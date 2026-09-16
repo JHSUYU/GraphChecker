@@ -925,6 +925,71 @@ public class ComposerTest {
                                 + "sorts: INT and REF"));
         assertFalse("the unplaceable symbol is not in the formula",
                 composition.body().contains("vh_ref"));
+        // And nothing the query does not rest on is declared in it.  A
+        // lowering answers many questions and this corpus refuses most of
+        // them; every name a refused or dropped term left in the declaration
+        // table used to be emitted anyway, which is how hdfs-17960's
+        // candidate.smt2 came to declare unsupported__d8d8220dc6,
+        // INSTANCE_FIELD/17#60@v209 and the selector of the path that was
+        // cut, and to use none of the three.
+        assertEquals("every declaration the query emits is a name some "
+                        + "assertion of it mentions",
+                Collections.<String>emptyList(),
+                deadDeclarations(composition));
+    }
+
+    /**
+     * Declarations the body emits that no assertion of the query mentions.
+     *
+     * <p>The query is the body plus the valuation it is asked with, so a pin
+     * naming a declared root counts as a mention; the theory preamble is not
+     * a declaration OF this recording and is not examined.</p>
+     */
+    private static List<String> deadDeclarations(
+            Composer.Composition composition) {
+        String[] lines = composition.body().split("\n");
+        int composed = 0;
+        for (int index = 0; index < lines.length; index++) {
+            if (lines[index].startsWith("(define-fun java_long_wrap")) {
+                composed = index + 1;
+                break;
+            }
+        }
+        StringBuilder asked = new StringBuilder();
+        for (Composer.Valuation valuation : composition.valuations()) {
+            for (String pin : valuation.assertions()) {
+                asked.append(pin).append('\n');
+            }
+        }
+        List<String> declared = new ArrayList<String>();
+        for (int index = 0; index < lines.length; index++) {
+            String name = index < composed ? "" : declaredName(lines[index]);
+            if (name.isEmpty()) {
+                asked.append(lines[index]).append('\n');
+            } else {
+                declared.add(name);
+            }
+        }
+        String text = asked.toString();
+        List<String> dead = new ArrayList<String>();
+        for (String name : declared) {
+            if (!text.contains(name)) dead.add(name);
+        }
+        return dead;
+    }
+
+    /** The name one declaration line declares, or {@code ""}. */
+    private static String declaredName(String line) {
+        for (String opening : new String[]{"(declare-const ",
+                "(define-fun "}) {
+            if (!line.startsWith(opening)) continue;
+            String rest = line.substring(opening.length());
+            int end = rest.indexOf(rest.startsWith("|") ? '|' : ' ');
+            if (end <= 0) return "";
+            return rest.startsWith("|") ? rest.substring(1, end)
+                    : rest.substring(0, end);
+        }
+        return "";
     }
 
     // ------------------------------------------------------------------

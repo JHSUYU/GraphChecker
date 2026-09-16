@@ -502,9 +502,17 @@ public final class Composer {
                             : "the propagation did not carry this value");
         }
 
-        return new Composition(anchor, lowering.body(), disjuncts, entries,
+        // The valuations first, then the body: a pin names a declared root
+        // the body's own assertions need not mention, and the body declares
+        // only what a text it will be asked with reaches.
+        List<Valuation> valuations = valuations();
+        List<String> pins = new ArrayList<String>();
+        for (Valuation valuation : valuations) {
+            pins.addAll(valuation.assertions());
+        }
+        return new Composition(anchor, lowering.body(pins), disjuncts, entries,
                 new ArrayList<Family>(families.values()),
-                new ArrayList<RootDomain>(roots.values()), valuations(),
+                new ArrayList<RootDomain>(roots.values()), valuations,
                 gaps, clockCells, clockReadings, unattestedRoots,
                 observedReads, observedArrivals, seed());
     }
