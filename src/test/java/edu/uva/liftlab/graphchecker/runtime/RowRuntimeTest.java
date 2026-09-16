@@ -328,7 +328,7 @@ public class RowRuntimeTest {
         // never opened, and the only balance check there was compared frame
         // depth, which such a pop does not move.
         Identity.resetForTests();
-        Identity.scopeStart();
+        Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
         Identity.enterFrame(NN.key(), "Loader.loadEditRecords()#u4");
         Identity.occurrence(NN.key(), "REGION.loader", true);
         long nested = ConcolicRegionRuntime.enterRegionEntry("REGION.apply",
@@ -775,7 +775,7 @@ public class RowRuntimeTest {
         Identity.resetForTests();
         Identity.enterFrame(NN.key(), "Server.processRpcRequest()#u3");
         long inbound = Identity.enterFrame(NN.key(), "Propagation.inbound()#u7");
-        Identity.scopeStart();
+        Identity.scopeStart(Identity.Hop.ANCHOR);
         Identity.exitFrame(inbound);
         long converting = Identity.enterFrame(NN.key(),
                 "PBHelper.convert()#u9");
@@ -784,6 +784,40 @@ public class RowRuntimeTest {
         Identity.enterFrame(NN.key(), "PBHelper.convert()#u9");
         assertEquals("the k-th call at one site under one occurrence",
                 "PBHelper.convert()#u9@1", Identity.atScope().render());
+
+        // And the frames ABOVE the inbound scope are the carrier thread's,
+        // not the request's: which of N pooled handlers serves a request is
+        // scheduling, and the anchor already identifies the request.  Two
+        // passes that schedule different handlers of one pool compute ONE
+        // index for the served activation -- hdfs-17960 planned handler 3
+        // and ran handler 0, and REPLAY refused 14 tasks at frame 0,
+        // <org.apache.hadoop.ipc.Server: void start()>#u31.
+        Object served = new Object();
+        RuntimeTraceContext.registerSource(served, NN);
+        long serving = RuntimeTraceContext.beginRequest(NN,
+                "checkpoint-namespace");
+        String header = RuntimeTraceContext.outboundHeader(served);
+        RuntimeTraceContext.endRequest(serving);
+        String recorded = anchoredActivationIndex(header, 3);
+        String replayed = anchoredActivationIndex(header, 0);
+        assertEquals("the served api is frame 0; no Server.start, no "
+                        + "Handler.run, no RpcCall.run",
+                "NameNodeRpcServer.saveNamespace()#u40@0", recorded);
+        assertEquals("the same index whichever handler was scheduled",
+                recorded, replayed);
+
+        // A tick is the other arm of the one rule: it IS the started work,
+        // so its index begins at the start frame it claimed rather than at
+        // the point the tick was opened -- the start site and its iteration
+        // are what tell two started siblings apart (G10/G11).
+        Identity.resetForTests();
+        Lineage.resetForTests();
+        Object updating = new Object();
+        RuntimeTraceContext.registerSource(updating, NN);
+        assertEquals("KeyManager.startBlockKeyUpdater()#u5@0"
+                        + "/BlockKeyUpdater.run()#u6@0"
+                        + "/KeyManager.updateBlockKeys()#u2@0",
+                daemonTickIndex(updating));
 
         // The bucket those counts live in is the enclosing occurrence's
         // CONTEXT, not the innermost scope frame's token: a tick opened and
@@ -810,7 +844,7 @@ public class RowRuntimeTest {
 
         Identity.resetForTests();
         Lineage.resetForTests();
-        Identity.scopeStart();
+        Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
         Identity.enterFrame(NN.key(), "Caller.run()#u3");
         Identity.enterFrame(NN.key(), "Caller.step()#u7");
         ExecutionIndex inner = Identity.atScope();
@@ -850,7 +884,7 @@ public class RowRuntimeTest {
                 return clock[0];
             }
         });
-        Identity.scopeStart();
+        Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
         Identity.regionEnter();
         Identity.regionKey(41L);
         // No event between the region entry and this call, so the entry the
@@ -892,7 +926,7 @@ public class RowRuntimeTest {
         assertNull("an event of no activation of this session names none",
                 RowRuntime.occurrenceAt(99L));
         Identity.resetForTests();
-        Identity.scopeStart();
+        Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
         Identity.enterFrame(NN.key(), "Caller.run()#u3");
         Identity.enterFrame(NN.key(), "Caller.step()#u7");
         Identity.enterFrame(NN.key(), "Caller.body()#u9");
@@ -903,7 +937,7 @@ public class RowRuntimeTest {
         // FSImageSaver threads -- differ by that start's iteration and by
         // nothing else.  No thread id, no address, no session counter.
         Identity.resetForTests();
-        Identity.scopeStart();
+        Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
         long saving = Identity.enterFrame(NN.key(),
                 "FSImage.saveFSImageInAllDirs()#u12");
         String first = startedWorkIndex("FSImage.saveFSImageInAllDirs()#u40");
@@ -936,7 +970,7 @@ public class RowRuntimeTest {
         // hdfs-17960 verification #3 -- 0, then 0..8 -- and refused 13
         // tasks at that one frame.
         Identity.resetForTests();
-        Identity.scopeStart();
+        Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
         Identity.enterFrame(NN.key(), "Loader.loadEditRecords()#u4");
         Identity.occurrence(NN.key(), "REGION.loader", true);
         assertEquals("one region open, pushed by the entry", 1,
@@ -994,7 +1028,7 @@ public class RowRuntimeTest {
                 }
             }
         });
-        Identity.scopeStart();
+        Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
         Identity.enterFrame(NN.key(), "Pool.submitAll()#u5");
         Identity.startWork("Pool.submitAll()#u9", tasks[0], NN.key());
         Identity.startWork("Pool.submitAll()#u9", tasks[1], NN.key());
@@ -1030,7 +1064,7 @@ public class RowRuntimeTest {
         assertEquals(depthAtOpen, Identity.depth());
 
         Identity.resetForTests();
-        Identity.scopeStart();
+        Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
         Identity.enterFrame(NN.key(), "Caller.run()#u3");
 
         // The three causal contexts, and the one that is not an ordinal.
@@ -1047,6 +1081,81 @@ public class RowRuntimeTest {
         assertEquals("Lost:DATA_XCEIVER",
                 Identity.context("", "", Role.of("DATA_XCEIVER"), "", 0)
                         .render());
+    }
+
+    /**
+     * The index of one anchored activation, as a pass that scheduled the
+     * {@code scheduled}-th handler of the pool computes it.
+     *
+     * <p>The real shape of hdfs-17960's NameNode RPC: {@code Server.start}
+     * starts N handler threads, one of them takes the call, and
+     * {@code CausynthMessagePropagation.inbound} opens the served scope
+     * inside a call that hands control straight back to the handler.</p>
+     */
+    private static String anchoredActivationIndex(final String header,
+                                                  int scheduled) {
+        Identity.resetForTests();
+        Lineage.resetForTests();
+        final AtomicReference<String> onHandler = new AtomicReference<>("");
+        Runnable handling = new Runnable() {
+            @Override
+            public void run() {
+                Identity.enterFrame(NN.key(), "Server$Handler.run()#u32");
+                Identity.enterFrame(NN.key(), "Server$RpcCall.run()#u33");
+                long propagating = Identity.enterFrame(NN.key(),
+                        "Propagation.inbound()#u7");
+                long inbound = RuntimeTraceContext.enterInbound(header,
+                        "HADOOP_IPC", "corr-1", "attempt-0", "REQUEST", null);
+                Identity.exitFrame(propagating);
+                Identity.enterFrame(NN.key(),
+                        "NameNodeRpcServer.saveNamespace()#u40");
+                onHandler.set(Identity.atScope().render());
+                RuntimeTraceContext.exitInbound(inbound);
+            }
+        };
+        Thread[] pool = new Thread[4];
+        for (int handler = 0; handler < pool.length; handler++) {
+            pool[handler] = new Thread(handler == scheduled ? handling
+                    : new Runnable() {
+                        @Override
+                        public void run() {
+                        }
+                    });
+            Identity.startWork("Server.start()#u31", pool[handler], NN.key());
+        }
+        pool[scheduled].start();
+        try {
+            pool[scheduled].join();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        }
+        return onHandler.get();
+    }
+
+    /** The index one daemon tick of a started updater thread stands on. */
+    private static String daemonTickIndex(final Object owner) {
+        final AtomicReference<String> onUpdater = new AtomicReference<>("");
+        Thread updater = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                Identity.enterFrame(NN.key(), "BlockKeyUpdater.run()#u6");
+                long tick = CausynthTraceRecorder.beginDaemonTick(owner,
+                        "KEY_MANAGER_TICK");
+                Identity.enterFrame(NN.key(),
+                        "KeyManager.updateBlockKeys()#u2");
+                onUpdater.set(Identity.atScope().render());
+                CausynthTraceRecorder.endDaemonTick(tick);
+            }
+        });
+        Identity.startWork("KeyManager.startBlockKeyUpdater()#u5", updater,
+                NN.key());
+        updater.start();
+        try {
+            updater.join();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        }
+        return onUpdater.get();
     }
 
     /**
