@@ -681,6 +681,11 @@ public final class ConcolicRegionRuntime {
      * before the first send it makes.</p>
      */
     public static void claimStart(Object carrier) {
+        // The carrier IS the work, so with none there is no frame to claim
+        // and nothing for a refusal below to be ABOUT.  Answered here
+        // rather than by passing "" as the subject of a gap row -- which
+        // Fields.text refuses, out of a woven hook, into the workload.
+        if (carrier == null) return;
         try {
             RowRuntime.claimStart(carrier);
         } catch (Throwable unnamed) {
@@ -690,7 +695,7 @@ public final class ConcolicRegionRuntime {
             RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
                             .LINEAGE_LOST,
                     edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
-                    carrier == null ? "" : carrier.getClass().getName(),
+                    carrier.getClass().getName(),
                     "the start frame filed for this work could not be "
                             + "claimed, so the occurrences it publishes carry "
                             + "no start-site frame in their execution index: "
@@ -737,7 +742,11 @@ public final class ConcolicRegionRuntime {
             RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
                             .LINEAGE_LOST,
                     edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
-                    site, "the frame of this work start could not be filed, "
+                    // The woven start site, else the work it was filed
+                    // for: one of the two is always spelled.
+                    firstNonBlank(site, carrier == null ? ""
+                            : carrier.getClass().getName()),
+                    "the frame of this work start could not be filed, "
                             + "so the work it started carries no start-site "
                             + "frame in its execution index: " + unnamed);
         }

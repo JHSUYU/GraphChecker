@@ -2,6 +2,8 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
+
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
 import edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.RawSharedStateReadOut;
 import java.util.ArrayList;
@@ -74,8 +76,15 @@ final class ConcolicResultPublisher {
      * {@code gaps.jsonl} sees why without a second file.</p>
      */
     static void taskUnanswered(RuntimeTask task, String detail) {
+        // The task, else the region it plans, else this session: a row that
+        // named nothing would refuse inside Fields.text, out of the hook
+        // that filed it.  taskId is the plan's own optionalString, so it
+        // can be blank even when the task is not.
         RowRuntime.gap(GapKind.TASK_UNANSWERED, GapClass.DIAGNOSTIC,
-                task == null ? "" : task.taskId, detail);
+                task == null ? RowRuntime.sessionId()
+                        : firstNonBlank(task.taskId, task.regionId,
+                                task.occurrenceId, RowRuntime.sessionId()),
+                detail);
     }
 
     /**

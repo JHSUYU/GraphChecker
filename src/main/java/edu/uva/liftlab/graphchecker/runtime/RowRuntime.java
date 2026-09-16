@@ -2,6 +2,8 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import edu.uva.liftlab.graphchecker.smt.Arms;
 
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
+
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
 import com.google.gson.JsonElement;
@@ -154,10 +156,11 @@ public final class RowRuntime {
         SessionPublisher session = publisher;
         if (address == null) {
             if (session != null) {
-                session.gap(GapRow.of(sessionId(), GapKind.LINEAGE_LOST,
-                        GapClass.DIAGNOSTIC, Text.safe(regionId),
+                gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC,
+                        firstNonBlank(Text.safe(regionId), Text.safe(taskId),
+                                Long.toString(token)),
                         "an activation of this region ran on a node this run"
-                                + " could not name, so it has no address"));
+                                + " could not name, so it has no address");
             }
             return null;
         }
@@ -494,18 +497,40 @@ public final class RowRuntime {
                 detail);
     }
 
+    /**
+     * One refusal or diagnostic, naming its subject.
+     *
+     * <p>A GAP ROW NAMES WHAT IT IS ABOUT: {@code GapRow.of} puts {@code
+     * subject} through {@code Fields.text}, which REFUSES a blank one --
+     * correctly, a refusal that reports a category is not evidence.  That
+     * refusal is an {@code IllegalArgumentException} thrown out of a woven
+     * hook, and this class never throws into the workload (see the class
+     * javadoc): a publisher that did would change the execution it is
+     * describing.  So an unnamed subject is answered HERE, by the session
+     * that met it, with the kind and class the caller stated and a detail
+     * that says the caller named nothing.  Every caller in {@code runtime/}
+     * hands a subject that cannot be blank; this is the door holding the
+     * next one to it.</p>
+     */
     public static void gap(GapKind kind, GapClass cls, String subject,
                            String detail) {
         SessionPublisher session = publisher;
         if (session == null) return;
+        String named = Text.safe(subject).trim();
+        String says = Text.safe(detail);
+        if (named.isEmpty()) {
+            // A session is open, so sessionId() is not blank: configure()
+            // sets both under one lock.
+            named = sessionId();
+            says = "this " + kind + " names no subject, so the run cannot"
+                    + " say what it refused on: " + says;
+        }
         // One statement, stated once: the same refusal is reached from every
         // activation that met it, and a reader counts named gaps.
-        if (!claimEvent("gap", kind + "#" + cls + "#" + Text.safe(subject)
-                + "#" + Text.safe(detail))) {
+        if (!claimEvent("gap", kind + "#" + cls + "#" + named + "#" + says)) {
             return;
         }
-        session.gap(GapRow.of(sessionId(), kind, cls, Text.safe(subject),
-                Text.safe(detail)));
+        session.gap(GapRow.of(sessionId(), kind, cls, named, says));
     }
 
     /** The symbols this session minted at declared region inputs. */
@@ -860,7 +885,9 @@ public final class RowRuntime {
         for (Map.Entry<String, String> unplanted
                 : FocusedReplay.unplantedAssignments().entrySet()) {
             gap(GapKind.ASSIGNMENT_UNPLANTED, GapClass.BLOCKING,
-                    unplanted.getKey(),
+                    // The focus row's own key for the root; JSON admits an
+                    // empty one, and this session is what is left to name.
+                    firstNonBlank(unplanted.getKey(), sessionId()),
                     "the obligation assigns this root \"" + unplanted
                             .getValue() + "\" and no mint of this replay"
                             + " planted it");

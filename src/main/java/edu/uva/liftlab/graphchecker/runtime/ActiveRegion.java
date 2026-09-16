@@ -682,7 +682,14 @@ final class ActiveRegion {
             String detail) {
         RowRuntime.gap(kind, edu.uva.liftlab.graphchecker.contract
                         .GapClass.BLOCKING,
-                phase == null ? occurrenceId() : phase.phaseId(),
+                // The declared phase, else this occurrence, else the
+                // activation's own token: phaseId and occurrenceId are both
+                // read out of the plan with optionalString, so either can
+                // be blank, and a blank subject refuses inside Fields.text
+                // -- out of the mint hook, into the workload.
+                edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank(
+                        phase == null ? "" : phase.phaseId(),
+                        occurrenceId(), Long.toString(token)),
                 safe(detail));
     }
 

@@ -306,6 +306,14 @@ public class RowRuntimeTest {
         RowRuntime.target(occurrence, 15L, "Klass.m()#u8", expression, true,
                 true, true);
         RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.BLOCKING, "s", "d");
+        // THE DOOR NEVER THROWS INTO THE WORKLOAD.  GapRow.of puts subject
+        // through Fields.text, which refuses a blank one -- correctly, a
+        // refusal that reports a category is not evidence -- and that
+        // refusal would leave a woven hook and change the execution the
+        // rows describe.  An unnamed subject is answered by the session
+        // that met it, and the detail says the caller named nothing.
+        RowRuntime.gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC, "   ",
+                "a caller that named no subject");
         // A declared region input is a READ of the location it stands for,
         // spelled the way the write log spells it, so the placeholder joins
         // the write above rather than naming a second location nobody wrote.
@@ -493,6 +501,18 @@ public class RowRuntimeTest {
         assertTrue(targets.get(0).observedFatal());
         List<GapRow> gaps = RowCodec.readAll(dir.gaps(), RowCodec::readGap);
         assertTrue(gaps.get(0).blocking());
+        boolean unnamedSubject = false;
+        for (GapRow gap : gaps) {
+            if (!gap.detail().startsWith("this LINEAGE_LOST names no"
+                    + " subject")) {
+                continue;
+            }
+            unnamedSubject = true;
+            assertEquals("the session that met it is what is left to name",
+                    gap.sessionId(), gap.subject());
+        }
+        assertTrue("a gap whose caller named nothing is a row, not a throw",
+                unnamedSubject);
         // And the refusal of the location-less mint is a row of its own, so
         // "this input read nothing the run can name" is stated rather than
         // replaced by a fabricated location.
