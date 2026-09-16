@@ -44,7 +44,6 @@ import soot.ValueBox;
 import soot.VoidType;
 import soot.PrimType;
 import soot.jimple.AssignStmt;
-import soot.jimple.ArrayRef;
 import soot.jimple.CastExpr;
 import soot.jimple.Constant;
 import soot.jimple.DefinitionStmt;

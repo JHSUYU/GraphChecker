@@ -10,7 +10,6 @@ import com.google.gson.ToNumberPolicy;
 import edu.uva.liftlab.graphchecker.causynth.MapFields;
 import edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
-import edu.uva.liftlab.graphchecker.causynth.StaticDataflowEdgeSchema;
 import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
 import edu.uva.liftlab.graphchecker.plan.AutomaticRegionEdge;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
@@ -28,7 +27,6 @@ import edu.uva.liftlab.graphchecker.plan.RuntimePlanArtifact;
 import edu.uva.liftlab.graphchecker.plan.StaticSymbolicSourceDeclaration;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 
-import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
