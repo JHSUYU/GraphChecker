@@ -3724,7 +3724,8 @@ public final class ConcolicRegionRuntime {
             // A candidate that is not the addressed occurrence is the
             // candidate loop working, not a finding, so it is released without
             // a durable row.
-            active.activation.noteUnaddressedCandidate(unaddressed);
+            active.activation.noteUnaddressedCandidate(
+                    ConcolicTaskPlan.RefusedCandidate.stated(unaddressed));
             active.releaseActivation();
             active.abandoned = true;
             endLiveSelectedRegion();

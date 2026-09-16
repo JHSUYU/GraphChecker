@@ -27,10 +27,12 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
@@ -80,6 +82,34 @@ final class ConcolicTaskPlan {
      */
     final boolean[] candidateLive;
     final boolean[] occurrenceClaimed;
+    /**
+     * Each task's slot in {@link #candidateLive} and
+     * {@link #occurrenceClaimed}, by the task object itself.
+     *
+     * <p>A task is its own identity here -- it declares no {@code equals} --
+     * and the two arrays are addressed by position, so the position is looked
+     * up rather than searched for.  {@code tasks.indexOf} walked the whole
+     * plan under this monitor on every admitted occurrence and every released
+     * candidate.</p>
+     */
+    private final Map<RuntimeTask, Integer> slots =
+            new IdentityHashMap<RuntimeTask, Integer>();
+    /**
+     * The hook group of each {@code (instrumentationSelector, rootMethod)}
+     * this run has entered.
+     *
+     * <p>{@link #rootHookGroup} is a function of the pair and of
+     * {@link #tasks}, which is unmodifiable, so its answer is a property of
+     * the pair: computed on the first entry at that hook and read from here
+     * afterwards.  It scanned the plan twice at EVERY woven root entry --
+     * {@code ConcolicRegionRuntime.enterRegionFrame} asks before it knows
+     * whether the hook is even a sibling of one already open -- which is
+     * where hdfs-11741's replay threads were found blocked.</p>
+     */
+    private final Map<String, RootHookGroup> rootHookGroups =
+            new LinkedHashMap<String, RootHookGroup>();
+    private final Map<String, RootHookGroup> loopRootHookGroups =
+            new LinkedHashMap<String, RootHookGroup>();
     /** Next observed physical entry in each planner-authored scope. */
     final Map<String, Integer> invocationOrdinals =
             new LinkedHashMap<>();
@@ -92,6 +122,9 @@ final class ConcolicTaskPlan {
         this.tasks = Collections.unmodifiableList(tasks);
         this.candidateLive = new boolean[tasks.size()];
         this.occurrenceClaimed = new boolean[tasks.size()];
+        for (int index = 0; index < this.tasks.size(); index++) {
+            this.slots.put(this.tasks.get(index), index);
+        }
     }
 
 
@@ -100,8 +133,8 @@ final class ConcolicTaskPlan {
      * occurrence, so the next compatible invocation may try for it.
      */
     synchronized void releaseCandidate(RuntimeTask task) {
-        int index = tasks.indexOf(task);
-        if (index >= 0) candidateLive[index] = false;
+        Integer index = slots.get(task);
+        if (index != null) candidateLive[index] = false;
     }
 
     /**
@@ -114,15 +147,26 @@ final class ConcolicTaskPlan {
      * replay; an address several activations answered is README {@code
      * OCC-1}'s ambiguity, a statement about the address itself.</p>
      */
-    synchronized void publishUnansweredAddresses() {
-        if (unansweredAddressesPublished) return;
-        unansweredAddressesPublished = true;
-        for (int index = 0; index < tasks.size(); index++) {
-            RuntimeTask task = tasks.get(index);
-            // An address that published at least one occurrence has been
-            // answered for end-of-run diagnostics. Goal completion owns
-            // the separate decision to admit another activation.
-            if (occurrenceClaimed[index]) continue;
+    void publishUnansweredAddresses() {
+        List<RuntimeTask> unanswered = new ArrayList<RuntimeTask>();
+        synchronized (this) {
+            if (unansweredAddressesPublished) return;
+            unansweredAddressesPublished = true;
+            for (int index = 0; index < tasks.size(); index++) {
+                // An address that published at least one occurrence has been
+                // answered for end-of-run diagnostics. Goal completion owns
+                // the separate decision to admit another activation.
+                if (occurrenceClaimed[index]) continue;
+                unanswered.add(tasks.get(index));
+            }
+        }
+        // Rendering a refusal reads the endpoints this run filed and digests
+        // the addresses it names, and it happens here -- once per address
+        // nothing answered, with this monitor released.  It used to happen
+        // once per candidate COMPARISON, inside #select, and hdfs-11741's
+        // seed replay then spent 980 seconds with every woven thread blocked
+        // behind the one holding this monitor to hash.
+        for (RuntimeTask task : unanswered) {
             if (task.unaddressedCandidates == 0) {
                 // Nothing compatible ran at all -- not one activation the
                 // address could have been compared against.  That is a
@@ -143,17 +187,127 @@ final class ConcolicTaskPlan {
         }
     }
 
+    /**
+     * One candidate that ran and was not the addressed occurrence: the facts
+     * of the refusal, not a sentence about it.
+     *
+     * <p>A refusal is stated once, at {@code TASK_UNANSWERED}, and admission
+     * only files what the sentence is made of -- the prefix, the address the
+     * activation ran at, the node this run attributed it to and the thread it
+     * ran on.  All four are already in hand at the comparison; rendering them
+     * is what is not, because it digests two addresses and searches the
+     * endpoints this run filed for the two anchors behind them.</p>
+     *
+     * <p>Distinct refusals stay distinct: the four facts ARE the identity the
+     * rendered sentence had, so the set the run reports is the same set.</p>
+     */
+    static final class RefusedCandidate {
+        private final String said;
+        /** The address the activation ran at, or null when {@code said} is
+         * the whole reason. */
+        private final OccurrenceAddress observed;
+        /** Which node this run attributed the candidate to, as the sentence
+         * states it, or {@code ""} where the refusal states no node.  Short
+         * enough to render where it is read; the address is not. */
+        private final String attribution;
+        private final String thread;
+
+        private RefusedCandidate(String said, OccurrenceAddress observed,
+                                 String attribution) {
+            this.said = safe(said);
+            this.observed = observed;
+            this.attribution = safe(attribution);
+            this.thread = Thread.currentThread().getName();
+        }
+
+        /** A candidate refused on its address, stated against {@code said}. */
+        static RefusedCandidate onAddress(String said,
+                                          OccurrenceAddress observed,
+                                          SourceRef activationSource) {
+            return new RefusedCandidate(said, observed,
+                    attribution(activationSource == null ? ""
+                            : activationSource.key()));
+        }
+
+        /** A candidate refused on something that is not its address. */
+        static RefusedCandidate stated(String said,
+                                       SourceRef activationSource) {
+            return new RefusedCandidate(said, null,
+                    attribution(activationSource == null ? ""
+                            : activationSource.key()));
+        }
+
+        /** The same, where the refusal itself names where it ran. */
+        static RefusedCandidate stated(String said) {
+            return new RefusedCandidate(said, null, "");
+        }
+
+        /**
+         * One refused candidate, as a sentence a reader can act on.
+         *
+         * <p>Two facts every refusal owes and neither of which it carried:
+         * the thread the candidate ran on -- filed when it ran -- and a
+         * difference that is actually stated.  A row whose difference was
+         * empty read as "matching root:  (attributed to X)", which is the
+         * shape 11741's balancer#3 and 17897's dn0#1 were reported in: the
+         * address matched and something else refused it, and the row said
+         * neither half out loud.  Both halves are always stated now --
+         * {@link #difference} names "the two addresses do not differ" rather
+         * than nothing, and every caller states a {@code said} -- so the
+         * arm that substituted a sentence for an empty one is gone.</p>
+         */
+        String render(RuntimeTask task) {
+            String stated = (observed == null ? said
+                    : said + ": " + task.addressDifference(observed))
+                    + attribution;
+            return stated.trim() + " [thread=" + thread + "]";
+        }
+
+        @Override
+        public boolean equals(Object value) {
+            if (this == value) return true;
+            if (!(value instanceof RefusedCandidate)) return false;
+            RefusedCandidate other = (RefusedCandidate) value;
+            return said.equals(other.said)
+                    && thread.equals(other.thread)
+                    && attribution.equals(other.attribution)
+                    && (observed == null ? other.observed == null
+                    : observed.equals(other.observed));
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(said, thread, attribution, observed);
+        }
+    }
+
     /** Marks durable evidence without clearing a newer live candidate. */
     synchronized void markOccurrenceClaimed(RuntimeTask task) {
-        int index = tasks.indexOf(task);
-        if (index >= 0) occurrenceClaimed[index] = true;
+        Integer index = slots.get(task);
+        if (index != null) occurrenceClaimed[index] = true;
     }
 
     /**
      * Resolves an occurrence-specific instrumentation hook to the stable
      * region entry shared by every sibling hook at that Java method.
+     *
+     * <p>An index lookup: the answer belongs to the {@code
+     * (instrumentationSelector, rootMethod)} pair, so it is computed on the
+     * first entry at that hook and read afterwards ({@link
+     * #rootHookGroups}).</p>
      */
     synchronized RootHookGroup rootHookGroup(
+            String instrumentationSelector, String rootMethod) {
+        String hook = safe(instrumentationSelector) + "\n" + safe(rootMethod);
+        RootHookGroup known = rootHookGroups.get(hook);
+        if (known != null) return known;
+        RootHookGroup resolved = resolveRootHookGroup(instrumentationSelector,
+                rootMethod);
+        rootHookGroups.put(hook, resolved);
+        return resolved;
+    }
+
+    private RootHookGroup resolveRootHookGroup(
             String instrumentationSelector, String rootMethod) {
         RuntimeTask selected = null;
         for (RuntimeTask task : tasks) {
@@ -186,6 +340,17 @@ final class ConcolicTaskPlan {
 
     /** Resolves one lightweight outer hook shared by loop-body tasks. */
     synchronized RootHookGroup loopRootHookGroup(
+            String instrumentationSelector, String rootMethod) {
+        String hook = safe(instrumentationSelector) + "\n" + safe(rootMethod);
+        RootHookGroup known = loopRootHookGroups.get(hook);
+        if (known != null) return known;
+        RootHookGroup resolved = resolveLoopRootHookGroup(
+                instrumentationSelector, rootMethod);
+        loopRootHookGroups.put(hook, resolved);
+        return resolved;
+    }
+
+    private RootHookGroup resolveLoopRootHookGroup(
             String instrumentationSelector, String rootMethod) {
         RuntimeTask selected = null;
         for (RuntimeTask task : tasks) {
@@ -236,6 +401,7 @@ final class ConcolicTaskPlan {
         if (!RuntimeTraceContext.recordingWindowOpen()) {
             return admitted;
         }
+        ObservedAddresses observedAddresses = new ObservedAddresses();
         for (RuntimeTask task : tasks) {
             if (!task.loopBodyRoot
                     || !task.loopRootHookGroupKey().equals(
@@ -249,8 +415,8 @@ final class ConcolicTaskPlan {
                     context).isEmpty()) {
                 continue;
             }
-            OccurrenceAddress observed = task.observedAddress(
-                    countedLifecycle(task, activationSource));
+            OccurrenceAddress observed = observedAddresses.of(task,
+                    activationSource);
             // The whole address, and nothing standing in for it.  A
             // non-loop root publishes one occurrence and its unique OUT
             // anchor confirms the node before that publication, so entry may
@@ -261,9 +427,9 @@ final class ConcolicTaskPlan {
             // admitted to any address, which is how one occurrence came to
             // own two enclosing invocations.
             if (!task.acceptsRootInvocation(observed)) {
-                task.noteUnaddressedCandidate("matching enclosing root: "
-                        + task.addressDifference(observed)
-                        + attribution(activationSource));
+                task.noteUnaddressedCandidate(RefusedCandidate.onAddress(
+                        "matching enclosing root", observed,
+                        activationSource));
                 continue;
             }
             // One occurrence, one enclosing activation.  The bodies of
@@ -279,13 +445,13 @@ final class ConcolicTaskPlan {
             // bucket: bookkeeping that lets one occurrence absorb another
             // activation.
             if (!task.claimsEnclosingInvocation(enclosingInvocationEvent)) {
-                task.noteUnaddressedCandidate(
+                task.noteUnaddressedCandidate(RefusedCandidate.stated(
                         "a second enclosing invocation of this region: "
                                 + "occurrence " + task.occurrenceId
                                 + " already runs the bodies of entry event "
                                 + task.enclosingInvocationEvent()
-                                + ", so this entry is another activation"
-                                + attribution(activationSource));
+                                + ", so this entry is another activation",
+                        activationSource));
                 continue;
             }
             // Which of this invocation's admissions this task is, not an
@@ -316,6 +482,7 @@ final class ConcolicTaskPlan {
         // Same rule as the counting pass: outside the recording window
         // there is no candidate to select.
         if (!RuntimeTraceContext.recordingWindowOpen()) return null;
+        ObservedAddresses observedAddresses = new ObservedAddresses();
         for (int index = 0; index < tasks.size(); index++) {
             RuntimeTask task = tasks.get(index);
             if (!task.rootHookGroupKey().equals(
@@ -336,8 +503,8 @@ final class ConcolicTaskPlan {
             }
             if (!sourceAdmissionMismatch(task, registeredReceiverSource,
                     context).isEmpty()) continue;
-            OccurrenceAddress observed = task.observedAddress(
-                    countedLifecycle(task, activationSource));
+            OccurrenceAddress observed = observedAddresses.of(task,
+                    activationSource);
             if (!task.acceptsRootInvocation(observed)) {
                 // Said out loud, as the loop-body path already says it.  A
                 // non-loop root that ran and was refused on its address was
@@ -348,9 +515,8 @@ final class ConcolicTaskPlan {
                 // REGION.763d087e on target-dn: activations of
                 // Client$Connection.sendRpcRequest were offered and refused
                 // on the ordinal, and the row said the root never executed.
-                task.noteUnaddressedCandidate("matching root: "
-                        + task.addressDifference(observed)
-                        + attribution(activationSource));
+                task.noteUnaddressedCandidate(RefusedCandidate.onAddress(
+                        "matching root", observed, activationSource));
                 continue;
             }
             if (candidateLive[index]) continue;
@@ -479,6 +645,34 @@ final class ConcolicTaskPlan {
     }
 
     /**
+     * The address one root entry ran at, computed once for that entry.
+     *
+     * <p>{@link RuntimeTask#observedAddress} is {@code Identity.occurrence}:
+     * it reads the frames standing on this thread, folds them into an
+     * execution index (one digest per frame) and digests the address.  Its
+     * answer depends on the entry -- the thread's frames and the causal
+     * context it stands in -- and on the (lifecycle, region) the task names,
+     * and admission asked it once per CANDIDATE.  The key is exactly what the
+     * answer depends on, so this is a memo and not a narrowing: {@link
+     * #select} has already matched the root hook group, which names the
+     * region, and {@link #countedLifecycle} answers the same lifecycle for
+     * every task whose planned node declares an epoch.</p>
+     */
+    static final class ObservedAddresses {
+        private final Map<String, OccurrenceAddress> byTarget =
+                new LinkedHashMap<String, OccurrenceAddress>();
+
+        OccurrenceAddress of(RuntimeTask task, SourceRef activationSource) {
+            String lifecycle = countedLifecycle(task, activationSource);
+            String target = lifecycle + "\n" + task.regionId;
+            if (byTarget.containsKey(target)) return byTarget.get(target);
+            OccurrenceAddress observed = task.observedAddress(lifecycle);
+            byTarget.put(target, observed);
+            return observed;
+        }
+    }
+
+    /**
      * What this run attributed the refused activation to, for the note.
      *
      * <p>An ordinal refusal says "occurrence is activation 2, not 1" and
@@ -491,14 +685,14 @@ final class ConcolicTaskPlan {
      * whether a given heartbeat carries the node at all depends on when the
      * workload registered it -- and the row could not tell them apart.</p>
      */
-    static String attribution(SourceRef activationSource) {
-        if (activationSource == null
-                || RuntimeTraceContext.UNREGISTERED_SOURCE.key()
-                .equals(activationSource.key())) {
+    static String attribution(String activationSourceKey) {
+        String key = safe(activationSourceKey);
+        if (key.isEmpty()
+                || RuntimeTraceContext.UNREGISTERED_SOURCE.key().equals(key)) {
             return " (this run attributed the activation to no node, so it"
                     + " counts in the unregistered source)";
         }
-        return " (attributed to " + activationSource.key() + ")";
+        return " (attributed to " + key + ")";
     }
 
     /** The source keys this run attributed to one live root entry. */
@@ -1030,7 +1224,7 @@ final class ConcolicTaskPlan {
          * addressed occurrence, and every distinct reason they were not.
          */
         int unaddressedCandidates;
-        final Set<String> unaddressedReasons = new LinkedHashSet<>();
+        final Set<RefusedCandidate> unaddressedReasons = new LinkedHashSet<>();
 
         RuntimeTask(ExecutionTask task) {
             if (!task.executable()) {
@@ -1165,37 +1359,17 @@ final class ConcolicTaskPlan {
             return (exporting ? "EXPORT\n" : "ATTACH\n") + safe(portId);
         }
 
-        /**
-         * Records that one candidate ran and was not this address, keeping
-         * the last reason for the run's single statement about it.
-         */
         private final Set<String> requestContexts = new LinkedHashSet<>();
 
-        synchronized void noteUnaddressedCandidate(String reason) {
-            unaddressedCandidates++;
-            unaddressedReasons.add(candidateNote(reason));
-            registerRunTotalsHook();
-        }
-
         /**
-         * One refused candidate, as a sentence a reader can act on.
-         *
-         * <p>Two facts every refusal owes and none of them carried: the
-         * thread the candidate ran on -- this method runs on it -- and a
-         * difference that is actually stated.  A row whose difference was
-         * empty read as "matching root:  (attributed to X)", which is the
-         * shape 11741's balancer#3 and 17897's dn0#1 were reported in: the
-         * address matched and something else refused it, and the row said
-         * neither half out loud.</p>
+         * Records that one candidate ran and was not this address, as the
+         * facts of the refusal rather than a sentence about them.
          */
-        private static String candidateNote(String reason) {
-            String stated = safe(reason).trim();
-            if (stated.isEmpty()) {
-                stated = "matching root was refused with no stated"
-                        + " difference";
-            }
-            return stated + " [thread="
-                    + Thread.currentThread().getName() + "]";
+        synchronized void noteUnaddressedCandidate(
+                RefusedCandidate refusal) {
+            unaddressedCandidates++;
+            unaddressedReasons.add(refusal);
+            registerRunTotalsHook();
         }
 
         /**
@@ -1207,13 +1381,24 @@ final class ConcolicTaskPlan {
             requestContexts.add(safe(enteredUnder));
         }
 
-        /** The run's one statement about an address nothing answered. */
+        /**
+         * The run's one statement about an address nothing answered.
+         *
+         * <p>Where every refusal this address met is rendered, once: the
+         * facts were filed as each candidate ran ({@link RefusedCandidate}).
+         * Called with the plan's monitor released, because rendering digests
+         * addresses and reads the endpoints the run filed.</p>
+         */
         synchronized String unansweredAddress() {
             boolean neverExisted = rootContextSelector
                     .anchorSourceNeverExisted();
+            List<String> said = new ArrayList<String>(
+                    unaddressedReasons.size());
+            for (RefusedCandidate refusal : unaddressedReasons) {
+                said.add(refusal.render(this));
+            }
             return unaddressedCandidates + " compatible activation(s) did "
-                    + "not answer the addressed occurrence; "
-                    + unaddressedReasons
+                    + "not answer the addressed occurrence; " + said
                     + (neverExisted
                     ? "; " + rootContextSelector.describe()
                     + " was never registered in this run" : "");
