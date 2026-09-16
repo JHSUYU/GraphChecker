@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "kind": "CLAIM",
-  "anchor": "hdfs-17960/nn0#epoch1/region/REGION.f0132fca-8c1f-3f7c-93e7-dc41bfc20f40/ctx:Anchor:dfd167508434fdc7@HADOOP_IPC/checkpoint-namespace/idx:\u003corg.apache.hadoop.hdfs.server.namenode.NameNodeRpcServer: boolean saveNamespace(long,long)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSNamesystem: boolean saveNamespace(long,long)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSImage: void saveNamespace(org.apache.hadoop.hdfs.server.namenode.FSNamesystem,org.apache.hadoop.hdfs.server.namenode.NNStorage$NameNodeFile,org.apache.hadoop.hdfs.util.Canceler)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSImage: void saveFSImageInAllDirs(org.apache.hadoop.hdfs.server.namenode.FSNamesystem,org.apache.hadoop.hdfs.server.namenode.NNStorage$NameNodeFile,long,org.apache.hadoop.hdfs.util.Canceler)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSImage: void saveFSImageInAllDirs(org.apache.hadoop.hdfs.server.namenode.FSNamesystem,org.apache.hadoop.hdfs.server.namenode.NNStorage$NameNodeFile,long,org.apache.hadoop.hdfs.util.Canceler)\u003e#u36@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSImage$FSImageSaver: void run()\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSImage: void saveFSImage(org.apache.hadoop.hdfs.server.namenode.SaveNamespaceContext,org.apache.hadoop.hdfs.server.common.Storage$StorageDirectory,org.apache.hadoop.hdfs.server.namenode.NNStorage$NameNodeFile)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSImageFormatProtobuf$Saver: long saveInternal(java.io.FileOutputStream,org.apache.hadoop.hdfs.server.namenode.FSImageCompression,java.lang.String)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSImageFormatProtobuf$Saver: long saveSnapshots(org.apache.hadoop.hdfs.server.namenode.FsImageProto$FileSummary$Builder)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.snapshot.FSImageFormatPBSnapshot$Saver: void serializeSnapshotSection(java.io.OutputStream)\u003e@0",
+  "anchor": "hdfs-17960/nn0#epoch1/region/REGION.f0132fca-8c1f-3f7c-93e7-dc41bfc20f40/ctx:Anchor:cb189bd419932b69@HADOOP_IPC/checkpoint-namespace/idx:\u003corg.apache.hadoop.hdfs.server.namenode.NameNodeRpcServer: boolean saveNamespace(long,long)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSNamesystem: boolean saveNamespace(long,long)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSImage: boolean saveNamespace(long,long,org.apache.hadoop.hdfs.server.namenode.FSNamesystem)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSImage: void saveNamespace(org.apache.hadoop.hdfs.server.namenode.FSNamesystem,org.apache.hadoop.hdfs.server.namenode.NNStorage$NameNodeFile,org.apache.hadoop.hdfs.util.Canceler)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSImage: void saveFSImageInAllDirs(org.apache.hadoop.hdfs.server.namenode.FSNamesystem,org.apache.hadoop.hdfs.server.namenode.NNStorage$NameNodeFile,long,org.apache.hadoop.hdfs.util.Canceler)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSImage: void saveFSImageInAllDirs(org.apache.hadoop.hdfs.server.namenode.FSNamesystem,org.apache.hadoop.hdfs.server.namenode.NNStorage$NameNodeFile,long,org.apache.hadoop.hdfs.util.Canceler)\u003e#u36@1/\u003corg.apache.hadoop.hdfs.server.namenode.FSImage$FSImageSaver: void run()\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSImage: void saveFSImage(org.apache.hadoop.hdfs.server.namenode.SaveNamespaceContext,org.apache.hadoop.hdfs.server.common.Storage$StorageDirectory,org.apache.hadoop.hdfs.server.namenode.NNStorage$NameNodeFile)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSImageFormatProtobuf$Saver: long save(java.io.File,org.apache.hadoop.hdfs.server.namenode.FSImageCompression)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSImageFormatProtobuf$Saver: long saveInternal(java.io.FileOutputStream,org.apache.hadoop.hdfs.server.namenode.FSImageCompression,java.lang.String)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.FSImageFormatProtobuf$Saver: long saveSnapshots(org.apache.hadoop.hdfs.server.namenode.FsImageProto$FileSummary$Builder)\u003e@0/\u003corg.apache.hadoop.hdfs.server.namenode.snapshot.FSImageFormatPBSnapshot$Saver: void serializeSnapshotSection(java.io.OutputStream)\u003e@0",
   "claim": {
     "kind": "MARKER_FLIPPED",
     "valuationOrdinal": 1,
@@ -11,46 +11,25 @@
     "polarityDecides": true,
     "gaps": [
       {
-        "sessionId": "e03c7d5bda13687c-9cd25e10",
-        "kind": "UNSTATED_VALUE",
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
         "cls": "DIAGNOSTIC",
-        "subject": "M_I_field_REGION.f0132fca-8c1f-3f7c-93e7-dc41bfc20f40.in.2d602119-e262-39a5-9011-b86f2bd17f75.occ.99304ab072de24bee5e149a7a32c60f225b372961146f0ab55806d2f3523838d_java/util/concurrent/atomic/AtomicInteger",
-        "detail": "the read row that states this version\u0027s symbol states no value for it, so nothing binds it"
+        "subject": "INSTANCE/9#64",
+        "detail": "the owner on this location\u0027s rows is neither an allocation endpoint id nor the preWindow form, so it names no storage across replays: this read is delivered as its own run delivered it and gets no alternative writers"
       },
       {
-        "sessionId": "e03c7d5bda13687c-9cd25e10",
-        "kind": "UNSTATED_VALUE",
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
         "cls": "DIAGNOSTIC",
-        "subject": "INSTANCE/8#64@179",
-        "detail": "no write of this location at this version in this session, and the recording states no value the read returned"
+        "subject": "INSTANCE/17#60",
+        "detail": "the owner on this location\u0027s rows is neither an allocation endpoint id nor the preWindow form, so it names no storage across replays: this read is delivered as its own run delivered it and gets no alternative writers"
       },
       {
-        "sessionId": "e03c7d5bda13687c-9cd25e10",
-        "kind": "UNSTATED_VALUE",
+        "sessionId": "composition",
+        "kind": "DECLARATION_MISSING",
         "cls": "DIAGNOSTIC",
-        "subject": "M_I_field_REGION.f0132fca-8c1f-3f7c-93e7-dc41bfc20f40.in.2d602119-e262-39a5-9011-b86f2bd17f75.occ.99304ab072de24bee5e149a7a32c60f225b372961146f0ab55806d2f3523838d_java/util/concurrent/atomic/AtomicInteger",
-        "detail": "the read row that states this version\u0027s symbol states no value for it, so nothing binds it"
-      },
-      {
-        "sessionId": "e03c7d5bda13687c-9cd25e10",
-        "kind": "UNSTATED_VALUE",
-        "cls": "DIAGNOSTIC",
-        "subject": "PROPAGATION_CUT:UndeclaredFreeSymbol:M_I_field_REGION.f0132fca-8c1f-3f7c-93e7-dc41bfc20f40.in.2d602119-e262-39a5-9011-b86f2bd17f75.occ.99304ab072de24bee5e149a7a32c60f225b372961146f0ab55806d2f3523838d_java/util/concurrent/atomic/AtomicInteger",
-        "detail": "this path rests on a value the recording does not state, so it is not in the disjunction"
-      },
-      {
-        "sessionId": "e03c7d5bda13687c-9cd25e10",
-        "kind": "UNSTATED_VALUE",
-        "cls": "DIAGNOSTIC",
-        "subject": "PROPAGATION_CUT:UndeclaredFreeSymbol:M_I_field_REGION.f0132fca-8c1f-3f7c-93e7-dc41bfc20f40.in.2d602119-e262-39a5-9011-b86f2bd17f75.occ.99304ab072de24bee5e149a7a32c60f225b372961146f0ab55806d2f3523838d_java/util/concurrent/atomic/AtomicInteger",
-        "detail": "this path rests on a value the recording does not state, so it is not in the disjunction"
-      },
-      {
-        "sessionId": "e03c7d5bda13687c-9cd25e10",
-        "kind": "UNSTATED_VALUE",
-        "cls": "DIAGNOSTIC",
-        "subject": "PROPAGATION_CUT:UndeclaredFreeSymbol:M_I_field_REGION.f0132fca-8c1f-3f7c-93e7-dc41bfc20f40.in.2d602119-e262-39a5-9011-b86f2bd17f75.occ.99304ab072de24bee5e149a7a32c60f225b372961146f0ab55806d2f3523838d_java/util/concurrent/atomic/AtomicInteger",
-        "detail": "this path rests on a value the recording does not state, so it is not in the disjunction"
+        "subject": "MAP/3#-3",
+        "detail": "the owner on this location\u0027s rows is neither an allocation endpoint id nor the preWindow form, so it names no storage across replays: this read is delivered as its own run delivered it and gets no alternative writers"
       },
       {
         "sessionId": "composition",
@@ -70,14 +49,7 @@
         "sessionId": "composition",
         "kind": "DECLARATION_MISSING",
         "cls": "DIAGNOSTIC",
-        "subject": "MAP/3#-3",
-        "detail": "the owner on this location\u0027s rows is neither an allocation endpoint id nor the preWindow form, so it names no storage across replays: this read is delivered as its own run delivered it and gets no alternative writers"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "DECLARATION_MISSING",
-        "cls": "DIAGNOSTIC",
-        "subject": "INSTANCE/11#60",
+        "subject": "INSTANCE/15#60",
         "detail": "the owner on this location\u0027s rows is neither an allocation endpoint id nor the preWindow form, so it names no storage across replays: this read is delivered as its own run delivered it and gets no alternative writers"
       },
       {
@@ -149,18 +121,11 @@
         "cls": "DIAGNOSTIC",
         "subject": "INSTANCE/59#88",
         "detail": "the owner on this location\u0027s rows is neither an allocation endpoint id nor the preWindow form, so it names no storage across replays: this read is delivered as its own run delivered it and gets no alternative writers"
-      },
-      {
-        "sessionId": "composition",
-        "kind": "UNSTATED_VALUE",
-        "cls": "DIAGNOSTIC",
-        "subject": "UndeclaredFreeSymbol:M_I_field_REGION.f0132fca-8c1f-3f7c-93e7-dc41bfc20f40.in.2d602119-e262-39a5-9011-b86f2bd17f75.occ.99304ab072de24bee5e149a7a32c60f225b372961146f0ab55806d2f3523838d_java/util/concurrent/atomic/AtomicInteger",
-        "detail": "the propagation did not carry this value"
       }
     ]
   },
   "solverRuns": 5,
-  "seedSessionId": "seed-result-a9f1e827",
+  "seedSessionId": "seed-result-5caa9286",
   "valuations": [
     {
       "ordinal": 0,
@@ -175,6 +140,7 @@
       "unsatCore": [
         "path_fatal__0",
         "path_fatal__1",
+        "path_fatal__2",
         "fatal_target",
         "valuation__M_Z_field_SRC_50c885b36ada5c1b9c4715f97f1d56b8ffd06bd94c83e91d476e32c8ef09b8cb_org_apache_hadoop_hdfs_server_namenode_snapshot_SnapshotManager"
       ]
@@ -188,54 +154,33 @@
       "moved": {
         "HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED": "false"
       },
-      "selectedPathId": "770436d5ea8f639d",
-      "selectedSessionId": "ffc6c479f4718c8b-1af13a9b",
+      "selectedPathId": "352bc6c422f05ec9",
+      "selectedSessionId": "cb67875d1d896d4d-ccfacd58",
       "fatalObserved": true,
       "unsatCore": []
     }
   ],
   "gaps": [
     {
-      "sessionId": "e03c7d5bda13687c-9cd25e10",
-      "kind": "UNSTATED_VALUE",
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
       "cls": "DIAGNOSTIC",
-      "subject": "M_I_field_REGION.f0132fca-8c1f-3f7c-93e7-dc41bfc20f40.in.2d602119-e262-39a5-9011-b86f2bd17f75.occ.99304ab072de24bee5e149a7a32c60f225b372961146f0ab55806d2f3523838d_java/util/concurrent/atomic/AtomicInteger",
-      "detail": "the read row that states this version\u0027s symbol states no value for it, so nothing binds it"
+      "subject": "INSTANCE/9#64",
+      "detail": "the owner on this location\u0027s rows is neither an allocation endpoint id nor the preWindow form, so it names no storage across replays: this read is delivered as its own run delivered it and gets no alternative writers"
     },
     {
-      "sessionId": "e03c7d5bda13687c-9cd25e10",
-      "kind": "UNSTATED_VALUE",
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
       "cls": "DIAGNOSTIC",
-      "subject": "INSTANCE/8#64@179",
-      "detail": "no write of this location at this version in this session, and the recording states no value the read returned"
+      "subject": "INSTANCE/17#60",
+      "detail": "the owner on this location\u0027s rows is neither an allocation endpoint id nor the preWindow form, so it names no storage across replays: this read is delivered as its own run delivered it and gets no alternative writers"
     },
     {
-      "sessionId": "e03c7d5bda13687c-9cd25e10",
-      "kind": "UNSTATED_VALUE",
+      "sessionId": "composition",
+      "kind": "DECLARATION_MISSING",
       "cls": "DIAGNOSTIC",
-      "subject": "M_I_field_REGION.f0132fca-8c1f-3f7c-93e7-dc41bfc20f40.in.2d602119-e262-39a5-9011-b86f2bd17f75.occ.99304ab072de24bee5e149a7a32c60f225b372961146f0ab55806d2f3523838d_java/util/concurrent/atomic/AtomicInteger",
-      "detail": "the read row that states this version\u0027s symbol states no value for it, so nothing binds it"
-    },
-    {
-      "sessionId": "e03c7d5bda13687c-9cd25e10",
-      "kind": "UNSTATED_VALUE",
-      "cls": "DIAGNOSTIC",
-      "subject": "PROPAGATION_CUT:UndeclaredFreeSymbol:M_I_field_REGION.f0132fca-8c1f-3f7c-93e7-dc41bfc20f40.in.2d602119-e262-39a5-9011-b86f2bd17f75.occ.99304ab072de24bee5e149a7a32c60f225b372961146f0ab55806d2f3523838d_java/util/concurrent/atomic/AtomicInteger",
-      "detail": "this path rests on a value the recording does not state, so it is not in the disjunction"
-    },
-    {
-      "sessionId": "e03c7d5bda13687c-9cd25e10",
-      "kind": "UNSTATED_VALUE",
-      "cls": "DIAGNOSTIC",
-      "subject": "PROPAGATION_CUT:UndeclaredFreeSymbol:M_I_field_REGION.f0132fca-8c1f-3f7c-93e7-dc41bfc20f40.in.2d602119-e262-39a5-9011-b86f2bd17f75.occ.99304ab072de24bee5e149a7a32c60f225b372961146f0ab55806d2f3523838d_java/util/concurrent/atomic/AtomicInteger",
-      "detail": "this path rests on a value the recording does not state, so it is not in the disjunction"
-    },
-    {
-      "sessionId": "e03c7d5bda13687c-9cd25e10",
-      "kind": "UNSTATED_VALUE",
-      "cls": "DIAGNOSTIC",
-      "subject": "PROPAGATION_CUT:UndeclaredFreeSymbol:M_I_field_REGION.f0132fca-8c1f-3f7c-93e7-dc41bfc20f40.in.2d602119-e262-39a5-9011-b86f2bd17f75.occ.99304ab072de24bee5e149a7a32c60f225b372961146f0ab55806d2f3523838d_java/util/concurrent/atomic/AtomicInteger",
-      "detail": "this path rests on a value the recording does not state, so it is not in the disjunction"
+      "subject": "MAP/3#-3",
+      "detail": "the owner on this location\u0027s rows is neither an allocation endpoint id nor the preWindow form, so it names no storage across replays: this read is delivered as its own run delivered it and gets no alternative writers"
     },
     {
       "sessionId": "composition",
@@ -255,14 +200,7 @@
       "sessionId": "composition",
       "kind": "DECLARATION_MISSING",
       "cls": "DIAGNOSTIC",
-      "subject": "MAP/3#-3",
-      "detail": "the owner on this location\u0027s rows is neither an allocation endpoint id nor the preWindow form, so it names no storage across replays: this read is delivered as its own run delivered it and gets no alternative writers"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "DECLARATION_MISSING",
-      "cls": "DIAGNOSTIC",
-      "subject": "INSTANCE/11#60",
+      "subject": "INSTANCE/15#60",
       "detail": "the owner on this location\u0027s rows is neither an allocation endpoint id nor the preWindow form, so it names no storage across replays: this read is delivered as its own run delivered it and gets no alternative writers"
     },
     {
@@ -334,13 +272,6 @@
       "cls": "DIAGNOSTIC",
       "subject": "INSTANCE/59#88",
       "detail": "the owner on this location\u0027s rows is neither an allocation endpoint id nor the preWindow form, so it names no storage across replays: this read is delivered as its own run delivered it and gets no alternative writers"
-    },
-    {
-      "sessionId": "composition",
-      "kind": "UNSTATED_VALUE",
-      "cls": "DIAGNOSTIC",
-      "subject": "UndeclaredFreeSymbol:M_I_field_REGION.f0132fca-8c1f-3f7c-93e7-dc41bfc20f40.in.2d602119-e262-39a5-9011-b86f2bd17f75.occ.99304ab072de24bee5e149a7a32c60f225b372961146f0ab55806d2f3523838d_java/util/concurrent/atomic/AtomicInteger",
-      "detail": "the propagation did not carry this value"
     }
   ]
 }

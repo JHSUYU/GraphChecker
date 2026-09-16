@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "kind": "CAMPAIGN_RUN_MANIFEST",
-  "campaignRoot": "/tmp/claude-20003/-opt-GraphChecker/10153a9a-290a-45d1-b3c9-072f259e090e/scratchpad/final-7d18b9f2a/out/hdfs-17960/schedule",
-  "outputDir": "/tmp/claude-20003/-opt-GraphChecker/10153a9a-290a-45d1-b3c9-072f259e090e/scratchpad/final-7d18b9f2a/out/hdfs-17960/schedule/iteration-0000/final",
+  "campaignRoot": "/tmp/claude-20003/-opt-GraphChecker/10153a9a-290a-45d1-b3c9-072f259e090e/scratchpad/final-6f6f88ec6/out/hdfs-17960/schedule",
+  "outputDir": "/tmp/claude-20003/-opt-GraphChecker/10153a9a-290a-45d1-b3c9-072f259e090e/scratchpad/final-6f6f88ec6/out/hdfs-17960/schedule/iteration-0000/final",
   "provenance": {
     "jar": {
-      "path": "/tmp/claude-20003/-opt-GraphChecker/10153a9a-290a-45d1-b3c9-072f259e090e/scratchpad/final-7d18b9f2a/out/hdfs-17960/schedule/frozen-inputs/GraphChecker.jar",
-      "sha256": "e2ab8f0672a85951098eb52cabebf292bb85639143e6f5fbbdfad838c592c0c8"
+      "path": "/tmp/claude-20003/-opt-GraphChecker/10153a9a-290a-45d1-b3c9-072f259e090e/scratchpad/final-6f6f88ec6/out/hdfs-17960/schedule/frozen-inputs/GraphChecker.jar",
+      "sha256": "f317ccae04479d22298bcfc2ef3691134b09c91c0e7af90a0cc0699aa6e535dd"
     },
     "vm": {
       "path": "/tmp/claude-20003/-opt-GraphChecker/99c84a54-86ac-44a4-a030-760f664ae2a1/scratchpad/images/j2sdk-image-build24/bin/java",
@@ -25,11 +25,11 @@
       }
     },
     "config": {
-      "path": "/tmp/claude-20003/-opt-GraphChecker/10153a9a-290a-45d1-b3c9-072f259e090e/scratchpad/wt-verify-7d18b9f2a/experiments/hadoop/hdfs-17960/workflow.properties",
+      "path": "/tmp/claude-20003/-opt-GraphChecker/10153a9a-290a-45d1-b3c9-072f259e090e/scratchpad/wt-verify-6f6f88ec6/experiments/hadoop/hdfs-17960/workflow.properties",
       "sha256": "ade31eff2209a2954c4e7d095e0dc1782b51990712bfa7a2ab6f903f5be58497"
     },
     "targetSpec": {
-      "path": "/tmp/claude-20003/-opt-GraphChecker/10153a9a-290a-45d1-b3c9-072f259e090e/scratchpad/wt-verify-7d18b9f2a/experiments/hadoop/hdfs-17960/target.yaml",
+      "path": "/tmp/claude-20003/-opt-GraphChecker/10153a9a-290a-45d1-b3c9-072f259e090e/scratchpad/wt-verify-6f6f88ec6/experiments/hadoop/hdfs-17960/target.yaml",
       "sha256": "71a4fd49c2218b70a856ac6c1695509085ad666f36ec454a36651bf2cbd096c4"
     },
     "communicationMappings": {
@@ -37,11 +37,11 @@
       "sha256": ""
     },
     "loopBounds": {
-      "path": "/tmp/claude-20003/-opt-GraphChecker/10153a9a-290a-45d1-b3c9-072f259e090e/scratchpad/wt-verify-7d18b9f2a/experiments/hadoop/hdfs-17960/loop-bounds.jsonl",
+      "path": "/tmp/claude-20003/-opt-GraphChecker/10153a9a-290a-45d1-b3c9-072f259e090e/scratchpad/wt-verify-6f6f88ec6/experiments/hadoop/hdfs-17960/loop-bounds.jsonl",
       "sha256": "5dd03da99b089fcb78329e0d459853a9c919d79cc739fa18b024863c2f848aee"
     },
     "symbolicInputs": {
-      "path": "/tmp/claude-20003/-opt-GraphChecker/10153a9a-290a-45d1-b3c9-072f259e090e/scratchpad/wt-verify-7d18b9f2a/experiments/hadoop/hdfs-17960/symbolic-inputs.jsonl",
+      "path": "/tmp/claude-20003/-opt-GraphChecker/10153a9a-290a-45d1-b3c9-072f259e090e/scratchpad/wt-verify-6f6f88ec6/experiments/hadoop/hdfs-17960/symbolic-inputs.jsonl",
       "sha256": "d7d3cb8c95be18756bdb108d3ae40f17b25c6cde6cfb165ea73308be2e1c9b41"
     },
     "productionClasses": {
@@ -59,10 +59,10 @@
     },
     "source": {
       "graphchecker": {
-        "path": "/tmp/claude-20003/-opt-GraphChecker/10153a9a-290a-45d1-b3c9-072f259e090e/scratchpad/wt-verify-7d18b9f2a",
-        "head": "7d18b9f2a415783b9969b9893a12e6ef4f15cb09",
+        "path": "/tmp/claude-20003/-opt-GraphChecker/10153a9a-290a-45d1-b3c9-072f259e090e/scratchpad/wt-verify-6f6f88ec6",
+        "head": "6f6f88ec6551f1c2d544fbc1921cac297ef56c39",
         "branch": "HEAD",
-        "worktreeDigest": "5838edce383016f8e908fa5aeff035071d9506c506b6884d109ae6f69fd566a4"
+        "worktreeDigest": "3af9893b26cd309c2713bd2073a8f0300bad025ae5253bb6f78539f15edc6f7f"
       },
       "workload": {
         "path": "/opt/hadoop-hdfs-17960-jdk8",
@@ -72,16 +72,16 @@
       }
     },
     "staticCatalog": {
-      "path": "/tmp/claude-20003/-opt-GraphChecker/10153a9a-290a-45d1-b3c9-072f259e090e/scratchpad/final-7d18b9f2a/out/hdfs-17960/candidate_dataflow_edges.jsonl.gz",
+      "path": "/tmp/claude-20003/-opt-GraphChecker/10153a9a-290a-45d1-b3c9-072f259e090e/scratchpad/final-6f6f88ec6/out/hdfs-17960/candidate_dataflow_edges.jsonl.gz",
       "sha256": "8091dc42a140423abf66b0dda2b66484c6bc29904ffb695eab963522ca70c167"
     },
     "regionPlan": {
-      "path": "/tmp/claude-20003/-opt-GraphChecker/10153a9a-290a-45d1-b3c9-072f259e090e/scratchpad/final-7d18b9f2a/out/hdfs-17960/runtime/concolic_region_plan.jsonl",
-      "sha256": "a6d2bedbfc763a0e6ee7db8dd6eafaa1ec6aeb758e858746527d5ff95260da37"
+      "path": "/tmp/claude-20003/-opt-GraphChecker/10153a9a-290a-45d1-b3c9-072f259e090e/scratchpad/final-6f6f88ec6/out/hdfs-17960/runtime/concolic_region_plan.jsonl",
+      "sha256": "39b20fd5956a77f73552409dc7c7477560874eee4aa17f967c016ee167e9a3ea"
     },
     "refinedGraph": {
-      "path": "/tmp/claude-20003/-opt-GraphChecker/10153a9a-290a-45d1-b3c9-072f259e090e/scratchpad/final-7d18b9f2a/out/hdfs-17960/runtime/refined_dataflow_edges.jsonl.gz",
-      "sha256": "13b6af554f4b99ac1cea1d6c9e21f7c55df77a2a452955e7788d45534c3d6e62"
+      "path": "/tmp/claude-20003/-opt-GraphChecker/10153a9a-290a-45d1-b3c9-072f259e090e/scratchpad/final-6f6f88ec6/out/hdfs-17960/runtime/refined_dataflow_edges.jsonl.gz",
+      "sha256": "6a9eacc7804671cbc2cf7280cd58f0302795b9bd32e3753358039a2494b31e24"
     }
   },
   "iterations": [
@@ -90,231 +90,231 @@
       "parentIterationId": "",
       "externalWorkerCount": 8,
       "taskIds": [
-        "TASK.SEED.f06f6a92e3565420268e5d4dd0b6d79f589abaf95bf5feb56add90ff05a531d4",
-        "TASK.SEED.8fac9ba4a476800d5b8b5adc69cd127cb958e8a90fd810d3066154f074ddd9e6",
-        "TASK.SEED.116815a40f792dccdc66579757475624416413c2264bc83755e7ab4d49aaff36",
-        "TASK.SEED.03851fa8cb334a98e0beb6cf4bbc0dda00f4110622bad5b236e9653152dbb4da",
-        "TASK.SEED.41d10180665d1c66838d3ae59cde6807dc849f7a46b6f3947875bf7bf0a337c4",
-        "TASK.SEED.69d955d9a098fe83d78f60b1e6a709af0ea17983cb36c4fe362804be543d0966",
-        "TASK.SEED.f4eb47a6b20f5b214c6b7e0b22ebd53975764dabe07b739affe08b65bbf77655",
-        "TASK.SEED.a851b48e238c3ef9f84d2cd0ac36a736ac4e760cc37a8122c6098c3795b93e94",
-        "TASK.SEED.a0b8747ac72061c56b0723c93879a77ae9469376184b26c394ba803d695e33b6",
-        "TASK.SEED.ae52d21e01c661630ba22a537bb6b4b8510d2bf134e7324a47c60bc7ffd379f1",
-        "TASK.SEED.504433cc94cb7c23b11bd17041dfbad5d39caa29181e3a9d3b345e5d27400f61",
-        "TASK.SEED.df23473a5f5843b2378928dc9f5d2e4a28b2e1b471b0531577e89f2c8010cf0b",
-        "TASK.SEED.ef04fd85f2db2752ec6d7f2e90462adec9c4817ca5c4b048320659d61ba71e07",
-        "TASK.SEED.5166a7c97afa1d56c54fcc7352427b56ac3d3f253d091ed2ce5bf78c61e60d33",
-        "TASK.SEED.a722fcc40a86de9cdf7a42ec5eb6498c66bc623e55fdc0b79db0bbd451671c28",
-        "TASK.SEED.13ea6563d28aaad283495d3dc305347b2c90367312fc7a8afc251d72cf1793d8",
-        "TASK.SEED.80cf41951881e18ddefacc4d09a29098a20b92cd5ad759321c2434ebe1d08934",
-        "TASK.SEED.c77abf14010df93bdc98124be5a9c38a230e885a3474b49e1f0dd13a79e30481",
-        "TASK.SEED.9757b24fbfc40ee8dc9c895c7c0720b460d3c30af50db74a78ba30ed7d8dff79",
-        "TASK.SEED.c775d76671ce5c54ab7cc8ca96896e2b4f9fa1753a06315002861ff276cd8261",
-        "TASK.SEED.3d71042db3d1ec2a94dbd96a061f1bbe1201f582233d19fb4969cf4d513b9136",
-        "TASK.SEED.f180f9d7f1cdd98693a3bc166347b4a990b0b78f2f61cf8a0912a84864362890",
-        "TASK.SEED.6e2374429054e1a6f2dcb7668932b4e6b4e33cd5e0bbdc26fa2cb83bf4b70900",
-        "TASK.SEED.53f157bad0a58055c20369c24d26401608a239e47fc3be0d6ccec148b4f59886",
-        "TASK.SEED.3fc75e7037e9b5c547173430a878557435cfb0004e8e40978416feca2ab8b494",
-        "TASK.SEED.c0344a4cee46a8430628392d702eb32c4ffad1095915a0a69ab9f6b3a05fd0a1",
-        "TASK.SEED.7004fbb40633c1ad708c15e93ceed6529e36b2f1d88cb5028fbbce9e2f7923ab",
-        "TASK.SEED.ae2f99b06b4aeac800b5c94c3da9c486b2d615969822dcd55ff83e590002562d",
-        "TASK.SEED.80ddcf610e6f99add3032e698a7373702b2065ce8f9f2e69ec38c4b1b597b271",
-        "TASK.SEED.0b79e42f11d4c1316fc67dfe4d43c4a81cea9c0934e5b727407493fe3018fe35",
-        "TASK.SEED.eb843d7d55c99b2bf46ea955de3783fa777a57836d80cb3c30e680b6ca9772d8",
-        "TASK.SEED.2694e6c01542c35138a8ba5c0461e857f596d3be27106f9a8339faf30217e200",
-        "TASK.SEED.3fede6fc2e98465bcf13ecb29fb4349d1059c7737e0a497954eb7204a852a7db",
-        "TASK.SEED.9ff613461414c35714e785de3975be156ed51adc36afebbc7b9a1f5d198dfb9c",
-        "TASK.SEED.aaf12c477c1027ba03eb7a8fb7b0c59629ebc90a1e96975658dd8b4074cae9d0",
-        "TASK.SEED.617508da54a3d9c66b7ac7b2211ec620a0025a1d695ec512335f2696853c46c7",
-        "TASK.SEED.2a77797df71860b1a15c83203347da944165b2f0b829e619ee0374bd2b9a70b1",
-        "TASK.SEED.46a4d2bf27a9d3b07df915c98a8ac744014a6800e1af138f8ec0d2ee919dbf2c",
-        "TASK.SEED.8e26a1aa389deb77b74cbbda99065452aa00821794f4abd036bf2a8a94cd83c3",
-        "TASK.SEED.c8765820aa8d19e87970c09b1de537ca7d981961885e296ad776d1695a8cdb5c",
-        "TASK.SEED.4363a660f996a94823fc4a61f2db28b83463b9c786fbd671a5ffdae5ce368c21",
-        "TASK.SEED.d7dad0688a29ca0a2c3119f29ee664503620c5ac04edcf0337c3b42006ecb7bc",
-        "TASK.SEED.112286e442ff6ee40ecdde7153890c9431c523c2aee15a7e16dedf766bd0e11f",
-        "TASK.SEED.4db14441c80c6070f5901a48a252857f56252eacdd5c88688c6f5885d1d5ae03",
-        "TASK.SEED.eb3695721b0a00d347096d52271a43bc24a363bbc411c732551b49535b12a32a"
+        "TASK.SEED.bd900252f91b9d8d9396ca95731bda08792318c5918a2cae98b0b7d1804bd71f",
+        "TASK.SEED.7668b5fa9e4cdc2b89c76bf87adaf1c210318a667f5d7bac83442f8fac3731fa",
+        "TASK.SEED.d0d709f88a593f4c4a299ac02ee83758c696f4145efea6b99386d7920fed7db7",
+        "TASK.SEED.c10d3a12ddf30c49bf1dcbf94d4363ae9c0efc7c372cfb3fada1cc5f2b82d56f",
+        "TASK.SEED.fa7daa0e47271222ff66e34f0d33a87f39460ff7b68949b7f7f0c73f5f253b5f",
+        "TASK.SEED.80ad5c483327c3c0cf0f5dd127e8c00e44c89c751fe4bcd13dcd47b3c2a75ba9",
+        "TASK.SEED.942c956fcb1add9da370f380fda1b9492676071d1f99e5bd9b8d9e1da1643775",
+        "TASK.SEED.b6f21ba97371d6bf0518dc51a1ada02ed9095cf949f7e1b31c922f7df57235b4",
+        "TASK.SEED.1e31c09661d41574cf5f80e5f4573e668a7798f9c98405f5213de11665d73974",
+        "TASK.SEED.b1b13766d0707882216fe2295cdf1a541b9322de7e5615927b24ea512c126b9e",
+        "TASK.SEED.869c540380cce74ff6f936ef47e0aa3f402d10c38dc1a62ed50c263ccb0ac725",
+        "TASK.SEED.d05eecff9e09f9ee8ea89b32c78e90b5ce92699788d1f3cade90d498c4bb737b",
+        "TASK.SEED.ac42454a8d621f74ef3a6933e975e92f5cfb28cf68db730a9f0d0d36f590fdc3",
+        "TASK.SEED.7c36c4848af49194acd002d990fdb593ee00e1a5c6f4cfaa0a2d79cf1281058b",
+        "TASK.SEED.d1fe10d362cb47d4527b2a2ea204ef5556399f7bb67491182be8d46017712a60",
+        "TASK.SEED.db02d9a666575fb7efaef6e9c4970d6b4a5c65f01c2360d8cd4dc52eae023742",
+        "TASK.SEED.8b498b93f5552183d3a05e00ee2e41ad59637cf69c77984c29106d73966ff31a",
+        "TASK.SEED.d0bae60a7ca5a9c4f985c7579df26e2d9500c6fa741ca9f4558bb9ff06000796",
+        "TASK.SEED.73ac96f64fb9ee1d98100348f0dd3ec56ddf7c59d1842609e0a9abcc66c334b8",
+        "TASK.SEED.3c123aadcf394b73ae041d052b3530ef8d113bedf2128f524ab3a9145d468a5f",
+        "TASK.SEED.af4ad56b61099cbfd8cc3bbf3c603bb2e8b8dc0c1149f6173c87716b97ce7d4f",
+        "TASK.SEED.53cd1fc00c38f5fc5c22bb6c9fa410124f5b44a4e7f07fc78b56ac433122a523",
+        "TASK.SEED.974dbde54c730b7fb12936d342b84e8a9e45035c8d4ff0363079bd2b18da1a20",
+        "TASK.SEED.5f536de5c6f2e2910303d28b66b1aca2ec48b3a86d8893456918573fb199392b",
+        "TASK.SEED.672a685efafa7e2f9947e196f31bcbdbac248fbaf5670f6105924ca5aa3b6174",
+        "TASK.SEED.89dad84438b3399e4ea786e7bc868a040af6a048dd4fc928186c8d14e33e03de",
+        "TASK.SEED.4e845357f0e4d5a1da47c595fb436b0382b2d03fb48f6a373b4d9aaadf783c52",
+        "TASK.SEED.a321aae0598ab34500126979dc680f31474b2f77e446e0627f0519630d0b73a9",
+        "TASK.SEED.14461bffdad0584f958dc9b5537ad0788fa045fcfb4ae05c38395d85f79f88ca",
+        "TASK.SEED.eb4eddeefbf37ae3659ed2df14800b18368e2ace9d2abff48559dcc5687cf6ec",
+        "TASK.SEED.0a4821e3d37fc664a6aa81cb7d8222cf1cade9bee1ffc6fe0d5aa025ee451d1a",
+        "TASK.SEED.cd27a07f84a165aaa7da59bb700f29a21470bb96a97fbf8ac1791710c15479db",
+        "TASK.SEED.46ec41d1fd2313e847fdce102fa430fca2c806c8cf46bb7a5d688a709e82ae72",
+        "TASK.SEED.f4cc3b13a41974b3e275efd01f56fd020c526f46e39087fc17c8dbe17f72ca35",
+        "TASK.SEED.8c505d48173b6927b16a6b6236f1c123e7dcc111742920d188aad2eeabac1057",
+        "TASK.SEED.be44b2afec958e4f7b6169adb382cf771d7c440670e360c10d885073da4af519",
+        "TASK.SEED.b0d63d5d544fa92cb84ea45351c889e98f4dc9a1fa66467b0a63faacb51211b9",
+        "TASK.SEED.3c26503ee8eeb743fbb76e9d5ca17e4d21d3c687e419e6216af7a0aa4436383a",
+        "TASK.SEED.5553aea42f0a00f4caadba495facff7a1887c763d77dddba01eca60310b97d45",
+        "TASK.SEED.57d2238ef94d5b46a058f060132f87f481d7eec235d921a1d18d8f177ff95aa2",
+        "TASK.SEED.878696127452c8d7b9f847b77c34fd12d3a358ed76efafa338fee1b7ed106601",
+        "TASK.SEED.76213050f36a5bc91274bae23101839052341a5b589277085b31edac5d294080",
+        "TASK.SEED.7ee6aea4bc2f5a853563dc98d0e86299eed338d9fdf0823ff5e1f5643be44598",
+        "TASK.SEED.0cf0a37562ed0380299699b45f39b702121c61975704e0425ed08bb517fd1eda",
+        "TASK.SEED.60c470fd9e4e01932ea5990ea3422746b8d0fffb4b4dc6504cb17c55d1837770"
       ],
       "obligations": [
         {
-          "taskId": "TASK.SEED.f06f6a92e3565420268e5d4dd0b6d79f589abaf95bf5feb56add90ff05a531d4",
+          "taskId": "TASK.SEED.bd900252f91b9d8d9396ca95731bda08792318c5918a2cae98b0b7d1804bd71f",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.8fac9ba4a476800d5b8b5adc69cd127cb958e8a90fd810d3066154f074ddd9e6",
+          "taskId": "TASK.SEED.7668b5fa9e4cdc2b89c76bf87adaf1c210318a667f5d7bac83442f8fac3731fa",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.116815a40f792dccdc66579757475624416413c2264bc83755e7ab4d49aaff36",
+          "taskId": "TASK.SEED.d0d709f88a593f4c4a299ac02ee83758c696f4145efea6b99386d7920fed7db7",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.03851fa8cb334a98e0beb6cf4bbc0dda00f4110622bad5b236e9653152dbb4da",
+          "taskId": "TASK.SEED.c10d3a12ddf30c49bf1dcbf94d4363ae9c0efc7c372cfb3fada1cc5f2b82d56f",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.41d10180665d1c66838d3ae59cde6807dc849f7a46b6f3947875bf7bf0a337c4",
+          "taskId": "TASK.SEED.fa7daa0e47271222ff66e34f0d33a87f39460ff7b68949b7f7f0c73f5f253b5f",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.69d955d9a098fe83d78f60b1e6a709af0ea17983cb36c4fe362804be543d0966",
+          "taskId": "TASK.SEED.80ad5c483327c3c0cf0f5dd127e8c00e44c89c751fe4bcd13dcd47b3c2a75ba9",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.f4eb47a6b20f5b214c6b7e0b22ebd53975764dabe07b739affe08b65bbf77655",
+          "taskId": "TASK.SEED.942c956fcb1add9da370f380fda1b9492676071d1f99e5bd9b8d9e1da1643775",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.a851b48e238c3ef9f84d2cd0ac36a736ac4e760cc37a8122c6098c3795b93e94",
+          "taskId": "TASK.SEED.b6f21ba97371d6bf0518dc51a1ada02ed9095cf949f7e1b31c922f7df57235b4",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.a0b8747ac72061c56b0723c93879a77ae9469376184b26c394ba803d695e33b6",
+          "taskId": "TASK.SEED.1e31c09661d41574cf5f80e5f4573e668a7798f9c98405f5213de11665d73974",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.ae52d21e01c661630ba22a537bb6b4b8510d2bf134e7324a47c60bc7ffd379f1",
+          "taskId": "TASK.SEED.b1b13766d0707882216fe2295cdf1a541b9322de7e5615927b24ea512c126b9e",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.504433cc94cb7c23b11bd17041dfbad5d39caa29181e3a9d3b345e5d27400f61",
+          "taskId": "TASK.SEED.869c540380cce74ff6f936ef47e0aa3f402d10c38dc1a62ed50c263ccb0ac725",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.df23473a5f5843b2378928dc9f5d2e4a28b2e1b471b0531577e89f2c8010cf0b",
+          "taskId": "TASK.SEED.d05eecff9e09f9ee8ea89b32c78e90b5ce92699788d1f3cade90d498c4bb737b",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.ef04fd85f2db2752ec6d7f2e90462adec9c4817ca5c4b048320659d61ba71e07",
+          "taskId": "TASK.SEED.ac42454a8d621f74ef3a6933e975e92f5cfb28cf68db730a9f0d0d36f590fdc3",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.5166a7c97afa1d56c54fcc7352427b56ac3d3f253d091ed2ce5bf78c61e60d33",
+          "taskId": "TASK.SEED.7c36c4848af49194acd002d990fdb593ee00e1a5c6f4cfaa0a2d79cf1281058b",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.a722fcc40a86de9cdf7a42ec5eb6498c66bc623e55fdc0b79db0bbd451671c28",
+          "taskId": "TASK.SEED.d1fe10d362cb47d4527b2a2ea204ef5556399f7bb67491182be8d46017712a60",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.13ea6563d28aaad283495d3dc305347b2c90367312fc7a8afc251d72cf1793d8",
+          "taskId": "TASK.SEED.db02d9a666575fb7efaef6e9c4970d6b4a5c65f01c2360d8cd4dc52eae023742",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.80cf41951881e18ddefacc4d09a29098a20b92cd5ad759321c2434ebe1d08934",
+          "taskId": "TASK.SEED.8b498b93f5552183d3a05e00ee2e41ad59637cf69c77984c29106d73966ff31a",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.c77abf14010df93bdc98124be5a9c38a230e885a3474b49e1f0dd13a79e30481",
+          "taskId": "TASK.SEED.d0bae60a7ca5a9c4f985c7579df26e2d9500c6fa741ca9f4558bb9ff06000796",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.9757b24fbfc40ee8dc9c895c7c0720b460d3c30af50db74a78ba30ed7d8dff79",
+          "taskId": "TASK.SEED.73ac96f64fb9ee1d98100348f0dd3ec56ddf7c59d1842609e0a9abcc66c334b8",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.c775d76671ce5c54ab7cc8ca96896e2b4f9fa1753a06315002861ff276cd8261",
+          "taskId": "TASK.SEED.3c123aadcf394b73ae041d052b3530ef8d113bedf2128f524ab3a9145d468a5f",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.3d71042db3d1ec2a94dbd96a061f1bbe1201f582233d19fb4969cf4d513b9136",
+          "taskId": "TASK.SEED.af4ad56b61099cbfd8cc3bbf3c603bb2e8b8dc0c1149f6173c87716b97ce7d4f",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.f180f9d7f1cdd98693a3bc166347b4a990b0b78f2f61cf8a0912a84864362890",
+          "taskId": "TASK.SEED.53cd1fc00c38f5fc5c22bb6c9fa410124f5b44a4e7f07fc78b56ac433122a523",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.6e2374429054e1a6f2dcb7668932b4e6b4e33cd5e0bbdc26fa2cb83bf4b70900",
+          "taskId": "TASK.SEED.974dbde54c730b7fb12936d342b84e8a9e45035c8d4ff0363079bd2b18da1a20",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.53f157bad0a58055c20369c24d26401608a239e47fc3be0d6ccec148b4f59886",
+          "taskId": "TASK.SEED.5f536de5c6f2e2910303d28b66b1aca2ec48b3a86d8893456918573fb199392b",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.3fc75e7037e9b5c547173430a878557435cfb0004e8e40978416feca2ab8b494",
+          "taskId": "TASK.SEED.672a685efafa7e2f9947e196f31bcbdbac248fbaf5670f6105924ca5aa3b6174",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.c0344a4cee46a8430628392d702eb32c4ffad1095915a0a69ab9f6b3a05fd0a1",
+          "taskId": "TASK.SEED.89dad84438b3399e4ea786e7bc868a040af6a048dd4fc928186c8d14e33e03de",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.7004fbb40633c1ad708c15e93ceed6529e36b2f1d88cb5028fbbce9e2f7923ab",
+          "taskId": "TASK.SEED.4e845357f0e4d5a1da47c595fb436b0382b2d03fb48f6a373b4d9aaadf783c52",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.ae2f99b06b4aeac800b5c94c3da9c486b2d615969822dcd55ff83e590002562d",
+          "taskId": "TASK.SEED.a321aae0598ab34500126979dc680f31474b2f77e446e0627f0519630d0b73a9",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.80ddcf610e6f99add3032e698a7373702b2065ce8f9f2e69ec38c4b1b597b271",
+          "taskId": "TASK.SEED.14461bffdad0584f958dc9b5537ad0788fa045fcfb4ae05c38395d85f79f88ca",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.0b79e42f11d4c1316fc67dfe4d43c4a81cea9c0934e5b727407493fe3018fe35",
+          "taskId": "TASK.SEED.eb4eddeefbf37ae3659ed2df14800b18368e2ace9d2abff48559dcc5687cf6ec",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.eb843d7d55c99b2bf46ea955de3783fa777a57836d80cb3c30e680b6ca9772d8",
+          "taskId": "TASK.SEED.0a4821e3d37fc664a6aa81cb7d8222cf1cade9bee1ffc6fe0d5aa025ee451d1a",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.2694e6c01542c35138a8ba5c0461e857f596d3be27106f9a8339faf30217e200",
+          "taskId": "TASK.SEED.cd27a07f84a165aaa7da59bb700f29a21470bb96a97fbf8ac1791710c15479db",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.3fede6fc2e98465bcf13ecb29fb4349d1059c7737e0a497954eb7204a852a7db",
+          "taskId": "TASK.SEED.46ec41d1fd2313e847fdce102fa430fca2c806c8cf46bb7a5d688a709e82ae72",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.9ff613461414c35714e785de3975be156ed51adc36afebbc7b9a1f5d198dfb9c",
+          "taskId": "TASK.SEED.f4cc3b13a41974b3e275efd01f56fd020c526f46e39087fc17c8dbe17f72ca35",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.aaf12c477c1027ba03eb7a8fb7b0c59629ebc90a1e96975658dd8b4074cae9d0",
+          "taskId": "TASK.SEED.8c505d48173b6927b16a6b6236f1c123e7dcc111742920d188aad2eeabac1057",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.617508da54a3d9c66b7ac7b2211ec620a0025a1d695ec512335f2696853c46c7",
+          "taskId": "TASK.SEED.be44b2afec958e4f7b6169adb382cf771d7c440670e360c10d885073da4af519",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.2a77797df71860b1a15c83203347da944165b2f0b829e619ee0374bd2b9a70b1",
+          "taskId": "TASK.SEED.b0d63d5d544fa92cb84ea45351c889e98f4dc9a1fa66467b0a63faacb51211b9",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.46a4d2bf27a9d3b07df915c98a8ac744014a6800e1af138f8ec0d2ee919dbf2c",
+          "taskId": "TASK.SEED.3c26503ee8eeb743fbb76e9d5ca17e4d21d3c687e419e6216af7a0aa4436383a",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.8e26a1aa389deb77b74cbbda99065452aa00821794f4abd036bf2a8a94cd83c3",
+          "taskId": "TASK.SEED.5553aea42f0a00f4caadba495facff7a1887c763d77dddba01eca60310b97d45",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.c8765820aa8d19e87970c09b1de537ca7d981961885e296ad776d1695a8cdb5c",
+          "taskId": "TASK.SEED.57d2238ef94d5b46a058f060132f87f481d7eec235d921a1d18d8f177ff95aa2",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.4363a660f996a94823fc4a61f2db28b83463b9c786fbd671a5ffdae5ce368c21",
+          "taskId": "TASK.SEED.878696127452c8d7b9f847b77c34fd12d3a358ed76efafa338fee1b7ed106601",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.d7dad0688a29ca0a2c3119f29ee664503620c5ac04edcf0337c3b42006ecb7bc",
+          "taskId": "TASK.SEED.76213050f36a5bc91274bae23101839052341a5b589277085b31edac5d294080",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.112286e442ff6ee40ecdde7153890c9431c523c2aee15a7e16dedf766bd0e11f",
+          "taskId": "TASK.SEED.7ee6aea4bc2f5a853563dc98d0e86299eed338d9fdf0823ff5e1f5643be44598",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.4db14441c80c6070f5901a48a252857f56252eacdd5c88688c6f5885d1d5ae03",
+          "taskId": "TASK.SEED.0cf0a37562ed0380299699b45f39b702121c61975704e0425ed08bb517fd1eda",
           "digests": []
         },
         {
-          "taskId": "TASK.SEED.eb3695721b0a00d347096d52271a43bc24a363bbc411c732551b49535b12a32a",
+          "taskId": "TASK.SEED.60c470fd9e4e01932ea5990ea3422746b8d0fffb4b4dc6504cb17c55d1837770",
           "digests": []
         }
       ]
@@ -323,27 +323,27 @@
   "artifacts": [
     {
       "name": "candidate.smt2",
-      "path": "/tmp/claude-20003/-opt-GraphChecker/10153a9a-290a-45d1-b3c9-072f259e090e/scratchpad/final-7d18b9f2a/out/hdfs-17960/schedule/iteration-0000/final/candidate.smt2",
-      "bytes": 26912,
-      "sha256": "4b70c15f151fa1559903ab57b7eca4b99849e7deb81405092d1cae87ce6b49a0"
+      "path": "/tmp/claude-20003/-opt-GraphChecker/10153a9a-290a-45d1-b3c9-072f259e090e/scratchpad/final-6f6f88ec6/out/hdfs-17960/schedule/iteration-0000/final/candidate.smt2",
+      "bytes": 28983,
+      "sha256": "edcdc169a11f4ad9debdd82bc0391f29ea6be28742c003fd3c5a37bbeace2177"
     },
     {
       "name": "candidate_composition_manifest.json",
-      "path": "/tmp/claude-20003/-opt-GraphChecker/10153a9a-290a-45d1-b3c9-072f259e090e/scratchpad/final-7d18b9f2a/out/hdfs-17960/schedule/iteration-0000/final/candidate_composition_manifest.json",
-      "bytes": 25056,
-      "sha256": "db50efec1e69cf9be6269191be919c8b3eae457620af40feb1e1a79b749c9606"
+      "path": "/tmp/claude-20003/-opt-GraphChecker/10153a9a-290a-45d1-b3c9-072f259e090e/scratchpad/final-6f6f88ec6/out/hdfs-17960/schedule/iteration-0000/final/candidate_composition_manifest.json",
+      "bytes": 21186,
+      "sha256": "cc259d9f3fa9acad721d2449dbfac2b4f17174745160255e201b436e05d60ac4"
     },
     {
       "name": "gaps.json",
-      "path": "/tmp/claude-20003/-opt-GraphChecker/10153a9a-290a-45d1-b3c9-072f259e090e/scratchpad/final-7d18b9f2a/out/hdfs-17960/schedule/iteration-0000/final/gaps.json",
-      "bytes": 368541,
-      "sha256": "db922f042239ff2f408ebe4dca6f96597101489cce2f135fd3b5cfe3f3b8cd5d"
+      "path": "/tmp/claude-20003/-opt-GraphChecker/10153a9a-290a-45d1-b3c9-072f259e090e/scratchpad/final-6f6f88ec6/out/hdfs-17960/schedule/iteration-0000/final/gaps.json",
+      "bytes": 406823,
+      "sha256": "8768c871184ae7bb2531ba645e696a8ebc9dcdfcf3ca3c03658c3e3852b0842c"
     },
     {
       "name": "result.json",
-      "path": "/tmp/claude-20003/-opt-GraphChecker/10153a9a-290a-45d1-b3c9-072f259e090e/scratchpad/final-7d18b9f2a/out/hdfs-17960/schedule/iteration-0000/final/result.json",
-      "bytes": 26645,
-      "sha256": "2fdbfb43cc89d3914a38449e5e98338ae571f572e854cb8ab4fa0b4c8e0bbf37"
+      "path": "/tmp/claude-20003/-opt-GraphChecker/10153a9a-290a-45d1-b3c9-072f259e090e/scratchpad/final-6f6f88ec6/out/hdfs-17960/schedule/iteration-0000/final/result.json",
+      "bytes": 26892,
+      "sha256": "90c3fc3d626c86028959cf3026c2dafdfca4b6a468b045c0fa5e82360f72f663"
     }
   ],
   "metrics": {
@@ -354,59 +354,59 @@
       },
       {
         "stage": "FREEZE_TOOL",
-        "wallMillis": 514
+        "wallMillis": 525
       },
       {
         "stage": "SETUP",
-        "wallMillis": 1340
+        "wallMillis": 1337
       },
       {
         "stage": "FREEZE",
-        "wallMillis": 8225
+        "wallMillis": 8279
       },
       {
         "stage": "SEED",
-        "wallMillis": 75719
+        "wallMillis": 74430
       },
       {
         "stage": "PLAN[0]",
-        "wallMillis": 19128
+        "wallMillis": 21170
       },
       {
         "stage": "INSTRUMENT[0]",
-        "wallMillis": 26414
+        "wallMillis": 26787
       },
       {
         "stage": "REPLAY[0]",
-        "wallMillis": 380145
+        "wallMillis": 423152
       },
       {
         "stage": "IMPORT[0]",
-        "wallMillis": 1697
+        "wallMillis": 1731
       },
       {
         "stage": "EXPLORE[0]",
-        "wallMillis": 351540
+        "wallMillis": 399761
       },
       {
         "stage": "COMPOSE[anchor]",
-        "wallMillis": 1605
+        "wallMillis": 1801
       },
       {
         "stage": "COMPOSE[0]",
-        "wallMillis": 1741
+        "wallMillis": 1941
       },
       {
         "stage": "SOLVE[0]",
-        "wallMillis": 306
+        "wallMillis": 313
       },
       {
         "stage": "DECIDE[0]",
-        "wallMillis": 318
+        "wallMillis": 329
       }
     ],
-    "totalStageWallMillis": 868700,
-    "sessionRows": 1347,
-    "sessionBytes": 7208358
+    "totalStageWallMillis": 961564,
+    "sessionRows": 1344,
+    "sessionBytes": 11113015
   }
 }
