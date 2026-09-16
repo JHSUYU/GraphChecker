@@ -520,19 +520,6 @@ public final class Corpus implements Arms.Rows {
         return session == null ? null : session.expressions();
     }
 
-    /**
-     * Whether this session explored that occurrence symbolically.
-     *
-     * <p>The rule is {@link Arms#attested}: instrumented, and symbolic in
-     * this session.  Asked through the same object both stages ask, so an
-     * arm the explorer treats as attested is not one the composition reads
-     * as concrete.</p>
-     */
-    public boolean attested(String sessionId,
-                            OccurrenceAddress occurrence) {
-        return arms.attested(sessionId, occurrence);
-    }
-
     /** Every interaction any session's own pairing states. */
     public Map<String, Interaction> interactions() {
         return Collections.unmodifiableMap(interactions);

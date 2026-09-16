@@ -807,6 +807,27 @@ public class ComposerTest {
                     "sat", solver.ask(composition.query(pinned),
                             Collections.<String>emptyList(), false).status());
         }
+
+        // R1: ATTESTATION IS THE PRODUCER'S PROPERTY.  The same two paths,
+        // where the SEED instrumented the producer and the focused replay
+        // did not: what that occurrence would have delivered is stated by
+        // the session that ran it symbolically, so BOTH paths bind the
+        // attach to that session's export expression and neither falls back
+        // to the arrival it happened to receive.  Asking whether the
+        // CONSUMER's own session attests the producer asked about the wrong
+        // run, and left every hdfs-11741 focused path on the literal.
+        Path attested = folder.newFolder("attested").toPath();
+        session(attested, "s0", false, "false", producer, consumer,
+                "vh", "false", null, true, false, "EXPR.v1.marker");
+        session(attested, "s1", true, "false", producer, consumer,
+                "vh", "true", null, false, false, "EXPR.v1.marker");
+        Composer.Composition across = compose(attested, 4);
+        assertEquals("both sessions reached the anchor", 2,
+                across.disjuncts().size());
+        assertTrue("the arm the seed attests binds the consumer's variable",
+                across.body().contains("(= vh " + MARKER + ")"));
+        assertFalse("so the focused replay's own arrival is not the answer",
+                across.body().contains("(= vh true)"));
     }
 
     // ------------------------------------------------------------------
@@ -1244,7 +1265,23 @@ public class ComposerTest {
                 "EXPR.v1.rpc", 1L, "false");
         session.expression("EXPR.v1.first", symbol(MARKER, "Z"));
         session.expression("EXPR.v1.second", symbol(MARKER, "Z"));
-        session.expression("EXPR.v1.ancestor", symbol(MARKER, "Z"));
+        // R1: what the ancestor STORED is what it was handed over the wire,
+        // so the state join reaches a handoff variable the anchor has no
+        // attach of its own for.  Bound by nothing it is a free constant in
+        // the query -- hdfs-11741 #3 declared dn1's addKeys arrival twelve
+        // times inside the allKeys dag and asserted nothing about it -- so
+        // the path binds every handoff its own conjunction reaches, by the
+        // same three rules the anchor's attaches take.
+        session.expression("EXPR.v1.ancestor", symbol("vh_wire", "Z"));
+        session.expression("EXPR.v1.wired", symbol(MARKER, "Z"));
+        session.activation(PRODUCER);
+        Endpoint wireProducer = Endpoint.of(PRODUCER, "PORT.wire",
+                at("export#1", 0), 0);
+        session.decision(PRODUCER, "nn#u1", "(or " + MARKER + " (not "
+                + MARKER + "))");
+        session.export(wireProducer, "EXPR.v1.wired", 9L, "false");
+        session.attach(Endpoint.of(UPSTREAM, "PORT.wire",
+                at("attach#1", 0), 0), "vh_wire", "false", wireProducer);
         // The ancestor writes, then the concurrent tick writes, then the
         // reader reads -- and observes the ancestor's version.
         session.decision(UPSTREAM, "up#u1", "(or " + MARKER + " (not "
@@ -1276,6 +1313,8 @@ public class ComposerTest {
         assertEquals("one disjunct", 1, composition.disjuncts().size());
         assertTrue("the concurrent writer is an alternative",
                 composition.body().contains("state_family__"));
+        assertTrue("a handoff the state join reaches is bound, not free",
+                composition.body().contains("(= vh_wire " + MARKER + ")"));
         assertTrue("and the composition says which slots it filled",
                 composition.families().size() >= 2);
         // The ancestor started the reader's request, so it is ordered before
