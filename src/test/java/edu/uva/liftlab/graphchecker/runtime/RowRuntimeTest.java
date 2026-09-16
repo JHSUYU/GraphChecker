@@ -707,7 +707,7 @@ public class RowRuntimeTest {
                                     JsonObject row, String symbol,
                                     java.util.Map<String, String[]> installed)
             throws Exception {
-        java.lang.reflect.Method publish = RowPublication.class
+        java.lang.reflect.Method publish = RowPlaceholderMint.class
                 .getDeclaredMethod("placeholder", OccurrenceAddress.class,
                         JsonObject.class, String.class, java.util.Map.class);
         publish.setAccessible(true);
@@ -734,14 +734,14 @@ public class RowRuntimeTest {
     }
 
     private static boolean minted(JsonObject row) throws Exception {
-        java.lang.reflect.Method decision = RowPublication.class
+        java.lang.reflect.Method decision = RowPlaceholderMint.class
                 .getDeclaredMethod("minted", JsonObject.class);
         decision.setAccessible(true);
         return ((Boolean) decision.invoke(null, row)).booleanValue();
     }
 
     private static RootKind kindOf(JsonObject row) throws Exception {
-        java.lang.reflect.Method kind = RowPublication.class
+        java.lang.reflect.Method kind = RowPlaceholderMint.class
                 .getDeclaredMethod("kindOf", JsonObject.class);
         kind.setAccessible(true);
         return (RootKind) kind.invoke(null, row);

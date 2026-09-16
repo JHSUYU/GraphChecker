@@ -14,6 +14,7 @@ import java.util.List;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -56,8 +57,12 @@ public class ConcolicHookAbiTest {
             "edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime";
     private static final String RECORDER_CLASS =
             "edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder";
+    /** The class every {@code execute.sh} launches, by name. */
     private static final String RUNNER_CLASS =
             "edu.uva.liftlab.graphchecker.runtime.JUnitMethodRunner";
+    /** The reflective JUnit lifecycle that runner drives. */
+    private static final String LIFECYCLE_CLASS =
+            "edu.uva.liftlab.graphchecker.runtime.JUnitLifecycle";
     private static final String PACKAGE = "edu.uva.liftlab.graphchecker.";
     /** APIs called from outside this repository; see the class javadoc. */
     private static final String EXTERNAL_CALLERS =
@@ -164,7 +169,11 @@ public class ConcolicHookAbiTest {
     /** Calls the runner's one lifecycle driver, unwrapping reflection. */
     private static void runWorkloadMethod(Class<?> workload, String method)
             throws Throwable {
-        Method run = Class.forName(RUNNER_CLASS)
+        // The runner owns main and the session's lifetime; the lifecycle
+        // it drives is its own class, and this is that class's one entry.
+        assertNotNull(Class.forName(RUNNER_CLASS)
+                .getDeclaredMethod("main", String[].class));
+        Method run = Class.forName(LIFECYCLE_CLASS)
                 .getDeclaredMethod("run", String[].class);
         run.setAccessible(true);
         try {

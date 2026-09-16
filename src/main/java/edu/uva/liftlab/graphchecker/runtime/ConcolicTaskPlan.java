@@ -1660,9 +1660,9 @@ final class ConcolicTaskPlan {
                 return "its anchor's transport site (planned "
                         + plan.rpcSite() + ", ran " + ran.rpcSite() + ")";
             }
-            Endpoint plannedEnd = Interactions.endpoint(
+            Endpoint plannedEnd = InteractionRefusals.endpoint(
                     plan.producerEndpointId());
-            Endpoint ranEnd = Interactions.endpoint(ran.producerEndpointId());
+            Endpoint ranEnd = InteractionRefusals.endpoint(ran.producerEndpointId());
             if (plannedEnd == null || ranEnd == null) {
                 return "its causal anchor (planned "
                         + plan.producerEndpointId()
@@ -1703,7 +1703,7 @@ final class ConcolicTaskPlan {
             }
             String producer = ((CausalContext.Anchor) address.context())
                     .producerEndpointId();
-            String components = Interactions.components(producer);
+            String components = InteractionRefusals.components(producer);
             return " [anchor " + producer + " = "
                     + (components.isEmpty()
                     ? "no message of this run minted it" : components) + "]";
