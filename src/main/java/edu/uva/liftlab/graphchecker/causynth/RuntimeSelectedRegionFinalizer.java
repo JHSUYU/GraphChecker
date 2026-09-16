@@ -839,7 +839,7 @@ public final class RuntimeSelectedRegionFinalizer {
      * (RuntimePlanArtifact.read, whose duplicate check stays as the second
      * line).  Renumbering them would be an ordinal, which is what v3 exists
      * to remove; the rule that separates them is the entry count of {@code
-     * Identity.enterCall}, and a residual collision means that count could
+     * Identity.enterFrame}, and a residual collision means that count could
      * not.  The address is recorded here and CLASSED after the closure walk
      * ({@link #stateSharedAddressClasses}), because whether the ambiguity
      * can reach a claim is whether the kept slice holds its region.</p>

@@ -788,6 +788,33 @@ public final class ConcolicRegionRuntime {
         }
     }
 
+    /**
+     * Enters the execution-index level of ONE application-scope method.
+     *
+     * <p>The replay's half of the one frame rule: the same hook, over the
+     * same scope, that the recording weaves
+     * ({@code CausynthTraceRecorder.enterMethodFrame}), from the one walk
+     * ({@code CausynthPipeline.instrumentApplicationScope}).  The node is
+     * not read here -- reading it costs a lock and this runs at every
+     * application call -- because an event of a thread that names no node
+     * of its own belongs to the node of the start that created its work.</p>
+     *
+     * @return the token that closes exactly the level this opened
+     */
+    public static long enterMethodFrame(String callSiteId) {
+        return RowRuntime.enterFrame("", safe(callSiteId));
+    }
+
+    /** Leaves the level {@link #enterMethodFrame} opened. */
+    public static void exitMethodFrame(long token) {
+        RowRuntime.exitFrame(token);
+    }
+
+    /** The exceptional edge of {@link #enterMethodFrame}. */
+    public static void throwMethodFrame(long token, Throwable thrown) {
+        RowRuntime.exitFrame(token);
+    }
+
     public static void startWork(String startSiteId, Object carrier) {
         String site = safe(startSiteId);
         try {
@@ -834,10 +861,12 @@ public final class ConcolicRegionRuntime {
         // push for the same reason the frame depth is.
         int regions = edu.uva.liftlab.graphchecker.runtime.Identity
                 .regionDepth();
-        // One reading of the node for the frame and for the address, as the
-        // recording takes one (CausynthTraceRecorder.enterMethod).
+        // No frame here.  The level of this activation was opened by the
+        // frame hook at this same entry (RowRuntime.enterFrame, woven at
+        // every application-scope method in both passes), and it is
+        // standing before the address is minted -- as it is in the
+        // recording (CausynthTraceRecorder.enterMethod).
         String node = RuntimeTraceContext.activationSource(receiver).key();
-        RowRuntime.enterFrame(node, safe(rootMethod));
         edu.uva.liftlab.graphchecker.runtime.Identity.occurrence(
                 node, safe(regionId), true);
         REGION_ENTRIES.get().push(new RegionEntry(entry, depth, regions,
@@ -910,7 +939,6 @@ public final class ConcolicRegionRuntime {
         while (!open.isEmpty()) {
             RegionEntry top = open.pop();
             RowRuntime.exitRegionIndex();
-            RowRuntime.exitFrame();
             if (top.token == entry) break;
         }
         if (open.isEmpty()) REGION_ENTRIES.remove();

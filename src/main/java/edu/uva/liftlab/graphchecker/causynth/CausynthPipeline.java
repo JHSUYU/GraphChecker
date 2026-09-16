@@ -372,13 +372,13 @@ public final class CausynthPipeline {
                     instrumentReferenceArrayTrace(body, method, recordArrayRef,
                             units, lowerBound);
                 });
-        // The same hook, over the same scope, as the replay weaves: a
-        // thread inherits its creator's index when it is CONSTRUCTED, so
-        // without the start-site frame two siblings started from one loop
-        // stand on one index in the recording while the replay tells them
-        // apart (REPORT-P2H), and the address of every such occurrence
-        // drifts between the two passes.
-        instrumentWorkStarts(refs);
+        // The same hooks, over the same scope, as the replay weaves: the
+        // calling-context frame of every application method, the frame of
+        // every work start and the claim of every work entry.  Last, so the
+        // level of an activation is standing before anything woven inside
+        // it reads an address, and one walk, so a scope one pass frames and
+        // the other does not cannot exist.
+        instrumentApplicationScope(refs);
         LOG.info("Instrumented {} of {} runtime-selected methods for "
                 + "REGION_STATE trace; {} of them open a region",
                 rewritten.size(), result.traceMethods.size(),
@@ -651,11 +651,6 @@ public final class CausynthPipeline {
         // second row at one entry cannot add a frame and a recursive entry
         // cannot be mistaken for a second row.
         instrumentSkeletonRegions(refs);
-        // The same scope the recording weaves (instrumentRuntimeState): every
-        // work start of every application class, whatever this campaign
-        // selected, or a thread this envelope does not mention runs with no
-        // start-site frame in one pass and with one in the other.
-        instrumentWorkStarts(refs);
         instrumentConcolicConfiguredSourceCallContexts(
                 envelope.configuredSourcePhaseSites.values(), refs);
         instrumentConcolicAccessorCallContexts(envelope.materializations,
@@ -665,6 +660,14 @@ public final class CausynthPipeline {
         instrumentConcolicMethodArguments(envelope.materializations, refs);
         instrumentConcolicMaterializations(envelope, refs);
         instrumentConcolicBranches(envelope.methods, refs);
+        // The same scope the recording weaves (instrumentRuntimeState), and
+        // LAST: every application method's calling-context level, every
+        // work start and every work entry claim, whatever this campaign
+        // selected.  A level, a start frame or a claim one pass has and the
+        // other does not names two different occurrences for one execution
+        // point; woven last, the level opens ahead of every hook woven
+        // inside it and closes after them.
+        instrumentApplicationScope(refs);
     }
 
     /**
@@ -1863,9 +1866,10 @@ public final class CausynthPipeline {
      * their own counters and their own k (G8: the k of an occurrence's own
      * events, never a cross-thread counter).</p>
      */
-    private void instrumentWorkStarts(HookCatalog refs) {
+    private void instrumentApplicationScope(HookCatalog refs) {
         int filed = 0;
         int claimed = 0;
+        int framed = 0;
         int walked = 0;
         for (SootClass type : new ArrayList<>(
                 Scene.v().getApplicationClasses())) {
@@ -1916,12 +1920,95 @@ public final class CausynthPipeline {
                     insertBeforeSequence(body, stmt, before);
                     filed += started;
                 }
-                if (claimWorkEntry(body, method, refs)) claimed++;
+                // The claim first and the level second, at one entry, in this
+                // order: the claim inserts the start frame at the boundary
+                // between the starter's levels and the work's own, so a
+                // level of the work opened ahead of it would put the start
+                // frame above what the work has already entered.
+                Unit entry = safeInstrumentationEntry(body, method);
+                if (claimWorkEntry(body, method, entry, refs)) claimed++;
+                if (openMethodLevel(body, method, originalUnits, entry,
+                        refs)) {
+                    framed++;
+                }
             }
         }
-        LOG.info("Instrumented {} work start(s) and {} work entry claim(s) "
-                + "across {} method(s) of the application scope for the "
-                + "execution index", filed, claimed, walked);
+        LOG.info("Instrumented {} calling-context frame(s), {} work start(s) "
+                + "and {} work entry claim(s) across {} method(s) of the "
+                + "application scope for the execution index", framed, filed,
+                claimed, walked);
+    }
+
+    /**
+     * Opens the execution-index level of ONE application-scope method.
+     *
+     * <p>THE frame rule (G11, IDENTITY-V3 §1): a calling context is the
+     * application methods an event is inside, so every method of the
+     * application scope opens a level at its entry and closes it at every
+     * exit -- the normal returns and the exceptional edge -- in BOTH passes
+     * from this one walk.  The region roots additionally open their region
+     * where they always did, on top of the level this opens; nothing else
+     * pushes a frame any more.</p>
+     *
+     * <p>What this replaces: frames at region roots, work starts and loop
+     * roots only.  A thread outside every region then had an EMPTY calling
+     * context -- hdfs-11741's balancer {@code main} addressed its whole
+     * process as one degraded occurrence -- so the k of an event at a site
+     * was a run-length ordinal over the process, which IDENTITY-V3 §1
+     * forbids: the recording's declared {@code balance-block} request sent
+     * at {@code HADOOP_IPC#REQUEST@18} and the replay's at {@code @22},
+     * four polling requests later, and dn1's target was refused on the
+     * causal anchor alone.</p>
+     *
+     * <p>Woven LAST, which is what puts the level's entry at the HEAD of a
+     * method's woven prologue and its exits at the TAIL of every woven
+     * epilogue: {@code safeInstrumentationEntry} answers the first
+     * non-identity unit of the body as it now stands, so units another
+     * weave already put at this entry come after this one, and the level is
+     * standing before any region entry or materialization reads an address.
+     * Its trap is registered last for the same reason and in the opposite
+     * direction -- the exception table is searched in registration order,
+     * so the level's handler runs after the handlers of everything woven
+     * inside it, and the region closes before the frame it stood on
+     * goes.</p>
+     *
+     * @return whether this method received a level
+     */
+    private boolean openMethodLevel(Body body, SootMethod method,
+                                    List<Unit> originalUnits, Unit entry,
+                                    HookCatalog refs) {
+        if (entry == null) return false;
+        boolean observed = refs.ref(Hook.PAUSE_OBSERVATION) != null;
+        Local token = newTraceLocal(body, LongType.v(),
+                "$causynthFrameToken");
+        List<Unit> opening = new ArrayList<>();
+        // The entry hook IS the token's store and the trap opens after it,
+        // so there is nothing for a `= 0L` ahead of it to make safe: it was
+        // the false comfort that let the trap open at it
+        // (#instrumentRegionEntry, the woven-trap rule).
+        if (observed) emit(opening, refs.ref(Hook.PAUSE_OBSERVATION));
+        emit(opening, token, refs.ref(Hook.ENTER_METHOD_FRAME),
+                StringConstant.v(method.getSignature()));
+        if (observed) emit(opening, refs.ref(Hook.RESUME_OBSERVATION));
+        insertBeforeOrAppendNoRedirect(body, entry, opening);
+        for (int index = instrumentableFrom(originalUnits, null);
+                index >= 0 && index < originalUnits.size(); index++) {
+            Unit unit = originalUnits.get(index);
+            if (!(unit instanceof ReturnStmt)
+                    && !(unit instanceof ReturnVoidStmt)) {
+                continue;
+            }
+            List<Unit> closing = new ArrayList<>();
+            if (observed) emit(closing, refs.ref(Hook.PAUSE_OBSERVATION));
+            emit(closing, refs.ref(Hook.EXIT_METHOD_FRAME), token);
+            if (observed) emit(closing, refs.ref(Hook.RESUME_OBSERVATION));
+            insertBeforeSequence(body, unit, closing);
+        }
+        // The handler reads the token, so the trap opens after the store:
+        // afterWovenPrologue, not the prologue's own first unit.
+        addThrowHandler(body, afterWovenPrologue(body, opening), refs,
+                Hook.THROW_METHOD_FRAME, "$causynthFrameThrown", token);
+        return true;
     }
 
     /**
@@ -1935,7 +2022,7 @@ public final class CausynthPipeline {
      *
      * @return whether this method received the claim
      */
-    private boolean claimWorkEntry(Body body, SootMethod method,
+    private boolean claimWorkEntry(Body body, SootMethod method, Unit entry,
                                    HookCatalog refs) {
         if (method.isStatic() || method.isConstructor()
                 || !WorkStartSites.entersWork(method.getName(),
@@ -1945,7 +2032,6 @@ public final class CausynthPipeline {
         }
         Value receiver = receiverOrNull(body, method);
         if (receiver instanceof NullConstant) return false;
-        Unit entry = safeInstrumentationEntry(body, method);
         if (entry == null) return false;
         List<Unit> claim = new ArrayList<>();
         // Paused where there is symbolic observation to pause, exactly as
@@ -3759,6 +3845,9 @@ public final class CausynthPipeline {
         THROW_REGION_ENTRY,
         START_WORK,
         CLAIM_START,
+        ENTER_METHOD_FRAME,
+        EXIT_METHOD_FRAME,
+        THROW_METHOD_FRAME,
         ENTER_CONFIGURED_SOURCE_PHASE_SITE,
         EXIT_CONFIGURED_SOURCE_PHASE_SITE,
         THROW_CONFIGURED_SOURCE_PHASE_SITE,
@@ -3848,6 +3937,15 @@ public final class CausynthPipeline {
                             VoidType.v(), string, object)
                     .add(Hook.CLAIM_START, recorder, "claimStart",
                             VoidType.v(), object)
+                    // The one calling-context frame hook, woven by both
+                    // passes over the whole application scope.
+                    .add(Hook.ENTER_METHOD_FRAME, recorder,
+                            "enterMethodFrame", LongType.v(), string)
+                    .add(Hook.EXIT_METHOD_FRAME, recorder, "exitMethodFrame",
+                            VoidType.v(), LongType.v())
+                    .add(Hook.THROW_METHOD_FRAME, recorder,
+                            "throwMethodFrame", VoidType.v(), LongType.v(),
+                            RefType.v("java.lang.Throwable"))
                     .add(Hook.RECORD_METHOD_ARGUMENT, recorder,
                             "recordMethodArgument", VoidType.v(), LongType.v(),
                             IntType.v(), string, object, string)
@@ -3909,6 +4007,13 @@ public final class CausynthPipeline {
                             VoidType.v(), string, object)
                     .add(Hook.CLAIM_START, runtime, "claimStart",
                             VoidType.v(), object)
+                    .add(Hook.ENTER_METHOD_FRAME, runtime,
+                            "enterMethodFrame", LongType.v(), string)
+                    .add(Hook.EXIT_METHOD_FRAME, runtime, "exitMethodFrame",
+                            VoidType.v(), LongType.v())
+                    .add(Hook.THROW_METHOD_FRAME, runtime,
+                            "throwMethodFrame", VoidType.v(), LongType.v(),
+                            RefType.v("java.lang.Throwable"))
                     .add(Hook.ENTER_CONFIGURED_SOURCE_PHASE_SITE, runtime,
                             "enterConfiguredSourcePhaseCallSite",
                             LongType.v(), string, IntType.v(), string)

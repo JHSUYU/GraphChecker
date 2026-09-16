@@ -54,17 +54,33 @@ public final class Lineage {
     private static final class Frame {
         private final long token;
         private final Role role;
+        /**
+         * The api this hop's {@code k} was counted under, or {@code ""}.
+         *
+         * <p>Kept because {@link #push} counts k per (node, role, api) and
+         * the rendered context is what a replay compares: dn1's
+         * {@code refresh-block-keys} request and its {@code offer-service}
+         * tick are the first root of their own api on that node, so both
+         * rendered {@code Root:CLIENT#1} while being two occurrences
+         * (IDENTITY-V3 §1: the context states what the k counts).</p>
+         */
+        private final String api;
         /** The window index of this hop, which only a ROOT hop carries. */
         private final int k;
+        /** Whether this hop is a root: nothing opened it but the node. */
+        private final boolean root;
         /** The producer endpoint whose message opened this scope, or "". */
         private String anchor = "";
         /** The transport site that message crossed, or "". */
         private String rpcSite = "";
 
-        private Frame(long token, Role role, int k) {
+        private Frame(long token, Role role, String api, int k,
+                      boolean root) {
             this.token = token;
             this.role = role;
+            this.api = api;
             this.k = k;
+            this.root = root;
         }
     }
 
@@ -111,15 +127,37 @@ public final class Lineage {
      * chain.</p>
      */
     public static long push(String nodeKey, Role role, String api) {
+        return push(nodeKey, role, api, STACK.get().isEmpty());
+    }
+
+    /**
+     * Enters one ROOT hop, whatever the thread already stands in.
+     *
+     * <p>A daemon tick is started by no message and serves none, so it is
+     * its own root wherever it runs: {@code KeyManager$BlockKeyUpdater} is
+     * constructed on the balancer's {@code main} inside
+     * {@code balance-block#1} and the workload's own two
+     * {@code KEY_MANAGER_TICK} rotations are opened ON {@code main} inside
+     * it, and a nested hop made all three render {@code main}'s
+     * {@code Root:CLIENT#1} -- the request's context on an occurrence no
+     * request started.</p>
+     */
+    public static long pushRoot(String nodeKey, Role role, String api) {
+        return push(nodeKey, role, api, true);
+    }
+
+    private static long push(String nodeKey, Role role, String api,
+                             boolean root) {
         List<Frame> stack = STACK.get();
         String node = Text.safe(nodeKey);
         Role kind = role == null ? Role.UNKNOWN : role;
-        int k = stack.isEmpty()
+        String family = Text.safe(api);
+        int k = root
                 ? counter(node + "\n" + kind.name() + "\n"
-                        + Text.safe(api)).incrementAndGet()
+                        + family).incrementAndGet()
                 : 0;
         long token = TOKENS.getAndIncrement();
-        stack.add(new Frame(token, kind, k));
+        stack.add(new Frame(token, kind, family, k, root));
         return token;
     }
 
@@ -266,16 +304,51 @@ public final class Lineage {
         return "";
     }
 
-    /** The role of the OUTERMOST frame: the root this scope descends from. */
-    public static Role rootRole() {
+    /**
+     * The innermost ROOT hop: the root this scope descends from.
+     *
+     * <p>Innermost rather than outermost, because a root hop is one: a
+     * daemon tick opened inside a request descends from the tick, not from
+     * the request that happened to be in force on the thread that
+     * constructed it ({@link #pushRoot}).</p>
+     */
+    private static Frame root() {
         List<Frame> stack = STACK.get();
-        return stack.isEmpty() ? Role.UNKNOWN : stack.get(0).role;
+        for (int index = stack.size() - 1; index >= 0; index--) {
+            if (stack.get(index).root) return stack.get(index);
+        }
+        return null;
+    }
+
+    /** The role of that root, or {@link Role#UNKNOWN}. */
+    public static Role rootRole() {
+        Frame root = root();
+        return root == null ? Role.UNKNOWN : root.role;
     }
 
     /** The window index of that root, or 0. */
     public static int rootWindowIndex() {
+        Frame root = root();
+        return root == null ? 0 : root.k;
+    }
+
+    /** The api that root's window index was counted under, or {@code ""}. */
+    public static String rootApi() {
+        Frame root = root();
+        return root == null ? "" : root.api;
+    }
+
+    /**
+     * The token of the innermost scope frame, or 0.
+     *
+     * <p>What changes when the scope does, and nothing else: the
+     * execution index counts the events of a degraded occurrence per scope
+     * ({@code Identity.State#degraded}), and a tick opened inside a request
+     * is not a continuation of that request's counts.</p>
+     */
+    public static long scopeToken() {
         List<Frame> stack = STACK.get();
-        return stack.isEmpty() ? 0 : stack.get(0).k;
+        return stack.isEmpty() ? 0L : stack.get(stack.size() - 1).token;
     }
 
     /** Opens the recording window: k counts from here, in every replay. */

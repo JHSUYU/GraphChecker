@@ -507,21 +507,23 @@ public final class RowRuntime {
     }
 
     /**
-     * Enters one frame of the execution index: a region activation's entry.
+     * Enters one level of the execution index: an application method's entry.
      *
      * <p>{@code nodeKey} is the node the activation is being entered on,
      * the same one its address is minted with: the frame's iteration is the
      * k-th entry at this site inside the occurrence that encloses it, and
      * outside every region that enclosing occurrence is the node's degraded
      * role occurrence.</p>
+     *
+     * @return the token that closes exactly this level
      */
-    public static void enterFrame(String nodeKey, String callSiteId) {
-        Identity.enterCall(nodeKey, callSiteId);
+    public static long enterFrame(String nodeKey, String callSiteId) {
+        return Identity.enterFrame(nodeKey, callSiteId);
     }
 
-    /** Leaves the innermost frame. */
-    public static void exitFrame() {
-        Identity.exitCall();
+    /** Leaves the level {@code token} opened. */
+    public static void exitFrame(long token) {
+        Identity.exitFrame(token);
     }
 
     /**

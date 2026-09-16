@@ -365,7 +365,7 @@ public class OccurrenceAddressIsNotARequestTest {
                     CausalContext.of(Role.UNKNOWN), ExecutionIndex.empty());
         }
         return OccurrenceAddress.of(NodeId.parse(BALANCER), BALANCER_REGION,
-                CausalContext.of(Role.of("BALANCER"), 1),
+                CausalContext.of(Role.of("BALANCER"), "", 1),
                 ExecutionIndex.of(Collections.singletonList(
                         Frame.of("o.a.h.h.s.b.Balancer#dispatch#4",
                                 ordinal))));
@@ -413,7 +413,7 @@ public class OccurrenceAddressIsNotARequestTest {
         encoded.addProperty("taskId", "TASK.SEED.occurrence" + ordinal);
         encoded.addProperty("occurrenceId", OccurrenceAddress.of(
                 NodeId.parse(NAMENODE + "#epoch0"), regionId,
-                CausalContext.of(Role.of("BP_SERVICE_ACTOR"), 1),
+                CausalContext.of(Role.of("BP_SERVICE_ACTOR"), "", 1),
                 ExecutionIndex.of(Collections.singletonList(
                         Frame.of("o.a.h.h.s.b.BlockTokenSecretManager"
                                 + "#updateKeys#7", ordinal)))).render());
