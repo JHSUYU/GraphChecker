@@ -112,7 +112,7 @@ public final class RowRuntime {
     }
 
     /** The iteration directory a campaign path belongs to. */
-    public static Path iterationOf(Path inside) {
+    private static Path iterationOf(Path inside) {
         if (inside == null) return null;
         Path cursor = inside.toAbsolutePath();
         while (cursor != null) {
@@ -173,6 +173,9 @@ public final class RowRuntime {
             return null;
         }
         if (session != null) {
+            // The contract's last member is the deleted intra-node
+            // thread-start edge: no producer of it is left in the runtime,
+            // and the argument goes with the member (contract owner).
             session.activation(ActivationRow.of(sessionId(), address,
                     Text.safe(taskId), FocusedReplay.focused(taskId,
                             address), true, threadKey(), null));

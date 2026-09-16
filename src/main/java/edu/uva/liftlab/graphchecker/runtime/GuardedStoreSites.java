@@ -52,11 +52,10 @@ import java.util.Set;
  */
 final class GuardedStoreSites {
     /** Where the epoch's static scope map is, as the campaign states it. */
-    static final String PATH_PROPERTY = "causynth.static.scope.map";
     static final String PATH_ENVIRONMENT = "CAUSYNTH_STATIC_SCOPE_MAP";
 
     /**
-     * The VM's grammar (sharedFieldVersions.cpp:557, VM25):
+     * The VM's grammar (VM25):
      * {@code line ::= methodKey ( '\t' guardSite )*}, lines split on
      * {@code '\n'} and fields on {@code '\t'} and on nothing else -- so a
      * guard site id carries its parameter list's commas whole.
@@ -79,9 +78,8 @@ final class GuardedStoreSites {
     static String install(ConcolicVmBroker api) {
         String declared = declaredPath();
         if (declared.isEmpty()) {
-            return "GUARDED_STORE_SITES_UNDECLARED: neither -D"
-                    + PATH_PROPERTY + " nor $" + PATH_ENVIRONMENT
-                    + " names this epoch's " + StaticScopeMap.FILE;
+            return "GUARDED_STORE_SITES_UNDECLARED: $" + PATH_ENVIRONMENT
+                    + " does not name this epoch's " + StaticScopeMap.FILE;
         }
         Path artifact = Paths.get(declared);
         if (!Files.isRegularFile(artifact)) {
@@ -114,11 +112,9 @@ final class GuardedStoreSites {
         return "";
     }
 
-    /** The path the campaign states, property first, then environment. */
+    /** The path the campaign states, in the one spelling it sets. */
     static String declaredPath() {
-        String property = value(System.getProperty(PATH_PROPERTY));
-        return property.isEmpty()
-                ? value(System.getenv(PATH_ENVIRONMENT)) : property;
+        return value(System.getenv(PATH_ENVIRONMENT));
     }
 
     /** The table one static scope map's rows state. */

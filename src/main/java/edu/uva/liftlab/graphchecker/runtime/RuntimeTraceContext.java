@@ -200,13 +200,8 @@ final class RuntimeTraceContext {
         // The lineage travels with the work, exactly as the request scope
         // does: a pool thread created before the scope existed inherits
         // neither, and both are facts about the work rather than the thread.
-        // The submission itself is an endpoint: the thread that runs this
-        // work inherits the frame from it, and its activation row names it
-        // as startedBy (R-I7.1's thread-start edge).
         String nodeKey = view.source == null ? "" : view.source.key();
-        Object lineage = Lineage.capture(nodeKey,
-                edu.uva.liftlab.graphchecker.runtime.Identity
-                        .workSubmitted(nodeKey));
+        Object lineage = Lineage.capture(nodeKey);
         synchronized (LOCK) {
             ASYNC_SEEDS.put(carrier, new Seed(view.spanId,
                     view.source, view.requestKey, view.requestApi,
@@ -323,14 +318,8 @@ final class RuntimeTraceContext {
     static Object captureScope() {
         View view = CURRENT.get().view();
         String nodeKey = view.source == null ? "" : view.source.key();
-        // Building the work is a submission, exactly as handing a task to
-        // an executor is: the endpoint it mints is what the thread that
-        // runs the work ran BECAUSE OF, and it is the only thing that
-        // tells two calls of one api inside one request apart.
         return new RequestScope(view.source, view.requestKey,
-                view.requestApi, Lineage.capture(nodeKey,
-                        edu.uva.liftlab.graphchecker.runtime.Identity
-                                .workSubmitted(nodeKey)));
+                view.requestApi, Lineage.capture(nodeKey));
     }
 
     /**

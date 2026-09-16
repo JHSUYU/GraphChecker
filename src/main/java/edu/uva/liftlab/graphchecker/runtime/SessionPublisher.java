@@ -29,13 +29,6 @@ import java.util.Map;
  * Writes one replay session's rows, one file per kind, through the
  * contract's own codec.
  *
- * <p>The replay used to publish ONE row kind -- a {@code
- * CONCOLIC_REGION_RESULT} line with ten arrays inside it -- so every reader
- * re-parsed whole results to reach one member and no reader could join on a
- * kind it did not own (RUNTIME-INVENTORY §6.3).  Here each kind is its own
- * JSONL file under the session directory, written by {@code RowCodec}, so
- * the runtime and every reader spell one row shape.</p>
- *
  * <p>Every row is flushed as it is written.  A campaign halts the JVM
  * ({@code Runtime.halt}) as soon as the selected result settles, which runs
  * no shutdown hook: a buffered row is a lost row, and a lost row is
@@ -68,7 +61,7 @@ public final class SessionPublisher {
      * The publisher of one session under the sessions root the campaign
      * named, rather than one derived from the result file.
      */
-    public static SessionPublisher at(SessionDir layout) {
+    static SessionPublisher at(SessionDir layout) {
         String key = layout.dir().toAbsolutePath().toString();
         synchronized (LOCK) {
             SessionPublisher publisher = SESSIONS.get(key);
@@ -267,18 +260,11 @@ public final class SessionPublisher {
         }
     }
 
-    /** Closes every session this JVM opened. */
-    public static void closeAll() {
+    public static void resetForTests() {
         synchronized (LOCK) {
             for (SessionPublisher publisher : SESSIONS.values()) {
                 publisher.close();
             }
-        }
-    }
-
-    public static void resetForTests() {
-        synchronized (LOCK) {
-            closeAll();
             SESSIONS.clear();
         }
     }

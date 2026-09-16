@@ -441,9 +441,5 @@ public final class SymbolicMessageEnvelope {
         public String producerOccurrenceId() {
             return producerOccurrenceId;
         }
-
-        /** Which element of that frame and port the value was set on. */
-        public int ordinal() { return ordinal; }
-
     }
 }

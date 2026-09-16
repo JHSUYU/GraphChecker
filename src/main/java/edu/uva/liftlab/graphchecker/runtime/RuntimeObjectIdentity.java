@@ -87,10 +87,6 @@ final class RuntimeObjectIdentity {
         return named == null ? objectId : named;
     }
 
-    /** How many objects this recording named. */
-    int size() {
-        return names.size();
-    }
 
     /**
      * One address's name, kept distinct from every name already minted.
