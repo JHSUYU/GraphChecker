@@ -35,6 +35,18 @@ public final class OccurrenceAddress {
     private final String regionId;
     private final CausalContext context;
     private final ExecutionIndex index;
+    /**
+     * {@link #id()}, digested on its first reader.
+     *
+     * <p>One address is one id, so the digest is a property of this object and
+     * not of the call that asks for it.  It was recomputed at every ask, and
+     * admission asks once per candidate comparison: hdfs-11741's seed replay
+     * spent its 980 seconds inside {@code ArtifactIO.sha256} under the
+     * concolic plan's monitor, with every other thread blocked behind it.
+     * Unsynchronized on purpose -- the value is a pure function of four final
+     * fields, so two threads that race compute the same string.</p>
+     */
+    private String id;
 
     private OccurrenceAddress(NodeId node, String regionId,
                               CausalContext context, ExecutionIndex index) {
@@ -159,8 +171,13 @@ public final class OccurrenceAddress {
      * constant-size however deep the path was.</p>
      */
     public String id() {
-        return ArtifactIO.digest(node.render() + "/" + regionId + "/"
-                + context.render() + "/" + index.hash(), 16);
+        String digested = id;
+        if (digested == null) {
+            digested = ArtifactIO.digest(node.render() + "/" + regionId + "/"
+                    + context.render() + "/" + index.hash(), 16);
+            id = digested;
+        }
+        return digested;
     }
 
     @Override

@@ -30,6 +30,15 @@ public final class Endpoint {
     private final String site;
     private final ExecutionIndex siteIndex;
     private final int attempt;
+    /**
+     * {@link #id()}, digested on its first reader, as an occurrence's is.
+     *
+     * <p>{@link edu.uva.liftlab.graphchecker.runtime.Interactions#endpoint}
+     * finds one filed endpoint by asking every filed endpoint for its id, so
+     * a reader that recomputed the digest re-digested the whole store on
+     * every lookup.</p>
+     */
+    private String id;
 
     private Endpoint(OccurrenceAddress occurrence, String site,
                      ExecutionIndex siteIndex, int attempt) {
@@ -96,8 +105,13 @@ public final class Endpoint {
     }
 
     public String id() {
-        return ArtifactIO.digest(occurrence.id() + "/" + site + "/"
-                + siteIndex.hash() + "/" + attempt, 16);
+        String digested = id;
+        if (digested == null) {
+            digested = ArtifactIO.digest(occurrence.id() + "/" + site + "/"
+                    + siteIndex.hash() + "/" + attempt, 16);
+            id = digested;
+        }
+        return digested;
     }
 
     /** The canonical spelling, for reports and refusals. */
