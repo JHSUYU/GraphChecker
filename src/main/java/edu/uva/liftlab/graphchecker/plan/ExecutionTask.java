@@ -55,15 +55,6 @@ public final class ExecutionTask extends PlanRow {
 
     /** Write sites of a declared input's cell the replay must observe. */
     public static final String OBSERVED_WRITE_SITES = "observedWriteSites";
-    /**
-     * Export port id to the execution sources of its planned consumers.
-     *
-     * <p>This is the whole of what PLAN asks this occurrence's edge
-     * evidence: one export sends to one peer.  The rows themselves were
-     * 54.5 MB of the 57.8 MB hdfs-17960 task plan and 27.3 MB of the 32 MB
-     * region plan, restated once per selection, for this one test.</p>
-     */
-    public static final String EXPORT_CONSUMERS = "exportConsumers";
     private final InputActionCatalog inputActions;
     private final LoopBoundPolicy loopBound;
     private final String rootLoopMethod;
@@ -109,53 +100,6 @@ public final class ExecutionTask extends PlanRow {
                 LoopBoundPolicy.LOOP_CONTROL_SITE_IDS);
         rootLoopSiteId = optionalString(rootLoop, LoopBoundPolicy.LOOP_SITE_ID);
         fixedCountLoopSites = fixedCountLoopSites(encoded);
-        requireOneSourcePerExportPort(this);
-    }
-
-    /**
-     * Refuses a plan whose one outgoing port sends to two peers.
-     *
-     * <p>A producer occurrence rooted at a loop body exports one value per
-     * iteration onto one message, so one outgoing port legitimately has as
-     * many planned consumer occurrences as the delivery carries values --
-     * one per-element consumer occurrence on the receiving side.  What is
-     * <em>not</em> legitimate is a port whose consumers sit on more than one
-     * execution source: one message is sent to one peer, so a second source
-     * means the plan has merged two deliveries into one export and neither
-     * the envelope nor the attach could say which value belongs to which.
-     * That is refused here, in the one decode both the PLAN stage
-     * ({@link #create}) and the replay JVM ({@link #decode}) pass through,
-     * so a plan the runtime could not execute never reaches REPLAY.</p>
-     *
-     * <p>The consumers themselves are not kept: the replay does not read
-     * them.  A delivery is addressed by {@code (frame, port, ordinal)} and
-     * the attach names the live activation that declares the port, so a
-     * copy here was a second authority over the plan's own edges -- and,
-     * carried on the wire, the thing that overran the envelope.  What this
-     * test needs of them is their execution SOURCE, so that is what {@link
-     * #EXPORT_CONSUMERS} carries: the source keys of the consumers the
-     * region planner bound to each export port of this occurrence.</p>
-     */
-    private static void requireOneSourcePerExportPort(ExecutionTask task) {
-        Set<String> outgoing = new LinkedHashSet<>();
-        for (CommunicationHandoffSpec site : task.communicationHandoffs()) {
-            if (site.outgoing()) outgoing.add(site.portId());
-        }
-        if (outgoing.isEmpty()) {
-            return;
-        }
-        JsonObject consumers = object(task.encoded, EXPORT_CONSUMERS);
-        for (String portId : consumers.keySet()) {
-            if (!outgoing.contains(portId)) continue;
-            Set<String> sources = textSet(consumers, portId);
-            if (sources.size() > 1) {
-                throw new IllegalArgumentException(
-                        "communication export port has consumer occurrences "
-                                + "on more than one source in "
-                                + task.taskId() + ": " + portId + " "
-                                + sources);
-            }
-        }
     }
 
     public static ExecutionTask decode(JsonObject encoded) {
@@ -188,10 +132,6 @@ public final class ExecutionTask extends PlanRow {
         task.add(InputActionCatalog.FIELD, compactInputActions(inputActions));
         task.add(BRANCH_METHODS, branchMethods.deepCopy());
         loopBound.writeTo(task);
-        JsonObject exportConsumers = goal.exportConsumers();
-        if (exportConsumers.size() > 0) {
-            task.add(EXPORT_CONSUMERS, exportConsumers);
-        }
         // A scheduled task is executable by construction: the scheduler
         // publishes the occurrences it selected, never ones it decided
         // against.  The state is still written, and still read back on
@@ -375,25 +315,6 @@ public final class ExecutionTask extends PlanRow {
      */
     public JsonArray observedWriteSites() {
         return array(encoded, OBSERVED_WRITE_SITES).deepCopy();
-    }
-
-    /**
-     * The component an occurrence id names: everything before its region.
-     *
-     * <p>One message is sent to one peer, so the component is what decides
-     * whether two occurrences can be two consumers of one delivery. Read off
-     * the id here rather than through an identity type, because the only
-     * thing this asks of the id is where its region segment starts -- and
-     * both the v1 and the v3 spelling put the component before it.</p>
-     *
-     * <p>Public because the region planner, which is where a consumer
-     * occurrence is bound to an export port, reduces the consumer to this
-     * key when it writes {@link #EXPORT_CONSUMERS}: one spelling of "which
-     * peer", used by the producer and by the test above.</p>
-     */
-    public static String sourceKeyOf(String occurrenceId) {
-        int region = occurrenceId.indexOf("/region/");
-        return region <= 0 ? "" : occurrenceId.substring(0, region);
     }
 
 }

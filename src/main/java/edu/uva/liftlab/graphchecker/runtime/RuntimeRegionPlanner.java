@@ -1187,12 +1187,6 @@ final class RuntimeRegionPlanner {
                     "blockers", Collections.emptyList()));
             goal.put("symbolize", occurrenceSymbolize);
             goal.put("branches", occurrenceBranches);
-            // What PLAN asks of this occurrence's edge evidence, and the
-            // whole of it: per export port, which execution sources its
-            // bound consumers sit on.  Filled by #appendPortSummary below.
-            goal.put(ExecutionTask.EXPORT_CONSUMERS,
-                    new LinkedHashMap<String, Object>());
-
             Map<String, Object> plan = new LinkedHashMap<>();
             plan.put("schemaVersion", 3);
             plan.put("kind", "CONCOLIC_REGION_PLAN");
@@ -1290,7 +1284,6 @@ final class RuntimeRegionPlanner {
         for (Map<String, Object> edge : regionEdges) {
             String edgeKind = stringValue(edge.get("kind"));
             if (!"RUNTIME_FIELD_FLOW".equals(edgeKind)
-                    && !"RUNTIME_PROTOCOL_FLOW".equals(edgeKind)
                     && !AutomaticRegionEdge
                     .RUNTIME_REQUEST_CONTROL_EDGE_KIND.equals(edgeKind)) {
                 throw new IllegalArgumentException("invalid runtime region "
@@ -1303,19 +1296,8 @@ final class RuntimeRegionPlanner {
                         "runtime field flow has no selected activation: "
                                 + stringValue(edge.get("edgeId")));
             }
-            boolean protocol = "RUNTIME_PROTOCOL_FLOW".equals(edgeKind);
             boolean requestControl = AutomaticRegionEdge
                     .RUNTIME_REQUEST_CONTROL_EDGE_KIND.equals(edgeKind);
-            // A protocol row names one observed exchange delivery. Its VM
-            // handoff carries the value; the graph row only links replays.
-            if (protocol && !AutomaticRegionEdge.tracedExchangeCandidate(
-                    candidateExchangeRow(edge, fromOccurrence,
-                            toOccurrence))) {
-                throw new IllegalArgumentException(
-                        "runtime protocol flow lacks a correlated exchange, "
-                                + "attempt and delivery: "
-                                + stringValue(edge.get("edgeId")));
-            }
             if (requestControl) {
                 JsonObject encoded = GSON.toJsonTree(edge).getAsJsonObject();
                 if (!AutomaticRegionEdge.trustedRequestFaultControl(
@@ -1325,45 +1307,32 @@ final class RuntimeRegionPlanner {
                                     + "request and ordered response: "
                                     + stringValue(edge.get("edgeId")));
                 }
-                Map<String, Object> evidence = edgeEvidenceRow(edge,
-                        fromOccurrence, toOccurrence);
-                evidence.put("correlationAuthority", AutomaticRegionEdge
-                        .EXACT_REQUEST_FAULT_CONTROL_AUTHORITY);
-                evidence.put("state", "CONFIRMED_REQUEST_CONTROL");
-                recordEdgeEvidence(result, goalByOccurrence, evidence,
-                        fromOccurrence, toOccurrence);
                 continue;
             }
             String fromPort = exactPort(exactPorts, fromOccurrence,
                     "OUT", stringValue(edge.get("fromPort")), edge);
             String toPort = exactPort(exactPorts, toOccurrence,
                     "IN", stringValue(edge.get("toPort")), edge);
-            Map<String, Object> evidence = edgeEvidenceRow(edge,
-                    fromOccurrence, toOccurrence);
+            Map<String, Object> evidence = new LinkedHashMap<>(edge);
+            evidence.put("schemaVersion", 3);
+            evidence.put("fromOccurrenceId", fromOccurrence);
+            evidence.put("toOccurrenceId", toOccurrence);
             evidence.remove("fromPort");
             evidence.remove("toPort");
             evidence.remove("bindings");
             evidence.put("fromOutputPort", fromPort);
             evidence.put("toInputPort", toPort);
-            evidence.put("correlationAuthority", protocol
-                    ? AutomaticRegionEdge.TRACED_EXCHANGE_AUTHORITY
-                    : SharedFieldFlow.LOCATION_MATCH_AUTHORITY);
-            if (protocol) {
-                evidence.put("protocolDirection", edge.get("direction"));
-            }
-            evidence.put("state", protocol
-                    ? "CANDIDATE_TRACED_RPC_EXCHANGE"
-                    : "CANDIDATE_SHARED_LOCATION");
+            evidence.put("correlationAuthority",
+                    SharedFieldFlow.LOCATION_MATCH_AUTHORITY);
+            evidence.put("state", "CANDIDATE_SHARED_LOCATION");
             JsonObject encodedEvidence = GSON.toJsonTree(evidence)
                     .getAsJsonObject();
-            if (!protocol && !AutomaticRegionEdge.sharedLocationCandidate(
+            if (!AutomaticRegionEdge.sharedLocationCandidate(
                     encodedEvidence)) {
                 throw new IllegalArgumentException(
                         "runtime field flow lacks a declared shared location: "
                                 + stringValue(edge.get("edgeId")));
             }
-            recordEdgeEvidence(result, goalByOccurrence, evidence,
-                    fromOccurrence, toOccurrence);
         }
         // The plan catalog names the planned regions, the static symbolic
         // sources a scheduler admits inside them, and the declared roots
@@ -1396,84 +1365,6 @@ final class RuntimeRegionPlanner {
             result.regionCatalog.add(row);
         }
         return result;
-    }
-
-    /** The refined protocol row as the composition gate reads it, before the
-     * port ids the planner is about to mint exist. */
-    private static JsonObject candidateExchangeRow(
-            Map<String, Object> edge, String fromOccurrence,
-            String toOccurrence) {
-        Map<String, Object> row = new LinkedHashMap<>(edge);
-        row.put("fromOccurrenceId", fromOccurrence);
-        row.put("toOccurrenceId", toOccurrence);
-        row.put("fromOutputPort", stringValue(edge.get("fromPort")));
-        row.put("toInputPort", stringValue(edge.get("toPort")));
-        return toJsonTreeFast(row).getAsJsonObject();
-    }
-
-    /** One edge validation row, stamped with the two selected activations. */
-    private static Map<String, Object> edgeEvidenceRow(
-            Map<String, Object> edge, String fromOccurrence,
-            String toOccurrence) {
-        Map<String, Object> evidence = new LinkedHashMap<>(edge);
-        evidence.put("schemaVersion", 3);
-        evidence.put("fromOccurrenceId", fromOccurrence);
-        evidence.put("toOccurrenceId", toOccurrence);
-        return evidence;
-    }
-
-    /** Summarizes one validated edge onto both endpoint goals.
-     *
-     * <p>The edge selects linked-replay membership; runtime VM evidence
-     * supplies the propagated expression.  So what a plan row needs of it
-     * is the ports it named -- not the row.  The rows used to be published
-     * whole, once per selection, into a catalog the plan artifact carried
-     * and every task row restated: 6,708 rows and 13,416 selections on
-     * hdfs-17960, 27.3 MB of a 32 MB region plan and 54.5 MB of a 57.8 MB
-     * task plan, for two set tests in {@code plan/ExecutionTask}.</p> */
-    private static void recordEdgeEvidence(
-            Result result,
-            Map<String, Map<String, Object>> goalByOccurrence,
-            Map<String, Object> evidence, String fromOccurrence,
-            String toOccurrence) {
-        Map<String, Object> producerGoal =
-                goalByOccurrence.get(fromOccurrence);
-        if (producerGoal != null) {
-            appendPortSummary(producerGoal, evidence, toOccurrence);
-        }
-        Map<String, Object> consumerGoal =
-                goalByOccurrence.get(toOccurrence);
-        if (consumerGoal != null && consumerGoal != producerGoal) {
-            appendPortSummary(consumerGoal, evidence, "");
-        }
-    }
-
-    /**
-     * Adds one edge's ports to a goal's summary.
-     *
-     * <p>{@code exportConsumer} is the consumer occurrence when this goal is
-     * the edge's PRODUCER, and empty otherwise: a protocol delivery's
-     * consumer is reduced to its execution source, which is the one thing
-     * {@code ExecutionTask.requireOneSourcePerExportPort} asks of it.</p>
-     */
-    @SuppressWarnings("unchecked")
-    private static void appendPortSummary(
-            Map<String, Object> goal, Map<String, Object> edge,
-            String exportConsumer) {
-        String outputPort = stringValue(edge.get("fromOutputPort"));
-        if (exportConsumer.isEmpty() || outputPort.isEmpty()
-                || !AutomaticRegionEdge.RUNTIME_PROTOCOL_EDGE_KIND.equals(
-                        stringValue(edge.get("kind")))) {
-            return;
-        }
-        Map<String, Object> consumers = (Map<String, Object>)
-                goal.get(ExecutionTask.EXPORT_CONSUMERS);
-        List<String> sources = (List<String>) consumers.computeIfAbsent(
-                outputPort, ignored -> new ArrayList<String>());
-        String source = ExecutionTask.sourceKeyOf(exportConsumer);
-        if (!source.isEmpty() && !sources.contains(source)) {
-            sources.add(source);
-        }
     }
 
     /** Structural copy with the value domain of the JSONL round trip:
