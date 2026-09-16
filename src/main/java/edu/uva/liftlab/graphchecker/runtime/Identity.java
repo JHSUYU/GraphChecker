@@ -251,6 +251,12 @@ public final class Identity {
          * turns of it, and it must not be reset by anything that is not
          * control flow.</p>
          *
+         * <p>The count is of one ACTIVATION of the enclosing level: it dies
+         * when that level exits.  The level a scope's own frames are
+         * entered in may be the thread root, which is not an activation of
+         * anything -- so a scope start clears it ({@link #scopeStart}), the
+         * scope being the unit of work there.</p>
+         *
          * <p>What this replaces: counting a frame entry as an EVENT of the
          * enclosing occurrence.  A thread's ambient occurrence changes
          * whenever its scope does -- an IPC client carries the inbound
@@ -649,6 +655,22 @@ public final class Identity {
         state.scopeBase = state.startDepth >= 0
                 ? Math.min(state.startDepth, state.depth())
                 : state.depth();
+        // The counts of the level the scope's own frames are entered in
+        // start with the scope, because that level's ENCLOSING ACTIVATION
+        // is the scope: a thread whose work is driven from outside the
+        // application scope -- a DataNode's offer-service loop, a balancer
+        // iteration loop in a test -- enters its first application frame
+        // at a level whose activation is the thread itself, and a count
+        // over the thread's whole life is a run-length ordinal
+        // (IDENTITY-V3 §1 forbids it, and it does not survive a replay:
+        // hdfs-11741's heartbeat frames stood at @8 and @11 in one pass
+        // and elsewhere in the other, and 7 planned tasks were refused
+        // OCCURRENCE_ANCHOR_UNMATCHED against 1509 compatible
+        // activations).  Two turns of such a loop are told apart by the
+        // window index of the root hop each of them opens, which is what a
+        // Root context states.
+        state.levels.get(Math.min(state.scopeBase, state.depth()))
+                .calls.clear();
     }
 
     /** The index from the scope root to here: an occurrence's own index. */

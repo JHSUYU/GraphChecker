@@ -746,12 +746,16 @@ public class RowRuntimeTest {
         assertEquals("the k-th call at one site under one occurrence",
                 "PBHelper.convert()#u9@1", Identity.atScope().render());
 
-        // The bucket those counts live in is the enclosing occurrence's
-        // CONTEXT, not the innermost scope frame's token: a tick opened and
-        // closed inside a request is its own occurrence, and the request's
-        // own counts continue afterwards.  Keyed by the token, the
-        // balancer's two Balancer.runOneIteration calls of one request both
-        // stood at iteration 0 and shared a producer endpoint.
+        // A count is of one ACTIVATION of its level, and the level a
+        // scope's own frames are entered in may be the thread root -- which
+        // is not an activation of anything.  So a scope start clears it:
+        // two turns of a loop outside the application scope (a DataNode's
+        // offer-service loop, a balancer iteration loop in a test) are told
+        // apart by the window index of the root hop each turn opens, not by
+        // a count over the thread's whole life, which is a run-length
+        // ordinal and does not survive a replay.  Inside ONE scope the
+        // count continues, which is what tells the balancer's two
+        // Balancer.runOneIteration calls of one request apart.
         Identity.resetForTests();
         Lineage.resetForTests();
         Object ticking = new Object();
@@ -759,15 +763,22 @@ public class RowRuntimeTest {
         long request = RuntimeTraceContext.beginRequest(NN, "balance-block");
         Identity.exitFrame(Identity.enterFrame(
                 "Balancer.runOneIteration()#u1"));
+        Identity.enterFrame("Balancer.runOneIteration()#u1");
+        assertEquals("inside one scope the count continues",
+                "Balancer.runOneIteration()#u1@1",
+                Identity.atScope().render());
+        Identity.exitFrame(Identity.enterFrame(
+                "Balancer.runOneIteration()#u1"));
+        RuntimeTraceContext.endRequest(request);
+        // A new turn of the loop opens a new root hop, and the count of the
+        // level that hop's frames are entered in starts with it.
         long tick = CausynthTraceRecorder.beginDaemonTick(ticking,
                 "KEY_MANAGER_TICK");
-        Identity.exitFrame(Identity.enterFrame(
-                "KeyManager.updateBlockKeys()#u2"));
-        CausynthTraceRecorder.endDaemonTick(tick);
         Identity.enterFrame("Balancer.runOneIteration()#u1");
-        assertEquals("Balancer.runOneIteration()#u1@1",
+        assertEquals("a new scope starts the count of its own level",
+                "Balancer.runOneIteration()#u1@0",
                 Identity.atScope().render());
-        RuntimeTraceContext.endRequest(request);
+        CausynthTraceRecorder.endDaemonTick(tick);
 
         Identity.resetForTests();
         Lineage.resetForTests();
