@@ -1,3 +1,6 @@
-{"class": "org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager", "method": "boolean updateKeys()", "cells": ["<org.apache.hadoop.util.Timer: long now()>.return"], "clock": true}
-{"class": "org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager", "method": "void addKeys(org.apache.hadoop.hdfs.security.token.block.ExportedBlockKeys,boolean)", "cells": ["<org.apache.hadoop.util.Timer: long now()>.return"], "clock": true}
-{"class": "org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager", "method": "void removeExpiredKeys()", "cells": ["<org.apache.hadoop.util.Timer: long now()>.return"], "clock": true}
+{"callee": "<org.apache.hadoop.util.Timer: long now()>", "kind": "CLOCK"}
+{"callee": "<org.apache.hadoop.util.Time: long now()>", "kind": "CLOCK"}
+{"callee": "<org.apache.hadoop.util.Time: long monotonicNow()>", "kind": "CLOCK"}
+{"class": "org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager", "method": "boolean updateKeys()"}
+{"class": "org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager", "method": "void addKeys(org.apache.hadoop.hdfs.security.token.block.ExportedBlockKeys,boolean)"}
+{"class": "org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager", "method": "void removeExpiredKeys()"}
