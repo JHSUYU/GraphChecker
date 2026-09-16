@@ -1156,4 +1156,42 @@ grep -q 'allowSnapshot.*Local index 2 is invalid' "${verify_dir}/error.log" \
   || fail "the verifier's failure does not name the class, method and \
 reason: $(cat "${verify_dir}/error.log")"
 
+# COUNT: a count the campaign decides on is a decision, and an unreadable
+# count is a refusal.  `[[ "${n}" -eq 0 ]]` reads an empty string as zero, so
+# the IMPORT gate passed whenever its summary could not be read at all --
+# precisely when it should not.  Pinned here because the shape recurs: the
+# gate, the solver's model count, the published gap count and the epoch
+# loop's divergence count all decide on a number some other process printed.
+count_dir="${test_tmp}/campaign-count"
+mkdir -p "${count_dir}"
+campaign_count IMPORT ImportGate "${count_dir}" label 0 \
+  || fail "campaign_count refused a zero count"
+campaign_count IMPORT ImportGate "${count_dir}" label 12 \
+  || fail "campaign_count refused a count"
+for bad in "" " " "x" "1+1" "-1" "0 -o 1" "null"; do
+  (campaign_count IMPORT ImportGate "${count_dir}" \
+      "the import gate's blocking count" "${bad}") \
+    2>"${count_dir}/error.log" \
+    && fail "campaign_count accepted '${bad}' as a count"
+  grep -q 'stage=IMPORT' "${count_dir}/error.log" \
+    || fail "an unreadable count is not attributed to its stage"
+  grep -q "is not a count: '${bad}'" "${count_dir}/error.log" \
+    || fail "an unreadable count does not name the value it read: \
+$(cat "${count_dir}/error.log")"
+done
+# The gate itself, over a summary the gate JVM wrote nothing into: the old
+# spelling logged "0 blocking" and carried on.
+gate_empty="${test_tmp}/import-gate-unreadable"
+mkdir -p "${gate_empty}/sessions"
+(
+  run_java_main() { printf '{}\n'; }
+  campaign_import_gate "${gate_empty}" iteration-0000
+) 2>"${gate_empty}/error.log" \
+  && fail "an import gate summary with no counts did not fail the campaign"
+grep -q 'stage=IMPORT' "${gate_empty}/error.log" \
+  || fail "the unreadable gate summary is not attributed to IMPORT"
+grep -q "is not a count: 'null'" "${gate_empty}/error.log" \
+  || fail "the unreadable gate summary does not name the value it read: \
+$(cat "${gate_empty}/error.log")"
+
 echo "run_engine campaign helper tests passed"

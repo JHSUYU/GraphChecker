@@ -846,6 +846,60 @@ public final class StaticScopeMap {
         return SiteId.methodOf(site.siteId);
     }
 
+    /**
+     * Every site this map names as a place a declared value can enter, in
+     * publication order.
+     *
+     * <p>Role-typed, like every other accessor here: a row of any other role
+     * is not a declared site and can never be returned by this one.  A
+     * declaration is still what decides whether any of these mints -- see
+     * {@link ConcolicScheduler.SymbolicInputSelection} -- and a caller that
+     * wants the recording's side of one asks the recording.</p>
+     */
+    public List<Site> declaredSites() {
+        List<Site> found = new ArrayList<Site>();
+        for (Site site : sites) {
+            if (DECLARED_SITE.equals(site.role) && site.declared != null) {
+                found.add(site);
+            }
+        }
+        return found;
+    }
+
+    /**
+     * The declarations of one recorded site and callee, one per candidate
+     * edge they were read from.
+     *
+     * <p>A site several regions hold is several rows of this map -- the
+     * region is part of a row's identity -- and it is still one
+     * declaration, so rows are deduped by the candidate edge they were read
+     * from and a caller minting a port at one site mints one.  WHICH
+     * occurrence owns the read is not this map's answer: the map states
+     * where a declared value can enter the text, and the recording states
+     * which activation actually entered it.</p>
+     */
+    public List<Site> declaredSitesAt(String siteId,
+                                      String declaredCallee) {
+        List<Site> found = new ArrayList<Site>();
+        Set<String> seen = new LinkedHashSet<String>();
+        String named = siteId == null ? "" : siteId;
+        String callee = declaredCallee == null ? "" : declaredCallee;
+        for (Site site : sites) {
+            if (!DECLARED_SITE.equals(site.role) || site.declared == null
+                    || !named.equals(site.siteId)
+                    || !callee.equals(site.declaredCallee)) {
+                continue;
+            }
+            if (!seen.add(site.declared.kind + "|" + site.declared.edgeId
+                    + "|" + site.cell + "|"
+                    + site.declared.dependencyCell)) {
+                continue;
+            }
+            found.add(site);
+        }
+        return found;
+    }
+
     /** The annotated target sites this map states. */
     public List<Site> targetSites() {
         List<Site> found = new ArrayList<Site>();

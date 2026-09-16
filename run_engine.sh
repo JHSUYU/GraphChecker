@@ -459,7 +459,7 @@ validate_config() {
   for key in solver_timeout_ms schedule_max_jobs \
       concolic_worker_count campaign_max_iterations \
       region_path_max_waves compose_max_valuations \
-      causynth_loop_default_bound; do
+      campaign_max_epochs causynth_loop_default_bound; do
     require_positive_integer "${key}"
   done
   # The one stage a campaign may be asked to stop after.  Refused here rather
@@ -723,10 +723,12 @@ do_workload() {
       CAUSYNTH_REGION_SKELETONS="${selected_skeletons}" \
       do_analyze
     run_configured_workload
+    require_file "static scope map" "${causynth_static_scope_map}"
     run_java_main edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder \
       --trace-dir "${trace_dir}" \
       --candidate-graph "${candidate_graph}" \
       --region-skeletons "${selected_skeletons}" \
+      --static-scope-map "${causynth_static_scope_map}" \
       --refined-graph "${refined_graph}" \
       --recording-gaps "${trace_dir}/skeleton-pass/recording_gaps.jsonl" \
       --test "${trace_test}"
@@ -790,6 +792,33 @@ campaign_fail() {
     echo "  reason=$*"
   } >&2
   exit 1
+}
+
+# A count a campaign DECIDES on, read back from an artifact.
+#
+# `[[ "${n}" -eq 0 ]]` is true for an empty string: bash evaluates the word as
+# an arithmetic expression and an empty one is zero.  So every gate of the
+# shape "no blocking gaps, carry on" passed whenever the count could not be
+# read at all -- a jq that printed nothing because the key was absent, a
+# summary file the stage wrote no JSON into, a jq that failed -- and the gate
+# that exists to stop the campaign let it through with the artifact it was
+# reading unreadable.  A count is a decision: an unreadable one is a refusal
+# naming the artifact, never a zero.
+#
+# `-eq` is also happy with `1+1`, `x` and `9 -o 1` (bash arithmetic evaluates
+# the word and an unset name is 0), so the test is the spelling of a count and
+# not just "non-empty".
+# It CHECKS rather than returns the value: campaign_fail ends the run with
+# `exit`, and a helper that answered through a command substitution would end
+# only that substitution, leaving the caller with the empty string this rule
+# exists to refuse.
+campaign_count() {
+  local stage=$1 component=$2 artifact=$3 label=$4 value=$5
+  case "${value}" in
+    ''|*[!0-9]*)
+      campaign_fail "${stage}" "${component}" "${artifact}" \
+        "${label} is not a count: '${value}'" ;;
+  esac
 }
 
 # The failure this tree has paid for more than once: a stage exits 0 after
@@ -874,6 +903,8 @@ campaign_print_symbolic_variable_models() {
         and has("value")))
   ' "${report}" >/dev/null || return 1
   model_count=$(jq -r '.solver.symbolicVariableModels | length' "${report}")
+  campaign_count SOLVE SymbolicModels "${report}" \
+    "the solver's model count" "${model_count}"
   if [[ "${model_count}" -eq 0 ]]; then
     campaign_log "symbolic variables: no satisfying model"
     return 0
@@ -1886,8 +1917,12 @@ campaign_import_gate() {
     --out "${gaps}" \
     --topology-epoch "${iteration_id}" >"${summary}"
   require_nonempty "import gate summary" "${summary}"
-  violations=$(jq -er '.violations' "${summary}")
-  blocking=$(jq -er '.blocking' "${summary}")
+  violations=$(jq -r '.violations' "${summary}")
+  campaign_count IMPORT ImportGate "${summary}" \
+    "the import gate's violation count" "${violations}"
+  blocking=$(jq -r '.blocking' "${summary}")
+  campaign_count IMPORT ImportGate "${summary}" \
+    "the import gate's blocking count" "${blocking}"
   first=$(jq -r '.firstBlockingSubject // ""' "${summary}")
   campaign_log "import gate: ${violations} row invariant violation(s), \
 ${blocking} blocking"
@@ -2738,6 +2773,8 @@ campaign_emit() {
   campaign_publish_epoch_final "${iteration_dir}"
 
   gapCount=$(jq -r '.gapCount' "${campaign_final}/gaps.json")
+  campaign_count EMIT GapLedger "${campaign_final}/gaps.json" \
+    "the published blocking gap count" "${gapCount}"
   campaign_log "artifacts in ${campaign_final}"
   jq -r '"  claim=\(.claim) reachability=\(.reachability) blockers=\(.blockerCount) gaps=\(.gapCount) telemetry=\(.telemetryCount) finalStatus=\(.finalStatus)"' \
     "${campaign_final}/result.json"
@@ -2794,10 +2831,15 @@ campaign_publish_pending_refinement() {
 # epoch catalog does not carry (INTERACTION-ID R-I3), or a path that reached a
 # region the workload never retained (section 8 case 2).  Zero means the
 # topology is closed.
+# The same rule as campaign_count, at the one count this file computes rather
+# than reads: `|| printf '0'` said "no divergences" for a jq that failed, which
+# is the answer that ends the epoch loop.
 campaign_topology_divergences() {
-  local iteration_dir=$1
-  campaign_divergence_rows "${iteration_dir}" \
-    | jq -r -s 'length' 2>/dev/null || printf '0'
+  local iteration_dir=$1 counted
+  counted=$(campaign_divergence_rows "${iteration_dir}" | jq -r -s 'length')
+  campaign_count EXPLORE TopologyDivergence "${iteration_dir}" \
+    "the iteration's topology divergence count" "${counted}"
+  printf '%s' "${counted}"
 }
 
 # Every TOPOLOGY_DIVERGENCE row of this iteration, from the sessions.

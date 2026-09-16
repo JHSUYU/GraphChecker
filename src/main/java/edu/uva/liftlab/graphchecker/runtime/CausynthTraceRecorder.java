@@ -12,6 +12,7 @@ import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.plan.DeclaredSymbolicInputs;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
+import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.plan.WorkStartSites;
 import java.io.BufferedWriter;
 import java.io.BufferedReader;
@@ -145,7 +146,8 @@ public final class CausynthTraceRecorder {
                         : new File(configuredRefined.trim());
                 aggregateStateTrace(directory, graph, candidateSkeletons,
                         refinedGraph, test, planOutputDirectory,
-                        new File(requiredArg(params, "recording-gaps")));
+                        new File(requiredArg(params, "recording-gaps")),
+                        new File(requiredArg(params, "static-scope-map")));
             }
         } catch (Throwable throwable) {
             System.err.println("Failed to aggregate Causynth runtime trace: "
@@ -263,8 +265,8 @@ public final class CausynthTraceRecorder {
             // Same rule as the filing half: the work runs either way, and a
             // frame nobody could claim is stated where it happened rather
             // than swallowed.
-            String subject = carrier == null ? "" : carrier.getClass()
-                    .getName();
+            String subject = lineageSubject(carrier == null ? ""
+                    : carrier.getClass().getName());
             RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
                             .LINEAGE_LOST,
                     edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
@@ -288,11 +290,15 @@ public final class CausynthTraceRecorder {
             RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
                             .LINEAGE_LOST,
                     edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
-                    site, "the frame of this work start could not be filed, "
+                    lineageSubject(site.isEmpty() && carrier != null
+                                    ? carrier.getClass().getName() : site),
+                    "the frame of this work start could not be filed, "
                             + "so the work it started carries no start-site "
                             + "frame in its execution index: "
                             + unnamed);
-            writeLineageGap(site, "the frame of this work start could not be "
+            writeLineageGap(lineageSubject(site.isEmpty() && carrier != null
+                            ? carrier.getClass().getName() : site),
+                    "the frame of this work start could not be "
                     + "filed, so the work it started carries no start-site "
                     + "frame in its execution index: " + unnamed);
         }
@@ -310,6 +316,34 @@ public final class CausynthTraceRecorder {
      * gap list.  A gap the recording cannot state is a gap nobody ever
      * hears about.</p>
      */
+    /**
+     * A gap row names its own subject.
+     *
+     * <p>Both lineage gaps above are raised exactly where an identity could
+     * NOT be established, which is where the name they would like to state
+     * is most likely missing: a null carrier, a blank start site.  The row's
+     * door substitutes the session for a blank subject, so the row was still
+     * filed -- and named the session rather than the thing that lost its
+     * frame, which is the one fact a reader needs from it.  The fallbacks
+     * are the frames this thread is actually in: the source key the
+     * recording attributes its work to, then the thread itself, which always
+     * has a name and an id.</p>
+     */
+    private static String lineageSubject(String named) {
+        String subject = MapFields.safe(named);
+        if (!subject.isEmpty()) return subject;
+        try {
+            subject = MapFields.safe(
+                    RuntimeTraceContext.activationSource(null).key());
+        } catch (Throwable unnamed) {
+            subject = "";
+        }
+        if (!subject.isEmpty()) return subject;
+        Thread current = Thread.currentThread();
+        return "thread:" + MapFields.safe(current.getName())
+                + "#" + current.getId();
+    }
+
     private static void writeLineageGap(String subject, String detail) {
         if (!recordingEnabled) return;
         synchronized (LOCK) {
@@ -1285,7 +1319,7 @@ public final class CausynthTraceRecorder {
     private static void aggregateStateTrace(
             File directory, File candidateGraph, File selectedSkeletons,
             File refinedGraph, String test, File planOutputDirectory,
-            File recordingGaps)
+            File recordingGaps, File staticScopeMap)
             throws IOException {
         synchronized (LOCK) {
             List<Map<String, Object>> earlierPassGaps =
@@ -1350,7 +1384,8 @@ public final class CausynthTraceRecorder {
             planGaps.addAll(earlierPassGaps);
             writeRuntimeRegionPlans(planOutputDirectory,
                     closure.regions, closure.regionEdges, trace,
-                    activationGraph.runtimeInstances, planGaps);
+                    activationGraph.runtimeInstances, planGaps,
+                    declaredSites(staticScopeMap));
         }
     }
 
@@ -2316,14 +2351,38 @@ public final class CausynthTraceRecorder {
             List<Map<String, Object>> regions,
             List<Map<String, Object>> regionEdges, TraceData trace,
             Collection<Map<String, Object>> runtimeSeeds,
-            Collection<Map<String, Object>> planGaps) throws IOException {
+            Collection<Map<String, Object>> planGaps,
+            Set<String> declaredSites) throws IOException {
         writeFile(new File(directory, "concolic_region_plan.jsonl"),
                 RuntimeRegionPlanner.plan(regions, regionEdges,
                         "runtime region closure",
                         "runtime region edge closure",
                         runtimeSeeds, trace.methods, trace.execution,
                         trace.fields, trace.protocol,
-                        planGaps).runtimePlanJsonl());
+                        planGaps, declaredSites).runtimePlanJsonl());
+    }
+
+    /**
+     * The sites the one scoping artifact names as places a declared value
+     * enters, as {@code <siteId>\n<callee>}.
+     *
+     * <p>Scope, read from the map that publishes it, so the recording's own
+     * side of a declared port is stated at exactly the sites the static pass
+     * named -- not at every call the run made, and not at a set this stage
+     * re-derives from the graph.  Admission is still the scheduler's.</p>
+     */
+    private static Set<String> declaredSites(File staticScopeMap)
+            throws IOException {
+        StaticScopeMap map = StaticScopeMap.read(staticScopeMap.toPath());
+        if (!map.stated()) {
+            throw new IOException("static scope map states no site: "
+                    + staticScopeMap);
+        }
+        Set<String> sites = new LinkedHashSet<>();
+        for (StaticScopeMap.Site site : map.declaredSites()) {
+            sites.add(site.siteId + "\n" + site.declaredCallee);
+        }
+        return sites;
     }
 
     private static void writeFile(File file, String value) throws IOException {

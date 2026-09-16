@@ -112,7 +112,7 @@ public final class ConcolicScheduler {
         loaded.symbolicInputs.resolveDeclaredNames(loaded.candidateGraph);
         List<Candidate> candidates = candidates(arguments,
                 loaded.regionPlans, loaded.regionIndex,
-                loaded.staticScopeMap);
+                loaded.staticScopeMap, loaded.symbolicInputs);
         Collections.sort(candidates, Candidate.ORDER);
 
         LoopBoundPolicy loopBound = declaredLoopBounds(
@@ -472,7 +472,9 @@ public final class ConcolicScheduler {
                                               List<RegionInstancePlan>
                                                       regionPlans,
                                               Set<String> regions,
-                                              StaticScopeMap scopeMap)
+                                              StaticScopeMap scopeMap,
+                                              SymbolicInputSelection
+                                                      symbolicInputs)
             throws IOException {
         List<Candidate> result = new ArrayList<>();
         for (RegionInstancePlan plan : regionPlans) {
@@ -496,7 +498,8 @@ public final class ConcolicScheduler {
                 if (!goal.replayable()) {
                     continue;
                 }
-                appendGoalCandidates(arguments, result, goal, scopeMap);
+                appendGoalCandidates(arguments, result, goal, scopeMap,
+                        symbolicInputs);
             }
         }
         return result;
@@ -544,11 +547,14 @@ public final class ConcolicScheduler {
      */
     private static void appendGoalCandidates(
             Arguments arguments, List<Candidate> result, Goal goal,
-            StaticScopeMap scopeMap)
+            StaticScopeMap scopeMap, SymbolicInputSelection symbolicInputs)
             throws IOException {
         Set<String> definitionMethods = goal.runtimeDefinitionMethods();
         JsonArray branches = goal.branches();
-        JsonArray inputActions = materializationPlan(goal, goal.symbolize(),
+        JsonArray inputActions = materializationPlan(goal,
+                withDeclaredPorts(goal.symbolize(),
+                        symbolicInputs.declaredPorts(goal.plan(), scopeMap,
+                                definitionMethods)),
                 scopeMap, definitionMethods);
         if (goal.kind().capturesRegionPath()) {
             result.add(new Candidate(goal, branches, "", 1, false,
@@ -640,6 +646,40 @@ public final class ConcolicScheduler {
      * no presentation for cannot carry a symbol however it is declared, and
      * neither can a value whose type the SMT layer has no term for.</p>
      */
+    /**
+     * One goal's proposed inputs, with the declared ports the one admission
+     * rule minted from the scope map and the recording.
+     *
+     * <p>A minted port and the region row's own port for the same site are
+     * the same port -- same id, same static members, same recorded ordinal
+     * and value -- so the minted one takes its place rather than standing
+     * beside it.  The region row's copy is the one that is going: it is
+     * assembled from the refined graph's runtime bindings, and the minted
+     * one is assembled from the two artifacts that publish the same facts.
+     * A minted port the row does not carry is appended.</p>
+     */
+    static JsonArray withDeclaredPorts(JsonArray proposed, JsonArray minted) {
+        if (minted.size() == 0) return proposed;
+        Map<String, JsonObject> bySymbol = new LinkedHashMap<>();
+        for (JsonElement element : minted) {
+            JsonObject port = element.getAsJsonObject();
+            bySymbol.put(optionalString(port, "symbol"), port);
+        }
+        JsonArray result = new JsonArray();
+        for (JsonElement element : proposed) {
+            if (!element.isJsonObject()) {
+                result.add(element);
+                continue;
+            }
+            JsonObject action = element.getAsJsonObject();
+            JsonObject port = bySymbol.remove(
+                    optionalString(action, "symbol"));
+            result.add(port == null ? action : port);
+        }
+        for (JsonObject port : bySymbol.values()) result.add(port);
+        return result;
+    }
+
     static JsonArray materializationPlan(
             Goal goal, JsonArray sourceActions,
             StaticScopeMap scopeMap,
@@ -1514,6 +1554,66 @@ public final class ConcolicScheduler {
          */
         void resolveDeclaredNames(List<JsonObject> candidateGraph) {
             renameDeclaredNames(candidateGraph);
+        }
+
+        /**
+         * The ports one occurrence's DECLARED sites mint: the static scope
+         * map's {@code DECLARED_SITE} rows joined with the recording's own
+         * captures of the same site, for the sites THIS rule admits.
+         *
+         * <p>One rule, one place.  A site the case declared mints a port per
+         * recorded return; a site it did not declare mints nothing at all,
+         * so no candidate is built for the rule to discard afterwards.  The
+         * static half is the map's, the dynamic half is the recording's, and
+         * the region is the plan's -- the occurrence the capture was
+         * recorded in belongs to it.</p>
+         *
+         * <p>A site whose declarations include an accessor return mints only
+         * that: the VM propagates the field's own expression through the
+         * getter, so a second symbol for the same call result would give one
+         * value two authorities.  The occurrence a capture belongs to is
+         * the recording's answer -- the innermost planned activation that
+         * ran the call, decided where the captures are published -- and the
+         * port is spelled with the PLAN's region, which is the region that
+         * activation ran as.</p>
+         */
+        JsonArray declaredPorts(RegionInstancePlan plan,
+                                StaticScopeMap scopeMap,
+                                Set<String> regionMethods) {
+            Map<String, JsonObject> ports = new LinkedHashMap<>();
+            for (DeclaredSiteCapture capture
+                    : DeclaredSiteCapture.decode(plan.json())) {
+                // The region's own text has to hold the site: a read this
+                // region does not contain is not this region's port.
+                if (!regionMethods.contains(
+                        SiteId.methodOf(capture.siteId()))) {
+                    continue;
+                }
+                for (StaticScopeMap.Site site : accessorFirst(
+                        scopeMap.declaredSitesAt(capture.siteId(),
+                                capture.declaredCallee()))) {
+                    JsonObject port = capture.port(plan, site);
+                    if (!admits(plan.regionId(), port)) continue;
+                    ports.putIfAbsent(optionalString(port, "portId"), port);
+                }
+            }
+            JsonArray minted = new JsonArray();
+            for (JsonObject port : ports.values()) minted.add(port);
+            return minted;
+        }
+
+        /** The accessor declarations of one site, or all of them when it
+         *  has none. */
+        private static List<StaticScopeMap.Site> accessorFirst(
+                List<StaticScopeMap.Site> declarations) {
+            List<StaticScopeMap.Site> accessors = new ArrayList<>();
+            for (StaticScopeMap.Site site : declarations) {
+                if (StaticScopeMap.ACCESSOR_RETURN.equals(
+                        site.declared.kind)) {
+                    accessors.add(site);
+                }
+            }
+            return accessors.isEmpty() ? declarations : accessors;
         }
 
         JsonArray select(String regionId, JsonArray actions) {
