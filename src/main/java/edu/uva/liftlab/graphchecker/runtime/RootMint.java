@@ -432,11 +432,19 @@ final class RootMint {
             // source concrete.  Only a tree that actually names a VM symbol
             // root inside those wrappers is an expression of its own.
             boolean reused = configuredSourceCarriesAuthority(carried);
+            // WHAT THE REGION OBSERVED, read before anything is written:
+            // the live value at this mint, which in a focused replay is the
+            // recording's own.  Asked here and not after the plant, because
+            // after the plant the cell holds the wave's value and the two
+            // quantities are no longer distinguishable off the heap.
+            String observed = ConcolicRegionRuntime.recordedScalar(
+                    field.get(owner));
             // The application's Map re-key reads the assigned value back
             // through this same path, so the wave's value is written first.
-            boolean assigned = !reused && applyFocusedRootAssignment(
-                    active, safe(sourceId), owner, safe(fieldSignature),
-                    descriptor);
+            if (!reused) {
+                applyFocusedRootAssignment(active, safe(sourceId), owner,
+                        safe(fieldSignature), descriptor);
+            }
             // ONE SYMBOL PER DECLARED SOURCE.  The label is derived from
             // the declared site and from nothing this read is: the same leaf
             // is asked for at every read of it, so the composer meets one
@@ -460,7 +468,7 @@ final class RootMint {
                     value));
             active.recordConfiguredSourceMint(entry, safe(sourceId),
                     safe(fieldSignature), symbol, expression, reused,
-                    assigned ? null : ConcolicRegionRuntime.recordedScalar(value));
+                    observed);
             return true;
         } catch (Throwable failure) {
             return false;
@@ -662,8 +670,11 @@ final class RootMint {
                 leafFieldSignature, descriptor, value);
         // The plant wrote into the cell this mint stands on, so the leaf the
         // VM is handed is what the region will now read, not what it held.
-        Object held = recorded.isEmpty()
-                ? readExactField(owner, leafFieldSignature) : value;
+        // Re-read in both cases: nothing else writes this cell between the
+        // read above and here, so with no plant the re-read IS what it held
+        // and no flag has to carry whether a plant happened -- which is what
+        // let "the row states no value" stand in for "a plant happened".
+        Object held = readExactField(owner, leafFieldSignature);
         if (held == MissingValue.INSTANCE) held = value;
         api.symbolizeExactField(owner, leafFieldSignature,
                 manualMintLabel(symbol, active.activation.occurrenceId,
@@ -687,23 +698,36 @@ final class RootMint {
 
     /**
      * Plants the wave's value at one field mint and states what that mint
-     * may publish as recorded: {@code ""} when it planted.
+     * OBSERVED there: two questions, two answers, one after the other.
      *
      * <p>ONE PLACE DECIDES A MINT'S VALUE, and every mint path asks it: the
      * manual primitive ({@link #materializePrimitiveValue}), the configured
      * source ({@link #symbolizeConfiguredSourceField}), the clock (a skew,
-     * inside {@link #focusedRootValue}) and now the manual field.  A path
+     * inside {@link #focusedRootValue}) and the manual field here.  A path
      * that minted a declared root without asking left the replay running the
-     * recording's value under an obligation that asked for another one --
-     * and publishing that value as {@code recordedValue} is how a
-     * counterfactual becomes the recording.</p>
+     * recording's value under an obligation that asked for another one.</p>
+     *
+     * <p>AND A MINT ROW ALWAYS STATES WHAT THE REGION OBSERVED.  It used to
+     * state {@code ""} whenever a plant followed, on the ground that a
+     * counterfactual is not a recording -- but {@code value} is not the
+     * counterfactual: it is the live value this region read at the mint,
+     * before anything was written, which in a focused replay is the
+     * recording's own.  The session's valuation is stated by the FOCUS row
+     * and by nothing here.  Blanking it is what published {@code
+     * roots.jsonl seq=121 field=recordedValue
+     * HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED=} in hdfs-17960's two focused
+     * sessions (793875fb…, cb67875d…) and one empty CLOCK row in each of
+     * hdfs-11741's six -- the very root each obligation moves -- and a root
+     * whose row states no value has no centre for a relative domain to
+     * resolve against, so IMPORT refuses it under invariant 8 and the
+     * composer could not move it at all.</p>
      */
     static String fieldMintRecordedValue(
             ActiveRegion active, SymbolizeAction action, Object owner,
             String leafFieldSignature, String descriptor, Object value) {
-        return applyFocusedRootAssignment(active, action.symbol, owner,
-                leafFieldSignature, descriptor)
-                ? "" : ConcolicRegionRuntime.recordedScalar(value);
+        applyFocusedRootAssignment(active, action.symbol, owner,
+                leafFieldSignature, descriptor);
+        return ConcolicRegionRuntime.recordedScalar(value);
     }
 
     private static void symbolizeFieldPath(ActiveRegion active,
@@ -776,10 +800,14 @@ final class RootMint {
             JsonElement expression = primitiveBoxExpression(api, fresh);
             active.recordManualSymbolization(action, action.symbol,
                     exactPath, fieldSignature, expression, true, false,
-                    // A replay that planted the wave's value read the wave's
-                    // value back, and publishing that as "recorded" is how a
-                    // counterfactual becomes the recording.
-                    assigned.isEmpty() ? ConcolicRegionRuntime.recordedScalar(concrete) : "");
+                    // WHAT THIS REGION OBSERVED, whether or not a plant
+                    // followed: `concrete` is the value the mint was handed,
+                    // and the plant above builds a FRESH box rather than
+                    // writing into it, so this is the live read and never the
+                    // wave's value.  The wave's value is the focus row's
+                    // statement; a row that states neither leaves the root
+                    // with no centre for its domain (invariant 8).
+                    ConcolicRegionRuntime.recordedScalar(concrete));
             if (!assigned.isEmpty()) {
                 edu.uva.liftlab.graphchecker.runtime.FocusedReplay.planted(
                         action.symbol);

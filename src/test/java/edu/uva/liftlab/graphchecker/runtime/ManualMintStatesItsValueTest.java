@@ -59,6 +59,8 @@ public class ManualMintStatesItsValueTest {
 
     private final List<Long> opened = new ArrayList<>();
     private String occurrenceId = PLANNED;
+    /** The activation the last {@link #manualRow} published into. */
+    private ActiveRegion lastManualRegion;
 
     @Before
     public void clearRegistry() {
@@ -76,15 +78,25 @@ public class ManualMintStatesItsValueTest {
     }
 
     /**
-     * A mint publishes the value it read -- and only a value it read.
+     * A mint publishes the value it read -- and every mint publishes one.
      *
      * <p>A clock is no exception.  The seed replay IS the reference
      * execution the composer's clock deltas are relative to, so the instant
      * THIS run read is what both members state; the row used to publish the
      * PLAN's instant as {@code recordedValue}, which made every delta
-     * relative to an execution nobody ran.  A replay that wrote a model read
-     * it back and states neither: calling that "recorded" makes a
-     * counterfactual the recording.</p>
+     * relative to an execution nobody ran.</p>
+     *
+     * <p>INVARIANT 8, and it holds in a FOCUSED replay too.  A mint that
+     * planted the wave's value used to state nothing, on the ground that a
+     * counterfactual is not a recording -- but the value a mint states is
+     * the one it read BEFORE the plant, which is the recording's own, and
+     * the session's valuation is stated by the focus row.  Suppressing it
+     * published the one root each obligation moves with an empty {@code
+     * recordedValue}: hdfs-17960's two focused sessions state {@code
+     * roots.jsonl seq=121 field=recordedValue
+     * HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED=} and hdfs-11741's six state
+     * one empty CLOCK row each, which IMPORT refuses as BLOCKING and the
+     * composer cannot resolve a relative domain against.</p>
      */
     @Test
     public void aMintStatesTheValueItRead() throws Exception {
@@ -98,12 +110,7 @@ public class ManualMintStatesItsValueTest {
         assertEquals("J", recorded.get("javaType").getAsString());
         assertTrue(recorded.get("minted").getAsBoolean());
 
-        JsonObject modelled = manualRow(action("PORT.now"), "");
-        assertFalse("a counterfactual is not a recording",
-                modelled.has("recordedValue"));
-        assertEquals("J", modelled.get("javaType").getAsString());
-
-        JsonObject clock = manualRow(clockAction(), "1789358344655");
+        JsonObject clock = manualRow(clockAction("PORT.now"), "1789358344655");
         assertTrue("the mint states the clock the case declared",
                 clock.get("clock").getAsBoolean());
         assertEquals("this execution's own instant, which the window is "
@@ -115,14 +122,6 @@ public class ManualMintStatesItsValueTest {
                 clock.get("recordedValue").getAsString());
         assertEquals("the plan's instant is stated by nothing here",
                 7L, clock.get("eventSeq").getAsLong());
-
-        JsonObject plantedClock = manualRow(clockAction(), "");
-        assertTrue("still a declared clock",
-                plantedClock.get("clock").getAsBoolean());
-        assertFalse("a planted instant is not a recording",
-                plantedClock.has("recordedValue"));
-        assertFalse("and states no observation either",
-                plantedClock.has("observedValue"));
 
         // What the wave asks of a clock is a SKEW, and the mint applies it
         // to the instant THIS run read: a model is an instant of the
@@ -136,7 +135,8 @@ public class ManualMintStatesItsValueTest {
                 .id() + "\","
                 + "\"flip\":{\"siteId\":\"Arrival#u8\",\"ordinal\":1,"
                 + "\"outcome\":true},"
-                + "\"rootAssignments\":{\"CASE.SERIAL\":\"12\"},"
+                + "\"rootAssignments\":{\"CASE.SERIAL\":\"12\","
+                + "\"CASE.ORDERED\":\"false\"},"
                 + "\"clockDeltas\":{\"CASE.NOW\":\"-4200\"},"
                 + "\"rootMints\":{\"CASE.SERIAL\":\"" + MINT_ADDRESS
                 + "\"},"
@@ -211,6 +211,8 @@ public class ManualMintStatesItsValueTest {
         // SERIAL_NO = 182907 under an obligation assigning 182910.
         KeyManager keys = new KeyManager();
         keys.serialNo = 182907;
+        keys.ordered = true;
+        keys.now = 1789358344655L;
         // A model rewrites the recorded execution, so it is written only at
         // a mint this run can place at the node and epoch the plan names --
         // the same rule the configured source's assignment goes through.
@@ -226,20 +228,42 @@ public class ManualMintStatesItsValueTest {
         java.util.Map<String, String> owed =
                 new java.util.LinkedHashMap<String, String>();
         owed.put("CASE.SERIAL", "12");
+        owed.put("CASE.ORDERED", "false");
         owed.put("CASE.NOW", "-4200");
         assertEquals("what the wave asked of a root is unplanted until a "
                         + "mint plants it, a clock's skew included", owed,
                 FocusedReplay.unplantedAssignments());
-        assertEquals("a field mint that planted states no recordedValue", "",
-                RootMint.fieldMintRecordedValue(focused,
-                        new SymbolizeAction(
-                                action("CASE.SERIAL")),
+
+        // INVARIANT 8 AT A FOCUSED MINT, for every kind the cases declare.
+        // Two questions with two answers: the plant writes the session's
+        // valuation into the cell, and the row states the value the region
+        // OBSERVED there, which the mint read before the write.  The row
+        // used to state nothing at all whenever a plant followed, so the
+        // one root the obligation moves was the one root with no reading --
+        // 17960's MARKER at seq=121 and one CLOCK per 11741 focused
+        // session, both BLOCKING at IMPORT.
+        assertEquals("a focused INTEGRAL mint states the value it read",
+                "182907", RootMint.fieldMintRecordedValue(focused,
+                        new SymbolizeAction(action("CASE.SERIAL")),
                         keys, SERIAL_FIELD, "I", Integer.valueOf(182907)));
         assertEquals("and the region reads the wave's value back",
                 12, keys.serialNo);
+        assertEquals("a focused MARKER mint states the polarity it read",
+                "true", RootMint.fieldMintRecordedValue(focused,
+                        new SymbolizeAction(action("CASE.ORDERED")),
+                        keys, ORDERED_FIELD, "Z", Boolean.TRUE));
+        assertFalse("and the region reads the moved polarity back",
+                keys.ordered);
+        assertEquals("a focused CLOCK mint states the instant it read, "
+                        + "which is what the composer's deltas are "
+                        + "relative to", "1789358344655",
+                RootMint.fieldMintRecordedValue(focused,
+                        new SymbolizeAction(clockAction("CASE.NOW")),
+                        keys, NOW_FIELD, "J", Long.valueOf(1789358344655L)));
+        assertEquals("and the region reads its own instant plus the skew",
+                1789358340455L, keys.now);
         assertEquals("so the replay owes no ASSIGNMENT_UNPLANTED refusal "
-                        + "for it, and still owes the clock's",
-                Collections.singletonMap("CASE.NOW", "-4200"),
+                        + "for any of them", Collections.emptyMap(),
                 FocusedReplay.unplantedAssignments());
 
         // A root the wave said nothing about keeps its reading, and states
@@ -251,16 +275,41 @@ public class ManualMintStatesItsValueTest {
                                 action("CASE.OTHER")),
                         keys, SERIAL_FIELD, "I", Integer.valueOf(182907)));
         assertEquals("and reads its own value back", 182907, keys.serialNo);
+
+        // AND A BLANK IS NAMED.  No producer hands one now, so a root row
+        // left without a reading carries a value the runtime has no scalar
+        // spelling for -- and the session says which root, rather than
+        // publishing the row IMPORT will refuse with nothing beside it.
+        openSession();
+        JsonObject unspellable =
+                manualRow(clockAction("PORT.unspellable"), "");
+        assertFalse("the row writer states no blank",
+                unspellable.has("recordedValue"));
+        RowPlaceholderMint.roots(lastManualRegion, address(PLANNED_ADDRESS));
+        assertEquals(GapKind.UNSTATED_VALUE, gap().kind());
+        assertTrue("a root with no centre for its domain blocks",
+                gap().blocking());
+        assertEquals("named by the root it is about", "PORT.unspellable",
+                gap().subject());
+        assertTrue(gap().detail(),
+                gap().detail().contains("states no value it observed"));
     }
 
-    /** One declared INTEGRAL cell, as 11741's SERIAL_NO is minted. */
+    /** One declared cell of each kind a case declares a root at. */
     private static final class KeyManager {
         private int serialNo;
+        private boolean ordered;
+        private long now;
     }
 
-    private static final String SERIAL_FIELD =
+    private static final String KEY_MANAGER =
             "<edu.uva.liftlab.graphchecker.runtime.ManualMintStatesItsValue"
-                    + "Test$KeyManager: int serialNo>";
+                    + "Test$KeyManager: ";
+    private static final String SERIAL_FIELD =
+            KEY_MANAGER + "int serialNo>";
+    private static final String ORDERED_FIELD =
+            KEY_MANAGER + "boolean ordered>";
+    private static final String NOW_FIELD = KEY_MANAGER + "long now>";
 
     /** The rendered v3 address the focus row names and the region carries. */
     private static final String PLANNED_ADDRESS =
@@ -425,6 +474,7 @@ public class ManualMintStatesItsValueTest {
     private JsonObject manualRow(JsonObject encoded, String recordedValue)
             throws Exception {
         ActiveRegion active = manualRegion();
+        lastManualRegion = active;
         JsonObject expression = new JsonObject();
         expression.addProperty("_type", "SymbolExpression");
         expression.addProperty("_java_type", "J");
@@ -461,8 +511,8 @@ public class ManualMintStatesItsValueTest {
     }
 
     /** The same action, as the plan carries a declared clock read. */
-    private static JsonObject clockAction() {
-        JsonObject encoded = action("REGION.aaa1cfd7.in.f30dbb22");
+    private static JsonObject clockAction(String symbol) {
+        JsonObject encoded = action(symbol);
         encoded.addProperty("rootKind", "CALL_RETURN");
         encoded.addProperty("clock", true);
         encoded.addProperty("observed", true);
