@@ -145,7 +145,8 @@ public final class CausynthTraceRecorder {
                         "refined_dataflow_edges.jsonl.gz")
                         : new File(configuredRefined.trim());
                 aggregateStateTrace(directory, graph, candidateSkeletons,
-                        refinedGraph, test, planOutputDirectory);
+                        refinedGraph, test, planOutputDirectory,
+                        new File(requiredArg(params, "recording-gaps")));
             }
         } catch (Throwable throwable) {
             System.err.println("Failed to aggregate Causynth runtime trace: "
@@ -592,11 +593,6 @@ public final class CausynthTraceRecorder {
     }
 
     /** Removes an exceptionally exiting lite activation without trace output. */
-    public static void throwActiveMethodLite() {
-        throwActiveMethodLite(null);
-    }
-
-    /** Throwable-shaped overload used by the existing catch-all instrumenter. */
     public static void throwActiveMethodLite(Throwable ignored) {
         exitActiveMethodLite("CALL_SITE_THROW");
     }
@@ -623,30 +619,6 @@ public final class CausynthTraceRecorder {
                         receiverObjectId, valueObjectId, primitiveValue);
         synchronized (LOCK) {
             writeFieldTraceLine(event);
-        }
-    }
-
-    /** Records one exact aaload/aastore of a reference-array element. */
-    public static void recordArrayElement(String kind, String method,
-                                          int unitIndex, Object array,
-                                          int index, Object element) {
-        if (method == null || !("ARRAY_READ".equals(kind)
-                || "ARRAY_WRITE".equals(kind))) {
-            return;
-        }
-        initialize();
-        if (contextOnlyConcolicReplay) {
-            return;
-        }
-        long id = EVENT_COUNTER.incrementAndGet();
-        ActiveCall activeCall = ACTIVE_CALLS.get().peek();
-        RuntimeRegionPlanner.ArrayAccessEvent event =
-                new RuntimeRegionPlanner.ArrayAccessEvent(id, kind, method,
-                        activeCall == null ? 0L : activeCall.callId,
-                        unitIndex, SiteId.render(method, unitIndex),
-                        identity(array), index, identity(element));
-        synchronized (LOCK) {
-            writeArrayTraceLine(event);
         }
     }
 
@@ -1313,9 +1285,12 @@ public final class CausynthTraceRecorder {
 
     private static void aggregateStateTrace(
             File directory, File candidateGraph, File selectedSkeletons,
-            File refinedGraph, String test, File planOutputDirectory)
+            File refinedGraph, String test, File planOutputDirectory,
+            File recordingGaps)
             throws IOException {
         synchronized (LOCK) {
+            List<Map<String, Object>> earlierPassGaps =
+                    readRecordingGaps(recordingGaps);
             clearInMemoryTrace();
             requireClosedTrace(new File(directory,
                     "streaming_trace_manifest.json"));
@@ -1374,6 +1349,9 @@ public final class CausynthTraceRecorder {
             List<Map<String, Object>> planGaps =
                     new ArrayList<>(closure.gaps);
             planGaps.addAll(trace.lineageGaps);
+            // And the earlier recording pass's, which had no plan of its
+            // own to carry them: one workload, one gap list.
+            planGaps.addAll(earlierPassGaps);
             writeRuntimeRegionPlans(planOutputDirectory, refinedFlowIndex,
                     closure.regions, closure.regionEdges, trace,
                     activationGraph.runtimeInstances, planGaps);
@@ -1477,7 +1455,76 @@ public final class CausynthTraceRecorder {
             }
             writeSelectedSkeletons(candidateSkeletons, skeletons,
                     graph.runtimeInstances);
+            writeRecordingGaps(outputDirectory, trace.lineageGaps);
         }
+    }
+
+    /**
+     * The name a recording pass publishes its own stated gaps under.
+     *
+     * <p>A pass with no plan artifact still states its refusals: the
+     * REGION_SKELETON aggregation writes what it parsed here and the
+     * REGION_STATE aggregation -- the pass that publishes the plan -- files
+     * them with its own.  Before this channel existed, a gap pass 1 stated
+     * lived only in a trace file nothing read again.</p>
+     */
+    static final String RECORDING_GAPS_FILE = "recording_gaps.jsonl";
+
+    private static void writeRecordingGaps(
+            File directory, List<Map<String, Object>> gaps)
+            throws IOException {
+        StringBuilder text = new StringBuilder();
+        for (Map<String, Object> gap : gaps) {
+            text.append(objectWithoutNulls(
+                    "schemaVersion", gap.get("schemaVersion"),
+                    "kind", gap.get("kind"),
+                    "cls", gap.get("cls"),
+                    "subject", gap.get("subject"),
+                    "detail", gap.get("detail")));
+            text.append('\n');
+        }
+        writeFile(new File(directory, RECORDING_GAPS_FILE), text.toString());
+    }
+
+    /**
+     * The earlier recording pass's gap rows, in the plan-gap shape {@code
+     * parseTraceLine} builds, refusing rather than defaulting: the file is
+     * an artifact the earlier pass wrote, so its absence is a broken
+     * pipeline and not an empty gap list.
+     */
+    private static List<Map<String, Object>> readRecordingGaps(File file)
+            throws IOException {
+        if (file == null || String.valueOf(file).trim().isEmpty()) {
+            throw new IOException("--recording-gaps is required: the plan "
+                    + "states the gaps of every recording pass");
+        }
+        if (!file.isFile()) {
+            throw new IOException("no recording gap artifact at " + file
+                    + "; the earlier recording pass must publish "
+                    + RECORDING_GAPS_FILE + " before the plan is written");
+        }
+        List<Map<String, Object>> gaps = new ArrayList<>();
+        ConcurrentHashMap<String, String> pool = new ConcurrentHashMap<>();
+        try (BufferedReader reader = Files.newBufferedReader(file.toPath(),
+                StandardCharsets.UTF_8)) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.trim().isEmpty()) continue;
+                FlatJsonRow row = FlatJsonRow.parse(line, pool);
+                if (row == null) {
+                    throw new IOException("Malformed recording gap row in "
+                            + file + ": " + line);
+                }
+                Map<String, Object> gap = new LinkedHashMap<>();
+                gap.put("schemaVersion", row.intValue("schemaVersion", 1));
+                gap.put("kind", row.stringValue("kind"));
+                gap.put("cls", row.stringValue("cls"));
+                gap.put("subject", row.stringValue("subject"));
+                gap.put("detail", row.stringValue("detail"));
+                gaps.add(gap);
+            }
+        }
+        return gaps;
     }
 
     /**
@@ -1921,6 +1968,9 @@ public final class CausynthTraceRecorder {
             trace.execution.addAll(part.execution);
             trace.protocol.addAll(part.protocol);
             trace.sources.addAll(part.sources);
+            // Every list the parse fills: a gap the recording stated and
+            // this merge dropped is a refusal nobody hears about.
+            trace.lineageGaps.addAll(part.lineageGaps);
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             throw new IOException("trace parse interrupted", interrupted);
@@ -2029,9 +2079,6 @@ public final class CausynthTraceRecorder {
             gap.put("subject", row.stringValue("subject"));
             gap.put("detail", row.stringValue("detail"));
             trace.lineageGaps.add(gap);
-        } else if (PROTOCOL_NOTE_EVENT.equals(eventKind)) {
-            // Recognised, and deliberately not a protocol event.
-            return;
         } else if ("SOURCE_REGISTER".equals(eventKind)
                 || "SOURCE_ALIAS".equals(eventKind)
                 || "SOURCE_RESTART".equals(eventKind)) {
@@ -2127,29 +2174,18 @@ public final class CausynthTraceRecorder {
                 "primitiveValue", event.primitiveValue);
     }
 
-    private static void writeArrayTraceLine(
-            RuntimeRegionPlanner.ArrayAccessEvent event) {
-        if (!recordingEnabled) return;
-        writeTraceRow(
-                "schemaVersion", 3,
-                "event", event.kind,
-                "seq", event.seq,
-                "method", event.method,
-                "callId", event.callId,
-                "siteId", event.siteId,
-                "unitIndex", event.unitIndex,
-                "arrayObjectId", event.arrayObjectId,
-                "arrayIndex", event.index,
-                "elementObjectId", event.elementObjectId);
-    }
-
-    /** The row kind one recorded protocol leg is written under. */
-    static final String PROTOCOL_NOTE_EVENT = "EXCHANGE_NOTE";
-
+    /**
+     * The row kind one recorded protocol leg is written under.  A leg is a
+     * SEND or a RECEIVE and nothing else -- {@link #recordExchange} refuses
+     * every other direction by name before an event exists -- so a third
+     * spelling here would be a row kind no parse branch reads.
+     */
     static String protocolEventKind(String direction) {
         if ("SEND".equals(direction)) return "EXCHANGE_SEND";
         if ("RECEIVE".equals(direction)) return "EXCHANGE_RECEIVE";
-        return PROTOCOL_NOTE_EVENT;
+        throw new IllegalStateException("EXCHANGE_DIRECTION_UNSTATED: "
+                + "a protocol leg states SEND or RECEIVE, not "
+                + direction);
     }
 
     private static void writeProtocolTraceLine(
@@ -2159,11 +2195,6 @@ public final class CausynthTraceRecorder {
         writeTraceRow(
                 "schemaVersion", 3,
                 "event", kind,
-                // The stated direction of a non-boundary row, kept as the
-                // application named it: a handoff gap and a lifecycle note
-                // are two different notes and must not merge into one kind.
-                "noteKind", PROTOCOL_NOTE_EVENT.equals(kind)
-                        ? event.direction : null,
                 "seq", event.seq,
                 "transport", event.transport,
                 "correlationId", event.correlationId,

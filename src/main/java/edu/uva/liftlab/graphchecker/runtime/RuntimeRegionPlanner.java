@@ -3294,33 +3294,6 @@ final class RuntimeRegionPlanner {
         }
     }
 
-    /** Exact identity observation for one reference-array element access. */
-    static final class ArrayAccessEvent {
-        final long seq;
-        final String kind;
-        final String method;
-        final long callId;
-        final int unitIndex;
-        final String siteId;
-        final int arrayObjectId;
-        final int index;
-        final int elementObjectId;
-        ArrayAccessEvent(long seq, String kind, String method, long callId,
-                         int unitIndex, String siteId, int arrayObjectId,
-                         int index, int elementObjectId) {
-            this.seq = seq;
-            this.kind = safe(kind);
-            this.method = safe(method);
-            this.callId = callId;
-            this.unitIndex = unitIndex;
-            this.siteId = unitIndex >= 0 && !this.method.isEmpty()
-                    ? SiteId.of(this.method, unitIndex) : safe(siteId);
-            this.arrayObjectId = arrayObjectId;
-            this.index = index;
-            this.elementObjectId = elementObjectId;
-        }
-    }
-
     /** Open-addressed long->long map with an ambiguity sentinel. */
     private static final class LongLongMap {
         private static final long AMBIGUOUS = Long.MIN_VALUE;
