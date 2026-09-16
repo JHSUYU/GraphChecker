@@ -20,20 +20,17 @@ import java.util.Objects;
  * inside this session: two rows with the same key ran in program order, which
  * is the same-thread half of happens-before (sec 7.1).</p>
  *
- * <p>{@code startedBy} is the other half, and ONLY that: the intra-node
- * thread-creation edge -- the {@code Thread.start} or executor-submission
- * {@link Endpoint} whose frame this activation's thread inherited.  It is null
- * for a thread that already existed (a handler pool takes work off a queue; no
- * event in this recording started it) and null for an activation a message
- * started.  Message causality is the occurrence's
- * {@link CausalContext.Anchor} and stays there.</p>
- *
- * <p>The two are different happens-before relations -- thread start against
- * message receive -- and both may hold of one activation without disagreeing:
- * a thread started here can go on to receive a message, and an ancestor walk
- * ({@code Arms.ancestor}) follows both.  Reading {@code startedBy} as "who
- * caused this work" would collapse them and lose the message edge on every
- * pooled handler, which has no starter at all.</p>
+ * <p>The OTHER half of happens-before -- the intra-node thread-creation
+ * edge, a {@code startedBy} {@link Endpoint} whose frame the activation's
+ * thread inherited -- is NOT a member of this row.  It was, and no runtime
+ * ever published one: every producer passed a literal null, so the walks in
+ * {@code smt.Arms} that followed it could only ever return "unordered", and
+ * a member the recording never states is a relation the engine does not
+ * have.  What the rows do carry is {@code threadKey} (same-thread program
+ * order) and the occurrence's {@link CausalContext.Anchor} (message
+ * causality); an occurrence a message did not start and a thread key does
+ * not place is CONCURRENT with everything, which is the honest answer.
+ * When the thread-start edge comes back it comes back with a producer.</p>
  */
 public final class ActivationRow {
     private final String sessionId;
@@ -42,28 +39,26 @@ public final class ActivationRow {
     private final boolean focused;
     private final boolean instrumented;
     private final String threadKey;
-    private final Endpoint startedBy;
 
     private ActivationRow(String sessionId, OccurrenceAddress occurrence,
                           String taskId, boolean focused, boolean instrumented,
-                          String threadKey, Endpoint startedBy) {
+                          String threadKey) {
         this.sessionId = sessionId;
         this.occurrence = occurrence;
         this.taskId = taskId;
         this.focused = focused;
         this.instrumented = instrumented;
         this.threadKey = threadKey;
-        this.startedBy = startedBy;
     }
 
     public static ActivationRow of(String sessionId,
                                    OccurrenceAddress occurrence, String taskId,
                                    boolean focused, boolean instrumented,
-                                   String threadKey, Endpoint startedBy) {
+                                   String threadKey) {
         return new ActivationRow(Fields.text(sessionId, "sessionId"),
                 Fields.required(occurrence, "occurrence"),
                 Fields.stated(taskId, "taskId"), focused, instrumented,
-                Fields.text(threadKey, "threadKey"), startedBy);
+                Fields.text(threadKey, "threadKey"));
     }
 
     public String sessionId() {
@@ -92,11 +87,6 @@ public final class ActivationRow {
         return threadKey;
     }
 
-    /** The endpoint that started this thread, or {@code null}. */
-    public Endpoint startedBy() {
-        return startedBy;
-    }
-
     @Override
     public boolean equals(Object value) {
         if (this == value) return true;
@@ -107,14 +97,13 @@ public final class ActivationRow {
                 && sessionId.equals(other.sessionId)
                 && occurrence.equals(other.occurrence)
                 && taskId.equals(other.taskId)
-                && threadKey.equals(other.threadKey)
-                && Objects.equals(startedBy, other.startedBy);
+                && threadKey.equals(other.threadKey);
     }
 
     @Override
     public int hashCode() {
         return Objects.hash(sessionId, occurrence, taskId, focused,
-                instrumented, threadKey, startedBy);
+                instrumented, threadKey);
     }
 
     @Override

@@ -1741,7 +1741,7 @@ public class ExploreTest {
                                 boolean instrumented) {
             activations.add(ActivationRow.of(sessionId, occurrence,
                     "task-" + occurrence.regionId(), focused, instrumented,
-                    "fixture#" + occurrence.node().node(), null));
+                    "fixture#" + occurrence.node().node()));
         }
 
         private void decision(OccurrenceAddress occurrence, String site,

@@ -175,7 +175,7 @@ public final class RowRuntime {
         if (session != null) {
             session.activation(ActivationRow.of(sessionId(), address,
                     Text.safe(taskId), FocusedReplay.focused(taskId,
-                            address), true, threadKey(), null));
+                            address), true, threadKey()));
             if (address.lineageLost()) {
                 session.gap(GapRow.of(sessionId(), GapKind.LINEAGE_LOST,
                         GapClass.DIAGNOSTIC, address.render(),
@@ -203,7 +203,7 @@ public final class RowRuntime {
         // A lightweight entry hook published this one: the region is not in
         // the instrumented set, so it has no decisions to find.
         session.activation(ActivationRow.of(sessionId(), address, "", false,
-                false, threadKey(), null));
+                false, threadKey()));
     }
 
     private static final Map<String, Boolean> AMBIENT =

@@ -188,19 +188,14 @@ public final class RowCodec {
         json.addProperty("focused", row.focused());
         json.addProperty("instrumented", row.instrumented());
         json.addProperty("threadKey", row.threadKey());
-        if (row.startedBy() != null) {
-            json.add("startedBy", writeEndpoint(row.startedBy()));
-        }
         return json;
     }
 
     public static ActivationRow readActivation(JsonObject json) {
-        JsonObject startedBy = optionalObject(json, "startedBy");
         return ActivationRow.of(string(json, SESSION_ID),
                 readOccurrence(object(json, OCCURRENCE)),
                 string(json, "taskId"), bool(json, "focused"),
-                bool(json, "instrumented"), string(json, "threadKey"),
-                startedBy == null ? null : readEndpoint(startedBy));
+                bool(json, "instrumented"), string(json, "threadKey"));
     }
 
     public static JsonObject writeDecision(DecisionRow row) {
