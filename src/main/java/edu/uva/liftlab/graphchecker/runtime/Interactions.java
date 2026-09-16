@@ -122,18 +122,44 @@ public final class Interactions {
      */
     public static synchronized void sent(String transport,
                                          String correlationId, String half,
-                                         String producerEndpointId) {
+                                         Endpoint producer) {
         String key = message(transport, correlationId, half);
-        if (key.isEmpty() || Text.safe(producerEndpointId).isEmpty()) return;
-        MESSAGES.put(key, Text.safe(producerEndpointId));
+        if (key.isEmpty() || producer == null) return;
+        MESSAGES.put(key, producer);
     }
 
     /** The endpoint that sent this message, or {@code ""}. */
     public static synchronized String sender(String transport,
                                              String correlationId,
                                              String half) {
-        String id = MESSAGES.get(message(transport, correlationId, half));
-        return id == null ? "" : id;
+        Endpoint producer = MESSAGES.get(
+                message(transport, correlationId, half));
+        return producer == null ? "" : producer.id();
+    }
+
+    /**
+     * The components behind one producer endpoint id, as this run minted
+     * them, or {@code ""}.
+     *
+     * <p>An anchor travels as a digest, so a refusal naming two of them
+     * names nothing a reader can act on: on hdfs-17960 the endpoints behind
+     * {@code Anchor:81d0aa0dbdd84d73} and {@code Anchor:5cd4981c9a67d41e}
+     * agreed on their occurrence, their transport site and their attempt
+     * and differed in one number, and finding that out took a brute-force
+     * search over candidate components.  What comes back here is the filed
+     * {@link Endpoint} itself -- the very object {@link
+     * Identity#endpointAt} built from its four inputs -- so the components
+     * are stated rather than computed a second time.</p>
+     */
+    public static synchronized String components(String endpointId) {
+        String id = Text.safe(endpointId);
+        if (id.isEmpty()) return "";
+        // Over the filed endpoints rather than a second index of them: one
+        // store of producers, read on the path that prints a refusal.
+        for (Endpoint producer : MESSAGES.values()) {
+            if (id.equals(producer.id())) return producer.render();
+        }
+        return "";
     }
 
     private static String message(String transport, String correlationId,
@@ -144,11 +170,11 @@ public final class Interactions {
                 + Text.safe(half);
     }
 
-    private static final Map<String, String> MESSAGES =
-            new LinkedHashMap<String, String>(64, 0.75f, false) {
+    private static final Map<String, Endpoint> MESSAGES =
+            new LinkedHashMap<String, Endpoint>(64, 0.75f, false) {
                 @Override
                 protected boolean removeEldestEntry(
-                        Map.Entry<String, String> eldest) {
+                        Map.Entry<String, Endpoint> eldest) {
                     return size() > LIMIT;
                 }
             };

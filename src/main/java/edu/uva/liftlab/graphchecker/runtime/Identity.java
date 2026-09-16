@@ -606,16 +606,22 @@ public final class Identity {
      * Files the producer endpoint of one whole message, for the anchor its
      * receiver states (IDENTITY-IMPL §C).
      *
-     * @return the endpoint id filed, or {@code ""}
+     * <p>The endpoint itself comes back, not its digest: the caller states
+     * the four components this mint was given -- which occurrence sent the
+     * message, at which transport site, the k-th event of that occurrence
+     * there, and the attempt -- so the trace row and a refusal spell out
+     * what the anchor is a digest OF.</p>
+     *
+     * @return the endpoint filed, or {@code null}
      */
-    public static String messageSent(String nodeKey, String transport,
-                                     String correlationId, String half) {
+    public static Endpoint messageSent(String nodeKey, String transport,
+                                       String correlationId, String half) {
         Endpoint producer = endpoint(nodeKey,
                 Text.safe(transport) + "#" + Text.safe(half), 0);
-        if (producer == null) return "";
+        if (producer == null) return null;
         Interactions.sent(Text.safe(transport), Text.safe(correlationId),
-                Text.safe(half), producer.id());
-        return producer.id();
+                Text.safe(half), producer);
+        return producer;
     }
 
     /**

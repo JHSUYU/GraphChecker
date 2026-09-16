@@ -9,6 +9,7 @@ import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
 import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
+import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
 import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
@@ -1440,14 +1441,38 @@ final class ConcolicTaskPlan {
          * component that differed because it had four; a v3 address is a
          * node, a region, a causal context and an execution index, and the
          * useful thing to put in a refusal is which two it is comparing.</p>
+         *
+         * <p>And, when the two differ in their causal anchor, the
+         * COMPONENTS behind each anchor digest: which occurrence sent the
+         * message, at which transport site, the k-th event of that
+         * occurrence there, and the attempt -- the four inputs the one mint
+         * was given, read back from the producer it filed ({@link
+         * Interactions#components}).  Two digests that differ say only
+         * that; on hdfs-17960 they agreed on everything but one number and
+         * the row did not say so.  An anchor this run never minted is
+         * stated as that, which is itself the finding.</p>
          */
         String addressDifference(OccurrenceAddress observed) {
             if (address == null) return "the task plans no occurrence";
             if (observed == null) {
                 return "the activation ran where this run cannot name it";
             }
-            return "planned " + address.render() + ", ran at "
-                    + observed.render();
+            return "planned " + address.render() + anchorComponents(address)
+                    + ", ran at " + observed.render()
+                    + anchorComponents(observed);
+        }
+
+        /** The producer endpoint one address's anchor is a digest of. */
+        private static String anchorComponents(OccurrenceAddress address) {
+            if (!(address.context() instanceof CausalContext.Anchor)) {
+                return "";
+            }
+            String producer = ((CausalContext.Anchor) address.context())
+                    .producerEndpointId();
+            String components = Interactions.components(producer);
+            return " [anchor " + producer + " = "
+                    + (components.isEmpty()
+                    ? "no message of this run minted it" : components) + "]";
         }
 
 

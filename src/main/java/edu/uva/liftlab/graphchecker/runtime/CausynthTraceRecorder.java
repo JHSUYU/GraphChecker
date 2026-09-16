@@ -6,6 +6,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
+import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
@@ -632,16 +633,22 @@ public final class CausynthTraceRecorder {
             // published by SessionPublisher (M2).
             return "";
         }
-        recordExchange("SEND", transport, correlationId, attemptId, half,
-                localOwner, carriedScope);
         // IDENTITY-V3 §C: the message carries its producer's endpoint, so
         // the receiver can state the anchor it ran under.  Filed by
         // correlation because the endpoint is bigger than the header slot
         // this transport has; the pairing itself is the run's own fact.
         // One computation, called from the one place both passes reach it:
         // the recording files the same producer endpoint a replay does.
-        Identity.messageSent(RuntimeTraceContext.activationSource(localOwner)
-                .key(), transport, correlationId, half);
+        Endpoint producer = Identity.messageSent(
+                RuntimeTraceContext.activationSource(localOwner).key(),
+                transport, correlationId, half);
+        // The row states that endpoint's components and not only the digest
+        // the anchor travels as, because they are what a planned-vs-ran
+        // anchor has to be compared on.  Stated by the mint above: the
+        // trace carries the endpoint Identity built, never a second reading
+        // of the four inputs.
+        recordExchange("SEND", transport, correlationId, attemptId, half,
+                localOwner, carriedScope, producer);
         return header;
     }
 
@@ -654,8 +661,10 @@ public final class CausynthTraceRecorder {
         long token = RuntimeTraceContext.enterInbound(header, transport,
                 correlationId, attemptId, half, localOwner);
         try {
+            // No producer: a delivery states the endpoint it was SENT from
+            // through the message, and the receiving leg mints none.
             recordExchange("RECEIVE", transport, correlationId, attemptId,
-                    half, localOwner);
+                    half, localOwner, null, null);
             return token;
         } catch (RuntimeException | Error failure) {
             RuntimeTraceContext.exitInbound(token);
@@ -667,19 +676,15 @@ public final class CausynthTraceRecorder {
         RuntimeTraceContext.exitInbound(scopeToken);
     }
 
-    /** Records one transport-neutral message boundary. */
-    public static void recordExchange(String direction, String transport,
-                                      String correlationId, String attemptId,
-                                      String half, Object localOwner) {
-        recordExchange(direction, transport, correlationId, attemptId, half,
-                localOwner, null);
-    }
-
-    /** The same boundary, attributed to the scope the work carries. */
+    /**
+     * Records one transport-neutral message boundary, attributed to the
+     * scope the work carries, stating the producer endpoint a SEND minted.
+     */
     public static void recordExchange(String direction, String transport,
                                       String correlationId, String attemptId,
                                       String half, Object localOwner,
-                                      Object carriedScope) {
+                                      Object carriedScope,
+                                      Endpoint producer) {
         String normalizedDirection = MapFields.safe(direction).toUpperCase();
         String normalizedTransport = MapFields.safe(transport).trim();
         String normalizedCorrelation = MapFields.safe(correlationId).trim();
@@ -716,7 +721,9 @@ public final class CausynthTraceRecorder {
                         context.laneId, context.spanId,
                         context.parentSpanId, context.remoteParentSpanId,
                         context.source, context.requestKey,
-                        context.requestApi);
+                        context.requestApi,
+                        producer == null ? "" : producer.id(),
+                        producer == null ? "" : producer.render());
         synchronized (LOCK) {
             writeProtocolTraceLine(event);
         }
@@ -1919,7 +1926,9 @@ public final class CausynthTraceRecorder {
                     row.longValue("parentSpanId", 0L),
                     row.longValue("remoteParentSpanId", 0L),
                     sourceRef(row), row.stringValue("requestKey"),
-                    row.stringValue("requestApi")));
+                    row.stringValue("requestApi"),
+                    row.stringValue("producerEndpointId"),
+                    row.stringValue("producerEndpoint")));
         } else if (LINEAGE_GAP_EVENT.equals(eventKind)) {
             Map<String, Object> gap = new LinkedHashMap<>();
             gap.put("schemaVersion", 1);
@@ -2084,7 +2093,15 @@ public final class CausynthTraceRecorder {
                 "sourceEpoch", sourceEpoch(event.source),
                 "sourceKey", sourceKey(event.source),
                 "requestKey", event.requestKey,
-                "requestApi", event.requestApi);
+                "requestApi", event.requestApi,
+                // The endpoint this leg's sender minted, digest and
+                // components both: an anchor downstream is the digest, and
+                // the components are what tells two of them apart.  Absent
+                // on a delivery, which mints none.
+                "producerEndpointId", event.producerEndpointId.isEmpty()
+                        ? null : event.producerEndpointId,
+                "producerEndpoint", event.producerEndpoint.isEmpty()
+                        ? null : event.producerEndpoint);
     }
 
     private static void writeSourceTraceLine(String event, SourceRef source,
