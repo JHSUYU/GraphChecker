@@ -573,14 +573,12 @@ public final class Identity {
      * calling context, so its site counts were run-length ordinals over the
      * process.</p>
      *
-     * <p>The frame's iteration is the k-th entry of THIS site inside the
-     * occurrence that ENCLOSES it, counted in the level of the enclosing
-     * frame: a method entry is an event of the enclosing occurrence,
-     * counted by the one counter every other event of an occurrence is
-     * counted by ({@link State#nextSiteEvent}).  A loop body re-entering
-     * the same call site is that site at iteration 1, 2, 3 -- which is what
-     * the innermost enclosing loop's iteration count means -- and one rule
-     * computes it in the recording and in the replay alike.</p>
+     * <p>The frame's iteration is the k-th entry of THIS site in the level
+     * that encloses it, for one activation of that level ({@link
+     * State#nextCall}).  A loop body re-entering the same call site is that
+     * site at iteration 1, 2, 3 -- which is what the innermost enclosing
+     * loop's iteration count means -- and one rule computes it in the
+     * recording and in the replay alike.</p>
      *
      * <p>No node: a level is a point of the component's control structure
      * and the node is a property of the OCCURRENCE an event belongs to,
