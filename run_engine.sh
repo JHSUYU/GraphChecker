@@ -524,6 +524,17 @@ do_analyze() {
       "-Dcausynth.communication.mappings=${causynth_communication_mappings}"
     )
   fi
+  # Roots are manual, so the case's declaration is an input to P1 and not
+  # only to PLAN: the static slice holds every declared method, the skeleton
+  # weave roots a region at it, and both passes weave it. Named on the same
+  # condition do_schedule passes --symbolic-inputs, so the two stages cannot
+  # be planned against different declarations.
+  if [[ -n "${causynth_symbolic_inputs}" ]]; then
+    require_file "symbolic input selection" "${causynth_symbolic_inputs}"
+    system_properties+=(
+      "-Dcausynth.symbolic.inputs=${causynth_symbolic_inputs}"
+    )
+  fi
   # README section 5's per-loop K_L, declared by the campaign that owns the
   # workload. The declarations are read by the static pass that retains the
   # loops, so they are named here rather than inherited from whatever

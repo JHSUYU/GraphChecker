@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.causynth;
 import edu.uva.liftlab.graphchecker.annotation.Debug;
 
 import edu.uva.liftlab.graphchecker.smt.JavaContainerTypes;
+import edu.uva.liftlab.graphchecker.plan.DeclaredSymbolicInputs;
 import edu.uva.liftlab.graphchecker.plan.DependencyRole;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
@@ -279,6 +280,7 @@ final class SeedBackwardStaticAnalyzer {
         initializeExceptionSeedAnchors();
         seedDeclaredWireFlows();
         seedExplicitFaultEntries();
+        seedDeclaredSymbolicInputMethods();
         runWorklist();
         if (discoveredExceptionSeedCount != 1) {
             throw new IllegalStateException("Annotated exception target did "
@@ -528,6 +530,36 @@ final class SeedBackwardStaticAnalyzer {
                 }
                 selectedMethods.add(method);
             }
+        }
+    }
+
+    /**
+     * Puts every method the case declares symbolic into the static slice.
+     *
+     * <p>Roots are manual, so a declared method belongs to the slice by
+     * declaration and not because the backward walk from the annotated
+     * exception happened to demand one of its values.  The two differ
+     * exactly where the case is about an arm the healthy recording did not
+     * take: hdfs-11741's {@code removeExpiredKeys} reads the clock, decides
+     * an expiry and removes nothing in a healthy run, so it exports no value
+     * for any backward walk to arrive on.  Seeded here beside the wire flows
+     * and the fault markers, which are declarations in the same sense.</p>
+     *
+     * <p>A declaration Soot cannot resolve to a concrete body is refused by
+     * name: the case names a site the analysed program does not have, and
+     * planning on would drop the root silently.</p>
+     */
+    private void seedDeclaredSymbolicInputMethods() {
+        for (String signature : DeclaredSymbolicInputs.configured()) {
+            SootMethod method = concreteMethod(signature);
+            if (method == null || !ensureLoaded(method)) {
+                throw new IllegalStateException(
+                        "DECLARED_INPUT_UNRESOLVED: the case declares a "
+                                + "symbolic input in a method the analysed "
+                                + "program has no concrete body for: "
+                                + signature);
+            }
+            selectedMethods.add(signature);
         }
     }
 

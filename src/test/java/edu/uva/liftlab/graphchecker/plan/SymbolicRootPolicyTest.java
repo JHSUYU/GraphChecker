@@ -4,6 +4,8 @@ package edu.uva.liftlab.graphchecker.plan;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
+import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -14,7 +16,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -42,6 +46,10 @@ public class SymbolicRootPolicyTest {
     private static final String CLASS = "org.apache.hadoop.hdfs.security"
             + ".token.block.BlockTokenSecretManager";
     private static final String UPDATE_KEYS = "boolean updateKeys()";
+    /** hdfs-11741's declared site, planned as a region of its own. */
+    private static final String EXPIRE = "REGION.expire";
+    private static final String REMOVE_EXPIRED =
+            "<" + CLASS + ": void removeExpiredKeys()>";
     private static final String ROOT = InputActionCatalog
             .DECLARED_SYMBOLIC_ROOT;
 
@@ -244,18 +252,73 @@ public class SymbolicRootPolicyTest {
                         + "\"node\":\"dn0\",\"epoch\":\"0\"",
                 Arrays.asList(DN), Arrays.asList(NN, NN_TWIN));
 
-        // A site no planned region covers is refused by name: the campaign
-        // asked for a root the plan cannot carry, and running on would drop it.
+        // A declared method is a region ROOT by declaration, and the region
+        // it roots opens on whatever anchor the recording selected -- on
+        // hdfs-11741, removeExpiredKeys is held by the updateKeys region and
+        // its own region's plan row names that enclosing method.  The
+        // declaration still means the region it roots, so the anchor column
+        // alone does not decide this.
+        declaresAt("\"class\":\"" + CLASS
+                        + "\",\"method\":\"void removeExpiredKeys()\"",
+                Arrays.asList(EXPIRE), Arrays.asList(NN, NN_TWIN, DN));
+
+        // A site the plan carries no region for is refused by name.  Under
+        // the rule it can mean only one thing: this plan was built without
+        // the declaration, because a declared root the recording never
+        // entered is refused at aggregation instead (below).  The refusal
+        // names the declared roots the plan did honour, which is what tells
+        // the reader to re-plan rather than to edit the case.
         try {
             read("{\"class\":\"" + CLASS + "\",\"method\":\"long absent()\","
                     + "\"cells\":[\"" + CLOCK_CELL + "\"]}");
             fail("a site outside every planned region was admitted");
         } catch (IOException refused) {
             assertTrue(refused.getMessage(), refused.getMessage()
-                    .contains("no planned region covers"));
+                    .contains("DECLARED_INPUT_NOT_PLANNED"));
             assertTrue(refused.getMessage(), refused.getMessage()
                     .contains("long absent()"));
+            assertTrue(refused.getMessage(), refused.getMessage()
+                    .contains(REMOVE_EXPIRED));
         }
+
+        // And the other failure mode, where the count is a fact: PLAN plans
+        // the declared root whether or not the recording entered it, and the
+        // aggregation refuses it by name with the activation count, so the
+        // case author reads "your workload never reached this site" rather
+        // than "the engine dropped your root".
+        List<StaticProgram.RegionRow> declared = StaticProgram.regionRows(
+                Collections.singletonList(declaredRootSkeleton()),
+                "REGION_SKELETON", "test");
+        try {
+            RuntimeSelectedRegionFinalizer.refuseUnactivatedDeclaredInputs(
+                    declared, Collections.<Map<String, Object>>emptyList());
+            fail("a declared root the recording never entered was planned");
+        } catch (IOException refused) {
+            assertTrue(refused.getMessage(), refused.getMessage()
+                    .contains("DECLARED_INPUT_NEVER_ACTIVATED"));
+            assertTrue(refused.getMessage(), refused.getMessage()
+                    .contains(REMOVE_EXPIRED));
+            assertTrue(refused.getMessage(), refused.getMessage()
+                    .contains("0 times"));
+        }
+        Map<String, Object> activation = new LinkedHashMap<String, Object>();
+        activation.put("regionId", EXPIRE);
+        RuntimeSelectedRegionFinalizer.refuseUnactivatedDeclaredInputs(
+                declared, Collections.singletonList(activation));
+    }
+
+    /** The skeleton PLAN publishes for hdfs-11741's declared clock site. */
+    private static Map<String, Object> declaredRootSkeleton() {
+        Map<String, Object> row = new LinkedHashMap<String, Object>();
+        row.put("schemaVersion", 3);
+        row.put("kind", "REGION_SKELETON");
+        row.put("regionId", EXPIRE);
+        row.put("rootMethod", REMOVE_EXPIRED);
+        row.put("rootAuthority", DeclaredSymbolicInputs.AUTHORITY);
+        row.put("anchorMethod", REMOVE_EXPIRED);
+        row.put("methods", Collections.singletonList(REMOVE_EXPIRED));
+        row.put(DeclaredSymbolicInputs.ROOT_FIELD, true);
+        return row;
     }
 
     /** One site declaration, and the regions it must and must not reach. */
@@ -282,7 +345,11 @@ public class SymbolicRootPolicyTest {
         return ConcolicScheduler.SymbolicInputSelection.read(path,
                 Arrays.asList(json("{\"regionId\":\"" + NN + "\"}"),
                         json("{\"regionId\":\"" + NN_TWIN + "\"}"),
-                        json("{\"regionId\":\"" + DN + "\"}")), plans());
+                        json("{\"regionId\":\"" + DN + "\"}"),
+                        json("{\"regionId\":\"" + EXPIRE
+                                + "\",\"rootMethod\":\"" + REMOVE_EXPIRED
+                                + "\",\"" + DeclaredSymbolicInputs.ROOT_FIELD
+                                + "\":true}")), plans());
     }
 
     /** Two nn0 regions of one method, and one dn0 region of another. */
@@ -290,7 +357,10 @@ public class SymbolicRootPolicyTest {
         String updateKeys = "<" + CLASS + ": " + UPDATE_KEYS + ">";
         return Arrays.asList(plan(NN, updateKeys, "wl/nn0#epoch0", 1),
                 plan(NN_TWIN, updateKeys, "wl/nn0#epoch0", 2),
-                plan(DN, "<" + CLASS + ": void addKeys()>", "wl/dn0#epoch0", 1));
+                plan(DN, "<" + CLASS + ": void addKeys()>", "wl/dn0#epoch0", 1),
+                // the declared root's own region, anchored on the enclosing
+                // method the recording selected
+                plan(EXPIRE, updateKeys, "wl/nn0#epoch0", 3));
     }
 
     private static RegionInstancePlan plan(String regionId, String method,

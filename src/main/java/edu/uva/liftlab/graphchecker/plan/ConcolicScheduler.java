@@ -1269,10 +1269,27 @@ public final class ConcolicScheduler {
                 throws IOException {
             Map<String, Map<String, String>> minted = new LinkedHashMap<>();
             Set<String> catalogRegions = new LinkedHashSet<>();
+            // The declaration this plan was built under, published on the
+            // region rows by the finalizer that honoured it: declared
+            // method -> the regions it roots.  It is both halves of the
+            // rule.  It resolves the declaration the way the rule states
+            // it -- a declared method is a region root -- and a declared
+            // method missing from it says the plan never saw the
+            // declaration, which is a different fault from a site the
+            // recording never entered, and nothing else can tell the two
+            // apart.
+            Map<String, Set<String>> declaredRootRegions =
+                    new LinkedHashMap<>();
             for (JsonObject region : regionCatalog == null
                     ? Collections.<JsonObject>emptyList() : regionCatalog) {
                 String regionId = optionalString(region, "regionId");
                 if (!regionId.isEmpty()) catalogRegions.add(regionId);
+                if (!regionId.isEmpty() && optionalBool(region,
+                        DeclaredSymbolicInputs.ROOT_FIELD, false)) {
+                    declaredRootRegions.computeIfAbsent(
+                            optionalString(region, "rootMethod"),
+                            ignored -> new LinkedHashSet<>()).add(regionId);
+                }
                 for (JsonElement element : array(region,
                         StaticSymbolicSourceDeclaration.FIELD)) {
                     if (!element.isJsonObject() || regionId.isEmpty()) {
@@ -1297,7 +1314,7 @@ public final class ConcolicScheduler {
                 boolean clock = optionalBool(
                         row, InputActionCatalog.DECLARED_WALL_CLOCK, false);
                 for (String regionId : declaredRegions(row, catalogRegions,
-                        regionPlans)) {
+                        regionPlans, declaredRootRegions)) {
                     Set<String> names = admitted.computeIfAbsent(regionId,
                             ignored -> new LinkedHashSet<>());
                     Set<String> clockNames = clock
@@ -1329,17 +1346,27 @@ public final class ConcolicScheduler {
          * it is resolved here, against the plan that names each region's
          * {@code targetMethod}.</p>
          *
-         * <p>A site that matches no planned region is a hard error naming the
-         * site: the campaign asked for a root the plan cannot carry, and
-         * running on without it would silently drop the root.  A site that
-         * matches several regions declares the root in each of them -- the
-         * same Java method planned on two nodes is two regions and the
-         * declaration means both -- unless it scopes itself to a node or an
-         * epoch.  The region-id form is still read.</p>
+         * <p>Resolution is the rule of {@link DeclaredSymbolicInputs}: a
+         * declared method is a region root by declaration, so it names every
+         * planned region it roots, and -- since a region opens on the anchor
+         * the recording selected, which need not be the root -- every region
+         * it anchors as well.  A site that matches several regions declares
+         * the root in each of them: the same Java method planned on two
+         * nodes is two regions and the declaration means both, unless it
+         * scopes itself to a node or an epoch.  The region-id form is still
+         * read.</p>
+         *
+         * <p>A site that matches nothing is a hard error naming the site.
+         * Under the rule it can mean only one thing -- this plan was built
+         * without the declaration -- because a declared root the recording
+         * never entered is refused at aggregation, by name and with its
+         * activation count.</p>
          */
         private static List<String> declaredRegions(
                 JsonObject row, Set<String> catalogRegions,
-                List<RegionInstancePlan> regionPlans) throws IOException {
+                List<RegionInstancePlan> regionPlans,
+                Map<String, Set<String>> declaredRootRegions)
+                throws IOException {
             String regionId = firstNonBlank(optionalString(row, "regionId"));
             if (!regionId.isEmpty()) {
                 if (!catalogRegions.contains(regionId)) {
@@ -1348,7 +1375,7 @@ public final class ConcolicScheduler {
                 }
                 return Collections.singletonList(regionId);
             }
-            String method = declaredMethod(row);
+            String method = DeclaredSymbolicInputs.declaredMethod(row);
             if (method.isEmpty()) {
                 throw new IOException("symbolic input selection row declares "
                         + "neither a regionId nor a static site "
@@ -1358,11 +1385,21 @@ public final class ConcolicScheduler {
             String epoch = firstNonBlank(optionalString(row, "epoch"));
             List<String> resolved = new ArrayList<>();
             Set<String> seen = new LinkedHashSet<>();
+            // The regions this method roots by declaration, plus the ones
+            // it anchors.  Both are the same site seen from two sides: the
+            // declaration names a method, the plan names each region's
+            // anchor, and a declared root whose region opens on some other
+            // anchor is still the region the declaration meant.
+            Set<String> rooted = declaredRootRegions == null
+                    ? Collections.<String>emptySet()
+                    : declaredRootRegions.getOrDefault(method,
+                    Collections.<String>emptySet());
             for (RegionInstancePlan plan : regionPlans == null
                     ? Collections.<RegionInstancePlan>emptyList()
                     : regionPlans) {
-                if (!method.equals(optionalString(plan.json(),
-                        "targetMethod"))
+                boolean names = method.equals(optionalString(plan.json(),
+                        "targetMethod")) || rooted.contains(plan.regionId());
+                if (!names
                         || !scopeAdmits(plan.sourceKey(), node, epoch)
                         || !catalogRegions.contains(plan.regionId())) {
                     continue;
@@ -1370,37 +1407,26 @@ public final class ConcolicScheduler {
                 if (seen.add(plan.regionId())) resolved.add(plan.regionId());
             }
             if (resolved.isEmpty()) {
-                throw new IOException("symbolic input selection names a "
-                        + "static site no planned region covers: " + method
-                        + (node.isEmpty() ? "" : " on node " + node)
-                        + (epoch.isEmpty() ? "" : " at epoch " + epoch));
+                // A declared method is a region root by declaration, and the
+                // finalizer publishes one region row per honoured
+                // declaration and refuses DECLARED_INPUT_NEVER_ACTIVATED for
+                // a declared root the recording never entered.  So an empty
+                // resolution here is not "the site is not causal": it is a
+                // plan that was built without this declaration -- a stale
+                // plan, or a PLAN stage the case file never reached -- and
+                // saying so is the only way the reader knows to re-plan
+                // rather than to edit the case.
+                String scope = (node.isEmpty() ? "" : " on node " + node)
+                        + (epoch.isEmpty() ? "" : " at epoch " + epoch);
+                throw new IOException("DECLARED_INPUT_NOT_PLANNED: symbolic "
+                        + "input selection names " + method + scope
+                        + ", which this runtime region plan carries no "
+                        + "region for; the plan honoured the declared "
+                        + "roots " + declaredRootRegions.keySet() + ", so "
+                        + "it was planned without this declaration and must "
+                        + "be re-planned with it");
             }
             return resolved;
-        }
-
-        /**
-         * The canonical signature a site declaration names.
-         *
-         * <p>Either spelling is read: the whole Soot signature in
-         * {@code method}, or {@code class} plus the method's own
-         * {@code returnType name(argumentTypes)} half.</p>
-         */
-        static String declaredMethod(JsonObject row) throws IOException {
-            String method = firstNonBlank(optionalString(row, "method"));
-            if (method.isEmpty()) return "";
-            if (method.startsWith("<")) {
-                if (!method.endsWith(">") || !method.contains(": ")) {
-                    throw new IOException("symbolic input selection method "
-                            + "is not a signature: " + method);
-                }
-                return method;
-            }
-            String declaring = firstNonBlank(optionalString(row, "class"));
-            if (declaring.isEmpty()) {
-                throw new IOException("symbolic input selection names a "
-                        + "method with no declaring class: " + method);
-            }
-            return "<" + declaring + ": " + method + ">";
         }
 
         /**

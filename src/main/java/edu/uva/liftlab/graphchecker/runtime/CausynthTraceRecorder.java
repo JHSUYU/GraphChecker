@@ -11,6 +11,7 @@ import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.CanonicalJson;
+import edu.uva.liftlab.graphchecker.plan.DeclaredSymbolicInputs;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.plan.WorkStartSites;
 import java.io.BufferedWriter;
@@ -41,6 +42,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.objectWithoutNulls;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
@@ -1388,6 +1390,16 @@ public final class CausynthTraceRecorder {
      * region's candidate skeleton with the anchor names the run observed.
      * Every other member is the candidate's own, so the two artifacts state
      * one static region and not two.
+     *
+     * <p>A region whose root the case declares symbolic is selected whether
+     * or not pass 1 entered it, keeping its candidate anchors: roots are
+     * manual, so PLAN instruments a declared method in pass 2 by declaration
+     * (see {@code DeclaredSymbolicInputs}), and pass 2's own trace is then
+     * the one authority on whether the site ran -- {@code
+     * RuntimeSelectedRegionFinalizer} refuses {@code
+     * DECLARED_INPUT_NEVER_ACTIVATED} there, with the recorded count.
+     * Dropping it here instead would leave pass 2 blind to the site and turn
+     * a workload that never reached it into an engine that never looked.</p>
      */
     private static void writeSelectedSkeletons(
             File candidates, File output,
@@ -1433,7 +1445,9 @@ public final class CausynthTraceRecorder {
                             .getAsJsonObject();
                     String region = optionalString(row, "regionId");
                     String selectedAnchor = anchorByRegion.get(region);
-                    if (selectedAnchor == null) {
+                    boolean declaredRoot = optionalBool(row,
+                            DeclaredSymbolicInputs.ROOT_FIELD, false);
+                    if (selectedAnchor == null && !declaredRoot) {
                         continue;
                     }
                     String rootMethod = optionalString(row, "rootMethod");
@@ -1445,12 +1459,14 @@ public final class CausynthTraceRecorder {
                         throw new IOException("coalesced static region methods "
                                 + "must contain the runtime root: " + region);
                     }
-                    row.addProperty("anchorMethod", selectedAnchor);
-                    JsonArray selectedAnchors = new JsonArray();
-                    for (String anchor : anchorsByRegion.get(region)) {
-                        selectedAnchors.add(anchor);
+                    if (selectedAnchor != null) {
+                        row.addProperty("anchorMethod", selectedAnchor);
+                        JsonArray selectedAnchors = new JsonArray();
+                        for (String anchor : anchorsByRegion.get(region)) {
+                            selectedAnchors.add(anchor);
+                        }
+                        row.add("anchorMethods", selectedAnchors);
                     }
-                    row.add("anchorMethods", selectedAnchors);
                     writer.write(row.toString());
                     writer.write('\n');
                 }

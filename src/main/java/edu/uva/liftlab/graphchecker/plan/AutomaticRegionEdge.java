@@ -63,13 +63,6 @@ public final class AutomaticRegionEdge {
                         optionalString(edge, "authority")));
     }
 
-    /** Evidence that may select the two recorded interaction summaries. */
-    public static boolean summaryTraversalBinding(JsonObject binding) {
-        return tracedExchangeCandidate(binding)
-                || sharedLocationCandidate(binding)
-                || trustedRequestFaultControl(binding);
-    }
-
     /**
      * A scheduling-only control predecessor.  It deliberately names no value
      * ports: the marker is an independent symbolic input, while the exact
