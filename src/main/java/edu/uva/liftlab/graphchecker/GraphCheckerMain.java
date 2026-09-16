@@ -35,8 +35,6 @@ public class GraphCheckerMain {
     private static final Logger LOG = LoggerFactory.getLogger(GraphCheckerMain.class);
 
     private final GraphCheckerOptions options;
-    private final Set<String> explicitApplicationClasses =
-            new LinkedHashSet<>();
     private final List<String> productionProcessDirs = new ArrayList<>();
     private final Set<String> testClassOutputDirs = new LinkedHashSet<>();
     private boolean concolicInstrumentation;
@@ -125,15 +123,7 @@ public class GraphCheckerMain {
         Options.v().set_whole_program(true);
         concolicInstrumentation = ConcolicInstrumentationSelections
                 .instrumentationRequested();
-        if (concolicInstrumentation) {
-            explicitApplicationClasses.addAll(
-                    ConcolicInstrumentationSelections
-                            .applicationClassesFromEnvironment());
-            LOG.info("Concolic instrumentation limits Soot application "
-                            + "classes to {} task-plan owner(s); {} full "
-                            + "project root(s) remain on the classpath",
-                    explicitApplicationClasses.size(), processDirs.size());
-        } else if (!configuredTestDirs.isEmpty()) {
+        if (!configuredTestDirs.isEmpty()) {
             LOG.info("Static discovery keeps {} test output(s) on the "
                             + "classpath but excludes every test class "
                             + "from application scope; {} production "
@@ -141,8 +131,19 @@ public class GraphCheckerMain {
                     configuredTestDirs.size(),
                     productionProcessDirs.size());
         }
-        Options.v().set_process_dir(concolicInstrumentation
-                ? new ArrayList<>() : productionProcessDirs);
+        // ONE application scope, whatever this run is for: the case's own
+        // process dirs.  The concolic pass used to narrow it to the owners of
+        // the campaign envelope, which silently dropped every woven body
+        // outside them -- PackManager writes application classes and nothing
+        // else -- so a work start (G9) or a skeleton region entry in an
+        // unselected class was woven in the recording and absent from the
+        // replay's class tree, and every index below it drifted.  The scope
+        // is the same in both passes or the two passes are not comparable.
+        Options.v().set_process_dir(productionProcessDirs);
+        LOG.info("Soot application scope is the case's {} production "
+                        + "root(s){}", productionProcessDirs.size(),
+                concolicInstrumentation
+                        ? ", campaign instrumentation included" : "");
         if (options.getOutputDir() != null) {
             Options.v().set_output_dir(options.getOutputDir());
         }
@@ -159,10 +160,6 @@ public class GraphCheckerMain {
     }
 
     private void loadClasses() {
-        for (String className : explicitApplicationClasses) {
-            Options.v().classes().add(className);
-        }
-
         Class<?>[] basicClasses = {PrintStream.class, System.class, Thread.class, Throwable.class};
         for (Class<?> cls : basicClasses) {
             Scene.v().addBasicClass(cls.getCanonicalName(), SIGNATURES);
@@ -210,8 +207,7 @@ public class GraphCheckerMain {
         // Soot parses a trailing -cp after configureSoot().
         collectTestClassOutputs(Options.v().soot_classpath(),
                 testClassOutputDirs);
-        Options.v().set_process_dir(concolicInstrumentation
-                ? new ArrayList<>() : productionProcessDirs);
+        Options.v().set_process_dir(productionProcessDirs);
         for (String className : new ArrayList<>(Options.v().classes())) {
             if (classComesFromTestOutput(className)) {
                 throw new IllegalStateException("Test class cannot enter "

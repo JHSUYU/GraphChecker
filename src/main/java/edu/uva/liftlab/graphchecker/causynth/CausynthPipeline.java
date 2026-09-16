@@ -11,6 +11,7 @@ import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
+import edu.uva.liftlab.graphchecker.plan.WorkStartSites;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.option.GraphCheckerOptions;
 import edu.uva.liftlab.graphchecker.runtime.RuntimeTraceMode;
@@ -371,13 +372,13 @@ public final class CausynthPipeline {
                     instrumentReferenceArrayTrace(body, method, recordArrayRef,
                             units, lowerBound);
                 });
-        // The same hook, over the same methods, as the replay weaves: a
+        // The same hook, over the same scope, as the replay weaves: a
         // thread inherits its creator's index when it is CONSTRUCTED, so
         // without the start-site frame two siblings started from one loop
         // stand on one index in the recording while the replay tells them
         // apart (REPORT-P2H), and the address of every such occurrence
         // drifts between the two passes.
-        instrumentWorkStarts(new LinkedHashSet<>(result.traceMethods), refs);
+        instrumentWorkStarts(refs);
         LOG.info("Instrumented {} of {} runtime-selected methods for "
                 + "REGION_STATE trace; {} of them open a region",
                 rewritten.size(), result.traceMethods.size(),
@@ -650,7 +651,11 @@ public final class CausynthPipeline {
         // second row at one entry cannot add a frame and a recursive entry
         // cannot be mistaken for a second row.
         instrumentSkeletonRegions(refs);
-        instrumentWorkStarts(envelope.methods, refs);
+        // The same scope the recording weaves (instrumentRuntimeState): every
+        // work start of every application class, whatever this campaign
+        // selected, or a thread this envelope does not mention runs with no
+        // start-site frame in one pass and with one in the other.
+        instrumentWorkStarts(refs);
         instrumentConcolicConfiguredSourceCallContexts(
                 envelope.configuredSourcePhaseSites.values(), refs);
         instrumentConcolicAccessorCallContexts(envelope.materializations,
@@ -1814,7 +1819,7 @@ public final class CausynthPipeline {
     }
 
     /**
-     * Files the start-site frame of every work start in the selected methods.
+     * Files the start-site frame of every work start the analysis can see.
      *
      * <p>A thread inherits its creator's execution index when it is
      * CONSTRUCTED, which is before the start that made it run; and a pool
@@ -1827,84 +1832,124 @@ public final class CausynthPipeline {
      * {@code FSImageSaver} threads of hdfs-17960 -- stand on the same frames
      * and mint one address for two occurrences.</p>
      *
-     * <p>One hook, and no frame on the starter: a start is an event of the
-     * starter, not a call it returns from.  Woven by BOTH passes over their
-     * own selected methods -- the recording's trace methods and the
-     * campaign's envelope -- because an index computed with the start frame
-     * on one side and without it on the other names two different
-     * occurrences for one execution point.</p>
+     * <p>One hook per started carrier, and no frame on the starter: a start
+     * is an event of the starter, not a call it returns from.  Woven by BOTH
+     * passes over the WHOLE application scope -- every class the analysis
+     * loads, region selection included or not -- because an index computed
+     * with the start frame on one side and without it on the other names two
+     * different occurrences for one execution point, and a thread started
+     * from a method no region selected is exactly the thread whose frames
+     * begin nowhere (G9: hdfs-11741's two balancer pool threads, started by
+     * {@code Dispatcher.dispatchBlockMoves}, shared one anchor).  The shapes
+     * are {@link WorkStartSites}', which the recording's own call hooks read
+     * too.</p>
      */
-    private void instrumentWorkStarts(Set<String> methods,
-                                      HookCatalog refs) {
+    private void instrumentWorkStarts(HookCatalog refs) {
         int filed = 0;
-        for (String signature : methods) {
-            Body body;
-            try {
-                body = CausynthStaticFacts.activeBody(
-                        CausynthStaticFacts.method(signature));
-            } catch (RuntimeException unavailable) {
-                // A body no pass can retrieve is instrumented by none.
-                continue;
-            }
-            if (body == null) continue;
-            tagOriginalUnits(snapshotUnits(body));
-            for (Unit unit : snapshotUnits(body)) {
-                int unitIndex = originalUnitIndex(unit);
-                if (unitIndex < 0 || !(unit instanceof Stmt)) continue;
-                Stmt stmt = (Stmt) unit;
-                if (!stmt.containsInvokeExpr()) continue;
-                Value carried = startedWork(stmt.getInvokeExpr());
-                if (carried == null) continue;
-                List<Unit> before = new ArrayList<>();
-                Value carrier = objectArg(body, carried, before);
-                if (carrier instanceof NullConstant) continue;
-                // Paused where there is symbolic observation to pause: the
-                // recording pass has none, and the hook is the same one.
-                boolean observed = refs.ref(Hook.PAUSE_OBSERVATION) != null;
-                if (observed) emit(before, refs.ref(Hook.PAUSE_OBSERVATION));
-                emit(before, refs.ref(Hook.START_WORK),
-                        StringConstant.v(SiteId.of(signature, unitIndex)),
-                        carrier);
-                if (observed) emit(before, refs.ref(Hook.RESUME_OBSERVATION));
-                insertBeforeSequence(body, stmt, before);
-                filed++;
+        int walked = 0;
+        for (SootClass type : new ArrayList<>(
+                Scene.v().getApplicationClasses())) {
+            for (SootMethod method : new ArrayList<>(type.getMethods())) {
+                Body body = CausynthStaticFacts.activeBody(method);
+                if (body == null) continue;
+                walked++;
+                List<Unit> originalUnits = snapshotUnits(body);
+                tagOriginalUnits(originalUnits);
+                // A constructor may not be rewritten before its own
+                // initialization, and one whose boundary this body does not
+                // name has no site a weave may touch.
+                int from = 0;
+                if (method.isConstructor()) {
+                    Unit entry = safeInstrumentationEntry(body, method);
+                    from = entry == null ? -1
+                            : instrumentableFrom(originalUnits, entry);
+                }
+                if (from < 0) continue;
+                for (Unit unit : snapshotUnits(body)) {
+                    int unitIndex = originalUnitIndex(unit);
+                    if (unitIndex < from || !(unit instanceof Stmt)) continue;
+                    Stmt stmt = (Stmt) unit;
+                    if (!stmt.containsInvokeExpr()) continue;
+                    List<Unit> before = new ArrayList<>();
+                    int started = 0;
+                    for (Value carried : startedWork(stmt.getInvokeExpr())) {
+                        Value carrier = objectArg(body, carried, before);
+                        if (carrier instanceof NullConstant) continue;
+                        // Paused where there is symbolic observation to
+                        // pause: the recording pass has none, and the hook
+                        // is the same one.
+                        boolean observed =
+                                refs.ref(Hook.PAUSE_OBSERVATION) != null;
+                        if (observed) {
+                            emit(before, refs.ref(Hook.PAUSE_OBSERVATION));
+                        }
+                        emit(before, refs.ref(Hook.START_WORK),
+                                StringConstant.v(SiteId.of(
+                                        method.getSignature(), unitIndex)),
+                                carrier);
+                        if (observed) {
+                            emit(before, refs.ref(Hook.RESUME_OBSERVATION));
+                        }
+                        started++;
+                    }
+                    if (started == 0) continue;
+                    insertBeforeSequence(body, stmt, before);
+                    filed += started;
+                }
             }
         }
-        LOG.info("Instrumented {} work-start site(s) across {} selected "
-                + "method(s) for the execution index", filed, methods.size());
+        LOG.info("Instrumented {} work start(s) across {} method(s) of the "
+                + "application scope for the execution index", filed, walked);
     }
 
     /**
-     * The object that carries the work one invocation starts, or null.
+     * The objects that carry the work one invocation starts, in call order.
      *
-     * <p>The same three shapes the recorder's own carry recognizes: a
-     * {@code Thread.start} starts its receiver, an executor submission
-     * starts its first argument, and a fork-join {@code fork}/{@code
-     * invoke} starts its receiver.</p>
+     * <p>{@link WorkStartSites} owns which shapes those are; this is its
+     * Soot projection: the declaring class answers the receiver's type and
+     * the declared type of each argument answers whether it can be work.
+     * One invocation can start several -- {@code invokeAll(t1, t2)} -- and
+     * each start is its own event at this one site.</p>
      */
-    private static Value startedWork(InvokeExpr invoke) {
+    private static List<Value> startedWork(InvokeExpr invoke) {
         SootMethodRef callee = invoke.getMethodRef();
         String name = callee.name();
+        List<Value> carried = new ArrayList<>();
         Value receiver = invoke instanceof InstanceInvokeExpr
                 && !"<init>".equals(name)
                 ? ((InstanceInvokeExpr) invoke).getBase() : null;
-        if (receiver == null) return null;
-        SootClass declaring = callee.declaringClass();
-        if (invoke.getArgCount() == 0 && "start".equals(name)
-                && declares(declaring, "java.lang.Thread")) {
-            return receiver;
+        if (receiver != null && WorkStartSites.startsReceiver(name,
+                invoke.getArgCount(),
+                hierarchyOf(callee.declaringClass()))) {
+            carried.add(receiver);
+            return carried;
         }
-        if (invoke.getArgCount() == 0
-                && ("fork".equals(name) || "invoke".equals(name))
-                && declares(declaring, "java.util.concurrent.ForkJoinTask")) {
-            return receiver;
+        if (!WorkStartSites.submitsArguments(name, invoke.getArgCount())) {
+            return carried;
         }
-        if (invoke.getArgCount() >= 1 && executorFamily(declaring)
-                && ("execute".equals(name) || "submit".equals(name)
-                        || "schedule".equals(name))) {
-            return invoke.getArg(0);
+        for (int index = 0; index < invoke.getArgCount(); index++) {
+            Value argument = invoke.getArg(index);
+            if (WorkStartSites.carriesWork(hierarchyOf(argument.getType()))) {
+                carried.add(argument);
+            }
         }
-        return null;
+        return carried;
+    }
+
+    /** {@link WorkStartSites.Types} of a declared type: its hierarchy. */
+    private static WorkStartSites.Types hierarchyOf(Type type) {
+        return hierarchyOf(type instanceof RefType
+                ? ((RefType) type).getSootClass() : null);
+    }
+
+    /** {@link WorkStartSites.Types} of a class: its own hierarchy. */
+    private static WorkStartSites.Types hierarchyOf(final SootClass type) {
+        return new WorkStartSites.Types() {
+            @Override
+            public boolean is(String typeName) {
+                return declares(type, typeName);
+            }
+        };
     }
 
     /** Whether this type is, or inherits, the named one. */
@@ -1922,21 +1967,6 @@ public final class CausynthPipeline {
             }
         }
         return false;
-    }
-
-    /**
-     * Whether a submission call is an executor's.
-     *
-     * <p>{@code java.util.concurrent.Executor} by inheritance where the
-     * hierarchy is resolved, and the package where a JDK interface is a
-     * phantom class with no interfaces of its own: {@code execute} on some
-     * application object is not a submission and may not file a frame for
-     * an argument that is nobody's work.</p>
-     */
-    private static boolean executorFamily(SootClass type) {
-        return type != null
-                && (declares(type, "java.util.concurrent.Executor")
-                || type.getName().startsWith("java.util.concurrent."));
     }
 
     /**
