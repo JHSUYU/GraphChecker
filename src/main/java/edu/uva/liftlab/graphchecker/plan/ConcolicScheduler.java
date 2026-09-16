@@ -125,14 +125,11 @@ public final class ConcolicScheduler {
                 LoopBoundPolicy.declaredDefault(), loaded.regionPlans);
         Result result = new Result();
         for (Candidate candidate : candidates) {
-            JsonArray edgeBindings = deduplicateTopologyEdges(objectRows(
-                    candidate.goal.edgeBindings()));
             JsonArray taskInputActions = candidate.inputActions;
             JsonArray selectedInputs = loaded.symbolicInputs.select(
                     candidate.goal.plan().regionId(), taskInputActions);
             selectedInputs = removeInboundProtocolHandoffInputs(
-                    selectedInputs, edgeBindings,
-                    candidate.queryOccurrenceId,
+                    selectedInputs,
                     CommunicationHandoffSpec.decode(
                             candidate.goal.plan().json()));
             String taskId = candidate.seedTaskId(selectedInputs);
@@ -141,8 +138,7 @@ public final class ConcolicScheduler {
             }
             ExecutionTask scheduled = ExecutionTask.create(candidate.goal,
                     taskId, selectedInputs,
-                    branchMethods(candidate.branches), edgeBindings,
-                    loopBound);
+                    branchMethods(candidate.branches), loopBound);
             // json() is the live row by decision (contract/PlanRow): the
             // scheduler annotates the task it has just created, and no typed
             // member it already decoded is derived from these carriers.
@@ -215,32 +211,24 @@ public final class ConcolicScheduler {
      * A selected receive gets its symbolic value from the VM handoff.  A
      * local action for the same exact port would mint a temporary second root
      * before attach, so it is not part of the frozen task.
+     *
+     * <p>The rule reads the DECLARED handoff spec: an IN site is where this
+     * occurrence attaches, which is its own declaration and not something an
+     * edge row grants it.  It used to additionally require a correlated
+     * exchange binding naming the port -- a second authority over the same
+     * declaration.  Measured on both kept corpora the two sets are equal
+     * (hdfs-11741: 48 declared IN ports, 48 supplied; hdfs-17960: 0 and 0)
+     * and neither rule suppresses any action, so no task changes.</p>
      */
     static JsonArray removeInboundProtocolHandoffInputs(
-            JsonArray actions, JsonArray edgeBindings,
-            String occurrenceId,
+            JsonArray actions,
             Iterable<CommunicationHandoffSpec> declaredHandoffs) {
-        Set<String> declaredInboundPorts = new LinkedHashSet<>();
+        Set<String> suppliedPorts = new LinkedHashSet<>();
         if (declaredHandoffs != null) {
             for (CommunicationHandoffSpec handoff : declaredHandoffs) {
                 if (handoff != null && !handoff.outgoing()) {
-                    declaredInboundPorts.add(handoff.portId());
+                    suppliedPorts.add(handoff.portId());
                 }
-            }
-        }
-        String receiver = occurrenceId;
-        Set<String> suppliedPorts = new LinkedHashSet<>();
-        for (JsonElement element : edgeBindings == null
-                ? new JsonArray() : edgeBindings) {
-            if (!element.isJsonObject()) continue;
-            JsonObject binding = element.getAsJsonObject();
-            if (!AutomaticRegionEdge.tracedExchangeCandidate(binding)
-                    || !receiver.equals(optionalString(binding, "toOccurrenceId"))) {
-                continue;
-            }
-            String port = optionalString(binding, "toInputPort");
-            if (declaredInboundPorts.contains(port)) {
-                suppliedPorts.add(port);
             }
         }
         JsonArray retained = new JsonArray();
@@ -463,59 +451,6 @@ public final class ConcolicScheduler {
         Collections.sort(keys);
         List<T> result = new ArrayList<>();
         for (String key : keys) result.add(values.get(key));
-        return result;
-    }
-
-    /**
-     * The object rows of {@code source} that {@code keep} admits, each as
-     * its own copy.  A non-object element is not a row and is dropped.
-     */
-    private static JsonArray copyMatching(JsonArray source,
-                                          Predicate<JsonObject> keep) {
-        JsonArray result = new JsonArray();
-        for (JsonElement element : source == null ? new JsonArray() : source) {
-            if (!element.isJsonObject()) continue;
-            JsonObject row = element.getAsJsonObject();
-            if (keep.test(row)) result.add(row.deepCopy());
-        }
-        return result;
-    }
-
-    /** One causal edge can be represented by a refined runtime row and by a
-     * compact closure row. */
-    private static JsonArray objectRows(JsonArray source) {
-        return copyMatching(source, row -> true);
-    }
-
-    private static JsonArray deduplicateTopologyEdges(JsonArray bindings)
-            throws IOException {
-        Map<String, JsonObject> rows = new LinkedHashMap<>();
-        for (JsonElement element : bindings) {
-            if (!element.isJsonObject()) {
-                throw new IOException("edge binding must be an object");
-            }
-            JsonObject row = element.getAsJsonObject();
-            String edgeId = optionalString(row, "edgeId");
-            if (edgeId.isEmpty()) {
-                throw new IOException("edge binding has no edgeId");
-            }
-            JsonObject merged = rows.get(edgeId);
-            if (merged == null) {
-                rows.put(edgeId, row.deepCopy());
-                continue;
-            }
-            for (Map.Entry<String, JsonElement> field : row.entrySet()) {
-                JsonElement prior = merged.get(field.getKey());
-                if (prior == null) {
-                    merged.add(field.getKey(), field.getValue().deepCopy());
-                } else if (!prior.equals(field.getValue())) {
-                    throw new IOException("conflicting edge binding "
-                            + edgeId + " field " + field.getKey());
-                }
-            }
-        }
-        JsonArray result = new JsonArray();
-        for (JsonObject row : rows.values()) result.add(row.deepCopy());
         return result;
     }
 

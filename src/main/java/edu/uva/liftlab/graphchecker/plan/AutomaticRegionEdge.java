@@ -10,7 +10,7 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 
 /** Evidence gate shared by graph discovery and SMT preparation. */
 public final class AutomaticRegionEdge {
-    static final String RUNTIME_PROTOCOL_EDGE_KIND =
+    public static final String RUNTIME_PROTOCOL_EDGE_KIND =
             "RUNTIME_PROTOCOL_FLOW";
     /**
      * A fault decision observed immediately before the request half of the

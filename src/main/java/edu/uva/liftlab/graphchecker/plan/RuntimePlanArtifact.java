@@ -25,9 +25,8 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 /**
  * Canonical runtime-planning artifact.
  *
- * <p>The first JSONL row owns the region catalog and runtime edge evidence
- * exactly once; occurrence goals store only edge ids, and {@link #read(Path)}
- * hydrates them back into {@code edgeBindings}.</p>
+ * <p>The first JSONL row owns the region catalog and the planning gaps; the
+ * rows after it are the occurrence plans, each self-contained.</p>
  */
 public final class RuntimePlanArtifact {
     private static final int SCHEMA_VERSION = 2;
@@ -54,31 +53,22 @@ public final class RuntimePlanArtifact {
 
     /** As above, carrying the planning gaps the catalog publishes. */
     public static String encode(Collection<JsonObject> encodedPlans,
-                                Collection<JsonObject> encodedEdges,
                                 Collection<JsonObject> encodedRegions,
                                 Collection<JsonObject> encodedGaps) {
-        List<JsonObject> edges = copies(encodedEdges);
-        EdgeBindingCatalog catalog = EdgeBindingCatalog.of(edges);
-
         StringBuilder output = new StringBuilder();
-        output.append(encodeCatalog(edges, copies(encodedRegions),
+        output.append(encodeCatalog(copies(encodedRegions),
                 copies(encodedGaps)));
         for (JsonObject source : encodedPlans) {
-            output.append(CanonicalJson.render(
-                    compactBindings(source, catalog))).append('\n');
+            output.append(CanonicalJson.render(source)).append('\n');
         }
         return output.toString();
     }
 
-    private static String encodeCatalog(List<JsonObject> edges,
-                                        List<JsonObject> encodedRegions,
+    private static String encodeCatalog(List<JsonObject> encodedRegions,
                                         List<JsonObject> encodedGaps) {
         JsonObject catalog = new JsonObject();
         catalog.addProperty("schemaVersion", SCHEMA_VERSION);
         catalog.addProperty("kind", CATALOG_KIND);
-        JsonArray edgeRows = new JsonArray();
-        for (JsonObject edge : edges) edgeRows.add(edge.deepCopy());
-        catalog.add("edges", edgeRows);
         JsonArray regionRows = new JsonArray();
         for (JsonObject region : encodedRegions) {
             regionRows.add(region.deepCopy());
@@ -104,25 +94,15 @@ public final class RuntimePlanArtifact {
             }
             compactPlans.add(row);
         }
-        List<JsonObject> edges = objects(array(catalog, "edges"),
-                "runtime edge catalog", path);
         List<JsonObject> regions = objects(array(catalog, "regions"),
                 "runtime region catalog", path);
-        EdgeBindingCatalog bindings;
-        try {
-            bindings = EdgeBindingCatalog.of(edges);
-        } catch (IllegalArgumentException malformed) {
-            throw new IOException("invalid runtime edge catalog: " + path,
-                    malformed);
-        }
         List<RegionInstancePlan> decoded = new ArrayList<>();
         try {
             for (JsonObject plan : compactPlans) {
-                decoded.add(RegionInstancePlan.decode(
-                        hydrateBindings(plan, bindings)));
+                decoded.add(RegionInstancePlan.decode(plan));
             }
         } catch (IllegalArgumentException malformed) {
-            throw new IOException("invalid compact runtime plan: " + path,
+            throw new IOException("invalid runtime plan row: " + path,
                     malformed);
         }
         // One coarse occurrence is one row (README REGION-1); the decode
@@ -157,46 +137,6 @@ public final class RuntimePlanArtifact {
                     + path);
         }
         return rows.get(0);
-    }
-
-    private static JsonObject compactBindings(
-            JsonObject source, EdgeBindingCatalog catalog) {
-        JsonObject plan = source.deepCopy();
-        for (JsonElement element : array(plan, "closureGoals")) {
-            JsonObject goal = element.getAsJsonObject();
-            // Compacting twice would replace the stored ids with an empty
-            // list, so the second pass is refused rather than absorbed.
-            if (goal.has(EdgeBindingCatalog.IDS)) {
-                throw new IllegalArgumentException(
-                        "runtime plan is already binding-compacted");
-            }
-            JsonArray ids = catalog.idsOf(
-                    array(goal, EdgeBindingCatalog.BINDINGS));
-            goal.remove(EdgeBindingCatalog.BINDINGS);
-            goal.add(EdgeBindingCatalog.IDS, ids);
-        }
-        return plan;
-    }
-
-    private static JsonObject hydrateBindings(
-            JsonObject source, EdgeBindingCatalog catalog) {
-        JsonObject plan = source.deepCopy();
-        for (JsonElement element : array(plan, "closureGoals")) {
-            if (!element.isJsonObject()) {
-                throw new IllegalArgumentException(
-                        "closureGoals must contain objects");
-            }
-            JsonObject goal = element.getAsJsonObject();
-            if (goal.has(EdgeBindingCatalog.BINDINGS)) {
-                throw new IllegalArgumentException(
-                        "compact runtime plan must not duplicate edgeBindings");
-            }
-            JsonArray hydrated = catalog.hydrate(
-                    array(goal, EdgeBindingCatalog.IDS));
-            goal.remove(EdgeBindingCatalog.IDS);
-            goal.add(EdgeBindingCatalog.BINDINGS, hydrated);
-        }
-        return plan;
     }
 
     private static List<JsonObject> objects(JsonArray values, String label,

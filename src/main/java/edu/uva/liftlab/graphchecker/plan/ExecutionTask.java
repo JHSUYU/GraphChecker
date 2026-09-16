@@ -58,6 +58,18 @@ public final class ExecutionTask extends PlanRow {
 
     /** Write sites of a declared input's cell the replay must observe. */
     public static final String OBSERVED_WRITE_SITES = "observedWriteSites";
+    /**
+     * The communication ports this occurrence's own edge evidence named.
+     *
+     * <p>This is the whole of what PLAN ever asked the edge rows: which
+     * ports the evidence touched, and -- per export port -- which execution
+     * sources its consumers sit on.  The rows themselves were 54.5 MB of the
+     * 57.8 MB hdfs-17960 task plan and 27.3 MB of the 32 MB region plan,
+     * restated once per selection, for two set tests.</p>
+     */
+    public static final String SELECTED_PORTS = "selectedPorts";
+    /** Export port id to the execution sources of its planned consumers. */
+    public static final String EXPORT_CONSUMERS = "exportConsumers";
     private final InputActionCatalog inputActions;
     private final LoopBoundPolicy loopBound;
     private final String rootLoopMethod;
@@ -125,7 +137,10 @@ public final class ExecutionTask extends PlanRow {
      * them.  A delivery is addressed by {@code (frame, port, ordinal)} and
      * the attach names the live activation that declares the port, so a
      * copy here was a second authority over the plan's own edges -- and,
-     * carried on the wire, the thing that overran the envelope.</p>
+     * carried on the wire, the thing that overran the envelope.  What this
+     * test needs of them is their execution SOURCE, so that is what {@link
+     * #EXPORT_CONSUMERS} carries: the source keys of the consumers the
+     * region planner bound to each export port of this occurrence.</p>
      */
     private static void requireOneSourcePerExportPort(ExecutionTask task) {
         Set<String> outgoing = new LinkedHashSet<>();
@@ -135,37 +150,15 @@ public final class ExecutionTask extends PlanRow {
         if (outgoing.isEmpty()) {
             return;
         }
-        String producer = task.occurrenceId();
-        Map<String, List<String>> byPort = new LinkedHashMap<>();
-        for (JsonElement element : task.edgeBindings()) {
-            if (!element.isJsonObject()) continue;
-            JsonObject binding = element.getAsJsonObject();
-            String portId = optionalString(binding, "fromOutputPort");
-            if (!"RUNTIME_PROTOCOL_FLOW".equals(
-                    optionalString(binding, "kind"))
-                    || !outgoing.contains(portId)
-                    || !producer.equals(optionalString(
-                            binding, "fromOccurrenceId"))) {
-                continue;
-            }
-            String consumer = optionalString(binding, "toOccurrenceId");
-            if (consumer.isEmpty()) continue;
-            List<String> consumers = byPort.computeIfAbsent(portId,
-                    ignored -> new ArrayList<String>());
-            if (!consumers.contains(consumer)) {
-                consumers.add(consumer);
-            }
-        }
-        for (Map.Entry<String, List<String>> port : byPort.entrySet()) {
-            Set<String> sources = new LinkedHashSet<>();
-            for (String consumer : port.getValue()) {
-                sources.add(sourceKeyOf(consumer));
-            }
+        JsonObject consumers = object(task.encoded, EXPORT_CONSUMERS);
+        for (String portId : consumers.keySet()) {
+            if (!outgoing.contains(portId)) continue;
+            Set<String> sources = textSet(consumers, portId);
             if (sources.size() > 1) {
                 throw new IllegalArgumentException(
                         "communication export port has consumer occurrences "
                                 + "on more than one source in "
-                                + task.taskId() + ": " + port.getKey() + " "
+                                + task.taskId() + ": " + portId + " "
                                 + sources);
             }
         }
@@ -187,10 +180,9 @@ public final class ExecutionTask extends PlanRow {
             String taskId,
             JsonArray inputActions,
             JsonArray branchMethods,
-            JsonArray edgeBindings,
             LoopBoundPolicy loopBound) {
         if (goal == null || inputActions == null || branchMethods == null
-                || edgeBindings == null || loopBound == null) {
+                || loopBound == null) {
             throw new IllegalArgumentException(
                     "goal and task contract values are required");
         }
@@ -202,10 +194,15 @@ public final class ExecutionTask extends PlanRow {
         task.add(InputActionCatalog.FIELD, compactInputActions(inputActions));
         task.add(BRANCH_METHODS, branchMethods.deepCopy());
         loopBound.writeTo(task);
-        if (edgeBindings.size() > 0) {
-            task.add("edgeBindings", edgeBindings.deepCopy());
+        JsonArray selectedPorts = goal.selectedPorts();
+        JsonObject exportConsumers = goal.exportConsumers();
+        if (selectedPorts.size() > 0) {
+            task.add(SELECTED_PORTS, selectedPorts);
         }
-        retainSelectedCommunicationHandoffs(task, edgeBindings);
+        if (exportConsumers.size() > 0) {
+            task.add(EXPORT_CONSUMERS, exportConsumers);
+        }
+        retainSelectedCommunicationHandoffs(task, selectedPorts);
         // A scheduled task is executable by construction: the scheduler
         // publishes the occurrences it selected, never ones it decided
         // against.  The state is still written, and still read back on
@@ -225,16 +222,16 @@ public final class ExecutionTask extends PlanRow {
      * task's complete interaction frontier.
      */
     static void retainSelectedCommunicationHandoffs(
-            JsonObject task, JsonArray edgeBindings) {
+            JsonObject task, JsonArray selected) {
         JsonArray declared = array(task, CommunicationHandoffSpec.FIELD);
         if (declared.size() == 0) return;
 
         Set<String> selectedPorts = new LinkedHashSet<>();
-        for (JsonElement element : edgeBindings) {
-            if (!element.isJsonObject()) continue;
-            JsonObject edge = element.getAsJsonObject();
-            addPort(selectedPorts, optionalString(edge, "fromOutputPort"));
-            addPort(selectedPorts, optionalString(edge, "toInputPort"));
+        for (JsonElement element : selected == null
+                ? new JsonArray() : selected) {
+            if (!element.isJsonPrimitive()) continue;
+            String port = element.getAsString().trim();
+            if (!port.isEmpty()) selectedPorts.add(port);
         }
         JsonArray retained = new JsonArray();
         for (JsonElement element : declared) {
@@ -262,10 +259,6 @@ public final class ExecutionTask extends PlanRow {
         } else {
             task.add(CommunicationHandoffSpec.FIELD, retained);
         }
-    }
-
-    private static void addPort(Set<String> ports, String port) {
-        if (port != null && !port.isEmpty()) ports.add(port);
     }
 
     /** Drops planner-only access histories after the replay site is chosen. */
@@ -383,7 +376,7 @@ public final class ExecutionTask extends PlanRow {
     }
 
     /** Non-blank strings of a JSON array member, in wire order. */
-    private static Set<String> textSet(JsonObject row, String field) {
+    static Set<String> textSet(JsonObject row, String field) {
         Set<String> result = new LinkedHashSet<>();
         for (JsonElement element : array(row, field)) {
             if (!element.isJsonPrimitive()) continue;
@@ -415,10 +408,6 @@ public final class ExecutionTask extends PlanRow {
     }
 
     public LoopBoundPolicy loopBound() { return loopBound; }
-
-    public JsonArray edgeBindings() {
-        return array(encoded, "edgeBindings").deepCopy();
-    }
 
     /**
      * Where this occurrence hands a declared communication port to the VM.
@@ -454,8 +443,13 @@ public final class ExecutionTask extends PlanRow {
      * the id here rather than through an identity type, because the only
      * thing this asks of the id is where its region segment starts -- and
      * both the v1 and the v3 spelling put the component before it.</p>
+     *
+     * <p>Public because the region planner, which is where a consumer
+     * occurrence is bound to an export port, reduces the consumer to this
+     * key when it writes {@link #EXPORT_CONSUMERS}: one spelling of "which
+     * peer", used by the producer and by the test above.</p>
      */
-    private static String sourceKeyOf(String occurrenceId) {
+    public static String sourceKeyOf(String occurrenceId) {
         int region = occurrenceId.indexOf("/region/");
         return region <= 0 ? "" : occurrenceId.substring(0, region);
     }
