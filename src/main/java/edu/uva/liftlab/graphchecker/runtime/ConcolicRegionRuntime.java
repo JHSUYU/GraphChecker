@@ -802,7 +802,7 @@ public final class ConcolicRegionRuntime {
      * @return the token that closes exactly the level this opened
      */
     public static long enterMethodFrame(String callSiteId) {
-        return RowRuntime.enterFrame("", safe(callSiteId));
+        return RowRuntime.enterFrame(safe(callSiteId));
     }
 
     /** Leaves the level {@link #enterMethodFrame} opened. */
@@ -948,10 +948,11 @@ public final class ConcolicRegionRuntime {
         // Both stacks of the execution index, under one rule: an activation
         // closes where it opened or it is refused.  The region stack needs
         // the same check as the frames because it decides which occurrence
-        // an event belongs to and which bucket numbers its site, so a region
-        // popped without a push does not break an address -- it silently
-        // RENUMBERS the next ones (see #popActiveRegion).  One row, naming
-        // the stack that is off and what it left standing.
+        // an event belongs to and which frame its endpoints' site index is
+        // measured from, so a region popped without a push does not break an
+        // address -- it silently REBASES the next ones (see
+        // #popActiveRegion).  One row, naming the stack that is off and what
+        // it left standing.
         if (depth != mine.depthAtOpen) {
             RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
                             .FRAME_UNBALANCED,
@@ -4616,9 +4617,10 @@ public final class ConcolicRegionRuntime {
         // the entry token.  This pop had no push left after beginActivation
         // stopped opening one (RowRuntime.beginActivation reads
         // currentOccurrence), so it closed the ENCLOSING region instead --
-        // and Identity.regionExit deletes the closing occurrence's per-site
-        // counters, which are the counters that number the frames of
-        // everything the enclosing occurrence still had to run.  On
+        // and the region exit of the day deleted the closing occurrence's
+        // per-site counters, which were the counters that numbered the
+        // frames of everything the enclosing occurrence still had to run
+        // (counts live in the levels now, and a region holds none).  On
         // hdfs-17960 verification #3 that renumbered the 10 applyEditLogOp
         // entries of one loadEditRecords as 0 and then 0..8, so all 13 tasks
         // addressed under the NameNode restart were refused

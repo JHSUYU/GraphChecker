@@ -286,22 +286,48 @@ public final class Lineage {
         frame.rpcSite = Text.safe(rpcSite);
     }
 
-    /** The producer endpoint of the message that opened this scope, or "". */
+    /**
+     * The producer endpoint of the message that opened this scope, or "".
+     *
+     * <p>Searched outwards from the innermost hop and STOPPED at the
+     * innermost root, whose own anchor still counts: a root hop descends
+     * from nothing ({@link #pushRoot}), so a message that opened some
+     * enclosing scope did not open this one.  Reaching past it is the same
+     * bug {@code pushRoot} exists for, one form along: it stopped a tick
+     * inheriting the enclosing request's {@code Root} form and this stops it
+     * inheriting the enclosing request's {@code Anchor} form.  hdfs-11741's
+     * workload drives two {@code KEY_MANAGER_TICK} rotations on {@code main}
+     * inside its {@code balance-block} request, and both rendered {@code
+     * Anchor:a34f4570d766297e@HADOOP_IPC/balance-block} -- the balancer
+     * send's context on two occurrences no message started -- so the four
+     * {@code KeyManager.updateKeys} regions of the second rotation shared an
+     * address with the first's and were dropped from the plan (4 BLOCKING
+     * {@code OCCURRENCE_ADDRESS_SHARED}, PLAN 85 rows to 81, and the
+     * rotation that mints {@code SERIAL_NO + 2} unaddressed).  Two turns of
+     * a tick are told apart by the window index of the root hop, which is
+     * what a {@code Root} context states ({@code
+     * Identity.Hop#STARTED_ROOT}).</p>
+     */
     public static String anchor() {
-        List<Frame> stack = STACK.get();
-        for (int i = stack.size() - 1; i >= 0; i--) {
-            if (!stack.get(i).anchor.isEmpty()) return stack.get(i).anchor;
-        }
-        return "";
+        Frame anchored = anchored();
+        return anchored == null ? "" : anchored.anchor;
     }
 
     /** The transport site of that message, or "". */
     public static String rpcSite() {
+        Frame anchored = anchored();
+        return anchored == null ? "" : anchored.rpcSite;
+    }
+
+    /** The hop whose message opened the scope running here, or null. */
+    private static Frame anchored() {
         List<Frame> stack = STACK.get();
         for (int i = stack.size() - 1; i >= 0; i--) {
-            if (!stack.get(i).anchor.isEmpty()) return stack.get(i).rpcSite;
+            Frame frame = stack.get(i);
+            if (!frame.anchor.isEmpty()) return frame;
+            if (frame.root) return null;
         }
-        return "";
+        return null;
     }
 
     /**
@@ -332,10 +358,56 @@ public final class Lineage {
         return root == null ? 0 : root.k;
     }
 
+    /**
+     * The token of that root, or 0: which root hop is running here.
+     *
+     * <p>THE lifetime of an execution-index level's counters ({@code
+     * Identity.Level}).  A level counts the events made at each site while it
+     * is the innermost one, and a level with no frame to close it -- the
+     * thread base level, outside every woven method -- would otherwise count
+     * for the whole thread: the 12th {@code Client.call} of the process
+     * rather than the 12th of this request, which is the run-length ordinal
+     * IDENTITY-V3 SS1 forbids.  A root hop is the lifetime, because a root hop
+     * is what an occurrence descends from: the next request is a new root
+     * occurrence and its k starts again.</p>
+     *
+     * <p>Thread-local bookkeeping, published nowhere.  Two replays never
+     * compare tokens; they compare the k a token's counters produced, and
+     * they see the same sequence of root hops on a thread because both
+     * passes open them through the same doors ({@code RuntimeTraceContext}).
+     * A captured lineage carries its frames by reference ({@link #capture}),
+     * so work dequeued on a pool thread counts under the root hop that
+     * created it rather than under the carrier's.</p>
+     */
+    public static long rootToken() {
+        Frame root = root();
+        return root == null ? 0L : root.token;
+    }
+
     /** The api that root's window index was counted under, or {@code ""}. */
     public static String rootApi() {
         Frame root = root();
         return root == null ? "" : root.api;
+    }
+
+    /**
+     * Whether the root hop {@code token} is still standing on this thread.
+     *
+     * <p>What tells an ENCLOSING hop from one that has closed, for the
+     * counters an execution-index level files per hop ({@code
+     * Identity.Level#events}).  {@code 0} -- "this thread stands in no root
+     * hop" -- is always standing: it is a state of the thread rather than a
+     * hop, and a hop opened and closed in the middle of it does not end
+     * it.</p>
+     */
+    public static boolean isOpenRoot(long token) {
+        if (token == 0L) return true;
+        List<Frame> stack = STACK.get();
+        for (int index = stack.size() - 1; index >= 0; index--) {
+            Frame frame = stack.get(index);
+            if (frame.root && frame.token == token) return true;
+        }
+        return false;
     }
 
 
