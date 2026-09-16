@@ -45,12 +45,9 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.stringValue;
 /** Refines the cheap static candidate graph with one concrete REGION_STATE
  * execution. */
 final class RuntimeRefinedGraphBuilder {
-    static final int REFINEMENT_SCHEMA_VERSION = 1;
     static final String GRAPH_KIND = "RUNTIME_REFINED_DATAFLOW";
     static final String FIELD_ACCESS_AUTHORITY =
             "EXACT_RUNTIME_ACTIVATION_FIELD_ACCESS_V1";
-    static final String ASSOCIATIVE_MEMBER_AUTHORITY =
-            "EXACT_RUNTIME_ASSOCIATIVE_PUT_PROVENANCE_V1";
 
     private static final Type ROW_TYPE =
             new TypeToken<Map<String, Object>>() { }.getType();
@@ -164,11 +161,7 @@ final class RuntimeRefinedGraphBuilder {
                                             mutation, path,
                                             "CONTAINER_MUTATION",
                                             FIELD_ACCESS_AUTHORITY,
-                                            container, event, completion,
-                                            callArguments.getOrDefault(
-                                                    event.invocationId,
-                                                    Collections.<RuntimeRegionPlanner.RuntimeEvent>emptyList()),
-                                            activationFields));
+                                            container, event, completion));
                         }
                     }
                 }
@@ -183,7 +176,6 @@ final class RuntimeRefinedGraphBuilder {
                 return;
             }
             Map<String, Object> edge = new LinkedHashMap<>(candidate);
-            edge.put("refinementSchemaVersion", REFINEMENT_SCHEMA_VERSION);
             edge.put("graphKind", GRAPH_KIND);
 
             String transfer = stringValue(edge.get("transferKind"));
@@ -260,11 +252,6 @@ final class RuntimeRefinedGraphBuilder {
             throws IOException {
         int threads = Math.max(1, Math.min(8,
                 Runtime.getRuntime().availableProcessors() - 2));
-        int configured = Integer.getInteger(
-                "causynth.aggregate.threads", 0);
-        if (configured > 0) {
-            threads = Math.min(configured, 32);
-        }
         final int workerCount = threads;
         ExecutorService executor = Executors.newFixedThreadPool(workerCount,
                 runnable -> {
@@ -945,10 +932,6 @@ final class RuntimeRefinedGraphBuilder {
         private final RuntimeRegionPlanner.FieldAccessEvent containerRead;
         private final RuntimeRegionPlanner.RuntimeEvent mutationEnter;
         private final RuntimeRegionPlanner.RuntimeEvent mutationCompletion;
-        private final List<RuntimeRegionPlanner.RuntimeEvent>
-                mutationArguments;
-        private final List<RuntimeRegionPlanner.FieldAccessEvent>
-                activationFields;
 
         private RuntimeFieldBinding(String regionId,
                                     RuntimeRegionPlanner.MethodEvent root,
@@ -957,9 +940,7 @@ final class RuntimeRefinedGraphBuilder {
                                     String bindingKind,
                                     String authority) {
             this(regionId, root, event, path, bindingKind, authority,
-                    null, null, null,
-                    Collections.<RuntimeRegionPlanner.RuntimeEvent>emptyList(),
-                    Collections.<RuntimeRegionPlanner.FieldAccessEvent>emptyList());
+                    null, null, null);
         }
 
         private RuntimeFieldBinding(String regionId,
@@ -970,9 +951,7 @@ final class RuntimeRefinedGraphBuilder {
                                     String authority,
                                     RuntimeRegionPlanner.FieldAccessEvent containerRead,
                                     RuntimeRegionPlanner.RuntimeEvent mutationEnter,
-                                    RuntimeRegionPlanner.RuntimeEvent mutationCompletion,
-                                    List<RuntimeRegionPlanner.RuntimeEvent> mutationArguments,
-                                    List<RuntimeRegionPlanner.FieldAccessEvent> activationFields) {
+                                    RuntimeRegionPlanner.RuntimeEvent mutationCompletion) {
             this.regionId = regionId;
             this.root = root;
             this.event = event;
@@ -982,12 +961,6 @@ final class RuntimeRefinedGraphBuilder {
             this.containerRead = containerRead;
             this.mutationEnter = mutationEnter;
             this.mutationCompletion = mutationCompletion;
-            this.mutationArguments = mutationArguments == null
-                    ? Collections.<RuntimeRegionPlanner.RuntimeEvent>emptyList()
-                    : mutationArguments;
-            this.activationFields = activationFields == null
-                    ? Collections.<RuntimeRegionPlanner.FieldAccessEvent>emptyList()
-                    : activationFields;
         }
 
         private Map<String, Object> toMap() {

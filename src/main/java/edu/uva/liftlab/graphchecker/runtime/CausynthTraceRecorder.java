@@ -1324,12 +1324,9 @@ public final class CausynthTraceRecorder {
                             trace.fields,
                             refinedGraph.toPath());
             // The refined rows returned by the builder are normalized to the
-            // exact JSONL round-trip domain, so the flow index and the
-            // finalizer see precisely what re-reading the artifact would
-            // produce, without parsing the multi-hundred-MB file twice more.
-            RuntimeRegionPlanner.RefinedFlowIndex refinedFlowIndex =
-                    RuntimeRegionPlanner.buildFlowIndex(refinement.rows,
-                            refinedGraph);
+            // exact JSONL round-trip domain, so the finalizer sees precisely
+            // what re-reading the artifact would produce, without parsing
+            // the multi-hundred-MB file twice more.
             RuntimeSelectedRegionFinalizer.Result closure =
                     RuntimeSelectedRegionFinalizer.finalizeRegions(
                     refinement.rows, skeletons,
@@ -1352,7 +1349,7 @@ public final class CausynthTraceRecorder {
             // And the earlier recording pass's, which had no plan of its
             // own to carry them: one workload, one gap list.
             planGaps.addAll(earlierPassGaps);
-            writeRuntimeRegionPlans(planOutputDirectory, refinedFlowIndex,
+            writeRuntimeRegionPlans(planOutputDirectory,
                     closure.regions, closure.regionEdges, trace,
                     activationGraph.runtimeInstances, planGaps);
         }
@@ -1883,11 +1880,6 @@ public final class CausynthTraceRecorder {
 
     /** Number of worker threads used by offline trace aggregation parsing. */
     private static int aggregationThreads() {
-        int configured = Integer.getInteger(
-                "causynth.aggregate.threads", 0);
-        if (configured > 0) {
-            return Math.min(configured, 32);
-        }
         return Math.max(1, Math.min(8,
                 Runtime.getRuntime().availableProcessors() - 2));
     }
@@ -2325,13 +2317,13 @@ public final class CausynthTraceRecorder {
 
     /** Binds frozen static regions to concrete same-thread invocations. */
     private static void writeRuntimeRegionPlans(
-            File directory, RuntimeRegionPlanner.RefinedFlowIndex flowIndex,
+            File directory,
             List<Map<String, Object>> regions,
             List<Map<String, Object>> regionEdges, TraceData trace,
             Collection<Map<String, Object>> runtimeSeeds,
             Collection<Map<String, Object>> planGaps) throws IOException {
         writeFile(new File(directory, "concolic_region_plan.jsonl"),
-                RuntimeRegionPlanner.plan(regions, regionEdges, flowIndex,
+                RuntimeRegionPlanner.plan(regions, regionEdges,
                         "runtime region closure",
                         "runtime region edge closure",
                         runtimeSeeds, trace.methods, trace.execution,
