@@ -126,9 +126,6 @@ public final class Arms {
         /** The occurrence this endpoint id belongs to, or null. */
         OccurrenceAddress occurrenceOf(String endpointId);
 
-        /** The session event this endpoint's row was sequenced at, or -1. */
-        long seqOf(String sessionId, String endpointId);
-
         /** This session's activation of that occurrence, or null. */
         ActivationRow activationOf(String sessionId, String occurrenceId);
 
@@ -457,7 +454,7 @@ public final class Arms {
     }
 
     /**
-     * Whether {@code a} is causally before {@code b} in this session.
+     * Whether EVENT {@code a} is causally before EVENT {@code b}.
      *
      * <p>Three orderings, in the order they can be asked of the rows: inside
      * one occurrence, the session's own event order (same-thread program
@@ -466,8 +463,23 @@ public final class Arms {
      * which the rows carry only as that chain today.  An ordering the rows
      * do not state is UNKNOWN, and unknown is answered {@code false} here,
      * so a caller asking "is a before b" never reads absence as order.</p>
+     *
+     * <p>An EVENT is a ROW, and the row carries its own {@code seq}; the
+     * caller passes it, because an ENDPOINT is not an event.  An endpoint is
+     * {@code (occurrence, site, siteIndex, attempt)} and a site the runtime
+     * does not stand at carries no site index, so ONE endpoint id names every
+     * event of that site in that occurrence -- 11741's
+     * {@code GeneratedMethodAccessor#invoke:WRITE} names two writes of one
+     * {@code PBHelper.convert} activation.  Picking one seq for such an id
+     * answers program order about an event that is not the one asked about:
+     * the 11741 wave-0 skeleton read a v1197 written at seq 1197 and observed
+     * at seq 1198 as a read before its own writer, because the write
+     * endpoint's OTHER event stood at seq 1201.  The seq of the row is the
+     * only thing that states when the event happened, so it is what is
+     * compared.</p>
      */
-    public boolean ancestor(Endpoint a, Endpoint b, String session) {
+    public boolean ancestor(Endpoint a, long aSeq, Endpoint b, long bSeq,
+                            String session) {
         if (a == null || b == null) return false;
         OccurrenceAddress left = a.occurrence();
         OccurrenceAddress right = b.occurrence();
@@ -477,9 +489,7 @@ public final class Arms {
         // first.
         if (left.id().equals(right.id())
                 || sameThread(session, left, right)) {
-            long first = rows.seqOf(session, a.id());
-            long second = rows.seqOf(session, b.id());
-            return first >= 0L && second >= 0L && first < second;
+            return aSeq >= 0L && bSeq >= 0L && aSeq < bSeq;
         }
         if (!chainKnown(session, left) || !chainKnown(session, right)) {
             return false;

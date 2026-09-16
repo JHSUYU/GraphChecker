@@ -1620,9 +1620,9 @@ public class ComposerTest {
                 at("w#2", 0), 0);
         Endpoint third = Endpoint.of(started, "Task#put#5:WRITE",
                 at("w#3", 0), 0);
-        session.write(first, keys, 1L, "EXPR.v1.k");
-        session.write(second, keys, 2L, "EXPR.v1.k");
-        session.write(third, keys, 3L, "EXPR.v1.k");
+        long firstAt = session.write(first, keys, 1L, "EXPR.v1.k");
+        long secondAt = session.write(second, keys, 2L, "EXPR.v1.k");
+        long thirdAt = session.write(third, keys, 3L, "EXPR.v1.k");
         session.target("true", false, true);
         session.write();
 
@@ -1630,15 +1630,15 @@ public class ComposerTest {
                 new edu.uva.liftlab.graphchecker.smt.Arms(
                         Corpus.read(iteration, null));
         assertTrue("one thread is one order, whatever the occurrence",
-                rule.ancestor(first, second, "s0"));
+                rule.ancestor(first, firstAt, second, secondAt, "s0"));
         assertFalse("and it runs one way",
-                rule.ancestor(second, first, "s0"));
+                rule.ancestor(second, secondAt, first, firstAt, "s0"));
         assertFalse("so two activations of one thread never interleave",
                 rule.concurrent(earlier, later, "s0"));
         assertFalse("what started a thread is before everything on it",
                 rule.concurrent(earlier, started, "s0"));
         assertTrue("and the direction says which way",
-                rule.ancestor(first, third, "s0"));
+                rule.ancestor(first, firstAt, third, thirdAt, "s0"));
         // Attestation: instrumented and symbolic in this session -- the seed
         // -- with no decision anywhere in it.
         assertTrue("a symbolic straight-line region is attested",
@@ -1942,10 +1942,12 @@ public class ComposerTest {
                     arrival, false, null, producer, "corr-" + symbol));
         }
 
-        void write(Endpoint endpoint, LocationId location, long version,
+        /** @return the session event this write was sequenced at. */
+        long write(Endpoint endpoint, LocationId location, long version,
                    String ref) {
             writes.add(WriteRow.of(id, ++seq, endpoint, location, version,
                     ref, "Z"));
+            return seq;
         }
 
         void read(Endpoint endpoint, LocationId location, long version,
