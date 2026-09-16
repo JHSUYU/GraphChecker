@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
+import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
@@ -270,6 +271,16 @@ public class RowRuntimeTest {
         // with outcome=true, which is what lets a flip be seen at all.
         RowRuntime.decision(occurrence, 13L, "SnapshotManager.delete()#u7", 1,
                 false, markerJumpCondition("M_Z_marker"));
+        // A decision the VM gave no event id: taken before path recording
+        // opened, so it captured no site condition and states no term.  Its
+        // seq used to be the session's HIGH-WATER MARK -- "no VM clock" and
+        // "the latest VM event" came out as one integer, and Arms
+        // #pathCondition keeps every decision seq < before, so whether this
+        // row sat inside a prefix was decided by where the mark stood.  On
+        // the 17960 corpus 46/46/52 decision rows per session share a seq
+        // with another row and exactly one of each group owns it.
+        RowRuntime.decision(occurrence, 0L, "Klass.beforeRecording()#u2", 1,
+                true, null);
         RowRuntime.exported(occurrence, 4L, "XCH.port", 7L, "c1", 0,
                 expression, "J", "1");
         RowRuntime.attachedAt(endpoint, 9L, "XCH.port", 7L, "c1", "v_H", "J",
@@ -350,9 +361,17 @@ public class RowRuntimeTest {
         SessionDir dir = session();
         List<DecisionRow> decisions = RowCodec.readAll(dir.decisions(),
                 RowCodec::readDecision);
-        assertEquals(2, decisions.size());
+        assertEquals(3, decisions.size());
         assertEquals(occurrence, decisions.get(0).occurrence());
         assertTrue(decisions.get(0).term().startsWith("EXPR."));
+        // seq == 0 IS the statement "this row carries no VM clock", and it
+        // never borrows an order it does not have.
+        assertEquals("a decision with no VM event id states 0", 0L,
+                decisions.get(2).seq());
+        assertEquals("and no term, so it is in no path condition either",
+                "", decisions.get(2).term());
+        assertFalse("a clockless decision adds no conjunct at any prefix",
+                Arms.predicate(Arms.conjunct(decisions.get(2))));
         List<ExportRow> exports = RowCodec.readAll(dir.exports(),
                 RowCodec::readExport);
         assertEquals(1, exports.size());

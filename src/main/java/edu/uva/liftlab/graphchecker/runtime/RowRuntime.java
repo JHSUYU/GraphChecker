@@ -50,17 +50,6 @@ public final class RowRuntime {
     /** This replay's clock readings so far, by root id. */
     private static final Map<String, Long> CLOCKS =
             new ConcurrentHashMap<String, Long>();
-    /**
-     * The highest VM event id this session has published.
-     *
-     * <p>{@code seq} is ONE counter for every row kind -- the VM's own
-     * session-global event id, which the decisions' {@code vmEventId} and
-     * the write log's {@code fieldVersionId} are both drawn from -- because
-     * the composer compares a decision's seq against an export's directly.
-     * Never a per-kind ordinal.</p>
-     */
-    private static final java.util.concurrent.atomic.AtomicLong LAST_SEQ =
-            new java.util.concurrent.atomic.AtomicLong();
     private static volatile SessionPublisher publisher;
     private static volatile String sessionId = "";
 
@@ -604,31 +593,37 @@ public final class RowRuntime {
     }
 
     /**
-     * Where one row sits in the run: the VM's own event id.
+     * Where one row sits in the run: the VM's own event id, or 0.
      *
      * <p>One counter for every kind, so a producer's prefix can be cut at
      * its export and a read ordered against the write it saw.  The VM's
      * ledger is that counter -- decisions carry its event id, versions are
      * drawn from it -- so a row states the id it was produced at rather
-     * than a second numbering of the same events.  A row the VM gave no id
-     * states 0, which says "this row carries no VM clock" and never
-     * pretends to an order it does not have.</p>
+     * than a second numbering of the same events.</p>
+     *
+     * <p><b>{@code seq == 0} means THIS ROW CARRIES NO VM CLOCK.</b>  An
+     * ambient mint, a decision taken before path recording opened, an
+     * export the ledger did not number: the run cannot place it in the VM's
+     * event order and the row says so.  It is not a position at the start
+     * of the run and no reader may treat it as one.</p>
+     *
+     * <p>It used to answer the session's HIGH-WATER MARK instead, on the
+     * ground that such a row is "no earlier than anything already seen".
+     * That made two different statements one integer: "no VM clock" and
+     * "the latest VM event this session published" both came out as 345.
+     * On the 17960 corpus 46, 46 and 52 decision rows per session share a
+     * seq with another row, and in each group exactly ONE owns that VM
+     * event id and carries a term -- {@code
+     * FSImageFormatPBSnapshot$Saver.serializeSnapshotSection#u61#1} at 220,
+     * {@code FSImageFormatProtobuf$Saver.saveSnapshots#u13#1} at 345 -- the
+     * rest borrowed it and state no term at all.  A borrowed mark reads
+     * downstream as a real ordering: {@code Arms#pathCondition} keeps every
+     * decision {@code seq < before}, so a clockless decision was dropped
+     * from or kept in a prefix by the accident of where the mark stood when
+     * it was published.  Answering 0 states the one thing that is true.</p>
      */
     private static long sequence(long vmEventId) {
-        if (vmEventId > 0L) {
-            long seen = LAST_SEQ.get();
-            while (vmEventId > seen
-                    && !LAST_SEQ.compareAndSet(seen, vmEventId)) {
-                seen = LAST_SEQ.get();
-            }
-            return vmEventId;
-        }
-        // The VM gave this row no id of its own -- an ambient mint, an
-        // export the ledger did not number.  It is not earlier than
-        // anything already seen, and saying 0 would place it before the
-        // whole run.  A comparison against it is then "no earlier than",
-        // which is the strongest true statement available.
-        return LAST_SEQ.get();
+        return vmEventId > 0L ? vmEventId : 0L;
     }
 
     /**
@@ -912,7 +907,6 @@ public final class RowRuntime {
             REFS.clear();
             Identity.resetForTests();
             CLOCKS.clear();
-            LAST_SEQ.set(0L);
             publisher = null;
             sessionId = "";
             Interactions.resetForTests();
