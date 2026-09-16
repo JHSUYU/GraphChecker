@@ -509,14 +509,16 @@ public final class RowRuntime {
     /**
      * Enters one level of the execution index: an application method's entry.
      *
-     * <p>The iteration of the frame is the k-th entry of this site in the
-     * level that encloses it -- control flow, which is what a calling
-     * context is made of (IDENTITY-V3 §1).</p>
+     * <p>{@code nodeKey} is the node the activation is being entered on,
+     * the same one its address is minted with: the frame's iteration is the
+     * k-th entry at this site inside the occurrence that encloses it, and
+     * outside every region that enclosing occurrence is the node's degraded
+     * role occurrence.</p>
      *
      * @return the token that closes exactly this level
      */
-    public static long enterFrame(String callSiteId) {
-        return Identity.enterFrame(callSiteId);
+    public static long enterFrame(String nodeKey, String callSiteId) {
+        return Identity.enterFrame(nodeKey, callSiteId);
     }
 
     /** Leaves the level {@code token} opened. */
