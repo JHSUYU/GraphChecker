@@ -1874,11 +1874,15 @@ campaign_import_session() {
 # overwrites was never evidence.
 campaign_import_gate() {
   local iteration_dir=$1 iteration_id=$2
+  # A wave runs the same gate over its own session set: the gate is given
+  # the sessions to read and the file to summarise into, and appends to the
+  # one campaign gap file either way.
+  local sessions=${3:-${iteration_dir}/sessions}
+  local summary=${4:-${iteration_dir}/import_gate.json}
   local gaps="${iteration_dir}/campaign_gaps.jsonl"
-  local summary="${iteration_dir}/import_gate.json"
   local blocking violations first
   run_java_main edu.uva.liftlab.graphchecker.contract.ImportGateMain \
-    --sessions "${iteration_dir}/sessions" \
+    --sessions "${sessions}" \
     --out "${gaps}" \
     --topology-epoch "${iteration_id}" >"${summary}"
   require_nonempty "import gate summary" "${summary}"
@@ -1889,6 +1893,61 @@ campaign_import_gate() {
 ${blocking} blocking"
   [[ "${blocking}" -eq 0 ]] || campaign_fail IMPORT ImportGate "${gaps}" \
     "${blocking} row invariants violated: ${first}"
+}
+
+# The same gate, over one wave's own replays.
+#
+# It used to run once, on the seed session alone, so every FOCUSED session a
+# wave published entered EXPLORE and COMPOSE unchecked: an invariant-8
+# violation there (a root mint whose recordedValue is empty) was read as a
+# valid row by both stages and reported, if at all, later and elsewhere.  A
+# wave is where a focused session is produced, so it is where the contract is
+# checked -- a BLOCKING violation fails the campaign at that wave, by name.
+#
+# ImportGateMain reads the session set of an ITERATION directory
+# ({@code <iteration>/sessions}) and invariant 10 needs that directory's
+# obligation workers, so the wave is given a directory of exactly that shape:
+# its own new sessions, and itself as the one wave of workers.  Nothing is
+# copied and nothing under sessions/ is written.
+campaign_import_wave_gate() {
+  local iteration_dir=$1 iteration_id=$2 wave_dir=$3 sessions=$4
+  local before="${wave_dir}/sessions-before.txt"
+  local gate="${wave_dir}/import-gate"
+  local name count=0
+  require_file "wave session roster" "${before}"
+  rm -rf -- "${gate}"
+  mkdir -p "${gate}/sessions"
+  ln -s "${wave_dir}" "${gate}/obligations-0000"
+  while IFS= read -r name; do
+    [[ -n "${name}" && -d "${sessions}/${name}" ]] || continue
+    ln -s "${sessions}/${name}" "${gate}/sessions/${name}"
+    count=$((count + 1))
+  done < <(campaign_wave_sessions "${sessions}" "${before}")
+  if [[ "${count}" -eq 0 ]]; then
+    # Every obligation of the wave failed to replay, which its own result
+    # rows already say; there is no row here to check.
+    campaign_log "import gate: $(basename "${wave_dir}") published no session"
+    return 0
+  fi
+  campaign_log "import gate: $(basename "${wave_dir}") published \
+${count} session(s)"
+  campaign_import_gate "${iteration_dir}" "${iteration_id}" \
+    "${gate}/sessions" "${wave_dir}/import_gate.json"
+}
+
+# The session names under ${1} that are not in the roster file ${2}.
+campaign_wave_sessions() {
+  local sessions=$1 before=$2
+  LC_ALL=C comm -13 "${before}" <(campaign_session_roster "${sessions}")
+}
+
+# Every session directory name under ${1}, sorted.
+campaign_session_roster() {
+  local sessions=$1 entry
+  for entry in "${sessions}"/*/; do
+    [[ -d "${entry}" ]] || continue
+    basename "${entry}"
+  done | LC_ALL=C sort
 }
 
 
@@ -2098,6 +2157,9 @@ as the wave before it with no new verdict"
     previous_signature=${wave_signature}
     campaign_log "wave ${wave}: ${pending} obligation(s), \
 workers=${concolic_worker_count}"
+    # Which sessions existed before this wave's replays landed, so the row
+    # contract below is checked over the wave's own and no other.
+    campaign_session_roster "${sessions}" >"${wave_dir}/sessions-before.txt"
     pids=()
     status=0
     for job in "${jobs[@]}"; do
@@ -2124,6 +2186,10 @@ workers=${concolic_worker_count}"
     # next wave sees a complete frontier rather than a partial one.
     find "${wave_dir}" -mindepth 2 -maxdepth 2 -name obligation_result.jsonl \
       -print0 | LC_ALL=C sort -z | xargs -0 -r cat >>"${results}"
+    # The row contract, over the sessions this wave published, before the
+    # next wave's planner reads one of their rows.
+    campaign_import_wave_gate "${iteration_dir}" "${iteration_id}" \
+      "${wave_dir}" "${sessions}"
     wave=$((wave + 1))
   done
   campaign_log "exploration stopped after ${wave} wave(s), \

@@ -17,10 +17,8 @@ import edu.uva.liftlab.graphchecker.plan.SharedFieldFlow;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
-import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
 import edu.uva.liftlab.graphchecker.plan.DeclaredSymbolicInputs;
 import edu.uva.liftlab.graphchecker.plan.DependencyRole;
-import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.plan.MaterializationSpec;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.plan.RuntimePlanArtifact;
@@ -45,7 +43,6 @@ import java.util.function.ToLongFunction;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import static edu.uva.liftlab.graphchecker.causynth.MapFields.firstNonEmpty;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.longNumber;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.object;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.number;
