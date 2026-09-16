@@ -155,8 +155,13 @@ public final class RuntimeSelectedRegionFinalizer {
         }
         List<Map<String, Object>> branchOrder = orderedBranchObservations(
                 runtimeObservations);
+        // The addresses several activations landed on, held until the closure
+        // is known: whether that ambiguity blocks is whether the region is
+        // inside it (see #stateSharedAddressClasses).
+        List<Map<String, Object>> sharedAddresses = new ArrayList<>();
         Map<String, String> occurrenceByRecordedRootCall =
-                readOccurrences(program, runtimeInstances, skeletonSource);
+                readOccurrences(program, runtimeInstances, skeletonSource,
+                        sharedAddresses);
 
         for (Map.Entry<String, StaticProgram.RegionRow> entry
                 : program.skeletons.entrySet()) {
@@ -251,6 +256,9 @@ public final class RuntimeSelectedRegionFinalizer {
         program.regionEdges.addAll(retainExactRequestFaultControls(
                 program, closure, runtimeOccurrenceLinks));
         applyClosure(program, closure);
+        // AFTER the closure: the class of a shared address is whether the
+        // kept slice holds its region.
+        stateSharedAddressClasses(program, sharedAddresses);
         // Declared last, and deliberately after the closure filter.
         declareCommunicationPorts(program, cutPorts);
         canonicalizeRegionEdges(program);
@@ -825,22 +833,27 @@ public final class RuntimeSelectedRegionFinalizer {
      *
      * <p>Two activations may still land on one address -- nothing IDENTITY-V3
      * names separates them (same node, same region, same context, same
-     * index) -- and that is now a BLOCKING refusal, not a note.  One
-     * occurrence is one plan row (README REGION-1): the first activation is
-     * published and the rest are not, so the artifact never states the
-     * contradiction and PLAN never meets it as a schema complaint
+     * index).  One occurrence is one plan row (README REGION-1): the first
+     * activation is published and the rest are not, so the artifact never
+     * states the contradiction and PLAN never meets it as a schema complaint
      * (RuntimePlanArtifact.read, whose duplicate check stays as the second
      * line).  Renumbering them would be an ordinal, which is what v3 exists
      * to remove; the rule that separates them is the entry count of {@code
      * Identity.enterCall}, and a residual collision means that count could
-     * not, so no claim may be made over the address.</p>
+     * not.  The address is recorded here and CLASSED after the closure walk
+     * ({@link #stateSharedAddressClasses}), because whether the ambiguity
+     * can reach a claim is whether the kept slice holds its region.</p>
      *
+     * @param sharedAddresses collects one row per address several activations
+     *     landed on: its {@code occurrenceId}, its {@code regionId} and the
+     *     recorded root calls that shared it
      * @return every recorded root call, by the occurrence it belongs to
      */
     private static Map<String, String> readOccurrences(
             StaticProgram program,
             Collection<Map<String, Object>> runtimeInstances,
-            String source) throws IOException {
+            String source,
+            List<Map<String, Object>> sharedAddresses) throws IOException {
         Map<String, String> occurrenceByRecordedRootCall =
                 new LinkedHashMap<>();
         Map<String, List<Long>> rootCallsByAddress = new LinkedHashMap<>();
@@ -864,20 +877,73 @@ public final class RuntimeSelectedRegionFinalizer {
         for (Map.Entry<String, List<Long>> entry
                 : rootCallsByAddress.entrySet()) {
             if (entry.getValue().size() < 2) continue;
-            program.activations.get(entry.getKey()).put(
-                    SHARED_ADDRESS_ROOT_CALLS, entry.getValue());
-            planGap(program.planGaps, GapKind.OCCURRENCE_ADDRESS_SHARED,
-                    GapClass.BLOCKING,
-                    entry.getKey(), entry.getValue().size() + " activations "
-                            + "of this region share one address: nothing "
-                            + "IDENTITY-V3 names distinguishes them (same "
-                            + "node, causal context and execution index); "
-                            + "recorded root calls " + entry.getValue()
-                            + "; one occurrence is one plan row, so only the "
-                            + "first is published and no claim may be made "
-                            + "over this address");
+            Map<String, Object> activation =
+                    program.activations.get(entry.getKey());
+            activation.put(SHARED_ADDRESS_ROOT_CALLS, entry.getValue());
+            Map<String, Object> shared = new LinkedHashMap<>();
+            shared.put("occurrenceId", entry.getKey());
+            shared.put("regionId", text(activation.get("regionId")));
+            shared.put(SHARED_ADDRESS_ROOT_CALLS, entry.getValue());
+            sharedAddresses.add(shared);
         }
         return occurrenceByRecordedRootCall;
+    }
+
+    /**
+     * States the class of every shared occurrence address, once.
+     *
+     * <p>A row states its own class (CONTRACT-SPEC SS2) and no later stage
+     * overrules it, so the class has to be the answer to the question the
+     * claim would ask: can this ambiguity reach the formula?  It can exactly
+     * when the region is a member of the closure this plan publishes -- the
+     * target-directed walk's own answer, {@code program.regions} after
+     * {@link #applyClosure}, which is the ONE closure notion this engine has
+     * and is not re-decided here.  Inside it, the shared address is an
+     * occurrence a task addresses and a session publishes rows for, and
+     * withholding is the only safe answer.  Outside it there is no plan row,
+     * no task and no session row that names the occurrence, so nothing the
+     * composer reads can rest on it: the row is DIAGNOSTIC and says so.</p>
+     *
+     * <p>Three rows of the reviewed hdfs-17960 run were the second case --
+     * {@code FSDirectory$InitQuotaTask} ForkJoin siblings, whose fork site is
+     * in the JDK and cannot be woven -- and they were published with no
+     * stated class, which {@code campaign_write_gaps} reads as BLOCKING.
+     * They withheld nothing that could be withheld and appeared in
+     * {@code result.json blockingGapCodes} beside a claim of
+     * SAT_CANDIDATE with zero blockers.</p>
+     */
+    private static void stateSharedAddressClasses(StaticProgram program,
+            List<Map<String, Object>> sharedAddresses) {
+        Set<String> kept = new LinkedHashSet<>();
+        for (Map<String, Object> region : program.regions) {
+            kept.add(text(region.get("regionId")));
+        }
+        for (Map<String, Object> shared : sharedAddresses) {
+            String regionId = text(shared.get("regionId"));
+            boolean member = kept.contains(regionId);
+            Object rootCalls = shared.get(SHARED_ADDRESS_ROOT_CALLS);
+            int count = rootCalls instanceof Collection
+                    ? ((Collection<?>) rootCalls).size() : 0;
+            planGap(program.planGaps, GapKind.OCCURRENCE_ADDRESS_SHARED,
+                    member ? GapClass.BLOCKING : GapClass.DIAGNOSTIC,
+                    text(shared.get("occurrenceId")),
+                    count + " activations of this region share one address: "
+                            + "nothing IDENTITY-V3 names distinguishes them "
+                            + "(same node, causal context and execution "
+                            + "index); recorded root calls " + rootCalls
+                            + "; one occurrence is one plan row, so only the "
+                            + "first is published"
+                            + (member
+                            ? "; BLOCKING: " + regionId + " is a member of "
+                            + "the closure this plan publishes, so a task "
+                            + "addresses this occurrence and no claim may be "
+                            + "made over it"
+                            : "; DIAGNOSTIC: " + regionId + " is not a "
+                            + "member of the closure this plan publishes, so "
+                            + "no plan row, no task and no session row names "
+                            + "this occurrence and no composition can rest "
+                            + "on it"));
+        }
     }
 
     /** Canonical activation records at the trace-aggregation boundary. */
