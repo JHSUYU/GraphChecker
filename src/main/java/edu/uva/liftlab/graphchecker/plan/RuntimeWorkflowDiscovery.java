@@ -1,7 +1,6 @@
 package edu.uva.liftlab.graphchecker.plan;
 
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
-import edu.uva.liftlab.graphchecker.smt.CanonicalJson;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -13,12 +12,8 @@ import edu.uva.liftlab.graphchecker.plan.RegionInstancePlan;
 import edu.uva.liftlab.graphchecker.plan.RegionInstancePlan.Goal;
 
 import java.io.IOException;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.Collections;
-import java.util.Comparator;
-import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -28,26 +23,41 @@ import java.util.Set;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
-/** Selects one target and its VM-observed linked replay scope. */
+/** Selects the declared target and schedules the whole region plan with it. */
 public final class RuntimeWorkflowDiscovery {
-    private static final String EXPLICIT_FAULT_ENTRY =
-            "EXPLICIT_FAULT_ENTRY";
 
     private RuntimeWorkflowDiscovery() {
     }
 
     /**
-     * The candidate scope: the target and the candidate closure that replays
-     * with it.
+     * The seed schedule: the declared target, then every other planned
+     * occurrence the plan states is replayable.
      *
-     * <p>The candidate graph is the instrumentation frontier and the replay
-     * scope both.  There used to be a third scope that narrowed it to the
-     * occurrences a previous iteration's result envelope reported as
-     * activated; the envelope is gone, and the narrowing was wrong anyway --
-     * see the comment at the closure below.  With it went the last thing that
-     * told a candidate schedule from a seed-replay one HERE: both asked for
-     * the same closure, so this is one entry rather than two names for it,
-     * and what a seed replay still varies is withSeedReplayGroup.</p>
+     * <p>PLAN owns no slice of its own.  The closure is EXPLORE's, computed
+     * over the static scope map and the recorded rows (closure v2), so a
+     * second scope here could only be a weaker copy of it -- and it was: the
+     * walk this replaces started at the target and followed {@code
+     * edgeBindings} backwards over the writes the recording happened to
+     * make, keeping only producers that produced something.  On a healthy
+     * recording the occurrence whose root flip is the whole question is
+     * exactly the one that produced nothing.  hdfs-11741's {@code
+     * removeExpiredKeys} reads the clock, decides an expiry and removes
+     * nothing: six planned READY occurrences, no outgoing field flow, and so
+     * no seed task at all under the old walk, which is a campaign that
+     * explores everything except the thing the case declared.  A
+     * counterfactual writer is invisible to a walk over what was written, so
+     * there is no narrowing by observed flow here and no admission driven by
+     * {@code edgeBindings}: every replayable occurrence of the region plan
+     * is a seed task.</p>
+     *
+     * <p>What still decides anything here is fail-closed and about the plan,
+     * not about flow: the case must declare which occurrence of the
+     * annotated site the campaign is about ({@link #declaredTarget}), and an
+     * occurrence that states two replayable goals is refused rather than
+     * scheduled twice ({@link #onlyReplayableGoal}).  Order is the target
+     * first and then the plan's own recorded order, which is the order the
+     * recording published the activations in and therefore the order a case
+     * author counted.</p>
      */
     static RankedWorkflow workflow(List<RegionInstancePlan> plans,
                                    String declaredOccurrence)
@@ -55,19 +65,15 @@ public final class RuntimeWorkflowDiscovery {
         if (plans == null || plans.isEmpty()) {
             throw new IOException("runtime region plan is empty");
         }
-        Map<String, RegionInstancePlan> byOccurrence = new LinkedHashMap<>();
-        Map<String, JsonObject> edges = new LinkedHashMap<>();
+        Set<String> occurrences = new LinkedHashSet<>();
         List<Target> targets = new ArrayList<>();
         for (RegionInstancePlan plan : plans) {
             String occurrence = plan.occurrenceId();
-            RegionInstancePlan prior = byOccurrence.putIfAbsent(
-                    occurrence, plan);
-            if (prior != null && prior != plan) {
+            if (!occurrences.add(occurrence)) {
                 throw new IOException("duplicate planned region occurrence: "
                         + occurrence);
             }
             for (Goal goal : plan.goals()) {
-                indexEdges(edges, goal.edgeBindings());
                 if (goal.kind().capturesTargetReach() && goal.replayable()
                         && namesFailureSite(goal)) {
                     targets.add(new Target(plan, goal));
@@ -83,78 +89,28 @@ public final class RuntimeWorkflowDiscovery {
         // decide which instance of the annotated site "matters" is a
         // decision outside the slice, and a case that declares nothing is
         // refused by name rather than answered by a heuristic.
-        Set<String> anchors = anchorGoals(targets, declaredOccurrence);
-        Target target = declaredTarget(targets, declaredOccurrence);
-        // A linked replay contains only the observed dynamic ancestry of the
-        // target. Static demand still guides instrumentation and later
-        // topology discovery; making an unrelated observed occurrence a
-        // mandatory replay member can prevent the real causal chain from
-        // executing at all.
-        Set<String> candidateClosure = equivalentTargetTopologyScope(target,
-                targets, byOccurrence, edges);
-        // Which occurrences are in scope is one decision, made once over the
-        // region graph by root dependence: an occurrence is in the slice
-        // because it reads a root, carries a root-dependent value, or is the
-        // target.  A concrete object or container is still a carrier -- its
-        // fields or elements can hold expressions propagated by an upstream
-        // region -- so nothing prunes the producer that populated it.
         //
-        // What is deliberately not re-derived is the scope, from observed
-        // data flow.  A walk backwards from the target over the writes this
-        // run happened to make keeps only the producers that produced
-        // something -- and on a healthy recording the occurrence whose root
-        // flip is the whole question is exactly the one that produced
-        // nothing.  A counterfactual writer is invisible to a walk over what
-        // was written, and narrowing the slice by that one occurrence is how
-        // a campaign comes to explore nothing at all.  That narrowing was
-        // the result envelope's last reader, and it is gone with it.
-        Set<String> closure = candidateClosure;
-        // An explicit fault occurrence controls whether an interaction takes
-        // place; it need not produce the interaction's payload.  Keep such a
-        // control root when (and only when) the selected target's runtime
-        // candidate closure already contains that exact occurrence.  This
-        // leaves unrelated marker occurrences in the instrumentation union
-        // without forcing them into the linked replay.
-        closure = new LinkedHashSet<>(closure);
-        for (String occurrence : candidateClosure) {
-            RegionInstancePlan plan = byOccurrence.get(occurrence);
-            if (plan != null && explicitFaultEntry(plan)) {
-                closure.add(occurrence);
-            }
-        }
-        // The occurrence(s) of the annotated site this campaign is about.
-        // A campaign is target-directed: the anchor is the occurrence at
-        // which the RECORDING took the fatal arm -- the annotated
-        // exception's own occurrence -- or the one the case declares.
-        // Every other occurrence reached the site healthily and carries no
-        // verdict to state, so it is scheduled as a dependency and named
-        // rather than composed and judged.  Downstream stages read this
-        // flag for the reach query, the obligation wave and the claim.
-        Set<String> targetReachGoals = anchors;
+        // targetReach marks the occurrence(s) of the annotated site this
+        // campaign is about.  Every other occurrence reached the site
+        // healthily and carries no verdict to state, so it is scheduled as a
+        // dependency and named rather than composed and judged.  Downstream
+        // stages read this flag for the reach query, the obligation wave and
+        // the claim.
+        Set<String> targetReachGoals = anchorGoals(targets,
+                declaredOccurrence);
+        Target target = declaredTarget(targets, declaredOccurrence);
         List<Selection> selections = new ArrayList<>();
-        // Preserve the seed task's symbolic frontier and therefore its stable
-        // task identity.  The exact replay closure narrows which occurrences
-        // need path summaries; it does not rewrite the already executed
-        // target task or the candidate edges retained for instrumentation.
         selections.add(Selection.target(target,
                 targetReachGoals.contains(target.goal.goalId())));
-
-        List<RegionInstancePlan> dependencies = new ArrayList<>();
-        for (String occurrence : closure) {
-            if (occurrence.equals(target.occurrenceId)) continue;
-            RegionInstancePlan plan = byOccurrence.get(occurrence);
-            if (plan != null) dependencies.add(plan);
-        }
-        dependencies.sort(Comparator
-                .comparing(RegionInstancePlan::regionId)
-                .thenComparing(RegionInstancePlan::occurrenceId));
-        for (RegionInstancePlan plan : dependencies) {
+        for (RegionInstancePlan plan : plans) {
+            if (plan.occurrenceId().equals(target.occurrenceId)) continue;
+            // An occurrence the plan states no replayable goal for is not a
+            // task: "READY" is the plan's own word for "this occurrence can
+            // be replayed", and nothing here overrides it.
             Goal goal = onlyReplayableGoal(plan);
-            if (goal != null) {
-                selections.add(Selection.dependency(target.campaignId,
-                        plan, goal,
-                        targetReachGoals.contains(goal.goalId())));
-            }
+            if (goal == null) continue;
+            selections.add(Selection.dependency(target.campaignId, plan,
+                    goal, targetReachGoals.contains(goal.goalId())));
         }
         return new RankedWorkflow(selections);
     }
@@ -253,24 +209,6 @@ public final class RuntimeWorkflowDiscovery {
                 SelectorResolution.apiOf(selector, address));
     }
 
-    /** All graph-connected occurrences of every execution of the same
-     * failure site.  These edges schedule one JVM bundle only; they never
-     * supply a symbolic value or a writer choice. */
-    private static Set<String> equivalentTargetTopologyScope(
-            Target selected, Collection<Target> targets,
-            Map<String, RegionInstancePlan> plans,
-            Map<String, JsonObject> edges) {
-        Set<String> sites = failureSites(selected.goal);
-        Set<String> result = new LinkedHashSet<>();
-        for (Target target : targets) {
-            if (sites.equals(failureSites(target.goal))) {
-                result.addAll(topologyScope(target.occurrenceId,
-                        plans, edges));
-            }
-        }
-        return result;
-    }
-
     /** The observed failure-target branch sites one goal names. */
     private static Set<String> failureSites(Goal goal) {
         Set<String> result = new LinkedHashSet<>();
@@ -284,50 +222,6 @@ public final class RuntimeWorkflowDiscovery {
             }
         }
         return result;
-    }
-
-    private static boolean explicitFaultEntry(RegionInstancePlan plan) {
-        return EXPLICIT_FAULT_ENTRY.equals(optionalString(plan.json(),
-                "rootAuthority"));
-    }
-
-    private static void indexEdges(Map<String, JsonObject> indexed,
-                                   JsonArray candidates) throws IOException {
-        for (JsonElement element : candidates) {
-            if (!element.isJsonObject()) continue;
-            JsonObject edge = element.getAsJsonObject();
-            if (!AutomaticRegionEdge.summaryTraversalBinding(edge)) continue;
-            String from = optionalString(edge, "fromOccurrenceId");
-            String to = optionalString(edge, "toOccurrenceId");
-            if (from.isEmpty() || to.isEmpty()) continue;
-            String id = optionalString(edge, "edgeId");
-            if (id.isEmpty()) id = ArtifactIO.sha256(CanonicalJson.render(edge));
-            JsonObject prior = indexed.putIfAbsent(id, edge.deepCopy());
-            if (prior != null && !prior.equals(edge)) {
-                throw new IOException("conflicting runtime edge: " + id);
-            }
-        }
-    }
-
-    private static Set<String> topologyScope(
-            String target, Map<String, RegionInstancePlan> plans,
-            Map<String, JsonObject> edges) {
-        Set<String> selected = new LinkedHashSet<>();
-        Deque<String> work = new ArrayDeque<>();
-        selected.add(target);
-        work.add(target);
-        while (!work.isEmpty()) {
-            String consumer = work.removeFirst();
-            for (JsonObject edge : edges.values()) {
-                String to = optionalString(edge, "toOccurrenceId");
-                String from = optionalString(edge, "fromOccurrenceId");
-                if (consumer.equals(to) && plans.containsKey(from)
-                        && selected.add(from)) {
-                    work.addLast(from);
-                }
-            }
-        }
-        return selected;
     }
 
     private static Goal onlyReplayableGoal(RegionInstancePlan plan)
