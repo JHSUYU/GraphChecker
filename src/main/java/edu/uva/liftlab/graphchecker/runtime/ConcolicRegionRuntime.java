@@ -314,6 +314,11 @@ public final class ConcolicRegionRuntime {
                 cut = active.chargeLoopBody(loop);
             }
         } catch (Throwable failure) {
+            // Fail-OPEN, unlike the sibling: checkLoopBackedge turns the
+            // same failure into a BOUND_HOOK_FAILURE cut, while here the
+            // body goes uncharged and the replay resource cap stops being
+            // enforced for it.  Left as it stands because the fix is the
+            // sibling's control flow (end the activation), not a row.
         } finally {
             resumeLoopAccounting(active, api, paused);
         }
@@ -1487,6 +1492,19 @@ public final class ConcolicRegionRuntime {
                         minted.expression, true, false,
                         minted.recordedValue);
             } catch (Throwable throwable) {
+                // The declaration said the search starts at this cell and
+                // it was not minted, so the region reads it concretely and
+                // the composer meets a read with no root.  Stated, never
+                // swallowed: a mint that failed and a cell the plan never
+                // named read identically from the corpus.
+                RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.UNSTATED_VALUE,
+                        edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
+                        firstNonBlank(action.symbol, action.actionDigest),
+                        "the declared heap-field input at "
+                                + SiteId.render(method, unitIndex)
+                                + " was not minted, so the region reads it"
+                                + " concretely and no row states a value"
+                                + " for it: " + rootCause(throwable));
             }
         }
     }
@@ -1525,6 +1543,17 @@ public final class ConcolicRegionRuntime {
             engine().observeExactPrimitiveField(receiver, fieldSignature);
             ensurePathRecordingStarted(active);
         } catch (Throwable failure) {
+            // This call is what STARTS the location's version log, so a
+            // loss here is not one row: every later read of the same cell
+            // joins to no writer at all, which is the hdfs-17960 shape
+            // this hook exists to close.
+            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.UNSTATED_VALUE,
+                    edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
+                    firstNonBlank(safe(siteId), safe(fieldSignature)),
+                    "this write site could not start the VM's version log"
+                            + " for " + safe(fieldSignature) + ", so every"
+                            + " later read of that location joins to no"
+                            + " writer: " + rootCause(failure));
         }
     }
 
@@ -2048,8 +2077,16 @@ public final class ConcolicRegionRuntime {
             RowRuntime.exported(producer, exportEventId, site.portId(),
                     handle, view.exchangeCorrelationId, attemptOf(view),
                     exported, descriptor, recordedValue);
-        } catch (Throwable ignored) {
-            // Publishing never ends a workload run.
+        } catch (Throwable unstated) {
+            // Publishing never ends a workload run -- and it never passes
+            // in silence either: the value crossed the port and no row
+            // states the endpoint, so nothing downstream can pair the
+            // delivery to it.
+            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.UNSTATED_VALUE,
+                    edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC, site.portId(),
+                    "the export of this port published no endpoint row, so"
+                            + " no delivery can be paired to it: "
+                            + rootCause(unstated));
         } finally {
             endBookkeeping();
         }
@@ -2285,7 +2322,6 @@ public final class ConcolicRegionRuntime {
                                              String producerOccurrenceId) {
         if (site == null) return;
         ActiveRegion active = attachConsumerRegion(site);
-        if (site == null) return;
         if (active == null) {
             // Same rule on the element-present side: the delivery happened.
             beginBookkeeping();
@@ -2498,12 +2534,17 @@ public final class ConcolicRegionRuntime {
         String portId = safe(site.portId());
         Field element = declaredInstanceField(owner, declaringClass,
                 fieldName, descriptor);
-        List<HandoffLeaf> leaves = handoffLeaves(owner, element);
+        List<HandoffLeaf> leaves = handoffLeaves(portId, owner, element);
         if (leaves.isEmpty()) {
             // Never silence: a port whose delivered value exposes no
             // primitive leaf the VM can mint on has no v_H, and a row
             // without one names no occurrence two replays could be joined
-            // at, so the loss is named.
+            // at, so the loss is named -- in the same words the ambient
+            // sibling uses, so one fact is stated once.
+            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.UNSTATED_VALUE,
+                    edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC, portId,
+                    "the delivered element exposes no primitive leaf to mint"
+                            + " a boundary variable on");
             return;
         }
         for (HandoffLeaf leaf : leaves) {
@@ -2576,9 +2617,17 @@ public final class ConcolicRegionRuntime {
                             .answer(consumer.id());
             if (!answer.isEmpty() && !writeModeledField(owner, signature,
                     descriptor, answer)) {
-                throw new IllegalStateException(
-                        "the wave's answer could not be written into "
-                                + signature);
+                // The obligation's answer for this H was not written, so
+                // this replay ran the value that arrived where the wave
+                // asked for another one.  The same refusal a root mint
+                // states (#applyFocusedRootAssignment), by name, instead of
+                // an exception the catch below would have flattened into
+                // "the mint failed".
+                RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.ASSIGNMENT_UNPLANTED,
+                        edu.uva.liftlab.graphchecker.contract.GapClass.BLOCKING, portId,
+                        "the wave's answer for this handoff could not be"
+                                + " written into " + signature);
+                return;
             }
             api.symbolizeExactField(owner, signature,
                     handoffMintLabel(phaseId, portId));
@@ -2594,6 +2643,11 @@ public final class ConcolicRegionRuntime {
                     optionalString(minted, "_java_type"), recordedValue,
                     !answer.isEmpty(), answer);
         } catch (Throwable failure) {
+            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.UNSTATED_VALUE,
+                    edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC, portId,
+                    "the boundary variable of this attach was not minted, so"
+                            + " the delivery names no occurrence two replays"
+                            + " could be joined at: " + rootCause(failure));
         }
     }
 
@@ -2690,8 +2744,15 @@ public final class ConcolicRegionRuntime {
                     Interactions.deliveryHandle(),
                     view.exchangeCorrelationId, symbol, javaType, arrival,
                     answered, answeredValue);
-        } catch (Throwable ignored) {
-            // Publishing never ends a workload run.
+        } catch (Throwable unstated) {
+            // The same rule as the export side: the delivery happened, and
+            // a consumer endpoint nothing published is a handoff no arm can
+            // be keyed by.
+            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.UNSTATED_VALUE,
+                    edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC, portId,
+                    "this delivery published no consumer endpoint row, so no"
+                            + " arm can be keyed by it: "
+                            + rootCause(unstated));
         }
     }
 
@@ -2728,7 +2789,7 @@ public final class ConcolicRegionRuntime {
         RowRuntime.ambientActivation(consumer);
         Field element = declaredInstanceField(owner, declaringClass,
                 fieldName, descriptor);
-        List<HandoffLeaf> leaves = handoffLeaves(owner, element);
+        List<HandoffLeaf> leaves = handoffLeaves(portId, owner, element);
         if (leaves.isEmpty()) {
             RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
                             .UNSTATED_VALUE,
@@ -2801,8 +2862,17 @@ public final class ConcolicRegionRuntime {
      * so two elements are two handoff occurrences.  An array of primitives
      * has no field to address and yields none, which the caller names rather
      * than passes over.</p>
+     *
+     * <p>The cap is named too.  A leaf above it is a boundary variable the
+     * run never minted, so no later stage can join that half of the
+     * delivery at all -- and an unnamed cap reads from the corpus exactly
+     * like a delivery that carried nothing there.  The row states the port,
+     * the cap, and what was left out, counted exactly and without a second
+     * walk: the delivered array elements never visited, and the declared
+     * primitive fields of the elements that were.</p>
      */
-    private static List<HandoffLeaf> handoffLeaves(Object owner,
+    private static List<HandoffLeaf> handoffLeaves(String portId,
+                                                   Object owner,
                                                    Field element) {
         List<HandoffLeaf> leaves = new ArrayList<>();
         if (element == null) return leaves;
@@ -2818,32 +2888,59 @@ public final class ConcolicRegionRuntime {
             return leaves;
         }
         if (value == null) return leaves;
+        int droppedFields = 0;
         if (value.getClass().isArray()) {
             int length = java.lang.reflect.Array.getLength(value);
-            for (int index = 0; index < length
+            int index = 0;
+            for (; index < length
                     && leaves.size() < HANDOFF_LEAF_LIMIT; index++) {
                 Object item = java.lang.reflect.Array.get(value, index);
                 if (item == null) continue;
-                addPrimitiveLeaves(item, "[" + index + "]", leaves);
+                droppedFields += addPrimitiveLeaves(item, "[" + index + "]",
+                        leaves);
             }
+            noteTruncatedHandoff(portId, leaves.size(), length - index,
+                    droppedFields);
             return leaves;
         }
-        addPrimitiveLeaves(value, "", leaves);
+        droppedFields = addPrimitiveLeaves(value, "", leaves);
+        noteTruncatedHandoff(portId, leaves.size(), 0, droppedFields);
         return leaves;
     }
 
-    private static void addPrimitiveLeaves(Object owner, String prefix,
-                                           List<HandoffLeaf> leaves) {
+    /** Names one delivery whose boundary variables did not fit the cap. */
+    private static void noteTruncatedHandoff(String portId, int minted,
+                                             int droppedElements,
+                                             int droppedFields) {
+        if (droppedElements <= 0 && droppedFields <= 0) return;
+        RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.BOUND_INSUFFICIENT,
+                edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC, portId,
+                "this delivery minted " + minted + " boundary variable(s)"
+                        + " and stopped at the " + HANDOFF_LEAF_LIMIT
+                        + "-leaf cap, leaving " + droppedElements
+                        + " delivered element(s) and " + droppedFields
+                        + " declared primitive field(s) with none, so no"
+                        + " later stage can join a handoff at them");
+    }
+
+    /** @return how many qualifying leaves the cap left out */
+    private static int addPrimitiveLeaves(Object owner, String prefix,
+                                          List<HandoffLeaf> leaves) {
         // Only the application's own objects.  An array of primitives boxes
         // each element on the way out of reflection, and java.lang.Integer's
         // own private "value" is not a leaf the workload addresses -- it is
         // the box the array element already is, and minting into it would
         // publish a handoff at a field no decode ever reads.
-        if (owner.getClass().getName().startsWith("java.")) return;
+        if (owner.getClass().getName().startsWith("java.")) return 0;
+        int dropped = 0;
         for (Field field : owner.getClass().getDeclaredFields()) {
-            if (leaves.size() >= HANDOFF_LEAF_LIMIT) return;
             if (java.lang.reflect.Modifier.isStatic(field.getModifiers())
                     || !field.getType().isPrimitive()) {
+                continue;
+            }
+            if (leaves.size() >= HANDOFF_LEAF_LIMIT) {
+                // Counted, not minted: the caller names how many.
+                dropped++;
                 continue;
             }
             try {
@@ -2854,6 +2951,7 @@ public final class ConcolicRegionRuntime {
             leaves.add(new HandoffLeaf(owner, field,
                     prefix + exactFieldSignature(field)));
         }
+        return dropped;
     }
 
     /** The one exact VM root of a read-back, or null when it is not one. */
@@ -2997,7 +3095,14 @@ public final class ConcolicRegionRuntime {
                 finish(frame.token, "NORMAL", "", null);
             }
         } catch (Throwable ignored) {
-            // Runtime observation is fail-closed and cannot alter the return.
+            // Runtime observation is fail-closed and cannot alter the
+            // return.  Deliberate, and the loss is bounded: every stage
+            // inside #finish states its own refusal (closeOccurrence files
+            // UNSTATED_VALUE for a read-out it could not invoke, and
+            // judgeFinishedOccurrence calls taskUnanswered), so what is
+            // left here is the unwinding -- and a row published from the
+            // workload's own return path could only be attempted through
+            // the same publisher the terminal has just failed on.
         }
     }
 
@@ -3023,7 +3128,10 @@ public final class ConcolicRegionRuntime {
                 }
             }
         } catch (Throwable ignored) {
-            // Preserve the program's original throwable identity.
+            // Preserve the program's original throwable identity: the
+            // injected bytecode rethrows it, and a refusal raised here
+            // would replace it.  Bounded for the same reason as
+            // #exitRegionFrame's.
         }
     }
 
@@ -3160,9 +3268,12 @@ public final class ConcolicRegionRuntime {
             expected = SwitchExpectation.parse(branchKind, encodedCaseKeys,
                     observedSuccessorIndex);
         } catch (IllegalArgumentException malformed) {
-            ActiveRegion active = activeRegion();
-            if (active != null) {
-            }
+            // The weave handed static case keys this decoder refuses, so
+            // the decision is not observed at all.  Not stated here: no
+            // kind of the closed GapKind set names a plan/weave
+            // disagreement about a switch's static domain, and both kept
+            // corpora publish 0 switch rows, so there is no firing to
+            // measure a choice against.  Reported for the planner instead.
             return observedSuccessorIndex;
         }
         observeDecision(BranchDecision.multiway(expected), preparedHandle,
@@ -3272,6 +3383,12 @@ public final class ConcolicRegionRuntime {
                         decision.outcome(), vmEventId);
             }
         } catch (Throwable throwable) {
+            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.UNATTESTED_ARM,
+                    edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
+                    branchSite + "#" + prepared.occurrence,
+                    "this decision was not captured, so it states neither an"
+                            + " arm nor the target reach that would have"
+                            + " stood beside it: " + rootCause(throwable));
         } finally {
             if (paused) resumePathCondition(active, api);
             if (replayContradicted) {
@@ -3320,6 +3437,9 @@ public final class ConcolicRegionRuntime {
         VmBranchEventAttestation vmAttestation = attestVmBranchEvent(api,
                 active, siteId, expression, observedOutcome, vmEventId,
                 occurrence, conditions, attestationBaseline, null, events);
+        if (!vmAttestation.valid) {
+            noteRefusedAttestation(siteId, occurrence, vmAttestation);
+        }
         int conditionIndex = vmAttestation.valid
                 && vmAttestation.conditionIndices.size() == 1
                 ? vmAttestation.conditionIndices.get(0) : -1;
@@ -3409,6 +3529,7 @@ public final class ConcolicRegionRuntime {
         mapping.addProperty("rawPathConditionSize", mappingLimit);
         mapping.addProperty("rawPathConditionBaseline", mappingBaseline);
         if (!attestation.valid) {
+            noteRefusedAttestation(siteId, occurrence, attestation);
         }
         active.branchMappings.add(mapping);
         if (attestation.valid) {
@@ -3471,6 +3592,27 @@ public final class ConcolicRegionRuntime {
         mapping.addProperty("occurrence", occurrence);
         if (vmEventId > 0L) mapping.addProperty("vmEventId", vmEventId);
         return mapping;
+    }
+
+    /**
+     * Names one VM branch event this replay could not attest.
+     *
+     * <p>The refusal used to travel on {@code
+     * VmBranchEventAttestation.error}: 24 call sites built a sentence
+     * saying exactly what the VM had handed back, and nothing ever read the
+     * field.  A refused attestation means the decision row publishes no
+     * site predicate, so the arm it states carries no term -- which is what
+     * {@code UNATTESTED_ARM} names, and the row is the reader the field
+     * never had.</p>
+     */
+    private static void noteRefusedAttestation(
+            String siteId, int occurrence,
+            VmBranchEventAttestation attestation) {
+        RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.UNATTESTED_ARM,
+                edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
+                safe(siteId) + "#" + occurrence,
+                "this decision publishes no site predicate: "
+                        + attestation.error);
     }
 
     /**
@@ -3990,6 +4132,11 @@ public final class ConcolicRegionRuntime {
                     leafFieldSignature, minted.expression, true, false,
                     minted.recordedValue);
         } catch (Throwable throwable) {
+            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.UNSTATED_VALUE,
+                    edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC, symbol,
+                    "this declared field input was not minted, so the region"
+                            + " reads it concretely and no row states a"
+                            + " value for it: " + rootCause(throwable));
         }
     }
 
@@ -4330,6 +4477,12 @@ public final class ConcolicRegionRuntime {
                     Collections.<String>emptyList(), "", expression,
                     true, false);
         } catch (Throwable throwable) {
+            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.UNSTATED_VALUE,
+                    edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
+                    firstNonBlank(action.symbol, action.actionDigest),
+                    "this declared input was not minted, so the region reads"
+                            + " it concretely and no row states a value for"
+                            + " it: " + rootCause(throwable));
         }
     }
 
@@ -4918,11 +5071,30 @@ public final class ConcolicRegionRuntime {
                 optionalString(object, "_exp"));
     }
 
+    /**
+     * Restores the path condition one branch observation paused.
+     *
+     * <p>BLOCKING when the resume is lost, and it has to be: the workload's
+     * own observation stays muted for the rest of this activation, so every
+     * decision after this point records nothing and the path condition the
+     * session publishes is a prefix nobody stated.  The loop-accounting
+     * sibling treats the same loss as a cut
+     * ({@code BOUND_HOOK_RESUME_FAILURE}); here the activation keeps
+     * running and the row says its arms cannot be trusted.</p>
+     */
     private static void resumePathCondition(ActiveRegion active,
                                             ConcolicVmBroker api) {
         try {
             api.resumePathCondition();
         } catch (Throwable throwable) {
+            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.UNATTESTED_ARM,
+                    edu.uva.liftlab.graphchecker.contract.GapClass.BLOCKING,
+                    firstNonBlank(active.occurrenceId(),
+                            Long.toString(active.token)),
+                    "the path condition this branch observation paused was"
+                            + " not resumed, so every decision this"
+                            + " activation takes afterwards is unrecorded: "
+                            + rootCause(throwable));
         }
     }
 
@@ -5611,18 +5783,47 @@ public final class ConcolicRegionRuntime {
         /**
          * Records one firing of a fault marker this replay could not answer.
          *
-         * <p>{@code controlled} decides whether it blocks: a marker the plan
-         * declares is a question the search asked and the model did not
-         * answer, and the polarity it would otherwise default to is the very
-         * one the search exists to flip.  A marker the plan never declared
-         * put no question to this replay.</p>
+         * <p>{@link #materializeSymbolicBoolean} must hand the workload a
+         * {@code boolean}: the marker stands at a call site the program is
+         * about to branch on, so there is no third value to return and no
+         * point at which the replay can stop.  What it must not do is let
+         * the {@code false} it returns pass for an answer.</p>
+         *
+         * <p>There are two answers, and a firing is unanswered only when it
+         * has neither.  A flip replay answers from its model assignment; a
+         * seed replay has no model by construction and answers from the
+         * recording's own polarity, which the plan states as the action's
+         * {@code primitiveValue} gated on {@code observed}.</p>
+         *
+         * <p>{@code controlled} decides the class, and it decides it the
+         * way the frame does.  A marker the plan declares is a question the
+         * search asked and neither answer came, so the polarity handed back
+         * is the very one the obligation asked to move: the run did not run
+         * what was asked, which is BLOCKING and is exactly what {@code
+         * ASSIGNMENT_UNPLANTED} names.  A marker the plan never declared
+         * put no question to this replay -- the recording ran the same hook
+         * to the same {@code false} -- so it is named on the diagnostic
+         * stream and nothing is refused.</p>
+         *
+         * <p>Both bodies used to be empty, so a fault that fired the plan's
+         * controls and could not answer was silently {@code false}.</p>
          */
         void noteFaultIdle(String name, int occurrence, boolean controlled,
                            String reason) {
-            String subject = "marker=" + safe(name) + "#" + occurrence
-                    + " reason=" + safe(reason);
+            String subject = "marker=" + safe(name) + "#" + occurrence;
             if (controlled) {
+                RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.ASSIGNMENT_UNPLANTED,
+                        edu.uva.liftlab.graphchecker.contract.GapClass.BLOCKING, subject,
+                        "this activation's plan controls the marker and had"
+                                + " neither answer for this firing ("
+                                + safe(reason) + "), so it ran the polarity"
+                                + " the obligation asked to move");
+                return;
             }
+            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.DECLARATION_MISSING,
+                    edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC, subject,
+                    "this fault marker fired where the case declares no"
+                            + " action for it (" + safe(reason) + ")");
         }
 
         /**
