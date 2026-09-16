@@ -85,7 +85,7 @@ final class VmBranchAttestation {
             ConcolicVmBroker api, ActiveRegion active, String siteId,
             String expression, boolean observedOutcome, long eventId,
             int occurrence, PathConditionWindow conditions, int baseline,
-            ConcolicRegionRuntime.SwitchExpectation switchExpectation,
+            BranchObservation.SwitchExpectation switchExpectation,
             JsonElement readEvents) {
         if (eventId <= 0L) {
             return Attestation.invalid(
@@ -207,7 +207,7 @@ final class VmBranchAttestation {
     }
 
     private static Attestation attestSwitchConditions(
-            JsonObject event, ConcolicRegionRuntime.SwitchExpectation expected,
+            JsonObject event, BranchObservation.SwitchExpectation expected,
             JsonArray rawIndices, PathConditionWindow conditions) {
         int expectedOpcode = "TABLE_SWITCH".equals(expected.branchKind)
                 ? 170 : 171;

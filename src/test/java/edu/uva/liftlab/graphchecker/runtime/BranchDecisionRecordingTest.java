@@ -215,7 +215,7 @@ public class BranchDecisionRecordingTest {
 
     private static Class<?> nested(String name) throws Exception {
         return Class.forName("edu.uva.liftlab.graphchecker.runtime"
-                + ".ConcolicRegionRuntime$" + name);
+                + ".BranchObservation$" + name);
     }
 
     private static Object rawField(Object owner, String name)
