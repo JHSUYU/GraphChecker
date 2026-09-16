@@ -825,7 +825,8 @@ public final class RowRuntime {
         try {
             java.nio.file.Files.write(
                     java.nio.file.Paths.get(worker,
-                            "obligation_result.jsonl"),
+                            edu.uva.liftlab.graphchecker.contract
+                                    .ObligationDir.RESULT),
                     rows.toString().getBytes(
                             java.nio.charset.StandardCharsets.UTF_8));
         } catch (java.io.IOException unwritable) {

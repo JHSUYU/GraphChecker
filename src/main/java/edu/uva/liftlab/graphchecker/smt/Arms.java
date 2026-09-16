@@ -97,25 +97,35 @@ public final class Arms {
         Map<String, List<RootMintRow>> roots();
 
         /**
-         * Whether the sessions of this corpus mint this root at more than
+         * What one session RAN one root at, or {@code ""} when it states
+         * none.
+         *
+         * <p>Not the mint row's {@code recordedValue}: a replay the wave
+         * handed an assignment PLANTED the value and states no recorded
+         * one, so the value it ran under is stated by the obligation it ran
+         * under.  The corpus answers both halves in one place.</p>
+         */
+        String rootValue(String sessionId, String rootId);
+
+        /**
+         * Whether the sessions of this corpus ran this root at more than
          * one value.
          *
          * <p>One definition, because "varied" decides two things that must
          * agree: what a PATH carries (its own replay's valuation of every
          * varied root) and what an ARM is guarded by (the delivering
-         * replay's).  Read off the rows, so a stage cannot hold a second
-         * opinion about it.</p>
+         * replay's).  Read off {@link #rootValue}, so a stage cannot hold a
+         * second opinion about it -- and so a flip replay, whose mint
+         * states nothing by rule, still counts as a different value.</p>
          */
         default boolean varied(String rootId) {
             List<RootMintRow> minted = roots().get(rootId);
             if (minted == null) return false;
             Set<String> values = new LinkedHashSet<String>();
             for (RootMintRow row : minted) {
-                if (row.recordedValue() == null
-                        || row.recordedValue().isEmpty()) {
-                    continue;
-                }
-                values.add(row.recordedValue());
+                String value = rootValue(row.sessionId(), rootId);
+                if (value == null || value.isEmpty()) continue;
+                values.add(value);
             }
             return values.size() > 1;
         }
@@ -587,11 +597,9 @@ public final class Arms {
                     && !symbols.contains(row.symbol())) {
                 continue;
             }
-            if (row.recordedValue() == null
-                    || row.recordedValue().isEmpty()) {
-                continue;
-            }
-            guard.put(row.symbol(), row.recordedValue());
+            String value = rows.rootValue(session, entry.getKey());
+            if (value == null || value.isEmpty()) continue;
+            guard.put(row.symbol(), value);
             guardRoots.add(row.rootId());
         }
         Set<String> nested = new LinkedHashSet<String>();

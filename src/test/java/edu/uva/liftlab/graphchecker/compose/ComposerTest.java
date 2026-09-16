@@ -21,6 +21,10 @@ import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
+import edu.uva.liftlab.graphchecker.contract.Obligation;
+import edu.uva.liftlab.graphchecker.contract.ObligationDir;
+import edu.uva.liftlab.graphchecker.contract.ObligationResult;
+import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.Role;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
@@ -31,6 +35,7 @@ import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.explore.Corpus;
+import edu.uva.liftlab.graphchecker.explore.ExploreCodec;
 
 import org.junit.Assume;
 import org.junit.Rule;
@@ -494,6 +499,133 @@ public class ComposerTest {
                 same.body().contains("(= " + MARKER + " "));
         assertEquals("and there is one question", 1,
                 same.valuations().size());
+
+        // 1f. The same control shape where the flip replay's MINT states
+        // no value.  It PLANTED the marker, so by rule it states no
+        // recordedValue -- a counterfactual is not a recording -- and what
+        // it ran under is stated by the obligation it ran under.  Read off
+        // the mint alone (05f4bf265), that valuation was stated nowhere: no
+        // path's formula named the marker, no valuation of it was asked,
+        // and 17960's composition published MESSAGE_PAIRING_FLIPPED at the
+        // recorded valuation over a corpus with no wire row in it.
+        Path planted = folder.newFolder("marker-planted").toPath();
+        for (String[] each : new String[][]{
+                {"s0", "true", "2", "false"}, {"s1", "", "0", "true"}}) {
+            controlSession(planted, each);
+        }
+        obligation(planted, "s1", Collections.singletonMap(
+                MARKER_ROOT, "false"));
+        Composer.Composition asked = compose(planted, 8);
+        assertEquals("both replays reach the anchor", 2,
+                asked.paths().size());
+        assertEquals("the ask is what the flip replay ran the root at, so "
+                        + "the root is varied, declared and enumerated", 2,
+                asked.valuations().size());
+        assertEquals("ordinal 0 is still the SEED's reading", "true",
+                asked.valuations().get(0).assignment().get(MARKER_ROOT));
+        assertTrue("each path carries its own replay's valuation: " + asked
+                        .gaps(),
+                asked.body().contains("(= " + MARKER + " true)")
+                        && asked.body().contains(
+                        "(= " + MARKER + " false)"));
+        ClaimPolicy.Decision planted3 = ClaimPolicy.decide(asked, solver());
+        assertEquals("the recording does not reach the fatal arm", "unsat",
+                planted3.outcomes().get(0).answer().status());
+        assertEquals(ClaimKind.MARKER_FLIPPED, planted3.claim().kind());
+        assertEquals(Collections.singletonMap(MARKER_ROOT, "false"),
+                planted3.claim().movedRoots());
+        assertTrue(planted3.claim().polarityDecides());
+
+        // And fail closed both ways.  Nothing states what the flip replay
+        // ran the declared root at: the path is REFUSED by name, because a
+        // disjunct free in a root the query enumerates is satisfiable at
+        // every valuation of it and reads as one that decided something.
+        Path unstated = folder.newFolder("marker-unstated").toPath();
+        for (String[] each : new String[][]{
+                {"s0", "true", "2", "false"}, {"s1", "", "0", "true"}}) {
+            controlSession(unstated, each);
+        }
+        Composer.Composition silent = compose(unstated, 8);
+        assertEquals("the flip path is not in the disjunction", 1,
+                silent.paths().size());
+        assertTrue("and the row names the root and the replay: "
+                        + silent.gaps(),
+                says(silent.gaps(), GapKind.UNSTATED_VALUE,
+                        "states no value it ran it at"));
+        assertTrue("it blocks", blocking(silent.gaps()));
+
+        // Both state it and they disagree: one replay ran the root at one
+        // value, so a corpus that names two is not one this path can
+        // carry.  This is the shape the leak had -- the reused mint read
+        // the plant back and published it as `recordedValue` -- and it is
+        // named rather than resolved by preferring one of them silently.
+        Path twice = folder.newFolder("marker-twice").toPath();
+        for (String[] each : new String[][]{
+                {"s0", "true", "2", "false"}, {"s1", "true", "0", "true"}}) {
+            controlSession(twice, each);
+        }
+        obligation(twice, "s1", Collections.singletonMap(
+                MARKER_ROOT, "false"));
+        Composer.Composition contradicted = compose(twice, 8);
+        assertEquals("the flip path is not in the disjunction", 1,
+                contradicted.paths().size());
+        assertTrue("and the row names both statements: "
+                        + contradicted.gaps(),
+                says(contradicted.gaps(), GapKind.UNSTATED_VALUE,
+                        "stated twice and differently"));
+        assertTrue("it blocks", blocking(contradicted.gaps()));
+    }
+
+    /** One session of the control-dependence marker fixture. */
+    private void controlSession(Path iteration, String[] each)
+            throws IOException {
+        Session session = new Session(iteration, each[0],
+                "true".equals(each[3]));
+        session.marker(each[1]);
+        session.read(Endpoint.of(ANCHOR,
+                        "<Manager: int count>#PLACEHOLDER#0:READ",
+                        at("count#1", 0), 0),
+                LocationId.of(LocationKind.INSTANCE, "Manager", "held"),
+                -1L, PLACEHOLDER, "I", each[2]);
+        session.expression("EXPR.0000000000000fc1", binary("!=",
+                integer("I", 2L), symbol(PLACEHOLDER, "I")));
+        session.target("EXPR.0000000000000fc1", "true".equals(each[3]),
+                true);
+        session.write();
+    }
+
+    /**
+     * One obligation worker: the ask, and the session its replay wrote.
+     *
+     * <p>The layout the campaign publishes, because that is what the
+     * corpus reads: {@code obligations-0000/<id>/obligation.jsonl} beside
+     * the {@code obligation_result.jsonl} that names the session.</p>
+     */
+    private static void obligation(Path iteration, String sessionId,
+                                   Map<String, String> roots)
+            throws IOException {
+        Path worker = iteration.resolve("obligations-0000")
+                .resolve("ob-" + sessionId);
+        Files.createDirectories(worker);
+        RowCodec.writeJsonl(worker.resolve(ObligationDir.OBLIGATION),
+                Collections.singletonList(ExploreCodec.writeObligation(
+                        Obligation.of("ob-" + sessionId, "task-flip",
+                                "path-flip", "nn#u1", 1, true, roots,
+                                Collections.<String, String>emptyMap(),
+                                Collections.<String>emptyList()))));
+        RowCodec.writeJsonl(worker.resolve(ObligationDir.RESULT),
+                Collections.singletonList(ExploreCodec.writeResult(
+                        ObligationResult.of("ob-" + sessionId,
+                                Verdict.ADMITTED, sessionId,
+                                "the focused prefix reproduced"))));
+    }
+
+    /** Whether any of these rows blocks. */
+    private static boolean blocking(List<GapRow> gaps) {
+        for (GapRow gap : gaps) {
+            if (gap.blocking()) return true;
+        }
+        return false;
     }
 
     /** A solver that answers every question with an SMT-LIB read error. */

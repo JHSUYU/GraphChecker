@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
@@ -163,7 +164,7 @@ public class ExploreTest {
                 Files.exists(worker.directory.resolve(
                         "execution_task_plan.jsonl")));
         JsonObject focus = RowCodec.readJsonl(worker.directory.resolve(
-                ObligationSolverMain.FOCUSED_TASK)).get(0);
+                ObligationDir.FOCUSED_TASK)).get(0);
         assertEquals("FOCUSED_TASK", focus.get("kind").getAsString());
         assertEquals("the row states WHICH occurrence it focuses",
                 target.render(), focus.get("focused").getAsString());
@@ -455,7 +456,7 @@ public class ExploreTest {
         assertTrue("a clock is not a value written at a mint",
                 ticked.obligation.rootAssignments().isEmpty());
         JsonObject focus = RowCodec.readJsonl(ticked.directory
-                .resolve(ObligationSolverMain.FOCUSED_TASK)).get(0);
+                .resolve(ObligationDir.FOCUSED_TASK)).get(0);
         String skew = focus.getAsJsonObject("clockDeltas")
                 .get("CASE.NOW").getAsString();
         assertTrue("the skew carries a reading of 700 past 1000: " + skew,

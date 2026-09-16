@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
@@ -158,7 +159,7 @@ public class ManualMintStatesItsValueTest {
     private void focusRow(String row) throws Exception {
         java.nio.file.Path dir = java.nio.file.Files.createTempDirectory(
                 "causynth-focus");
-        java.nio.file.Files.write(dir.resolve(FocusedReplay.FOCUS_FILE),
+        java.nio.file.Files.write(dir.resolve(ObligationDir.FOCUSED_TASK),
                 (row + System.lineSeparator()).getBytes("UTF-8"));
         System.setProperty(FocusedReplay.PLAN_PROPERTY,
                 dir.resolve("execution_task_plan.jsonl").toString());
