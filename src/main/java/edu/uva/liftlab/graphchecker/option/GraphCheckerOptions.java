@@ -10,7 +10,6 @@ public final class GraphCheckerOptions {
     String classPath;
     List<String> inputList = Collections.emptyList();
     String outputDir;
-    String configFilePath;
     String[] args = new String[0];
 
     GraphCheckerOptions() {
@@ -26,7 +25,6 @@ public final class GraphCheckerOptions {
 
     public String getOutputDir() { return outputDir; }
 
-    public String getConfigFilePath() { return configFilePath; }
 
     public String[] getArgs() { return args; }
 }

@@ -560,16 +560,44 @@ public final class CausynthPipeline {
          * Freezes original unit indices for every body the campaign may
          * rewrite, before the first rewrite moves one.
          */
+        /**
+         * Numbers the original units of every body this campaign weaves.
+         *
+         * <p>The numbering IS the site vocabulary: `static_scope_map`'s
+         * guard ids, the plan's `unitIndex` and the replay's decision sites
+         * are all original-unit indices of these bodies, so a body whose
+         * tagging fails is a body whose sites no replay can decide at --
+         * the `#u63`/`#u61` defect class, where 17960's target guard was
+         * published for one numbering and woven at another.  It used to be
+         * swallowed with "unresolvable bodies are dropped by every later
+         * pass too", which is true of a body with no active body and false
+         * of one whose tagging threw: that one is still woven.</p>
+         */
         private void tagSelectedBodies() {
             Set<String> tagged = new LinkedHashSet<>(methods);
             tagged.addAll(loopBoundMethods);
             for (String signature : tagged) {
+                Body body;
                 try {
-                    Body body = CausynthStaticFacts.activeBody(
+                    body = CausynthStaticFacts.activeBody(
                             CausynthStaticFacts.method(signature));
-                    if (body != null) tagOriginalUnits(snapshotUnits(body));
-                } catch (RuntimeException ignored) {
-                    // Unresolvable bodies are dropped by every later pass too.
+                } catch (RuntimeException unresolvable) {
+                    // No body to number: every later pass skips it too, and
+                    // it is named rather than counted silently.
+                    LOG.warn("ORIGINAL_UNIT_TAGGING_SKIPPED: {} has no "
+                            + "active body to number", signature);
+                    continue;
+                }
+                if (body == null) continue;
+                try {
+                    tagOriginalUnits(snapshotUnits(body));
+                } catch (RuntimeException failed) {
+                    throw new IllegalStateException(
+                            "ORIGINAL_UNIT_TAGGING_FAILED: " + signature
+                                    + " is woven by this campaign and its "
+                                    + "original units could not be numbered,"
+                                    + " so no site of it names the same unit"
+                                    + " the plan does", failed);
                 }
             }
         }

@@ -273,17 +273,6 @@ public final class CausynthStaticFacts {
                 || method.contains(" <clinit>("));
     }
 
-    /** Declaring type of a method signature, or {@code ""}. */
-    static String methodOwner(String methodSignature) {
-        return signatureGroup(methodSignature, 1);
-    }
-
-    private static String signatureGroup(String signature, int group) {
-        Matcher matcher = METHOD_SIGNATURE.matcher(
-                signature == null ? "" : signature);
-        return matcher.matches() ? matcher.group(group) : "";
-    }
-
     static List<String> actualInvokeArgs(String unit) {
         if (unit == null) {
             return Collections.emptyList();

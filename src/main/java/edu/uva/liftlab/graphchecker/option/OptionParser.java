@@ -20,7 +20,6 @@ public class OptionParser {
         many("i", "directory directory ...", "Input directories of classes");
         many("j", "file file ...", "Input jar files");
         many("x", "classpath classpath ...", "Extra classpath entries");
-        one("C", "file", "Workflow configuration file");
         one("o", "directory", "Output directory");
         options.addOption(Option.builder("h")
                 .desc("Print this help message").build());
@@ -33,7 +32,6 @@ public class OptionParser {
             parsed.inputList = parseInputs(cmd);
             parsed.outputJar = cmd.hasOption("j");
             parsed.outputDir = cmd.getOptionValue("o");
-            parsed.configFilePath = cmd.getOptionValue("C");
             parsed.help = cmd.hasOption("h");
             parsed.args = cmd.getArgs();
             parsed.classPath = buildClassPath(cmd, parsed.inputList);

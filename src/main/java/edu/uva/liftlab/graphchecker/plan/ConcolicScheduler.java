@@ -1875,7 +1875,7 @@ public final class ConcolicScheduler {
                     values.get("closure-mode"));
             return new Arguments(regionPlan, candidateGraph, staticScopeMap,
                     output, "", "", "",
-                    parseInt(values.get("max-jobs"), 1),
+                    positiveInt(values.get("max-jobs"), 1, "max-jobs"),
                     symbolicInputs, closureMode,
                     values.get("target-occurrence"),
                     splitRegions(values.get("retain-regions")));
@@ -1905,14 +1905,13 @@ public final class ConcolicScheduler {
                     ? null : Paths.get(value);
         }
 
-        private static int parseInt(String value, int fallback) {
-            try {
-                return value == null ? fallback : Integer.parseInt(value);
-            } catch (RuntimeException ignored) {
-                return fallback;
-            }
-        }
-
+        /**
+         * The one option-integer parse: a bound the campaign states and a
+         * mistyped one are different things.  `--max-jobs` went through a
+         * catch that returned the fallback, so `--max-jobs 12o` scheduled
+         * ONE task and the truncation was invisible -- a schedule of one
+         * task is not an empty schedule, so the stage exited 0.
+         */
         private static int positiveInt(String value, int fallback,
                                        String option) {
             int parsed;

@@ -581,7 +581,6 @@ do_analyze() {
     edu.uva.liftlab.graphchecker.GraphCheckerMain \
     "${input_flag}" "${project_classes_dir}" \
     -x "${project_classpath}" \
-    -C "${config_file}" \
     -o "${analysis_classes_dir}"
 }
 
