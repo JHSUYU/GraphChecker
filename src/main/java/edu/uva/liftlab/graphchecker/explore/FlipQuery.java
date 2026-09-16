@@ -1165,11 +1165,22 @@ final class FlipQuery {
             }
             // The lowering's own preamble, then EXACTLY the declarations
             // this query's texts reach ({@link #statedDeclarations}).
+            List<String> assertions = asserted();
+            Set<String> declarations = statedDeclarations(assertions);
+            // WHAT THIS QUERY REACHES: its assertions, the declarations
+            // they reach, and the sorts of its own variables -- which is
+            // what decides the part of the preamble the query states
+            // (SmtLowering#reachedPreamble, the same rule the composed
+            // query is written by).
+            List<String> reaching = new ArrayList<String>(assertions);
+            reaching.addAll(declarations);
+            reaching.addAll(sorts.values());
             Set<String> opening = new LinkedHashSet<String>();
             for (String sessionId : lowered) {
                 SmtLowering lowering = corpus.lowering(sessionId);
                 if (lowering == null) continue;
-                opening.addAll(lowering.preambleLines());
+                opening.addAll(SmtLowering.reachedPreamble(
+                        lowering.preambleLines(), reaching));
             }
             if (opening.isEmpty()) opening.add("(set-logic ALL)");
             for (String line : opening) text.append(line).append('\n');
@@ -1181,10 +1192,10 @@ final class FlipQuery {
                 text.append("(declare-fun ").append(entry.getKey())
                         .append(" () ").append(entry.getValue()).append(")\n");
             }
-            for (String line : statedDeclarations(asserted())) {
+            for (String line : declarations) {
                 text.append(line).append('\n');
             }
-            for (String assertion : asserted()) {
+            for (String assertion : assertions) {
                 text.append("(assert ").append(assertion).append(")\n");
             }
             // No check-sat here: the body is the formula, and what is
