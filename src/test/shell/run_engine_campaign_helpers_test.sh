@@ -1067,8 +1067,11 @@ grep -q "artifact=${gate_dir}/campaign_gaps.jsonl" "${gate_dir}/error.log" \
   || fail "the gate's gap file is not append-only"
 
 # The same gate over one wave's own sessions: EXPLORE calls it after the
-# wave's replays land, it reads only the sessions that wave added, and a
-# blocking violation there fails the campaign at that wave.
+# wave's replays land, and a blocking violation there fails the campaign at
+# that wave.  What the wave ADDED decides whether the gate runs; what it READS
+# is the epoch's whole roster, seed included, because invariant 1 is a
+# set-level rule (exactly one session states role SEED) and a set cut down to
+# one wave never holds the seed.
 declare -f campaign_explore | grep -q campaign_import_wave_gate \
   || fail "EXPLORE does not put its wave's sessions to the import gate"
 wave_gate="${test_tmp}/import-gate-wave"
@@ -1082,15 +1085,19 @@ campaign_session_roster "${wave_gate}/sessions" \
 mkdir -p "${wave_gate}/sessions/focus-a"
 [[ "$(campaign_wave_sessions "${wave_gate}/sessions" \
         "${wave_gate}/obligations-0000/sessions-before.txt")" == "focus-a" ]] \
-  || fail "the wave gate does not read exactly the sessions the wave added"
+  || fail "the wave gate does not count exactly the sessions the wave added"
 (
   run_java_main() {
-    # The gate is handed the wave's own session directory, and the wave
-    # itself as the one wave of obligation workers behind it.
+    # The gate is handed a session directory of its own, holding the
+    # epoch's whole roster, and the wave itself as the one wave of
+    # obligation workers behind it.
     [[ "$3" == "${wave_gate}/obligations-0000/import-gate/sessions" ]] \
       || fail "the wave gate did not name its own session set: $3"
-    [[ -d "$3/focus-a" && ! -e "$3/seed-result-0" ]] \
-      || fail "the wave gate's session set is not the wave's own"
+    [[ -d "$3/focus-a" ]] \
+      || fail "the wave gate did not gate the session its wave published"
+    [[ -d "$3/seed-result-0" ]] \
+      || fail "the wave gate left the epoch's seed out of the set it gated, \
+so invariant 1 has no SEED to find"
     [[ -f "${wave_gate}/obligations-0000/import-gate/obligations-0000/\
 OBL.a/obligation_result.jsonl" ]] \
       || fail "the wave gate hid its own obligation workers"
