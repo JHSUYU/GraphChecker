@@ -142,8 +142,6 @@ public final class ConcolicRegionRuntime {
             };
     static final ThreadLocal<AccessorCallContext>
             CURRENT_ACCESSOR_CALL_CONTEXT = new ThreadLocal<>();
-    private static final Pattern BRANCH_OPERATOR = Pattern.compile(
-            "(?:^|\\s)(==|!=|<=|>=|<|>)(?:\\s|$)");
     /** Session this JVM opened for its workload, or zero when it opened none. */
     static volatile long workloadSessionId;
     /**
@@ -3273,11 +3271,13 @@ public final class ConcolicRegionRuntime {
         PathConditionWindow conditions = read.conditions;
         int rawPathConditionSize = exactRange ? conditions.size() : baseline;
         int attestationBaseline = noVmCondition ? 0 : baseline;
-        VmBranchEventAttestation vmAttestation = attestVmBranchEvent(api,
-                active, siteId, expression, observedOutcome, vmEventId,
-                occurrence, conditions, attestationBaseline, null, events);
+        VmBranchAttestation.Attestation vmAttestation =
+                VmBranchAttestation.attest(api, active, siteId, expression,
+                        observedOutcome, vmEventId, occurrence, conditions,
+                        attestationBaseline, null, events);
         if (!vmAttestation.valid) {
-            noteRefusedAttestation(siteId, occurrence, vmAttestation);
+            VmBranchAttestation.noteRefused(siteId, occurrence,
+                    vmAttestation);
         }
         int conditionIndex = vmAttestation.valid
                 && vmAttestation.conditionIndices.size() == 1
@@ -3297,8 +3297,9 @@ public final class ConcolicRegionRuntime {
         mapping.addProperty("rawPathConditionBaseline", mappingBaseline);
         if (conditionIndex >= 0) {
             JsonElement condition = conditions.get(conditionIndex);
-            JsonElement semanticCondition = semanticBranchCondition(
-                    expression, observedOutcome, condition);
+            JsonElement semanticCondition =
+                    VmBranchAttestation.semanticCondition(
+                            expression, observedOutcome, condition);
             if (vmAttestation.valid) {
                 mapping.add("witness", BranchWitness.immutablePredicate(
                         semanticCondition).toImmutableJsonView());
@@ -3321,7 +3322,7 @@ public final class ConcolicRegionRuntime {
                 // operation on the VM's own constraint and re-evaluates
                 // nothing.
                 JsonElement written = observedOutcome ? condition
-                        : negatedCondition(condition);
+                        : VmBranchAttestation.negated(condition);
                 if (written != null && written.isJsonObject()) {
                     mapping.add("siteCondition", written);
                 }
@@ -3350,10 +3351,10 @@ public final class ConcolicRegionRuntime {
         PathConditionWindow.Read read = PathConditionWindow.forEvent(
                 active.expressionStore, api, eventConditionIndices);
         PathConditionWindow conditions = read.conditions;
-        VmBranchEventAttestation attestation = attestVmBranchEvent(api,
-                active, siteId, expression, expected.caseArm(), vmEventId,
-                occurrence, conditions, noVmCondition ? 0 : baseline,
-                expected, events);
+        VmBranchAttestation.Attestation attestation =
+                VmBranchAttestation.attest(api, active, siteId, expression,
+                        expected.caseArm(), vmEventId, occurrence, conditions,
+                        noVmCondition ? 0 : baseline, expected, events);
         List<Integer> conditionIndices = attestation.valid
                 ? attestation.conditionIndices
                 : Collections.<Integer>emptyList();
@@ -3368,7 +3369,7 @@ public final class ConcolicRegionRuntime {
         mapping.addProperty("rawPathConditionSize", mappingLimit);
         mapping.addProperty("rawPathConditionBaseline", mappingBaseline);
         if (!attestation.valid) {
-            noteRefusedAttestation(siteId, occurrence, attestation);
+            VmBranchAttestation.noteRefused(siteId, occurrence, attestation);
         }
         active.branchMappings.add(mapping);
         if (attestation.valid) {
@@ -3431,278 +3432,6 @@ public final class ConcolicRegionRuntime {
         mapping.addProperty("occurrence", occurrence);
         if (vmEventId > 0L) mapping.addProperty("vmEventId", vmEventId);
         return mapping;
-    }
-
-    /**
-     * Names one VM branch event this replay could not attest.
-     *
-     * <p>The refusal used to travel on {@code
-     * VmBranchEventAttestation.error}: 24 call sites built a sentence
-     * saying exactly what the VM had handed back, and nothing ever read the
-     * field.  A refused attestation means the decision row publishes no
-     * site predicate, so the arm it states carries no term -- which is what
-     * {@code UNATTESTED_ARM} names, and the row is the reader the field
-     * never had.</p>
-     */
-    private static void noteRefusedAttestation(
-            String siteId, int occurrence,
-            VmBranchEventAttestation attestation) {
-        RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.UNATTESTED_ARM,
-                edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
-                safe(siteId) + "#" + occurrence,
-                "this decision publishes no site predicate: "
-                        + attestation.error);
-    }
-
-    /**
-     * @param readEvents the caller's own read of the exact event stream, or
-     *                   {@code null} to read it here.  A caller that has
-     *                   already asked the stream a question about this event
-     *                   passes what it read: a second read costs a full
-     *                   serialization and decode of every event the thread has
-     *                   recorded, and would let the two answers be taken from
-     *                   two different observations of it.
-     */
-    private static VmBranchEventAttestation attestVmBranchEvent(
-            ConcolicVmBroker api, ActiveRegion active, String siteId,
-            String expression, boolean observedOutcome, long eventId,
-            int occurrence, PathConditionWindow conditions, int baseline,
-            SwitchExpectation switchExpectation, JsonElement readEvents) {
-        if (eventId <= 0L) {
-            return VmBranchEventAttestation.invalid(
-                    "marker returned a non-positive event id");
-        }
-        final JsonElement parsed;
-        if (readEvents != null) {
-            parsed = readEvents;
-        } else {
-            try {
-                parsed = parseJson(api.branchEvents());
-            } catch (Throwable throwable) {
-                return VmBranchEventAttestation.invalid(
-                        "event stream is not readable: "
-                                + rootCause(throwable));
-            }
-        }
-        if (!parsed.isJsonObject()) {
-            return VmBranchEventAttestation.invalid(
-                    "event stream is not a JSON object");
-        }
-        JsonObject envelope = parsed.getAsJsonObject();
-        if (optionalInteger(envelope, "schemaVersion", -1) != 1
-                || !"CONCOLIC_THREAD_BRANCH_EVENTS".equals(
-                optionalString(envelope, "kind"))
-                || !optionalBool(envelope, "active", false)) {
-            return VmBranchEventAttestation.invalid(
-                    "unexpected or inactive event stream");
-        }
-        long envelopeContext = optionalLongInteger(envelope, "contextId", 0L);
-        long envelopeOwner = optionalLongInteger(envelope,
-                "ownerJavaThreadId", 0L);
-        if (envelopeContext <= 0L) {
-            return VmBranchEventAttestation.invalid(
-                    "missing positive VM thread context id");
-        }
-        if (envelopeOwner != active.thread.getId()) {
-            return VmBranchEventAttestation.invalid(
-                    "event stream belongs to Java thread " + envelopeOwner
-                            + " instead of " + active.thread.getId());
-        }
-        if (!safe(active.activation.regionId).equals(
-                optionalString(envelope, "regionId"))
-                || !safe(active.activation.taskId).equals(
-                optionalString(envelope, "taskId"))) {
-            return VmBranchEventAttestation.invalid(
-                    "event stream region/task does not match owner");
-        }
-
-        JsonObject selected = null;
-        int matches = 0;
-        for (JsonElement candidate : array(envelope, "events")) {
-            if (!candidate.isJsonObject()) continue;
-            JsonObject event = candidate.getAsJsonObject();
-            if (optionalLongInteger(event, "eventId", -1L) == eventId) {
-                selected = event;
-                matches++;
-            }
-        }
-        if (matches != 1 || selected == null) {
-            return VmBranchEventAttestation.invalid(
-                    "event id " + eventId + " matched " + matches
-                            + " records");
-        }
-        String authority = optionalString(selected, "authority");
-        if (!"VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_V1".equals(authority)) {
-            return VmBranchEventAttestation.invalid(
-                    "unsupported event authority " + authority);
-        }
-        if (!safe(siteId).equals(optionalString(selected, "siteId"))
-                || optionalInteger(selected, "occurrence", -1) != occurrence) {
-            return VmBranchEventAttestation.invalid(
-                    "event site/occurrence does not match prepared branch");
-        }
-        if (optionalBool(selected, "outcome", !observedOutcome)
-                != observedOutcome) {
-            return VmBranchEventAttestation.invalid(
-                    "event outcome differs from observed branch");
-        }
-        JsonArray indices = array(selected, "conditionIndices");
-        if (optionalInteger(selected, "conditionCount", -1) != indices.size()) {
-            return VmBranchEventAttestation.invalid(
-                    "event condition count differs from its index vector");
-        }
-        if (switchExpectation != null) {
-            return attestVmSwitchConditions(selected,
-                    switchExpectation, indices, conditions);
-        }
-        if (indices.size() > 1) {
-            return VmBranchEventAttestation.invalid(
-                    "instrumented IfStmt emitted multiple condition indices");
-        }
-        int conditionIndex = -1;
-        if (indices.size() == 1) {
-            try {
-                conditionIndex = indices.get(0).getAsInt();
-            } catch (RuntimeException exception) {
-                return VmBranchEventAttestation.invalid(
-                        "condition index is not an integer");
-            }
-            if (conditionIndex < baseline
-                    || conditionIndex >= conditions.size()) {
-                return VmBranchEventAttestation.invalid(
-                        "condition index " + conditionIndex
-                                + " is outside new path-condition suffix ["
-                                + baseline + "," + conditions.size() + ")");
-            }
-            if (!branchConditionMatches(expression, observedOutcome,
-                    conditions.get(conditionIndex))) {
-                return VmBranchEventAttestation.invalid(
-                        "selected VM condition does not match the original "
-                                + "branch predicate");
-            }
-        }
-        return VmBranchEventAttestation.valid(
-                conditionIndex < 0
-                        ? Collections.<Integer>emptyList()
-                        : Collections.singletonList(conditionIndex));
-    }
-
-    private static VmBranchEventAttestation attestVmSwitchConditions(
-            JsonObject event, SwitchExpectation expected,
-            JsonArray rawIndices, PathConditionWindow conditions) {
-        int expectedOpcode = "TABLE_SWITCH".equals(expected.branchKind)
-                ? 170 : 171;
-        if (optionalInteger(event, "opcode", -1) != expectedOpcode) {
-            return VmBranchEventAttestation.invalid(
-                    "event opcode does not match static "
-                            + expected.branchKind);
-        }
-        if (optionalString(event, "codePosition").isEmpty()) {
-            return VmBranchEventAttestation.invalid(
-                    "switch event has no bytecode position");
-        }
-
-        int completeSymbolicCount = expected.caseArm()
-                ? 1 : expected.caseKeys.size();
-        // The VM still emits an exact event when the selector is concrete.
-        if (rawIndices.size() == 0) {
-            return VmBranchEventAttestation.valid(
-                    Collections.<Integer>emptyList());
-        }
-        if (rawIndices.size() != completeSymbolicCount) {
-            return VmBranchEventAttestation.invalid(
-                    "switch arm owns " + rawIndices.size()
-                            + " conditions; exact arm requires "
-                            + completeSymbolicCount);
-        }
-        List<Integer> indices = new ArrayList<>();
-        String selector = "";
-        String expectedPosition = optionalString(event, "codePosition");
-        int previousIndex = -1;
-        for (int offset = 0; offset < rawIndices.size(); offset++) {
-            final int conditionIndex;
-            try {
-                conditionIndex = rawIndices.get(offset).getAsInt();
-            } catch (RuntimeException malformed) {
-                return VmBranchEventAttestation.invalid(
-                        "switch condition index is not an integer");
-            }
-            if (conditionIndex < 0
-                    || offset > 0 && conditionIndex != previousIndex + 1) {
-                return VmBranchEventAttestation.invalid(
-                        "switch condition indices are not one exact ordered "
-                                + "VM event range");
-            }
-            final JsonElement condition;
-            try {
-                condition = conditions.get(conditionIndex);
-            } catch (IndexOutOfBoundsException unavailable) {
-                return VmBranchEventAttestation.invalid(
-                        "switch condition index " + conditionIndex
-                                + " is outside the exact VM event range");
-            }
-            int key = expected.caseArm()
-                    ? expected.caseKeys.get(
-                    expected.observedSuccessorIndex)
-                    : expected.caseKeys.get(offset);
-            String operator = expected.caseArm() ? "==" : "!=";
-            String matchedSelector = switchSelectorIfMatches(condition,
-                    operator, key);
-            if (matchedSelector.isEmpty()) {
-                return VmBranchEventAttestation.invalid(
-                        "switch condition " + offset
-                                + " is not selector " + operator + " "
-                                + key);
-            }
-            if (selector.isEmpty()) {
-                selector = matchedSelector;
-            } else if (!selector.equals(matchedSelector)) {
-                return VmBranchEventAttestation.invalid(
-                        "switch conditions do not share one selector");
-            }
-            String conditionPosition = condition.isJsonObject()
-                    ? optionalString(condition.getAsJsonObject(), "_code_position")
-                    : "";
-            if (!conditionPosition.isEmpty()
-                    && !expectedPosition.equals(conditionPosition)) {
-                return VmBranchEventAttestation.invalid(
-                        "switch condition bytecode position differs from "
-                                + "its exact event");
-            }
-            indices.add(conditionIndex);
-            previousIndex = conditionIndex;
-        }
-        return VmBranchEventAttestation.valid(indices);
-    }
-
-    private static String switchSelectorIfMatches(
-            JsonElement condition, String expectedOperator, int expectedKey) {
-        if (condition == null || !condition.isJsonObject()) return "";
-        JsonObject object = condition.getAsJsonObject();
-        if (!"BinaryExpression".equals(optionalString(object, "_type"))
-                || !expectedOperator.equals(optionalString(object, "_op"))) {
-            return "";
-        }
-        JsonElement left = object.get("_left");
-        JsonElement right = object.get("_right");
-        if (left == null || !left.isJsonObject()
-                || right == null || !right.isJsonObject()
-                || "ConstExpr".equals(optionalString(left.getAsJsonObject(),
-                "_type"))) {
-            return "";
-        }
-        JsonObject constant = right.getAsJsonObject();
-        if (!"ConstExpr".equals(optionalString(constant, "_type"))) return "";
-        Matcher encoded = Pattern.compile("^Y_I_(-?(?:0|[1-9][0-9]*))$")
-                .matcher(optionalString(constant, "_exp"));
-        if (!encoded.matches()) return "";
-        final int key;
-        try {
-            key = Integer.parseInt(encoded.group(1));
-        } catch (NumberFormatException malformed) {
-            return "";
-        }
-        return key == expectedKey ? left.toString() : "";
     }
 
     /** Marks one selected occurrence unusable before its VM close. */
@@ -4492,177 +4221,6 @@ public final class ConcolicRegionRuntime {
 
     @SuppressWarnings("deprecation")
 
-    static boolean branchConditionMatches(String expression, boolean outcome,
-                                          JsonElement condition) {
-        if (condition == null || !condition.isJsonObject()) {
-            return false;
-        }
-        JsonObject object = condition.getAsJsonObject();
-        if (!"BinaryExpression".equals(optionalString(object, "_type"))) {
-            Boolean requiredValue = booleanValueRequiredByZeroBranch(
-                    expression, outcome);
-            Boolean representedValue = representedBooleanValue(object);
-            return requiredValue != null && representedValue != null
-                    && requiredValue.equals(representedValue);
-        }
-        Matcher matcher = BRANCH_OPERATOR.matcher(safe(expression));
-        if (!matcher.find()) {
-            return false;
-        }
-        String declared = matcher.group(1);
-        String expected = outcome ? declared
-                : BranchPredicateAlgebra.complementOperator(declared);
-        String observed = optionalString(object, "_op");
-        if (!observedOperatorImpliesBranch(expected, observed,
-                safe(expression).matches(".*\\bnull\\b.*"))) {
-            return false;
-        }
-        if (safe(expression).matches(".*\\bnull\\b.*")) {
-            return symbolicNull(object.get("_left"))
-                    || symbolicNull(object.get("_right"));
-        }
-        return true;
-    }
-
-    /** Resolves the Java boolean value selected by a Jimple zero test. */
-    private static Boolean booleanValueRequiredByZeroBranch(
-            String expression, boolean outcome) {
-        String rendered = safe(expression).trim();
-        Matcher matcher = BRANCH_OPERATOR.matcher(rendered);
-        if (!matcher.find()) return null;
-        String declared = matcher.group(1);
-        if (!("==".equals(declared) || "!=".equals(declared))) {
-            return null;
-        }
-        String left = rendered.substring(0, matcher.start()).trim();
-        String right = rendered.substring(matcher.end()).trim();
-        boolean leftZero = "0".equals(left);
-        boolean rightZero = "0".equals(right);
-        if (leftZero == rightZero) return null;
-        String effective = outcome ? declared
-                : BranchPredicateAlgebra.complementOperator(declared);
-        return "!=".equals(effective);
-    }
-
-    /**
-     * Returns the underlying Java boolean represented by an asserted engine
-     * condition, or {@code null} when the IR node is value-producing or its
-     * semantics are not part of the exact codec.
-     */
-    private static Boolean representedBooleanValue(JsonObject condition) {
-        if (!"OpStrExpression".equals(optionalString(condition, "_type"))) {
-            return null;
-        }
-        String operation = optionalString(condition, "_name");
-        int expectedArity;
-        if ("isEmpty".equals(operation)) {
-            expectedArity = 1;
-        } else if ("contains".equals(operation)
-                || "equals".equals(operation)
-                || "startsWith".equals(operation)
-                || "endsWith".equals(operation)) {
-            expectedArity = 2;
-        } else {
-            return null;
-        }
-        if (array(condition, "_param_list").size() != expectedArity) {
-            return null;
-        }
-        return !optionalBool(condition, "_is_not", false);
-    }
-
-    /**
-     * Soot may describe one selected Jimple edge as {@code >=}/{@code <=}
-     * while the asserted VM relation for that concrete edge is the stronger
-     * {@code >}, {@code <}, or {@code ==}.  Admit only that forward
-     * implication, then canonicalize the retained condition to the actual
-     * Jimple predicate below.  Numeric {@code *cmp*} bytecodes now propagate
-     * their symbolic trichotomy result to the consuming branch; this is not a
-     * fallback to the removed concrete compare-witness mechanism.
-     */
-    private static boolean observedOperatorImpliesBranch(
-            String expected, String observed, boolean nullComparison) {
-        if (expected.equals(observed)) {
-            return true;
-        }
-        if (nullComparison) {
-            return false;
-        }
-        return ">=".equals(expected)
-                && (">".equals(observed) || "==".equals(observed))
-                || "<=".equals(expected)
-                && ("<".equals(observed) || "==".equals(observed));
-    }
-
-    /** Returns the branch-level predicate while retaining the VM operands. */
-    private static JsonElement semanticBranchCondition(
-            String expression, boolean outcome, JsonElement condition) {
-        if (condition == null || !condition.isJsonObject()) {
-            return condition;
-        }
-        JsonObject original = condition.getAsJsonObject();
-        if (!"BinaryExpression".equals(optionalString(original, "_type"))) {
-            return condition;
-        }
-        Matcher matcher = BRANCH_OPERATOR.matcher(safe(expression));
-        if (!matcher.find()) {
-            return condition;
-        }
-        String expected = outcome ? matcher.group(1)
-                : BranchPredicateAlgebra.complementOperator(
-                matcher.group(1));
-        String observed = optionalString(original, "_op");
-        if (!observedOperatorImpliesBranch(expected, observed,
-                safe(expression).matches(".*\\bnull\\b.*"))
-                || expected.equals(observed)) {
-            return condition;
-        }
-        JsonObject normalized = shallowCopy(original);
-        normalized.addProperty("_op", expected);
-        return normalized;
-    }
-
-    /**
-     * One constraint, negated by spelling, or null.
-     *
-     * <p>The negation of a relational predicate is the same predicate over
-     * the same operands with the complementary operator, so nothing is
-     * re-evaluated and no second expression is built: the operands are the
-     * VM's own nodes.  Null when the constraint carries no relational
-     * operator to complement -- the run then states no term rather than one
-     * it cannot spell.</p>
-     */
-    private static JsonElement negatedCondition(JsonElement condition) {
-        if (condition == null || !condition.isJsonObject()) return null;
-        JsonObject original = condition.getAsJsonObject();
-        String operator = binaryOperator(original);
-        if (operator.isEmpty()) return null;
-        final String complement;
-        try {
-            complement = BranchPredicateAlgebra.complementOperator(operator);
-        } catch (IllegalArgumentException unsupported) {
-            return null;
-        }
-        JsonObject negated = shallowCopy(original);
-        negated.addProperty("_op", complement);
-        return negated;
-    }
-
-    private static String binaryOperator(JsonElement condition) {
-        return condition != null && condition.isJsonObject()
-                ? optionalString(condition.getAsJsonObject(), "_op") : "";
-    }
-
-    private static boolean symbolicNull(JsonElement element) {
-        if (element == null || !element.isJsonObject()) {
-            return false;
-        }
-        JsonObject object = element.getAsJsonObject();
-        return "SymbolExpression".equals(optionalString(object, "_type"))
-                && VmExpressionIr.SYMBOLIC_NULL.equals(
-                optionalString(object, "_exp"));
-    }
-
     /**
      * Restores the path condition one branch observation paused.
      *
@@ -4788,10 +4346,10 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    private static final class SwitchExpectation {
-        private final String branchKind;
-        private final List<Integer> caseKeys;
-        private final int observedSuccessorIndex;
+    static final class SwitchExpectation {
+        final String branchKind;
+        final List<Integer> caseKeys;
+        final int observedSuccessorIndex;
 
         private SwitchExpectation(String branchKind, List<Integer> caseKeys,
                                   int observedSuccessorIndex) {
@@ -4853,7 +4411,7 @@ public final class ConcolicRegionRuntime {
                     observedSuccessorIndex);
         }
 
-        private boolean caseArm() {
+        boolean caseArm() {
             return observedSuccessorIndex < caseKeys.size();
         }
     }
@@ -4913,31 +4471,6 @@ public final class ConcolicRegionRuntime {
             return expected == null;
         }
 
-    }
-
-    private static final class VmBranchEventAttestation {
-        private final List<Integer> conditionIndices;
-        private final boolean valid;
-        private final String error;
-
-        private VmBranchEventAttestation(List<Integer> conditionIndices,
-                                         boolean valid,
-                                         String error) {
-            this.conditionIndices = Collections.unmodifiableList(
-                    new ArrayList<>(conditionIndices));
-            this.valid = valid;
-            this.error = safe(error);
-        }
-
-        private static VmBranchEventAttestation valid(
-                List<Integer> conditionIndices) {
-            return new VmBranchEventAttestation(conditionIndices, true, "");
-        }
-
-        private static VmBranchEventAttestation invalid(String error) {
-            return new VmBranchEventAttestation(
-                    Collections.<Integer>emptyList(), false, error);
-        }
     }
 
     private static final class PreparedBranch {
@@ -5050,7 +4583,7 @@ public final class ConcolicRegionRuntime {
         /** Exact event-ledger entry of this native region frame. */
         long vmRegionEnterEventId;
         final Object receiver;
-        private final Thread thread;
+        final Thread thread;
         /** Entry lacked local producer-source evidence; OUT must confirm it. */
         /** Exact outgoing message leaves this provisional activation reached. */
         final AtomicBoolean finished = new AtomicBoolean();
