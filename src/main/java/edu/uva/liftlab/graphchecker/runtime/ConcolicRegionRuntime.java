@@ -2213,9 +2213,11 @@ public final class ConcolicRegionRuntime {
      * The value the wave asks of this root at its mint, or {@code ""}.
      *
      * <p>One decision for every mint, whatever the mint writes into.  Only
-     * on the focused occurrence: an obligation's assignment is a
-     * counterfactual about ONE region's roots, and applying it in a region
-     * that merely runs alongside would make the run state something the
+     * on an occurrence of the FOCUSED SET ({@code FocusedReplay#focused}):
+     * the flipped occurrence, a member of its factor, or the MINT of a root
+     * the obligation assigns, which the focus row names because a value can
+     * only be planted where the run mints it.  Applying it in a region that
+     * merely runs alongside would make the run state something the
      * obligation never asked.</p>
      *
      * <p>A clock is stated as a SKEW rather than a value, because every

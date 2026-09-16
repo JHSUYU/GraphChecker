@@ -101,6 +101,7 @@ public final class ObligationSolverMain {
                                     + proposal.pathId() + " of task "
                                     + proposal.taskId()), "",
                     Collections.<String, String>emptyMap(),
+                    Collections.<String, String>emptyMap(),
                     Collections.singletonList(GapRow.of(ExploreCodec.EXPLORATION,
                             GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                             obligationId, "the obligation names a path the "
@@ -111,7 +112,7 @@ public final class ObligationSolverMain {
         return publish(out, candidate.task,
                 outcome.issued() ? outcome.obligation : proposal,
                 outcome.result, outcome.smt2, outcome.clockDeltas,
-                outcome.gaps);
+                outcome.rootMints, outcome.gaps);
     }
 
     /**
@@ -131,6 +132,7 @@ public final class ObligationSolverMain {
                                       Obligation obligation,
                                       ObligationResult result, String smt2,
                                       Map<String, String> clockDeltas,
+                                      Map<String, String> rootMints,
                                       List<GapRow> gaps) throws IOException {
         JsonObject row = ExploreCodec.writeResult(result);
         row.addProperty("schemaVersion", 1);
@@ -154,7 +156,8 @@ public final class ObligationSolverMain {
                         : smt2).getBytes(StandardCharsets.UTF_8));
         List<JsonObject> focus = new ArrayList<JsonObject>();
         if (result.verdict() == Verdict.SAT_MODEL_READY) {
-            focus.add(replayTask(task, obligation, clockDeltas));
+            focus.add(replayTask(task, obligation, clockDeltas,
+                    rootMints));
         }
         RowCodec.writeJsonl(out.resolve(ObligationDir.FOCUSED_TASK), focus);
         return row;
@@ -163,14 +166,24 @@ public final class ObligationSolverMain {
     /**
      * The focused replay this obligation asks for.
      *
-     * <p>One task: the obligation's own focused occurrence, the decision it
-     * flips, the value to apply at every mint (a clock's as the skew to add
-     * to the replay's own reading) and the value to answer at every attach.  A handoff the corpus cannot produce is named rather than
-     * hidden, so a replay that rests on one is a known hypothesis.</p>
+     * <p>One task: the obligation's own focused occurrence, its factor
+     * members, the MINT OCCURRENCE of every root the model assigns, the
+     * decision it flips, the value to apply at every mint (a clock's as the
+     * skew to add to the replay's own reading) and the value to answer at
+     * every attach.  A handoff the corpus cannot produce is named rather
+     * than hidden, so a replay that rests on one is a known hypothesis.</p>
+     *
+     * <p>The mints are on the row because the focused set is what the
+     * replay is told, not what it derives: a focused replay is one run of
+     * the WHOLE workload, so nn0's key rotation can be focused in the same
+     * replay as the balancer occurrence whose guard the flip is about --
+     * which is the only way the balancer's flip ever runs under the serial
+     * the obligation assigns.</p>
      */
     private static JsonObject replayTask(Task focused,
                                          Obligation obligation,
-                                         Map<String, String> clockDeltas) {
+                                         Map<String, String> clockDeltas,
+                                         Map<String, String> rootMints) {
         JsonObject task = new JsonObject();
         task.addProperty("schemaVersion", 1);
         task.addProperty("kind", "FOCUSED_TASK");
@@ -216,6 +229,17 @@ public final class ObligationSolverMain {
             answers.addProperty(answer.getKey(), answer.getValue());
         }
         task.add("answers", answers);
+        // Where each assigned root is MINTED, so the replay focuses those
+        // occurrences too: an assignment is planted at its mint, and a mint
+        // that runs unfocused reads the recording's value under an
+        // obligation asking for another one.  A CLOCK's skew names its mint
+        // here as well -- the two are one focused set, however the value is
+        // stated.
+        JsonObject mints = new JsonObject();
+        for (Map.Entry<String, String> mint : rootMints.entrySet()) {
+            mints.addProperty(mint.getKey(), mint.getValue());
+        }
+        task.add("rootMints", mints);
         JsonArray unproducible = new JsonArray();
         for (String endpoint : obligation.unproducible()) {
             unproducible.add(endpoint);

@@ -94,7 +94,20 @@ final class FlipQuery {
         final String refusal;
         final DecisionRow flipped;
         final List<Control> controls;
-        /** query variable -> the root it stands for, for the model read-back. */
+        /**
+         * query variable -> the root it stands for, for the model read-back.
+         *
+         * <p>Exactly the roots the query's own assertions REACH.  A model
+         * assigns a value to every variable a query declares, and a root the
+         * flipped path does not depend on is one the solver picked freely --
+         * so carrying it into the obligation would tell a replay to plant a
+         * counterfactual nothing asked for, and the replay would then owe an
+         * {@code ASSIGNMENT_UNPLANTED} for a root the flip never read.  The
+         * projection is {@link Builder#reached}, over the one reachability
+         * ({@link SmtLowering#reachedBy}); a root's OWN window is not a
+         * reason to keep it, which is why {@link Builder#rootFacts} is a
+         * list of its own.</p>
+         */
         final Map<String, String> rootVariables;
         /**
          * The same, for the clocks of the path this obligation is about.
@@ -234,6 +247,20 @@ final class FlipQuery {
         private final Map<String, String> meaning =
                 new LinkedHashMap<String, String>();
         private final List<String> assertions = new ArrayList<String>();
+        /**
+         * What the ROOT rule states about a root's own variable: the window
+         * the case declared, a clock's floor, or the pin of a root with no
+         * window.
+         *
+         * <p>A list of its own, and not one more assertion, because the
+         * model PROJECTION asks which roots this query's assertions reach
+         * ({@link Built#rootVariables}).  A root's window mentions the root,
+         * so a query that kept the two in one list would reach every root it
+         * ever declared and the projection would keep them all -- it would
+         * be a rule that decides nothing.  The rendered query states both,
+         * the assertions first.</p>
+         */
+        private final List<String> rootFacts = new ArrayList<String>();
         private final Set<String> explained = new LinkedHashSet<String>();
         private final Deque<Ref> pending = new ArrayDeque<Ref>();
         private final Set<String> queued = new LinkedHashSet<String>();
@@ -280,7 +307,7 @@ final class FlipQuery {
                     continue;
                 }
                 String held = rename(conjunct(decision, path.sessionId),
-                        path.sessionId, new LinkedHashSet<String>(), unknown);
+                        path.sessionId, unknown);
                 if (!unknown.isEmpty()) {
                     String named = unknown.iterator().next();
                     if (last) {
@@ -319,10 +346,62 @@ final class FlipQuery {
                                 + "with a value the chain does not reach",
                         flipped);
             }
+            // One walk, for both read-back maps: the roots and the clocks
+            // of one query are projected by one notion of reached.
+            Set<String> reached = reachedVariables();
             return new Built(render(flipped, flipIndex),
                     new ArrayList<String>(sorts.keySet()), "", flipped,
-                    new ArrayList<Control>(controls.values()), rootVariables,
-                    clockVariables, gaps);
+                    new ArrayList<Control>(controls.values()),
+                    reached(rootVariables, reached),
+                    reached(clockVariables, reached), gaps);
+        }
+
+        /**
+         * The roots of one read-back map this query's assertions REACH.
+         *
+         * <p>THE PROJECTION.  A query declares a variable for every symbol
+         * it named on the way to the flip, and a model assigns a value to
+         * every one of them; the roots the OBLIGATION assigns are the ones
+         * the flipped path depends on, and nothing else.  A root the drain
+         * reached through an arm this query then dropped -- the arm's
+         * expression did not lower, or one of its references was undeclared
+         * -- is exactly that: declared, windowed, and mentioned by no
+         * assertion.  Kept, it becomes an assignment the replay is told to
+         * plant at a mint the flip never read.</p>
+         *
+         * <p>Reachability is {@link #reachedVariables}: the one walk the
+         * query's declarations are emitted with.</p>
+         */
+        private Map<String, String> reached(Map<String, String> declared,
+                                            Set<String> names) {
+            Map<String, String> kept = new LinkedHashMap<String, String>();
+            for (Map.Entry<String, String> variable : declared.entrySet()) {
+                if (names.contains(variable.getKey())) {
+                    kept.put(variable.getKey(), variable.getValue());
+                }
+            }
+            return kept;
+        }
+
+        /**
+         * Every variable of this query the ASSERTIONS reach.
+         *
+         * <p>The assertions as they stand, plus the subterms they name --
+         * one term reaches its leaves through the bodies of the shared
+         * definitions it mentions, and those bodies are spelled in this
+         * query's variables once renamed, exactly as {@link #render} emits
+         * them.  {@link #rootFacts} is not among the texts: a root's own
+         * window is not a reason to keep the root.</p>
+         */
+        private Set<String> reachedVariables() {
+            Set<String> names = new LinkedHashSet<String>();
+            for (String assertion : assertions) {
+                SmtLowering.symbols(assertion, names);
+            }
+            for (String line : statedDeclarations(assertions)) {
+                SmtLowering.symbols(line, names);
+            }
+            return names;
         }
 
         /**
@@ -402,7 +481,7 @@ final class FlipQuery {
                 if (minted.sessionId().equals(path.sessionId)) {
                     clockVariables.put(variable, row.rootId());
                 }
-                assertions.add("(>= " + variable + " 0)");
+                rootFacts.add("(>= " + variable + " 0)");
                 return;
             }
             rootVariables.put(variable, row.rootId());
@@ -436,7 +515,7 @@ final class FlipQuery {
                         "root " + row.rootId() + " has an unreadable domain");
                 return;
             }
-            assertions.add("(and (>= " + variable + " " + min + ") (<= "
+            rootFacts.add("(and (>= " + variable + " " + min + ") (<= "
                     + variable + " " + max + "))");
         }
 
@@ -523,12 +602,12 @@ final class FlipQuery {
                     .lower(arm.expressionRef());
             if (!lowered.ok()) return "";
             String delivered = rename(lowered.text(), arm.sessionId(),
-                    new LinkedHashSet<String>(), unknown);
+                    unknown);
             if (!unknown.isEmpty()) return "";
             List<String> conjuncts = new ArrayList<String>();
             for (String term : arm.pi()) {
                 String renamed = rename(lower(term, arm.sessionId()),
-                        arm.sessionId(), new LinkedHashSet<String>(), unknown);
+                        arm.sessionId(), unknown);
                 if (!unknown.isEmpty()) return "";
                 conjuncts.add(renamed);
             }
@@ -625,7 +704,7 @@ final class FlipQuery {
             if (!lowered.ok()) return "";
             Set<String> unknown = new LinkedHashSet<String>();
             String value = rename(lowered.text(), alternative.sessionId(),
-                    new LinkedHashSet<String>(), unknown);
+                    unknown);
             return unknown.isEmpty() ? value : "";
         }
 
@@ -658,7 +737,7 @@ final class FlipQuery {
          * enqueueing every symbol it names.
          */
         private String rename(String term, String sessionId,
-                              Set<String> rootsTouched, Set<String> unknown) {
+                              Set<String> unknown) {
             lowered.add(sessionId);
             Map<String, String> rename = renamesOf(sessionId);
             // THE CLOSURE: the recorded symbols of a term are the ones
@@ -669,21 +748,14 @@ final class FlipQuery {
             // answer, and the replay something to apply.  One answer, in
             // SmtLowering, which the closure planner asks too.
             SmtLowering lowering = corpus.lowering(sessionId);
-            Set<String> symbols = lowering == null
-                    ? SmtLowering.symbols(term, new LinkedHashSet<String>())
-                    : lowering.reachedSymbols(term,
-                            new LinkedHashSet<String>());
-            for (String token : symbols) {
-                Corpus.SymbolKind kind = corpus.symbolKind(sessionId, token);
-                if (kind == Corpus.SymbolKind.UNKNOWN) continue;
+            for (String token : lowering.reachedSymbols(term,
+                    new LinkedHashSet<String>())) {
+                if (corpus.symbolKind(sessionId, token)
+                        == Corpus.SymbolKind.UNKNOWN) {
+                    continue;
+                }
                 rename.put(token, variable(sessionId, token));
                 bound.add(sessionId + "|" + token);
-                if (kind == Corpus.SymbolKind.ROOT) {
-                    RootMintRow root = corpus.rootBySymbol(sessionId, token);
-                    if (root.kind() != RootKind.CLOCK) {
-                        rootsTouched.add(root.rootId());
-                    }
-                }
             }
             return SmtLowering.rename(term, rename,
                     name -> stated(name, sessionId), unknown);
@@ -803,6 +875,7 @@ final class FlipQuery {
                     attach.endpoint().id(), variable, unproducible));
         }
 
+        /** A root with no window, held to what the recording read. */
         private void pin(String variable, String recorded, String why) {
             String literal = SmtText.literal(recorded, sorts.get(variable));
             if (literal.isEmpty()) {
@@ -811,7 +884,7 @@ final class FlipQuery {
                         why + ", and no recorded value to pin it to"));
                 return;
             }
-            assertions.add("(= " + variable + " " + literal + ")");
+            rootFacts.add("(= " + variable + " " + literal + ")");
         }
 
         /**
@@ -830,7 +903,7 @@ final class FlipQuery {
                 SmtLowering lowering = corpus.lowering(sessionId);
                 if (lowering == null) continue;
                 for (SmtLowering.Declaration declaration
-                        : lowering.reachedBy(assertions)) {
+                        : lowering.reachedBy(asserted())) {
                     if (!declaration.body.isEmpty()) continue;
                     if (corpus.symbolKind(sessionId, declaration.name)
                             == Corpus.SymbolKind.UNKNOWN) {
@@ -855,6 +928,56 @@ final class FlipQuery {
                     clockVariables, gaps);
         }
 
+        /**
+         * Every text this query ASSERTS: the path as it ran with one
+         * decision negated, and what the root rule states about the roots
+         * that path reached.
+         *
+         * <p>One list, so that "what does this query say" has one answer --
+         * the rendered assertions, the declarations they reach, and the
+         * closure check are all over it.  Only the model projection asks
+         * the narrower question ({@link #reachedVariables}).</p>
+         */
+        private List<String> asserted() {
+            List<String> texts = new ArrayList<String>(assertions);
+            texts.addAll(rootFacts);
+            return texts;
+        }
+
+        /**
+         * Exactly the declarations these texts reach, in this query's own
+         * variables.
+         *
+         * <p>A lowering is cached per session and answers many questions, so
+         * emitting all of its declarations would state symbols this query
+         * does not conjoin, and a reader cannot tell those from the ones the
+         * query rests on.  Deduplicated by line: two sessions share a minted
+         * name only when the definition is literally the same closed term,
+         * because the digest is over the scoped text.</p>
+         */
+        private Set<String> statedDeclarations(List<String> texts) {
+            Set<String> stated = new LinkedHashSet<String>();
+            for (String sessionId : lowered) {
+                SmtLowering lowering = corpus.lowering(sessionId);
+                if (lowering == null) continue;
+                Map<String, String> rename = renamesOf(sessionId);
+                for (SmtLowering.Declaration declaration
+                        : lowering.reachedBy(texts)) {
+                    // A recorded symbol the query bound is declared by the
+                    // query, under its own variable, once.
+                    if (rename.containsKey(declaration.name)) continue;
+                    stated.add(declaration.body.isEmpty()
+                            ? declaration.render()
+                            : "(define-fun " + declaration.name + " () "
+                            + declaration.sort + " "
+                            + SmtLowering.rename(declaration.body, rename,
+                            name -> stated(name, sessionId),
+                            new LinkedHashSet<String>()) + ")");
+                }
+            }
+            return stated;
+        }
+
         private String render(DecisionRow flipped, int flipIndex) {
             StringBuilder text = new StringBuilder();
             text.append("; task ").append(task.taskId())
@@ -871,13 +994,8 @@ final class FlipQuery {
                 text.append("; ").append(entry.getKey()).append(" = ")
                         .append(entry.getValue()).append('\n');
             }
-            // The lowering's own preamble, and EXACTLY the declarations
-            // the assertions reach -- a lowering is cached per session and
-            // answers many questions, so emitting all of them would state
-            // symbols this query does not conjoin.  Deduplicated by line:
-            // two sessions share a minted name only when the definition is
-            // literally the same closed term, because the digest is over
-            // the scoped text.
+            // The lowering's own preamble, then EXACTLY the declarations
+            // this query's texts reach ({@link #statedDeclarations}).
             Set<String> opening = new LinkedHashSet<String>();
             for (String sessionId : lowered) {
                 SmtLowering lowering = corpus.lowering(sessionId);
@@ -894,27 +1012,10 @@ final class FlipQuery {
                 text.append("(declare-fun ").append(entry.getKey())
                         .append(" () ").append(entry.getValue()).append(")\n");
             }
-            Set<String> stated = new LinkedHashSet<String>();
-            for (String sessionId : lowered) {
-                SmtLowering lowering = corpus.lowering(sessionId);
-                if (lowering == null) continue;
-                Map<String, String> rename = renamesOf(sessionId);
-                for (SmtLowering.Declaration declaration
-                        : lowering.reachedBy(assertions)) {
-                    // A recorded symbol the query bound is declared by the
-                    // query, under its own variable, once.
-                    if (rename.containsKey(declaration.name)) continue;
-                    stated.add(declaration.body.isEmpty()
-                            ? declaration.render()
-                            : "(define-fun " + declaration.name + " () "
-                            + declaration.sort + " "
-                            + SmtLowering.rename(declaration.body, rename,
-                            name -> stated(name, sessionId),
-                            new LinkedHashSet<String>()) + ")");
-                }
+            for (String line : statedDeclarations(asserted())) {
+                text.append(line).append('\n');
             }
-            for (String line : stated) text.append(line).append('\n');
-            for (String assertion : assertions) {
+            for (String assertion : asserted()) {
                 text.append("(assert ").append(assertion).append(")\n");
             }
             // No check-sat here: the body is the formula, and what is

@@ -136,6 +136,8 @@ public class ManualMintStatesItsValueTest {
                 + "\"outcome\":true},"
                 + "\"rootAssignments\":{\"CASE.SERIAL\":\"12\"},"
                 + "\"clockDeltas\":{\"CASE.NOW\":\"-4200\"},"
+                + "\"rootMints\":{\"CASE.SERIAL\":\"" + MINT_ADDRESS
+                + "\"},"
                 + "\"answers\":{},\"unproducible\":[]}");
         ConcolicRegionRuntime.ActiveRegion focused = manualRegion();
         focused.d3Address = edu.uva.liftlab.graphchecker.contract
@@ -148,6 +150,26 @@ public class ManualMintStatesItsValueTest {
                 focusedRootValue(focused, "CASE.SERIAL", Long.valueOf(7L)));
         assertEquals("nothing was asked of this root", "",
                 focusedRootValue(focused, "CASE.OTHER", Long.valueOf(7L)));
+
+        // THE FOCUSED SET holds the MINT of every root the obligation
+        // assigns, not only the occurrence the flip is about: an assignment
+        // is planted where the run mints it, and 11741's SERIAL_NO is
+        // minted in nn0's rotation while the flip is the balancer's.  A
+        // focused replay is one run of the whole workload, so both run
+        // symbolic in it.
+        ConcolicRegionRuntime.ActiveRegion minting = manualRegion();
+        minting.d3Address = edu.uva.liftlab.graphchecker.contract
+                .OccurrenceAddress.parse(MINT_ADDRESS);
+        assertEquals("the value is planted at the mint the row names", "12",
+                focusedRootValue(minting, "CASE.SERIAL", Long.valueOf(7L)));
+        ConcolicRegionRuntime.ActiveRegion alongside = manualRegion();
+        alongside.d3Address = edu.uva.liftlab.graphchecker.contract
+                .OccurrenceAddress.parse(ALONGSIDE_ADDRESS);
+        assertEquals("and nowhere else: a region that merely runs alongside "
+                        + "would make the run state what the obligation "
+                        + "never asked", "",
+                focusedRootValue(alongside, "CASE.SERIAL",
+                        Long.valueOf(7L)));
 
         // A FIELD mint asks the same one decision.  It did not: a declared
         // INTEGRAL cell minted through symbolizeField/materializeField
@@ -199,6 +221,19 @@ public class ManualMintStatesItsValueTest {
     private static final String PLANNED_ADDRESS =
             "hdfs/nn0#epoch1/region/" + MANUAL_REGION
                     + "/ctx:Root:CLIENT#1/idx:";
+    /**
+     * Another occurrence entirely: where the recording mints the root the
+     * flip depends on.
+     *
+     * <p>11741's shape -- {@code HDFS.BLOCK_KEY.SERIAL_NO} is minted in
+     * nn0's key rotation and read by the balancer, so the occurrence the
+     * flip is about mints nothing.</p>
+     */
+    private static final String MINT_ADDRESS =
+            "hdfs/dn1#epoch0/region/REGION.53092d3e/ctx:Root:CLIENT#1/idx:";
+    /** And one the wave named nowhere, which merely runs alongside. */
+    private static final String ALONGSIDE_ADDRESS =
+            "hdfs/dn0#epoch0/region/REGION.094a8e3d/ctx:Root:CLIENT#1/idx:";
 
     /** Writes one focus row where this replay looks for it. */
     private void focusRow(String row) throws Exception {

@@ -126,5 +126,20 @@ public enum GapKind {
      * "the mint states 182907 and the obligation assigns 182910" was the
      * second statement of the same fact, not the first.</p>
      */
-    ASSIGNMENT_UNPLANTED
+    ASSIGNMENT_UNPLANTED,
+    /**
+     * A root the obligation assigns that the recording mints nowhere.
+     *
+     * <p>DIAGNOSTIC, and raised where the obligation is PROPOSED: a replay
+     * plants an assignment at the MINT of the root, so an assignment the
+     * recording published no mint for names no occurrence any replay could
+     * be focused on, and running it would spend a replay on the recording's
+     * own value.  The subject is the obligation -- that is what is not run
+     * -- and the detail is the root, which is why.</p>
+     *
+     * <p>Told apart from {@link #ASSIGNMENT_UNPLANTED}, which is a REPLAY
+     * that reached a mint and could not place the write: this one never
+     * gets that far, and the wave spends nothing on it.</p>
+     */
+    ASSIGNMENT_UNMINTABLE
 }
