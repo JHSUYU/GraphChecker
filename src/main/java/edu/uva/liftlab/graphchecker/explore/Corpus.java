@@ -10,8 +10,10 @@ import edu.uva.liftlab.graphchecker.contract.ExpressionTable;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
+import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.RootDomain;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
@@ -149,6 +151,10 @@ public final class Corpus implements Arms.Rows {
     private final Map<String, RootDomain> declaredDomains =
             new LinkedHashMap<String, RootDomain>();
 
+    /** session id -> root id -> the value the wave assigned that replay. */
+    private final Map<String, Map<String, String>> assignments =
+            new LinkedHashMap<String, Map<String, String>>();
+
     private final Arms arms;
 
     private Corpus(Path iteration, List<SessionReader> sessions) {
@@ -167,7 +173,38 @@ public final class Corpus implements Arms.Rows {
             corpus.declaredDomains.putAll(
                     RootDomain.declared(rootDomains));
         }
+        corpus.indexAssignments(iteration);
         return corpus;
+    }
+
+    /**
+     * What the wave assigned each replay's roots, by the session it ran.
+     *
+     * <p>A replay handed an assignment PLANTED that value: the runtime
+     * writes it into the declared field ({@code
+     * ConcolicRegionRuntime#applyFocusedRootAssignment}, off {@code
+     * FocusedReplay#rootAssignment}) and then states NO {@code
+     * recordedValue} on the mint, because a counterfactual is not a
+     * recording.  So what that replay ran the root at is stated by the ASK
+     * and nowhere else, and this is where the corpus reads it.  A corpus
+     * with no obligation workers -- a seed-only one -- states none, and
+     * every root value is then a recording.</p>
+     */
+    private void indexAssignments(Path iteration) throws IOException {
+        for (ObligationDir worker : ObligationDir.workersIn(iteration)) {
+            for (JsonObject row : RowCodec.readJsonl(worker.obligation())) {
+                Map<String, String> assigned =
+                        ExploreCodec.readObligation(row).rootAssignments();
+                if (assigned.isEmpty()) continue;
+                Map<String, String> bySession =
+                        assignments.get(worker.sessionId());
+                if (bySession == null) {
+                    bySession = new LinkedHashMap<String, String>();
+                    assignments.put(worker.sessionId(), bySession);
+                }
+                bySession.putAll(assigned);
+            }
+        }
     }
 
     /**
@@ -637,11 +674,55 @@ public final class Corpus implements Arms.Rows {
         return SymbolKind.UNKNOWN;
     }
 
-    /** What one session read at one root, or "" when it minted none. */
+    /**
+     * What one session RAN one root at, or {@code ""} when it states none.
+     *
+     * <p>ONE NOTION, because everything a path says about a root is said
+     * over it: what the path's own {@code valuation_p} pins, what an arm
+     * the path rests on is guarded by, whether the corpus {@link #varied}
+     * this root at all, and what an obligation's model is compared against.
+     * They must agree, so they are one method.</p>
+     *
+     * <p>Two ways a replay comes to run a root at a value, and the
+     * recording states exactly one of them per replay.  A replay that READ
+     * the root states it on the mint ({@code recordedValue}).  A replay
+     * that PLANTED it -- the wave wrote the value into the declared field
+     * before the mint -- states NO recordedValue by rule (a counterfactual
+     * is not a recording), and what it ran under is the ASK: the {@code
+     * rootAssignments} of the obligation whose result names this session.
+     * Reading only the mint left a flip replay's own valuation stated
+     * nowhere: on the 05f4bf265 17960 corpus the two flip sessions' mints
+     * state {@code ""}, no path's formula named the marker, no valuation of
+     * it was asked, and the composition published MESSAGE_PAIRING_FLIPPED
+     * at the recorded valuation over a corpus with no wire row in it.</p>
+     *
+     * <p>The ask is preferred where both are stated: the value the replay
+     * was handed is what it ran under, and a mint that states one too has
+     * read the plant back.</p>
+     */
+    @Override
+    public String rootValue(String sessionId, String rootId) {
+        Map<String, String> assigned = assignments.get(sessionId);
+        String wave = assigned == null ? null : assigned.get(rootId);
+        if (wave != null && !wave.isEmpty()) return wave;
+        Map<String, RootMintRow> bySession = rootsById.get(rootId);
+        RootMintRow row = bySession == null ? null : bySession.get(sessionId);
+        return row == null || row.recordedValue() == null
+                ? "" : row.recordedValue();
+    }
+
+    /**
+     * What one session's MINT states it read, or {@code ""}.
+     *
+     * <p>Told apart from {@link #rootValue} on purpose: this is the
+     * recording's own reading, which a refusal needs in order to say that
+     * it disagrees with the ask.</p>
+     */
     public String rootReading(String sessionId, String rootId) {
         Map<String, RootMintRow> bySession = rootsById.get(rootId);
         RootMintRow row = bySession == null ? null : bySession.get(sessionId);
-        return row == null ? "" : row.recordedValue();
+        return row == null || row.recordedValue() == null
+                ? "" : row.recordedValue();
     }
 
     /** What one session minted for one root, or null when it minted none. */

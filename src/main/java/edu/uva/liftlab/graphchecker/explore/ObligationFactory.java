@@ -284,7 +284,7 @@ public final class ObligationFactory {
         if (roots.isEmpty() || !answers.isEmpty()) return "";
         List<String> same = new ArrayList<String>();
         for (Map.Entry<String, String> assignment : roots.entrySet()) {
-            String reading = corpus.rootReading(candidate.path.sessionId,
+            String reading = corpus.rootValue(candidate.path.sessionId,
                     assignment.getKey());
             if (reading.isEmpty()
                     || !reading.equals(assignment.getValue())) {
@@ -396,7 +396,7 @@ public final class ObligationFactory {
                 : built.clockVariables.entrySet()) {
             String rootId = variable.getValue();
             String delta = skew(answer.values().get(variable.getKey()),
-                    corpus.rootReading(candidate.path.sessionId, rootId));
+                    corpus.rootValue(candidate.path.sessionId, rootId));
             if (delta.isEmpty()) {
                 gaps.add(GapRow.of(candidate.path.sessionId,
                         GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, rootId,

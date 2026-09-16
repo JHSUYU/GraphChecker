@@ -690,7 +690,18 @@ public final class Composer {
                 interactionIds);
     }
 
-    /** What this replay ran every varied root at. */
+    /**
+     * What this replay ran every varied root at.
+     *
+     * <p>The value is {@link Corpus#rootValue}, the ONE notion: the mint's
+     * reading where the replay read the root, the obligation's assignment
+     * where the replay PLANTED it.  Reading the mint alone left a flip
+     * replay's own valuation stated nowhere -- its mint states no
+     * recordedValue by rule, because a counterfactual is not a recording --
+     * so no path's formula named the marker, no valuation of it was asked,
+     * and 17960 published a finding at the recorded valuation with no root
+     * moved.</p>
+     */
     private List<String> valuationOf(String session,
                                      List<GapRow> refusals) {
         List<String> valuation = new ArrayList<String>();
@@ -699,17 +710,51 @@ public final class Composer {
             RootMintRow any = corpus.anyRoot(entry.getKey());
             RootMintRow row = corpus.root(entry.getKey(), session);
             if (any == null || any.kind() == RootKind.CLOCK) continue;
+            boolean constrains = any.declared()
+                    && lowering.declared(any.symbol());
             if (row == null) {
                 // A root the case declares and THIS replay did not mint:
                 // the path states nothing about it, and pinning it to some
                 // other session's reading would state a fact about an
                 // execution that never read it.
-                if (any.declared() && lowering.declared(any.symbol())) {
+                if (constrains) {
                     refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
                             GapClass.BLOCKING, any.rootId(),
                             "this session minted no value for a declared "
                                     + "root the composition constrains"));
                 }
+                continue;
+            }
+            String ran = corpus.rootValue(session, row.rootId());
+            // Neither half states it, and this replay DID mint the root:
+            // the path would be satisfiable at every valuation of it, which
+            // is a disjunct that decides nothing and reads as one that
+            // does.  Not gated on the symbol being declared already -- that
+            // gate is circular, because the only thing that declares a
+            // marker's symbol is the pin this refusal replaces: on the
+            // 05f4bf265 17960 corpus the two flip sessions state no value,
+            // nothing named the marker, and the composition published
+            // MESSAGE_PAIRING_FLIPPED at the recorded valuation instead.
+            if (ran.isEmpty() && row.declared()) {
+                refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
+                        GapClass.BLOCKING, any.rootId(),
+                        "this replay minted a declared root and states no "
+                                + "value it ran it at: its mint states none "
+                                + "and no obligation it ran under assigns "
+                                + "it"));
+                continue;
+            }
+            // Both halves state it and they disagree: one replay ran the
+            // root at one value, so a corpus that names two is not a
+            // recording this path can carry.
+            String read = corpus.rootReading(session, row.rootId());
+            if (!read.isEmpty() && !read.equals(ran)) {
+                refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
+                        GapClass.BLOCKING, any.rootId(),
+                        "this session's mint states \"" + read + "\" and the "
+                                + "obligation it ran under assigns \"" + ran
+                                + "\", so what this replay ran the root at "
+                                + "is stated twice and differently"));
                 continue;
             }
             if (!corpus.varied(row.rootId())) continue;
@@ -726,7 +771,7 @@ public final class Composer {
                 valuation.add(window);
                 continue;
             }
-            String literal = smtLiteral(row.recordedValue());
+            String literal = smtLiteral(ran);
             if (literal.isEmpty()) continue;
             valuation.add("(= " + row.symbol() + " " + literal + ")");
         }
