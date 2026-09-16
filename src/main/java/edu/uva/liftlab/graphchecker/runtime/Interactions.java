@@ -126,7 +126,57 @@ public final class Interactions {
         String key = message(transport, correlationId, half);
         if (key.isEmpty() || producer == null) return;
         MESSAGES.put(key, producer);
+        // The first message each endpoint id was minted for, so a second
+        // one can be told that it is a second one (#sharedProducer).  Not a
+        // second store of producers: it is an index over this one, keyed the
+        // other way round, and it never answers a pairing.
+        if (!MESSAGE_OF_ENDPOINT.containsKey(producer.id())) {
+            MESSAGE_OF_ENDPOINT.put(producer.id(), key);
+        }
     }
+
+    /**
+     * The OTHER message this producer endpoint already named, or {@code ""}.
+     *
+     * <p>An endpoint id is (occurrence, site, the k-th event of that
+     * occurrence there, attempt), and one event sends one message: a second
+     * message under the same id means the identity did not separate two
+     * events, so both messages' consumers state one causal anchor.  Called
+     * right after the mint files it, so the id's own message is this one and
+     * anything else under it is the collision.</p>
+     */
+    public static synchronized String sharedProducer(String transport,
+                                                     String correlationId,
+                                                     String half,
+                                                     Endpoint producer) {
+        if (producer == null) return "";
+        String mine = message(transport, correlationId, half);
+        String first = MESSAGE_OF_ENDPOINT.get(producer.id());
+        return first == null || first.equals(mine) || mine.isEmpty()
+                ? "" : rendered(first);
+    }
+
+    /** One message key, as a refusal can print it. */
+    private static String rendered(String key) {
+        String[] parts = key.split("\n", -1);
+        if (parts.length < 3) return key;
+        return parts[0] + " " + parts[2] + " " + parts[1];
+    }
+
+    /**
+     * The first message each producer endpoint id was minted for.
+     *
+     * <p>Bounded with {@link #MESSAGES}, and evicted with it: a run that has
+     * forgotten a message has forgotten the endpoint that sent it.</p>
+     */
+    private static final Map<String, String> MESSAGE_OF_ENDPOINT =
+            new LinkedHashMap<String, String>(64, 0.75f, false) {
+                @Override
+                protected boolean removeEldestEntry(
+                        Map.Entry<String, String> eldest) {
+                    return size() > LIMIT;
+                }
+            };
 
     /** The endpoint that sent this message, or {@code ""}. */
     public static synchronized String sender(String transport,
@@ -193,6 +243,7 @@ public final class Interactions {
 
     public static synchronized void resetForTests() {
         MESSAGES.clear();
+        MESSAGE_OF_ENDPOINT.clear();
         DELIVERY.remove();
         PRODUCERS.clear();
     }

@@ -138,6 +138,61 @@ public final class WorkStartSites {
         return false;
     }
 
+    /**
+     * The methods a started work RUNS: this list, read from the other side.
+     *
+     * <p>A start is filed under the object that carries the work
+     * ({@code Identity.startWork}), and the thread that runs it never sees
+     * that object through any hook of its own -- a pool worker is handed a
+     * task by {@code ThreadPoolExecutor}, which is JDK code no weave
+     * touches.  So the work claims its own start frame at its own first
+     * instruction: the entry of the functional method the start named.  The
+     * shapes are the mirror of {@link #RECEIVER_STARTS} and
+     * {@link #WORK_TYPES} -- {@code Runnable.run}, {@code Callable.call},
+     * a fork-join {@code exec}/{@code compute}, {@code Thread.run} -- and
+     * nothing else, so a work shape only one of the two sides recognizes
+     * is impossible by construction.</p>
+     */
+    private static final Map<String, Set<String>> WORK_ENTRIES =
+            workEntries();
+
+    private static Map<String, Set<String>> workEntries() {
+        Map<String, Set<String>> entries = new LinkedHashMap<>();
+        entries.put("java.lang.Runnable", names("run"));
+        entries.put("java.util.concurrent.Callable", names("call"));
+        entries.put("java.util.concurrent.ForkJoinTask",
+                names("exec", "compute"));
+        entries.put("java.lang.Thread", names("run"));
+        return entries;
+    }
+
+    /**
+     * Whether this method is the entry of work a start hands to a thread.
+     *
+     * <p>Zero-argument and instance-bound, because that is what every shape
+     * above is: the work is the receiver, so {@code this} is the carrier the
+     * start was filed under and the claim needs no argument of its own.</p>
+     *
+     * @param methodName     the method's own name, no signature
+     * @param argumentCount  how many arguments it declares
+     * @param declaringType  the declaring class, as the reader can see it
+     */
+    public static boolean entersWork(String methodName, int argumentCount,
+                                     Types declaringType) {
+        if (argumentCount != 0 || methodName == null
+                || declaringType == null) {
+            return false;
+        }
+        for (Map.Entry<String, Set<String>> shape
+                : WORK_ENTRIES.entrySet()) {
+            if (shape.getValue().contains(methodName)
+                    && declaringType.is(shape.getKey())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** The runtime projection of {@link Types}: the value's own class. */
     public static Types typesOf(final Object value) {
         return new Types() {

@@ -198,14 +198,13 @@ public final class CausynthTraceRecorder {
         // it is in the replay.
         String address = "";
         if (!region.isEmpty()) {
-            // A pool thread was created before the work it is running, so it
-            // inherits no frame from the submission: the start filed for THIS
-            // task is claimed here, on the object the region was entered on,
-            // BEFORE the node is read and the frame pushed -- which is where
-            // and when the replay claims it
-            // (ConcolicRegionRuntime.enterRegionEntry).  Claimed by only one
-            // pass, the frame is in one pass's index and not the other's.
-            edu.uva.liftlab.graphchecker.runtime.Identity.claimStart(receiver);
+            // No claim here.  A started work claims its start frame at its
+            // FIRST identity event, which is the entry of the functional
+            // method the start named (#claimStart, woven by
+            // CausynthPipeline.claimWorkEntry in both passes) -- strictly
+            // earlier than any region entry inside the work, and reached on
+            // a pool thread whose task enters no region at all.  A second
+            // claim point for one notion is a second identity.
             // One reading of the node for the frame and for the address, as
             // the replay takes one (ConcolicRegionRuntime.enterRegionEntry).
             String node = RuntimeTraceContext.activationSource(receiver).key();
@@ -259,6 +258,29 @@ public final class CausynthTraceRecorder {
      * each pass has (a session gap row in a replay, a plan gap through the
      * trace in the recording).  It is never swallowed.</p>
      */
+    public static void claimStart(Object carrier) {
+        try {
+            Identity.claimStart(carrier);
+        } catch (Throwable unnamed) {
+            // Same rule as the filing half: the work runs either way, and a
+            // frame nobody could claim is stated where it happened rather
+            // than swallowed.
+            String subject = carrier == null ? "" : carrier.getClass()
+                    .getName();
+            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
+                            .LINEAGE_LOST,
+                    edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
+                    subject, "the start frame filed for this work could not "
+                            + "be claimed, so the occurrences it publishes "
+                            + "carry no start-site frame in their execution "
+                            + "index: " + unnamed);
+            writeLineageGap(subject, "the start frame filed for this work "
+                    + "could not be claimed, so the occurrences it publishes "
+                    + "carry no start-site frame in their execution index: "
+                    + unnamed);
+        }
+    }
+
     public static void startWork(String startSiteId, Object carrier) {
         String site = MapFields.safe(startSiteId);
         try {
@@ -670,9 +692,49 @@ public final class CausynthTraceRecorder {
         // anchor has to be compared on.  Stated by the mint above: the
         // trace carries the endpoint Identity built, never a second reading
         // of the four inputs.
+        refuseSharedProducer(transport, correlationId, half, producer);
         recordExchange("SEND", transport, correlationId, attemptId, half,
                 localOwner, carriedScope, producer);
         return header;
+    }
+
+    /**
+     * Names the refusal when two messages carry ONE producer endpoint.
+     *
+     * <p>A producer endpoint id is (occurrence, transport site, the k-th
+     * event of that occurrence there, attempt), so two messages that share
+     * one are two messages whose consumers state the SAME causal anchor:
+     * every occurrence downstream of either carries the other's context too,
+     * and no plan can address them apart.  It happens when two threads run
+     * under one degraded role occurrence and neither could claim a start
+     * frame -- a thread started before the recording began, or from JDK
+     * code, files none -- and the consequence is already refused where it
+     * is decidable (OCCURRENCE_ADDRESS_SHARED over the region activations,
+     * and invariant 4 over the session's own endpoints).  This row names
+     * the CAUSE, at the mint, in the one place both passes send from, and
+     * states the endpoint's four components rather than the digest.</p>
+     *
+     * <p>DIAGNOSTIC, by the same ruling invariant 4 carries: an index that
+     * cannot separate two events of one site is the identity's to fix and no
+     * row can state it, so refusing the recording for it would fail every
+     * campaign at IMPORT over something no stage can repair.</p>
+     */
+    private static void refuseSharedProducer(String transport,
+                                             String correlationId,
+                                             String half, Endpoint producer) {
+        String shared = Interactions.sharedProducer(transport, correlationId,
+                half, producer);
+        if (shared.isEmpty()) return;
+        String detail = "this message's producer endpoint was already minted "
+                + "for " + shared + ", so both messages carry one causal "
+                + "anchor and every occurrence downstream of either states "
+                + "the same context; the endpoint is "
+                + producer.render();
+        RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
+                        .LINEAGE_LOST,
+                edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
+                producer.id(), detail);
+        writeLineageGap(producer.id(), detail);
     }
 
     /** Installs a received message context until {@link #endInboundExchange}. */

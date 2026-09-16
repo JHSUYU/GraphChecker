@@ -760,6 +760,34 @@ public final class ConcolicRegionRuntime {
      * nothing on the starter: the frame belongs to the work that was
      * started, which takes it when it runs.</p>
      */
+    /**
+     * Takes the execution-index frame filed for the work running here.
+     *
+     * <p>Woven at the entry of every functional method a start hands to a
+     * thread ({@code WorkStartSites.entersWork}), in this pass and in the
+     * recording alike.  The receiver IS the carrier the start was filed
+     * under, so a pool worker -- handed its task by JDK code no weave
+     * touches -- claims its own start frame at its own first instruction,
+     * before the first send it makes.</p>
+     */
+    public static void claimStart(Object carrier) {
+        try {
+            RowRuntime.claimStart(carrier);
+        } catch (Throwable unnamed) {
+            // The work runs either way, and the hole is stated: the
+            // occurrences this work publishes will be missing the
+            // start-site frame that tells two siblings apart.
+            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
+                            .LINEAGE_LOST,
+                    edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
+                    carrier == null ? "" : carrier.getClass().getName(),
+                    "the start frame filed for this work could not be "
+                            + "claimed, so the occurrences it publishes carry "
+                            + "no start-site frame in their execution index: "
+                            + unnamed);
+        }
+    }
+
     public static void startWork(String startSiteId, Object carrier) {
         String site = safe(startSiteId);
         try {
@@ -795,7 +823,11 @@ public final class ConcolicRegionRuntime {
      */
     public static long enterRegionEntry(String regionId, String rootMethod,
                                         Object receiver) {
-        RowRuntime.claimStart(receiver);
+        // No claim here: a started work claims its start frame at its FIRST
+        // identity event, which is the entry of the functional method the
+        // start named (#claimStart) -- strictly earlier than any region
+        // entry inside the work, and reached on a pool thread whose task
+        // enters no region at all.
         long entry = TOKEN_COUNTER.incrementAndGet();
         int depth = edu.uva.liftlab.graphchecker.runtime.Identity.depth();
         // The other stack this entry is the one push of, read before the
@@ -928,10 +960,6 @@ public final class ConcolicRegionRuntime {
                                         String rootMethod,
                                         Object receiver,
                                         Object[] rootArguments) {
-        // A pool thread was created before the work it is running, so it
-        // inherits no frame from the submission: the start filed for THIS
-        // task is claimed here, on the object the region was entered on.
-        RowRuntime.claimStart(receiver);
         ConcolicTaskPlan config = configuration();
         RootHookGroup group = config.rootHookGroup(
                 instrumentationSelector, rootMethod);
