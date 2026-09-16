@@ -1,18 +1,33 @@
 package edu.uva.liftlab.graphchecker.plan;
 
-/** Failure-directed role of one exact region input port. */
+/**
+ * The one role a region port can have: it carries a value the solver may
+ * move.
+ *
+ * <p>There used to be a second, {@code CONCRETE_STRUCTURE_CARRIER}, for the
+ * object graph a replay needs but the formula never asks about.  It was
+ * produced only by the discovered heap ports and by the carrier walk over
+ * the runtime-refined graph, both deleted: a port is now a DECLARATION, and
+ * a declaration the case did not make produces no port to classify.  The
+ * type test that used to decide the role stayed where it belongs -- {@code
+ * RuntimeRegionPlanner.symbolicLeafPort} asks whether the VM can present
+ * this value at all -- and it answers a boolean rather than naming a
+ * role.</p>
+ *
+ * <p>{@link #normalize} therefore refuses every other spelling by name,
+ * including the deleted one: a plan artifact written before this change
+ * states a role this engine has no meaning for, and is not a supported
+ * input.</p>
+ */
 public final class DependencyRole {
     public static final String VALUE_FRONTIER = "VALUE_FRONTIER";
-    public static final String CONCRETE_STRUCTURE_CARRIER =
-            "CONCRETE_STRUCTURE_CARRIER";
 
     private DependencyRole() {
     }
 
     /**
-     * Decodes the required two-valued dependency role.  Fail closed on
-     * purpose: treating a missing or misspelled role as a value frontier
-     * silently creates solver inputs from structural owners and containers.
+     * Decodes the one dependency role.  Fail closed on purpose: a missing or
+     * misspelled role is a row this engine cannot read, not a default.
      */
     public static String normalize(Object value) {
         if (value == null) {
@@ -24,8 +39,7 @@ public final class DependencyRole {
             encoded = encoded.substring(1, encoded.length() - 1);
         }
         encoded = encoded.trim();
-        if (VALUE_FRONTIER.equals(encoded)
-                || CONCRETE_STRUCTURE_CARRIER.equals(encoded)) {
+        if (VALUE_FRONTIER.equals(encoded)) {
             return encoded;
         }
         throw new IllegalArgumentException(
@@ -34,14 +48,5 @@ public final class DependencyRole {
 
     public static boolean valueFrontier(Object value) {
         return VALUE_FRONTIER.equals(normalize(value));
-    }
-
-    /** VALUE dominates when several static uses share one runtime port. */
-    public static String merge(Object left, Object right) {
-        String normalizedLeft = normalize(left);
-        String normalizedRight = normalize(right);
-        return VALUE_FRONTIER.equals(normalizedLeft)
-                || VALUE_FRONTIER.equals(normalizedRight)
-                ? VALUE_FRONTIER : CONCRETE_STRUCTURE_CARRIER;
     }
 }

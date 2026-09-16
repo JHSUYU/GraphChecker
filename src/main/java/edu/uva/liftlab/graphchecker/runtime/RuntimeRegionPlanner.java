@@ -11,15 +11,12 @@ import edu.uva.liftlab.graphchecker.causynth.MapFields;
 import edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
-import edu.uva.liftlab.graphchecker.plan.AutomaticRegionEdge;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
-import edu.uva.liftlab.graphchecker.plan.SharedFieldFlow;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.plan.DeclaredSiteCapture;
 import edu.uva.liftlab.graphchecker.plan.DeclaredSymbolicInputs;
-import edu.uva.liftlab.graphchecker.plan.DependencyRole;
 import edu.uva.liftlab.graphchecker.plan.MaterializationSpec;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.plan.RuntimePlanArtifact;
@@ -1036,8 +1033,7 @@ final class RuntimeRegionPlanner {
      * regionEdgeSource} only label diagnostics; rows must already be in the
      * exact JSONL value domain the file readers would produce. */
     static Result plan(List<Map<String, Object>> regions,
-                       List<Map<String, Object>> regionEdges,
-                       String regionSource, String regionEdgeSource,
+                       String regionSource,
                        Collection<Map<String, Object>> runtimeSeeds,
                        List<MethodEvent> methods,
                        List<RuntimeEvent> runtimeEvents,
@@ -1162,8 +1158,6 @@ final class RuntimeRegionPlanner {
             }
             if (!retainedOccurrences.contains(occurrenceId)) continue;
             OccurrenceBinding.bindOccurrence(region.json, rootCallId,
-                    occurrenceId);
-            OccurrenceBinding.bindEdges(regionEdges, regionId, rootCallId,
                     occurrenceId);
             registerExactPorts(region, occurrenceId, exactPorts);
             List<Map<String, Object>> occurrenceSymbolize = symbolize(
@@ -1300,59 +1294,6 @@ final class RuntimeRegionPlanner {
         retainInnermostDeclaredSiteCaptures(result.regionPlans);
         retainInnermostExactGoalEventOwners(result.regionPlans, trace);
         retainInnermostCommunicationConsumers(result.regionPlans);
-        for (Map<String, Object> edge : regionEdges) {
-            String edgeKind = stringValue(edge.get("kind"));
-            if (!"RUNTIME_FIELD_FLOW".equals(edgeKind)
-                    && !AutomaticRegionEdge
-                    .RUNTIME_REQUEST_CONTROL_EDGE_KIND.equals(edgeKind)) {
-                throw new IllegalArgumentException("invalid runtime region "
-                        + "flow row in " + regionEdgeSource);
-            }
-            String fromOccurrence = stringValue(edge.get("fromOccurrenceId"));
-            String toOccurrence = stringValue(edge.get("toOccurrenceId"));
-            if (fromOccurrence.isEmpty() || toOccurrence.isEmpty()) {
-                throw new IllegalArgumentException(
-                        "runtime field flow has no selected activation: "
-                                + stringValue(edge.get("edgeId")));
-            }
-            boolean requestControl = AutomaticRegionEdge
-                    .RUNTIME_REQUEST_CONTROL_EDGE_KIND.equals(edgeKind);
-            if (requestControl) {
-                JsonObject encoded = GSON.toJsonTree(edge).getAsJsonObject();
-                if (!AutomaticRegionEdge.trustedRequestFaultControl(
-                        encoded)) {
-                    throw new IllegalArgumentException(
-                            "runtime request control lacks an exact fault, "
-                                    + "request and ordered response: "
-                                    + stringValue(edge.get("edgeId")));
-                }
-                continue;
-            }
-            String fromPort = exactPort(exactPorts, fromOccurrence,
-                    "OUT", stringValue(edge.get("fromPort")), edge);
-            String toPort = exactPort(exactPorts, toOccurrence,
-                    "IN", stringValue(edge.get("toPort")), edge);
-            Map<String, Object> evidence = new LinkedHashMap<>(edge);
-            evidence.put("schemaVersion", 3);
-            evidence.put("fromOccurrenceId", fromOccurrence);
-            evidence.put("toOccurrenceId", toOccurrence);
-            evidence.remove("fromPort");
-            evidence.remove("toPort");
-            evidence.remove("bindings");
-            evidence.put("fromOutputPort", fromPort);
-            evidence.put("toInputPort", toPort);
-            evidence.put("correlationAuthority",
-                    SharedFieldFlow.LOCATION_MATCH_AUTHORITY);
-            evidence.put("state", "CANDIDATE_SHARED_LOCATION");
-            JsonObject encodedEvidence = GSON.toJsonTree(evidence)
-                    .getAsJsonObject();
-            if (!AutomaticRegionEdge.sharedLocationCandidate(
-                    encodedEvidence)) {
-                throw new IllegalArgumentException(
-                        "runtime field flow lacks a declared shared location: "
-                                + stringValue(edge.get("edgeId")));
-            }
-        }
         // The plan catalog names the planned regions, the static symbolic
         // sources a scheduler admits inside them, and the declared roots
         // this plan honoured.  Ports, methods, branch policies and access
@@ -1497,10 +1438,8 @@ final class RuntimeRegionPlanner {
             String regionSide = inbound ? "IN" : "OUT";
             for (Map<String, Object> port : inbound
                     ? region.symbolicInputs : region.outputs) {
-                if (!declaredCutPort(port)
-                        || !DependencyRole.VALUE_FRONTIER.equals(
-                        effectiveDependencyRole(port,
-                                stringValue(port.get("javaType"))))) {
+                if (!declaredCutPort(port) || !symbolicLeafPort(port,
+                        stringValue(port.get("javaType")))) {
                     continue;
                 }
                 Map<String, Object> site = communicationHandoffSite(
@@ -1808,9 +1747,6 @@ final class RuntimeRegionPlanner {
                         Collections.singletonList(path));
             }
             action.putAll(materialization.actionFields());
-            action.put("dependencyRole",
-                    effectiveDependencyRole(action,
-                            stringValue(action.get("javaType"))));
             result.add(action);
         }
         return result;
@@ -1907,37 +1843,31 @@ final class RuntimeRegionPlanner {
             // *writes* a value at its boundary.
             return null;
         }
-        action.put("dependencyRole",
-                effectiveDependencyRole(action, javaType));
         return action;
     }
 
 
-    /** Separates semantic solver leaves from the object graph needed only to
-     * replay a region. */
-    static String effectiveDependencyRole(Map<String, Object> port,
-                                          String javaType) {
-        if (concreteStructureCarrier(port)) {
-            return DependencyRole.CONCRETE_STRUCTURE_CARRIER;
+    /**
+     * Whether the VM can present this port's value as a symbol at all.
+     *
+     * <p>A type question and a statement the port already carries, not a
+     * role: a value whose type the SMT layer has no term for cannot be a
+     * solver leaf however it is declared, and a port the plan has already
+     * marked concrete says so about itself.</p>
+     */
+    static boolean symbolicLeafPort(Map<String, Object> port,
+                                    String javaType) {
+        if (port != null && !port.isEmpty()) {
+            String demand = stringValue(port.get("symbolicDemand"));
+            if (demand.startsWith("CONCRETE_")
+                    || Boolean.TRUE.equals(port.get("captureRootOnly"))
+                    || Boolean.TRUE.equals(port.get("loopControlOnly"))
+                    || Boolean.TRUE.equals(port.get("controlOnly"))
+                    || Boolean.TRUE.equals(port.get("pathAssumptionOnly"))) {
+                return false;
+            }
         }
-        return symbolicLeafType(javaType)
-                ? DependencyRole.VALUE_FRONTIER
-                : DependencyRole.CONCRETE_STRUCTURE_CARRIER;
-    }
-
-    /** Structure retained only to replay control is not shared symbolic
-     * state and therefore has no writer-version carrier. */
-    private static boolean concreteStructureCarrier(
-            Map<String, Object> port) {
-        if (port == null || port.isEmpty()) return false;
-        String demand = stringValue(port.get("symbolicDemand"));
-        return DependencyRole.CONCRETE_STRUCTURE_CARRIER.equals(
-                stringValue(port.get("dependencyRole")))
-                || demand.startsWith("CONCRETE_")
-                || Boolean.TRUE.equals(port.get("captureRootOnly"))
-                || Boolean.TRUE.equals(port.get("loopControlOnly"))
-                || Boolean.TRUE.equals(port.get("controlOnly"))
-                || Boolean.TRUE.equals(port.get("pathAssumptionOnly"));
+        return symbolicLeafType(javaType);
     }
 
     private static boolean symbolicLeafType(String javaType) {
@@ -2002,20 +1932,6 @@ final class RuntimeRegionPlanner {
                         "conflicting exact runtime port binding: " + key);
             }
         }
-    }
-
-    private static String exactPort(
-            Map<String, String> exactPorts, String occurrenceId,
-            String direction, String portId, Map<String, Object> edge) {
-        String selected = exactPorts.get(exactPortKey(occurrenceId,
-                direction, portId));
-        if (selected == null) {
-            throw new IllegalArgumentException("runtime flow "
-                    + stringValue(edge.get("edgeId")) + " has no exact "
-                    + direction.toLowerCase() + " port for "
-                    + occurrenceId + ": " + portId);
-        }
-        return selected;
     }
 
     private static String exactPortKey(String occurrenceId,

@@ -1375,9 +1375,6 @@ public final class CausynthTraceRecorder {
             for (Map<String, Object> row : closure.regions) {
                 RuntimeRefinedGraphBuilder.normalizeNumbersInPlace(row);
             }
-            for (Map<String, Object> row : closure.regionEdges) {
-                RuntimeRefinedGraphBuilder.normalizeNumbersInPlace(row);
-            }
             // The plan's gaps are this pass's own plus the ones the
             // RECORDING stated: the recording has no session to hold a gap
             // row, and a gap it cannot state is one nobody hears about.
@@ -1388,7 +1385,7 @@ public final class CausynthTraceRecorder {
             // own to carry them: one workload, one gap list.
             planGaps.addAll(earlierPassGaps);
             writeRuntimeRegionPlans(planOutputDirectory,
-                    closure.regions, closure.regionEdges, trace,
+                    closure.regions, trace,
                     activationGraph.runtimeInstances, planGaps);
         }
     }
@@ -2353,14 +2350,12 @@ public final class CausynthTraceRecorder {
     /** Binds frozen static regions to concrete same-thread invocations. */
     private static void writeRuntimeRegionPlans(
             File directory,
-            List<Map<String, Object>> regions,
-            List<Map<String, Object>> regionEdges, TraceData trace,
+            List<Map<String, Object>> regions, TraceData trace,
             Collection<Map<String, Object>> runtimeSeeds,
             Collection<Map<String, Object>> planGaps) throws IOException {
         writeFile(new File(directory, "concolic_region_plan.jsonl"),
-                RuntimeRegionPlanner.plan(regions, regionEdges,
+                RuntimeRegionPlanner.plan(regions,
                         "runtime region closure",
-                        "runtime region edge closure",
                         runtimeSeeds, trace.methods, trace.execution,
                         trace.fields, trace.protocol,
                         planGaps).runtimePlanJsonl());
