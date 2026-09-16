@@ -188,7 +188,6 @@ final class RowPlaceholderMint {
         // answered for it.  A mint the VM's own symbol does not find is
         // refused below.
         String[] installedAt = installed.get(symbol);
-        String minted = symbol;
         String locationKey = installedAt == null ? "" : installedAt[0];
         LocationId location = locationId(locationKey);
         // The version this read OBSERVED.  The mint's own version is not a
@@ -248,7 +247,7 @@ final class RowPlaceholderMint {
             return;
         }
         String declared = javaDescriptor(stated);
-        String sort = mintedSort(minted);
+        String sort = mintedSort(symbol);
         if (!sort.isEmpty() && sort.charAt(0) != declared.charAt(0)) {
             // The mint symbolized the OBJECT, not the cell: on hdfs-17960
             // REGION.9492ec77 declares <Snapshot: int id> and the row came
@@ -259,7 +258,7 @@ final class RowPlaceholderMint {
             // which no lowering can hold; the run states the disagreement
             // instead of a row that hides it.
             RowRuntime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
-                    minted, "a declared region input minted a " + sort
+                    symbol, "a declared region input minted a " + sort
                             + "-sorted symbol for a " + declared + " cell ("
                             + optionalString(row, "fieldSignature")
                             + "), so this read states no one sort: "
@@ -316,7 +315,7 @@ final class RowPlaceholderMint {
         // a row is already a stated failure downstream (contract v2.4
         // invariant 7: a placeholder states the version it mints), so
         // nothing is hidden by keying it.
-        String mintKey = mintVersion < 0L ? "symbol#" + safe(minted)
+        String mintKey = mintVersion < 0L ? "symbol#" + safe(symbol)
                 : locationKey + "#" + mintVersion;
         if (!RowRuntime.claimEvent("placeholder", mintKey)) {
             RowRuntime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
@@ -340,7 +339,7 @@ final class RowPlaceholderMint {
         RowRuntime.read(occurrence,
                 mintVersion < 0L ? event : mintVersion,
                 Endpoint.stateSite(locationKey, "PLACEHOLDER", 0, false),
-                location, observed, minted,
+                location, observed, symbol,
                 declared, literal(value),
                 optionalString(row, "siteIndex"), mintVersion);
     }
