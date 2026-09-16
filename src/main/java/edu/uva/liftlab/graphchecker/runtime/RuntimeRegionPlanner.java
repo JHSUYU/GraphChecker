@@ -1131,6 +1131,14 @@ final class RuntimeRegionPlanner {
             // did not retain carries none.
             String occurrenceId = stringValue(seed.get("occurrenceId"));
             if (occurrenceId.isEmpty()) continue;
+            // One coarse occurrence is one row (README REGION-1).  A second
+            // activation that landed on this address is refused where the
+            // address is minted -- RuntimeSelectedRegionFinalizer states
+            // OCCURRENCE_ADDRESS_SHARED as a BLOCKING plan gap and retains
+            // the first -- so publishing it here would put the same
+            // contradiction in the artifact, where PLAN meets it as
+            // "duplicate region occurrence" and says nothing about why.
+            if (planByOccurrence.containsKey(occurrenceId)) continue;
             // planSkeletonGraph mints the recorded call identity once and
             // stamps it on the seed; this stage reads it rather than
             // spelling a second one to check the first against.
@@ -3137,13 +3145,29 @@ final class RuntimeRegionPlanner {
         final SourceRef source;
         final String requestKey;
         final String requestApi;
+        /**
+         * The {@link edu.uva.liftlab.graphchecker.contract.Endpoint} id this
+         * leg's sender minted, or {@code ""} on a delivery.  This is the
+         * digest an occurrence downstream of the message carries as its
+         * causal anchor.
+         */
+        final String producerEndpointId;
+        /**
+         * The components behind that digest, as the sender stated them:
+         * which occurrence sent the message, at which transport site, the
+         * k-th event of that occurrence there, and the attempt.  Two
+         * anchors are told apart on these; the digest only says they
+         * differ.
+         */
+        final String producerEndpoint;
         ProtocolEvent(long seq, String direction, String transport,
                       String correlationId, String attemptId, String half,
                       String threadName, long tid, String method, long callId,
                       long invocationId, String declaredCallee,
                       long laneId, long spanId,
                       long parentSpanId, long remoteParentSpanId,
-                      SourceRef source, String requestKey, String requestApi) {
+                      SourceRef source, String requestKey, String requestApi,
+                      String producerEndpointId, String producerEndpoint) {
             this.seq = seq;
             this.direction = safe(direction);
             this.transport = safe(transport);
@@ -3163,6 +3187,8 @@ final class RuntimeRegionPlanner {
             this.source = source;
             this.requestKey = safe(requestKey);
             this.requestApi = safe(requestApi);
+            this.producerEndpointId = safe(producerEndpointId);
+            this.producerEndpoint = safe(producerEndpoint);
         }
 
         /** The one half of one exchange this leg is on. */

@@ -486,9 +486,17 @@ public final class RowRuntime {
         return PLACEHOLDERS.containsKey(Text.safe(symbol));
     }
 
-    /** Enters one frame of the execution index: a woven control site. */
-    public static void enterFrame(String callSiteId) {
-        Identity.enterCall(callSiteId);
+    /**
+     * Enters one frame of the execution index: a region activation's entry.
+     *
+     * <p>{@code nodeKey} is the node the activation is being entered on,
+     * the same one its address is minted with: the frame's iteration is the
+     * k-th entry at this site inside the occurrence that encloses it, and
+     * outside every region that enclosing occurrence is the node's degraded
+     * role occurrence.</p>
+     */
+    public static void enterFrame(String nodeKey, String callSiteId) {
+        Identity.enterCall(nodeKey, callSiteId);
     }
 
     /** Leaves the innermost frame. */

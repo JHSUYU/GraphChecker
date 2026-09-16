@@ -701,22 +701,22 @@ public class RowRuntimeTest {
     private void executionIndexIsStableUnderUnrelatedCalls() {
         Identity.resetForTests();
         Identity.scopeStart();
-        Identity.enterCall("Caller.run()#u3");
-        Identity.enterCall("Caller.step()#u7");
+        Identity.enterCall(NN.key(), "Caller.run()#u3");
+        Identity.enterCall(NN.key(), "Caller.step()#u7");
         ExecutionIndex inner = Identity.atScope();
         assertEquals("Caller.run()#u3@0/Caller.step()#u7@0", inner.render());
 
         // An unrelated call, entered and left, moves nothing.
-        Identity.enterCall("Other.helper()#u1");
+        Identity.enterCall(NN.key(), "Other.helper()#u1");
         Identity.exitCall();
         assertEquals(inner, Identity.atScope());
 
         // Re-entering one site under one frame IS the next iteration --
         // the rule that makes a loop body's turns distinct, computed the
         // same way in the recording and in the replay.
-        Identity.enterCall("Caller.body()#u9");
+        Identity.enterCall(NN.key(), "Caller.body()#u9");
         Identity.exitCall();
-        Identity.enterCall("Caller.body()#u9");
+        Identity.enterCall(NN.key(), "Caller.body()#u9");
         assertEquals("Caller.run()#u3@0/Caller.step()#u7@0"
                 + "/Caller.body()#u9@1", Identity.atScope().render());
 
@@ -725,7 +725,7 @@ public class RowRuntimeTest {
         ExecutionIndex atEntry = Identity.regionEnter();
         assertEquals(3, atEntry.frames().size());
         assertTrue(Identity.siteIndex().isEmpty());
-        Identity.enterCall("Region.port()#u2");
+        Identity.enterCall(NN.key(), "Region.port()#u2");
         assertEquals("Region.port()#u2@0", Identity.siteIndex().render());
 
         // The frame journal: a VM-logged event takes the frames the thread
@@ -745,9 +745,9 @@ public class RowRuntimeTest {
         Identity.regionKey(41L);
         // No event between the region entry and this call, so the entry the
         // clock stood at is replaced rather than duplicated.
-        Identity.enterCall("Saver.save()#u1");
+        Identity.enterCall(NN.key(), "Saver.save()#u1");
         clock[0] = 44L;
-        Identity.enterCall("Manager.count()#u2");
+        Identity.enterCall(NN.key(), "Manager.count()#u2");
         clock[0] = 48L;
         // Event 45..48 happened inside count(): the last entry below it is
         // the one the clock read when count() was entered.
@@ -762,7 +762,7 @@ public class RowRuntimeTest {
         // Entered and left with no event in between: the interval holds
         // nothing, so the collapsed entry is the one that stood at 48.
         Identity.exitCall();
-        Identity.enterCall("Manager.count()#u2");
+        Identity.enterCall(NN.key(), "Manager.count()#u2");
         assertEquals("Saver.save()#u1@0/Manager.count()#u2@1",
                 FrameJournal.framesAt(41L, 49L).render());
         // Not this activation's journal, and below the region entry: unplaced
@@ -783,9 +783,9 @@ public class RowRuntimeTest {
                 RowRuntime.occurrenceAt(99L));
         Identity.resetForTests();
         Identity.scopeStart();
-        Identity.enterCall("Caller.run()#u3");
-        Identity.enterCall("Caller.step()#u7");
-        Identity.enterCall("Caller.body()#u9");
+        Identity.enterCall(NN.key(), "Caller.run()#u3");
+        Identity.enterCall(NN.key(), "Caller.step()#u7");
+        Identity.enterCall(NN.key(), "Caller.body()#u9");
 
         // The thread-start handover (P2h): the child's inherited stack
         // GAINS the frame of the start that created it, and two siblings
@@ -794,7 +794,7 @@ public class RowRuntimeTest {
         // nothing else.  No thread id, no address, no session counter.
         Identity.resetForTests();
         Identity.scopeStart();
-        Identity.enterCall("FSImage.saveFSImageInAllDirs()#u12");
+        Identity.enterCall(NN.key(), "FSImage.saveFSImageInAllDirs()#u12");
         String first = startedWorkIndex("FSImage.saveFSImageInAllDirs()#u40");
         String second = startedWorkIndex("FSImage.saveFSImageInAllDirs()#u40");
         assertEquals("FSImage.saveFSImageInAllDirs()#u12@0"
@@ -807,7 +807,7 @@ public class RowRuntimeTest {
         // activation of the starter starts its starts again at 0, exactly as
         // a loop iteration count does.
         Identity.exitCall();
-        Identity.enterCall("FSImage.saveFSImageInAllDirs()#u12");
+        Identity.enterCall(NN.key(), "FSImage.saveFSImageInAllDirs()#u12");
         assertEquals("FSImage.saveFSImageInAllDirs()#u12@1"
                 + "/FSImage.saveFSImageInAllDirs()#u40@0"
                 + "/FSImageSaver.run()#u1@0",
@@ -826,14 +826,14 @@ public class RowRuntimeTest {
             public void run() {
                 for (Object task : tasks) {
                     Identity.claimStart(task);
-                    Identity.enterCall("Task.run()#u1");
+                    Identity.enterCall(NN.key(), "Task.run()#u1");
                     ran.add(Identity.atScope().render());
                     Identity.exitCall();
                 }
             }
         });
         Identity.scopeStart();
-        Identity.enterCall("Pool.submitAll()#u5");
+        Identity.enterCall(NN.key(), "Pool.submitAll()#u5");
         Identity.startWork("Pool.submitAll()#u9", tasks[0], NN.key());
         Identity.startWork("Pool.submitAll()#u9", tasks[1], NN.key());
         worker.start();
@@ -851,8 +851,8 @@ public class RowRuntimeTest {
         // entry of one method has its own depth, and an unbalanced one is
         // visible as a depth that did not come back.
         int depthAtOpen = Identity.depth();
-        Identity.enterCall("Recursive.m()#u1");
-        Identity.enterCall("Recursive.m()#u1");
+        Identity.enterCall(NN.key(), "Recursive.m()#u1");
+        Identity.enterCall(NN.key(), "Recursive.m()#u1");
         assertEquals(depthAtOpen + 2, Identity.depth());
         assertEquals("Recursive.m()#u1", Identity.innermostFrame());
         Identity.exitCall();
@@ -861,7 +861,7 @@ public class RowRuntimeTest {
 
         Identity.resetForTests();
         Identity.scopeStart();
-        Identity.enterCall("Caller.run()#u3");
+        Identity.enterCall(NN.key(), "Caller.run()#u3");
 
         // The three causal contexts, and the one that is not an ordinal.
         assertEquals("Root:HEARTBEAT_TICK#4", Identity.context("", "",
@@ -885,7 +885,7 @@ public class RowRuntimeTest {
         Thread child = new Thread(new Runnable() {
             @Override
             public void run() {
-                Identity.enterCall("FSImageSaver.run()#u1");
+                Identity.enterCall(NN.key(), "FSImageSaver.run()#u1");
                 onChild.set(Identity.atScope().render());
             }
         });

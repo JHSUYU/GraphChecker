@@ -800,10 +800,12 @@ public final class ConcolicRegionRuntime {
         RowRuntime.claimStart(receiver);
         long entry = TOKEN_COUNTER.incrementAndGet();
         int depth = edu.uva.liftlab.graphchecker.runtime.Identity.depth();
-        RowRuntime.enterFrame(safe(rootMethod));
+        // One reading of the node for the frame and for the address, as the
+        // recording takes one (CausynthTraceRecorder.enterMethod).
+        String node = RuntimeTraceContext.activationSource(receiver).key();
+        RowRuntime.enterFrame(node, safe(rootMethod));
         edu.uva.liftlab.graphchecker.runtime.Identity.occurrence(
-                RuntimeTraceContext.activationSource(receiver).key(),
-                safe(regionId), true);
+                node, safe(regionId), true);
         REGION_ENTRIES.get().push(new RegionEntry(entry, depth,
                 safe(rootMethod)));
         return entry;

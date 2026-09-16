@@ -178,22 +178,50 @@ public final class Identity {
             return standing;
         }
 
-        /** The site counters of the innermost open occurrence. */
-        private Map<String, Integer> siteEvents() {
-            return regions.isEmpty() ? ambientSiteEvents
-                    : regions.get(regions.size() - 1).siteEvents;
-        }
+        /**
+         * How often each occurrence has minted an event at each site.
+         *
+         * <p>Keyed by the occurrence the endpoint is under, because that is
+         * what the count means: IDENTITY-V3 §1 asks the site-local index to
+         * separate two events of ONE occurrence at ONE site, so the counter
+         * belongs to that occurrence and to nothing else.</p>
+         *
+         * <p>What this replaces: one counter for the innermost open region
+         * and one for the whole thread.  Neither is an occurrence.  On
+         * hdfs-17960 the client thread mints sends for two degraded
+         * occurrences -- {@code client#epoch0/ROLE.CLIENT/Root:CLIENT#1} for
+         * the workload's own requests and {@code
+         * nn0#epoch1/ROLE.CLIENT/Root:CLIENT#1} for the two
+         * {@code restart-namenode} requests -- and a thread-wide counter let
+         * the restart's sends consume the client's k: the recording's
+         * {@code saveNamespace} send was the 22nd send on the thread
+         * (k=21, Anchor:81d0aa0dbdd84d73) and only the 20th of its own
+         * occurrence, so the anchor of everything that message started moved
+         * with a retry the recording happened to make.  One of those two
+         * restart sends was never received (seq 27340 has no
+         * EXCHANGE_RECEIVE), which is a timing fact no replay is held to;
+         * the replay minted k=20 and refused the target.</p>
+         */
+        private final Map<String, Map<String, Integer>> siteEvents =
+                new HashMap<String, Map<String, Integer>>();
 
         /**
-         * The counters of events minted outside every region.
+         * The counters of one occurrence's events, opening them at zero.
          *
-         * <p>A thread that mints an endpoint with no occurrence open does it
-         * under its degraded role occurrence, and two such events at one
-         * site have to differ there too.  Per thread, because that is what
-         * the degraded occurrence is.</p>
+         * <p>{@code null} is the occurrence this run can name none of -- the
+         * node was unnameable -- and it is one bucket of this thread like
+         * any other, because there is one such occurrence per thread and its
+         * address is refused anyway.</p>
          */
-        private final Map<String, Integer> ambientSiteEvents =
-                new HashMap<String, Integer>();
+        private Map<String, Integer> siteEvents(OccurrenceAddress occurrence) {
+            String key = occurrence == null ? "" : occurrence.id();
+            Map<String, Integer> events = siteEvents.get(key);
+            if (events == null) {
+                events = new HashMap<String, Integer>();
+                siteEvents.put(key, events);
+            }
+            return events;
+        }
 
         private ExecutionIndex from(int base) {
             int start = Math.max(0, Math.min(base, frames.size()));
@@ -366,24 +394,38 @@ public final class Identity {
     private static final String STARTED = "start\u0000";
 
     /**
-     * Enters one instrumented call site.
+     * Enters the index frame of one region activation.
      *
-     * <p>The frame's iteration is the k-th entry of THIS call site under
-     * the frame that encloses it, counted since that frame was entered.  A
-     * loop body re-entering the same site is the same site at iteration
-     * 1, 2, 3 -- which is what the innermost enclosing loop's iteration
-     * count means -- and one rule computes it in the recording and in the
-     * replay alike, because the recording weaves no loop-backedge hook and
-     * an index that differed between the two passes would name two
-     * different points for one execution point.</p>
+     * <p>The frame's iteration is the k-th entry of THIS site inside the
+     * occurrence that ENCLOSES it: the region entry is an event of the
+     * enclosing occurrence, counted by the one counter every other event of
+     * an occurrence is counted by ({@link #eventSiteIndex}).  A loop body
+     * re-entering the same region root is that root at iteration 1, 2, 3 --
+     * which is what the innermost enclosing loop's iteration count means --
+     * and one rule computes it in the recording and in the replay alike,
+     * because both weave this entry (CausynthTraceRecorder.enterMethod,
+     * ConcolicRegionRuntime.enterRegionEntry) and the recording weaves no
+     * loop-backedge hook.</p>
+     *
+     * <p>What this replaces: the k-th entry of the site under the enclosing
+     * FRAME.  A frame's own counters die when it pops, so two activations
+     * whose distinct enclosing invocations are in UNTRACED code both stood
+     * at iteration 0 and their whole addresses collided -- on hdfs-11741,
+     * 10 of the 62 region-plan rows shared an occurrence id with another
+     * row (dn1's and dn0's SASL {@code retrieveDataEncryptionKey}, and the
+     * three {@code BlockKeyProto convert} activations of each of nn0 and
+     * the balancer, entered twice under one anchor) and PLAN refused the
+     * artifact at RuntimePlanArtifact.read.  An occurrence does not die
+     * between two of its own events, so its count separates them.</p>
      */
-    public static void enterCall(String callSiteId) {
+    public static void enterCall(String nodeKey, String callSiteId) {
         State state = state();
         String site = Text.safe(callSiteId);
-        Map<String, Integer> siblings = state.children();
-        Integer seen = siblings.get(site);
+        Map<String, Integer> entered =
+                state.siteEvents(currentOccurrence(nodeKey));
+        Integer seen = entered.get(site);
         int iteration = seen == null ? 0 : seen;
-        siblings.put(site, iteration + 1);
+        entered.put(site, iteration + 1);
         state.frames.add(Frame.of(site, iteration));
         state.entries.add(new HashMap<String, Integer>());
         state.journal();
@@ -454,7 +496,14 @@ public final class Identity {
     public static void regionExit() {
         State state = state();
         if (state.regions.isEmpty()) return;
-        state.regions.remove(state.regions.size() - 1);
+        Region closed = state.regions.remove(state.regions.size() - 1);
+        // An occurrence's site counts start at zero when it opens and are
+        // gone when it closes, as they were when they lived on the Region
+        // itself: two activations of one region are two occurrences, and
+        // their ids differ by the index of the path to each entry.
+        if (closed.occurrence != null) {
+            state.siteEvents.remove(closed.occurrence.id());
+        }
     }
 
     /** The site-local index of one event inside the region. */
@@ -567,7 +616,7 @@ public final class Identity {
                                       String site, int attempt) {
         return occurrence == null ? null
                 : Endpoint.of(occurrence, Text.safe(site),
-                        eventSiteIndex(site), attempt);
+                        eventSiteIndex(occurrence, site), attempt);
     }
 
     /**
@@ -581,18 +630,21 @@ public final class Identity {
      * states as "invariant 4 site index missing ... 2 events of this site in
      * one occurrence share one endpoint id" and says is the identity's to
      * fix with no ordinal and no counter of the session's.  The count is
-     * the occurrence's own ({@link Region#siteEvents}): it starts at zero
-     * when the activation opens, dies with it, and is therefore the same
-     * number in the recording and in a replay of that occurrence.  It is
-     * also what separates the five {@code record-ordered-deletes} messages
-     * one client occurrence sends at one transport site, whose consumers
-     * would otherwise share one causal context and one address.</p>
+     * the occurrence's own ({@link State#siteEvents}), keyed by the
+     * occurrence this endpoint is under: it starts at zero for that
+     * occurrence and is therefore the same number in the recording and in a
+     * replay of that occurrence, whatever else the thread it ran on did.
+     * It is also what separates the five {@code record-ordered-deletes}
+     * messages one client occurrence sends at one transport site, whose
+     * consumers would otherwise share one causal context and one
+     * address.</p>
      */
-    private static ExecutionIndex eventSiteIndex(String site) {
+    private static ExecutionIndex eventSiteIndex(OccurrenceAddress occurrence,
+                                                 String site) {
         State state = state();
         String key = Text.safe(site);
         if (key.isEmpty()) return state.from(state.regionBase());
-        Map<String, Integer> events = state.siteEvents();
+        Map<String, Integer> events = state.siteEvents(occurrence);
         Integer made = events.get(key);
         int iteration = made == null ? 0 : made;
         events.put(key, iteration + 1);
@@ -606,16 +658,22 @@ public final class Identity {
      * Files the producer endpoint of one whole message, for the anchor its
      * receiver states (IDENTITY-IMPL §C).
      *
-     * @return the endpoint id filed, or {@code ""}
+     * <p>The endpoint itself comes back, not its digest: the caller states
+     * the four components this mint was given -- which occurrence sent the
+     * message, at which transport site, the k-th event of that occurrence
+     * there, and the attempt -- so the trace row and a refusal spell out
+     * what the anchor is a digest OF.</p>
+     *
+     * @return the endpoint filed, or {@code null}
      */
-    public static String messageSent(String nodeKey, String transport,
-                                     String correlationId, String half) {
+    public static Endpoint messageSent(String nodeKey, String transport,
+                                       String correlationId, String half) {
         Endpoint producer = endpoint(nodeKey,
                 Text.safe(transport) + "#" + Text.safe(half), 0);
-        if (producer == null) return "";
+        if (producer == null) return null;
         Interactions.sent(Text.safe(transport), Text.safe(correlationId),
-                Text.safe(half), producer.id());
-        return producer.id();
+                Text.safe(half), producer);
+        return producer;
     }
 
     /**
@@ -702,18 +760,6 @@ public final class Identity {
         private FrameJournal journal;
         /** The occurrence this activation is, for the endpoints inside it. */
         private OccurrenceAddress occurrence;
-        /**
-         * How many events this occurrence has minted at each site.
-         *
-         * <p>Owned by the activation, so it starts at zero when the
-         * occurrence opens and is gone when it closes: it counts events of
-         * ONE occurrence at ONE site, which is what an Endpoint's
-         * site-local index has to separate (IDENTITY-V3 §1), and it is not
-         * a session ordinal -- nothing outside this activation can move
-         * it.</p>
-         */
-        private final Map<String, Integer> siteEvents =
-                new HashMap<String, Integer>();
 
         private Region(int base) {
             this.base = base;
