@@ -379,14 +379,23 @@ public final class ClosurePlanner {
      * {@code ADMISSION_GAP} and the closure never left the target's node.
      * </p>
      *
+     * <p>And the STATE behind the name too -- the v_C rule (CLOSURE-V2).
+     * A demand is what the failure can DEPEND on, not what its text spells:
+     * a container version is the value of the read that observed it, and
+     * that read's row is the only thing that names the cell, because the
+     * chain in the body ends at the mutations and, for 11741's
+     * {@code allKeys}, at an empty base.  The flip query asks the other
+     * half alone -- it BINDS names, and a name its text never mentions is a
+     * variable nothing constrains.</p>
+     *
      * @return whether the set grew
      */
     private static boolean reaches(Corpus corpus, String sessionId,
                                    String text, Set<String> named) {
         SmtLowering lowering = corpus.lowering(sessionId);
         if (lowering == null) return false;
-        Set<String> reached = lowering.reachedSymbols(text,
-                new LinkedHashSet<String>());
+        Set<String> reached = new LinkedHashSet<String>();
+        lowering.reachedSymbols(text, reached, reached);
         return named.addAll(reached);
     }
 
