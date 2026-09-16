@@ -1,815 +1,204 @@
-# Concolic integration contract
+# The concolic VM integration
 
-This document describes the boundary between instrumented Java code,
-GraphChecker, and the custom JDK. The graph chooses what to observe and replay;
-the custom JDK supplies the symbolic values used by the SMT query.
+**Scope.** This file used to describe the whole pipeline. Most of that is now the README,
+which states the design once — declared roots, in-JVM propagation with the static graph only
+scoping, identity v3, one flip on one occurrence, edges joined in the SMT, fail-closed named
+gaps — and restating it here only gave the two documents room to disagree. What is left is
+the part the README does not carry: the boundary between instrumented Java code,
+GraphChecker's runtime, and the customized OpenJDK 8 Zero VM. Read the README first; this
+file answers "what exactly does the VM do, and how does the engine talk to it".
 
-## From the annotated target to a runtime plan
+## What the VM is for
 
-Static analysis starts at the annotated target and finds a backward dependency
-closure of region skeletons, communication sites, shared-state sites, explicit
-symbolic sources, and retained loops. That candidate graph and its skeletons
-are the only static product; every address in the plan comes from a recording.
+The VM keeps a **shadow expression under each value**, by value and under the real object
+identity, not by a declared location. Any symbolic write leaves its expression on the object
+the write reached, and a later read of that object returns it — through fields, containers,
+threads, and across the wire once the value has been exported and attached. Nothing has to
+decide in advance which locations are "carriers", and nothing reconstructs a value's history
+afterwards: the fatal read's value in a replay is *already* an expression over the declared
+roots.
 
-Two traces resolve it, and one finalization mints from both:
+Two consequences the engine depends on:
 
-1. **Pass-1 lite trace.** A cheap instrumented run of the workload. It says
-   which skeleton regions actually activated, which causal anchors they
-   activated under, and what the topology is. Nothing symbolic is recorded.
-2. **Pass-2 rich trace.** Only the regions pass 1 selected are instrumented
-   richly: symbolic sources, message envelopes, shared-state reads with their
-   bounded writer snapshots, and loop counts.
-3. **Refinement** folds the rich observations back into the dependency graph,
-   dropping edges no execution took and adding the shared locations the
-   recording showed are read across regions.
-4. **Finalization** mints each region occurrence exactly once, from the
-   refined graph, and records on every plan row the basis it was admitted
-   under. Every address in the plan is an address some recording produced.
+- **A read that observes nothing symbolic has nothing to publish.** It is concrete at the
+  value the run gave it, and the composer pins it to that value.
+- **Containers are not modelled at region entry.** A container becomes symbolic only when a
+  root-derived value is put into it, and the VM carries the INITIAL snapshot base inside the
+  expression the reader gets back. Which relations hold is found by flipping root-dependent
+  branches, not by minting a symbol per read.
 
-A plan row's `admissionBasis` is one of: the target's own cone; a declared
-communication endpoint (`rootAuthority: COMMUNICATION_ENTRY`); or
-`SHARED_LOCATION_DEMAND_V1`, the transitive demand that pulls in whoever writes
-a shared location the cone reads, with `demandDepth` recording how many hops
-back it sits. That demand is gated by the care set -- the locations the target's
-cone actually reads -- so a workload's unrelated shared state does not enter
-the plan.
+## The broker ABI
 
-The result is `concolic_region_plan.jsonl`: one row per planned occurrence,
-carrying its region, occurrence id, source key, root selector, admission basis,
-retained loops, `closureGoals` (including the symbolization actions and their
-recorded `primitiveValue`) and `communicationHandoffs`. Every later stage
-addresses the recording through this file.
+`runtime/ConcolicVmBroker.java` is the whole Java-side view of the VM. Every entry point is
+looked up by reflection, so the class stays loadable on a stock JDK and the recording pass
+runs unchanged; `requireCurrentCapabilities` refuses a replay plan before its workload starts
+if any part of the surface is missing, naming the missing capabilities rather than degrading.
 
-A scheduled member names one region occurrence and one local path goal:
+| Capability group | VM entry points | What it buys |
+| --- | --- | --- |
+| session lifecycle | `openWorkloadSession`, `closeWorkloadSession`, `getWorkloadSessionStatus` | one symbolic session per workload JVM, with a status a Java caller can name |
+| region framing | `startConcolicRegion`, `finishConcolicRegion`, `getCurrentConcolicContextId`, `getCurrentConcolicRegionEnterEventId`, `currentSymbolicEventId` | brackets the events an activation owns: versions, reads and region entries are numbered from one monotone session counter, which is what aligns the runtime's frame journal with the VM's log |
+| minting | `symbolize`, `symbolizeField`, `symbolizeExactField` | where a declared root enters. A declared primitive source mints even when the value arrives wrapped over constants, which is the only way a case can say "the search starts here" about a cell nothing symbolic has reached |
+| observation | `observeExactPrimitiveField` | not a mint: the leaf installed is a concrete expression over the value the field already holds. What it buys is that the location becomes one the VM will version, so a selected write site publishes something at all |
+| readout | `getSymbolicExpression`, `getSymbolicFieldExpression` | the expression under a live value, for the row the runtime is about to publish |
+| path condition | `pauseConcolicPathCondition`, `resumeConcolicPathCondition`, `getConcolicBranchEvents`, `getConcolicPathConditionRange` | the region-local decision sequence, delimited so a reader can tell one region's conditions from its callees' |
+| wire | `exportExpression`, `attachExpression` | the producer's live expression staged into the message envelope, and installed on the consumer's real value on arrival. Each side reports its session-unique endpoint id |
+| tracked locations | `getTrackedLocationVersions` | the write log, read out by the object the VM filed it under rather than by a location Java declared; `afterEventId` scopes it on the session clock and `maxBytes` bounds one answer, which then says where to resume |
+| guarded stores | `installGuardedStoreSites` | the session's guarded-store table, one line per store method with its guard branch sites. With no table installed, no concrete store is evidence |
+| teardown | `endConcolic` | cleanup after a failed region |
 
-```json
-{
-  "taskId": "TASK.SEED.<sha256>",
-  "goalId": "GOAL.REGION_PATH.<uuid>",
-  "goalKind": "REGION_PATH_CLOSURE",
-  "regionId": "REGION.<uuid>",
-  "sourceKey": "node#epoch0",
-  "occurrenceId": "node#epoch0/region/REGION.<uuid>#1",
-  "rootSelector": {
-    "method": "<Worker: int compute()>",
-    "kind": "RECEIVER_CONTEXT",
-    "causalAnchor": {"kind": "REGISTERED_SOURCE", "sourceKey": "node#epoch0"},
-    "invocationOrdinal": 1
-  }
-}
-```
+The broker also mirrors the VM's own status ABI (`expressionBroker.hpp`) as named constants —
+`NO_ACTIVE_REGION`, `MISSING_METADATA`, `FIELD_NOT_FOUND`, `NOT_SYMBOLIC`, `FOREIGN_HANDLE`,
+`UNKNOWN_HANDLE`, `SORT_MISMATCH`, `UNSUPPORTED_TARGET` — plus two bridge-local ones,
+`INVOCATION_FAILED` and `MALFORMED_RESULT`, below every value the VM answers. The numbers are
+the VM's and are a shared ABI: retired codes stay unassigned rather than being reused. A VM
+answer that is not a number is `MALFORMED_RESULT` and never `0`, so "the engine has no
+context here" and "this bridge cannot read the answer" stay distinguishable.
 
-A scheduled task id is `TASK.SEED.<sha256>` over the member's source
-occurrence, relation content and exact port set; the replay task minted for a
-solved flip is `TASK.REPLAY.<sha256>`. `goalId` is `GOAL.REGION_PATH.` or
-`GOAL.TARGET_REACH.` followed by a UUID derived from the occurrence id, and
-`goalKind` is correspondingly `REGION_PATH_CLOSURE` or `TARGET_REACH_CLOSURE`.
+## The woven hooks
 
-An occurrence id is a planned address,
-`<sourceKey>/region/<regionId>#<ordinal>`, optionally followed by
-`#a<ordinal>` naming the activation that ran it. One planned address may be
-entered several times in one replay, so every compatible activation is
-published as its own occurrence rather than one being answered and the rest
-reported as an ambiguous address. Plan rows, relations and
-target-reach queries carry the planned address; a summary row carries the
-activation form and repeats its planned address in `plannedOccurrenceId` beside
-`activationOrdinal`. A plan and a summary are matched on the planned address,
-never on the activation.
+`causynth/CausynthPipeline` weaves both passes, and its `HookCatalog` is the one typed
+registry of what may be woven. There are exactly two catalogs, and naming them is the whole
+contract: `HookCatalog.trace()` targets `CausynthTraceRecorder` for the recording pass, and
+`HookCatalog.concolic()` targets `ConcolicRegionRuntime` for replay. Each declares its hooks
+by `Hook` constant with the owner, name, return type and parameter types Soot will emit — a
+hook that is not in a catalog cannot be woven, and one that is in both is woven in both.
 
-A schedule is drawn from exactly one closure. `ConcolicScheduler
---closure-mode` is `candidate` (every occurrence the frozen region plan
-declares), `seed-replay` (only the occurrences a seed activation can replay) or
-`active-observed` (only the occurrences this iteration's summaries observed),
-and the campaign states which one each stage uses. `schedule_max_jobs` caps how
-many workload JVMs a stage starts at once; members of one linked bundle are
-never split across jobs.
+That last point is the pass-equality rule the identity rests on (README §4): a hook that
+pushes a frame or counts an event is in both catalogs or in neither, and every push is paired
+with its pop, because the address *is* the join key. `HookCatalog.bracket` is where the
+catalog decides for itself whether the call needs observation paused across it — the
+recording pass registers no pause hook, so asking per call site is what let one weave emit a
+null invoke.
 
-All members in the selected causal closure form one linked replay bundle. They
-execute in one workload JVM so native expression handles, shared-state
-versions, and boundary identities remain valid across the whole causal chain.
-A bundle is seeded from the plan, not from whatever a worker directory happens
-to hold, so the same bundle replays identically in any stage.
+## Which reads are symbolic
 
-Two envelopes carry the VM's evidence out of that JVM:
+The case's `symbolic-inputs.jsonl` is the one authority (`plan/DeclaredSymbolicInputs.java`),
+and it is read in three forms:
 
-- `SHARED_FIELD_VERSIONS` -- for each selected shared location, the retained
-  version list under the version lock at the read. Each version carries its
-  session-monotonic `fieldVersionId`, its writer case, and its expression. The
-  earliest version is `INITIAL`; when the VM could capture the location's whole
-  content at that point it also publishes `initialSnapshot`, and membership
-  over the initial state is then decidable rather than free.
-- `CONCOLIC_PATH_CONDITION_RANGE` -- the region-local path condition, delimited
-  so the importer can tell one region's conditions from its callees' without
-  re-deriving them.
+- a **method** row, `{"class", "method"}` or the whole Soot signature: that method is a region
+  root by declaration, independent of whether the backward slice reaches it. The slice answers
+  "what does the failure read"; the declaration answers "where does a symbol enter at all",
+  and the two differ exactly where the healthy recording took the arm the case is about.
+- a **cells** row, naming `<callee signature>.return` or a field signature at that method: the
+  read of that cell mints a placeholder, with `"clock": true` where the cell is a wall clock.
+- a **callee** row, `{"callee", "kind": "CLOCK"}`: *every* call site of that callee in the
+  application scope is a root. That is the honest form for a clock, which the program may ask
+  in methods the case never listed.
 
-## Explicit symbolic roots
-
-There are two root authorities:
-
-- a configured application source such as a NameNode configuration field;
-- a planned manual symbolization action, including the public symbolization
-  hooks used by the HDFS workloads.
-
-Each successful mint records stable source identity, occurrence, Java type,
-and solver term. A value with no explicit root or propagated expression is a
-coverage gap. The runtime and composer do not manufacture an unconstrained
-replacement symbol.
-
-### Declaring which roots an experiment wants
-
-Most roots are proposed automatically: any primitive return of a call the
-analysis does not hold, reached backwards from an explored branch, becomes an
-`EXTERNAL_CALL_RETURN` input port. For the HDFS block-key workloads that is
-every `<org.apache.hadoop.util.Timer: long now()>` return. An experiment that
-does not want the whole automatic set narrows it with
-`causynth_symbolic_inputs=@config/symbolic-inputs.jsonl`.
-
-The file is the **declaration of which reads are symbolic at all**: an input
-action is symbolic only where a declaration names it, and every other
-proposed read is `CONCRETE` at its recorded value with
-`symbolicDemand: UNDECLARED_SYMBOLIC_INPUT`. A region the file does not
-mention declares nothing, and a campaign with no file at all declares
-nothing beyond the three declarations that live outside it (below).
-
-One JSONL row per **static site**. A row says where the root is read -- the
-class and the method -- and PLAN resolves that to the planned regions that
-cover it:
-
-```json
-{"class":"org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager",
- "method":"boolean updateKeys()",
- "cells":["<org.apache.hadoop.util.Timer: long now()>.return"]}
-```
-
-`method` may instead carry the whole Soot signature (`<class: ret name(args)>`),
-in which case `class` is redundant. `node` and `epoch` are optional and narrow
-the site to the regions planned on that node or in that epoch; without them a
-site that several regions cover declares the root in every one of them, which
-is what "the same Java method planned on two nodes" means. A site no planned
-region covers is a hard PLAN error naming the site: the campaign asked for a
-root the plan cannot carry, and running on would drop it in silence.
-
-A row may still carry `regionId` instead, and is still admitted, but PLAN
-records `SYMBOLIC_INPUT_REGION_ID_DECLARATION` (DIAGNOSTIC) in
-`symbolic_root_policy.jsonl` asking for the site form. A region id is a hash
-the planner mints from what the recording retained, so it moves when the
-retained selection moves, and a file that spells one has to be re-derived by
-hand every time: that is what refused the HDFS-17899 clock declaration at PLAN
-when a publication change shrank the retained region set.
-
-The other three keys are optional sets of names, any of which admits an
-action:
-
-| key | matches the action's |
-|---|---|
-| `fieldSignatures` | `accessFieldSignature` or `declaredFieldSignature` |
-| `portIds` | `portId` or `symbol` |
-| `cells` | `cell` |
-
-Every input this file does not mention stays concrete.
-
-`cells` is how a call return is named, since it carries no field signature: an
-`EXTERNAL_CALL_RETURN` action's cell is `<callee signature>.return`, identical
-at every call site of that callee inside the region, so one entry declares
-"this site's wall clock". Example, from
-`experiments/hadoop/hdfs-17899/symbolic-inputs.jsonl`:
-
-```json
-{"class":"org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager","method":"boolean updateKeys()","cells":["<org.apache.hadoop.util.Timer: long now()>.return"]}
-```
-
-A declared row does not only survive the narrowing: it **mints**. Once a
-shared value is installed, every later read of a field arrives wrapped
-in a `ReadFrom`, including a field only ever written from constants, and the
-automatic rule reads that wrapper as "already propagated" and skips the mint --
-so a declared field could stay concrete. A declared source of primitive type
-asks the strict question instead (is anything symbolic actually inside the
-tree?) and mints where the answer is no, recording the usual
-`PLANNED_MANUAL_SYMBOLIZATION_V1` evidence. A declared read that a symbol has
-already reached still flows, so declaring both a root and the values derived
-from it does not fork the chain: on the HDFS block-key experiments the clock
-is the mint and `DelegationKey#expiryDate` flows from it. Non-primitive
-declarations keep the loose rule, since a container or reference has no root
-to mint.
-
-### Only a declaration makes a read symbolic
-
-Owner ruling, 2026-09-13/15: shadow retention is **by value**, not by
-declared carrier location.  Any symbolic write keeps its expression under the
-real object identity and a read returns it, so no stage has to decide in
-advance which locations are "carriers": a read that observes a root-derived
-store gets that store's expression whether or not the plan named the
-location, and a read that observes nothing symbolic has nothing to publish.
-Containers are not modelled at region entry at all -- a container becomes
-symbolic only when a root-derived value is put into it, and the VM carries
-the INITIAL snapshot base inside the expression it then hands back.  Which
-relations hold is found by flipping the root-dependent branches, not by
-minting a symbol per read.
-
-`ConcolicScheduler.SymbolicInputSelection.decide` therefore takes one
-decision per proposed input, with four declarations and nothing else:
+`ConcolicScheduler.SymbolicInputSelection.decide` takes one decision per proposed input, and
+a declaration is the only thing that makes a read symbolic:
 
 | declaration | verdict | mints |
-|---|---|---|
-| a `fieldSignatures` / `portIds` / `cells` name of this file, for the action's own region | `DECLARED_SYMBOLIC_ROOT` | yes -- the read is where the search starts |
-| an `EXPLICIT_SYMBOLIC_FAULT` marker the workload wrote into its own source | `WORKLOAD_DECLARED_SYMBOLIC_FAULT` | yes |
-| a field a `CausynthSymbolicSource.symbolize` hook site owns | `CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED` | the hook does, at its own site, so the action stands down `CONCRETE` |
-| a `COMMUNICATION_SITE_PORT` the communication catalog declared | `DECLARED_COMMUNICATION_CUT_PORT` | never: tracked, and `attachCommunicationLeaf` installs the producer's expression |
-| anything else | `UNDECLARED_SYMBOLIC_INPUT` | no -- `CONCRETE` at its recorded value |
-
-`symbolic_root_policy.jsonl` publishes one summary row (`decidedActionCount`,
-`trackedActionCount`, `mintEligibleActionCount`, `declaredActionCount`) and
-one verdict per decided action.  On HDFS-17960 that is 4 declared counter
-reads (`<AtomicInteger: int value>` behind `SnapshotManager.getNumSnapshots`,
-selected by the exact-copy rename below), 2 hook-owned marker rows and 126
-undeclared refusals; 24 `SYMBOLIC` input actions become 4.
-
-A declaration names a **value**, and the graph names one value once per
-Jimple local it is copied into -- a method's `.return` cell is one of those
-names.  `renameDeclaredNames` extends every declared name backwards over the
-edges Soot itself proves are exact JVM value copies
-(`SOOT_EXACT_LOCAL_DIRECT_COPY_V1`, `SOOT_EXACT_PARAMETER_IDENTITY_BINDING_V1`)
-and over nothing else, so a case can declare
-`<SnapshotManager: int getNumSnapshots()>.return` and select the
-accessor-return port that names the `AtomicInteger` leaf, without any
-upstream cell becoming a root.
-
-A declared row **mints**.  Once a read arrives wrapped in a `ReadFrom` whose
-every candidate is a constant, the loose "already propagated" rule would skip
-the mint and the declared field would stay concrete, so a declared source of
-primitive type asks the strict question instead (is anything symbolic
-actually inside?) and mints where the answer is no, recording the usual
-`PLANNED_MANUAL_SYMBOLIZATION_V1` evidence.  A declared read a symbol has
-already reached still flows, so declaring both a root and the values derived
-from it does not fork the chain.
-
-Which leaves the choice of what to declare a soundness question. **A value
-whose earlier members are baked into concrete state elsewhere in the
-recording cannot be declared a free root.** The block key id is the worked
-example: the NameNode rolls it from a counter, and the target DataNode's
-`allKeys` arrives as recorded constants. Minting the NameNode-side id as a
-free symbol gives it no identity with those constants, so the solver answers
-with an id outside the recorded set and reaches the target's lookup miss
-whether or not the fault fired -- a world the recording does not admit.
-Declare the mechanism that is genuinely free (here the wall clock, and the
-expiry computed from it) and let the counter flow as the constants it was
-recorded as.
-
-### The replay task set
-
-The same slice decides which planned occurrences a replay executes
-symbolically at all. The runtime plan admits the target's whole dynamic
-ancestry, and every admitted occurrence is a symbolic activation inside the
-replayed workload -- on HDFS-17960 the fsimage loader,
-`FSImageFormatProtobuf$Loader.loadInternal`, was 93% of every replay (~659 s
-of ~800 s) and fed nothing the root could move. `ConcolicScheduler` therefore
-keeps a selected occurrence only when it can carry a root's influence *to the
-read that fails*, and publishes the rest as pruned instead of scheduling
-them. That is two questions, not one.
-
-**Bidirectional.** A location matters only where the forward closure of the
-root cells meets the backward closure of the fatal read -- the failing
-branch's operand, guard and throw cells and the reads the target goal
-symbolizes -- taken over the refined dataflow graph, and between occurrences
-over the plan's shared-location, protocol and request-control edges
-(the plan's own backward walk over the refined graph). A
-writer outside that intersection is a recorded constant *for this failure*
-however root-dependent its value is: either no root can move it, or nothing
-the failing branch reads consults it. Root dependence is seeded at
-`ROOT_SITE` alone; writing a cared location is a keep reason and never a
-fresh source of root influence, because a write whose value the recording
-fixed replays that value on every arm.
-
-| kept as | because |
-|---|---|
-| `TARGET_REACH` | the occurrence decides the fatal branch |
-| `ROOT_SITE` | it contains a root: a hook-owned or declared read, an `EXPLICIT_SYMBOLIC_FAULT` marker, or a configured source phase the hook published inside it |
-| `FATAL_READ_WRITER` | the fatal branch's own occurrence consumes its write directly, so the arm it takes is the arm the failure sees |
-| `ROOT_DEPENDENT_FLOW` | a root site reaches it over the plan's own edges -- a shared-location flow the slice cares about, a wire delivery, a request-fault control -- *and* the same edges lead on from it to the target |
-| `CARRIER_WRITER` | it writes a cared shared location; an annotation on an occurrence some root already reaches, never a reason of its own |
-
-**Repetition never narrows anything.** A loop over the elements of a
-structure plans one occurrence of the same region per element, under one
-source and one request, and a fold used to read a cohort of three or more
-such siblings as one arm per distinct root provenance, replaying one and
-publishing the rest as `REPLAY_TASK_FOLDED_SIBLING`. That was unsound: an
-occurrence reaches the question only by being root-dependent, and
-root-dependent siblings routinely write *different* derived values -- one
-key of a rotation and its successor share a provenance exactly -- so
-provenance could not tell the arms apart. On HDFS-17899 bug3 it collapsed
-the nine per-key `PBHelper.convert(BlockKeyProto)` deliveries to one per
-DataNode and left every other block-key consumer family bound to nothing.
-There is no fold: every occurrence the slice keeps is replayed.
-
-Everything else replays only what the recording observed -- every arm
-writes the recorded value -- and is published in `replay_task_slice.jsonl`
-with `reason: REPLAY_TASK_PRUNED_NOT_ROOT_DEPENDENT`; the summary row and
-the schedule index's `replayTaskSlice` member carry the counts. The
-decision is a pure function of the plan, the refined graph and the roots, so
-the active-observed schedule of the seed query takes the same subset. Three
-rules bound it: a target, a root site and a write the fatal read consumes are
-kept whatever else says, and the whole narrowing is withheld --
-`replayTaskSliceApplied: false`, nothing pruned -- when no declared root
-resolves to a cell of the graph, because a root the graph does not name
-cannot state what it reaches; a fatal read the graph has no cell for narrows
-nothing rather than everything.
-
-Offline on the recorded plans it takes HDFS-17960 from 44 tasks to 18 -- the
-same 18 the forward-only rule kept, the loader and the whole fsimage save
-nest gone -- HDFS-17899 bug3 from 31 to 25 and HDFS-17897 from 23 to 20.
-Every occurrence on the ground-truth causal chains survives in every case,
-and so does every delivery of every declared wire flow.
-
-No rule above names a workload, a class or a failure mechanism; whatever a
-single case needs beyond them belongs in that config and never in the
-scheduler. There used to be a `replay_task_budget` knob here, carried to the
-scheduler as `--replay-task-budget` and published as
-`replayTaskBudgetStatus`. It capped nothing, no experiment ever set it, and
-its own test asserted that it never dropped a task -- a number nobody wrote
-compared against a count nobody read. It is gone; the kept count is in
-`keptOccurrenceCount` and the per-occurrence decisions are beside it.
-
-## Trace context and topology
-
-The workload registers a stable node owner with `registerSource`, may bind
-handler aliases to it, and starts each external operation with
-`beginSourceRequest`. It closes the returned scope in `finally`.
-
-At a message boundary:
-
-```text
-outboundExchange(...) -> strict trace-context header
-inboundExchange(header, ...) -> scope token
-endInboundExchange(scope token)
-```
-
-The header carries sender span, source identity, request flow, and the symbolic
-message envelope. `recordExchange` records the SEND or RECEIVE leg and its
-REQUEST or RESPONSE half. Correlation, attempt, endpoint, and instrumentation
-site identifiers describe topology and locate the exact handoff. They are not
-SMT variables and are never used to reconstruct a value.
-
-## VM propagation and consumer anchors
-
-A declared wire flow identifies one exact producer endpoint and one exact
-consumer endpoint. Instrumentation invokes:
-
-```text
-exportCommunicationLeaf(portId, carrier, field, descriptor)
-attachCommunicationLeaf(portId, carrier, field, descriptor)
-```
-
-A port id names one declared endpoint of one exchange site --
-`<exchangeSiteKey>.req.<name>` or `<exchangeSiteKey>.resp.<name>` -- while a
-site id, `<method>#u<unitIndex>`, names the bytecode unit a capture was
-instrumented at. The plan's handoff row carries both, and the hook is addressed
-by the port.
-
-The export stores the live VM expression handle in the next message envelope.
-The matching receive attaches that expression to the real consumer value. A VM
-handle is valid only inside the workload JVM/session; linked regions therefore
-replay together.
-
-The custom JDK leaves a transparent `ConsumerBoundaryExpression` at every
-successful RPC attach and shared-state read. The anchor records boundary kind,
-event identity, Java type, and the already-propagated payload expression. Java
-operations continue from that payload. For example:
-
-```text
-C produces x + 1
-  -> RPC attach in B anchors x + 1
-  -> B computes 2 * (x + 1)
-  -> RPC attach in A anchors 2 * (x + 1)
-  -> A branches on the same propagated expression
-```
-
-Shared fields and containers use the same rule. When several recorded writes
-can supply a read, its propagated payload is a guarded choice over every writer
-expression. Each arm retains its writer case and local path condition. The SMT
-query requires exactly one arm and makes that arm imply its writer case and
-local path condition. All candidates in the bounded write set remain available
-to this choice. An incomplete set remains a coverage gap and cannot support a
-closed final claim.
-
-Requiring the selected arm's writer is necessary but not sufficient: on its own
-it leaves every *later* writer to the same location free to run as well, so a
-read could take a value its own program order has already overwritten. The
-model therefore also says that the selected arm is the last write the read
-could have seen. The order is the VM's own -- each candidate carries the
-session-monotonic `fieldVersionId` of the version it names, and a read's
-candidate list is the location's retained version list taken under the version
-lock at the read, so every candidate was published before the read and the ids
-order them exactly. For candidates `w_1 < ... < w_n`, selecting `w_k` implies
-`w_k` is active and no `w_j` with `j > k` is, where "active" is the same
-conjunction of writer case closure and local path condition the arm's writer
-obligation already asserts. The earliest candidate is the location's `INITIAL`
-version, so selecting it forbids every tracked writer. Each arm but the last
-carries one named `guarded_read_order__` assertion. Version ids minted in
-different symbolic sessions do not compare, so one stable read lowered from
-several sessions keeps an order only where the sessions agree; a read whose
-candidates admit no single order keeps the rest of its model and is reported as
-`GUARDED_READ_ORDER_UNKNOWN` in the guarded-read model, which is telemetry and
-not a refusal.
-
-## Local path conditions and symbolic merging
-
-Each region records the path condition it executed. RPC propagation does not
-copy an upstream region's path condition into the receiver thread. Instead,
-the importer keeps every region case with its own selector and local path
-condition.
-
-Offline closure groups consumer anchors by stable boundary family, one family
-per read event. A family's `boundaryKind` is `FIELD_READ` for a shared-state
-read or `RPC_ATTACH` for a value that crossed a wire. Every observed payload
-becomes one family arm selected by the exact producer case, and the selector
-implies that case's local path condition. One physical read consumed by several
-cases is one family addressed by all of them: sharing is not ambiguity, so no
-second ordering mechanism is introduced.
-
-Resolution is transitive. A boundary leaf that arrives inside another family's
-arm payload is rewritten by the same walk, which pulls that producer's cases in
-recursively until the cone ends in roots, `INITIAL` versions or constants --
-NN to client to DN is one chain, not three. The `active` set guards cycles
-(`CONSUMER_BOUNDARY_FAMILY_CYCLE`), and each resolved family records
-`boundaryDepth`: 0 for a boundary the target reads directly, 1 for one that
-arrived inside another boundary's payload, and so on. A multi-hop dependency
-therefore shares its intermediate merge instead of enumerating the Cartesian
-product of all upstream paths.
-
-Two facts the closure publishes rather than hides:
-
-- `INITIAL_CONTAINER_SNAPSHOT_TRUNCATED` -- a whole-state carrier whose
-  `INITIAL` version has no complete content snapshot. Membership over its
-  initial state is then a free Boolean, so "the key was never there" is
-  available at zero cost. The formula is still emitted, because the same read's
-  writer arms are real; the gate is what refuses a witness that stands on it.
-- An attach family that reached no arm and that no consumer leaf referenced is
-  named `RPC_ATTACH_SENDER_EXPRESSION_MISSING` once, by an end-of-closure
-  sweep. A family nothing referenced but which some other slice may own stays
-  telemetry in the wire-flow ledger with
-  `reason: CONSUMER_BOUNDARY_FAMILY_UNREFERENCED`.
-
-For two independent dependencies with two cases each, the formula contains two
-two-arm merges. It does not enumerate four whole executions. For a dependent
-chain, the downstream payload already contains the upstream expression and the
-family selectors add the matching local path conditions. Composition directly
-lowers those propagated expressions and local conditions.
-
-## Replay waves
-
-One path-flip obligation chooses a primary region branch. Companion regions in
-the same bundle receive the same solver assignment and replay normally, so
-downstream branches, RPC handoffs, and GuardedRead candidate snapshots are
-observed again. Different obligations run in separate workload JVMs and may
-execute in parallel.
-
-One planner JVM runs per wave. It reads the same immutable summary snapshot
-and task plan for every member named on its `--members` roster, computes the
-propagation closure once, and writes each member's own path manifest and
-worklist into that member's own directory. The campaign waits for the wave,
-imports its new cases, then publishes one larger snapshot for the next wave. A
-region is closed only at this closure-wide fixed point. An obligation whose
-flip query exhausts the solver budget is recorded as the `SOLVER_TIMEOUT`
-exploration status and the `PATH_FLIP_SOLVER_TIMEOUT` path coverage gap: its
-sibling path stays unexplored, which blocks `UNSAT_CLOSED` and never a
-`SAT_CANDIDATE`. A topology change quarantines the complete replay bundle and
-starts a new topology epoch; cases from different epochs are never merged.
-
-Retained loops use their configured finite unroll as one region-local path.
-Repeated transfers and shared-state accesses keep their loop/boundary ordinal
-and candidate writer versions. Loop iterations do not become separate
-symbolic-merge cases merely because they repeat.
-
-`RegionPathWorklist` is the per-member record of that loop. Each member writes
-its own `region_path_worklist.jsonl` -- the sibling branches still to flip and
-the verdict each obligation reached -- and its own `region_path_manifest.json`,
-whose `state` is `CLOSED` only at the closure-wide fixed point. The loop ends
-at that fixed point, or at one of two guards -- a wave that proposes exactly
-the previous wave's obligations over an unchanged verdict histogram has learned
-nothing, and failing that the loop stops after `region_path_max_waves` waves.
-Either stop is written onto every still-pending worklist as a
-`REGION_PATH_CLOSURE_NO_PROGRESS` or `REGION_PATH_WAVE_BUDGET_REACHED`
-coverage gap. Both are telemetry: an unexplored sibling path withholds a closed
-UNSAT conclusion and says nothing about a SAT candidate.
-
-## Result contract
-
-Every imported region summary carries `schemaVersion`, `kind`, `goalId`,
-`taskId`, `sourceKey`, `topologyEpoch`, `boundarySessionScope`, `regionId`,
-`occurrenceId`, `activationOrdinal`,
-`plannedOccurrenceId`, `relationKey`, `loopBound`, `goalKind`, `edgeBindings`,
-`pathCondition`, `branchMappings`, `normalExit`, `boundedExit`,
-`exceptionType`, `localCaseId`, `summaryId` and
-`pathSetClosed`. Evidence the replay did not produce is absent rather than
-empty: `symbolicSourceEvidence`, `manualSymbolicInputObservations`,
-`recordedSharedState`, `vmHandoffEvents`, `pathLoopCounts`,
-`pathLoopCountGaps`, `alignmentGaps`, `familySnapshotDigest`,
-`replayGroupId` when the replay named a group, `sharedExpressionTable` when
-some payload of the row refers to a hash-consed definition, and, for a
-target-reach goal, `targetReached` and `targetReach`. The importer validates
-that evidence and publishes local cases or named gaps; it writes every field
-above except `pathSetClosed`, which the campaign stamps on once the exploration
-waves settle, matching each worklist report on `plannedOccurrenceId`.
-`sharedExpressionTable` holds the hash-consed expression definitions the row's
-own payloads refer to.
-
-## Composition
-
-The composer consumes the closure-wide cases and the target predicate. Its
-manifest reports consumer-boundary families, case-to-PC dependencies,
-GuardedRead choices, field versions and reads, propagation gaps, and
-final-status refusals. `FINAL_READY` means the emitted formula has all
-selectors, path conditions, and propagated values needed for a sound SAT
-witness. `FINAL_READY` is stage-local: it states that the formula is complete,
-not that the campaign proved anything. Open path, propagation, and
-bounded-candidate coverage remains telemetry and prevents only a closed UNSAT
-conclusion. The generated SMT follows the recorded causal chain directly from
-explicit roots through propagated consumer expressions to the target condition.
-
-**Case partitions.** A region occurrence's local cases form an exactly-one
-partition. The manifest separates the two kinds, because a consumer may pin one
-and not the other. `caseSelectorPartitions` are the partitions the formula
-asserts unconditionally. `conditionalCaseSelectorPartitions` are those of a
-fault-controlled occurrence, whose predecessor's marker decides whether any of
-its cases runs at all; the formula states that as a
-`request_fault_control__<edge>` assertion -- the fault implies every case of the
-controlled occurrence is idle, and its negation implies the exactly-one
-partition. Advertising such a partition unconditionally would invite a consumer
-to pin it and silently freeze the marker.
-
-**Dead case arms.** An EXPLORE replay can observe a case whose path condition
-no model of the final composition admits -- the arm contradicts the
-target-reach obligation the formula was composed under. The formula already
-refutes it, but only after a solver has reasoned through the arm's whole cone,
-and z3 can spend its entire budget there before it commits to the live
-sibling: on HDFS-17960 the ordered-deletion arms of the root's own region carry
-the binary searches over free `children` lists and the lambda-valued snapshot
-chains, and the plain buggy polarity timed out at 600 s while each arm on its
-own is decided in 0.3 s. When the composer is given `--z3`, `DeadCaseLemmas`
-asks every arm of every unconditional multi-arm partition alone,
-`formula ∧ arm`, under a deterministic z3 resource limit (`--dead-case-rlimit`,
-default 5,000,000; `0` disables the pass). An `unsat` answer is a theorem of
-the formula, so `(not arm)` is asserted as a named `dead_case_lemma__<hash>`
-before `(check-sat)`; the model set is unchanged and nothing recorded is
-assumed, which is what separates a lemma from a pinned case frontier. Lemmas
-found earlier are carried into later probes, which stays sound and makes them
-cheap. Conditional partitions are never probed, nor is a fail-closed formula.
-The manifest's `deadCaseLemmas` ledger lists every probe with its status and
-elapsed time, and every lemma with the partition it decides. Without `--z3` the
-formula is untouched and the ledger says `skipped: NO_SOLVER`.
-
-The formula is asked before any arm is. Every arm of an unsatisfiable formula
-answers `unsat`, so on such a formula the pass "refutes" all of them --
-including both arms of one exactly-one partition, which is a statement about
-the composition and not about any arm. HDFS-17899 bug3 met exactly that under
-the replay-group identity axiom: 8 probes, 8 lemmas, and a core naming the
-lemmas rather than the contradiction that produced them. `formula` alone is
-therefore probed first under the same `rlimit`; on `unsat` no lemma is emitted,
-the ledger says `skipped: FORMULA_UNSAT` with the probe under `formulaProbe`,
-and `rows` carries `DEAD_CASE_LEMMAS_SKIPPED_FORMULA_UNSAT`. The same shape is
-caught from the other side after probing: lemmas that would refute *every* arm
-of one partition are dropped (`droppedLemmas`, row
-`DEAD_CASE_LEMMAS_PARTITION_FULLY_REFUTED`) rather than asserted, since they
-say either that the formula is unsatisfiable after all or that the partition's
-arms are not the ones the formula's own exactly-one constraint ranges over.
-Dropping only weakens what is emitted: each remaining lemma was proven against
-the formula, and a lemma carried into a later probe stays a theorem whether or
-not it is asserted in the end.
-
-**Unnamed elements.** `P_L'<class>'_` is the VM's placeholder for an operand
-oop no shadow names: `MethodSymbolizerHandle` observes an argument without
-allocating anything, so a reference that never carried a symbolic value
-reaches the recording with its class and no identity. It is not a root
-(nothing declared it, nothing the solver may move), so refusing it as
-`SymbolicSourceAuthorityMissing` refuses a whole composition for an identity
-the formula only has to keep distinct. HDFS-17960 met it the moment
-`snapshotCounter` left the carrier set: the `Snapshot` inserted into
-`snapshotsByNames` used to be shadowed (`M_L'Snapshot'_46`) only because its
-`id` field had received a versioned value. The placeholder carries no oop id,
-so it cannot be one witness everywhere it appears -- two distinct objects
-render the same text -- but the mutation that stored it is unique: one
-insertion event, one element. `ContainerSmtCodec` therefore hands the stored
-element of an `APPEND` / `INSERT` / `WRITE` / `PUT` to the host together with
-the mutation node (`Host.element`), and the composer names an unnamed
-reference there as an execution-local `structural_ref` scoped by the replay
-scope and the content digest of that mutation, minted once per insertion and
-reused wherever the insertion is lowered. It gets no distinctness
-constraints, which over-approximates; the placeholder anywhere else keeps its
-refusal. The manifest's `untrackedElementWitnesses` ledger lists every witness
-with its placeholder, mutation and use count.
-
-**Containers.** A Java container is lowered as a state witness, not as a fresh
-symbol per access: `AssocState` for maps (`assoc_present`, `assoc_values`,
-`assoc_order`, `assoc_position`) and `IndexedState` for lists and arrays. Size
-is a closed form of the operations applied, so `size()` after a put is derived
-rather than assumed, and an allocated container's size is stated once against
-the Java int domain rather than as any one path's precondition. Element and
-field reads project a scalar out of the state with the declared Java type, so
-the arithmetic downstream is the program's.
-
-**Wire flows.** `wireFlowBindings` is the ledger: one row per boundary family
-on a declared port, carrying `portId`, `armCount`, `referenced`, `valueBound`,
-its lowered `solverTerm`, and, where the mapping declares one, `consumerField`
-and `consumerFieldRead`. The declared ports come from the plan's
-`communicationHandoffs`; the declared consumer fields come from
-`--mappings`, the experiment's `communication-mappings.jsonl`. The refusal
-`WIRE_FLOW_VALUE_UNBOUND[<port>]` is decided **per flow**, not per family: a
-flow is unbound only when no family on its port reached a term and the field
-its consumer assigns was not read either. One lowered family out of eleven is
-the wire's value being in the formula; the other ten stay in the ledger as
-telemetry.
-
-## Reading the formula
-
-`RootValuationSolver` solves the composed formula and publishes its valuations
-and mechanisms into the manifest it solved, under `solver`: one anchored
-occurrence, one artifact. It enumerates the Java-boolean roots -- the injected fault
-markers and configured boolean sources -- one valuation per assignment, and
-leaves every other root existential. Each valuation row carries:
-
-- `values`, the boolean assignment, and `status`;
-- `pinnedCaseSelectors`, the case frontier the attempt that decided it was
-  solved under, so a reader can tell a causal verdict from one the frontier
-  decided;
-- `existentialWitness`, the model's value for each non-boolean root;
-- `witnessMechanisms`, each root the witness moved off its recorded value,
-  named as what it is: `MARKER_FLIPPED` for an injected fault, `CLOCK_SKEW`
-  with its `skewMillis` for a wall clock, `ROOT_MOVED` otherwise.
-
-Three further readings sit beside the table:
-
-- **`existentialRootProbe`.** One neighbouring value per existential root, with
-  the others pinned to the witness. A rejected neighbour is the solver's own
-  proof that the root decides the target. A candidate outside a clock's
-  declared `ClockRootPhysics` window is not solved at all; it is recorded
-  `status: "skipped", rejectedBy: "WINDOW_BOUNDARY"`, because a value the
-  root's own physics forbids is refused by that assertion and not by the
-  target.
-- **`mechanismNecessity`.** For each declared marker whose *recorded* polarity
-  is satisfiable, the mechanisms that polarity names are grouped by kind -- all
-  wall clocks together, since "these nodes' clocks disagreed" is the mechanism
-  and one clock is not -- pinned to their recorded values, and solved again. A
-  polarity that survives that was not carried by the mechanism. A model assigns
-  every free root, so a witness always names something; this is how a named
-  mechanism is told from decoration.
-- **`fatalStateSelection`.** The arms of the fatal predicate's own guarded
-  read, with the one the model chose marked. The `fatal_path` assertion names
-  one `merged_boundary__` constant, one equality binds it to a read's value
-  term, and the manifest holds that read's arms.
-
-A composition the composer refused is still solved. Everything above is
-published with `evidenceOnly: true`, the eligibility gap stays in `gaps`, and
-the state stays `CANDIDATE_WITH_GAPS`: a refusal is a reason to withhold a
-verdict, not a reason to withhold a reading. Because a refusal also fails the
-formula closed, evidence-only solving lifts that one `(assert false)` marker
-and reports how many it lifted in `failClosedMarkersLifted`.
-
-## The claim
-
-`ClaimPolicy` decides what a campaign proved, once, and publishes that
-decision inside the solver report as `campaignClaim`. The EMIT stage
-of `run_engine.sh` copies `claim`, `claimReason`, `blockers` and
-`whyNotAccepted` from it into `result.json` and refuses to publish a result
-from a manifest that carries no decision; it derives no verdict of its
-own. `ClaimPolicy` can be replayed on any published manifest:
-
-```bash
-java -cp GraphChecker.jar edu.uva.liftlab.graphchecker.concolic.ClaimPolicy \
-  --manifest schedule/final/candidate_composition_manifest.json
-```
-
-A claim is accepted only when no blocker is named. `SAT_CANDIDATE` needs a
-`REACHABLE` solver result, `UNSAT_CLOSED` an `UNREACHABLE` one; everything
-else is `INCONCLUSIVE_PARTIAL` and every reason is one row of `blockers`
-(`code`, `subject`, `detail`) and one line of `whyNotAccepted`.
-
-| Blocker | Named when |
-| --- | --- |
-| `COMPOSER_NOT_FINAL_READY` | the manifest's `finalStatus` is not `FINAL_READY` |
-| `COMPOSITION_GAPS_UNRESOLVED` | a blocking gap is open in the composition manifest or its solver report -- Composer refusals, the composition's own gaps, the bounded-loop model's, the propagation closure's, the fault-control closure's, classed by `GapLedger` |
-| `DECLARED_WIRE_FLOWS_UNREALIZED` | a declared `WIRE_FLOW` reached the formula by neither route; the subject names those flows |
-| `UNDETERMINED_INITIAL_STATE` | the fatal read's own container carries an `INITIAL_CONTAINER_SNAPSHOT_TRUNCATED` gap, so membership over its initial state is a free choice available under every arm |
-| `FAULT_MARKER_NOT_DETERMINING` | the experiment injects a fault marker, both polarities are satisfiable, and no named mechanism the target cannot do without explains the polarity that has no fault |
-| `TARGET_UNCONSTRAINED_BY_ROOTS` | a `REACHABLE` result where no single root flip changes satisfiability and no existential perturbation was rejected |
-| `WITNESS_UNINFORMATIVE` | the existential witness is every-zero, or identical under every satisfying valuation, while no perturbation of it was rejected |
-| `SOLVER_UNDECIDED_VALUATIONS` | the solver returned neither sat nor unsat on an enumerated valuation |
-| `UNSAT_CLOSURE_INCOMPLETE` | an `UNREACHABLE` result without closed selected-path authority |
-| `NO_EXACT_REACHABILITY` | the solver stage reached no exact reachability decision |
-| `COMPOSED_BODY_UNSATISFIABLE` | the composer's own probe found the composed formula unsatisfiable before any root polarity was asserted, so every valuation restates that one contradiction and the reachability answer is about the model rather than the target |
-
-A witness is evidence only if the target predicate depends on a symbolic root.
-Two enumerated valuations that differ in exactly one Boolean root and disagree
-on satisfiability show that dependence; so does a rejected existential
-perturbation inside the root's own declared physics. Without either, the
-formula and the roots are disconnected and the witness names nothing, whatever
-the formula satisfies. That check does not apply to an `UNREACHABLE` result,
-which has no witness to tie to a root.
-
-Where the experiment injects a marker, the marker is the hypothesis and the
-verdict has to rest on it. `constrainsRootSpace` on some other root is evidence
-about that root, so the claim also records `rootSpace.probedRoot` -- which root
-the probe perturbed and whether it was rejected.
-
-`UNSAT_CLOSURE_INCOMPLETE` is required for `UNSAT_CLOSED` and for nothing
-else: one connected SAT witness stays valid while sibling paths are open.
-
-### The gap ledger
-
-Every gap code the pipeline can publish is registered in one place,
-`contract/GapLedger.java`, with an explicit class:
-
-- **`BLOCKING`** -- a missing chain element, or freedom nobody accounted for.
-  The candidate is withheld while one is open.
-- **`DIAGNOSTIC`** -- provably cannot change the chain. Each of these carries
-  the argument in the table itself, and the registry refuses an entry that
-  states none.
-
-**A code nobody registered is `BLOCKING`.** Adding a gap to some stage
-therefore withholds candidates until somebody comes to that file and writes
-down why it cannot break a chain. That default is applied identically by both
-readers, so there is no second place for a code to be classed.
-
-`ClaimPolicy` reads the ledger for every gap the composition manifest and the
-reach report publish. The EMIT stage of `run_engine.sh` reads the same table --
-published beside the gaps as `schedule/final/gap_ledger.json` -- to partition
-`gaps.json` for the stages the claim cannot see: IMPORT diagnostics, EXPLORE
-path closures, CLASSIFY topology deltas, the static catalog's own gaps and the
-planning gaps the runtime plan artifact carries. `gaps.json` keeps `gaps` and
-`gapCount` for the blocking rows and `telemetryGaps` / `telemetryCount` for
-the diagnostic ones, with each row carrying its `class` and the whole exception
-list echoed in `gapLedger.diagnosticCodes`.
-
-`result.json` states `accepted`: the claim together with the ledger. A claim
-is decided in SOLVE and cannot see IMPORT, EXPLORE or CLASSIFY, so a run can
-publish `SAT_CANDIDATE` with blocking gaps raised after it -- `accepted` is
-false there and the campaign exits 3.
-
-The diagnostic classes, and what each rests on:
-
-| Code | Why it cannot change the chain |
-| --- | --- |
-| `SELECTED_PATH_SET_INCOMPLETE` | completeness is required only to close an UNSAT refutation, which `UNSAT_CLOSURE_INCOMPLETE` withholds by name |
-| the EXPLORE sibling-path family (`BOUND_REACHED`, `PATH_FLIP_*`, `UNSUPPORTED_PATH_FLIP`, `LINKED_REPLAY_LEFT_TOPOLOGY_EPOCH`, `REGION_PATH_WAVE_BUDGET_REACHED`, `REGION_PATH_CLOSURE_NO_PROGRESS`) | an unexplored sibling path is not a link of the chain the witness walks; each of these rows makes the summary's path set unclosed, so the one conclusion it can falsify is withheld by name |
-| `INITIAL_CONTAINER_SNAPSHOT_TRUNCATED` | `ClaimPolicy` decides this per read, blocking `UNDETERMINED_INITIAL_STATE` exactly when the accepted witness reads out of the truncated carrier's initial arm |
-| `REGION_LOOP_OCCURRENCES_BOUNDED` | the occurrence set is bounded by the declared `K_L` rather than truncated, and `BoundedLoopComposition` checks every replayed case against that same declaration |
-| `BOUNDED_LOOP_FIXED_COUNT_BOUND_UNDECLARED` | an array-indexed loop's trip count is its array length; a case that published no dense exact cardinality vector raises the blocking `PATH_LOCAL_ARRAY_CARDINALITY_MISSING` |
-
-Four codes are neither, and are decided against the replay slice the campaign
-ran: `REGION_CAUSAL_ANCHOR_NOT_OBSERVED`, `REGION_OCCURRENCE_ANCHOR_UNMATCHED`,
-`REGION_TASK_NO_PUBLISHED_ACTIVATION` and `COVERAGE_GAP`. The static plan
-over-approximates -- it admits every region the backward walk reaches -- and
-`ReplayTaskSlice` keeps the occurrences root dependence selected, for one of
-`TARGET_REACH`, `ROOT_SITE`, `CARRIER_WRITER`, `ROOT_DEPENDENT_FLOW` or
-`FATAL_READ_WRITER`. A planned region that never ran is a broken chain on the
-kept slice and an over-approximation of the plan off it, so each row is
-resolved through `runtime_workflow_schedule_index.json` (and
-`replay_task_slice.jsonl` where the run published one) and carries its
-`sliceVerdict`. An absent slice, a slice that narrowed nothing, or a subject
-naming no planned occurrence all read as blocking: not knowing which side a
-row is on is not a reason to stop withholding on it.
-
-Every gap row carries `classReason`, the ledger's own sentence for its code.
-
-**Reading a campaign as passed.** The claim is `SAT_CANDIDATE`, `blockers` is
-empty and `finalStatus` is `FINAL_READY`; and on the plain `candidate.smt2`,
-unpinned, the buggy polarity of the case's declared root is satisfiable while
-the other polarity is not -- or, where the mechanism is not a marker, a
-`mechanismNecessity` row names a mechanism the target cannot do without.
-
-### Realizing a declared wire flow
-
-A declared `WIRE_FLOW` reaches the formula by either of two routes, and the
-claim's `rootSpace.wireFlows` row says which one answered in `realizedBy`:
-
-- **`PORT_FAMILY`** -- some boundary family on the flow's own
-  `XCH.<exchangeSiteKey>.<req|resp>.<flow>` port was lowered into a term. This
-  is the direct route and it is reported first when both hold.
-- **`CONSUMER_FIELD_READ`** -- the value left the wire on arrival. The consumer
-  assigned it to a field and everything downstream reads that field, so the
-  term the wire's value ends up in is a guarded read of that field and the
-  port's own family is a term nobody was going to build. Only the experiment
-  knows which field that is, so the mapping declares it as `consumerField`,
-  named as the guarded-read model names a field -- by the class that declares
-  it, for example
-  `org.apache.hadoop.security.token.delegation.DelegationKey#expiryDate`.
-
-A flow that declares no `consumerField` has only the port route. The composer
-makes the same join before refusing, so the two stages cannot disagree about
-one composition.
-
-## Experiment inputs
-
-Four declarations per experiment directory, read by `run_engine.sh` and
-resolvable with `@config`, `@repo` and `@project`:
-
-| File | Role |
-| --- | --- |
-| `symbolic-inputs.jsonl` | the case's declaration, one `{"class", "method", "cells"/"fieldSignatures"/"portIds": [...]}` row per static site: which reads of this case are symbolic at all. Configured with `causynth_symbolic_inputs`. Every read it does not name is concrete, which is what keeps a witness about the fault rather than about whatever else happened to be free. A case that declares none is symbolic only where a hook site, a workload marker or a declared wire cut port says so. |
-| `communication-mappings.jsonl` | one `WIRE_FLOW` row per declared cross-node value: `id`, `transport`, `direction`, `javaType`, an exact `producer` and `consumer` endpoint, and optionally `consumerField` -- the field the consumer assigns the received value to, which is the second route a flow can reach the formula by. |
-| `loop-bounds.jsonl` | the finite unroll for every retained condition-controlled loop. An empty file explicitly means the workload has no such loop. |
-| `target.yaml` | the `exception_target_id` the annotated throw site carries. |
-
-`workflow.properties` holds the knobs: `schedule_max_jobs` (workload JVMs per
-stage), `solver_timeout_ms` (per-query Z3 budget), `region_path_max_waves`
-(EXPLORE wave budget, default 12), `reach_max_inputs` and `reach_max_valuations` (the Boolean enumeration bounds),
-`concolic_worker_count`, and the output, cache, classpath and VM paths.
+| --- | --- | --- |
+| a name of this file, for the action's own region | `declaredSymbolicRoot` | yes — the read is where the search starts |
+| a fault marker the workload wrote into its own source (`Debug.makeSymbolicBoolean`) | workload-owned | yes |
+| a field a `CausynthSymbolicSource.symbolize` hook site owns | `CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED` | no: the hook mints at its own site, so the action stands down `CONCRETE` |
+| a port `communication-mappings.jsonl` declared | `DECLARED_COMMUNICATION_CUT_PORT` | never: tracked, and `attachCommunicationLeaf` installs the producer's expression |
+| anything else | `UNDECLARED_SYMBOLIC_INPUT` | no — `CONCRETE` at its recorded value |
+
+A declaration names a *value*, and the graph names one value once per Jimple local it is
+copied into. `renameDeclaredNames` extends a declared name backwards over the edges Soot
+itself proves are exact JVM value copies (`SOOT_EXACT_LOCAL_DIRECT_COPY_V1`,
+`SOOT_EXACT_PARAMETER_IDENTITY_BINDING_V1`) and over nothing else, so a case can declare
+`<SnapshotManager: int getNumSnapshots()>.return` and select the accessor-return port that
+names the `AtomicInteger` leaf without any upstream cell becoming a root.
+
+Which leaves *what* to declare a soundness question. **A value whose earlier members are
+baked into concrete state elsewhere in the recording cannot be declared a free root.** The
+block key id is the worked example: the NameNode rolls it from a counter and the target
+DataNode's key map arrives as recorded constants, so minting the NameNode-side id as a free
+symbol gives it no identity with those constants and the solver answers with an id outside
+the recorded set — a world the recording does not admit. Declare the mechanism that is
+genuinely free (the wall clock, and the expiry computed from it) and let the counter flow as
+the constants it was recorded as.
+
+## Containers
+
+A Java container is lowered as a state witness, not as a fresh symbol per access.
+`compose/ContainerStateModel` declares two SMT datatypes — `AssocState` for maps
+(`assoc_present`, `assoc_values`, `assoc_order`, `assoc_position`) and `IndexedState` for
+lists and arrays — and `compose/ContainerSmtCodec` encodes the operations into them. Size is a closed form of the operations applied, so `size()`
+after a put is derived rather than assumed, and an allocated container's size is stated once
+against the Java int domain rather than as one path's precondition. Element and field reads
+project a scalar out of the state with the declared Java type, so the arithmetic downstream
+is the program's.
+
+## What a session publishes
+
+One replay writes one session directory, `<iteration>/sessions/<sessionId>/`
+(`contract/SessionDir.java`): `manifest.json` stating the role it ran as — `SEED` or
+`FOCUSED`, and a manifest that states none is refused — one JSONL file per row kind
+(`activations`, `decisions`, `roots`, `reads`, `writes`, `exports`, `attaches`, `targets`,
+`obligations`, `gaps`), and `expressions.json`, the session's own expression table that every
+reference in its rows must resolve in. One kind per file is the point: a reader of reads
+never parses writes.
+
+The row types are `contract/ActivationRow`, `DecisionRow`, `RootMintRow`, `ReadRow`,
+`WriteRow`, `ExportRow`, `AttachRow`, `TargetRow` and `GapRow`; the README's §5 table says
+what each states. `contract/RowInvariants` checks the row contract at `IMPORT` and nowhere
+else, as pure functions over rows — it opens no file, runs no solver and consults no plan,
+and where a rule cannot be decided from the rows alone it says so as a diagnostic rather than
+guessing.
+
+## Gaps
+
+Every refusal and every diagnostic is a `contract/GapRow` carrying a `kind` from the closed
+`contract/GapKind` registry, a `cls` from `contract/GapClass` — `BLOCKING`, the stage refuses
+and no claim may be made over it, or `DIAGNOSTIC`, recorded for the report while the claim
+stands — a `subject` and a `detail`. `GapRow.of` requires both `kind` and `cls`: a row cannot
+be published without stating which it is, and the producer that raises it is what decides.
+
+`GapKind` is closed on purpose — a kind with no consumer is a report nobody reads — and each
+constant carries in its javadoc why it is classed the way it is. The registry as it stands:
+`ADMISSION_GAP`, `TOPOLOGY_DIVERGENCE`, `UNATTESTED_ARM`, `UNSTATED_VALUE`,
+`UNPRODUCIBLE_ANSWER`, `FORMULA_SAT_AT_RECORDED_VALUATION`, `DECLARATION_MISSING`,
+`LINEAGE_LOST`, `TASK_UNANSWERED`, `ADDRESS_UNSTABLE`, `SOLVER_TIMEOUT`, `FRAME_UNBALANCED`,
+`BOUNDED_LOOP_BODY_BOUND_UNDECLARED`, `BOUNDED_LOOP_FIXED_COUNT_BOUND_UNDECLARED`,
+`BOUNDED_LOOP_CLASSIFICATION_INCONSISTENT`, `COMMUNICATION_REQUEST_PORT_UNRESOLVED`,
+`BOUND_INSUFFICIENT`, `OCCURRENCE_ADDRESS_SHARED`, `MINT_UNATTRIBUTED`,
+`MESSAGE_CONTEXT_REFUSED`, `EPOCH_UNMATCHED`, `SESSION_INCOMPLETE`, `ASSIGNMENT_UNPLANTED`,
+`ASSIGNMENT_UNMINTABLE`, `PATH_SELF_CONTRADICTORY`. A new kind is registered here, with its
+class argued in the same place.
+
+## Reading the composed query and the claim
+
+`COMPOSE` writes `candidate.smt2` and `candidate_composition_manifest.json`, and
+`compose/ComposeMain` writes `claim.json` beside them; `EMIT` requires `candidate.smt2`,
+`candidate_composition_manifest.json`, `gaps.json` and `result.json` under `schedule/final`
+and refuses to publish a result from a manifest carrying no decision — it derives no verdict
+of its own. `compose/ClaimPolicy` is the one place a campaign's claim is decided; it is a
+library class with no `main`, so a claim is read off the published `claim.json` and
+`result.json` rather than recomputed.
+
+Read them together. A `claim.json` naming a mechanism is not acceptance on its own:
+acceptance is the claim **plus** `polarityDecides`, no blocking gaps, and fresh provenance.
+Gap rows are read with their `cls` — `DIAGNOSTIC` describes coverage the run lacked,
+`BLOCKING` is why it refused.
+
+**The published formula is pinned.** The composer asserts its own recorded valuation into the
+file it publishes, as a named `valuation__…` assertion before `(check-sat)`. A plain
+`z3 candidate.smt2` therefore answers about *that one valuation* and commonly answers `unsat`
+for exactly that reason — on HDFS-17960 the pin is `(= M_Z_field_SRC…SnapshotManager true)`
+under the comment `; valuation 0: the run as it happened`. To ask the formula at each
+polarity, unpinned, use the acceptance harness's probe, `experiments/hadoop/accept/probe.sh`
+(`experiments/hadoop/accept/README.md`); it is reported and never gated on, because it asks
+about the whole formula rather than the slice the campaign solved. A zero exit code proves
+nothing.
+
+## Knobs
+
+`workflow.properties` holds them, resolvable with `@config`, `@repo` and `@project`:
+`causynth_target_spec`, `causynth_symbolic_inputs`, `causynth_root_domains`,
+`causynth_communication_mappings`, `causynth_loop_bounds` and `causynth_loop_default_bound`
+name the declarations; `declared_target_occurrence` names the occurrence the campaign is
+about; `schedule_max_jobs`, `concolic_worker_count`, `solver_timeout_ms`,
+`compose_max_valuations`, `campaign_max_iterations`, `region_path_max_waves`,
+`region_path_max_tasks` and `campaign_stop_after` bound the run; `custom_jdk_home`, `z3_bin`
+and the project/output/cache paths say where things are. Every one may be overridden by the
+matching upper-case environment variable.
+
+A schedule is drawn from exactly one closure: `ConcolicScheduler --closure-mode` is
+`candidate` (every occurrence the frozen region plan declares) or `seed-replay` (only the
+occurrences a seed activation can replay), and `run_engine.sh` states which one each stage
+uses.
