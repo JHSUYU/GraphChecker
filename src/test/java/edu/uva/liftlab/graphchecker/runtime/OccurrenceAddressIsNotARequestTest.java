@@ -145,7 +145,7 @@ public class OccurrenceAddressIsNotARequestTest {
         // An envelope naming another producer changes nothing either way: it
         // decides which v_H the attach mints, never which activation this is.
         assertTrue(SymbolicMessageEnvelope.stage(PORT, 41L, "task-x",
-                "some-other-producer#9", singletonList("some-consumer#4")));
+                "some-other-producer#9"));
         SymbolicMessageEnvelope.installInbound(
                 SymbolicMessageEnvelope.takeOutbound());
 
@@ -293,10 +293,15 @@ public class OccurrenceAddressIsNotARequestTest {
         refuses("no request scope, no envelope",
                 () -> RuntimeTraceContext.outboundHeader(nnc),
                 "requestKey", "requestApi", "!no source");
+        // The thread half is named, the thread is not: this refusal is
+        // published as a GapRow (RowRuntime.messageContextRefused), and a
+        // row keyed by which pool thread performed the write is a row no
+        // two replays can be compared on.
         refuses("no scope, no envelope",
                 () -> RuntimeTraceContext.outboundHeader(nnc, null),
                 "the call carried no scope at all",
-                "thread " + Thread.currentThread().getName(), "requestKey");
+                "the thread it is sent on carries no", "requestKey",
+                "!" + Thread.currentThread().getName());
         RuntimeTraceContext.enterRoot(nnc);
         final Object partial = RuntimeTraceContext.captureScope();
         refuses("a node is not a request",

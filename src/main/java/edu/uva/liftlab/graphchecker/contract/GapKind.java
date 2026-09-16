@@ -70,6 +70,21 @@ public enum GapKind {
      */
     MINT_UNATTRIBUTED,
     /**
+     * A message-carried context this side refused to install, so the
+     * values that message carried are unattributed.
+     *
+     * <p>DIAGNOSTIC: the consequence is already on the rows the message
+     * would have fed -- an attach with no element states {@code
+     * elementAbsent} and mints v_H on the arrived value, and a send with no
+     * request scope carries no header -- so this row is the reason those
+     * say what they say, once per distinct refusal.  It is a row and not an
+     * exception because the doors that raise it are called from inside the
+     * workload's own transport: thrown, a refused registration-response
+     * envelope stopped two DataNodes from ever registering and the
+     * MiniDFSCluster wait never ended (lane11741d).</p>
+     */
+    MESSAGE_CONTEXT_REFUSED,
+    /**
      * A mint of the right site at the wrong node epoch.
      *
      * <p>Same consequence, and the same class: a configured source is

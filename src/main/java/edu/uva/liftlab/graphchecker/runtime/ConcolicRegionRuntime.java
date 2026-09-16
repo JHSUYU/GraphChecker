@@ -1877,15 +1877,8 @@ public final class ConcolicRegionRuntime {
                 : active.activation.taskId;
         String producerOccurrence = active == null ? UNPLANNED_ENDPOINT
                 : active.occurrenceId();
-        // The entry says which consumers the plan bound to this port, which
-        // is a property of the port and not of whoever is producing: asking
-        // the running task first only narrowed it to the subset that task
-        // happened to declare.
-        List<String> consumerOccurrences = plannedExportConsumers(portId);
-        boolean staged = SymbolicMessageEnvelope.stage(
-                portId, handle, producerTask, producerOccurrence,
-                consumerOccurrences);
-        return staged;
+        return SymbolicMessageEnvelope.stage(portId, handle, producerTask,
+                producerOccurrence);
     }
 
     /**
@@ -1896,18 +1889,6 @@ public final class ConcolicRegionRuntime {
      * endpoint was not planned rather than pretending to an occurrence.</p>
      */
     static final String UNPLANNED_ENDPOINT = "UNPLANNED";
-
-    /** Every consumer occurrence any plan bound to this port. */
-    private static List<String> plannedExportConsumers(String portId) {
-        List<String> consumers = new ArrayList<>();
-        for (ConcolicTaskPlan.RuntimeTask task : configuration().tasks) {
-            for (String consumer : task.exportConsumerOccurrences(portId)) {
-                if (!consumers.contains(consumer)) consumers.add(consumer);
-            }
-        }
-        if (consumers.isEmpty()) consumers.add(UNPLANNED_ENDPOINT);
-        return consumers;
-    }
 
     // ------------------------------------------------------------------
     // Declared communication ports

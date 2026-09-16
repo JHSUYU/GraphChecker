@@ -1023,14 +1023,6 @@ final class ConcolicTaskPlan {
                 configuredSourcePhasesById = new LinkedHashMap<>();
         /** Every protocol input this occurrence attaches from the VM. */
         final Set<String> attachPortIds = new LinkedHashSet<>();
-        /**
-         * Planned consumer occurrences of each protocol value this task
-         * sends, in the order the plan's edges name them.  A producer rooted
-         * at a loop body exports one value per iteration onto one message, so
-         * one port legitimately addresses one consumer occurrence per value.
-         */
-        final Map<String, List<String>> exportConsumerOccurrenceByPort =
-                new LinkedHashMap<>();
         /** Frozen runtime bindings used to resolve exact Map producers. */
         final JsonArray edgeBindings;
         /**
@@ -1146,7 +1138,6 @@ final class ConcolicTaskPlan {
                             + "in " + taskId + ": " + site.portId());
                 }
             }
-            indexExportConsumerOccurrences(task, edgeBindings);
         }
 
         /**
@@ -1169,33 +1160,6 @@ final class ConcolicTaskPlan {
             return communicationHandoffs.get(handoffKey(portId, exporting));
         }
 
-
-        /**
-         * Indexes the consumers named by this occurrence's outgoing protocol
-         * edges.  The plan's own decode has already refused a port whose
-         * consumers span two execution sources; what is read here is which
-         * planned consumer occurrences one delivery may be attached by.
-         */
-        void indexExportConsumerOccurrences(ExecutionTask task,
-                                            JsonArray bindings) {
-            for (CommunicationHandoffSpec site
-                    : communicationHandoffs.values()) {
-                if (!site.outgoing()) continue;
-                String portId = site.portId();
-                List<String> consumers = task.exportConsumerOccurrences(
-                        portId);
-                if (consumers.isEmpty()) continue;
-                exportConsumerOccurrenceByPort.put(portId, consumers);
-            }
-        }
-
-        /** The planned consumer occurrences one exported port may address. */
-        List<String> exportConsumerOccurrences(String portId) {
-            List<String> consumers = exportConsumerOccurrenceByPort.get(
-                    safe(portId));
-            return consumers == null ? Collections.<String>emptyList()
-                    : consumers;
-        }
 
         static String handoffKey(String portId, boolean exporting) {
             return (exporting ? "EXPORT\n" : "ATTACH\n") + safe(portId);

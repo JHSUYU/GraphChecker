@@ -648,8 +648,12 @@ public final class CausynthTraceRecorder {
             header = RuntimeTraceContext.outboundHeader(localOwner,
                     carriedScope);
         } catch (IllegalStateException noFlow) {
-            // D2: "this send had no request scope to name" is a GapRow
-            // published by SessionPublisher (M2).
+            // One rule for both halves of a message-carried context: the
+            // refusal is a named row and the send goes out without a
+            // header.
+            RowRuntime.messageContextRefused("outbound "
+                    + MapFields.safe(transport) + " "
+                    + MapFields.safe(half), noFlow.getMessage());
             return "";
         }
         // IDENTITY-V3 §C: the message carries its producer's endpoint, so
@@ -677,8 +681,22 @@ public final class CausynthTraceRecorder {
                                        String attemptId, String half,
                                        Object localOwner) {
         initialize();
-        long token = RuntimeTraceContext.enterInbound(header, transport,
-                correlationId, attemptId, half, localOwner);
+        long token;
+        try {
+            token = RuntimeTraceContext.enterInbound(header, transport,
+                    correlationId, attemptId, half, localOwner);
+        } catch (IllegalArgumentException refused) {
+            // A header this side will not parse is the same refusal the
+            // envelope half states, and 0 is already what "no scope was
+            // installed" means to every caller.
+            RowRuntime.messageContextRefused("inbound "
+                    + MapFields.safe(transport) + " "
+                    + MapFields.safe(half), refused.getMessage());
+            return 0L;
+        }
+        // recordExchange's own refusal is not this rule: it names the
+        // engine's argument contract, which every caller satisfies with
+        // constants, so it stays an exception rather than a row.
         try {
             // No producer: a delivery states the endpoint it was SENT from
             // through the message, and the receiving leg mints none.

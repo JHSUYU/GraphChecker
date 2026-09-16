@@ -4,7 +4,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Base64;
-import java.util.Collections;
 import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -46,13 +45,30 @@ import java.util.Map;
  * generated parser do; they disagree exactly when one side visits a value the
  * other does not, and that disagreement is reported rather than absorbed: a
  * leaf nothing looked up, and a lookup with no leaf, are both named.</p>
+ *
+ * <p>The wire carries only what the receiver cannot derive: the expression
+ * handle and the occurrence that staged it, keyed by {@code (frame, port,
+ * ordinal)}.  Plan data does not travel -- both sides load the same
+ * execution task plan, so a field restating it is weight the transport pays
+ * for and nothing reads.</p>
+ *
+ * <p>Refusing a wire is a named row, not an exception: every door here
+ * leaves the workload running and lets the claim fail on the values.</p>
  */
 public final class SymbolicMessageEnvelope {
-    private static final String SCHEMA = "CSE4";
-    /** Separator between the consumer occurrences of one entry. */
-    private static final String CONSUMERS = "\n";
+    private static final String SCHEMA = "CSE5";
+    /**
+     * How many values one message may carry.
+     *
+     * <p>The only bound on a wire: the entry count IS what a message
+     * carries, and every field of every entry is checked structurally, so a
+     * second bound on the serialized length was a second authority over the
+     * same thing -- and the one that fired.  A registration response
+     * carrying five block-key leaves built a 68,674-character wire and the
+     * receiving DataNode refused its own peer's envelope on every retry
+     * (lane11741d).</p>
+     */
     private static final int MAX_ENTRIES = 64;
-    private static final int MAX_WIRE_LENGTH = 65_536;
     private static final Base64.Encoder ENCODER =
             Base64.getUrlEncoder().withoutPadding();
     private static final Base64.Decoder DECODER = Base64.getUrlDecoder();
@@ -68,24 +84,22 @@ public final class SymbolicMessageEnvelope {
     /**
      * Adds one declared port to the next message sent by this thread.
      *
-     * <p>{@code consumerOccurrenceIds} are the planned consumer occurrences
-     * the plan authorises for this port: a producer rooted at a loop body
-     * stages one entry per iteration onto one message, and the receiver's
-     * per-element occurrences take them in order, so the entry names the set
-     * the plan bound rather than one addressee the sender cannot pick.</p>
+     * <p>The entry carries what only the run knows: which VM expression the
+     * producer staged, and which occurrence of which task staged it.  Which
+     * consumer occurrences the plan authorised for the port is not carried,
+     * because it is not the run's fact and no receiver reads it from here:
+     * the plan is the authority on the planned consumers, both sides hold
+     * the same plan, and the attach names the live activation that declares
+     * the port ({@code ConcolicRegionRuntime.declaredConsumerOccurrence}).
+     * Carried, one 19-occurrence consumer set was 12,944 of the 13,738
+     * characters of every entry and five entries overran the wire.</p>
      */
     public static boolean stage(String portId, long handle,
                                 String producerTaskId,
-                                String producerOccurrenceId,
-                                List<String> consumerOccurrenceIds) {
+                                String producerOccurrenceId) {
         if (empty(portId) || handle < 0L || empty(producerTaskId)
-                || empty(producerOccurrenceId)
-                || consumerOccurrenceIds == null
-                || consumerOccurrenceIds.isEmpty()) {
+                || empty(producerOccurrenceId)) {
             return false;
-        }
-        for (String consumer : consumerOccurrenceIds) {
-            if (empty(consumer) || consumer.contains(CONSUMERS)) return false;
         }
         Outbound message = OUTBOUND.get();
         if (message == null) {
@@ -93,7 +107,7 @@ public final class SymbolicMessageEnvelope {
             OUTBOUND.set(message);
         }
         return message.stage(portId, handle, producerTaskId,
-                producerOccurrenceId, unmodifiableCopy(consumerOccurrenceIds));
+                producerOccurrenceId);
     }
 
     /**
@@ -132,9 +146,7 @@ public final class SymbolicMessageEnvelope {
                     .append(entry.handle).append(',')
                     .append(token(entry.producerTaskId)).append(',')
                     .append(token(entry.producerOccurrenceId)).append(',')
-                    .append(token(join(entry.consumerOccurrenceIds)))
-                    .append(',').append(entry.frame)
-                    .append(',').append(entry.ordinal);
+                    .append(entry.frame).append(',').append(entry.ordinal);
         }
         return wire.toString();
     }
@@ -154,7 +166,30 @@ public final class SymbolicMessageEnvelope {
     public static void installInbound(String wire) {
         Inbound displaced = INBOUND.get();
         INBOUND.remove();
-        Inbound message = new Inbound(decode(wire), wire);
+        List<Entry> entries;
+        try {
+            entries = decode(wire);
+        } catch (IllegalArgumentException refused) {
+            // A wire this side will not decode is a refusal, and a refusal
+            // is a named row -- never an exception the workload has to
+            // survive.  This one threw out of Hadoop's IPC client on every
+            // DataNode registration: the peer's response envelope was
+            // refused, ProtobufRpcEngine2 wrapped it as a plain IOException,
+            // BPServiceActor logged "Problem connecting to server" and
+            // retried for 51 minutes while MiniDFSCluster.waitActive waited
+            // for a DataNode that could never register (lane11741d).
+            // Nothing is installed, so every decode of this message answers
+            // MISSING and each attach states elementAbsent: the claim is
+            // fail-closed on the values, the process carries on.
+            if (displaced != null) displaced.reportUnattached();
+            RowRuntime.messageContextRefused(
+                    "inbound symbolic message envelope",
+                    refused.getMessage() + "; "
+                            + (wire == null ? 0 : wire.length())
+                            + " characters");
+            return;
+        }
+        Inbound message = new Inbound(entries, wire);
         if (displaced != null && !displaced.wire.equals(message.wire)) {
             displaced.reportUnattached();
         }
@@ -299,8 +334,7 @@ public final class SymbolicMessageEnvelope {
         }
 
         boolean stage(String portId, long handle, String producerTaskId,
-                      String producerOccurrenceId,
-                      List<String> consumerOccurrenceIds) {
+                      String producerOccurrenceId) {
             if (entries.size() >= MAX_ENTRIES) return false;
             int frame = frame();
             String counter = frame + "\n" + portId;
@@ -308,73 +342,44 @@ public final class SymbolicMessageEnvelope {
             int ordinal = held == null ? 0 : held;
             next.put(counter, ordinal + 1);
             entries.add(new Entry(true, portId, handle, producerTaskId,
-                    producerOccurrenceId, consumerOccurrenceIds, frame,
-                    ordinal));
+                    producerOccurrenceId, frame, ordinal));
             return true;
         }
     }
 
     private static List<Entry> decode(String wire) {
-        if (wire == null || wire.length() > MAX_WIRE_LENGTH) {
-            throw malformed();
-        }
+        if (wire == null) throw malformed();
         String[] rows = wire.split(";", -1);
         if (rows.length < 2 || !SCHEMA.equals(rows[0])
                 || rows.length - 1 > MAX_ENTRIES) throw malformed();
         List<Entry> entries = new ArrayList<>();
         for (int index = 1; index < rows.length; index++) {
             String[] fields = rows[index].split(",", -1);
-            if (fields.length != 7) throw malformed();
+            if (fields.length != 6) throw malformed();
             String portId = text(fields[0]);
             String producerTaskId = text(fields[2]);
             String producerOccurrenceId = text(fields[3]);
-            List<String> consumerOccurrenceIds = split(text(fields[4]));
             long handle;
             int frame;
             int ordinal;
             try {
                 handle = Long.parseLong(fields[1]);
-                frame = Integer.parseInt(fields[5]);
-                ordinal = Integer.parseInt(fields[6]);
+                frame = Integer.parseInt(fields[4]);
+                ordinal = Integer.parseInt(fields[5]);
             } catch (NumberFormatException invalid) {
                 throw malformed();
             }
             if (handle < 0L || !Long.toString(handle).equals(fields[1])
                     || frame < 0 || frame > MAX_FRAMES
-                    || !Integer.toString(frame).equals(fields[5])
+                    || !Integer.toString(frame).equals(fields[4])
                     || ordinal < 0 || ordinal >= MAX_ENTRIES
-                    || !Integer.toString(ordinal).equals(fields[6])
+                    || !Integer.toString(ordinal).equals(fields[5])
                     || empty(portId) || empty(producerTaskId)
-                    || empty(producerOccurrenceId)
-                    || consumerOccurrenceIds.isEmpty()) throw malformed();
+                    || empty(producerOccurrenceId)) throw malformed();
             entries.add(new Entry(true, portId, handle,
-                    producerTaskId, producerOccurrenceId,
-                    consumerOccurrenceIds, frame, ordinal));
+                    producerTaskId, producerOccurrenceId, frame, ordinal));
         }
         return entries;
-    }
-
-    /** The entry's consumer occurrences as one encodable field value. */
-    private static String join(List<String> consumers) {
-        StringBuilder joined = new StringBuilder();
-        for (String consumer : consumers) {
-            if (joined.length() > 0) joined.append(CONSUMERS);
-            joined.append(consumer);
-        }
-        return joined.toString();
-    }
-
-    /** The inverse of {@link #join}; an empty field decodes to no consumer. */
-    private static List<String> split(String value) {
-        List<String> consumers = new ArrayList<>();
-        for (String consumer : value.split(CONSUMERS, -1)) {
-            if (!empty(consumer)) consumers.add(consumer);
-        }
-        return Collections.unmodifiableList(consumers);
-    }
-
-    private static List<String> unmodifiableCopy(List<String> values) {
-        return Collections.unmodifiableList(new ArrayList<>(values));
     }
 
     private static String token(String value) {
@@ -406,27 +411,23 @@ public final class SymbolicMessageEnvelope {
     /** One immutable entry physically decoded from the current message. */
     public static final class Entry {
         private static final Entry MISSING =
-                new Entry(false, "", 0L, "", "",
-                        Collections.<String>emptyList(), -1, -1);
+                new Entry(false, "", 0L, "", "", -1, -1);
         private final boolean present;
         private final String portId;
         private final long handle;
         private final String producerTaskId;
         private final String producerOccurrenceId;
-        private final List<String> consumerOccurrenceIds;
         private final int frame;
         private final int ordinal;
 
         private Entry(boolean present, String portId, long handle,
                       String producerTaskId, String producerOccurrenceId,
-                      List<String> consumerOccurrenceIds, int frame,
-                      int ordinal) {
+                      int frame, int ordinal) {
             this.present = present;
             this.portId = portId;
             this.handle = handle;
             this.producerTaskId = producerTaskId;
             this.producerOccurrenceId = producerOccurrenceId;
-            this.consumerOccurrenceIds = consumerOccurrenceIds;
             this.frame = frame;
             this.ordinal = ordinal;
         }

@@ -453,12 +453,15 @@ final class RuntimeTraceContext {
             // carried nothing" from "the work carried a node and no
             // request", and those have different owners -- the first is the
             // carry, the second is where the work was created.
+            // The thread is not named: the refusal is published as a row,
+            // and a row a reader compares across replays cannot be keyed
+            // by which pool thread happened to perform the write -- that
+            // accident is the whole reason a scope is carried at all.
             throw new IllegalStateException(
                     "outbound message requires source and request flow;"
                             + " the call carried " + describe(carriedScope)
-                            + " and thread "
-                            + Thread.currentThread().getName()
-                            + " carries no" + missing(state.view()));
+                            + " and the thread it is sent on carries no"
+                            + missing(state.view()));
         }
         return header(view.source, view.requestKey, view.requestApi,
                 view.spanId);
