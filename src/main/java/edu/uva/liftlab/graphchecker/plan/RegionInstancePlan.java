@@ -137,11 +137,6 @@ public final class RegionInstancePlan extends PlanRow {
             return array(encoded, "branches").deepCopy();
         }
 
-        /** The communication ports this goal's edge evidence named. */
-        public JsonArray selectedPorts() {
-            return array(encoded, ExecutionTask.SELECTED_PORTS).deepCopy();
-        }
-
         /** Export port id to the sources of its planned consumers. */
         public JsonObject exportConsumers() {
             return object(encoded, ExecutionTask.EXPORT_CONSUMERS).deepCopy();

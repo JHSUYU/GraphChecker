@@ -1222,10 +1222,8 @@ final class RuntimeRegionPlanner {
             goal.put("symbolize", occurrenceSymbolize);
             goal.put("branches", occurrenceBranches);
             // What PLAN asks of this occurrence's edge evidence, and the
-            // whole of it: which communication ports the evidence named,
-            // and -- per export port -- which execution sources its bound
-            // consumers sit on.  Filled by #appendPortSummary below.
-            goal.put(ExecutionTask.SELECTED_PORTS, new ArrayList<String>());
+            // whole of it: per export port, which execution sources its
+            // bound consumers sit on.  Filled by #appendPortSummary below.
             goal.put(ExecutionTask.EXPORT_CONSUMERS,
                     new LinkedHashMap<String, Object>());
 
@@ -1496,16 +1494,7 @@ final class RuntimeRegionPlanner {
     private static void appendPortSummary(
             Map<String, Object> goal, Map<String, Object> edge,
             String exportConsumer) {
-        List<String> ports =
-                (List<String>) goal.get(ExecutionTask.SELECTED_PORTS);
         String outputPort = stringValue(edge.get("fromOutputPort"));
-        String inputPort = stringValue(edge.get("toInputPort"));
-        if (!outputPort.isEmpty() && !ports.contains(outputPort)) {
-            ports.add(outputPort);
-        }
-        if (!inputPort.isEmpty() && !ports.contains(inputPort)) {
-            ports.add(inputPort);
-        }
         if (exportConsumer.isEmpty() || outputPort.isEmpty()
                 || !AutomaticRegionEdge.RUNTIME_PROTOCOL_EDGE_KIND.equals(
                         stringValue(edge.get("kind")))) {

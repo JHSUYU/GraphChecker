@@ -59,16 +59,13 @@ public final class ExecutionTask extends PlanRow {
     /** Write sites of a declared input's cell the replay must observe. */
     public static final String OBSERVED_WRITE_SITES = "observedWriteSites";
     /**
-     * The communication ports this occurrence's own edge evidence named.
+     * Export port id to the execution sources of its planned consumers.
      *
-     * <p>This is the whole of what PLAN ever asked the edge rows: which
-     * ports the evidence touched, and -- per export port -- which execution
-     * sources its consumers sit on.  The rows themselves were 54.5 MB of the
-     * 57.8 MB hdfs-17960 task plan and 27.3 MB of the 32 MB region plan,
-     * restated once per selection, for two set tests.</p>
+     * <p>This is the whole of what PLAN asks this occurrence's edge
+     * evidence: one export sends to one peer.  The rows themselves were
+     * 54.5 MB of the 57.8 MB hdfs-17960 task plan and 27.3 MB of the 32 MB
+     * region plan, restated once per selection, for this one test.</p>
      */
-    public static final String SELECTED_PORTS = "selectedPorts";
-    /** Export port id to the execution sources of its planned consumers. */
     public static final String EXPORT_CONSUMERS = "exportConsumers";
     private final InputActionCatalog inputActions;
     private final LoopBoundPolicy loopBound;
@@ -194,15 +191,10 @@ public final class ExecutionTask extends PlanRow {
         task.add(InputActionCatalog.FIELD, compactInputActions(inputActions));
         task.add(BRANCH_METHODS, branchMethods.deepCopy());
         loopBound.writeTo(task);
-        JsonArray selectedPorts = goal.selectedPorts();
         JsonObject exportConsumers = goal.exportConsumers();
-        if (selectedPorts.size() > 0) {
-            task.add(SELECTED_PORTS, selectedPorts);
-        }
         if (exportConsumers.size() > 0) {
             task.add(EXPORT_CONSUMERS, exportConsumers);
         }
-        retainSelectedCommunicationHandoffs(task, selectedPorts);
         // A scheduled task is executable by construction: the scheduler
         // publishes the occurrences it selected, never ones it decided
         // against.  The state is still written, and still read back on
@@ -212,53 +204,6 @@ public final class ExecutionTask extends PlanRow {
         task.add("admission", admission);
         return new ExecutionTask(task, loopBound,
                 goal.plan().configuredSourcePhases());
-    }
-
-    /**
-     * Keeps only cut ports the selected task actually consumes or produces.
-     * Copying every observed RPC parameter into every task instruments
-     * unrelated payload and lets concrete service traffic grow the VM
-     * expression session; the selected edge and closure are already the
-     * task's complete interaction frontier.
-     */
-    static void retainSelectedCommunicationHandoffs(
-            JsonObject task, JsonArray selected) {
-        JsonArray declared = array(task, CommunicationHandoffSpec.FIELD);
-        if (declared.size() == 0) return;
-
-        Set<String> selectedPorts = new LinkedHashSet<>();
-        for (JsonElement element : selected == null
-                ? new JsonArray() : selected) {
-            if (!element.isJsonPrimitive()) continue;
-            String port = element.getAsString().trim();
-            if (!port.isEmpty()) selectedPorts.add(port);
-        }
-        JsonArray retained = new JsonArray();
-        for (JsonElement element : declared) {
-            if (!element.isJsonObject()) continue;
-            JsonObject handoff = element.getAsJsonObject();
-            String portId = optionalString(handoff,
-                    CommunicationCatalogContract.PORT_ID);
-            // An IN site is where this occurrence ATTACHES a value, which is
-            // its own act and its own frontier whether or not a field-flow
-            // edge happens to name the port.  The filter intersected
-            // communication ports with edgeBindings' fromOutputPort /
-            // toInputPort, which are field-flow ports, so a consumer's
-            // attach sites were dropped: on hdfs-17899 bug3 the DataNode
-            // task for REGION.16ba41cf declared resp.block-key-id with
-            // side IN in its region plan and carried zero handoffs in its
-            // execution task, so the attach it performed was read as an
-            // UNPLANNED_HANDOFF fifteen times.
-            if (selectedPorts.contains(portId)
-                    || "IN".equals(optionalString(handoff, "side"))) {
-                retained.add(handoff.deepCopy());
-            }
-        }
-        if (retained.size() == 0) {
-            task.remove(CommunicationHandoffSpec.FIELD);
-        } else {
-            task.add(CommunicationHandoffSpec.FIELD, retained);
-        }
     }
 
     /** Drops planner-only access histories after the replay site is chosen. */
