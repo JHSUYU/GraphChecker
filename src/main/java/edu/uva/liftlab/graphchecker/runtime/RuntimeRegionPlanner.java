@@ -2358,7 +2358,6 @@ final class RuntimeRegionPlanner {
         final long parentSiteId;
         final long laneId;
         final long spanId;
-        final long parentSpanId;
         final long remoteParentSpanId;
         /** Owner of this frame. Not final: a frame is stamped when it is
          * entered, and a node builds its service objects before it declares
@@ -2391,21 +2390,19 @@ final class RuntimeRegionPlanner {
         MethodEvent(long seq, String test, String threadName,
                     long tid, String method, int objectId, String receiverType,
                     long callId, long parentCallId, long parentSiteId,
-                    long laneId, long spanId,
-                    long parentSpanId, long remoteParentSpanId,
+                    long laneId, long spanId, long remoteParentSpanId,
                     SourceRef source, boolean receiverAttributed,
                     String requestKey, String requestApi) {
             this(seq, test, threadName, tid, method, objectId, receiverType,
                     callId, parentCallId, parentSiteId, laneId, spanId,
-                    parentSpanId, remoteParentSpanId, source,
+                    remoteParentSpanId, source,
                     receiverAttributed, requestKey, requestApi, "");
         }
 
         MethodEvent(long seq, String test, String threadName,
                     long tid, String method, int objectId, String receiverType,
                     long callId, long parentCallId, long parentSiteId,
-                    long laneId, long spanId,
-                    long parentSpanId, long remoteParentSpanId,
+                    long laneId, long spanId, long remoteParentSpanId,
                     SourceRef source, boolean receiverAttributed,
                     String requestKey, String requestApi,
                     String occurrenceAddress) {
@@ -2422,7 +2419,6 @@ final class RuntimeRegionPlanner {
             this.parentSiteId = parentSiteId;
             this.laneId = laneId;
             this.spanId = spanId;
-            this.parentSpanId = parentSpanId;
             this.remoteParentSpanId = remoteParentSpanId;
             this.source = source;
             this.sourceKey = sourceOf(source).key();
@@ -2475,7 +2471,6 @@ final class RuntimeRegionPlanner {
         final String declaredCallee;
         final long laneId;
         final long spanId;
-        final long parentSpanId;
         final long remoteParentSpanId;
         final SourceRef source;
         final String requestKey;
@@ -2499,8 +2494,7 @@ final class RuntimeRegionPlanner {
                       String correlationId, String attemptId, String half,
                       String threadName, long tid, String method, long callId,
                       long invocationId, String declaredCallee,
-                      long laneId, long spanId,
-                      long parentSpanId, long remoteParentSpanId,
+                      long laneId, long spanId, long remoteParentSpanId,
                       SourceRef source, String requestKey, String requestApi,
                       String producerEndpointId, String producerEndpoint) {
             this.seq = seq;
@@ -2517,7 +2511,6 @@ final class RuntimeRegionPlanner {
             this.declaredCallee = safe(declaredCallee);
             this.laneId = laneId;
             this.spanId = spanId;
-            this.parentSpanId = parentSpanId;
             this.remoteParentSpanId = remoteParentSpanId;
             this.source = source;
             this.requestKey = safe(requestKey);
