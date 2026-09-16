@@ -181,23 +181,39 @@ public final class FocusedReplay {
      * <p>The flipped decision must take the flipped arm.  A decision that
      * does not is the refusal, named with its site -- "wrong decision at X"
      * is a fact a reader can act on and "not admitted" is not.</p>
+     *
+     * <p>AT THE OBLIGATION'S OWN OCCURRENCE.  The flip used to be addressed
+     * by (siteId, ordinal) alone, and an ordinal restarts per activation:
+     * four hdfs-11741 nodes run one {@code BlockTokenSecretManager}, so
+     * {@code removeExpiredKeys#u15#1} happens on nn0, dn0, dn1 and the
+     * balancer, and whichever ran first decided the obligation -- 6 of 11
+     * campaign-#3 flips landed on the wrong node.  The occurrence's own
+     * gate {@link #focused} does not narrow it either: it is true of every
+     * member of the focused set, which includes each assigned root's MINT
+     * and every factor member.</p>
      */
     public static void observeDecision(OccurrenceAddress occurrence,
                                        String siteId, int ordinal,
                                        boolean outcome) {
         load();
-        if (task == null || !focused(occurrence)) return;
+        if (task == null || occurrence == null) return;
+        String at = occurrence.id();
         synchronized (LOCK) {
             for (Obligation obligation : OBLIGATIONS) {
-                observe(obligation, siteId, ordinal, outcome);
+                observe(obligation, at, siteId, ordinal, outcome);
             }
         }
     }
 
-    private static void observe(Obligation obligation, String siteId,
-                                int ordinal, boolean outcome) {
+    private static void observe(Obligation obligation, String at,
+                                String siteId, int ordinal,
+                                boolean outcome) {
         String id = Text.safe(obligation.obligationId());
         if (REFUSALS.containsKey(id) || FLIPPED.contains(id)) return;
+        // The focus row states which occurrence this obligation flips
+        // ({@code focusedOccurrenceId}), and the contract's own identity is
+        // what the two sides are joined on.
+        if (!Text.safe(FOCUS.get(id)).equals(Text.safe(at))) return;
         if (!Text.safe(obligation.siteId()).equals(Text.safe(siteId))
                 || obligation.ordinal() != ordinal) {
             return;
@@ -207,10 +223,14 @@ public final class FocusedReplay {
             return;
         }
         REFUSALS.put(id, "wrong decision at " + Text.safe(siteId)
-                + "#" + ordinal + ": took " + outcome
-                + ", the obligation flips it to "
+                + "#" + ordinal + " of occurrence " + Text.safe(at)
+                + ": took " + outcome + ", the obligation flips it to "
                 + obligation.flippedOutcome());
     }
+
+    /** Obligation id -> the occurrence id its flip is addressed at. */
+    private static final Map<String, String> FOCUS =
+            new LinkedHashMap<String, String>();
 
     /**
      * Whether this occurrence has already contradicted its obligation.
@@ -292,11 +312,23 @@ public final class FocusedReplay {
                             + Text.safe(obligation.siteId()) + "#"
                             + obligation.ordinal() + " took "
                             + obligation.flippedOutcome()));
+                } else if (Text.safe(FOCUS.get(id)).isEmpty()) {
+                    // The row states no occurrence for the flip, so the
+                    // flip is addressed at nothing and no decision of this
+                    // replay could ever answer it.  Named, not read as
+                    // "never reached": what is missing is the ask.
+                    results.add(ObligationResult.of(id, Verdict.NOT_ADMITTED,
+                            sessionId, "the focus row states no "
+                            + "focusedOccurrenceId, so the flip at "
+                            + Text.safe(obligation.siteId()) + "#"
+                            + obligation.ordinal() + " is addressed at no "
+                            + "occurrence of this replay"));
                 } else {
                     results.add(ObligationResult.of(id, Verdict.NOT_ADMITTED,
-                            sessionId, "the focused occurrence never reached "
+                            sessionId, "occurrence "
+                            + Text.safe(FOCUS.get(id)) + " never reached "
                             + Text.safe(obligation.siteId()) + "#"
-                            + obligation.ordinal()));
+                            + obligation.ordinal() + " in this replay"));
                 }
             }
         }
@@ -352,6 +384,8 @@ public final class FocusedReplay {
                         strings(row, "rootAssignments"),
                         strings(row, "answers"),
                         list(row, "unproducible")));
+                FOCUS.put(obligationId,
+                        string(row, "focusedOccurrenceId"));
                 CLOCK_DELTAS.putAll(strings(row, "clockDeltas"));
                 // The mint of every assigned root is focused too, by
                 // ADDRESS: the row states where the recording minted it,
@@ -553,6 +587,7 @@ public final class FocusedReplay {
             task = null;
             OBLIGATIONS.clear();
             CLOCK_DELTAS.clear();
+            FOCUS.clear();
             REFUSALS.clear();
             FLIPPED.clear();
             FOCUSED_TASKS.clear();
