@@ -66,7 +66,6 @@ public final class ExecutionTask extends PlanRow {
     private final String rootLoopSiteId;
     private final Set<String> rootLoopControlSites;
     private final Set<String> fixedCountLoopSites;
-    private final Map<String, List<String>> exportConsumerOccurrences;
 
     /** {@code bound} and {@code phases} are the values
      *  {@link #create} just encoded; a decoder passes null and the wire is
@@ -104,12 +103,11 @@ public final class ExecutionTask extends PlanRow {
                 LoopBoundPolicy.LOOP_CONTROL_SITE_IDS);
         rootLoopSiteId = optionalString(rootLoop, LoopBoundPolicy.LOOP_SITE_ID);
         fixedCountLoopSites = fixedCountLoopSites(encoded);
-        exportConsumerOccurrences = exportConsumerOccurrences(this);
+        requireOneSourcePerExportPort(this);
     }
 
     /**
-     * The planned consumer occurrences of each outgoing communication port,
-     * in the order the plan's edges name them.
+     * Refuses a plan whose one outgoing port sends to two peers.
      *
      * <p>A producer occurrence rooted at a loop body exports one value per
      * iteration onto one message, so one outgoing port legitimately has as
@@ -122,15 +120,20 @@ public final class ExecutionTask extends PlanRow {
      * That is refused here, in the one decode both the PLAN stage
      * ({@link #create}) and the replay JVM ({@link #decode}) pass through,
      * so a plan the runtime could not execute never reaches REPLAY.</p>
+     *
+     * <p>The consumers themselves are not kept: the replay does not read
+     * them.  A delivery is addressed by {@code (frame, port, ordinal)} and
+     * the attach names the live activation that declares the port, so a
+     * copy here was a second authority over the plan's own edges -- and,
+     * carried on the wire, the thing that overran the envelope.</p>
      */
-    private static Map<String, List<String>> exportConsumerOccurrences(
-            ExecutionTask task) {
+    private static void requireOneSourcePerExportPort(ExecutionTask task) {
         Set<String> outgoing = new LinkedHashSet<>();
         for (CommunicationHandoffSpec site : task.communicationHandoffs()) {
             if (site.outgoing()) outgoing.add(site.portId());
         }
         if (outgoing.isEmpty()) {
-            return Collections.emptyMap();
+            return;
         }
         String producer = task.occurrenceId();
         Map<String, List<String>> byPort = new LinkedHashMap<>();
@@ -165,19 +168,7 @@ public final class ExecutionTask extends PlanRow {
                                 + task.taskId() + ": " + port.getKey() + " "
                                 + sources);
             }
-            port.setValue(Collections.unmodifiableList(port.getValue()));
         }
-        return Collections.unmodifiableMap(byPort);
-    }
-
-    /**
-     * The planned consumer occurrences of one outgoing port, empty when the
-     * plan binds none.
-     */
-    public List<String> exportConsumerOccurrences(String portId) {
-        List<String> consumers = exportConsumerOccurrences.get(
-                portId == null ? "" : portId);
-        return consumers == null ? Collections.<String>emptyList() : consumers;
     }
 
     public static ExecutionTask decode(JsonObject encoded) {

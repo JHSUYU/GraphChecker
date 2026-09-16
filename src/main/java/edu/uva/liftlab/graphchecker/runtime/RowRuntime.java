@@ -449,6 +449,26 @@ public final class RowRuntime {
                 reachedAnchor));
     }
 
+    /**
+     * One refusal on message-carried context: named, and the message goes
+     * on without it.
+     *
+     * <p>The rule for every door the workload's own transport calls into:
+     * a header or an envelope this side will not install is a row, never a
+     * throw.  Fail-closed on the claim -- the values are not attributed and
+     * the rows that needed them say so -- and never on the process.</p>
+     *
+     * <p>{@code subject} is the flow, not the message: one correlation id
+     * is a fresh UUID per call, so keying the row by it published one row
+     * per RPC (62 of them in the first minute of hdfs-11741) and no two
+     * replays could be compared on them.  Stated once per transport, half
+     * and reason, as every other refusal here is.</p>
+     */
+    public static void messageContextRefused(String subject, String detail) {
+        gap(GapKind.MESSAGE_CONTEXT_REFUSED, GapClass.DIAGNOSTIC, subject,
+                detail);
+    }
+
     public static void gap(GapKind kind, GapClass cls, String subject,
                            String detail) {
         SessionPublisher session = publisher;
