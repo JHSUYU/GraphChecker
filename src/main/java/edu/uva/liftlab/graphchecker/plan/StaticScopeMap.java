@@ -45,9 +45,13 @@ import java.util.Set;
  *       reaches, with the {@code local} the return lands in.  That is what
  *       INSTRUMENT binds a {@code LOCAL_DEFINITION} symbol at, and it
  *       replaces {@code ConcolicScheduler.DefinitionIndex.returnSites},
- *       which read the same static fact off the runtime-refined graph.  A
- *       definition site is a fact about a method, so a ROOT_SITE row names
- *       no region.</li>
+ *       which read the same static fact off the runtime-refined graph.  It
+ *       names the REGION that would run it, like every other row and by
+ *       the same rule ({@link #holders}, the innermost retained region
+ *       holding the method): WHICH activation a root is minted at is what
+ *       makes a mint address the same in the seed and in a replay, and a
+ *       row that named no region left that to whichever activation happened
+ *       to be innermost when the site ran.</li>
  * </ul>
  *
  * <p>Every row carries {@code guards}: the branch sites its own site is
@@ -228,7 +232,7 @@ public final class StaticScopeMap {
                         "", "", "", "");
                 continue;
             }
-            addRootSite(found, seen, edge, method, unitIndex);
+            addRootSite(found, seen, retained, edge, method, unitIndex);
             if (!write(kind)) continue;
             String carrier = signature(text(edge.get("toCell")));
             if (carrier.isEmpty()) continue;
@@ -327,6 +331,7 @@ public final class StaticScopeMap {
      * {@code <callee>.return} cell.</p>
      */
     private static void addRootSite(List<Site> into, Set<String> seen,
+                                    List<Region> retained,
                                     Map<String, Object> edge, String method,
                                     int unitIndex) {
         if (!Boolean.TRUE.equals(edge.get("definitionSite"))) return;
@@ -336,14 +341,25 @@ public final class StaticScopeMap {
                 text(edge.get("toCell")));
         if (!local.matches() || !local.group(1).equals(method)) return;
         String siteId = SiteId.of(method, unitIndex);
-        if (!seen.add(ROOT_SITE + "|" + siteId + "|" + source + "|"
-                + local.group(2))) {
-            return;
+        // One row per REGION that would run it, as every other role is
+        // published: two regions neither of which contains the other are
+        // both named, because nothing here may choose between them.  A
+        // method no retained region holds is a definition site outside
+        // every region, and it is published once with no region -- the
+        // fact is still about the method.
+        List<String> owners = new ArrayList<String>(
+                holders(retained, method));
+        if (owners.isEmpty()) owners.add("");
+        for (String regionId : owners) {
+            if (!seen.add(ROOT_SITE + "|" + regionId + "|" + siteId + "|"
+                    + source + "|" + local.group(2))) {
+                continue;
+            }
+            into.add(new Site(ROOT_SITE, regionId, siteId, vmSite(method),
+                    source, "", "", "", local.group(2),
+                    Collections.<String>emptyList(),
+                    Collections.<Boolean>emptyList()));
         }
-        into.add(new Site(ROOT_SITE, "", siteId, vmSite(method), source,
-                "", "", "", local.group(2),
-                Collections.<String>emptyList(),
-                Collections.<Boolean>emptyList()));
     }
 
     private static void add(List<Site> into, Set<String> seen,
@@ -593,6 +609,11 @@ public final class StaticScopeMap {
     public JsonArray rootSitesOf(String cell, Set<String> allowedMethods) {
         JsonArray found = new JsonArray();
         String named = cell == null ? "" : cell;
+        // One row per SITE.  A site two regions both hold is two rows of
+        // this map -- the region is part of a row's identity -- and it is
+        // still one definition site, so a caller planning an action at it
+        // plans one.
+        Set<String> seen = new LinkedHashSet<String>();
         for (Site site : sites) {
             if (!ROOT_SITE.equals(site.role) || !named.equals(site.cell)) {
                 continue;
@@ -601,10 +622,12 @@ public final class StaticScopeMap {
             if (allowedMethods != null && !allowedMethods.contains(method)) {
                 continue;
             }
+            if (!seen.add(site.siteId + "|" + site.local)) continue;
             JsonObject row = new JsonObject();
             row.addProperty("method", method);
             row.addProperty("local", site.local);
             row.addProperty("unitIndex", SiteId.unitIndexOf(site.siteId));
+            row.addProperty("regionId", site.regionId);
             found.add(row);
         }
         return found;

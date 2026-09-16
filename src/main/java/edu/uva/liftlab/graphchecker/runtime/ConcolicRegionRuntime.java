@@ -2229,9 +2229,17 @@ public final class ConcolicRegionRuntime {
      */
     private static String focusedRootValue(ActiveRegion active,
                                            String rootId, Object observed) {
-        if (active == null || active.d3Address == null) return "";
+        if (active == null) return "";
+        // AT THE REGION THAT OWNS THE MINT, not at whichever activation was
+        // innermost when the site ran: the focus row addresses each mint by
+        // the occurrence the RECORDING minted it at (rootMints), so the two
+        // passes can only join if both resolve the mint the same way.
+        ActiveRegion owner = declaringRegion(
+                new Declares.Root(safe(rootId)));
+        if (owner == null) owner = active;
+        if (owner.d3Address == null) return "";
         if (!edu.uva.liftlab.graphchecker.runtime.FocusedReplay
-                .focused(active.d3Address)) {
+                .focused(owner.d3Address)) {
             return "";
         }
         Long skew = edu.uva.liftlab.graphchecker.runtime.FocusedReplay
@@ -2435,18 +2443,88 @@ public final class ConcolicRegionRuntime {
      */
     private static ActiveRegion attachConsumerRegion(
             CommunicationHandoffSpec site) {
+        return site == null ? activeRegion()
+                : declaringRegion(new Declares.Port(safe(site.portId())));
+    }
+
+    /**
+     * THE ONE RULE: the innermost live region whose own plan declares this.
+     *
+     * <p>Three things are filed by it -- an attach's consumer region, the
+     * consumer occurrence a handoff row states, and the occurrence a ROOT
+     * MINT is addressed at -- and it was written twice and missing on the
+     * third.  What it answers is the runtime counterpart of {@code
+     * StaticScopeMap.holders}: regions nest, and the innermost one that
+     * DECLARES the site is the one whose slice owns it, which is a fact of
+     * the plan and not of which activation happened to be innermost when
+     * the site ran.</p>
+     *
+     * <p>When no live region declares it the innermost live one still
+     * carries the row: the replay is exact about what it did, and R5 then
+     * says truthfully that a region ran something nobody planned there.</p>
+     */
+    private static ActiveRegion declaringRegion(Declares what) {
         ActiveRegion innermost = activeRegion();
-        if (site == null) return innermost;
-        String portId = safe(site.portId());
+        if (what == null) return innermost;
         for (Long token : CURRENT_TOKENS.get()) {
             ActiveRegion candidate = ownerRegion(token);
-            if (candidate == null) continue;
-            if (candidate.activation.communicationHandoff(portId, false)
-                    != null) {
+            if (candidate != null && what.declaredBy(candidate)) {
                 return candidate;
             }
         }
         return innermost;
+    }
+
+    /** What a region's plan is asked to declare. */
+    private interface Declares {
+        boolean declaredBy(ActiveRegion region);
+
+        /** A wire port, as an IN site. */
+        final class Port implements Declares {
+            private final String portId;
+
+            Port(String portId) {
+                this.portId = portId;
+            }
+
+            @Override
+            public boolean declaredBy(ActiveRegion region) {
+                return region.activation.communicationHandoff(portId, false)
+                        != null;
+            }
+        }
+
+        /**
+         * A root the plan names as a symbolic input of this region.
+         *
+         * <p>Both spellings a root arrives under: a frozen SYMBOLIC action,
+         * whose {@code symbol} IS the root id, and a CONFIGURED SOURCE,
+         * whose publish phase names it.  One predicate, because "the region
+         * that owns this mint" must not answer differently for the two.</p>
+         */
+        final class Root implements Declares {
+            private final String rootId;
+
+            Root(String rootId) {
+                this.rootId = rootId;
+            }
+
+            @Override
+            public boolean declaredBy(ActiveRegion region) {
+                for (SymbolizeAction action : region.activation.symbolize) {
+                    if (safe(action.symbol).equals(rootId)) return true;
+                }
+                for (ConfiguredSourcePhaseContract.Occurrence phase
+                        : region.activation.configuredSourcePhases) {
+                    if (phase.phase() == ConfiguredSourcePhaseContract
+                            .Phase.PUBLISH
+                            && safe(phase.sourceId()).equals(rootId)) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+        }
     }
 
     /**
@@ -2645,19 +2723,13 @@ public final class ConcolicRegionRuntime {
         // REGION.1f6914ec…#5 and ONE handoff phase id, which is one
         // variable for what are several handoffs, and left the occurrence
         // that did attach reported as not having reproduced its port.
-        for (Long token : CURRENT_TOKENS.get()) {
-            ActiveRegion candidate = ownerRegion(token);
-            if (candidate != null
-                    && candidate.activation.communicationHandoff(portId,
-                    false) != null) {
-                return candidate.activation.occurrenceId;
-            }
-        }
+        ActiveRegion declaring = declaringRegion(new Declares.Port(portId));
         // None live declares it: the attach is where it is, and the row
         // says so rather than borrowing another occurrence's address.  A
         // CALL_RETURN attach whose callee has already closed and published
         // lands here, and R5 then reports it against the carrier.
-        return carrying.activation.occurrenceId;
+        return declaring == null ? carrying.activation.occurrenceId
+                : declaring.activation.occurrenceId;
     }
 
     /**
@@ -5786,7 +5858,31 @@ public final class ConcolicRegionRuntime {
             row.add("expression", expression == null
                     ? JsonNull.INSTANCE : expression);
             row.addProperty("reused", reused);
+            row.addProperty("mintOccurrence",
+                    mintOccurrence(safe(sourceId)));
             symbolizedRows.add(row);
+        }
+
+        /**
+         * The occurrence a mint of this root is ADDRESSED at, rendered.
+         *
+         * <p>The activation of the region whose plan owns the mint
+         * ({@link #declaringRegion}), which is the runtime counterpart of
+         * {@code StaticScopeMap.holders}.  Captured here because here is
+         * where the region stack is live: the row is published when the
+         * activation closes, and by then the nesting is gone.  It is what
+         * makes a mint address the same in the seed and in a replay -- the
+         * row used to carry whichever activation happened to be innermost,
+         * and hdfs-11741 campaign #3 has one session (e635d55d...) whose
+         * SERIAL_NO row landed on REGION.08ab84c9 at index depth 1 where
+         * every other session and the seed put it on REGION.aaa1cfd7 at
+         * depth 2, so the focus row's rootMints address matched nothing.</p>
+         */
+        private String mintOccurrence(String rootId) {
+            ActiveRegion owner = declaringRegion(new Declares.Root(rootId));
+            if (owner == null) owner = this;
+            return owner.d3Address == null ? ""
+                    : owner.d3Address.render();
         }
 
         /**
@@ -5891,6 +5987,8 @@ public final class ConcolicRegionRuntime {
                 row.addProperty(InputActionCatalog.DECLARED_WALL_CLOCK, true);
                 row.addProperty("eventSeq", action.eventSeq);
             }
+            row.addProperty("mintOccurrence",
+                    mintOccurrence(safe(action.symbol)));
             symbolizedRows.add(row);
         }
 

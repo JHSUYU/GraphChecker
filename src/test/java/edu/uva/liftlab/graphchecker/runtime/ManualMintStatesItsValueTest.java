@@ -217,8 +217,18 @@ public class ManualMintStatesItsValueTest {
         RuntimeTraceContext.registerSource(keys,
                 new SourceRef("CLUSTER_NODE", "NAMENODE", "hdfs-17899/nn0",
                         0L));
-        assertEquals("the wave's value is unplanted until a mint plants it",
-                Collections.singletonMap("CASE.SERIAL", "12"),
+        // R3: ONE RULE OVER BOTH SPELLINGS of what a wave asks of a root.
+        // A clock is asked for as a DELTA and ASSIGNMENT_UNPLANTED covered
+        // the absolute assignments only -- and a clock is the root eleven
+        // of hdfs-11741 campaign #3's twelve obligations ask about, six of
+        // them stating a delta no mint of their replay ever planted, every
+        // one of them silently.
+        java.util.Map<String, String> owed =
+                new java.util.LinkedHashMap<String, String>();
+        owed.put("CASE.SERIAL", "12");
+        owed.put("CASE.NOW", "-4200");
+        assertEquals("what the wave asked of a root is unplanted until a "
+                        + "mint plants it, a clock's skew included", owed,
                 FocusedReplay.unplantedAssignments());
         assertEquals("a field mint that planted states no recordedValue", "",
                 ConcolicRegionRuntime.fieldMintRecordedValue(focused,
@@ -227,8 +237,10 @@ public class ManualMintStatesItsValueTest {
                         keys, SERIAL_FIELD, "I", Integer.valueOf(182907)));
         assertEquals("and the region reads the wave's value back",
                 12, keys.serialNo);
-        assertTrue("so the replay owes no ASSIGNMENT_UNPLANTED refusal",
-                FocusedReplay.unplantedAssignments().isEmpty());
+        assertEquals("so the replay owes no ASSIGNMENT_UNPLANTED refusal "
+                        + "for it, and still owes the clock's",
+                Collections.singletonMap("CASE.NOW", "-4200"),
+                FocusedReplay.unplantedAssignments());
 
         // A root the wave said nothing about keeps its reading, and states
         // it: the recording is what every delta is relative to.
