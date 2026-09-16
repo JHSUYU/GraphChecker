@@ -10,6 +10,9 @@ import com.google.gson.JsonPrimitive;
 import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
+import edu.uva.liftlab.graphchecker.contract.Endpoint;
+import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
+import edu.uva.liftlab.graphchecker.contract.Frame;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
 import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
@@ -1437,10 +1440,11 @@ final class ConcolicTaskPlan {
         /**
          * Why {@code observed} is not this task's occurrence.
          *
-         * <p>Both addresses, rendered.  Identity v1 could name the one
-         * component that differed because it had four; a v3 address is a
-         * node, a region, a causal context and an execution index, and the
-         * useful thing to put in a refusal is which two it is comparing.</p>
+         * <p>The one component that differs, then both addresses rendered.
+         * A v3 address is a node, a region, a causal context and an
+         * execution index; the refusal states which of the four parted and
+         * where ({@link #difference}), and still carries the two whole
+         * addresses behind it.</p>
          *
          * <p>And, when the two differ in their causal anchor, the
          * COMPONENTS behind each anchor digest: which occurrence sent the
@@ -1457,9 +1461,147 @@ final class ConcolicTaskPlan {
             if (observed == null) {
                 return "the activation ran where this run cannot name it";
             }
-            return "planned " + address.render() + anchorComponents(address)
+            return difference(address, observed)
+                    + "planned " + address.render() + anchorComponents(address)
                     + ", ran at " + observed.render()
                     + anchorComponents(observed);
+        }
+
+        /**
+         * Which component of the address differs, said before the addresses.
+         *
+         * <p>A v3 address is a node, a region, a causal context and an
+         * execution index, and printing two of them leaves the reader to
+         * diff two multi-kilobyte strings: the 13 refusals of hdfs-17960
+         * verification #3 differed in ONE number -- frame 5 of 8, the
+         * {@code applyEditLogOp} call site, planned iteration 3 and ran 0 --
+         * inside ~2500 characters that were otherwise character-identical,
+         * and finding that out took a script. The components are compared
+         * outermost-first (node, region, context, index) and each differing
+         * one is named; an index names the frame's position, its call site,
+         * and the two iterations. Nothing is summarized away: the two whole
+         * addresses still follow.</p>
+         */
+        private static String difference(OccurrenceAddress planned,
+                OccurrenceAddress observed) {
+            List<String> differ = new ArrayList<String>();
+            if (!planned.node().equals(observed.node())) {
+                differ.add("the node (planned " + planned.node().render()
+                        + ", ran " + observed.node().render() + ")");
+            }
+            if (!planned.regionId().equals(observed.regionId())) {
+                differ.add("the region (planned " + planned.regionId()
+                        + ", ran " + observed.regionId() + ")");
+            }
+            if (!planned.context().equals(observed.context())) {
+                differ.add(contextDifference(planned.context(),
+                        observed.context()));
+            }
+            String index = indexDifference(planned.index(), observed.index());
+            if (!index.isEmpty()) differ.add(index);
+            if (differ.isEmpty()) {
+                // Equal addresses reach here only when admission refused on
+                // something that is not the address; say that, do not invent
+                // a difference.
+                return "the two addresses do not differ; ";
+            }
+            StringBuilder said = new StringBuilder("differs in ");
+            for (int at = 0; at < differ.size(); at++) {
+                if (at > 0) said.append(at + 1 == differ.size()
+                        ? " and " : ", ");
+                said.append(differ.get(at));
+            }
+            return said.append("; ").toString();
+        }
+
+        /** The frame the two indexes part at, or {@code ""} when equal. */
+        private static String indexDifference(ExecutionIndex planned,
+                ExecutionIndex observed) {
+            List<Frame> plannedFrames = planned.frames();
+            List<Frame> observedFrames = observed.frames();
+            if (plannedFrames.size() != observedFrames.size()) {
+                return "its execution index depth (planned "
+                        + plannedFrames.size() + " frames, ran "
+                        + observedFrames.size() + ")";
+            }
+            int first = -1;
+            int differing = 0;
+            for (int at = 0; at < plannedFrames.size(); at++) {
+                if (plannedFrames.get(at).equals(observedFrames.get(at))) {
+                    continue;
+                }
+                differing++;
+                if (first < 0) first = at;
+            }
+            if (first < 0) return "";
+            Frame plan = plannedFrames.get(first);
+            Frame ran = observedFrames.get(first);
+            String where = "frame " + first + " of " + plannedFrames.size();
+            String said = plan.callSite().equals(ran.callSite())
+                    ? where + ", " + plan.callSite() + ", at iteration "
+                    + ran.iteration() + " and not the planned "
+                    + plan.iteration()
+                    : where + "'s call site (planned " + plan.callSite()
+                    + ", ran " + ran.callSite() + ")";
+            return differing == 1 ? said
+                    : said + " (and " + (differing - 1) + " further frame"
+                    + (differing == 2 ? "" : "s") + " below it)";
+        }
+
+        /**
+         * Which part of the causal context differs.
+         *
+         * <p>Two anchors are two digests, so the difference is stated over
+         * the four inputs the mint was given, read back from the producer
+         * this run filed ({@link Interactions#endpoint}).</p>
+         */
+        private static String contextDifference(CausalContext planned,
+                CausalContext observed) {
+            if (!(planned instanceof CausalContext.Anchor)
+                    || !(observed instanceof CausalContext.Anchor)) {
+                return "its causal context (planned " + planned.render()
+                        + ", ran " + observed.render() + ")";
+            }
+            CausalContext.Anchor plan = (CausalContext.Anchor) planned;
+            CausalContext.Anchor ran = (CausalContext.Anchor) observed;
+            if (!plan.rpcSite().equals(ran.rpcSite())) {
+                return "its anchor's transport site (planned "
+                        + plan.rpcSite() + ", ran " + ran.rpcSite() + ")";
+            }
+            Endpoint plannedEnd = Interactions.endpoint(
+                    plan.producerEndpointId());
+            Endpoint ranEnd = Interactions.endpoint(ran.producerEndpointId());
+            if (plannedEnd == null || ranEnd == null) {
+                return "its causal anchor (planned "
+                        + plan.producerEndpointId()
+                        + (plannedEnd == null ? ", which no message of this "
+                        + "run minted" : "") + "; ran "
+                        + ran.producerEndpointId()
+                        + (ranEnd == null ? ", which no message of this run "
+                        + "minted" : "") + ")";
+            }
+            if (!plannedEnd.occurrence().equals(ranEnd.occurrence())) {
+                return "its anchor's producer occurrence (planned "
+                        + plannedEnd.occurrence().render() + ", ran "
+                        + ranEnd.occurrence().render() + ")";
+            }
+            if (!plannedEnd.site().equals(ranEnd.site())) {
+                return "its anchor's producer site (planned "
+                        + plannedEnd.site() + ", ran " + ranEnd.site() + ")";
+            }
+            if (!plannedEnd.siteIndex().equals(ranEnd.siteIndex())) {
+                return "its anchor's producer site index (planned "
+                        + plannedEnd.siteIndex().render() + ", ran "
+                        + ranEnd.siteIndex().render() + ")";
+            }
+            if (plannedEnd.attempt() != ranEnd.attempt()) {
+                return "its anchor's producer attempt (planned "
+                        + plannedEnd.attempt() + ", ran "
+                        + ranEnd.attempt() + ")";
+            }
+            return "its causal anchor's digest over components that agree "
+                    + "(planned " + plan.producerEndpointId() + ", ran "
+                    + ran.producerEndpointId() + ")";
         }
 
         /** The producer endpoint one address's anchor is a digest of. */

@@ -637,7 +637,6 @@ public final class ConcolicRegionRuntime {
         boolean engineStarted = false;
         boolean pathConditionPaused = false;
         boolean javaRegionPushed = false;
-        boolean identityRegionEntered = false;
         ActiveRegion active = null;
         try {
             api.start(admitted.regionId, admitted.taskId);
@@ -669,9 +668,6 @@ public final class ConcolicRegionRuntime {
                             ranOn == null ? safe(admitted.sourceKey)
                                     : ranOn.key(),
                             admitted.regionId, admitted.taskId);
-            // Opened by beginActivation; closed by popActiveRegion, or here
-            // when the start fails before the region stack owns the token.
-            identityRegionEntered = true;
             LoopRootInvocationContext enclosingInvocation =
                     enclosingLoopRoot(admitted);
             if (enclosingInvocation != null) {
@@ -719,11 +715,13 @@ public final class ConcolicRegionRuntime {
         } catch (Throwable throwable) {
             if (active != null) {
                 ACTIVE.remove(active.token);
+                // The index region is not unwound here either: the entry
+                // hook that pushed it brackets this whole body, so its own
+                // throw handler closes it (Hook.THROW_REGION_ENTRY ->
+                // #closeRegionEntry).  Unwinding it here popped a region
+                // this method never pushed.
                 if (javaRegionPushed) {
                     popActiveRegion(active);
-                } else if (identityRegionEntered) {
-                    edu.uva.liftlab.graphchecker.runtime.RowRuntime
-                            .exitRegionIndex();
                 }
                 active.releaseActivation();
             }
@@ -800,13 +798,17 @@ public final class ConcolicRegionRuntime {
         RowRuntime.claimStart(receiver);
         long entry = TOKEN_COUNTER.incrementAndGet();
         int depth = edu.uva.liftlab.graphchecker.runtime.Identity.depth();
+        // The other stack this entry is the one push of, read before the
+        // push for the same reason the frame depth is.
+        int regions = edu.uva.liftlab.graphchecker.runtime.Identity
+                .regionDepth();
         // One reading of the node for the frame and for the address, as the
         // recording takes one (CausynthTraceRecorder.enterMethod).
         String node = RuntimeTraceContext.activationSource(receiver).key();
         RowRuntime.enterFrame(node, safe(rootMethod));
         edu.uva.liftlab.graphchecker.runtime.Identity.occurrence(
                 node, safe(regionId), true);
-        REGION_ENTRIES.get().push(new RegionEntry(entry, depth,
+        REGION_ENTRIES.get().push(new RegionEntry(entry, depth, regions,
                 safe(rootMethod)));
         return entry;
     }
@@ -828,11 +830,14 @@ public final class ConcolicRegionRuntime {
     private static final class RegionEntry {
         private final long token;
         private final int depthAtOpen;
+        private final int regionsAtOpen;
         private final String rootMethod;
 
-        private RegionEntry(long token, int depthAtOpen, String rootMethod) {
+        private RegionEntry(long token, int depthAtOpen, int regionsAtOpen,
+                            String rootMethod) {
             this.token = token;
             this.depthAtOpen = depthAtOpen;
+            this.regionsAtOpen = regionsAtOpen;
             this.rootMethod = rootMethod;
         }
     }
@@ -878,6 +883,15 @@ public final class ConcolicRegionRuntime {
         }
         if (open.isEmpty()) REGION_ENTRIES.remove();
         int depth = edu.uva.liftlab.graphchecker.runtime.Identity.depth();
+        int regions = edu.uva.liftlab.graphchecker.runtime.Identity
+                .regionDepth();
+        // Both stacks of the execution index, under one rule: an activation
+        // closes where it opened or it is refused.  The region stack needs
+        // the same check as the frames because it decides which occurrence
+        // an event belongs to and which bucket numbers its site, so a region
+        // popped without a push does not break an address -- it silently
+        // RENUMBERS the next ones (see #popActiveRegion).  One row, naming
+        // the stack that is off and what it left standing.
         if (depth != mine.depthAtOpen) {
             RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
                             .FRAME_UNBALANCED,
@@ -888,6 +902,24 @@ public final class ConcolicRegionRuntime {
                             + "; the innermost frame left standing is "
                             + edu.uva.liftlab.graphchecker.runtime.Identity
                                     .innermostFrame());
+        } else if (regions != mine.regionsAtOpen) {
+            String standing = edu.uva.liftlab.graphchecker.runtime.Identity
+                    .innermostRegion();
+            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
+                            .FRAME_UNBALANCED,
+                    edu.uva.liftlab.graphchecker.contract.GapClass.BLOCKING,
+                    mine.rootMethod,
+                    "this activation closed with " + regions
+                            + " region(s) open and opened with "
+                            + mine.regionsAtOpen + "; "
+                            + (regions > mine.regionsAtOpen
+                            ? "a region it opened is left standing"
+                            : "a region it did not open was closed under it")
+                            + " and the site counts of every occurrence "
+                            + "closed with it are gone, so the frames of "
+                            + "what the enclosing occurrence runs next are "
+                            + "renumbered; the innermost region now open is "
+                            + (standing.isEmpty() ? "none" : standing));
         }
     }
 
@@ -4488,11 +4520,21 @@ public final class ConcolicRegionRuntime {
                 "selected region stack does not own token " + active.token);
         tokens.pop();
         if (tokens.isEmpty()) CURRENT_TOKENS.remove();
-        // The endpoints of a nested region are indexed from its own entry;
-        // the enclosing one resumes being the innermost here.  The journal
-        // itself outlives the region: another activation publishes the rows
-        // of events this one performed.
-        edu.uva.liftlab.graphchecker.runtime.RowRuntime.exitRegionIndex();
+        // No index-region pop here.  The ENTRY hook owns the pair: it pushes
+        // the region (#enterRegionEntry) and #closeRegionEntry pops it, by
+        // the entry token.  This pop had no push left after beginActivation
+        // stopped opening one (RowRuntime.beginActivation reads
+        // currentOccurrence), so it closed the ENCLOSING region instead --
+        // and Identity.regionExit deletes the closing occurrence's per-site
+        // counters, which are the counters that number the frames of
+        // everything the enclosing occurrence still had to run.  On
+        // hdfs-17960 verification #3 that renumbered the 10 applyEditLogOp
+        // entries of one loadEditRecords as 0 and then 0..8, so all 13 tasks
+        // addressed under the NameNode restart were refused
+        // OCCURRENCE_ANCHOR_UNMATCHED at one frame (planned @1/@2/@4/@6/@8,
+        // ran @0/@1/@3/@5/@6) and the tasks whose region ran at every record
+        // were answered by the WRONG record.  The frame stack stayed
+        // balanced throughout, which is why nothing said so.
     }
 
     /**

@@ -152,14 +152,26 @@ public final class Interactions {
      * are stated rather than computed a second time.</p>
      */
     public static synchronized String components(String endpointId) {
+        Endpoint producer = endpoint(endpointId);
+        return producer == null ? "" : producer.render();
+    }
+
+    /**
+     * The endpoint {@code endpointId} was minted from, or {@code null}.
+     *
+     * <p>The filed object, so a reader comparing two anchors compares the
+     * four inputs themselves -- occurrence, site, site index, attempt --
+     * instead of two renders of them.</p>
+     */
+    public static synchronized Endpoint endpoint(String endpointId) {
         String id = Text.safe(endpointId);
-        if (id.isEmpty()) return "";
+        if (id.isEmpty()) return null;
         // Over the filed endpoints rather than a second index of them: one
         // store of producers, read on the path that prints a refusal.
         for (Endpoint producer : MESSAGES.values()) {
-            if (id.equals(producer.id())) return producer.render();
+            if (id.equals(producer.id())) return producer;
         }
-        return "";
+        return null;
     }
 
     private static String message(String transport, String correlationId,

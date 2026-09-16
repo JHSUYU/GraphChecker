@@ -318,6 +318,20 @@ public class RowRuntimeTest {
         placeholder(occurrence, placeholderRow("e", null), "M_I_unwritten",
                 Collections.singletonMap("M_I_unwritten",
                         new String[]{"INSTANCE_FIELD/22#32", "126", "-1"}));
+        // An over-pop of the region stack is a named refusal.  The entry
+        // hook is the one push and #closeRegionEntry the one pop; a second
+        // pop under an open activation closes a region that activation
+        // never opened, and the only balance check there was compared frame
+        // depth, which such a pop does not move.
+        Identity.resetForTests();
+        Identity.scopeStart();
+        Identity.enterCall(NN.key(), "Loader.loadEditRecords()#u4");
+        Identity.occurrence(NN.key(), "REGION.loader", true);
+        long nested = ConcolicRegionRuntime.enterRegionEntry("REGION.apply",
+                "<a.Loader: long applyEditLogOp()>", null);
+        RowRuntime.exitRegionIndex();
+        ConcolicRegionRuntime.exitRegionEntry(nested);
+
         RowRuntime.closeSession();
 
         SessionDir dir = session();
@@ -430,6 +444,14 @@ public class RowRuntimeTest {
         assertTrue(targets.get(0).observedFatal());
         List<GapRow> gaps = RowCodec.readAll(dir.gaps(), RowCodec::readGap);
         assertTrue(gaps.get(0).blocking());
+        GapRow unbalanced = gaps.get(gaps.size() - 1);
+        assertEquals(GapKind.FRAME_UNBALANCED, unbalanced.kind());
+        assertTrue("an over-pop is BLOCKING, not a renumbered anchor",
+                unbalanced.blocking());
+        assertTrue(unbalanced.detail(), unbalanced.detail().contains(
+                "closed with 0 region(s) open and opened with 1"));
+        assertTrue(unbalanced.detail(), unbalanced.detail().contains(
+                "a region it did not open was closed under it"));
         // What the read-out keeps of the VM's envelope is what a write or
         // read endpoint can be built from: the bytecode site the event stood
         // at and the activation that ran it.  The reduction used to drop
@@ -814,6 +836,52 @@ public class RowRuntimeTest {
                 + "/FSImage.saveFSImageInAllDirs()#u40@0"
                 + "/FSImageSaver.run()#u1@0",
                 startedWorkIndex("FSImage.saveFSImageInAllDirs()#u40"));
+
+        // The index has TWO stacks and one balance rule.  A nested region
+        // opened and closed leaves the enclosing occurrence's site counts
+        // alone, so the k-th entry of a site inside a loop keeps counting;
+        // a region popped without a push deletes those counts
+        // (Identity.regionExit), and the next entry at that site restarts
+        // at 0 while the FRAME depth stays right.  That is what renumbered
+        // the 10 applyEditLogOp entries of one loadEditRecords on
+        // hdfs-17960 verification #3 -- 0, then 0..8 -- and refused 13
+        // tasks at that one frame.
+        Identity.resetForTests();
+        Identity.scopeStart();
+        Identity.enterCall(NN.key(), "Loader.loadEditRecords()#u4");
+        Identity.occurrence(NN.key(), "REGION.loader", true);
+        assertEquals("one region open, pushed by the entry", 1,
+                Identity.regionDepth());
+        for (int record = 0; record < 3; record++) {
+            Identity.enterCall(NN.key(), "Loader.applyEditLogOp()#u115");
+            // One nested activation, opened and closed as the entry hook
+            // pairs them.
+            Identity.occurrence(NN.key(), "REGION.apply", true);
+            Identity.regionExit();
+            Identity.exitCall();
+        }
+        assertEquals("the pair left the enclosing region standing", 1,
+                Identity.regionDepth());
+        Identity.enterCall(NN.key(), "Loader.applyEditLogOp()#u115");
+        assertEquals("the k-th entry of one site inside one occurrence",
+                "Loader.loadEditRecords()#u4@0/Loader.applyEditLogOp()#u115@3",
+                Identity.atScope().render());
+        assertTrue("and the enclosing occurrence is the one open region",
+                Identity.innermostRegion().contains("REGION.loader"));
+        Identity.exitCall();
+
+        // One pop too many, and the same site restarts at 0 -- the frame
+        // depth says nothing is wrong.
+        int frames = Identity.depth();
+        Identity.regionExit();
+        assertEquals("the frames are untouched by a region pop", frames,
+                Identity.depth());
+        assertEquals("but no region is open any more", 0,
+                Identity.regionDepth());
+        Identity.enterCall(NN.key(), "Loader.applyEditLogOp()#u115");
+        assertEquals("the fifth entry, renumbered as the first",
+                "Loader.loadEditRecords()#u4@0/Loader.applyEditLogOp()#u115@0",
+                Identity.atScope().render());
 
         // A pool thread was created before the work it runs, so it inherits
         // nothing from the submission: the start filed for the TASK is
