@@ -1469,22 +1469,21 @@ public final class Composer {
         for (Map.Entry<String, List<ReadRow>> entry
                 : byLocation.entrySet()) {
             List<ReadRow> reads = entry.getValue();
-            // Alternatives need an owner that NAMES the storage across
-            // replays (IDENTITY-V3 sec 5).  A session rid is that run's
-            // counter and a class on a heap location is every instance of
-            // it at once: either one turns "another writer of L" into
-            // "a writer of something else", so such a read keeps the
-            // delivery its own run gave it and is named here.
+            // Alternatives need an owner that NAMES the storage
+            // ({@link Arms#namedOwner}).  A class on a heap location is
+            // every instance of it at once, which turns "another writer of
+            // L" into "a writer of something else", so such a read keeps
+            // the delivery its own run gave it and is named here.
             if (!Arms.namedOwner(reads.get(0).location())) {
                 if (aliasingNamed.add(entry.getKey())) {
                     gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
                             entry.getKey(), "the owner on this location's "
-                                    + "rows is neither an allocation "
-                                    + "endpoint id nor the preWindow form, "
-                                    + "so it names no storage across "
-                                    + "replays: this read is delivered as "
-                                    + "its own run delivered it and gets "
-                                    + "no alternative writers");
+                                    + "rows is a class and not the rid of "
+                                    + "one object, so it names every "
+                                    + "instance of that class at once: "
+                                    + "this read is delivered as its own "
+                                    + "run delivered it and gets no "
+                                    + "alternative writers");
                 }
                 continue;
             }

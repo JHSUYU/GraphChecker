@@ -652,13 +652,10 @@ public class ExploreTest {
         OccurrenceAddress target = TARGET;
         OccurrenceAddress writer = WRITER;
         OccurrenceAddress producer = PRODUCER;
-        // Memory Indexing: the map is owned by the endpoint that allocated
-        // it, never by a session address (IDENTITY-V3 SS5).
-        LocationId allKeys = LocationId.allocated(at(writer,
-                        Endpoint.allocationSite("BlockTokenSecretManager",
-                                "<init>", 4, false),
-                        "BlockTokenSecretManager#<init>#4"),
-                LocationKind.MAP, "allKeys");
+        // The map, owned the way the runtime writes an owner: the VM's
+        // symbolic rid of the object whose state this is.
+        LocationId allKeys = LocationId.of(LocationKind.MAP, "21",
+                "allKeys");
         Endpoint exported = at(producer, "XCH.resp.block-key-id",
                 "PBHelper#convert#9");
         Endpoint attached = at(writer, "XCH.resp.block-key-id",
@@ -1044,10 +1041,8 @@ public class ExploreTest {
         OccurrenceAddress undeclared = occurrence("hdfs-case/dn0",
                 "REGION.undeclared", CausalContext.of(Role.CLIENT, "", 2),
                 "o.a.h.h.s.n.SnapshotManager#renameSnapshot#7");
-        LocationId counter = LocationId.allocated(at(writer,
-                        Endpoint.allocationSite("SnapshotManager", "<init>",
-                                4, false), "SnapshotManager#<init>#4"),
-                LocationKind.INSTANCE, "24");
+        LocationId counter = LocationId.of(LocationKind.INSTANCE, "2",
+                "24");
         Session apart = new Session(aside, "s-seed");
         apart.activation(target, false);
         apart.activation(writer, false);

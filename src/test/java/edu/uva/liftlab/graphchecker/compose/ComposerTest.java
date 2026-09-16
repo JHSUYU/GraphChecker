@@ -275,13 +275,12 @@ public class ComposerTest {
         OccurrenceAddress sibling = occurrence("case/nn0", "REGION.saver",
                 CausalContext.of(Role.of("IPC_HANDLER"), "", 1),
                 frame("Saver#serializeSnapshotSection#8", 1));
-        // The counter, owned by its ALLOCATION and not by a session rid,
-        // so nothing about alternatives is withheld for the owner's
-        // spelling: what is asked here is the attestation rule.
-        Endpoint allocation = Endpoint.of(creating,
-                "AtomicInteger#<init>#1:NEW", at("alloc#1", 0), 0);
-        LocationId counter = LocationId.allocated(allocation,
-                LocationKind.INSTANCE, "value");
+        // The counter, owned the way the runtime writes an owner -- the
+        // VM's rid of the object -- so nothing about alternatives is
+        // withheld for the owner's spelling: what is asked here is the
+        // attestation rule.
+        LocationId counter = LocationId.of(LocationKind.INSTANCE, "31",
+                "value");
         String owner = counter.owner();
         for (String[] each : new String[][]{
                 {"s0", "true", "77", "2", "false"},
@@ -1218,13 +1217,14 @@ public class ComposerTest {
         OccurrenceAddress concurrent = occurrence("case/dn0",
                 "REGION.heartbeat", CausalContext.of(Role.of("HEARTBEAT_TICK"), "", 1),
                 frame("Heartbeat#run#9", 0));
-        // IDENTITY-V3 sec 5: the map is named by the endpoint that
-        // ALLOCATED it, which is the same name in every replay.
-        LocationId keys = LocationId.allocated(Endpoint.of(UPSTREAM,
-                "KeyManager#<init>#1:NEW", at("alloc#1", 0), 0),
-                LocationKind.MAP, "allKeys");
-        // The same storage named by its class instead: one name for every
-        // instance, so it names none of them.
+        // The map, named the way the runtime names an owner: the VM's rid
+        // of the object whose state this is, which inside one session is
+        // exactly one object.
+        LocationId keys = LocationId.of(LocationKind.MAP, "21", "allKeys");
+        // The same storage named by its class instead -- the other
+        // spelling the runtime writes, for a declared-field read with no
+        // VM location key: one name for every instance, so it names none
+        // of them.
         LocationId aliased = LocationId.of(LocationKind.MAP,
                 "BlockTokenSecretManager", "allKeys");
 
@@ -1289,7 +1289,7 @@ public class ComposerTest {
         // IDENTITY-V3 sec 5: alternatives need an owner that names the
         // storage.  The class-owned copy of the same state gets the
         // delivery its own run gave it, and says so.
-        assertTrue("an allocation endpoint names the storage",
+        assertTrue("the rid the runtime writes names the storage",
                 edu.uva.liftlab.graphchecker.smt.Arms.namedOwner(keys));
         assertFalse("a class on a heap location names every instance",
                 edu.uva.liftlab.graphchecker.smt.Arms.namedOwner(aliased));
@@ -1322,9 +1322,7 @@ public class ComposerTest {
         OccurrenceAddress second = occurrence("case/dn0", "REGION.second",
                 CausalContext.of(Role.of("HEARTBEAT_TICK"), "", 1),
                 frame("Heartbeat#run#9", 0));
-        LocationId keys = LocationId.allocated(Endpoint.of(first,
-                "KeyManager#<init>#1:NEW", at("alloc#1", 0), 0),
-                LocationKind.MAP, "allKeys");
+        LocationId keys = LocationId.of(LocationKind.MAP, "21", "allKeys");
 
         for (String[] each : new String[][]{{"s0", "false", "false"},
                 {"s1", "true", "true"}}) {

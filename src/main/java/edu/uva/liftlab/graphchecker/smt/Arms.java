@@ -329,48 +329,45 @@ public final class Arms {
      * @param location       the join key of L
      */
     /**
-     * Whether a location's owner NAMES its storage across replays.
+     * Whether a location's owner NAMES its storage.
      *
-     * <p>IDENTITY-V3 sec 5 (Memory Indexing): the three owner forms that
-     * name one storage are the allocating {@link Endpoint}'s id, the
-     * {@code preWindow:} form for an object older than the window, and --
-     * for a STATIC field only -- the class, which owns exactly one cell.
-     * Anything else is a name that is not an identity: a session rid is
-     * that run's counter and means nothing in another run, and a CLASS on
-     * a heap location aliases every instance of it at once.</p>
+     * <p>ONE owner spelling, the one the runtime writes: the VM's symbolic
+     * rid of the object whose state this is
+     * ({@code RowPublication.locationKey}, {@code KIND/rid#slot}).  A rid
+     * is a per-run counter, and that is enough here because this is asked
+     * inside ONE session: alternatives (R-I7.1) are the writer occurrences
+     * of one session's write log ({@link #stateArms}), whose rows and read
+     * rows spell the location the same way, so inside that run a rid names
+     * exactly one object.  A STATIC field is owned by its class and that
+     * class owns exactly one cell, so there the class names the storage.
      *
-     * <p>What follows is the whole use of it: alternatives (R-I7.1) are
-     * computed only where the owner names the storage.  A read on an
-     * aliasing owner gets its delivery and nothing else -- choosing among
-     * "writers" that may be writes to a different object is how a witness
-     * is invented rather than found.</p>
+     * <p>The other spelling the runtime writes is a CLASS on a heap
+     * location -- {@code RowPublication.fieldLocation:540} and
+     * {@code fieldAccess:1031}, for a declared-field read whose VM
+     * location key is absent -- and a class aliases every instance of it
+     * at once.  Such a read keeps the delivery its own run gave it and is
+     * offered no alternative writers: choosing among "writers" that may be
+     * writes to a different object is how a witness is invented rather
+     * than found.
+     *
+     * <p>The allocation-endpoint form this gate admitted instead (a 16-hex
+     * {@code Endpoint} id, {@code contract.LocationId.allocated}) is
+     * produced by no main code, so the gate refused every row of both
+     * corpora: 128 {@code DECLARATION_MISSING} DIAGNOSTIC rows on the
+     * clean hdfs-17960 run, and not one read anywhere was ever offered an
+     * alternative writer.</p>
      */
     public static boolean namedOwner(LocationId location) {
         if (location == null) return false;
-        if (location.preWindow()) return true;
         if (location.kind() == LocationKind.STATIC) return true;
-        return allocationId(location.owner());
+        return objectRid(location.owner());
     }
 
-    /** An allocation Endpoint id: sha16, optionally with its m-th object. */
-    private static boolean allocationId(String owner) {
-        if (owner == null) return false;
-        String digest = owner;
-        int at = owner.indexOf('#');
-        if (at >= 0) {
-            digest = owner.substring(0, at);
-            String ordinal = owner.substring(at + 1);
-            if (ordinal.isEmpty()) return false;
-            for (int index = 0; index < ordinal.length(); index++) {
-                if (!Character.isDigit(ordinal.charAt(index))) return false;
-            }
-        }
-        if (digest.length() != 16) return false;
-        for (int index = 0; index < digest.length(); index++) {
-            char value = digest.charAt(index);
-            boolean hex = value >= '0' && value <= '9'
-                    || value >= 'a' && value <= 'f';
-            if (!hex) return false;
+    /** The VM's symbolic rid of one object, as every row spells an owner. */
+    private static boolean objectRid(String owner) {
+        if (owner == null || owner.isEmpty()) return false;
+        for (int index = 0; index < owner.length(); index++) {
+            if (!Character.isDigit(owner.charAt(index))) return false;
         }
         return true;
     }
