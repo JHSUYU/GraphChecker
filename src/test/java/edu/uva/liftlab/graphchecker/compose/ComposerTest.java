@@ -93,6 +93,8 @@ public class ComposerTest {
     private static final String MARKER_ROOT = "ROOT.MARKER";
     private static final String SERIAL = "serial_s";
     private static final String SERIAL_ROOT = "ROOT.SERIAL";
+    private static final String CLOCK = "clock_now";
+    private static final String CLOCK_ROOT = "ROOT.NOW";
     /**
      * A declared region input, as the runtime publishes it: a READ
      * placeholder, so the row states its value and nothing mints it.
@@ -275,13 +277,12 @@ public class ComposerTest {
         OccurrenceAddress sibling = occurrence("case/nn0", "REGION.saver",
                 CausalContext.of(Role.of("IPC_HANDLER"), "", 1),
                 frame("Saver#serializeSnapshotSection#8", 1));
-        // The counter, owned by its ALLOCATION and not by a session rid,
-        // so nothing about alternatives is withheld for the owner's
-        // spelling: what is asked here is the attestation rule.
-        Endpoint allocation = Endpoint.of(creating,
-                "AtomicInteger#<init>#1:NEW", at("alloc#1", 0), 0);
-        LocationId counter = LocationId.allocated(allocation,
-                LocationKind.INSTANCE, "value");
+        // The counter, owned the way the runtime writes an owner -- the
+        // VM's rid of the object -- so nothing about alternatives is
+        // withheld for the owner's spelling: what is asked here is the
+        // attestation rule.
+        LocationId counter = LocationId.of(LocationKind.INSTANCE, "31",
+                "value");
         String owner = counter.owner();
         for (String[] each : new String[][]{
                 {"s0", "true", "77", "2", "false"},
@@ -1218,13 +1219,14 @@ public class ComposerTest {
         OccurrenceAddress concurrent = occurrence("case/dn0",
                 "REGION.heartbeat", CausalContext.of(Role.of("HEARTBEAT_TICK"), "", 1),
                 frame("Heartbeat#run#9", 0));
-        // IDENTITY-V3 sec 5: the map is named by the endpoint that
-        // ALLOCATED it, which is the same name in every replay.
-        LocationId keys = LocationId.allocated(Endpoint.of(UPSTREAM,
-                "KeyManager#<init>#1:NEW", at("alloc#1", 0), 0),
-                LocationKind.MAP, "allKeys");
-        // The same storage named by its class instead: one name for every
-        // instance, so it names none of them.
+        // The map, named the way the runtime names an owner: the VM's rid
+        // of the object whose state this is, which inside one session is
+        // exactly one object.
+        LocationId keys = LocationId.of(LocationKind.MAP, "21", "allKeys");
+        // The same storage named by its class instead -- the other
+        // spelling the runtime writes, for a declared-field read with no
+        // VM location key: one name for every instance, so it names none
+        // of them.
         LocationId aliased = LocationId.of(LocationKind.MAP,
                 "BlockTokenSecretManager", "allKeys");
 
@@ -1289,7 +1291,7 @@ public class ComposerTest {
         // IDENTITY-V3 sec 5: alternatives need an owner that names the
         // storage.  The class-owned copy of the same state gets the
         // delivery its own run gave it, and says so.
-        assertTrue("an allocation endpoint names the storage",
+        assertTrue("the rid the runtime writes names the storage",
                 edu.uva.liftlab.graphchecker.smt.Arms.namedOwner(keys));
         assertFalse("a class on a heap location names every instance",
                 edu.uva.liftlab.graphchecker.smt.Arms.namedOwner(aliased));
@@ -1322,9 +1324,7 @@ public class ComposerTest {
         OccurrenceAddress second = occurrence("case/dn0", "REGION.second",
                 CausalContext.of(Role.of("HEARTBEAT_TICK"), "", 1),
                 frame("Heartbeat#run#9", 0));
-        LocationId keys = LocationId.allocated(Endpoint.of(first,
-                "KeyManager#<init>#1:NEW", at("alloc#1", 0), 0),
-                LocationKind.MAP, "allKeys");
+        LocationId keys = LocationId.of(LocationKind.MAP, "21", "allKeys");
 
         for (String[] each : new String[][]{{"s0", "false", "false"},
                 {"s1", "true", "true"}}) {
@@ -1370,6 +1370,21 @@ public class ComposerTest {
                 ClaimKind.STATE_PAIRING_FLIPPED, decision.claim().kind());
         assertTrue("with the polarity the recording decides",
                 decision.claim().polarityDecides());
+        // A findingKind names a mechanism, and the claim may name one only
+        // where the EVIDENCE for it is in this composition: the state slot
+        // this witness replaces is there to be pinned, and there is no wire
+        // slot at all -- no attach, no arrival.  A branch whose `otherwise`
+        // was MESSAGE_PAIRING_FLIPPED published exactly that mechanism over
+        // a composition with families=0 and no wire row, which is
+        // verification #6's wrong claim; the rule is now one routine
+        // (ClaimPolicy#mechanism) with no such parameter.
+        String witness = decision.outcomes().get(1).selected()
+                .path().pathId;
+        assertFalse("the replaced state slot is this kind's evidence",
+                composition.observedReads(witness).isEmpty());
+        assertTrue("and a wire pairing is a mechanism this composition "
+                        + "could not name: there is no arrival to replace",
+                composition.observedArrivals(witness).isEmpty());
     }
 
     // ------------------------------------------------------------------
@@ -1390,6 +1405,15 @@ public class ComposerTest {
         // PREDICATE both times and the outcome says which arm ran.
         session.decision(ANCHOR, "anchor#u1", true, MARKER);
         session.decision(ANCHOR, "anchor#u2", false, MARKER);
+        // A clock the anchor's own predicate reads, with the instant this
+        // run read it.  The decision keys its reading by the clock's ROOT
+        // ID and the formula names the SYMBOL the session minted: asked
+        // whether the lowering declared the root id, the answer was no for
+        // every cell of every corpus, so the composition had no clock cell
+        // at all and CLOCK_SKEW could not be asked about in 52+ manifests.
+        session.clock("700");
+        session.decision(ANCHOR, "anchor#u9", "(> " + CLOCK + " 300)",
+                CLOCK_ROOT, 700L);
         // Two leaves the same path is made of, published by reference.
         // The array a store wrote WHOLE at version 1, and a read of ONE
         // cell of it at that version: the read is of the element, so the
@@ -1635,6 +1659,21 @@ public class ComposerTest {
                         + "enumerated",
                 composition.valuations().get(1).moved()
                         .containsKey(SERIAL_ROOT));
+        assertFalse("and a CLOCK is not a root a valuation moves at all: it "
+                        + "has a floor and no window",
+                composition.valuations().get(1).moved()
+                        .containsKey(CLOCK_ROOT));
+        // The CELL of a clock is the name the FORMULA names -- the symbol
+        // the session minted -- and not the root id the decision keyed its
+        // reading by.  Keyed by the root id, no cell was ever declared, so
+        // #clockNecessary answered "no clocks" without a solver run and
+        // CLOCK_SKEW was unreachable.
+        assertEquals("one clock cell, named as the formula names it",
+                Collections.singletonList(CLOCK), composition.clockCells());
+        assertEquals("at the instant this session read", Long.valueOf(700L),
+                composition.clockReadings().get(CLOCK));
+        assertTrue("with the floor that makes a value a time at all",
+                composition.body().contains("(>= " + CLOCK + " 0)"));
         assertTrue("it is pinned to what the recording read, by a named "
                         + "conjunct an unsat core can read",
                 composition.body().contains("(= " + SERIAL + " 41)")
@@ -1740,7 +1779,7 @@ public class ComposerTest {
                 SmtLowering.symbols(guard, new LinkedHashSet<String>())
                         .contains(SERIAL));
         Set<String> reached = lowering.reachedSymbols(guard,
-                new LinkedHashSet<String>());
+                new LinkedHashSet<String>(), new LinkedHashSet<String>());
         assertTrue("and the recorded symbol behind it is: " + reached,
                 reached.contains(SERIAL));
         for (String name : reached) {
@@ -2079,6 +2118,27 @@ public class ComposerTest {
         void marker(String recorded) {
             roots.add(RootMintRow.of(id, ++seq, PRODUCER, MARKER_ROOT, MARKER,
                     RootKind.MARKER, recorded, null, null, true));
+        }
+
+        /**
+         * A declared CLOCK: no window, only the instant it read.
+         *
+         * <p>A clock cell is not a root a valuation moves -- it has a floor
+         * and no domain -- and what names it in a composed query is the
+         * SYMBOL the session minted, which is what a decision's reading has
+         * to be joined to ({@code Composer.clocks}).</p>
+         */
+        void clock(String recorded) {
+            roots.add(RootMintRow.of(id, ++seq, ANCHOR, CLOCK_ROOT, CLOCK,
+                    RootKind.CLOCK, recorded, null, null, true));
+        }
+
+        /** One decision, and the clock cells its predicate read. */
+        void decision(OccurrenceAddress at, String site, String term,
+                      String clockRoot, long reading) {
+            decisions.add(DecisionRow.of(id, ++seq, at, site,
+                    decisions.size() + 1, true, term,
+                    Collections.singletonMap(clockRoot, reading)));
         }
 
         /** A declared counter, with the window the CASE states around it. */

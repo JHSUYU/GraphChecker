@@ -652,13 +652,10 @@ public class ExploreTest {
         OccurrenceAddress target = TARGET;
         OccurrenceAddress writer = WRITER;
         OccurrenceAddress producer = PRODUCER;
-        // Memory Indexing: the map is owned by the endpoint that allocated
-        // it, never by a session address (IDENTITY-V3 SS5).
-        LocationId allKeys = LocationId.allocated(at(writer,
-                        Endpoint.allocationSite("BlockTokenSecretManager",
-                                "<init>", 4, false),
-                        "BlockTokenSecretManager#<init>#4"),
-                LocationKind.MAP, "allKeys");
+        // The map, owned the way the runtime writes an owner: the VM's
+        // symbolic rid of the object whose state this is.
+        LocationId allKeys = LocationId.of(LocationKind.MAP, "21",
+                "allKeys");
         Endpoint exported = at(producer, "XCH.resp.block-key-id",
                 "PBHelper#convert#9");
         Endpoint attached = at(writer, "XCH.resp.block-key-id",
@@ -1044,10 +1041,8 @@ public class ExploreTest {
         OccurrenceAddress undeclared = occurrence("hdfs-case/dn0",
                 "REGION.undeclared", CausalContext.of(Role.CLIENT, "", 2),
                 "o.a.h.h.s.n.SnapshotManager#renameSnapshot#7");
-        LocationId counter = LocationId.allocated(at(writer,
-                        Endpoint.allocationSite("SnapshotManager", "<init>",
-                                4, false), "SnapshotManager#<init>#4"),
-                LocationKind.INSTANCE, "24");
+        LocationId counter = LocationId.of(LocationKind.INSTANCE, "2",
+                "24");
         Session apart = new Session(aside, "s-seed");
         apart.activation(target, false);
         apart.activation(writer, false);
@@ -1204,6 +1199,13 @@ public class ExploreTest {
                         "BlockTokenSecretManager#addKeys#12"), allKeys, 5L,
                 "e.map", "L");
         container.read(mapRead, allKeys, 5L, mapState, "119992");
+        // The predicate every key case's fatal arm is: is the reference
+        // this execution read null?  Published over the VM's own identity
+        // leaf, which the lowering mints an opaque name for -- and states
+        // a fact about.
+        container.expression("EXPR.0000000000000006", binary("==",
+                leaf("M_L'org/apache/Held'_9", "org/apache/Held"),
+                leaf("N", "")));
         container.target(target, "BlockTokenSecretManager#u120",
                 "EXPR.0000000000000005");
         container.flush();
@@ -1229,7 +1231,7 @@ public class ExploreTest {
         assertTrue("the container version stands in the text as one name: "
                 + mapGuard, mapGuard.contains("container_dag__"));
         Set<String> says = lowering.reachedSymbols(mapGuard,
-                new LinkedHashSet<String>());
+                new LinkedHashSet<String>(), new LinkedHashSet<String>());
         assertFalse("and the text does not SAY the read behind it, which is "
                         + "what a query binds its variables by: " + says,
                 says.contains(mapState));
@@ -1238,6 +1240,32 @@ public class ExploreTest {
                 restsOn);
         assertTrue("it RESTS ON it, which is what the closure demands: "
                 + restsOn, restsOn.contains(mapState));
+        // And what the state the guard rests on IS: the shape its WRITER
+        // delivers, which is what a query must declare the v_C variable at.
+        // The read row states javaType "L" -- the reference whose state was
+        // read -- so a query that took the sort off the row asserted an
+        // AssocState chain over a Ref and z3 answered the obligation
+        // `(error "Sorts Ref and AssocState are incompatible")`.
+        assertEquals("the writer of the state delivers its shape",
+                "AssocState", lowering.lower("e.map").sort());
+        // THE FACTS: what the recording states about the names the guard
+        // rests on travels with them.  The map read lowered to an opaque
+        // identity, and the recording states that identity was not null --
+        // the execution read fields off the object.  Unstated, a flip of
+        // `x == null` is satisfied by freeing that boundary (CLOSURE-V2
+        // SS3), which is how 18 of hdfs-11741's 36 wave-0 obligations came
+        // back SAT with no variable declared at all.
+        String nullTest = lowering.statedTerm("EXPR.0000000000000006",
+                "test");
+        List<String> states = lowering.facts(
+                Arrays.asList(mapGuard, nullTest));
+        boolean notNull = false;
+        for (String fact : states) {
+            notNull |= fact.startsWith("(not (= identity__")
+                    && fact.endsWith("nullRef))");
+        }
+        assertTrue("the identity the guard rests on is stated non-null: "
+                + states, notNull);
         ClosurePlanner.Plan demanded = ClosurePlanner.plan(vC, target,
                 ofAllKeys);
         Map<String, String> whyMap = new LinkedHashMap<String, String>();

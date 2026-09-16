@@ -261,6 +261,23 @@ final class FlipQuery {
          * the assertions first.</p>
          */
         private final List<String> rootFacts = new ArrayList<String>();
+        /**
+         * What each session's LOWERING states about the names this query
+         * declares: an identity the execution read fields off was not
+         * null, an integral leaf inside its Java domain, a container
+         * subterm at the shape it was built at
+         * ({@link SmtLowering#facts}).
+         *
+         * <p>Beside {@link #rootFacts} for the same reason: a fact about a
+         * name is not a reason to keep that name in a model.  And a list
+         * rather than an assertion because it is not this query's claim --
+         * it is what the RECORDING says about the boundary the claim rests
+         * on.  Unstated, the 18 hdfs-11741 wave-0 flips over
+         * {@code (= container_dag__... nullRef)} were satisfied by making
+         * an object the recording saw non-null null, declaring no variable
+         * at all.</p>
+         */
+        private final List<String> statedFacts = new ArrayList<String>();
         private final Set<String> explained = new LinkedHashSet<String>();
         private final Deque<Ref> pending = new ArrayDeque<Ref>();
         private final Set<String> queued = new LinkedHashSet<String>();
@@ -330,6 +347,7 @@ final class FlipQuery {
                 assertions.add(last ? "(not " + held + ")" : held);
             }
             drain();
+            stateFacts();
             if (!refusal.isEmpty()) {
                 return new Built("", Collections.<String>emptyList(),
                         refusal, flipped,
@@ -638,12 +656,87 @@ final class FlipQuery {
             return VmTermLowering.and(conjuncts);
         }
 
+        /** A read the flipped path's own text names, at the row's sort. */
         private void read(ReadRow row) {
-            String variable = variable(row.sessionId(), row.symbol());
-            if (!explained.add(variable)) return;
-            List<Arms.Arm> eligible = corpus.arms().stateArms(row.endpoint(),
+            bind(row, variable(row.sessionId(), row.symbol()));
+        }
+
+        /**
+         * THE v_C VARIABLE: the container state a guard reads, bound.
+         *
+         * <p>Behind the name and not in it -- the join inlines, so a read of
+         * a container leaves one {@code container_dag__} name whose body
+         * holds the mutations and nothing that names the cell
+         * ({@link SmtLowering#reachedSymbols}).  It is ONE variable of this
+         * query, at the sort its WRITERS deliver: a whole-state row states
+         * the {@code javaType} of the reference whose state was read
+         * ({@code "L"} on every MAP_STATE row of hdfs-11741), never the
+         * shape of the state, and the arms are the chains the composer
+         * already builds.  Declared at the row's own type instead, the
+         * query asserted {@code (= st_ (assoc_put ...))} over a
+         * {@code Ref} and z3 answered the whole obligation
+         * {@code (error "Sorts Ref and AssocState are incompatible")}.</p>
+         *
+         * <p>Writers whose expressions deliver two shapes are a corpus that
+         * states one state at two sorts: refused by name, never composed
+         * over.</p>
+         */
+        private void state(String sessionId, String symbol) {
+            ReadRow row = corpus.read(sessionId, symbol);
+            if (row == null) return;
+            List<Arms.Arm> eligible = eligible(row);
+            Set<String> shapes = new LinkedHashSet<String>();
+            for (Arms.Arm arm : eligible) {
+                SmtLowering.Lowered delivered =
+                        corpus.lowering(arm.sessionId())
+                                .lower(arm.expressionRef());
+                if (delivered.ok()) shapes.add(delivered.sort());
+            }
+            if (shapes.isEmpty()) {
+                gaps.add(GapRow.of(sessionId, GapKind.UNSTATED_VALUE,
+                        GapClass.DIAGNOSTIC, row.endpoint().toString(),
+                        "no writer of " + row.location() + " delivers an "
+                                + "expression this corpus lowers, so nothing "
+                                + "states the shape of the state this path's "
+                                + "guard reads"));
+                return;
+            }
+            if (shapes.size() > 1) {
+                refusal = "UNSTATED_VALUE:" + row.endpoint();
+                gaps.add(GapRow.of(sessionId, GapKind.UNSTATED_VALUE,
+                        GapClass.BLOCKING, row.endpoint().toString(),
+                        "the writers of " + row.location() + " deliver this "
+                                + "one state at " + shapes + ": a state has "
+                                + "one shape, and nothing is composed over a "
+                                + "corpus that states two"));
+                return;
+            }
+            String variable = readVariable(sessionId, row);
+            if (explained.contains(variable)) return;
+            declare(variable, shapes.iterator().next(),
+                    "container state " + row.location() + " read at "
+                            + row.endpoint() + " version "
+                            + row.observedVersion());
+            bind(row, variable);
+        }
+
+        /** The writer occurrences one read could have taken its value from. */
+        private List<Arms.Arm> eligible(ReadRow row) {
+            return corpus.arms().stateArms(row.endpoint(),
                     row.sessionId(), SmtLowering.locationKey(row.location()),
                     row.observedVersion());
+        }
+
+        /**
+         * One read, joined to the writes it could have seen (R-I7.1).
+         *
+         * <p>What the variable IS has already been decided by the caller --
+         * the row's own sort for a read the text names, the writers' shape
+         * for a v_C state -- and this is the one binding either gets.</p>
+         */
+        private void bind(ReadRow row, String variable) {
+            if (!explained.add(variable)) return;
+            List<Arms.Arm> eligible = eligible(row);
             gaps.add(GapRow.of(row.sessionId(), GapKind.UNSTATED_VALUE,
                     GapClass.DIAGNOSTIC, row.endpoint().toString(),
                     "eligible writers of " + row.location() + ": "
@@ -748,14 +841,35 @@ final class FlipQuery {
             // answer, and the replay something to apply.  One answer, in
             // SmtLowering, which the closure planner asks too.
             SmtLowering lowering = corpus.lowering(sessionId);
+            Set<String> states = new LinkedHashSet<String>();
             for (String token : lowering.reachedSymbols(term,
-                    new LinkedHashSet<String>())) {
+                    new LinkedHashSet<String>(), states)) {
                 if (corpus.symbolKind(sessionId, token)
                         == Corpus.SymbolKind.UNKNOWN) {
                     continue;
                 }
                 rename.put(token, variable(sessionId, token));
                 bound.add(sessionId + "|" + token);
+            }
+            // THE v_C RULE (CLOSURE-V2, X12's other half): the container
+            // STATE a guard reads is behind the name and not in it -- the
+            // join inlines, so a read of a map leaves one
+            // container_dag__ name whose body holds the mutations and
+            // nothing that names the cell.  That state is one variable of
+            // this query, bound by the same READ rule every other read is
+            // bound by: its writer occurrences are its arms, its recorded
+            // value is its pin.  It is not RENAMED into the term -- the
+            // text does not mention it -- so it is enqueued and nothing
+            // more; what the term says and what it rests on are two facts
+            // (SmtLowering#reachedSymbols).
+            for (String symbol : states) {
+                if (corpus.symbolKind(sessionId, symbol)
+                        != Corpus.SymbolKind.READ) {
+                    continue;
+                }
+                lowered.add(sessionId);
+                bound.add(sessionId + "|" + symbol);
+                state(sessionId, symbol);
             }
             return SmtLowering.rename(term, rename,
                     name -> stated(name, sessionId), unknown);
@@ -818,10 +932,7 @@ final class FlipQuery {
                 }
                 case READ: {
                     ReadRow row = corpus.read(sessionId, symbol);
-                    String name = names.name("read|" + sessionId + "|"
-                            + row.endpoint().id(), "st_"
-                            + row.location().slot() + "_"
-                            + row.endpoint().siteIndex().hash());
+                    String name = readVariable(sessionId, row);
                     declare(name, sortOf(row.javaType(), name,
                             "read " + row.endpoint()),
                             "read " + row.endpoint() + " of " + row.location()
@@ -836,20 +947,40 @@ final class FlipQuery {
         }
 
         /**
+         * The variable one READ event stands at, named once.
+         *
+         * <p>One variable per read EVENT, because a version id is a
+         * session-local name -- and one spelling of that name, because the
+         * event has two rules that may reach it: the text of the flipped
+         * path names it, or a container subterm of that text RESTS on it
+         * (the v_C rule).  Two spellings would be two variables for one
+         * read.</p>
+         */
+        private String readVariable(String sessionId, ReadRow row) {
+            return names.name("read|" + sessionId + "|"
+                            + row.endpoint().id(),
+                    "st_" + row.location().slot() + "_"
+                            + row.endpoint().siteIndex().hash());
+        }
+
+        /**
          * The sort the runtime declared one value at.
          *
-         * <p>{@link JavaSmtSorts} is the one Java-type vocabulary, so a
-         * boxed Integer is Int here exactly as it is in the composed query.
-         * A descriptor this query has no sort for -- a reference, a string,
-         * a floating value, a container -- refuses the obligation under its
-         * own name instead of being lowered as an integer.  The second copy
-         * this replaced answered nothing for the boxed types and "" for
-         * everything else, so one stage's Int was another's refusal.</p>
+         * <p>{@link JavaSmtSorts} is the one Java-type vocabulary and
+         * {@link VmTermLowering.Sort#smt} its one spelling, so a boxed
+         * Integer is Int here exactly as it is in the composed query, and a
+         * reference is Ref because the preamble this query renders declares
+         * that sort.  The allowlist this replaced stated a SECOND
+         * vocabulary -- Int and Bool and nothing else -- so a read the
+         * composer declares at {@code Ref} refused the whole obligation
+         * here.  Only the sentinel is a refusal: no Java sort is known for
+         * the descriptor, so there is no variable to declare.  What a
+         * recorded VALUE of that sort can be pinned to is a separate
+         * question, asked where the pin is ({@link SmtText#literal}).</p>
          */
         private String sortOf(String javaType, String name, String subject) {
             VmTermLowering.Sort sort = JavaSmtSorts.sortOfJava(javaType);
-            if (sort == VmTermLowering.Sort.INT) return "Int";
-            if (sort == VmTermLowering.Sort.BOOL) return "Bool";
+            if (sort != VmTermLowering.Sort.UNKNOWN) return sort.smt;
             refusal = "UNSTATED_VALUE:" + subject;
             gaps.add(GapRow.of(path.sessionId, GapKind.UNSTATED_VALUE,
                     GapClass.BLOCKING, subject,
@@ -941,7 +1072,47 @@ final class FlipQuery {
         private List<String> asserted() {
             List<String> texts = new ArrayList<String>(assertions);
             texts.addAll(rootFacts);
+            texts.addAll(statedFacts);
             return texts;
+        }
+
+        /**
+         * What the recording states about the names this query declares.
+         *
+         * <p>Asked of each session's lowering, over the texts this query
+         * asserts, and RENAMED: a fact about a recorded symbol is a fact
+         * about the variable the query gave it.  A fact the rename leaves
+         * an unknown name in is about a name this query does not state, so
+         * it is not this query's fact -- and it is named as a gap, because
+         * a constraint dropped in silence is how the identity became free
+         * in the first place.</p>
+         */
+        private void stateFacts() {
+            List<String> texts = asserted();
+            for (String sessionId : lowered) {
+                SmtLowering lowering = corpus.lowering(sessionId);
+                if (lowering == null) continue;
+                Map<String, String> rename = renamesOf(sessionId);
+                for (String fact : lowering.facts(texts)) {
+                    Set<String> unknown = new LinkedHashSet<String>();
+                    String renamed = SmtLowering.rename(fact, rename,
+                            name -> stated(name, sessionId), unknown);
+                    if (!unknown.isEmpty()) {
+                        gaps.add(GapRow.of(sessionId,
+                                GapKind.DECLARATION_MISSING,
+                                GapClass.DIAGNOSTIC, fact,
+                                "this recording states a fact over "
+                                        + unknown.iterator().next()
+                                        + ", which this query does not "
+                                        + "declare, so the fact is not "
+                                        + "stated here"));
+                        continue;
+                    }
+                    if (!statedFacts.contains(renamed)) {
+                        statedFacts.add(renamed);
+                    }
+                }
+            }
         }
 
         /**

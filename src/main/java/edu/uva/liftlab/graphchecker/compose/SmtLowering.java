@@ -216,7 +216,19 @@ public final class SmtLowering extends VmLoweringCore {
     /** What this corpus states at two sorts: name -> "<held> and <new>". */
     private final Map<String, String> sortConflicts =
             new LinkedHashMap<String, String>();
-    private final List<String> assertions = new ArrayList<String>();
+    /**
+     * Everything this lowering states, as {@link Stated} and not as
+     * finished {@code (assert ...)} lines.
+     *
+     * <p>Two kinds, and the entry says which: a FACT about a name -- an
+     * identity the execution read fields off was not null, an integral leaf
+     * inside its Java domain, a container subterm at the cell shape it was
+     * built at -- and a question the COMPOSITION labels for its own unsat
+     * core.  A caller assembling a query of its own takes the facts its
+     * text reaches ({@link #facts}) and never the labels, which it could
+     * not tell apart when the list held finished lines.</p>
+     */
+    private final List<Stated> assertions = new ArrayList<Stated>();
     private final Set<String> assertedOnce = new LinkedHashSet<String>();
     /** Declared symbols this lowering actually put in the formula. */
     private final Set<String> usedSymbols = new LinkedHashSet<String>();
@@ -438,7 +450,7 @@ public final class SmtLowering extends VmLoweringCore {
                 named.put(declaration.getKey(), declaration.getValue().smt);
             }
         }
-        return new Lowered(value.text, "", named);
+        return new Lowered(value.text, value.sort.smt, "", named);
     }
 
     /**
@@ -577,21 +589,23 @@ public final class SmtLowering extends VmLoweringCore {
         return "~!@$%^&*_-+=<>.?/#'".indexOf(value) >= 0;
     }
 
-    /** One lowered expression: its text, the symbols it names, or why not. */
+    /** One lowered expression: its text, its sort, its symbols, or why not. */
     public static final class Lowered {
         private final String text;
+        private final String sort;
         private final String refusal;
         private final Map<String, String> declarations;
 
-        private Lowered(String text, String refusal,
+        private Lowered(String text, String sort, String refusal,
                         Map<String, String> declarations) {
             this.text = text;
+            this.sort = sort;
             this.refusal = refusal;
             this.declarations = Collections.unmodifiableMap(declarations);
         }
 
         private static Lowered refused(String reason) {
-            return new Lowered("", reason,
+            return new Lowered("", "", reason,
                     new LinkedHashMap<String, String>());
         }
 
@@ -601,6 +615,20 @@ public final class SmtLowering extends VmLoweringCore {
 
         public String text() {
             return text;
+        }
+
+        /**
+         * The SMT sort this text carries.
+         *
+         * <p>What a caller binding a variable to this text must DECLARE
+         * that variable at -- the composed query declares a joined read at
+         * exactly this ({@code Composer.declareStated(read.symbol(),
+         * value.sort)}), and a caller that read the sort off the row's Java
+         * type instead put an {@code AssocState} chain on the right of a
+         * {@code Ref}.</p>
+         */
+        public String sort() {
+            return sort;
         }
 
         /** Every symbol the text names, with its SMT sort. */
@@ -1672,8 +1700,8 @@ public final class SmtLowering extends VmLoweringCore {
             if (!openSideConditions.contains(predicate)) {
                 openSideConditions.add(predicate);
             }
-        } else if (assertedOnce.add(predicate)) {
-            assertions.add("(assert " + predicate + ")");
+        } else {
+            assertPlain(predicate);
         }
     }
 
@@ -1707,8 +1735,25 @@ public final class SmtLowering extends VmLoweringCore {
                 ? IntegralWidth.JAVA_INT : IntegralWidth.NONE);
     }
 
+    /** One thing this lowering states, and the label a core reads it by. */
+    private static final class Stated {
+        private final String formula;
+        /** "" for a fact about a name; the core's label otherwise. */
+        private final String label;
+
+        private Stated(String formula, String label) {
+            this.formula = formula;
+            this.label = label;
+        }
+
+        private String render() {
+            return label.isEmpty() ? "(assert " + formula + ")"
+                    : "(assert (! " + formula + " :named " + label + "))";
+        }
+    }
+
     public void assertNamed(String name, String formula) {
-        assertions.add("(assert (! " + formula + " :named " + name + "))");
+        assertions.add(new Stated(formula, name));
     }
 
     public void assertPlain(String formula) {
@@ -1717,8 +1762,53 @@ public final class SmtLowering extends VmLoweringCore {
             return;
         }
         if (assertedOnce.add(formula)) {
-            assertions.add("(assert " + formula + ")");
+            assertions.add(new Stated(formula, ""));
         }
+    }
+
+    /**
+     * What this lowering states about the names one caller's texts reach.
+     *
+     * <p>THE FACTS.  A lowering does not only name the values a term is
+     * written over, it also states what the recording establishes about
+     * them, and those statements are as much part of the question as the
+     * term: an {@code identity__} is a reference the execution read fields
+     * off, so {@link #opaque} states it was not null, and a query that
+     * emits the name without the fact has freed a boundary CLOSURE-V2 SS3
+     * forbids freeing.  That is how 18 of hdfs-11741's 36 wave-0 flip
+     * queries -- {@code (= container_dag__... nullRef)}, negated -- were
+     * satisfied: by making the object the recording saw null, with no
+     * variable declared at all ({@code (get-value ())}).</p>
+     *
+     * <p>The composed query emits them with the body ({@link #body}); a
+     * query a caller assembles itself has to ask, and it asks for exactly
+     * the facts its own text reaches, for the reason {@link #reachedBy}
+     * declares exactly what its text reaches.  EVERY name of a fact must be
+     * one of those, not merely one: a fact is a relation between names, and
+     * half of one is not a weaker fact but a different one -- and stating
+     * it would put a name in the query that nothing there binds.</p>
+     */
+    public List<String> facts(Iterable<String> texts) {
+        Set<String> reached = new LinkedHashSet<String>(preambleNames());
+        for (Declaration declaration : reachedBy(texts)) {
+            reached.add(declaration.name);
+        }
+        List<String> stated = new ArrayList<String>();
+        for (Stated held : assertions) {
+            if (!held.label.isEmpty()) continue;
+            boolean whole = true;
+            for (String name : names(held.formula)) {
+                if (BUILTIN.contains(name) || reached.contains(name)) {
+                    continue;
+                }
+                whole = false;
+                break;
+            }
+            if (whole && !stated.contains(held.formula)) {
+                stated.add(held.formula);
+            }
+        }
+        return stated;
     }
 
     public Map<String, String> unsupportedDetail() {
@@ -1885,25 +1975,23 @@ public final class SmtLowering extends VmLoweringCore {
      * the names a text mentions, through the bodies of the subterms it
      * names, to a fixed point -- and a name this lowering MINTED is not one
      * of the recording's, so it is walked through and never reported.</p>
-     */
-    public Set<String> reachedSymbols(String text, Set<String> into) {
-        return reachedSymbols(text, into, null);
-    }
-
-    /**
-     * The same walk, also collecting the recorded STATE behind each name.
      *
-     * <p>Two facts about one term, and one walk that tells them apart.
+     * <p>TWO FACTS about one term, and one walk that tells them apart.
      * {@code into} is what the term SAYS: the recording's names, reachable
-     * through the bodies of the subterms it names, which is what a caller
-     * binding the variables of a query wants -- a variable for a symbol the
-     * text never mentions is a declaration nothing constrains, and it took
-     * 11741's anchor obligation from {@code SAT_MODEL_READY} to a refusal
-     * on the sort of a map its query does not name.  {@code states} is what
-     * the term RESTS ON and does not say: the version a named container
-     * subterm is the value of ({@link SharedTerm#states}), which the join
-     * inlined.  The closure planner asks both -- it is asking what the
-     * failure can depend on -- and passes one set for both.</p>
+     * through the bodies of the subterms it names.  {@code states} is what
+     * the term RESTS ON and does not say: the read row behind a named
+     * container subterm, the version it is the value of
+     * ({@link SharedTerm#states}), which the join inlined.  The closure
+     * planner passes one set for both -- it is asking what the failure can
+     * DEPEND on.  The flip query keeps them apart and binds each by its own
+     * rule: a name the text says is a variable of the query, and the state
+     * behind the name is the v_C variable, joined to its writers.  Passing
+     * one set there declared a variable of the container sort for a map the
+     * query does not name, which took 11741's anchor obligation from
+     * {@code SAT_MODEL_READY} to a refusal on that sort.  There is no
+     * two-argument form: a caller that does not want the states says so by
+     * handing an empty set it then ignores, and the one that had it bound
+     * no container state at all.</p>
      */
     public Set<String> reachedSymbols(String text, Set<String> into,
                                       Set<String> states) {
@@ -2189,7 +2277,8 @@ public final class SmtLowering extends VmLoweringCore {
     public String body(Iterable<String> alsoAsked) {
         StringBuilder query = new StringBuilder();
         appendPreamble(query);
-        List<String> texts = new ArrayList<String>(assertions);
+        List<String> texts = new ArrayList<String>();
+        for (Stated held : assertions) texts.add(held.formula);
         if (alsoAsked != null) {
             for (String text : alsoAsked) {
                 if (text != null && !text.isEmpty()) texts.add(text);
@@ -2198,8 +2287,8 @@ public final class SmtLowering extends VmLoweringCore {
         for (Declaration declaration : reachedBy(texts)) {
             query.append(declaration.render()).append('\n');
         }
-        for (String assertion : assertions) {
-            query.append(assertion).append('\n');
+        for (Stated held : assertions) {
+            query.append(held.render()).append('\n');
         }
         return legalSymbols(query.toString());
     }

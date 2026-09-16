@@ -3,26 +3,28 @@ package edu.uva.liftlab.graphchecker.contract;
 import java.util.Objects;
 
 /**
- * IDENTITY-V3 sec 5: a replay-stable name for the storage a state edge joins on.
+ * The name of the storage a state edge joins on, as the runtime writes it.
  *
- * <p>Memory Indexing (Sumner and Zhang, FSE 2010): an object's canonical name is
- * the execution index of its ALLOCATION, so the same semantic object gets the
- * same name in every replay whatever its address.  Here that is literally the
- * allocating {@link Endpoint}'s id -- the allocating occurrence, the allocation
- * site ({@code class#method#bci:NEW} or {@code :NEWARRAY}) and the site-local
- * execution index.  Never a session rid, never a machine address: those are the
- * two things that differ between two runs of the same program.</p>
+ * <p>ONE owner spelling, and it is the VM's: the symbolic rid of the object
+ * whose state this is, from the location key the runtime publishes
+ * ({@code RowPublication.locationKey}, {@code KIND/rid#slot}).  A rid is a
+ * per-run counter, and a join is per SESSION -- the write log and the read
+ * rows of one run, spelled the same way on both sides -- so inside that run
+ * it names exactly one object.  A static field is owned by its class, which
+ * owns exactly one cell.  {@code slot} is the field offset, the index, or
+ * the reserved state slot of a whole container.</p>
  *
- * <p>The three owner forms, and no fourth: a static field is owned by its class;
- * a heap object by {@link #allocated}; an object that already existed when the
- * recording window opened by {@link #preWindowOwner}, which is a named degraded
- * form -- the case must declare a root at its source if the anchor reads it.
- * {@code slot} is the field name or offset, the index, or the map key.</p>
+ * <p>Whether an owner names its storage well enough to offer a read
+ * ALTERNATIVE writers is one question, asked in one place
+ * ({@code smt.Arms.namedOwner}): a class on a heap location aliases every
+ * instance of it at once.  The allocation-endpoint form this class used to
+ * mint (Memory Indexing, Sumner and Zhang, FSE 2010) is deleted: no main
+ * code ever produced it, and the gate that admitted only it refused every
+ * row of both corpora -- 128 DECLARATION_MISSING rows on the clean
+ * hdfs-17960 run.  When cross-replay object identity is needed, it comes
+ * back with a producer.</p>
  */
 public final class LocationId {
-    /** The prefix of an owner that predates the recording window. */
-    public static final String PRE_WINDOW = "preWindow:";
-
     private final LocationKind kind;
     private final String owner;
     private final String slot;
@@ -38,35 +40,6 @@ public final class LocationId {
                 Fields.text(owner, "owner"), Fields.text(slot, "slot"));
     }
 
-    /**
-     * A heap location, owned by the endpoint that allocated the object.
-     *
-     * <p>Refuses {@link LocationKind#STATIC}: a static field is not allocated,
-     * and an owner that says otherwise would join two locations that are not
-     * the same storage.</p>
-     */
-    public static LocationId allocated(Endpoint allocation, LocationKind kind,
-                                       String slot) {
-        if (Fields.required(kind, "kind") == LocationKind.STATIC) {
-            throw new IllegalArgumentException(
-                    "a STATIC location is owned by its class, not by an "
-                            + "allocation");
-        }
-        return of(kind, Fields.required(allocation, "allocation").id(), slot);
-    }
-
-    /**
-     * The owner of an object that already existed when the window opened.
-     *
-     * <p>{@code m} is the m-th such pre-window object of that class seen -- an
-     * ordinal, because there is no allocation to index; the form is named so a
-     * reader can tell a degraded owner from an allocated one at a glance.</p>
-     */
-    public static String preWindowOwner(String className, int m) {
-        return PRE_WINDOW + Fields.text(className, "className") + "#"
-                + Fields.ordinal(m, "m");
-    }
-
     public LocationKind kind() {
         return kind;
     }
@@ -77,11 +50,6 @@ public final class LocationId {
 
     public String slot() {
         return slot;
-    }
-
-    /** Whether this location's owner predates the recording window. */
-    public boolean preWindow() {
-        return owner.startsWith(PRE_WINDOW);
     }
 
     @Override

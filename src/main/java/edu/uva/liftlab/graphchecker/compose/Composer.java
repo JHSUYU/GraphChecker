@@ -1469,22 +1469,21 @@ public final class Composer {
         for (Map.Entry<String, List<ReadRow>> entry
                 : byLocation.entrySet()) {
             List<ReadRow> reads = entry.getValue();
-            // Alternatives need an owner that NAMES the storage across
-            // replays (IDENTITY-V3 sec 5).  A session rid is that run's
-            // counter and a class on a heap location is every instance of
-            // it at once: either one turns "another writer of L" into
-            // "a writer of something else", so such a read keeps the
-            // delivery its own run gave it and is named here.
+            // Alternatives need an owner that NAMES the storage
+            // ({@link Arms#namedOwner}).  A class on a heap location is
+            // every instance of it at once, which turns "another writer of
+            // L" into "a writer of something else", so such a read keeps
+            // the delivery its own run gave it and is named here.
             if (!Arms.namedOwner(reads.get(0).location())) {
                 if (aliasingNamed.add(entry.getKey())) {
                     gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
                             entry.getKey(), "the owner on this location's "
-                                    + "rows is neither an allocation "
-                                    + "endpoint id nor the preWindow form, "
-                                    + "so it names no storage across "
-                                    + "replays: this read is delivered as "
-                                    + "its own run delivered it and gets "
-                                    + "no alternative writers");
+                                    + "rows is a class and not the rid of "
+                                    + "one object, so it names every "
+                                    + "instance of that class at once: "
+                                    + "this read is delivered as its own "
+                                    + "run delivered it and gets no "
+                                    + "alternative writers");
                 }
                 continue;
             }
@@ -1656,20 +1655,59 @@ public final class Composer {
      * is refused as an absurd clock.  It is not a window: two cells may sit
      * any distance apart and in any order.  What the execution fixes is
      * stated by its own decisions, which carry their readings.</p>
+     *
+     * <p>A CELL is the name the FORMULA names, and that is the clock root's
+     * symbol as the session that read it published it -- one cell per
+     * (root, session), because every execution reads a clock fresh.  A
+     * decision row keys its readings by the clock's ROOT ID, which is a
+     * name of the case and not of any query: asked whether the lowering
+     * declared that, the answer was no for all 13 cells of hdfs-11741, so
+     * {@code clockCells()} came back empty, {@code clockNecessary} answered
+     * "no clocks" without a solver run, and CLOCK_SKEW was unreachable in
+     * every one of the 52+ manifests published so far.  A reading whose
+     * root no mint row of that session states is named, not skipped.</p>
      */
     private void clocks(List<String> cells, Map<String, Long> readings) {
         for (Map.Entry<String, Map<String, Long>> cell
                 : corpus.clockCells().entrySet()) {
-            if (!lowering.declared(cell.getKey())) continue;
-            cells.add(cell.getKey());
+            int unminted = 0;
+            int unnamed = 0;
             for (Map.Entry<String, Long> reading
                     : cell.getValue().entrySet()) {
-                readings.put(cell.getKey(), reading.getValue());
-                break;
+                RootMintRow row = corpus.rootOf(reading.getKey(),
+                        cell.getKey());
+                if (row == null) {
+                    unminted++;
+                    continue;
+                }
+                if (!lowering.declared(row.symbol())) {
+                    unnamed++;
+                    continue;
+                }
+                cells.add(row.symbol());
+                readings.put(row.symbol(), reading.getValue());
+                lowering.assertNamed("clock_floor__"
+                                + ArtifactIO.digest(row.symbol(), 10),
+                        "(>= " + row.symbol() + " 0)");
             }
-            lowering.assertNamed("clock_floor__"
-                            + ArtifactIO.digest(cell.getKey(), 10),
-                    "(>= " + cell.getKey() + " 0)");
+            if (unminted == 0 && unnamed == 0) continue;
+            // The same fact #valuations names for a declared root no
+            // formula mentions, and for the same reason: which questions
+            // were ASKED is what a claim's polarity is about, and a clock
+            // nothing names is a clock no claim can be made about.  One
+            // row per CELL, with the counts: on hdfs-11741 it is all 13
+            // cells, because the occurrences that read a clock reach the
+            // anchor's composition only through arms whose producer ran
+            // concretely, and an unattested arm states what it delivered
+            // and no path condition.
+            gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                    cell.getKey(), cell.getValue().size()
+                            + " sessions' decisions read this clock and no "
+                            + "cell of it reaches the composition: "
+                            + unminted + " state no mint row for it and "
+                            + unnamed + " state a symbol no admitted "
+                            + "path's formula names, so no clock claim can "
+                            + "be asked about it");
         }
     }
 

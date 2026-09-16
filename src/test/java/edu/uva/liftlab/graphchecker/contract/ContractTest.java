@@ -146,23 +146,18 @@ public class ContractTest {
                         CausalContext.of(Role.UNKNOWN), site), PORT, site, 0),
                 attach).producerDegraded());
 
-        // Memory indexing: an object is named by the endpoint that allocated
-        // it, so two turns of the allocating loop are two objects.
-        String allocates = Endpoint.allocationSite("o.a.h.h.s.t.b.BlockKey",
-                "generate", 18, false);
-        Endpoint allocation = Endpoint.of(tick(1), allocates,
-                index(frame("o.a.h.h.s.b.KeyManager#updateKeys#22", 1)), 0);
-        LocationId expiry = LocationId.allocated(allocation,
-                LocationKind.INSTANCE, "expiryDate");
-        assertEquals(allocation.id(), expiry.owner());
-        assertFalse(expiry.preWindow());
-        assertNotEquals(expiry, LocationId.allocated(Endpoint.of(tick(1),
-                allocates,
-                index(frame("o.a.h.h.s.b.KeyManager#updateKeys#22", 2)), 0),
-                LocationKind.INSTANCE, "expiryDate"));
-        assertTrue(LocationId.of(LocationKind.INSTANCE,
-                LocationId.preWindowOwner("o.a.h.h.s.t.b.BlockKey", 2),
-                "expiryDate").preWindow());
+        // ONE owner spelling, the one the runtime writes: the VM's
+        // symbolic rid of the object whose state this is.  A join is per
+        // session, and inside one run two rids are two objects.  The
+        // allocation-endpoint owner this asked for is deleted -- no main
+        // code produced it, and the gate that admitted only it refused
+        // every row of both corpora.
+        LocationId expiry = LocationId.of(LocationKind.INSTANCE, "12",
+                "expiryDate");
+        assertEquals("12", expiry.owner());
+        assertNotEquals(expiry, LocationId.of(LocationKind.INSTANCE, "13",
+                "expiryDate"));
+        assertEquals("INSTANCE 12.expiryDate", expiry.toString());
     }
 
     @Test
