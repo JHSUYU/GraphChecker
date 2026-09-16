@@ -347,7 +347,7 @@ final class FlipQuery {
                 assertions.add(last ? "(not " + held + ")" : held);
             }
             drain();
-            state();
+            stateFacts();
             if (!refusal.isEmpty()) {
                 return new Built("", Collections.<String>emptyList(),
                         refusal, flipped,
@@ -711,9 +711,7 @@ final class FlipQuery {
                                 + "corpus that states two"));
                 return;
             }
-            String variable = names.name("read|" + sessionId + "|"
-                    + row.endpoint().id(), "st_" + row.location().slot()
-                    + "_" + row.endpoint().siteIndex().hash());
+            String variable = readVariable(sessionId, row);
             if (explained.contains(variable)) return;
             declare(variable, shapes.iterator().next(),
                     "container state " + row.location() + " read at "
@@ -934,10 +932,7 @@ final class FlipQuery {
                 }
                 case READ: {
                     ReadRow row = corpus.read(sessionId, symbol);
-                    String name = names.name("read|" + sessionId + "|"
-                            + row.endpoint().id(), "st_"
-                            + row.location().slot() + "_"
-                            + row.endpoint().siteIndex().hash());
+                    String name = readVariable(sessionId, row);
                     declare(name, sortOf(row.javaType(), name,
                             "read " + row.endpoint()),
                             "read " + row.endpoint() + " of " + row.location()
@@ -949,6 +944,23 @@ final class FlipQuery {
                 default:
                     return symbol;
             }
+        }
+
+        /**
+         * The variable one READ event stands at, named once.
+         *
+         * <p>One variable per read EVENT, because a version id is a
+         * session-local name -- and one spelling of that name, because the
+         * event has two rules that may reach it: the text of the flipped
+         * path names it, or a container subterm of that text RESTS on it
+         * (the v_C rule).  Two spellings would be two variables for one
+         * read.</p>
+         */
+        private String readVariable(String sessionId, ReadRow row) {
+            return names.name("read|" + sessionId + "|"
+                            + row.endpoint().id(),
+                    "st_" + row.location().slot() + "_"
+                            + row.endpoint().siteIndex().hash());
         }
 
         /**
@@ -1075,7 +1087,7 @@ final class FlipQuery {
          * a constraint dropped in silence is how the identity became free
          * in the first place.</p>
          */
-        private void state() {
+        private void stateFacts() {
             List<String> texts = asserted();
             for (String sessionId : lowered) {
                 SmtLowering lowering = corpus.lowering(sessionId);
