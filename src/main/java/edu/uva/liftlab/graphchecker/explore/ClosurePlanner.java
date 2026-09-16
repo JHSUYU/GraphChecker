@@ -322,14 +322,15 @@ public final class ClosurePlanner {
                     if (!demand.flipSites.contains(decision.siteId())) {
                         continue;
                     }
-                    SmtLowering.symbols(FlipQuery.statedTerm(corpus,
-                            path.sessionId, decision.term()), named);
+                    reaches(corpus, path.sessionId, FlipQuery.statedTerm(
+                            corpus, path.sessionId, decision.term()), named);
                 }
             }
             if (demand.anchor) {
                 for (TargetRow target : corpus.targetsOn(member)) {
-                    SmtLowering.symbols(FlipQuery.statedTerm(corpus,
-                            target.sessionId(), target.phiTerm()), named);
+                    reaches(corpus, target.sessionId(),
+                            FlipQuery.statedTerm(corpus, target.sessionId(),
+                                    target.phiTerm()), named);
                 }
             }
             reads.addAll(corpus.readsOn(member));
@@ -340,8 +341,8 @@ public final class ClosurePlanner {
             String sessionId = contributed.substring(0, split);
             SmtLowering lowering = corpus.lowering(sessionId);
             if (lowering == null) continue;
-            named.addAll(lowering.lower(contributed.substring(split + 1))
-                    .declarations().keySet());
+            reaches(corpus, sessionId, lowering.lower(
+                    contributed.substring(split + 1)).text(), named);
         }
         Set<String> settled = new LinkedHashSet<String>();
         boolean grew = true;
@@ -352,15 +353,41 @@ public final class ClosurePlanner {
                 for (ReadRow row : reads) {
                     if (!symbol.equals(row.symbol())) continue;
                     for (WriteRow write : eligibleWrites(corpus, row)) {
-                        SmtLowering.Lowered lowered =
+                        grew |= reaches(corpus, write.sessionId(),
                                 corpus.lowering(write.sessionId())
-                                        .lower(write.expressionRef());
-                        grew |= named.addAll(lowered.declarations().keySet());
+                                        .lower(write.expressionRef()).text(),
+                                named);
                     }
                 }
             }
         }
         return named;
+    }
+
+    /**
+     * The recorded symbols one lowered term reaches, into {@code named}.
+     *
+     * <p>Reachable from it, not visible in it: a container version is
+     * lowered once and named, so a guard over a map read is
+     * {@code (not (= container_dag__... nullRef))} and the recording's own
+     * symbols -- the handoffs and roots that were PUT into that map -- are
+     * inside the body behind the name.  {@link SmtLowering#reachedSymbols}
+     * is the one answer, the same one the flip query binds its variables
+     * by; asking {@code SmtLowering.symbols} instead left 11741's anchor
+     * demanding a single {@code container_dag__} name that matches no row,
+     * so every read and every attach of its group was reported
+     * {@code ADMISSION_GAP} and the closure never left the target's node.
+     * </p>
+     *
+     * @return whether the set grew
+     */
+    private static boolean reaches(Corpus corpus, String sessionId,
+                                   String text, Set<String> named) {
+        SmtLowering lowering = corpus.lowering(sessionId);
+        if (lowering == null) return false;
+        Set<String> reached = lowering.reachedSymbols(text,
+                new LinkedHashSet<String>());
+        return named.addAll(reached);
     }
 
     /**

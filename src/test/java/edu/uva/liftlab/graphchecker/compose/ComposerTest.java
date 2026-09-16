@@ -45,8 +45,10 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -1283,8 +1285,12 @@ public class ComposerTest {
                                 "java/util/ArrayList")));
         JsonObject one = relation("INDEXED", "INSERT", empty,
                 integer("I", 0L), integer("I", 7L));
+        // The second element is the declared ROOT, so the list's chain
+        // carries a symbol of the RECORDING and not only lowering-minted
+        // names: that is the shape a closure has to see through the name
+        // the chain is shared under.
         JsonObject two = relation("INDEXED", "INSERT", one,
-                integer("I", 1L), integer("I", 9L));
+                integer("I", 1L), symbol(SERIAL, "I"));
         // READ, not SIZE: a size is answered arithmetically along the
         // chain, and it is the STATE the shift has to produce.
         session.expression("EXPR.00000000000000c3", binary("==",
@@ -1576,12 +1582,38 @@ public class ComposerTest {
                         "(= |INSTANCE/Snapshot#40@e-1| nullRef)"));
 
         // And the one routine says the same of either row.
-        List<DecisionRow> rows = Corpus.read(iteration, null)
-                .path("s0", ANCHOR).decisions;
+        Corpus corpus = Corpus.read(iteration, null);
+        List<DecisionRow> rows = corpus.path("s0", ANCHOR).decisions;
         List<String> pi = edu.uva.liftlab.graphchecker.smt.Arms
                 .pathCondition(rows, Long.MAX_VALUE);
         assertEquals(MARKER, pi.get(0));
         assertEquals("(not " + MARKER + ")", pi.get(1));
+
+        // THE SYMBOLS OF A TERM ARE THE ONES REACHABLE FROM IT, not the ones
+        // visible in it.  A container version is lowered once and NAMED, so
+        // the list read above stands in the text as one container_dag__ name
+        // that declares nothing, and the recording's own symbol -- the list
+        // the STATE leaf names -- is inside the body behind it.  Asking for
+        // the visible names instead is what left 11741's anchor demanding a
+        // single container name that matches no read row and no attach row,
+        // so its closure never left the target's own node.
+        SmtLowering lowering = corpus.lowering("s0");
+        String guard = lowering.statedTerm("EXPR.00000000000000c3", "test");
+        assertTrue("the container version stands in the text as one name: "
+                        + guard,
+                guard.contains("container_dag__"));
+        assertFalse("which is not a symbol of the recording",
+                SmtLowering.symbols(guard, new LinkedHashSet<String>())
+                        .contains(SERIAL));
+        Set<String> reached = lowering.reachedSymbols(guard,
+                new LinkedHashSet<String>());
+        assertTrue("and the recorded symbol behind it is: " + reached,
+                reached.contains(SERIAL));
+        for (String name : reached) {
+            assertFalse("a name this lowering minted is not one of the "
+                            + "recording's: " + name,
+                    lowering.minted(name));
+        }
     }
 
     // ------------------------------------------------------------------
@@ -1620,9 +1652,9 @@ public class ComposerTest {
                 at("w#2", 0), 0);
         Endpoint third = Endpoint.of(started, "Task#put#5:WRITE",
                 at("w#3", 0), 0);
-        session.write(first, keys, 1L, "EXPR.v1.k");
-        session.write(second, keys, 2L, "EXPR.v1.k");
-        session.write(third, keys, 3L, "EXPR.v1.k");
+        long firstAt = session.write(first, keys, 1L, "EXPR.v1.k");
+        long secondAt = session.write(second, keys, 2L, "EXPR.v1.k");
+        long thirdAt = session.write(third, keys, 3L, "EXPR.v1.k");
         session.target("true", false, true);
         session.write();
 
@@ -1630,15 +1662,15 @@ public class ComposerTest {
                 new edu.uva.liftlab.graphchecker.smt.Arms(
                         Corpus.read(iteration, null));
         assertTrue("one thread is one order, whatever the occurrence",
-                rule.ancestor(first, second, "s0"));
+                rule.ancestor(first, firstAt, second, secondAt, "s0"));
         assertFalse("and it runs one way",
-                rule.ancestor(second, first, "s0"));
+                rule.ancestor(second, secondAt, first, firstAt, "s0"));
         assertFalse("so two activations of one thread never interleave",
                 rule.concurrent(earlier, later, "s0"));
         assertFalse("what started a thread is before everything on it",
                 rule.concurrent(earlier, started, "s0"));
         assertTrue("and the direction says which way",
-                rule.ancestor(first, third, "s0"));
+                rule.ancestor(first, firstAt, third, thirdAt, "s0"));
         // Attestation: instrumented and symbolic in this session -- the seed
         // -- with no decision anywhere in it.
         assertTrue("a symbolic straight-line region is attested",
@@ -1942,10 +1974,12 @@ public class ComposerTest {
                     arrival, false, null, producer, "corr-" + symbol));
         }
 
-        void write(Endpoint endpoint, LocationId location, long version,
+        /** @return the session event this write was sequenced at. */
+        long write(Endpoint endpoint, LocationId location, long version,
                    String ref) {
             writes.add(WriteRow.of(id, ++seq, endpoint, location, version,
                     ref, "Z"));
+            return seq;
         }
 
         void read(Endpoint endpoint, LocationId location, long version,

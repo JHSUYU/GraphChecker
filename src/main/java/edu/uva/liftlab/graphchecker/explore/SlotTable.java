@@ -339,11 +339,16 @@ public final class SlotTable {
      * reader started the thread the writer ran on.  All four are the one
      * question {@code Arms.ancestor} answers, and this stage asks it rather
      * than keeping a fifth opinion about happens-before.</p>
+     *
+     * <p>The two EVENTS are these two rows, and each carries the seq it
+     * happened at; the endpoints alone do not, because a site the runtime
+     * does not stand at has no site index and one endpoint id then names
+     * every event of that site in its occurrence.</p>
      */
     private static boolean contradictsOrder(Corpus corpus, ReadRow read,
                                             WriteRow observed) {
-        return corpus.arms().ancestor(read.endpoint(), observed.endpoint(),
-                read.sessionId());
+        return corpus.arms().ancestor(read.endpoint(), read.seq(),
+                observed.endpoint(), observed.seq(), read.sessionId());
     }
 
     /** One session that pairs a slot's consumer with another producer. */

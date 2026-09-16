@@ -1769,6 +1769,60 @@ public final class SmtLowering extends VmLoweringCore {
     }
 
     /**
+     * The symbols of one term, THROUGH the container subterms it names.
+     *
+     * <p>{@link #symbols} reads the text as it stands, and a container
+     * version does not stand there: {@link #name} replaces a pure container
+     * subterm with a {@code container_dag__} name and keeps the body for a
+     * {@code define-fun}, so a guard over a map read lowers to
+     * {@code (not (= container_dag__6a41cea2ab3d97c2e6bebb3c nullRef))} --
+     * one name, and it declares nothing.  A caller asking the CORPUS about
+     * the symbols of a term means the recording's own names, and every one
+     * of them is inside that body.  11741's anchor guard
+     * {@code allKeys.get(keyId) == null} is exactly this shape, and the
+     * closure planner, asking {@link #symbols}, matched no read row and no
+     * attach row of the anchor: its whole closure was the anchor's own
+     * state-connected group on one node, so no NameNode occurrence was ever
+     * demanded and wave 0 had one guard to flip.</p>
+     *
+     * <p>The same reachability {@link #reachedBy} emits declarations with --
+     * the names a text mentions, through the bodies of the subterms it
+     * names, to a fixed point -- and a name this lowering MINTED is not one
+     * of the recording's, so it is walked through and never reported.</p>
+     */
+    public Set<String> reachedSymbols(String text, Set<String> into) {
+        Map<String, SharedTerm> byName =
+                new LinkedHashMap<String, SharedTerm>();
+        for (SharedTerm shared : sharedTerms.values()) {
+            byName.put(shared.name, shared);
+        }
+        reachedSymbols(text, byName, new LinkedHashSet<String>(), into, 0);
+        return into;
+    }
+
+    private void reachedSymbols(String text,
+                                Map<String, SharedTerm> byName,
+                                Set<String> seen, Set<String> into,
+                                int depth) {
+        if (text == null || text.isEmpty() || depth > 512) return;
+        for (String name : names(text)) {
+            if (BUILTIN.contains(name) || !seen.add(name)) continue;
+            SharedTerm shared = byName.get(name);
+            if (shared != null) {
+                reachedSymbols(shared.body, byName, seen, into, depth + 1);
+                continue;
+            }
+            // A name this lowering MINTED means what the query says it
+            // means and the corpus has never heard of it; a name off a
+            // recorded leaf means whatever the RECORDING says
+            // ({@link #minted}).  Only the second kind is a symbol a
+            // caller can ask the corpus about.
+            if (minted(name)) continue;
+            into.add(name);
+        }
+    }
+
+    /**
      * The same names, minus the ones the theory declares.
      *
      * <p>What a caller means by "the symbols of this term": the free names,
