@@ -723,10 +723,12 @@ do_workload() {
       CAUSYNTH_REGION_SKELETONS="${selected_skeletons}" \
       do_analyze
     run_configured_workload
+    require_file "static scope map" "${causynth_static_scope_map}"
     run_java_main edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder \
       --trace-dir "${trace_dir}" \
       --candidate-graph "${candidate_graph}" \
       --region-skeletons "${selected_skeletons}" \
+      --static-scope-map "${causynth_static_scope_map}" \
       --refined-graph "${refined_graph}" \
       --recording-gaps "${trace_dir}/skeleton-pass/recording_gaps.jsonl" \
       --test "${trace_test}"

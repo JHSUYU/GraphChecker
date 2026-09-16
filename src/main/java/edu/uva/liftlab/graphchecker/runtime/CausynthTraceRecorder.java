@@ -12,6 +12,7 @@ import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.plan.DeclaredSymbolicInputs;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
+import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.plan.WorkStartSites;
 import java.io.BufferedWriter;
 import java.io.BufferedReader;
@@ -145,7 +146,8 @@ public final class CausynthTraceRecorder {
                         : new File(configuredRefined.trim());
                 aggregateStateTrace(directory, graph, candidateSkeletons,
                         refinedGraph, test, planOutputDirectory,
-                        new File(requiredArg(params, "recording-gaps")));
+                        new File(requiredArg(params, "recording-gaps")),
+                        new File(requiredArg(params, "static-scope-map")));
             }
         } catch (Throwable throwable) {
             System.err.println("Failed to aggregate Causynth runtime trace: "
@@ -1285,7 +1287,7 @@ public final class CausynthTraceRecorder {
     private static void aggregateStateTrace(
             File directory, File candidateGraph, File selectedSkeletons,
             File refinedGraph, String test, File planOutputDirectory,
-            File recordingGaps)
+            File recordingGaps, File staticScopeMap)
             throws IOException {
         synchronized (LOCK) {
             List<Map<String, Object>> earlierPassGaps =
@@ -1350,7 +1352,8 @@ public final class CausynthTraceRecorder {
             planGaps.addAll(earlierPassGaps);
             writeRuntimeRegionPlans(planOutputDirectory,
                     closure.regions, closure.regionEdges, trace,
-                    activationGraph.runtimeInstances, planGaps);
+                    activationGraph.runtimeInstances, planGaps,
+                    declaredSites(staticScopeMap));
         }
     }
 
@@ -2316,14 +2319,38 @@ public final class CausynthTraceRecorder {
             List<Map<String, Object>> regions,
             List<Map<String, Object>> regionEdges, TraceData trace,
             Collection<Map<String, Object>> runtimeSeeds,
-            Collection<Map<String, Object>> planGaps) throws IOException {
+            Collection<Map<String, Object>> planGaps,
+            Set<String> declaredSites) throws IOException {
         writeFile(new File(directory, "concolic_region_plan.jsonl"),
                 RuntimeRegionPlanner.plan(regions, regionEdges,
                         "runtime region closure",
                         "runtime region edge closure",
                         runtimeSeeds, trace.methods, trace.execution,
                         trace.fields, trace.protocol,
-                        planGaps).runtimePlanJsonl());
+                        planGaps, declaredSites).runtimePlanJsonl());
+    }
+
+    /**
+     * The sites the one scoping artifact names as places a declared value
+     * enters, as {@code <siteId>\n<callee>}.
+     *
+     * <p>Scope, read from the map that publishes it, so the recording's own
+     * side of a declared port is stated at exactly the sites the static pass
+     * named -- not at every call the run made, and not at a set this stage
+     * re-derives from the graph.  Admission is still the scheduler's.</p>
+     */
+    private static Set<String> declaredSites(File staticScopeMap)
+            throws IOException {
+        StaticScopeMap map = StaticScopeMap.read(staticScopeMap.toPath());
+        if (!map.stated()) {
+            throw new IOException("static scope map states no site: "
+                    + staticScopeMap);
+        }
+        Set<String> sites = new LinkedHashSet<>();
+        for (StaticScopeMap.Site site : map.declaredSites()) {
+            sites.add(site.siteId + "\n" + site.declaredCallee);
+        }
+        return sites;
     }
 
     private static void writeFile(File file, String value) throws IOException {

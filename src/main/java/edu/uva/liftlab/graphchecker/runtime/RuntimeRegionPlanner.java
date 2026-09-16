@@ -17,6 +17,7 @@ import edu.uva.liftlab.graphchecker.plan.SharedFieldFlow;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
+import edu.uva.liftlab.graphchecker.plan.DeclaredSiteCapture;
 import edu.uva.liftlab.graphchecker.plan.DeclaredSymbolicInputs;
 import edu.uva.liftlab.graphchecker.plan.DependencyRole;
 import edu.uva.liftlab.graphchecker.plan.MaterializationSpec;
@@ -1031,7 +1032,8 @@ final class RuntimeRegionPlanner {
                        List<RuntimeEvent> runtimeEvents,
                        List<FieldAccessEvent> fieldEvents,
                        List<ProtocolEvent> protocolEvents,
-                       Collection<Map<String, Object>> planGaps) {
+                       Collection<Map<String, Object>> planGaps,
+                       Set<String> declaredSites) {
         // One loop has one prefix: region rows that disagree on a loop's K_L
         // are refused here, before anything is planned over them.
         declaredLoopBounds(regions);
@@ -1241,6 +1243,14 @@ final class RuntimeRegionPlanner {
                 plan.put(ConfiguredSourcePhaseContract.PLAN_FIELD,
                         sourcePhases);
             }
+            // What the recording states at the sites the static scope map
+            // named DECLARED_SITE: the dynamic half of every port a
+            // declaration could mint in this occurrence.
+            List<Map<String, Object>> captures = declaredSiteCaptures(
+                    declaredSites, trace, calls, root);
+            if (!captures.isEmpty()) {
+                plan.put(DeclaredSiteCapture.PLAN_FIELD, captures);
+            }
             // Where this occurrence hands a declared communication port to the
             // VM, or takes one from it.
             List<Map<String, Object>> handoffSites =
@@ -1276,6 +1286,7 @@ final class RuntimeRegionPlanner {
         }
         republishEnclosingActivationIds(result.regionPlans,
                 publishedActivationIds);
+        retainInnermostDeclaredSiteCaptures(result.regionPlans);
         retainInnermostExactGoalEventOwners(result.regionPlans, trace);
         retainInnermostCommunicationConsumers(result.regionPlans);
         for (Map<String, Object> edge : regionEdges) {
@@ -1597,6 +1608,131 @@ final class RuntimeRegionPlanner {
      * run recorded; a declared cut port is a static statement about the cut -
      * README section 3's {@code Req_in}, {@code Resp_in}, {@code Live_in} -
      * and its site comes from the capture the declaration carries.</p> */
+    /**
+     * What the recording states at the sites the scope map named
+     * DECLARED_SITE, for ONE occurrence: one row per completed call there,
+     * with the value it returned and the receiver it ran on.
+     *
+     * <p>The ordinal counts every completed call of the occurrence at that
+     * (site, callee), whether or not the site is declared, so a declared
+     * site's ordinal is the same number whichever sites a later declaration
+     * adds or drops.  It is the port's replay address, so it is counted from
+     * the recording's own order and never from a per-run call id.</p>
+     *
+     * <p>No admission is taken here.  A capture is published for every
+     * declared site this occurrence entered; whether any of them mints is
+     * {@code ConcolicScheduler.SymbolicInputSelection}'s decision, and the
+     * value a capture states is evidence either way.</p>
+     */
+    /**
+     * One recorded call is ONE occurrence's read: the innermost planned
+     * activation that ran it.
+     *
+     * <p>Every planned activation enclosing the call holds it in its own
+     * call subtree, so the pass above states the capture on each of them.
+     * An enclosing activation's copy is the same recorded return under a
+     * second name, and a port minted from it would give one value two
+     * authorities -- the same rule {@link
+     * #retainInnermostExactGoalEventOwners} applies to the goals, applied
+     * to the evidence they are built from, and keyed on the recorded
+     * invocation, which is exactly one call site invocation of one
+     * frame.</p>
+     */
+    private static void retainInnermostDeclaredSiteCaptures(
+            List<Map<String, Object>> plans) {
+        Map<Long, Set<String>> ownersByInvocation = new LinkedHashMap<>();
+        for (Map<String, Object> plan : plans) {
+            String activationId = stringValue(plan.get("activationId"));
+            if (activationId.isEmpty()) continue;
+            for (Map<String, Object> capture
+                    : rows(plan.get(DeclaredSiteCapture.PLAN_FIELD))) {
+                ownersByInvocation.computeIfAbsent(longNumber(capture.get(
+                        DeclaredSiteCapture.INVOCATION_ID), -1L),
+                        ignored -> new LinkedHashSet<>()).add(activationId);
+            }
+        }
+        Set<String> shadowed = new LinkedHashSet<>();
+        for (Map<String, Object> child : plans) {
+            List<String> enclosing = strings(child.get(
+                    "enclosingActivationIds"));
+            if (enclosing.isEmpty()) continue;
+            for (Map<String, Object> capture
+                    : rows(child.get(DeclaredSiteCapture.PLAN_FIELD))) {
+                long invocation = longNumber(capture.get(
+                        DeclaredSiteCapture.INVOCATION_ID), -1L);
+                Set<String> owners = ownersByInvocation.get(invocation);
+                if (owners == null || owners.size() < 2) continue;
+                for (String ancestor : enclosing) {
+                    if (owners.contains(ancestor)) {
+                        shadowed.add(ancestor + "\n" + invocation);
+                    }
+                }
+            }
+        }
+        if (shadowed.isEmpty()) return;
+        for (Map<String, Object> plan : plans) {
+            String activationId = stringValue(plan.get("activationId"));
+            List<Map<String, Object>> retained = new ArrayList<>();
+            for (Map<String, Object> capture
+                    : rows(plan.get(DeclaredSiteCapture.PLAN_FIELD))) {
+                if (!shadowed.contains(activationId + "\n" + longNumber(
+                        capture.get(DeclaredSiteCapture.INVOCATION_ID),
+                        -1L))) {
+                    retained.add(capture);
+                }
+            }
+            if (retained.isEmpty()) {
+                plan.remove(DeclaredSiteCapture.PLAN_FIELD);
+            } else {
+                plan.put(DeclaredSiteCapture.PLAN_FIELD, retained);
+            }
+        }
+    }
+
+    private static List<Map<String, Object>> declaredSiteCaptures(
+            Set<String> declaredSites, TraceIndex trace, Set<Long> calls,
+            MethodEvent root) {
+        if (declaredSites == null || declaredSites.isEmpty()) {
+            return Collections.emptyList();
+        }
+        Map<Long, RuntimeEvent> entered = new LinkedHashMap<>();
+        Map<String, Integer> ordinals = new LinkedHashMap<>();
+        List<Map<String, Object>> captures = new ArrayList<>();
+        for (RuntimeEvent event : trace.runtime(calls)) {
+            if (event.invocationId <= 0L || event.siteId.isEmpty()
+                    || event.declaredCallee.isEmpty()) {
+                continue;
+            }
+            if ("CALL_SITE_ENTER".equals(event.kind)) {
+                entered.put(event.invocationId, event);
+                continue;
+            }
+            if (!"CALL_SITE_RETURN".equals(event.kind)
+                    || (event.primitiveValue.isEmpty()
+                    && event.objectId == 0)) {
+                continue;
+            }
+            RuntimeEvent enter = entered.remove(event.invocationId);
+            if (enter == null || !enter.siteId.equals(event.siteId)
+                    || !enter.declaredCallee.equals(event.declaredCallee)) {
+                continue;
+            }
+            String site = event.siteId + "\n" + event.declaredCallee;
+            int ordinal = ordinals.merge(site, 1, Integer::sum);
+            if (!declaredSites.contains(site)) continue;
+            MethodEvent frame = trace.methodByCall.get(event.callId);
+            captures.add(DeclaredSiteCapture.row(event.siteId,
+                    event.declaredCallee, ordinal, event.primitiveValue,
+                    event.seq, enter.callId, enter.invocationId,
+                    root.callId, root.sourceKey,
+                    frame == null ? "" : frame.sourceKey,
+                    frame == null ? "" : frame.requestKey,
+                    frame == null ? "" : frame.requestApi,
+                    enter.objectId, enter.runtimeType, event.objectId));
+        }
+        return captures;
+    }
+
     private static List<Map<String, Object>> symbolize(
             List<Map<String, Object>> ports, String occurrenceId,
             TraceIndex trace) {
