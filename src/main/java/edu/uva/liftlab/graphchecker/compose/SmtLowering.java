@@ -1914,7 +1914,20 @@ public final class SmtLowering extends VmLoweringCore {
                     "VRef", "VString", "valueByte", "valueChar", "valueShort",
                     "valueInt", "valueLong", "valueFloat", "valueDouble",
                     "valueBool", "valueRef", "valueString", "str", "fp",
-                    "to_real", "to_int", "is_int", "divisible")));
+                    "to_real", "to_int", "is_int", "divisible",
+                    // The string-theory names THIS lowering writes, and no
+                    // others: VmLoweringCore writes str.len, str.contains,
+                    // str.prefixof, str.suffixof and str.++, and
+                    // VmTermLowering's java_int_to_string writes str.++ and
+                    // str.from_int.  A name the engine emits and this set
+                    // does not hold is read as a free symbol and refuses
+                    // the path that carries it -- which is what dropped
+                    // hdfs-17960's third path the moment P3 conjoined the
+                    // prefix of a writer occurrence whose branch compares
+                    // two snapshot names ("join-pi renameSnapshot#u19#1
+                    // names symbols nothing declares: [str.++]").
+                    "str.++", "str.len", "str.contains", "str.prefixof",
+                    "str.suffixof", "str.from_int")));
 
     /**
      * Every NAME one SMT term names: the one tokenizer.
