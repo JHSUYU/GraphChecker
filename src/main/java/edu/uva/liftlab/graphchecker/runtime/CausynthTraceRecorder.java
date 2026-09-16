@@ -12,6 +12,7 @@ import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.CanonicalJson;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
+import edu.uva.liftlab.graphchecker.plan.WorkStartSites;
 import java.io.BufferedWriter;
 import java.io.BufferedReader;
 import java.io.File;
@@ -30,8 +31,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ForkJoinTask;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -197,6 +196,14 @@ public final class CausynthTraceRecorder {
         // it is in the replay.
         String address = "";
         if (!region.isEmpty()) {
+            // A pool thread was created before the work it is running, so it
+            // inherits no frame from the submission: the start filed for THIS
+            // task is claimed here, on the object the region was entered on,
+            // BEFORE the node is read and the frame pushed -- which is where
+            // and when the replay claims it
+            // (ConcolicRegionRuntime.enterRegionEntry).  Claimed by only one
+            // pass, the frame is in one pass's index and not the other's.
+            edu.uva.liftlab.graphchecker.runtime.Identity.claimStart(receiver);
             // One reading of the node for the frame and for the address, as
             // the replay takes one (ConcolicRegionRuntime.enterRegionEntry).
             String node = RuntimeTraceContext.activationSource(receiver).key();
@@ -363,8 +370,10 @@ public final class CausynthTraceRecorder {
         event.objectId = identity(receiver);
         event.invocationId = event.id;
         emitExecutionEvent(event);
-        if (isThreadStart(declaredCallee, receiver)
-                || isTaskFork(declaredCallee, receiver)) {
+        if (WorkStartSites.startsReceiver(
+                WorkStartSites.calleeName(declaredCallee),
+                WorkStartSites.argumentCount(declaredCallee),
+                WorkStartSites.typesOf(receiver))) {
             RuntimeTraceContext.captureAsync(receiver);
         }
         if (event.id > 0L) {
@@ -386,9 +395,15 @@ public final class CausynthTraceRecorder {
         event.primitiveValue = MapFields.safe(primitiveValue);
         // Any argument, not only the first: a fork-join batch submits its
         // tasks as the arguments of one invokeAll, and each of them is a
-        // submission whose endpoint the task it started runs under.
-        if (isAsyncTaskSubmission(
-                site == null ? "" : site.declaredCallee, value)) {
+        // submission whose endpoint the task it started runs under.  The
+        // shapes are WorkStartSites' -- the same list the weave files the
+        // start-site frames from.
+        String submission = site == null ? "" : site.declaredCallee;
+        if (WorkStartSites.submitsArguments(
+                WorkStartSites.calleeName(submission),
+                WorkStartSites.argumentCount(submission))
+                && WorkStartSites.carriesWork(
+                        WorkStartSites.typesOf(value))) {
             RuntimeTraceContext.captureAsync(value);
         }
         emitExecutionEvent(event);
@@ -938,42 +953,6 @@ public final class CausynthTraceRecorder {
         if (found != null) {
             ACTIVE_CALLS.get().remove(found);
         }
-    }
-
-    private static boolean isThreadStart(String declaredCallee,
-                                         Object receiver) {
-        return receiver instanceof Thread
-                && MapFields.safe(declaredCallee).contains(": void start()>");
-    }
-
-    private static boolean isAsyncTaskSubmission(String declaredCallee,
-                                                 Object task) {
-        if (!(task instanceof Runnable) && !(task instanceof Callable)
-                && !(task instanceof ForkJoinTask)
-                && !(task instanceof Collection)) {
-            return false;
-        }
-        String signature = MapFields.safe(declaredCallee);
-        return signature.contains(" execute(")
-                || signature.contains(" submit(")
-                || signature.contains(" schedule(")
-                || signature.contains(" invokeAll(");
-    }
-
-    /**
-     * A fork-join task submitted through its own receiver.
-     *
-     * <p>{@code fork()} and {@code invoke()} name no argument: the work is
-     * the receiver.  A pool worker that steals such a task was created by
-     * some earlier submission and inherits nothing from this one, so
-     * without this the task runs with the worker's inherited scope and two
-     * subtasks of one batch are one address.</p>
-     */
-    private static boolean isTaskFork(String declaredCallee, Object receiver) {
-        if (!(receiver instanceof ForkJoinTask)) return false;
-        String signature = MapFields.safe(declaredCallee);
-        return signature.contains(" fork()>")
-                || signature.contains(" invoke()>");
     }
 
     private static void removeCallSite(long invocationId) {

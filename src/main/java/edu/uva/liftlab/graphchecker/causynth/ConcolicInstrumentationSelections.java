@@ -55,24 +55,6 @@ public final class ConcolicInstrumentationSelections {
                 "false"));
     }
 
-    /** Declaring classes whose bodies the selected campaign may rewrite. */
-    public static Set<String> applicationClassesFromEnvironment() {
-        Set<String> classes = new LinkedHashSet<>();
-        for (InstrumentationPlan plan
-                : instrumentationCampaignFromEnvironment()) {
-            for (String signature : plan.envelopeMethods()) {
-                String owner = CausynthStaticFacts.methodOwner(signature);
-                if (!owner.isEmpty()) classes.add(owner);
-            }
-        }
-        if (classes.isEmpty()) {
-            throw new IllegalStateException(
-                    "Concolic instrumentation plan names no application "
-                            + "classes");
-        }
-        return Collections.unmodifiableSet(classes);
-    }
-
     /** The campaign this instrumentation pass must cover, in plan order. */
     static List<InstrumentationPlan> instrumentationCampaignFromEnvironment() {
         String planValue = stringValue(System.getProperty(
