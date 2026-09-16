@@ -137,11 +137,6 @@ public final class RegionInstancePlan extends PlanRow {
             return array(encoded, "branches").deepCopy();
         }
 
-        /** Export port id to the sources of its planned consumers. */
-        public JsonObject exportConsumers() {
-            return object(encoded, ExecutionTask.EXPORT_CONSUMERS).deepCopy();
-        }
-
         void writeTaskPayloadTo(JsonObject target) {
             target.addProperty("goalId", goalId());
         }

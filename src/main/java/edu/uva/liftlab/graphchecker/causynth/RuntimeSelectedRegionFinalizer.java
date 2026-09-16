@@ -30,7 +30,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.function.Predicate;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.booleanValue;
@@ -93,6 +92,25 @@ public final class RuntimeSelectedRegionFinalizer {
     public static final String DEMAND_DEPTH = "demandDepth";
     /** The fatal target is the origin of every shared-location demand. */
     private static final int TARGET_DEMAND_DEPTH = 0;
+    /**
+     * {@code admissionBasis} of an activation the plan carries because its
+     * region declares a communication capture.
+     *
+     * <p>Same rule, same reason, as {@link DeclaredSymbolicInputs#ADMISSION}
+     * one authority further out: a capture site the case DECLARED in
+     * {@code communication-mappings.jsonl} is where a value leaves one
+     * component and arrives in another, and an export that runs outside
+     * every instrumented activation has no decision prefix, so its arm can
+     * never be attested -- which is how hdfs-11741 campaign #4 published
+     * all 13 arms of the key-id family as {@code attested:false} with the
+     * producing side {@code instrumented:false} in every session.  Nothing
+     * demands an export's outputs (the value's consumer is on another node,
+     * and the walk is over this node's recorded flows), so a demand-directed
+     * closure cannot arrive on it.  The declaration is what puts it in the
+     * plan.</p>
+     */
+    private static final String DECLARED_COMMUNICATION_ADMISSION =
+            "DECLARED_COMMUNICATION_CAPTURE_V1";
     /** Communication ports whose exact export/attach sites need hooks. */
     public static final String COMMUNICATION_PORTS = "communicationPorts";
 
@@ -237,15 +255,11 @@ public final class RuntimeSelectedRegionFinalizer {
         program.regionEdges.addAll(runtimeFieldFlows);
         stampEdgeOccurrences(program.regionEdges,
                 occurrenceByRecordedRootCall);
-        // The declarations are static and the occurrence-owned copies below
-        // are dynamic, so this remains a typed-port join rather than a value
-        // or payload guess.  applyClosure removes every declaration and edge
-        // not reached by the target-directed walk; the declaration pass after
-        // it restores only the region-level catalog rows used downstream.
+        // applyClosure removes every declaration and edge not reached by the
+        // target-directed walk; the declaration pass after it restores only
+        // the region-level catalog rows used downstream.
         Map<String, List<CutPort>> cutPorts = declaredCutPorts(program);
         declareCommunicationPorts(program, cutPorts);
-        program.regionEdges.addAll(recordedOccurrenceProducerFlows(
-                program, runtimeOccurrenceLinks));
         // One index over the region catalog: the occurrence-owned ports are
         // stamped above, so the frontier pass and the closure walk read the
         // same declaration table.
@@ -405,251 +419,6 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * Names every recorded exchange whose producing occurrence this stage can
-     * no longer offer the failure closure as a typed producer edge.
-     */
-    static List<Map<String, Object>> recordedOccurrenceProducerFlows(
-            StaticProgram program,
-            Collection<Map<String, Object>> occurrenceLinks) {
-        Map<String, Map<String, Object>> activationsById =
-                program.activationsByActivationId();
-        Map<String, Map<String, Object>> regionsById = program.regionsById();
-        Map<String, Map<Long, Integer>> captureOrdinals =
-                communicationCaptureOrdinals(activationsById.values());
-        List<Map<String, Object>> flows = new ArrayList<>();
-        Set<String> emitted = new LinkedHashSet<>();
-        // The wire transaction one exchange ran on -- Hadoop's IPC client id
-        // and call number, or a SASL negotiation uuid -- is minted fresh by
-        // the workload in every run.  It correlates a request with its own
-        // response and is kept for that, but it cannot name the edge: an
-        // ordinal counted per producing and consuming occurrence, port and
-        // direction says which exchange this is in terms the next recording
-        // of the same obligation reproduces.
-        Map<String, Map<String, Integer>> exchangeOrdinals =
-                new LinkedHashMap<>();
-        for (Map<String, Object> link : occurrenceLinks == null
-                ? Collections.<Map<String, Object>>emptyList()
-                : occurrenceLinks) {
-            if (!"RECORDED_EXCHANGE_OCCURRENCE_LINK_V1".equals(
-                    text(link.get("authority")))) {
-                continue;
-            }
-            Map<String, Object> from = activationsById.get(
-                    text(link.get("fromActivationId")));
-            Map<String, Object> to = activationsById.get(
-                    text(link.get("toActivationId")));
-            if (from == null || to == null) {
-                continue;
-            }
-            Map<String, Object> fromRegion = regionsById.get(
-                    text(from.get("regionId")));
-            if (fromRegion == null) {
-                continue;
-            }
-            String direction = text(link.get("direction")).toUpperCase();
-            List<TypedReceiver> receivers = typedReceivers(to, direction,
-                    fromRegion, activationsById, regionsById);
-            String exchangeLeg = text(link.get("exchangeLeg"));
-            long senderEventSeq = longNumber(
-                    link.get("senderEventSeq"), -1L);
-            long receiverEventSeq = longNumber(
-                    link.get("receiverEventSeq"), -1L);
-            Map<TypedReceiver, Set<Integer>> matches = new LinkedHashMap<>();
-            Map<String, Map<Integer, Set<String>>> receiversByPortOrdinal =
-                    new LinkedHashMap<>();
-            for (TypedReceiver receiver : receivers) {
-                String portId = text(receiver.port.get("portId"));
-                Set<Integer> sent = observedCommunicationCaptureOrdinals(
-                        from, "OUT", portId, exchangeLeg, senderEventSeq,
-                        captureOrdinals);
-                Set<Integer> received = observedCommunicationCaptureOrdinals(
-                        receiver.activation, "IN", portId, exchangeLeg,
-                        receiverEventSeq, captureOrdinals);
-                received.retainAll(sent);
-                matches.put(receiver, received);
-                for (Integer ordinal : received) {
-                    receiversByPortOrdinal.computeIfAbsent(portId,
-                                    ignored -> new LinkedHashMap<>())
-                            .computeIfAbsent(ordinal,
-                                    ignored -> new LinkedHashSet<>())
-                            .add(text(receiver.activation.get(
-                                    "activationId")));
-                }
-            }
-            for (TypedReceiver receiver : receivers) {
-                Map<String, Object> exactTo = receiver.activation;
-                Map<String, Object> toRegion = receiver.region;
-                Map<String, Object> receiving = receiver.port;
-                String portId = text(receiving.get("portId"));
-                Map<String, Object> sending = declaredOutputPort(fromRegion,
-                        portId);
-                Set<Integer> matched = matches.getOrDefault(receiver,
-                        Collections.<Integer>emptySet());
-                boolean exactCapture = false;
-                for (Integer ordinal : matched) {
-                    if (receiversByPortOrdinal.getOrDefault(portId,
-                                    Collections.<Integer, Set<String>>emptyMap())
-                            .getOrDefault(ordinal,
-                                    Collections.<String>emptySet()).size()
-                            == 1) {
-                        exactCapture = true;
-                        break;
-                    }
-                }
-                if (!exactCapture) {
-                    continue;
-                }
-                String exchangeSite = occurrenceKey(
-                        from.get("occurrenceId")) + "\n"
-                        + occurrenceKey(exactTo.get("occurrenceId"))
-                        + "\n" + portId + "\n" + direction;
-                String identity = exchangeSite + "\n"
-                        + exchangeOrdinal(exchangeOrdinals, exchangeSite,
-                        text(link.get("requestKey")) + "\n" + exchangeLeg);
-                if (!emitted.add(identity)) continue;
-                stampOccurrenceOwnedPort(fromRegion, "outputs", sending,
-                        occurrenceKey(from.get("occurrenceId")),
-                        longNumber(link.get("senderEventSeq"), -1L));
-                stampOccurrenceOwnedPort(toRegion, "symbolicInputs",
-                        receiving, occurrenceKey(
-                                exactTo.get("occurrenceId")),
-                        longNumber(link.get("receiverEventSeq"), -1L));
-                flows.add(exchangeProducerEdge(from, exactTo, link,
-                        receiving, identity));
-            }
-        }
-        return flows;
-    }
-
-    private static Map<String, Map<Long, Integer>>
-    communicationCaptureOrdinals(
-            Collection<Map<String, Object>> activations) {
-        Map<String, Set<Long>> events = new LinkedHashMap<>();
-        for (Map<String, Object> activation : activations) {
-            for (Map<String, Object> capture : rows(activation.get(
-                    OBSERVED_COMMUNICATION_CAPTURES))) {
-                String key = captureOrdinalKey(capture);
-                long event = longNumber(capture.get("eventSeq"), -1L);
-                if (!key.isEmpty() && event >= 0L) {
-                    events.computeIfAbsent(key,
-                            ignored -> new TreeSet<>()).add(event);
-                }
-            }
-        }
-        Map<String, Map<Long, Integer>> result = new LinkedHashMap<>();
-        for (Map.Entry<String, Set<Long>> entry : events.entrySet()) {
-            Map<Long, Integer> ordinals = new LinkedHashMap<>();
-            int ordinal = 0;
-            for (Long event : entry.getValue()) ordinals.put(event, ordinal++);
-            result.put(entry.getKey(), ordinals);
-        }
-        return result;
-    }
-
-    private static String captureOrdinalKey(Map<String, Object> capture) {
-        String side = text(capture.get("side"));
-        String port = text(capture.get("portId"));
-        String exchange = text(capture.get("exchangeLeg"));
-        return side.isEmpty() || port.isEmpty() || exchange.isEmpty() ? ""
-                : side + '\n' + port + '\n' + exchange;
-    }
-
-    /**
-     * Capture ordinals carried by one exact logical delivery.
-     *
-     * <p>The transport may emit several physical frames for one exchange.
-     * The capture binder deliberately associates an input with the first
-     * frame that carried the value, while the handler occurrence link may be
-     * bracketed by a later frame of that same exchange.  The exchange leg and
-     * activation are the identities here; both recorded boundaries only need
-     * to be on the causal side of the capture.</p>
-     */
-    static Set<Integer> observedCommunicationCaptureOrdinals(
-            Map<String, Object> activation, String side, String portId,
-            String exchangeLeg, long transportEventSeq,
-            Map<String, Map<Long, Integer>> captureOrdinals) {
-        Set<Integer> result = new LinkedHashSet<>();
-        if (exchangeLeg.isEmpty() || transportEventSeq < 0L) return result;
-        for (Map<String, Object> capture : rows(activation.get(
-                OBSERVED_COMMUNICATION_CAPTURES))) {
-            long capturedAt = longNumber(capture.get("eventSeq"), -1L);
-            long capturedBoundary = longNumber(
-                    capture.get("transportEventSeq"), -1L);
-            if (side.equals(text(capture.get("side")))
-                    && portId.equals(text(capture.get("portId")))
-                    && exchangeLeg.equals(text(capture.get("exchangeLeg")))
-                    && capturedBoundary >= 0L
-                    && ("OUT".equals(side)
-                    ? capturedAt >= 0L && capturedBoundary > capturedAt
-                    && transportEventSeq > capturedAt
-                    : capturedAt > capturedBoundary
-                    && capturedAt > transportEventSeq)) {
-                Integer ordinal = captureOrdinals.getOrDefault(
-                        captureOrdinalKey(capture),
-                        Collections.<Long, Integer>emptyMap()).get(capturedAt);
-                if (ordinal != null) result.add(ordinal);
-            }
-        }
-        return result;
-    }
-
-    /**
-     * Resolves a recorded receiver envelope to typed receiving occurrences.
-     * A nested occurrence is eligible only through exact dynamic call
-     * containment plus a shared declared port.  This is scheduling topology;
-     * the VM handoff remains the only value authority.
-     */
-    private static List<TypedReceiver> typedReceivers(
-            Map<String, Object> recordedReceiver, String direction,
-            Map<String, Object> fromRegion,
-            Map<String, Map<String, Object>> activationsById,
-            Map<String, Map<String, Object>> regionsById) {
-        List<TypedReceiver> result = new ArrayList<>();
-        String envelopeId = text(recordedReceiver.get("activationId"));
-        for (Map<String, Object> candidate : activationsById.values()) {
-            if (!envelopeId.equals(text(candidate.get("activationId")))
-                    && !strings(candidate.get("enclosingActivationIds"))
-                    .contains(envelopeId)) {
-                continue;
-            }
-            Map<String, Object> region = regionsById.get(
-                    text(candidate.get("regionId")));
-            if (region == null) continue;
-            for (Map<String, Object> receiving
-                    : rows(region.get("symbolicInputs"))) {
-                if (!COMMUNICATION_SITE_PORT.equals(
-                        text(receiving.get("sourceKind")))
-                        || !direction.equals(text(receiving.get(
-                        CommunicationCatalogContract.PORT_DIRECTION)))) {
-                    continue;
-                }
-                Map<String, Object> sending = declaredOutputPort(fromRegion,
-                        text(receiving.get("portId")));
-                if (sending != null && direction.equals(text(sending.get(
-                        CommunicationCatalogContract.PORT_DIRECTION)))) {
-                    result.add(new TypedReceiver(candidate, region,
-                            receiving));
-                }
-            }
-        }
-        return result;
-    }
-
-    private static final class TypedReceiver {
-        private final Map<String, Object> activation;
-        private final Map<String, Object> region;
-        private final Map<String, Object> port;
-
-        private TypedReceiver(Map<String, Object> activation,
-                              Map<String, Object> region,
-                              Map<String, Object> port) {
-            this.activation = activation;
-            this.region = region;
-            this.port = port;
-        }
-    }
-
-    /**
      * Adds the occurrence-owned instance of one declared cut port, so demand
      * propagation can reach the exact activation that used it.
      */
@@ -686,109 +455,6 @@ public final class RuntimeSelectedRegionFinalizer {
                     + "is not one planned address: " + occurrenceId);
         }
         return rendered;
-    }
-
-    private static void stampOccurrenceOwnedPort(
-            Map<String, Object> region, String listName,
-            Map<String, Object> port, String occurrenceId, long eventSeq) {
-        List<Map<String, Object>> rows = rows(region.get(listName));
-        String portId = text(port.get("portId"));
-        if (portId.isEmpty() || occurrenceId.isEmpty()) {
-            return;
-        }
-        for (Map<String, Object> existing : rows) {
-            if (portId.equals(text(existing.get("portId")))
-                    && occurrenceId.equals(
-                    occurrenceKey(existing.get("occurrenceId")))) {
-                long previous = longNumber(existing.get("eventSeq"), -1L);
-                if (eventSeq >= 0L && (previous < 0L || eventSeq < previous)) {
-                    existing.put("eventSeq", eventSeq);
-                }
-                return;
-            }
-        }
-        Map<String, Object> owned = new LinkedHashMap<>(port);
-        owned.put("occurrenceId", occurrenceId);
-        if (eventSeq >= 0L) owned.put("eventSeq", eventSeq);
-        rows.add(owned);
-        region.put(listName, rows);
-    }
-
-    /** The exporting region's own declaration of one declared cut port. */
-    private static Map<String, Object> declaredOutputPort(
-            Map<String, Object> region, String portId) {
-        if (portId.isEmpty()) return null;
-        for (Map<String, Object> port : rows(region.get("outputs"))) {
-            if (COMMUNICATION_SITE_PORT.equals(text(port.get("sourceKind")))
-                    && portId.equals(text(port.get("portId")))) {
-                return port;
-            }
-        }
-        return null;
-    }
-
-    /**
-     * Which exchange of one producing/consuming occurrence pair this is.
-     *
-     * <p>Counts the distinct wire transactions seen at {@code exchangeSite}
-     * in recorded order and answers the same ordinal every time one
-     * transaction is offered again, so a retry and its original keep the
-     * numbers they were first given.</p>
-     */
-    static int exchangeOrdinal(
-            Map<String, Map<String, Integer>> ordinals, String exchangeSite,
-            String transaction) {
-        Map<String, Integer> perSite = ordinals.computeIfAbsent(exchangeSite,
-                ignored -> new LinkedHashMap<>());
-        Integer existing = perSite.get(transaction);
-        if (existing != null) return existing;
-        int assigned = perSite.size() + 1;
-        perSite.put(transaction, assigned);
-        return assigned;
-    }
-
-    /** One scheduling candidate for a recorded delivery of a declared port. */
-    private static Map<String, Object> exchangeProducerEdge(
-            Map<String, Object> from, Map<String, Object> to,
-            Map<String, Object> link, Map<String, Object> receiving,
-            String identity) {
-        String portId = text(receiving.get("portId"));
-        Map<String, Object> edge = new LinkedHashMap<>();
-        edge.put("schemaVersion", 3);
-        edge.put("kind", "RUNTIME_PROTOCOL_FLOW");
-        edge.put("transportKind", text(link.get("transport")));
-        edge.put("edgeId", CausynthStaticFacts.nameId("RPC.", identity));
-        edge.put("fromRegion", text(from.get("regionId")));
-        edge.put("toRegion", text(to.get("regionId")));
-        edge.put("fromPort", portId);
-        edge.put("toPort", portId);
-        edge.put("fromOccurrenceId", text(from.get("occurrenceId")));
-        edge.put("toOccurrenceId", text(to.get("occurrenceId")));
-        edge.put("fromRootCallId", from.get("rootCallId"));
-        edge.put("toRootCallId", to.get("rootCallId"));
-        edge.put("direction", text(link.get("direction")).toUpperCase());
-        edge.put("exchangeLeg", text(link.get("exchangeLeg")));
-        edge.put("attemptId", text(link.get("attemptId")));
-        edge.put("senderEventSeq", link.get("senderEventSeq"));
-        edge.put("receiverEventSeq", link.get("receiverEventSeq"));
-        edge.put("requestApi", text(link.get("requestApi")));
-        edge.put("requestKey", text(link.get("requestKey")));
-        for (String field : new String[]{
-                CommunicationCatalogContract.CALL_SITE_ID,
-                CommunicationCatalogContract.EXCHANGE_SITE_KEY,
-                CommunicationCatalogContract.PORT_HANDOFF_LEAF_PATH}) {
-            Object value = receiving.get(field);
-            if (value != null && !text(value).isEmpty()) {
-                edge.put(field, value);
-            }
-        }
-        edge.put("dependencyRole", DependencyRole.normalize(
-                receiving.get("dependencyRole")));
-        edge.put("javaType", text(receiving.get("javaType")));
-        edge.put("correlationAuthority",
-                AutomaticRegionEdge.TRACED_EXCHANGE_AUTHORITY);
-        edge.put("authority", AutomaticRegionEdge.TRACED_EXCHANGE_AUTHORITY);
-        return edge;
     }
 
     /** Region-level port declarations, excluding occurrence-owned copies. */
@@ -1237,10 +903,35 @@ public final class RuntimeSelectedRegionFinalizer {
         // here and this rule leaves its rows untouched.
         declaredInputOccurrences.removeAll(targets);
         admittedStateWriters.addAll(declaredInputOccurrences);
+        // Every activation that PERFORMED a declared communication capture,
+        // admitted the same way and for the reason
+        // DECLARED_COMMUNICATION_ADMISSION states: the export or attach the
+        // declaration names happened in this activation, so the activation
+        // has to be one the replay instrumented.
+        //
+        // The recording's own statement, not the declaration's scope: a
+        // region that declares a port is entered once per value the workload
+        // converts, and admitting every one of those activations put 146 of
+        // hdfs-11741's occurrences in the plan (202 tasks against a declared
+        // cap of 128) for the 22 that carried a capture.  An activation
+        // states its own captures, so that is what is read.
+        Set<String> declaredCaptureOccurrences = new LinkedHashSet<>();
+        for (Map.Entry<String, Map<String, Object>> entry
+                : instances.entrySet()) {
+            StaticProgram.RegionRow skeleton = program.skeletons.get(
+                    text(entry.getValue().get("regionId")));
+            if (skeleton == null || skeleton.communicationPorts.isEmpty()
+                    || rows(entry.getValue().get(
+                            OBSERVED_COMMUNICATION_CAPTURES)).isEmpty()) {
+                continue;
+            }
+            declaredCaptureOccurrences.add(entry.getKey());
+        }
+        declaredCaptureOccurrences.removeAll(targets);
+        admittedStateWriters.addAll(declaredCaptureOccurrences);
 
         Map<String, List<Map<String, Object>>> predecessors =
                 new LinkedHashMap<>();
-        Set<String> targetInteractionInputs = new LinkedHashSet<>();
         // The declared carriers of the demanded component leaves above. A
         // structured leaf has no capture of its own: the producer's relation
         // for it is anchored on the carrier's own observed delivery, so the
@@ -1266,15 +957,6 @@ public final class RuntimeSelectedRegionFinalizer {
             }
             predecessors.computeIfAbsent(portDemandKey(to, toPort),
                     ignored -> new ArrayList<>()).add(edge);
-            if ("RUNTIME_PROTOCOL_FLOW".equals(text(edge.get("kind")))
-                    && targets.contains(to)) {
-                if (DependencyRole.valueFrontier(
-                        edge.get("dependencyRole"))) {
-                    // The fatal region instance was entered through this
-                    // exact observed interaction.
-                    targetInteractionInputs.add(portDemandKey(to, toPort));
-                }
-            }
         }
 
         Map<String, Long> requestFlowPrefixInputs =
@@ -1291,7 +973,7 @@ public final class RuntimeSelectedRegionFinalizer {
         // together to one fixed point.
         Set<String> transitiveDemands = new LinkedHashSet<>();
         ClosureWalk union = walkFailureClosure(targets, instances,
-                demands, predecessors, targetInteractionInputs,
+                demands, predecessors,
                 requestFlowPrefixInputs, admittedStateWriters,
                 transitiveDemands);
         // Heap demand is transitive with port demand: each walk may reach a
@@ -1313,7 +995,7 @@ public final class RuntimeSelectedRegionFinalizer {
             grown |= !depthsBefore.equals(demandDepths);
             if (!grown) break;
             union = walkFailureClosure(targets, instances, demands,
-                    predecessors, targetInteractionInputs,
+                    predecessors,
                     requestFlowPrefixInputs, admittedStateWriters,
                     transitiveDemands);
         }
@@ -1328,6 +1010,15 @@ public final class RuntimeSelectedRegionFinalizer {
                 continue;
             }
             activation.put(ADMISSION_BASIS, DeclaredSymbolicInputs.ADMISSION);
+        }
+        for (String occurrence : declaredCaptureOccurrences) {
+            Map<String, Object> activation = instances.get(occurrence);
+            if (activation == null
+                    || !text(activation.get(ADMISSION_BASIS)).isEmpty()) {
+                continue;
+            }
+            activation.put(ADMISSION_BASIS,
+                    DECLARED_COMMUNICATION_ADMISSION);
         }
         return union;
     }
@@ -2028,7 +1719,6 @@ public final class RuntimeSelectedRegionFinalizer {
             Map<String, Map<String, Object>> instances,
             RegionDemandIndex demands,
             Map<String, List<Map<String, Object>>> predecessors,
-            Collection<String> targetInteractionInputs,
             Map<String, Long> requestFlowPrefixInputs,
             Set<String> admittedStateWriters,
             Collection<String> transitiveSharedDemands)
@@ -2043,9 +1733,6 @@ public final class RuntimeSelectedRegionFinalizer {
         for (String target : targets) {
             Map<String, Object> instance = instances.get(target);
             seeds.addAll(demands.targetInputs(instance));
-        }
-        for (String input : targetInteractionInputs) {
-            seeds.add(input);
         }
         seeds.addAll(requestFlowPrefixInputs.keySet());
         // Second-order shared-location demand, in the order the recorded
@@ -2065,11 +1752,10 @@ public final class RuntimeSelectedRegionFinalizer {
             addRegionPathInputs(seeds, writer, targets,
                     expandedRegionPathOccurrences, demands);
         }
-        // Communication is represented by exact occurrence-owned IN/OUT
-        // ports in predecessors, so the walk crosses a call the same way it
-        // crosses any other edge: from the demanded input port to the output
-        // port some other occurrence declared for it. Writer choice stays in
-        // the VM expression; this walk only selects linked replay members.
+        // The walk crosses a shared location the same way it crosses any
+        // other edge: from the demanded input port to the output port some
+        // other occurrence declared for it.  Writer choice stays in the VM
+        // expression; this walk only selects linked replay members.
         List<IOException> refused = new ArrayList<>();
         StaticProgram.closure(seeds, demanded -> {
             demandedInputs.add(demanded);
@@ -2132,9 +1818,7 @@ public final class RuntimeSelectedRegionFinalizer {
      */
     private static boolean causalRegionRetentionEdge(
             Map<String, Object> edge) {
-        String kind = text(edge.get("kind"));
-        return "RUNTIME_FIELD_FLOW".equals(kind)
-                || "RUNTIME_PROTOCOL_FLOW".equals(kind);
+        return "RUNTIME_FIELD_FLOW".equals(text(edge.get("kind")));
     }
 
     private static void applyClosure(StaticProgram program,

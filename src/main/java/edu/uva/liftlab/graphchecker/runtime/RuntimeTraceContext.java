@@ -5,14 +5,12 @@ import edu.uva.liftlab.graphchecker.contract.Role;
 import edu.uva.liftlab.graphchecker.runtime.Lineage;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
-import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
@@ -203,7 +201,7 @@ final class RuntimeTraceContext {
         String nodeKey = view.source == null ? "" : view.source.key();
         Object lineage = Lineage.capture(nodeKey);
         synchronized (LOCK) {
-            ASYNC_SEEDS.put(carrier, new Seed(view.spanId,
+            ASYNC_SEEDS.put(carrier, new Seed(
                     view.source, view.requestKey, view.requestApi,
                     view.exchangeTransport, view.exchangeCorrelationId,
                     view.exchangeAttemptId, view.exchangeHalf, lineage));
@@ -243,7 +241,6 @@ final class RuntimeTraceContext {
         // which is the only answer available while the trace is being written.
         String requestKey = seed == null ? state.requestKey : seed.requestKey;
         String requestApi = seed == null ? state.requestApi : seed.requestApi;
-        long parentSpanId = seed == null ? state.currentSpan() : seed.parentSpanId;
         if (seed != null || state.laneId == 0L) {
             state.laneId = nextId();
         }
@@ -251,7 +248,7 @@ final class RuntimeTraceContext {
         // A receive scope belongs to the server lane until the next receive
         // replaces it.
         long remoteParentSpanId = state.pendingRemoteParentSpanId;
-        Frame frame = new Frame(spanId, parentSpanId, remoteParentSpanId,
+        Frame frame = new Frame(spanId, remoteParentSpanId,
                 state.source, source, receiverAttributed,
                 state.requestKey, state.requestApi,
                 state.exchangeTransport, state.exchangeCorrelationId,
@@ -972,7 +969,6 @@ final class RuntimeTraceContext {
     static final class View {
         final long laneId;
         final long spanId;
-        final long parentSpanId;
         final long remoteParentSpanId;
         final SourceRef source;
         /** Whether {@link #source} is the root receiver's own registration
@@ -986,14 +982,13 @@ final class RuntimeTraceContext {
         final String exchangeHalf;
 
         private View(long laneId, long spanId,
-                     long parentSpanId, long remoteParentSpanId,
+                     long remoteParentSpanId,
                      SourceRef source, boolean receiverAttributed,
                      String requestKey, String requestApi,
                      String exchangeTransport, String exchangeCorrelationId,
                      String exchangeAttemptId, String exchangeHalf) {
             this.laneId = laneId;
             this.spanId = spanId;
-            this.parentSpanId = parentSpanId;
             this.remoteParentSpanId = remoteParentSpanId;
             this.source = source;
             this.receiverAttributed = receiverAttributed;
@@ -1008,7 +1003,7 @@ final class RuntimeTraceContext {
         /** The same view speaking for a carried request scope. */
         private View withScope(SourceRef scopeSource, String scopeKey,
                                String scopeApi) {
-            return new View(laneId, spanId, parentSpanId, remoteParentSpanId,
+            return new View(laneId, spanId, remoteParentSpanId,
                     scopeSource, receiverAttributed, scopeKey, scopeApi,
                     exchangeTransport, exchangeCorrelationId,
                     exchangeAttemptId, exchangeHalf);
@@ -1032,16 +1027,10 @@ final class RuntimeTraceContext {
             this.laneId = laneId;
         }
 
-        private long currentSpan() {
-            Frame frame = frames.peek();
-            return frame == null ? 0L : frame.spanId;
-        }
-
         private View view() {
             Frame frame = frames.peek();
             return new View(
                     laneId, frame == null ? 0L : frame.spanId,
-                    frame == null ? 0L : frame.parentSpanId,
                     frame == null ? pendingRemoteParentSpanId
                             : frame.remoteParentSpanId,
                     frame == null ? source : frame.source,
@@ -1053,7 +1042,6 @@ final class RuntimeTraceContext {
 
     private static final class Frame {
         private final long spanId;
-        private final long parentSpanId;
         /** The lineage hop this root opened, or 0 when it opened none. */
         private long lineageToken;
         private long remoteParentSpanId;
@@ -1067,7 +1055,7 @@ final class RuntimeTraceContext {
         private final String previousExchangeAttemptId;
         private final String previousExchangeHalf;
 
-        private Frame(long spanId, long parentSpanId,
+        private Frame(long spanId,
                       long remoteParentSpanId, SourceRef previousSource,
                       SourceRef source, boolean receiverAttributed,
                       String previousRequestKey, String previousRequestApi,
@@ -1076,7 +1064,6 @@ final class RuntimeTraceContext {
                       String previousExchangeAttemptId,
                       String previousExchangeHalf) {
             this.spanId = spanId;
-            this.parentSpanId = parentSpanId;
             this.remoteParentSpanId = remoteParentSpanId;
             this.previousSource = previousSource;
             this.source = source;
@@ -1094,7 +1081,6 @@ final class RuntimeTraceContext {
     }
 
     private static final class Seed {
-        private final long parentSpanId;
         private final SourceRef source;
         private final String requestKey;
         private final String requestApi;
@@ -1105,13 +1091,12 @@ final class RuntimeTraceContext {
         /** The lineage the submitting thread was inside, as a value. */
         private final Object lineage;
 
-        private Seed(long parentSpanId, SourceRef source,
+        private Seed(SourceRef source,
                      String requestKey, String requestApi,
                      String exchangeTransport, String exchangeCorrelationId,
                      String exchangeAttemptId, String exchangeHalf,
                      Object lineage) {
             this.lineage = lineage;
-            this.parentSpanId = parentSpanId;
             this.source = source;
             this.requestKey = MapFields.safe(requestKey);
             this.requestApi = MapFields.safe(requestApi);

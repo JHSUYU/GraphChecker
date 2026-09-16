@@ -11,7 +11,6 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
-import edu.uva.liftlab.graphchecker.plan.ClosureGoalKind;
 import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
@@ -27,7 +26,6 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.AbstractMap;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -40,14 +38,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
-import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
@@ -133,7 +128,8 @@ public final class ConcolicScheduler {
                             candidate.goal.plan().json()));
             String taskId = candidate.seedTaskId(selectedInputs);
             if (result.executionTasks.size() >= arguments.maxJobs) {
-                continue;
+                throw overMaxJobs(candidates.size(), arguments.maxJobs,
+                        loaded.regionPlans);
             }
             ExecutionTask scheduled = ExecutionTask.create(candidate.goal,
                     taskId, selectedInputs,
@@ -174,6 +170,30 @@ public final class ConcolicScheduler {
             }
         }
         return result;
+    }
+
+    /**
+     * The ONE cap rule: a selection that does not fit {@code --max-jobs} is
+     * refused, by name and with its own admission summary.
+     *
+     * <p>A bare count says only that the campaign is too big; what a reader
+     * needs is which admission rule bought the rows, so the next step is
+     * either raising {@code --max-jobs} or tightening that rule.</p>
+     *
+     * <p>Both scheduling paths refuse here.  {@link #scheduleLoaded} used to
+     * {@code continue} past the cap instead: the run then published the
+     * first {@code maxJobs} tasks, dropped every candidate after them and
+     * said nothing, so a campaign composed a formula missing arms it never
+     * reported dropping -- not a weaker claim, an unsound one.  A cap is a
+     * declaration about the size of the campaign, and a campaign that
+     * exceeds it is a campaign that has to be re-declared, never one to
+     * truncate silently.</p>
+     */
+    private static IOException overMaxJobs(
+            int selected, int maxJobs, List<RegionInstancePlan> regionPlans) {
+        return new IOException("selected exact closure exceeds max jobs: "
+                + selected + " > " + maxJobs + "; "
+                + closureAdmissionSummary(regionPlans));
     }
 
     /**
@@ -306,13 +326,8 @@ public final class ConcolicScheduler {
                         arguments.targetOccurrence);
         requireRetainedRegions(arguments.retainRegions, workflow);
         if (workflow.scheduledTaskCount() > arguments.maxJobs) {
-            // A bare count says only that the campaign is too big; what a
-            // reader needs is which admission rule bought the rows, so the
-            // next step is either raising --max-jobs or tightening that rule.
-            throw new IOException("selected exact closure exceeds max jobs: "
-                    + workflow.scheduledTaskCount() + " > "
-                    + arguments.maxJobs + "; "
-                    + closureAdmissionSummary(loaded.regionPlans));
+            throw overMaxJobs(workflow.scheduledTaskCount(),
+                    arguments.maxJobs, loaded.regionPlans);
         }
 
         List<Result> scheduled = scheduleSelections(arguments, loaded,

@@ -140,8 +140,10 @@ public class RegionGraphOccurrenceKeyTest {
      * What names a recorded exchange edge across two recordings of one workload.
      *
      * <p>The wire transaction is minted fresh in every run, so the name is
-     * the producing and consuming occurrence, the port, the direction and
-     * an ordinal over that tuple.</p>
+     * read off content.  The offline exchange pairing that used to mint an
+     * ordinal over (producer occurrence, consumer occurrence, port,
+     * direction) is gone -- rows are the pairing authority -- so what is
+     * left to state is the request-control edge's own name.</p>
      */
     @Test
     public void aRecordedExchangeEdgeIsNamedFromContentNotTheWire()
@@ -150,15 +152,6 @@ public class RegionGraphOccurrenceKeyTest {
                         + "expected to differ",
                 "hadoop-ipc-f76d5ada8a274fd1ac95a5db23edeaa4-21\n0",
                 "hadoop-ipc-9c8bc11a624f4ee1ad1374fe269fe5ca-21\n0");
-
-        // The one transaction of one exchange site is exchange number one,
-        // whichever transaction the recording happened to mint.
-        assertEquals(1, RuntimeSelectedRegionFinalizer.exchangeOrdinal(
-                new LinkedHashMap<>(), SITE,
-                "hadoop-ipc-f76d5ada8a274fd1ac95a5db23edeaa4-21\n0"));
-        assertEquals(1, RuntimeSelectedRegionFinalizer.exchangeOrdinal(
-                new LinkedHashMap<>(), SITE,
-                "hadoop-ipc-9c8bc11a624f4ee1ad1374fe269fe5ca-21\n0"));
 
         // A request-control edge is named by the response edge, not the wire:
         // the response edge already names the exchange from content, and it
