@@ -669,9 +669,10 @@ public final class RowRuntime {
      * they were ints (REPORT-P2CD follow-up).  Depth-first in the tree's own
      * member order, so one tree always answers the same type.</p>
      */
-    private static String javaType(String declared, JsonObject expression) {
+    private static String javaType(String declared, JsonObject expression,
+                                   String walk) {
         String type = Text.safe(declared);
-        return type.isEmpty() ? statedType(expression, 0) : type;
+        return type.isEmpty() ? statedType(expression, 0, walk) : type;
     }
 
     /**
@@ -694,7 +695,8 @@ public final class RowRuntime {
     private static String statedJavaType(String kind, String subject,
                                          String declared,
                                          JsonObject expression) {
-        String type = javaType(declared, expression);
+        String type = javaType(declared, expression,
+                kind + " type of " + subject);
         if (!type.isEmpty()) return type;
         gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, subject,
                 "this " + kind + " states no java type and its expression"
@@ -703,8 +705,33 @@ public final class RowRuntime {
         return "";
     }
 
-    private static String statedType(JsonElement node, int depth) {
-        if (node == null || depth > 64 || !node.isJsonObject()) return "";
+    /**
+     * The walk under {@link #javaType}, with its bound NAMED when it cuts.
+     *
+     * <p>The same silent-cut shape M-R2 closed for the four
+     * {@code RowPlaceholderMint} walks ({@code RowPublication#cut}): a walk
+     * that found no {@code _java_type} and a walk that was cut before it
+     * could look both answered {@code ""}, so a row refused
+     * UNSTATED_VALUE because its expression states no sort read exactly
+     * like one refused because this walk ran out of depth.  The bound stays
+     * -- a container's expression on hdfs-17960 nests one relation per
+     * recorded operation -- and the cut says so, once per walk and
+     * subject.</p>
+     */
+    private static final int TYPE_WALK_DEPTH = 64;
+
+    private static String statedType(JsonElement node, int depth,
+                                     String walk) {
+        if (depth > TYPE_WALK_DEPTH) {
+            gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                    firstNonBlank(walk, sessionId()),
+                    "this expression walk stopped at depth "
+                            + TYPE_WALK_DEPTH + ", so \"no java type\" here"
+                            + " is the walk's bound and not the"
+                            + " expression's silence");
+            return "";
+        }
+        if (node == null || !node.isJsonObject()) return "";
         JsonObject object = node.getAsJsonObject();
         JsonElement own = object.get("_java_type");
         if (own != null && own.isJsonPrimitive()) {
@@ -713,7 +740,7 @@ public final class RowRuntime {
         }
         for (java.util.Map.Entry<String, JsonElement> member
                 : object.entrySet()) {
-            String found = statedType(member.getValue(), depth + 1);
+            String found = statedType(member.getValue(), depth + 1, walk);
             if (!found.isEmpty()) return found;
         }
         return "";
