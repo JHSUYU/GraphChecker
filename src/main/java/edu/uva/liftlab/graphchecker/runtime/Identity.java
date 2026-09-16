@@ -766,12 +766,6 @@ public final class Identity {
         return "";
     }
 
-    /** The whole path this thread is at, for a degraded address. */
-    public static ExecutionIndex here() {
-        State state = state();
-        return state.from(0);
-    }
-
     /**
      * The address of the activation entering here (IDENTITY-IMPL A).
      *
@@ -929,7 +923,7 @@ public final class Identity {
 
     /**
      * The address of work that ran under no region this plan selected: its
-     * role, on its node, at the path the thread stood on.
+     * role, on its node, at the path from its scope root.
      *
      * <p>REPORT-ENTRY §4: the region slot carries a role id rather than a
      * plan region, so a reader tells an ambient occurrence from a planned
@@ -937,12 +931,24 @@ public final class Identity {
      * selected is not an activation with no CONTEXT: the message that opened
      * its scope, or the root it descends from, is known exactly as it is for
      * a selected one.</p>
+     *
+     * <p>Indexed from the SCOPE ROOT, exactly as a planned occurrence is
+     * ({@link #occurrence} reads {@link #atScope}): one notion, one rule.
+     * Measured from the thread's first frame instead, a degraded address
+     * carried the frames the thread stood on BEFORE its scope began, whose
+     * iterations count that thread's whole life -- hdfs-11741's DataNode
+     * senders were addressed at {@code @8}, {@code @9} … {@code @13}, a
+     * run-length ordinal IDENTITY-V3 §1 forbids, and the producer endpoints
+     * they minted therefore named a different anchor in the replay than in
+     * the recording.  Two turns of such a loop are told apart by the window
+     * index of the root hop each of them opens, which this address already
+     * carries in its context.</p>
      */
     public static OccurrenceAddress roleOccurrence(String nodeKey, Role role) {
         if (Text.safe(nodeKey).isEmpty()) return null;
         Role kind = role == null ? Role.UNKNOWN : role;
         return OccurrenceAddress.of(NodeId.parse(Text.safe(nodeKey)),
-                "ROLE." + kind.name(), here(kind), here());
+                "ROLE." + kind.name(), here(kind), atScope());
     }
 
     /**
