@@ -113,6 +113,16 @@ public class ExploreTest {
         seed.decision(target, "Guard#u8", 1, false, "EXPR.0000000000000001");
         // A CONCRETE branch beside it: no predicate, so nothing to flip.
         seed.decision(target, "Concrete#u3", 1, false, "");
+        // One PLANNED task, run at two addresses.  That is the one thing
+        // that can split an owed arm in two -- the arms answered at the
+        // first address settle nothing at the second -- so every wave names
+        // it, and the repair is upstream of any wave.
+        seed.activation(occurrence("hdfs-case/dn0", "REGION.spare",
+                CausalContext.of(Role.of("SPARE"), "", 1),
+                "o.a.h.Spare#run#1"), false);
+        seed.activation(occurrence("hdfs-case/dn0", "REGION.spare",
+                CausalContext.of(Role.of("SPARE"), "", 1),
+                "o.a.h.Spare#run#2"), false);
         seed.flush();
         // What the wave may flip in the anchor is the guard set of the
         // annotated target, and nothing else (CLOSURE-V2 SS1/SS3).
@@ -243,6 +253,65 @@ public class ExploreTest {
                 second.obligation.rootAssignments().get("CASE.MARKER"));
         assertTrue(Integer.parseInt(
                 second.obligation.rootAssignments().get("CASE.COUNT")) > 5);
+
+        // An arm is owed ONCE per PLANNED OCCURRENCE, not once per session.
+        // The deeper guard's flip is answered NOT_ADMITTED -- and a replay
+        // that is not admitted records no arm, so no DecisionRow of it
+        // exists anywhere -- and then another session runs the same
+        // occurrence and records another path of it.  A second path is a
+        // second pathId, and while the obligation id carried one, the next
+        // wave re-proposed the answered arm out of it: on the 11741 corpus
+        // (81 sessions) wave 0's 36 answers left 30 arms unrecorded and
+        // wave 1 asked those same 30 facts as 706 obligations.
+        record(results, ObligationResult.of(deeper.obligationId(),
+                Verdict.NOT_ADMITTED, "",
+                "the focused occurrence's own prefix did not match"));
+        Session other = new Session(iteration, "s-flip-2");
+        other.activation(target, true);
+        other.root(target, "CASE.MARKER", "M_MARKER", RootKind.MARKER,
+                "true", null, null, true);
+        other.root(target, "CASE.COUNT", "M_COUNT", RootKind.INTEGRAL, "0",
+                "0", "10", true);
+        other.decision(target, "Guard#u8", 1, true, "M_MARKER");
+        other.decision(target, "Guard#u19", 1, false, "(> M_COUNT 5)");
+        other.flush();
+        List<Corpus.RecordedPath> grown =
+                Corpus.read(iteration, null).pathsOf(target);
+        assertEquals("three sessions ran the occurrence", 3, grown.size());
+        assertFalse("and each of them minted its own pathId",
+                grown.get(1).pathId.equals(grown.get(2).pathId));
+
+        Path wave2 = out.resolve("obligations-0002");
+        JsonObject third = plan(iteration, TARGET_SELECTOR, null, results,
+                wave2, 2);
+        assertEquals("every arm of this occurrence is settled -- recorded by "
+                        + "some session, or answered by some wave -- so the "
+                        + "frontier closes however many sessions hold a path "
+                        + "of it", "FIXED_POINT",
+                third.get("state").getAsString());
+        assertTrue("an answered arm is never re-proposed out of a new "
+                        + "session's path: " + obligations(wave2),
+                obligations(wave2).isEmpty());
+        boolean owedOnce = false;
+        for (GapRow gap : RowCodec.readAll(wave2.resolve("gaps.jsonl"),
+                RowCodec::readGap)) {
+            owedOnce |= gap.cls() == GapClass.DIAGNOSTIC
+                    && gap.subject().equals("Guard#u19#1 -> true")
+                    && gap.detail().contains("already answered NOT_ADMITTED")
+                    && gap.detail().contains("owed once per planned "
+                            + "occurrence");
+        }
+        assertTrue("and the wave says which answer settled it", owedOnce);
+        boolean moved = false;
+        for (GapRow gap : RowCodec.readAll(wave2.resolve("gaps.jsonl"),
+                RowCodec::readGap)) {
+            moved |= gap.kind() == GapKind.ADDRESS_UNSTABLE
+                    && gap.cls() == GapClass.DIAGNOSTIC
+                    && gap.subject().equals("task-REGION.spare")
+                    && gap.detail().contains("answered at 2 addresses");
+        }
+        assertTrue("and a planned task answered at two addresses is named",
+                moved);
     }
 
     // ---- (2) a handoff is answered only with what a producer delivers --

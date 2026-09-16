@@ -16,10 +16,10 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.Predicate;
 
 /**
  * The obligations of one task, and the solving of one of them.
@@ -77,8 +77,9 @@ public final class ObligationFactory {
             this.path = path;
             this.index = index;
             this.decision = path.decisions.get(index);
-            this.obligationId = obligationId(task.taskId(), path.pathId,
-                    decision);
+            this.obligationId = obligationId(task.taskId(),
+                    decision.siteId(), decision.ordinal(),
+                    !decision.outcome());
         }
 
         /**
@@ -155,12 +156,24 @@ public final class ObligationFactory {
         }
     }
 
-    /** One obligation's id: the task, the path and the decision it flips. */
-    public static String obligationId(String taskId, String pathId,
-                                      DecisionRow decision) {
-        return ArtifactIO.digest(taskId + "|" + pathId + "|"
-                + decision.siteId() + "|" + decision.ordinal() + "|"
-                + !decision.outcome(), 16);
+    /**
+     * One obligation's id: the PLANNED OCCURRENCE and the arm it asks for.
+     *
+     * <p>The task is the occurrence ({@link ClosurePlanner#taskId}), so this
+     * key is a fact about the occurrence and not about a session.  The
+     * {@code pathId} was in here, and every session mints its own
+     * ({@link Corpus#pathId}), so one arm had as many ids as there were
+     * sessions that ran the occurrence -- 30 owed arms of the 11741 corpus
+     * came back as 706 obligations on wave 1 because the answers to them
+     * were filed under the seed's path.  The obligation ROW still carries a
+     * {@code pathId}: the prefix a flip is cut from is what the query is
+     * built over, and the composition reads it.  Only the IDENTITY drops the
+     * session (see {@link Frontier}).</p>
+     */
+    public static String obligationId(String taskId, String siteId,
+                                      int ordinal, boolean flippedOutcome) {
+        return ArtifactIO.digest(taskId + "|" + siteId + "|" + ordinal + "|"
+                + flippedOutcome, 16);
     }
 
     /**
@@ -180,16 +193,18 @@ public final class ObligationFactory {
      *
      * @param flipSites the site ids this task's demand names; a task with
      *                  none offers no flip, and null is the same as none
-     * @param gaps where a skipped candidate is recorded, so a reader can see
+     * @param owed the ONE ledger of what is still owed ({@link Frontier}):
+     *             an arm some session recorded, or some wave answered, is
+     *             settled and is never proposed again
+     * @param gaps where a settled candidate is recorded, so a reader can see
      *             that the wave shrank because the corpus grew
      */
     public static List<Candidate> candidates(Corpus corpus, Task task,
                                              Set<String> flipSites,
-                                             Bounds bounds,
-                                             Predicate<String> asked,
+                                             Bounds bounds, Frontier owed,
                                              List<GapRow> gaps) {
-        Map<String, String> attested = attestedArms(corpus, task);
         List<Candidate> candidates = new ArrayList<Candidate>();
+        Set<String> offered = new LinkedHashSet<String>();
         int paths = 0;
         for (Corpus.RecordedPath path : corpus.pathsOf(task.focused())) {
             if (paths++ >= bounds.maxPathsPerTask) break;
@@ -205,23 +220,18 @@ public final class ObligationFactory {
                     continue;
                 }
                 Candidate candidate = new Candidate(task, path, index);
-                if (asked != null && asked.test(candidate.obligationId)) {
-                    continue;
-                }
-                String recorded = attested.get(arm(decision.siteId(),
-                        decision.ordinal(), !decision.outcome()));
-                if (recorded != null) {
+                // A second path of the same occurrence offering the same arm
+                // is the same obligation, not another one: one witness of an
+                // owed fact is enough, and it costs neither a gap row nor a
+                // flip of the budget.  The first path in corpus order is the
+                // prefix the query is built over.
+                if (!offered.add(candidate.obligationId)) continue;
+                String reason = owed.settled(candidate.obligationId);
+                if (!reason.isEmpty()) {
                     gaps.add(GapRow.of(path.sessionId,
                             GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                             decision.siteId() + "#" + decision.ordinal()
-                                    + " -> " + !decision.outcome(),
-                            "arm already recorded by " + recorded
-                                    + ": this occurrence took that arm at "
-                                    + "that site in that session, so a "
-                                    + "focused replay of it would collect "
-                                    + "nothing the corpus lacks (HANDOVER "
-                                    + "SS1.5: exploration collects the arms "
-                                    + "the seed LACKS)"));
+                                    + " -> " + !decision.outcome(), reason));
                     continue;
                 }
                 candidates.add(candidate);
@@ -229,43 +239,6 @@ public final class ObligationFactory {
             }
         }
         return candidates;
-    }
-
-    /**
-     * Every arm of this task's occurrence that some session already took.
-     *
-     * <p>Keyed by site, ordinal and outcome, over the occurrence's OWN rows
-     * in every session of the epoch -- {@link Corpus#pathsOf} spans them --
-     * because an arm is attested by the identity that took it, not by the
-     * session that happens to hold the row.  On laneA6 wave 1 this is the
-     * marker decision flipped BACK to true out of the focused sessions the
-     * wave 0 flips wrote: nine minutes of replay each, to record a row the
-     * seed already had.</p>
-     *
-     * <p>The PREFIX is deliberately not part of the key, and that is a
-     * choice: an arm recorded under a different prefix of the same
-     * occurrence is treated as recorded, so that combination of prefix and
-     * flip is never replayed.  It is the fail-closed side of the question --
-     * the rule only ever skips an arm the corpus demonstrably HOLDS, so no
-     * unrecorded arm is dropped -- and the arm is what the composition
-     * needs: a family's arm is a writer's or a producer's path condition,
-     * and a second prefix over the same arm adds a disjunct to a formula
-     * that already has one, not an arm it lacks.</p>
-     */
-    private static Map<String, String> attestedArms(Corpus corpus,
-                                                    Task task) {
-        Map<String, String> attested = new LinkedHashMap<String, String>();
-        for (Corpus.RecordedPath path : corpus.pathsOf(task.focused())) {
-            for (DecisionRow decision : path.decisions) {
-                attested.put(arm(decision.siteId(), decision.ordinal(),
-                        decision.outcome()), path.sessionId);
-            }
-        }
-        return attested;
-    }
-
-    private static String arm(String siteId, int ordinal, boolean outcome) {
-        return siteId + "#" + ordinal + "#" + outcome;
     }
 
     /**
