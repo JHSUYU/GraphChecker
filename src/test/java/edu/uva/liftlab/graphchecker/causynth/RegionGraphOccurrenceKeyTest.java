@@ -193,54 +193,24 @@ public class RegionGraphOccurrenceKeyTest {
     }
 
     /**
-     * The care set is the intersection of the two conditions: a field must
-     * appear on the backward slice AND be forward-reachable from a symbolic
-     * root.  A field the slice names but no root reaches is a constant for
-     * this failure and stays out.  An explicit fault marker and a wire attach
-     * point are symbolic roots of the same standing.
-     *
-     * <p>Then what the slice PUBLISHES about those cells (CLOSURE-V2 SS4):
-     * every write site of a cell it names, under the innermost region that
-     * would run it, with the guard set post-dominance gives that site -- and
-     * the guard set is where a may-reach guard and a control-dependence guard
+     * What the slice PUBLISHES about the cells it names (CLOSURE-V2 SS4):
+     * every write site of such a cell, under the innermost region that would
+     * run it, with the guard set post-dominance gives that site -- and the
+     * guard set is where a may-reach guard and a control-dependence guard
      * differ, which is the difference between finding 17960's marker flip and
-     * not finding it.</p>
+     * not finding it.
+     *
+     * <p>That is the whole of what the static side contributes to the demand
+     * walk.  {@code writerRegionsByCell} is the join the region finalizer
+     * crosses on: one location, the REGIONS whose text stores into it, under
+     * both names a read can reach it by -- the leaf the VM versions and the
+     * declared field that owns it.  It names no activation and no writer: a
+     * region the recording never entered contributes no occurrence, and WHICH
+     * of the entered ones wrote the value the VM's own expression decides.</p>
      */
     @Test
-    public void careSetKeepsOnlySliceFieldsASymbolicRootReaches()
+    public void theMapScopesTheDemandWalkAndNamesNoWriter()
             throws IOException {
-        List<Map<String, Object>> graph = Arrays.asList(
-                // The fault symbol enters at the wire and flows to a cell
-                // that reads the rolled key.
-                row("kind", "explicit_symbolic_fault",
-                        "explicitSymbolicFault", true,
-                        "fromCell", "cell.fault", "toCell", "cell.request"),
-                row("kind", "field_read", "fromCell", "cell.request",
-                        "toCell", "cell.key",
-                        "declaredFieldSignature",
-                        "<example.Owner: example.Key currentKey>"),
-                // On the slice, but nothing symbolic reaches it: a harness
-                // setter writing its own island.
-                row("kind", "field_write", "fromCell", "cell.harness",
-                        "toCell", "cell.interval",
-                        "declaredFieldSignature",
-                        "<example.Owner: long keyUpdateInterval>"));
-
-        Set<String> cared = RuntimeSelectedRegionFinalizer
-                .caredSharedLocations(graph);
-        assertTrue(cared.contains("example.Owner#currentKey"));
-        assertFalse(cared.contains("example.Owner#keyUpdateInterval"));
-
-        List<Map<String, Object>> handoff = Arrays.asList(
-                row("kind", "wire_handoff", "fromCell", "cell.send",
-                        "toCell", "cell.receive"),
-                row("kind", "field_write", "fromCell", "cell.receive",
-                        "toCell", "cell.keys",
-                        "fieldPathDeclarations", Collections.singletonList(
-                                "<example.Owner: java.util.Map allKeys>")));
-        assertTrue(RuntimeSelectedRegionFinalizer.caredSharedLocations(handoff)
-                .contains("example.Owner#allKeys"));
-
         theSliceNamesEveryWriteSiteOfACellItNames();
         theGuardSetIsPostDominanceAndNotMayReach();
     }
@@ -251,6 +221,7 @@ public class RegionGraphOccurrenceKeyTest {
      */
     private void theSliceNamesEveryWriteSiteOfACellItNames()
             throws IOException {
+        String leaf = "<java.util.concurrent.atomic.AtomicInteger: int value>";
         String increment = "<example.Manager: java.lang.String create()>";
         String decrement = "<example.Manager: void delete(int,long)>";
         String saver = "<example.Saver: void save(java.io.OutputStream)>";
@@ -344,6 +315,28 @@ public class RegionGraphOccurrenceKeyTest {
         assertEquals(saver + "#u64", map.targetSites().get(0).siteId);
         assertEquals("example.Saver#save(Ljava/io/OutputStream;)V",
                 map.targetSites().get(0).vmSite);
+
+        // The join the demand walk crosses on: both names of the location
+        // answer with the same two sites, each naming the region AND the
+        // method an activation has to have entered to have written there.
+        Map<String, List<StaticScopeMap.Site>> writeSites =
+                map.writeSitesByCell();
+        assertEquals("the leaf the VM keeps versions of",
+                Arrays.asList("REGION.create " + increment + "#u27",
+                        "REGION.delete " + decrement + "#u35"),
+                scoped(writeSites.get(leaf)));
+        assertEquals("and the declared field that owns it",
+                scoped(writeSites.get(leaf)),
+                scoped(writeSites.get(carrier)));
+        assertEquals("the storing method is what the recording is joined on",
+                Arrays.asList(increment, decrement),
+                methodsOf(writeSites.get(leaf)));
+        assertFalse("a local-held container mutation names no shared "
+                        + "location, so it scopes no writer",
+                writeSites.containsKey(decrement + "::$r5"));
+        assertFalse("the annotated target is not a write site",
+                writeSites.containsKey(saver
+                        + "#u64#exception:java.lang.IllegalState"));
     }
 
     /**
@@ -413,6 +406,22 @@ public class RegionGraphOccurrenceKeyTest {
                 new ArrayList<Unit>(body.getUnits()).indexOf(write));
         assertEquals(expected, guardSites(SiteControlDependence.over(
                 Collections.singletonList(decrement)).of(decrement)));
+    }
+
+    private static List<String> scoped(List<StaticScopeMap.Site> sites) {
+        List<String> scopes = new ArrayList<>();
+        for (StaticScopeMap.Site site : sites) {
+            scopes.add(site.regionId + " " + site.siteId);
+        }
+        return scopes;
+    }
+
+    private static List<String> methodsOf(List<StaticScopeMap.Site> sites) {
+        List<String> methods = new ArrayList<>();
+        for (StaticScopeMap.Site site : sites) {
+            methods.add(SiteId.methodOf(site.siteId));
+        }
+        return methods;
     }
 
     private static List<String> guardSites(

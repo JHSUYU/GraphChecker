@@ -756,6 +756,43 @@ public final class StaticScopeMap {
         return found;
     }
 
+    /**
+     * The regions whose text STORES into each location the slice names.
+     *
+     * <p>This is the scoping half of the demand walk, and the only half the
+     * static side owns: a {@code WRITE_SITE} row says this region contains a
+     * store into that location, never that any activation of it stored
+     * anything, and never which of them a read observed.  WHICH activations
+     * ran is the recording's answer and the walk joins the two.</p>
+     *
+     * <p>Both names of a location are keys.  {@code cell} is the leaf the VM
+     * keeps versions of and {@code carrier} the declared field that owns it;
+     * a read reaches one or the other depending on how the slice spelled it,
+     * and one row answers for both.  The row is returned whole, because the
+     * join needs its METHOD as well as its region: an activation of a
+     * writer region that never entered the storing method wrote nothing
+     * there, and the recording says which methods it entered.</p>
+     */
+    public Map<String, List<Site>> writeSitesByCell() {
+        Map<String, List<Site>> byCell =
+                new java.util.LinkedHashMap<String, List<Site>>();
+        for (Site site : sites) {
+            if (!WRITE_SITE.equals(site.role) || site.regionId.isEmpty()) {
+                continue;
+            }
+            for (String location : new String[]{site.cell, site.carrier}) {
+                if (location.isEmpty()) continue;
+                List<Site> found = byCell.get(location);
+                if (found == null) {
+                    found = new ArrayList<Site>();
+                    byCell.put(location, found);
+                }
+                found.add(site);
+            }
+        }
+        return byCell;
+    }
+
     /** Every static write site of one carrier, whatever region runs it. */
     public List<Site> writersOf(String carrier) {
         List<Site> found = new ArrayList<Site>();

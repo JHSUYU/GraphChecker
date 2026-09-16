@@ -6,6 +6,7 @@ import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
+import edu.uva.liftlab.graphchecker.plan.DeclaredSiteCapture;
 import edu.uva.liftlab.graphchecker.plan.DeclaredSymbolicInputs;
 import edu.uva.liftlab.graphchecker.plan.DependencyRole;
 import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
@@ -16,6 +17,7 @@ import edu.uva.liftlab.graphchecker.plan.StaticSymbolicSourceDeclaration;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.runtime.OccurrenceBinding;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
+import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 
 import java.io.IOException;
 import java.util.ArrayDeque;
@@ -147,7 +149,8 @@ public final class RuntimeSelectedRegionFinalizer {
             String skeletonSource, Collection<String> observedMethods,
             Collection<Map<String, Object>> runtimeInstances,
             Collection<Map<String, Object>> runtimeObservations,
-            Collection<Map<String, Object>> runtimeOccurrenceLinks)
+            Collection<Map<String, Object>> runtimeOccurrenceLinks,
+            StaticScopeMap scopeMap)
             throws IOException {
         Set<String> observed = new LinkedHashSet<>();
         if (observedMethods != null) {
@@ -264,9 +267,9 @@ public final class RuntimeSelectedRegionFinalizer {
         // stamped above, so the frontier pass and the closure walk read the
         // same declaration table.
         RegionDemandIndex demands = new RegionDemandIndex(program.regions,
-                program.refinedGraph);
+                program.activations, program.refinedGraph);
         ClosureWalk closure = failureDirectedClosure(program, demands,
-                skeletonSource);
+                skeletonSource, scopeMap);
         program.regionEdges.addAll(retainExactRequestFaultControls(
                 program, closure, runtimeOccurrenceLinks));
         applyClosure(program, closure);
@@ -805,11 +808,28 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * Retains the concrete producer activations and ports that can reach an
-     * observed exception through confirmed heap or protocol flow.
+     * The activations the failure's demand reaches, from the DECLARATIONS and
+     * the static scope map.
+     *
+     * <p>Two authorities and no third.  The declarations say where a value
+     * may enter the replay: the case's symbolic inputs (a declared region
+     * root, and every {@code DECLARED_SITE} the recording states a capture
+     * at), its communication mappings (the declared cut ports, with the
+     * captures an activation performed), and the annotated target itself.
+     * The static scope map says, for one location, WHICH regions' text
+     * stores into it -- scope, never a writer: which activation of such a
+     * region actually ran is the recording's answer, and this walk joins the
+     * two ({@link StaticScopeMap#writerRegionsByCell}, CLOSURE-V2 SS4).</p>
+     *
+     * <p>Nothing is discovered from the recording's field accesses.  A read
+     * the campaign never declared mints no symbol -- {@code
+     * ConcolicScheduler.SymbolicInputSelection} is the one admission rule --
+     * so an occurrence retained only because such a read paired with some
+     * recorded write bought the plan a task that can publish no arm.</p>
      */
     private static ClosureWalk failureDirectedClosure(
-            StaticProgram program, RegionDemandIndex demands, String source)
+            StaticProgram program, RegionDemandIndex demands, String source,
+            StaticScopeMap scopeMap)
             throws IOException {
         Map<String, Map<String, Object>> instances = program.activations;
         if (instances.isEmpty()) {
@@ -857,41 +877,42 @@ public final class RuntimeSelectedRegionFinalizer {
                     + "exception-context activation observed its explicit "
                     + "fatal target branch: " + source);
         }
-        // Materialize the exact fatal prefix before request-flow selection;
-        // requestFlowPrefixInputs reads its recorded event cutoff directly.
+        // Materialize the exact fatal prefix before the walk:
+        // targetInputs publishes fatalPrefixContexts, which applyClosure and
+        // the plan row both read.
         for (String target : targets) {
             demands.targetInputs(instances.get(target));
         }
         // Hop count per admitted occurrence, seeded on the fatal target(s).
-        // It is written by the two admission rules below and read by the
-        // transitive rule, which refuses a hop past the configured bound.
         Map<String, Integer> demandDepths = new LinkedHashMap<>();
         for (String target : targets) {
             demandDepths.put(target, TARGET_DEMAND_DEPTH);
         }
-        // The locations transitive demand may travel through, decided once
-        // per finalization off the runtime-refined graph.
-        Set<String> caredLocations = caredSharedLocations(
-                program.refinedGraph);
-        Set<String> admittedStateWriters = new LinkedHashSet<>(
-                admitSharedLocationWriters(targets, instances, demands,
-                        program.regionEdges, demandDepths));
         // Every activation of a declared symbolic input's method, admitted
-        // by declaration.  It is the same admission the bounded state
-        // writers get -- an occurrence retained although nothing demands one
-        // of its outputs yet -- and it has to be, because a declared site
-        // typically has no output to demand: hdfs-11741's removeExpiredKeys
-        // reads the clock, decides an expiry, and in a healthy recording
-        // removes nothing, so it writes no field, exports no value, and no
-        // demand-directed walk over recorded flows can ever arrive on it.
-        // The case declared it precisely because the arm it did not take is
-        // the failure.
+        // by declaration.  It is an occurrence retained although nothing
+        // demands one of its outputs, and it has to be, because a declared
+        // site typically has no output to demand: hdfs-11741's
+        // removeExpiredKeys reads the clock, decides an expiry, and in a
+        // healthy recording removes nothing, so it writes no field, exports
+        // no value, and no demand-directed walk can ever arrive on it.  The
+        // case declared it precisely because the arm it did not take is the
+        // failure.
+        //
+        // The DECLARED_SITE captures such an activation holds are what it
+        // READS, not why it is here: they seed the walk below, and an
+        // activation that holds one but was declared by nothing is left to
+        // the demand like any other.
+        Set<String> declaredCallees =
+                DeclaredSymbolicInputs.configuredCallees().keySet();
         Set<String> declaredInputOccurrences = new LinkedHashSet<>();
         for (Map.Entry<String, Map<String, Object>> entry
                 : instances.entrySet()) {
             StaticProgram.RegionRow skeleton = program.skeletons.get(
                     text(entry.getValue().get("regionId")));
             if (skeleton != null && skeleton.declaredInputRoot) {
+                declaredInputOccurrences.add(entry.getKey());
+            } else if (declaresACapturedCallee(entry.getValue(),
+                    declaredCallees)) {
                 declaredInputOccurrences.add(entry.getKey());
             }
         }
@@ -902,7 +923,6 @@ public final class RuntimeSelectedRegionFinalizer {
         // target (hdfs-17960's serializeSnapshotSection) states nothing
         // here and this rule leaves its rows untouched.
         declaredInputOccurrences.removeAll(targets);
-        admittedStateWriters.addAll(declaredInputOccurrences);
         // Every activation that PERFORMED a declared communication capture,
         // admitted the same way and for the reason
         // DECLARED_COMMUNICATION_ADMISSION states: the export or attach the
@@ -920,89 +940,42 @@ public final class RuntimeSelectedRegionFinalizer {
                 : instances.entrySet()) {
             StaticProgram.RegionRow skeleton = program.skeletons.get(
                     text(entry.getValue().get("regionId")));
-            if (skeleton == null || skeleton.communicationPorts.isEmpty()
-                    || rows(entry.getValue().get(
-                            OBSERVED_COMMUNICATION_CAPTURES)).isEmpty()) {
+            if (skeleton == null || skeleton.communicationPorts.isEmpty()) {
+                continue;
+            }
+            if (rows(entry.getValue().get(
+                    OBSERVED_COMMUNICATION_CAPTURES)).isEmpty()
+                    && !attachedADeclaredPort(skeleton, entry.getValue())) {
                 continue;
             }
             declaredCaptureOccurrences.add(entry.getKey());
         }
         declaredCaptureOccurrences.removeAll(targets);
-        admittedStateWriters.addAll(declaredCaptureOccurrences);
 
-        Map<String, List<Map<String, Object>>> predecessors =
-                new LinkedHashMap<>();
-        // The declared carriers of the demanded component leaves above. A
-        // structured leaf has no capture of its own: the producer's relation
-        // for it is anchored on the carrier's own observed delivery, so the
-        // carrier is demanded together with the leaf it transported.
-        for (Map<String, Object> edge : program.regionEdges) {
-            if (!causalRegionRetentionEdge(edge)) {
+        Set<String> declaredOccurrences =
+                new LinkedHashSet<>(declaredInputOccurrences);
+        declaredOccurrences.addAll(declaredCaptureOccurrences);
+        for (String occurrence : declaredOccurrences) {
+            recordDemandDepth(demandDepths, occurrence, 1);
+        }
+
+        ClosureWalk walk = walkFailureClosure(targets, instances, program,
+                demands, scopeMap, scopeMap.writeSitesByCell(),
+                declaredOccurrences, demandDepths);
+        // Restated after the walk, so a writer the walk reached twice
+        // publishes the shortest chain that reached it.
+        for (String occurrence : walk.reached) {
+            Map<String, Object> activation = instances.get(occurrence);
+            if (activation == null || !SHARED_LOCATION_DEMAND_ADMISSION
+                    .equals(text(activation.get(ADMISSION_BASIS)))) {
                 continue;
             }
-            String from = text(edge.get("fromOccurrenceId"));
-            String to = text(edge.get("toOccurrenceId"));
-            if (!instances.containsKey(from) || !instances.containsKey(to)) {
-                throw new IOException("runtime causal edge references an "
-                        + "unselected activation: "
-                        + text(edge.get("edgeId")));
-            }
-            String toPort = text(edge.get("toPort"));
-            String fromPort = text(edge.get("fromPort"));
-            if (toPort.isEmpty() || fromPort.isEmpty()
-                    || !demands.hasInput(to, toPort)
-                    || !demands.hasOutput(from, fromPort)) {
-                throw new IOException("runtime causal edge references an "
-                        + "unknown exact port: " + text(edge.get("edgeId")));
-            }
-            predecessors.computeIfAbsent(portDemandKey(to, toPort),
-                    ignored -> new ArrayList<>()).add(edge);
+            activation.put(DEMAND_DEPTH,
+                    demandDepth(demandDepths, occurrence));
         }
-
-        Map<String, Long> requestFlowPrefixInputs =
-                requestFlowPrefixInputs(targets, instances,
-                        program.regionEdges);
-
-        // Shared reads an admitted occurrence holds that no port demand asked
-        // for yet.  They are the second-order demand: the target demands one
-        // location, the occurrence admitted to write it reads a location of
-        // its own, and that read stays a single INITIAL arm pinned to its
-        // recorded constant until the writers on its own node are demanded
-        // too.  Seeding them into the walk is what makes the read a
-        // multi-writer GuardedRead, so the seeds and the admission below grow
-        // together to one fixed point.
-        Set<String> transitiveDemands = new LinkedHashSet<>();
-        ClosureWalk union = walkFailureClosure(targets, instances,
-                demands, predecessors,
-                requestFlowPrefixInputs, admittedStateWriters,
-                transitiveDemands);
-        // Heap demand is transitive with port demand: each walk may reach a
-        // producer that itself reads a written location, so admit the writers
-        // of what this walk demanded and walk again.
-        while (true) {
-            Map<String, Integer> depthsBefore =
-                    new LinkedHashMap<>(demandDepths);
-            boolean grown = admittedStateWriters.addAll(admitWritersOfDemands(
-                    union.reached, union.demandedInputs, instances,
-                    program.regionEdges, demandDepths, targets,
-                    caredLocations));
-            grown |= transitiveDemands.addAll(transitiveSharedLocationDemand(
-                    union.reached, union.demandedInputs, instances,
-                    program.regionEdges, demandDepths, caredLocations));
-            // A round that only shortened a demand chain still restates the
-            // hop counts the rows publish.  Depths never rise and the
-            // occurrence set is finite, so answering that round terminates.
-            grown |= !depthsBefore.equals(demandDepths);
-            if (!grown) break;
-            union = walkFailureClosure(targets, instances, demands,
-                    predecessors,
-                    requestFlowPrefixInputs, admittedStateWriters,
-                    transitiveDemands);
-        }
-        // Stated after the fixed point, and only where no rule above has
-        // stated one: a declared occurrence the shared-location demand also
-        // reached keeps that basis, which carries the demand depth the
-        // scheduler reads.
+        // Stated after the walk, and only where no rule above has stated
+        // one: a declared occurrence the location demand also reached keeps
+        // that basis, which carries the demand depth the scheduler reads.
         for (String occurrence : declaredInputOccurrences) {
             Map<String, Object> activation = instances.get(occurrence);
             if (activation == null
@@ -1020,7 +993,7 @@ public final class RuntimeSelectedRegionFinalizer {
             activation.put(ADMISSION_BASIS,
                     DECLARED_COMMUNICATION_ADMISSION);
         }
-        return union;
+        return walk;
     }
 
     /**
@@ -1364,87 +1337,6 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * Every observed wire delivery in the bounded prefix of a failed logical
-     * request.  The request key, both endpoint activations, and the fatal
-     * event are recorded evidence; no transport name or application command
-     * participates in the selection.
-     */
-    private static Map<String, Long> requestFlowPrefixInputs(
-            Collection<String> targets,
-            Map<String, Map<String, Object>> instances,
-            Collection<Map<String, Object>> edges) {
-        Map<String, Long> fatalCutoffByRequest = new LinkedHashMap<>();
-        for (String target : targets) {
-            Map<String, Object> instance = instances.get(target);
-            String requestKey = text(instance == null
-                    ? null : instance.get("requestKey"));
-            long cutoff = fatalPrefixCutoff(instance);
-            if (!requestKey.isEmpty() && cutoff >= 0L) {
-                fatalCutoffByRequest.merge(requestKey, cutoff, Math::max);
-            }
-        }
-
-        Map<String, Long> result = new LinkedHashMap<>();
-        for (Map<String, Object> edge : edges) {
-            if (!"RUNTIME_PROTOCOL_FLOW".equals(text(edge.get("kind")))
-                    || !DependencyRole.valueFrontier(
-                    edge.get("dependencyRole"))) {
-                continue;
-            }
-            Map<String, Object> from = instances.get(
-                    text(edge.get("fromOccurrenceId")));
-            Map<String, Object> to = instances.get(
-                    text(edge.get("toOccurrenceId")));
-            String fromRequest = text(from == null
-                    ? null : from.get("requestKey"));
-            String toRequest = text(to == null
-                    ? null : to.get("requestKey"));
-            String edgeRequest = text(edge.get("requestKey"));
-            Long cutoff = fatalCutoffByRequest.get(edgeRequest);
-            long sentAt = longNumber(edge.get("senderEventSeq"), -1L);
-            long receivedAt = longNumber(edge.get("receiverEventSeq"), -1L);
-            if (cutoff == null || edgeRequest.isEmpty()
-                    || !edgeRequest.equals(fromRequest)
-                    || !edgeRequest.equals(toRequest)
-                    || sentAt < 0L || receivedAt <= sentAt
-                    || receivedAt >= cutoff.longValue()) {
-                continue;
-            }
-            String input = portDemandKey(
-                    text(edge.get("toOccurrenceId")),
-                    text(edge.get("toPort")));
-            result.merge(input, cutoff, Math::max);
-        }
-        return result;
-    }
-
-    private static long fatalPrefixCutoff(Map<String, Object> instance) {
-        long cutoff = -1L;
-        if (instance == null) return cutoff;
-        for (Map<String, Object> context
-                : rows(instance.get("fatalPrefixContexts"))) {
-            cutoff = Math.max(cutoff,
-                    longNumber(context.get("eventSeq"), -1L));
-        }
-        return cutoff;
-    }
-
-    /** Admits every observed writer linked to a demanded shared location. */
-    private static Set<String> admitSharedLocationWriters(
-            Set<String> targets,
-            Map<String, Map<String, Object>> instances,
-            RegionDemandIndex demands,
-            List<Map<String, Object>> regionEdges,
-            Map<String, Integer> demandDepths) throws IOException {
-        Set<String> fatalInputs = new LinkedHashSet<>();
-        for (String target : targets) {
-            fatalInputs.addAll(demands.targetInputs(instances.get(target)));
-        }
-        return admitWritersOfDemands(targets, fatalInputs, instances,
-                regionEdges, demandDepths, targets, null);
-    }
-
-    /**
      * The hop count of one admitted occurrence.  A target is the origin.  An
      * occurrence the closure reached on its own authority -- a fault entry, a
      * communication entry, a protocol producer -- is a demand origin of the
@@ -1468,357 +1360,218 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * The shared locations this failure cares about.
+     * One backward walk over the candidate graph, from the failure's own
+     * demand and from every declaration, crossing between activations only
+     * where the scope map says a location is stored.
      *
-     * <p>Transitive demand may only travel through a location whose value
-     * can still differ in a way the target can observe.  Two conditions
-     * decide that, both read off the one runtime-refined graph this
-     * finalization already holds:</p>
+     * <p>A demand is one cell of one occurrence.  Inside the occurrence the
+     * walk moves on the candidate graph's own rows -- the static slice, whose
+     * region scope the skeletons decide -- and it stops at a cell the scope
+     * map names as stored: the value of such a cell did not come from this
+     * occurrence's text, so what is upstream of it are the activations of
+     * the regions that store it.  Those are reached on the node that holds
+     * the object, because a heap location is private to the node and epoch
+     * that holds it, and the walk continues from the same cell inside each
+     * of them.  Its guard still travels: whether the read runs at all is
+     * decided by this occurrence's own branches.</p>
      *
-     * <ol>
-     *   <li>the location lies on the backward slice from the fatal target,
-     *   i.e. it appears as a declared field of some refined edge; and</li>
-     *   <li>it is forward-reachable from a symbolic root -- the explicit
-     *   fault symbol, a declared {@code CausynthSymbolicSource} field, an
-     *   {@code EXTERNAL_CALL_RETURN} value, or a wire attach point -- so
-     *   some symbolic choice can still change it.</li>
-     * </ol>
-     *
-     * <p>A location on the slice that no symbolic root reaches is a constant
-     * for this failure: every replay arm writes the value the recording
-     * observed, so admitting its writers buys no new behaviour and only
-     * grows the campaign.  Heartbeat timestamps, report counters and
-     * test-harness setters fall out here.</p>
+     * <p>Which of the reached activations actually wrote the value is not
+     * asked and is not this stage's to answer: every one of them is a replay
+     * arm of the read, and the VM's own GuardedRead expression carries the
+     * choice.</p>
      */
-    static Set<String> caredSharedLocations(
-            List<Map<String, Object>> refinedGraph) {
-        List<Map<String, Object>> rows = refinedGraph == null
-                ? Collections.<Map<String, Object>>emptyList() : refinedGraph;
-        Map<String, Set<String>> forward = new LinkedHashMap<>();
-        Set<String> roots = new LinkedHashSet<>();
-        for (Map<String, Object> edge : rows) {
-            String from = text(edge.get("fromCell"));
-            String to = text(edge.get("toCell"));
-            if (from.isEmpty() || to.isEmpty()) continue;
-            forward.computeIfAbsent(from,
-                    ignored -> new LinkedHashSet<>()).add(to);
-            if (symbolicRootEdge(edge)) {
-                // Both ends: the fault edge names the symbol it introduces
-                // on one side and the cell that carries it on the other.
-                roots.add(from);
-                roots.add(to);
-            }
-        }
-        Set<String> reachable = new LinkedHashSet<>(roots);
-        Deque<String> pending = new ArrayDeque<>(roots);
-        while (!pending.isEmpty()) {
-            for (String next : forward.getOrDefault(pending.removeFirst(),
-                    Collections.<String>emptySet())) {
-                if (reachable.add(next)) pending.addLast(next);
-            }
-        }
-        Set<String> cared = new LinkedHashSet<>();
-        for (Map<String, Object> edge : rows) {
-            if (!reachable.contains(text(edge.get("fromCell")))
-                    && !reachable.contains(text(edge.get("toCell")))) {
-                continue;
-            }
-            cared.addAll(declaredFieldLocations(edge));
-        }
-        return cared;
-    }
-
-    /** A refined edge that introduces a symbolic value of its own. */
-    private static boolean symbolicRootEdge(Map<String, Object> edge) {
-        String kind = text(edge.get("kind"));
-        return Boolean.TRUE.equals(booleanValue(
-                edge.get("explicitSymbolicFault")))
-                || !text(edge.get("symbolicName")).isEmpty()
-                || "wire_handoff".equals(kind)
-                || "wire_capture_argument".equals(kind)
-                || EXTERNAL_CALL_RETURN.equals(text(edge.get("sourceKind")));
-    }
-
-    /** Every {@code owner#field} address one refined edge names. */
-    private static Set<String> declaredFieldLocations(
-            Map<String, Object> edge) {
-        Set<String> located = new LinkedHashSet<>();
-        List<String> declarations = new ArrayList<>(
-                strings(edge.get("fieldPathDeclarations")));
-        declarations.add(text(edge.get("declaredFieldSignature")));
-        for (String declaration : declarations) {
-            FieldPathSpec.DeclaredField field =
-                    FieldPathSpec.declaredField(declaration);
-            if (field == null) continue;
-            String key = SharedFieldFlow.fieldKey(field.owner(),
-                    field.name());
-            if (!key.isEmpty()) located.add(key);
-        }
-        return located;
-    }
-
-    /**
-     * Second-order shared-location demand: the read ports an already admitted
-     * occurrence holds for a location some other recorded activation of the
-     * same node and epoch wrote.
-     *
-     * <p>The first-order rule only follows a read the failure closure had
-     * already demanded through a port, which is the read of a value the
-     * failure consumed directly.  A region admitted to supply that value
-     * reads shared state of its own, and such a read is ordinarily neither a
-     * target input nor an explored branch operand, so no port demand ever
-     * reaches it: replay then pins it to the one INITIAL arm its recording
-     * observed.  Returning the port here seeds it into the next closure walk,
-     * which retains the recorded field flows into it and therefore hands the
-     * first-order rule the writers to admit -- under
-     * {@code SHARED_LOCATION_DEMAND_V1}, with the hop count this demand
-     * travelled.</p>
-     *
-     * <p>Evidence is the same pass-2 field and accessor binding the
-     * first-order rule reads: one recorded {@code RUNTIME_FIELD_FLOW} per
-     * observed writer of the exact receiver and leaf.  A hop is opened only
-     * by a writer inside the reader's own semantic source, because a heap
-     * location is private to the node and epoch that holds the object; once
-     * the read is demanded, every recorded writer of that receiver and leaf
-     * is a replay arm of it, which is the first-order rule's standing
-     * contract and not this rule's to narrow.</p>
-     */
-    static Set<String> transitiveSharedLocationDemand(
-            Collection<String> admitted,
-            Set<String> demandedInputs,
-            Map<String, Map<String, Object>> instances,
-            List<Map<String, Object>> regionEdges,
-            Map<String, Integer> demandDepths,
-            Set<String> caredLocations) {
-        Set<String> reached = new LinkedHashSet<>(admitted);
-        Set<String> seeds = new LinkedHashSet<>();
-        for (Map<String, Object> edge : regionEdges) {
-            if (!"RUNTIME_FIELD_FLOW".equals(text(edge.get("kind")))) {
-                continue;
-            }
-            String consumer = text(edge.get("toOccurrenceId"));
-            String writer = text(edge.get("fromOccurrenceId"));
-            String toPort = text(edge.get("toPort"));
-            if (!reached.contains(consumer) || writer.equals(consumer)
-                    || toPort.isEmpty()
-                    || text(edge.get(SharedFieldFlow.EDGE_LOCATION))
-                    .isEmpty()
-                    || !instances.containsKey(writer)
-                    || !instances.containsKey(consumer)) {
-                continue;
-            }
-            String demand = portDemandKey(consumer, toPort);
-            if (demandedInputs.contains(demand)) {
-                // Already first-order demand; its writers are admitted by
-                // the rule above and this hop would only recount them.
-                continue;
-            }
-            if (!activationSourceKey(instances.get(consumer)).equals(
-                    activationSourceKey(instances.get(writer)))) {
-                continue;
-            }
-            String location = text(edge.get(SharedFieldFlow.EDGE_LOCATION));
-            if (caredLocations != null
-                    && !caredLocations.contains(location)) {
-                // Outside the care set this location is a constant for the
-                // failure, so the hop stops here.
-                continue;
-            }
-            recordDemandDepth(demandDepths, writer,
-                    demandDepth(demandDepths, consumer) + 1);
-            seeds.add(demand);
-        }
-        return seeds;
-    }
-
-    /** Admits the observed writers of locations read by the demand set. */
-    static Set<String> admitWritersOfDemands(
-            Collection<String> demanding,
-            Set<String> demandedInputs,
-            Map<String, Map<String, Object>> instances,
-            List<Map<String, Object>> regionEdges,
-            Map<String, Integer> demandDepths,
-            Collection<String> fatalTargets,
-            Set<String> caredLocations)
-            throws IOException {
-        Set<String> targets = new LinkedHashSet<>(demanding);
-        Set<String> fatalInputs = demandedInputs;
-        Map<String, Set<String>> locationsByWriter = new LinkedHashMap<>();
-        Map<String, Set<String>> targetRegionsByWriter =
-                new LinkedHashMap<>();
-        for (Map<String, Object> edge : regionEdges) {
-            if (!"RUNTIME_FIELD_FLOW".equals(text(edge.get("kind")))) {
-                continue;
-            }
-            String consumer = text(edge.get("toOccurrenceId"));
-            String writer = text(edge.get("fromOccurrenceId"));
-            String input = portDemandKey(consumer,
-                    text(edge.get("toPort")));
-            if (!targets.contains(consumer) || writer.equals(consumer)
-                    || !fatalInputs.contains(input)
-                    || !instances.containsKey(writer)) {
-                continue;
-            }
-            String location = text(edge.get(SharedFieldFlow.EDGE_LOCATION));
-            if (location.isEmpty()) {
-                continue;
-            }
-            // The fatal target's own reads are demanded whatever they are:
-            // they are the failure's direct inputs.  Every other consumer is
-            // here because it was itself admitted to supply a location, so
-            // its reads are second-order demand and travel only through the
-            // care set.
-            if (caredLocations != null
-                    && (fatalTargets == null
-                    || !fatalTargets.contains(consumer))
-                    && !caredLocations.contains(location)) {
-                continue;
-            }
-            locationsByWriter.computeIfAbsent(writer,
-                    ignored -> new LinkedHashSet<>()).add(location);
-            targetRegionsByWriter.computeIfAbsent(writer,
-                    ignored -> new TreeSet<>()).add(text(
-                    instances.get(consumer).get("regionId")));
-            recordDemandDepth(demandDepths, writer,
-                    demandDepth(demandDepths, consumer) + 1);
-        }
-
-        Set<String> admitted = new LinkedHashSet<>();
-        for (Map.Entry<String, Set<String>> entry
-                : locationsByWriter.entrySet()) {
-            String writer = entry.getKey();
-            Set<String> consumerRegions = targetRegionsByWriter.getOrDefault(
-                    writer, Collections.<String>emptySet());
-            if (consumerRegions.isEmpty()) {
-                continue;
-            }
-            Map<String, Object> activation = instances.get(writer);
-            String existingBasis = text(activation.get(ADMISSION_BASIS));
-            if (!existingBasis.isEmpty()
-                    && !SHARED_LOCATION_DEMAND_ADMISSION.equals(
-                    existingBasis)) {
-                throw new IOException("conflicting runtime activation "
-                        + "admission basis for " + writer + ": "
-                        + existingBasis);
-            }
-            // Which regions demanded this writer, and which locations they
-            // demanded it for, were the stitcher's join columns: it merged
-            // replays and had to re-derive who wanted each write.  The
-            // admission basis and the depth stay -- the scheduler reads both.
-            activation.put(ADMISSION_BASIS,
-                    SHARED_LOCATION_DEMAND_ADMISSION);
-            activation.put(DEMAND_DEPTH,
-                    demandDepth(demandDepths, writer));
-            admitted.add(writer);
-        }
-        return admitted;
-    }
-
     private static ClosureWalk walkFailureClosure(
             Collection<String> targets,
             Map<String, Map<String, Object>> instances,
+            StaticProgram program,
             RegionDemandIndex demands,
-            Map<String, List<Map<String, Object>>> predecessors,
-            Map<String, Long> requestFlowPrefixInputs,
-            Set<String> admittedStateWriters,
-            Collection<String> transitiveSharedDemands)
+            StaticScopeMap scopeMap,
+            Map<String, List<StaticScopeMap.Site>> writeSites,
+            Set<String> declaredOccurrences,
+            Map<String, Integer> demandDepths)
             throws IOException {
         Set<String> reached = new LinkedHashSet<>(targets);
-        Set<String> retainedEdges = new LinkedHashSet<>();
+        reached.addAll(declaredOccurrences);
         Set<String> demandedInputs = new LinkedHashSet<>();
-        Set<String> demandedOutputs = new LinkedHashSet<>();
-        Set<String> expandedOutputOccurrences = new LinkedHashSet<>();
-        Set<String> expandedRegionPathOccurrences = new LinkedHashSet<>();
         List<String> seeds = new ArrayList<>();
         for (String target : targets) {
-            Map<String, Object> instance = instances.get(target);
-            seeds.addAll(demands.targetInputs(instance));
+            for (String cell : demands.targetSeedCells(instances.get(target))) {
+                seeds.add(cellDemand(target, cell));
+            }
         }
-        seeds.addAll(requestFlowPrefixInputs.keySet());
-        // Second-order shared-location demand, in the order the recorded
-        // field flows exposed it.  A read seeded here is demanded exactly the
-        // way a target input is, so the walk retains its recorded writers'
-        // flows and output versions and the read becomes a multi-writer
-        // GuardedRead instead of its one recorded INITIAL arm.
-        seeds.addAll(transitiveSharedDemands);
-        // A selected writer is retained even when nothing demands one of its
-        // outputs yet: the bounded NN heartbeat predecessors stay in the
-        // closure without any of them becoming a read-from arm before replay
-        // records a write/version.
-        for (String writer : admittedStateWriters) {
-            Map<String, Object> instance = instances.get(writer);
-            if (instance == null) continue;
-            reached.add(writer);
-            addRegionPathInputs(seeds, writer, targets,
-                    expandedRegionPathOccurrences, demands);
+        for (String occurrence : declaredOccurrences) {
+            for (String cell : declaredCells(instances.get(occurrence),
+                    scopeMap)) {
+                seeds.add(cellDemand(occurrence, cell));
+            }
         }
-        // The walk crosses a shared location the same way it crosses any
-        // other edge: from the demanded input port to the output port some
-        // other occurrence declared for it.  Writer choice stays in the VM
-        // expression; this walk only selects linked replay members.
         List<IOException> refused = new ArrayList<>();
-        StaticProgram.closure(seeds, demanded -> {
-            demandedInputs.add(demanded);
+        StaticProgram.closure(seeds, demand -> {
+            int split = demand.indexOf('\n');
+            String occurrenceId = demand.substring(0, split);
+            String cell = demand.substring(split + 1);
             List<String> next = new ArrayList<>();
-            for (Map<String, Object> edge : predecessors.getOrDefault(
-                    demanded, Collections.<Map<String, Object>>emptyList())) {
-                String edgeId = text(edge.get("edgeId"));
-                if (edgeId.isEmpty()) {
-                    refused.add(new IOException("runtime causal edge has no "
-                            + "identity"));
-                    // A null adjacency ends the whole walk.
-                    return null;
+            // A port of this occurrence whose value boundary is this cell is
+            // demanded; filterPorts keeps exactly those.
+            demandedInputs.addAll(demands.portsAtBoundary(occurrenceId,
+                    cell));
+            List<StaticScopeMap.Site> writers = writeSites.get(cell);
+            if (writers == null || writers.isEmpty()) {
+                for (String from : demands.incomingCells(occurrenceId, cell)) {
+                    next.add(cellDemand(occurrenceId, from));
                 }
-                retainedEdges.add(edgeId);
-                String fromOccurrence = text(edge.get("fromOccurrenceId"));
-                reached.add(fromOccurrence);
-                addRegionPathInputs(next, fromOccurrence, targets,
-                        expandedRegionPathOccurrences, demands);
-                String toOccurrence = text(edge.get("toOccurrenceId"));
-                reached.add(toOccurrence);
-                addRegionPathInputs(next, toOccurrence, targets,
-                        expandedRegionPathOccurrences, demands);
-                String outputDemand = portDemandKey(fromOccurrence,
-                        text(edge.get("fromPort")));
-                demandedOutputs.add(outputDemand);
-                if (expandedOutputOccurrences.add(outputDemand)) {
-                    next.addAll(demands.inputsForOutput(fromOccurrence,
-                            text(edge.get("fromPort"))));
-                    next.addAll(demands.communicationInputs(
-                            fromOccurrence));
+                return next;
+            }
+            String node = activationSourceKey(instances.get(occurrenceId));
+            for (StaticScopeMap.Site site : writers) {
+                String storingMethod = SiteId.methodOf(site.siteId);
+                for (Map<String, Object> writer
+                        : program.regionActivations(site.regionId)) {
+                    String writerOccurrence = text(
+                            writer.get("occurrenceId"));
+                    if (writerOccurrence.isEmpty()
+                            || writerOccurrence.equals(occurrenceId)
+                            || !node.equals(activationSourceKey(writer))
+                            || !strings(writer.get("observedMethods"))
+                            .contains(storingMethod)) {
+                        continue;
+                    }
+                    recordDemandDepth(demandDepths, writerOccurrence,
+                            demandDepth(demandDepths, occurrenceId) + 1);
+                    if (reached.add(writerOccurrence)) {
+                        String basis = text(writer.get(ADMISSION_BASIS));
+                        if (!basis.isEmpty() && !SHARED_LOCATION_DEMAND_ADMISSION
+                                .equals(basis)) {
+                            refused.add(new IOException("conflicting runtime "
+                                    + "activation admission basis for "
+                                    + writerOccurrence + ": " + basis));
+                            return null;
+                        }
+                        writer.put(ADMISSION_BASIS,
+                                SHARED_LOCATION_DEMAND_ADMISSION);
+                    }
+                    next.add(cellDemand(writerOccurrence, cell));
                 }
+            }
+            // A stored location stops value provenance inside this
+            // occurrence, but not the guard deciding whether the read runs.
+            for (String guard : demands.guardCells(occurrenceId, cell)) {
+                next.add(cellDemand(occurrenceId, guard));
             }
             return next;
         });
         if (!refused.isEmpty()) throw refused.get(0);
-        return new ClosureWalk(reached, retainedEdges, demandedInputs,
-                demandedOutputs);
+        return new ClosureWalk(reached, Collections.<String>emptySet(),
+                demandedInputs, Collections.<String>emptySet());
     }
 
     /**
-     * A retained non-target activation becomes a REGION_PATH_CLOSURE task.
-     * Keep the exact local inputs of every semantic branch that task may
-     * reopen, even when the activation was admitted before one of its output
-     * versions was selected by the causal closure.
+     * Whether the case DECLARED one of the calls this activation made.
+     *
+     * <p>A callee declaration names no site of its own -- it is about every
+     * call of that method in the application scope -- so the activation that
+     * made the call is the one that holds the declared input, and the plan
+     * has to carry it whatever the failure's demand reaches.  That is
+     * hdfs-11741's three clock declarations: the value a replay would move
+     * is read in {@code PBHelper.convert} and in {@code generateKeys}, in
+     * activations no shared-location demand arrives on.</p>
+     *
+     * <p>The recording's half is the capture ({@code DeclaredSiteCapture}),
+     * the declaration's half is the case file, and neither is re-decided
+     * here: a callee the case did not name admits nothing.</p>
      */
-    private static void addRegionPathInputs(
-            Collection<String> work, String occurrenceId,
-            Collection<String> targets, Set<String> expanded,
-            RegionDemandIndex demands) {
-        if (occurrenceId.isEmpty() || targets.contains(occurrenceId)
-                || !expanded.add(occurrenceId)) {
-            return;
+    private static boolean declaresACapturedCallee(
+            Map<String, Object> activation, Set<String> declaredCallees) {
+        if (declaredCallees.isEmpty()) return false;
+        for (Map<String, Object> capture
+                : rows(activation.get(DeclaredSiteCapture.PLAN_FIELD))) {
+            if (declaredCallees.contains(text(
+                    capture.get(DeclaredSiteCapture.DECLARED_CALLEE)))) {
+                return true;
+            }
         }
-        work.addAll(demands.exploredBranchInputs(occurrenceId));
+        return false;
     }
 
     /**
-     * Region retention needs an executable channel, not a same-declaration
-     * hint.
+     * Whether the recording states this activation TOOK one of the declared
+     * cut values its region attaches.
+     *
+     * <p>{@link #OBSERVED_COMMUNICATION_CAPTURES} answers this for the
+     * activation the capture site's own frame belongs to.  The declaration
+     * also names the FRAME the attached value is built in -- {@code
+     * consumerFrameMethod} in the case's communication mapping, published on
+     * the port as {@code frameMethod} -- and that frame is a region of its
+     * own, one level out, holding the capture site in its method set.  It
+     * attaches the value as surely as the inner frame reads it: the leaf the
+     * producer minted is installed into the object the frame returns, and
+     * hdfs-11741's ten declared wire attaches are published on exactly that
+     * frame region and on no other.</p>
+     *
+     * <p>So the same question is asked of the frame, against the same
+     * recording: does it hold a DECLARED_SITE capture at the port's own call
+     * site and callee?  A frame activation that converted nothing states
+     * none and is not admitted.  Only the IN side is asked -- an export
+     * writes its value outward, and the capture rule above already names the
+     * activation that performed it.</p>
      */
-    private static boolean causalRegionRetentionEdge(
-            Map<String, Object> edge) {
-        return "RUNTIME_FIELD_FLOW".equals(text(edge.get("kind")));
+    private static boolean attachedADeclaredPort(
+            StaticProgram.RegionRow skeleton,
+            Map<String, Object> activation) {
+        List<Map<String, Object>> captures = rows(
+                activation.get(DeclaredSiteCapture.PLAN_FIELD));
+        if (captures.isEmpty()) return false;
+        for (Map<String, Object> port : skeleton.communicationPorts) {
+            if (!"IN".equals(text(port.get(REGION_PORT_SIDE)))
+                    || !CommunicationCatalogContract.CAPTURE_CALL_RETURN
+                    .equals(text(port.get(CommunicationCatalogContract
+                            .PORT_OUTPUT_CAPTURE_KIND)))) {
+                continue;
+            }
+            String site = text(port.get(
+                    CommunicationCatalogContract.CALL_SITE_ID));
+            String callee = text(port.get(
+                    CommunicationCatalogContract.DECLARED_CALLEE));
+            if (site.isEmpty() || callee.isEmpty()) continue;
+            for (Map<String, Object> capture : captures) {
+                if (site.equals(text(capture.get(SiteId.MEMBER)))
+                        && callee.equals(text(capture.get(
+                        DeclaredSiteCapture.DECLARED_CALLEE)))) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** One demand: the cell, inside the occurrence that reads it. */
+    private static String cellDemand(String occurrenceId, String cell) {
+        return occurrenceId + "\n" + cell;
+    }
+
+    /**
+     * The cells one activation's DECLARED sites name.
+     *
+     * <p>The static half is the scope map's ({@code DECLARED_SITE#cell} --
+     * the field a structural accessor reads, or the callee's own return) and
+     * the dynamic half is the recording's: a site this activation never
+     * entered states no capture, so it names no cell here.</p>
+     */
+    private static List<String> declaredCells(Map<String, Object> activation,
+                                              StaticScopeMap scopeMap) {
+        List<String> cells = new ArrayList<>();
+        if (activation == null) return cells;
+        for (Map<String, Object> capture
+                : rows(activation.get(DeclaredSiteCapture.PLAN_FIELD))) {
+            for (StaticScopeMap.Site site : scopeMap.declaredSitesAt(
+                    text(capture.get(SiteId.MEMBER)),
+                    text(capture.get(DeclaredSiteCapture.DECLARED_CALLEE)))) {
+                if (!site.cell.isEmpty() && !cells.contains(site.cell)) {
+                    cells.add(site.cell);
+                }
+            }
+        }
+        return cells;
     }
 
     private static void applyClosure(StaticProgram program,
@@ -3137,7 +2890,17 @@ public final class RuntimeSelectedRegionFinalizer {
 
         private RegionDemandIndex(
                 List<Map<String, Object>> regions,
+                Map<String, Map<String, Object>> activations,
                 List<Map<String, Object>> graph) {
+            // The region scope of EVERY observed activation, not only of the
+            // ones that hold a port: the demand walk moves on the candidate
+            // graph inside an occurrence, and an occurrence whose region it
+            // could not name would have no text to walk.
+            for (Map.Entry<String, Map<String, Object>> entry
+                    : activations.entrySet()) {
+                regionByOccurrence.put(entry.getKey(),
+                        text(entry.getValue().get("regionId")));
+            }
             Set<String> selectedRegions = new LinkedHashSet<>();
             for (Map<String, Object> region : regions) {
                 String regionId = text(region.get("regionId"));
@@ -3202,7 +2965,6 @@ public final class RuntimeSelectedRegionFinalizer {
             String occurrenceId = text(port.get("occurrenceId"));
             String portId = text(port.get("portId"));
             if (occurrenceId.isEmpty() || portId.isEmpty()) return;
-            regionByOccurrence.putIfAbsent(occurrenceId, regionId);
             String demand = portDemandKey(occurrenceId, portId);
             (output ? outputs : inputs).put(demand, port);
             if (output) return;
@@ -3268,6 +3030,52 @@ public final class RuntimeSelectedRegionFinalizer {
             List<String> computed = computeTargetInputs(instance);
             targetInputsCache.put(instance, computed);
             return computed;
+        }
+
+        /**
+         * The cells the failure's own decision reads: the operand cells of
+         * the {@code failureTarget} sites this activation was OBSERVED to
+         * decide, or -- for a region that names no explicit target site --
+         * the exception cell the slice ends at.
+         */
+        private List<String> targetSeedCells(Map<String, Object> instance) {
+            String regionId = text(instance.get("regionId"));
+            Map<String, List<String>> explicit =
+                    explicitFatalSeedsBySite.get(regionId);
+            if (explicit == null || explicit.isEmpty()) {
+                return fatalSeeds.getOrDefault(regionId,
+                        Collections.<String>emptyList());
+            }
+            List<String> cells = new ArrayList<>();
+            for (String site : observedFatalEvidence(instance).keySet()) {
+                for (String cell : explicit.getOrDefault(site,
+                        Collections.<String>emptyList())) {
+                    if (!cells.contains(cell)) cells.add(cell);
+                }
+            }
+            return cells;
+        }
+
+        /** The ports of one occurrence whose value boundary is this cell. */
+        private List<String> portsAtBoundary(String occurrenceId,
+                                             String cell) {
+            return inputsByBoundary.getOrDefault(
+                    instanceCellKey(occurrenceId, cell),
+                    Collections.<String>emptyList());
+        }
+
+        /** The candidate graph's incoming cells of one cell in one region. */
+        private List<String> incomingCells(String occurrenceId, String cell) {
+            return localIncoming.getOrDefault(contextKey(
+                    regionByOccurrence.getOrDefault(occurrenceId, ""), cell),
+                    Collections.<String>emptyList());
+        }
+
+        /** The same, restricted to the guards that decide the read. */
+        private List<String> guardCells(String occurrenceId, String cell) {
+            return guardIncoming.getOrDefault(contextKey(
+                    regionByOccurrence.getOrDefault(occurrenceId, ""), cell),
+                    Collections.<String>emptyList());
         }
 
         /** Exact occurrence-owned boundary inputs of its EXPLORE branches. */

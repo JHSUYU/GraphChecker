@@ -73,7 +73,8 @@ final class RuntimeRegionPlanner {
     static Result planSkeletonGraph(List<StaticProgram.RegionRow> skeletons,
                                     List<MethodEvent> methods,
                                     List<RuntimeEvent> runtimeEvents,
-                                    List<ProtocolEvent> protocolEvents) {
+                                    List<ProtocolEvent> protocolEvents,
+                                    Set<String> declaredSites) {
         // The recorded call sites are part of this index, not an extra: the
         // across-cut attribution below asks which call site opened a frame,
         // and that answer lives in the CALL_SITE_ENTER events.
@@ -119,7 +120,7 @@ final class RuntimeRegionPlanner {
                         continue;
                     }
                     addSkeletonActivation(activationByCall, skeleton,
-                            root, trace);
+                            root, trace, declaredSites);
                 }
             }
         }
@@ -466,7 +467,7 @@ final class RuntimeRegionPlanner {
     private static void addSkeletonActivation(
             Map<Long, Map<String, Object>> activationByCall,
             StaticProgram.RegionRow skeleton, MethodEvent root,
-            TraceIndex trace) {
+            TraceIndex trace, Set<String> declaredSites) {
         Set<Long> calls = trace.subtree(root.callId);
         Set<String> allowed = new LinkedHashSet<>(skeleton.methods);
         calls.removeIf(call -> {
@@ -514,6 +515,16 @@ final class RuntimeRegionPlanner {
                 RuntimeSelectedRegionFinalizer
                         .OBSERVED_COMMUNICATION_CAPTURES,
                 observedCommunicationCaptures(skeleton, calls, trace));
+        // What the recording states at the sites the scope map named
+        // DECLARED_SITE.  Computed once, here, where the activation's call
+        // set is first known: the region finalizer reads it to learn which
+        // activations hold a declared input, and the plan republishes these
+        // same rows.
+        List<Map<String, Object>> declared = declaredSiteCaptures(
+                declaredSites, trace, calls, root);
+        if (!declared.isEmpty()) {
+            activation.put(DeclaredSiteCapture.PLAN_FIELD, declared);
+        }
         activationByCall.put(root.callId, activation);
     }
 
@@ -1032,8 +1043,7 @@ final class RuntimeRegionPlanner {
                        List<RuntimeEvent> runtimeEvents,
                        List<FieldAccessEvent> fieldEvents,
                        List<ProtocolEvent> protocolEvents,
-                       Collection<Map<String, Object>> planGaps,
-                       Set<String> declaredSites) {
+                       Collection<Map<String, Object>> planGaps) {
         // One loop has one prefix: region rows that disagree on a loop's K_L
         // are refused here, before anything is planned over them.
         declaredLoopBounds(regions);
@@ -1245,9 +1255,10 @@ final class RuntimeRegionPlanner {
             }
             // What the recording states at the sites the static scope map
             // named DECLARED_SITE: the dynamic half of every port a
-            // declaration could mint in this occurrence.
-            List<Map<String, Object>> captures = declaredSiteCaptures(
-                    declaredSites, trace, calls, root);
+            // declaration could mint in this occurrence.  Stamped on the
+            // activation seed by planSkeletonGraph, republished here.
+            List<Map<String, Object>> captures = rows(
+                    seed.get(DeclaredSiteCapture.PLAN_FIELD));
             if (!captures.isEmpty()) {
                 plan.put(DeclaredSiteCapture.PLAN_FIELD, captures);
             }
@@ -1602,28 +1613,6 @@ final class RuntimeRegionPlanner {
         if (event.laneId > 0L) target.put("laneId", event.laneId);
     }
 
-    /** The symbolic inputs one activation of a region is planned over.
-     *
-     * <p>A heap port is an observed access and its site comes from what the
-     * run recorded; a declared cut port is a static statement about the cut -
-     * README section 3's {@code Req_in}, {@code Resp_in}, {@code Live_in} -
-     * and its site comes from the capture the declaration carries.</p> */
-    /**
-     * What the recording states at the sites the scope map named
-     * DECLARED_SITE, for ONE occurrence: one row per completed call there,
-     * with the value it returned and the receiver it ran on.
-     *
-     * <p>The ordinal counts every completed call of the occurrence at that
-     * (site, callee), whether or not the site is declared, so a declared
-     * site's ordinal is the same number whichever sites a later declaration
-     * adds or drops.  It is the port's replay address, so it is counted from
-     * the recording's own order and never from a per-run call id.</p>
-     *
-     * <p>No admission is taken here.  A capture is published for every
-     * declared site this occurrence entered; whether any of them mints is
-     * {@code ConcolicScheduler.SymbolicInputSelection}'s decision, and the
-     * value a capture states is evidence either way.</p>
-     */
     /**
      * One recorded call is ONE occurrence's read: the innermost planned
      * activation that ran it.
@@ -1689,6 +1678,22 @@ final class RuntimeRegionPlanner {
         }
     }
 
+    /**
+     * What the recording states at the sites the scope map named
+     * DECLARED_SITE, for ONE occurrence: one row per completed call there,
+     * with the value it returned and the receiver it ran on.
+     *
+     * <p>The ordinal counts every completed call of the occurrence at that
+     * (site, callee), whether or not the site is declared, so a declared
+     * site's ordinal is the same number whichever sites a later declaration
+     * adds or drops.  It is the port's replay address, so it is counted from
+     * the recording's own order and never from a per-run call id.</p>
+     *
+     * <p>No admission is taken here.  A capture is published for every
+     * declared site this occurrence entered; whether any of them mints is
+     * {@code ConcolicScheduler.SymbolicInputSelection}'s decision, and the
+     * value a capture states is evidence either way.</p>
+     */
     private static List<Map<String, Object>> declaredSiteCaptures(
             Set<String> declaredSites, TraceIndex trace, Set<Long> calls,
             MethodEvent root) {
@@ -1733,6 +1738,12 @@ final class RuntimeRegionPlanner {
         return captures;
     }
 
+    /** The symbolic inputs one activation of a region is planned over.
+     *
+     * <p>A heap port is an observed access and its site comes from what the
+     * run recorded; a declared cut port is a static statement about the cut -
+     * README section 3's {@code Req_in}, {@code Resp_in}, {@code Live_in} -
+     * and its site comes from the capture the declaration carries.</p> */
     private static List<Map<String, Object>> symbolize(
             List<Map<String, Object>> ports, String occurrenceId,
             TraceIndex trace) {
