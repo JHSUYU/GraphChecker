@@ -6,7 +6,6 @@ import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Sort;
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Term;
-import edu.uva.liftlab.graphchecker.contract.Arm;
 import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
@@ -168,6 +167,7 @@ public final class Composer {
         private final Map<String, Set<String>> unattestedRoots;
         private final Map<String, List<String>> observedReads;
         private final Map<String, List<String>> observedArrivals;
+        private final Map<String, ComposedFamilies.ArmChoice> armChoices;
         private final String seedSessionId;
 
         private Composition(OccurrenceAddress anchor, String body,
@@ -179,6 +179,7 @@ public final class Composer {
                             Map<String, Set<String>> unattestedRoots,
                             Map<String, List<String>> observedReads,
                             Map<String, List<String>> observedArrivals,
+                            Map<String, ComposedFamilies.ArmChoice> armChoices,
                             String seedSessionId) {
             this.anchor = anchor;
             this.body = body;
@@ -197,6 +198,7 @@ public final class Composer {
                     Collections.unmodifiableMap(observedReads);
             this.observedArrivals =
                     Collections.unmodifiableMap(observedArrivals);
+            this.armChoices = Collections.unmodifiableMap(armChoices);
             this.seedSessionId = seedSessionId;
         }
 
@@ -289,6 +291,25 @@ public final class Composer {
 
         public String seedSessionId() {
             return seedSessionId;
+        }
+
+        /**
+         * Every family ARM selector, for reading which delivery a model
+         * rested on.
+         *
+         * <p>A family is a case split (one selector per arm), so a sat
+         * model answers WHICH arm it took -- and a claim that names a
+         * mechanism over a slot has to be able to say which delivery of
+         * that slot the witness used, not merely that the slot had
+         * alternatives.</p>
+         */
+        public List<String> armSelectors() {
+            return new ArrayList<String>(armChoices.keySet());
+        }
+
+        /** The delivery one arm selector stands for, or null. */
+        public ComposedFamilies.ArmChoice arm(String selector) {
+            return armChoices.get(selector);
         }
 
         /** Every selector, for reading which disjunct a model selected. */
@@ -566,7 +587,8 @@ public final class Composer {
                 new ArrayList<Family>(families.values()),
                 new ArrayList<RootDomain>(roots.values()), valuations,
                 gaps, clockCells, clockReadings, unattestedRoots,
-                observedReads, observedArrivals, seed());
+                observedReads, observedArrivals,
+                composedFamilies.armChoices(), seed());
     }
 
     // ------------------------------------------------------------------
@@ -707,13 +729,16 @@ public final class Composer {
         //     not repeated here.
         terms.addAll(valuationOf(session, refusals));
 
-        // (2) What this path read at each handoff of the anchor: answered,
-        //     else the paired arm where it carries a movable root, else
-        //     this session's own arrival.  Never a corpus-wide arrival.
+        // (2) What this path read at each handoff of the anchor: the
+        //     obligation's answer where one answered the mint, and
+        //     otherwise NOTHING -- the arrival is bound by its family
+        //     alone, and the attach is collected for it (`bound`).  Never
+        //     a literal, this session's or any other's.
         Set<String> interactionIds = new LinkedHashSet<String>();
         Set<String> handoffs = new LinkedHashSet<String>();
+        List<AttachRow> bound = new ArrayList<AttachRow>();
         terms.addAll(handoffReads(session, interactionIds, handoffs,
-                refusals));
+                refusals, bound));
 
         // (3) The state joins: read := the expression of the write version
         //     it observed, within this session.  Kept by symbol, because a
@@ -804,7 +829,7 @@ public final class Composer {
         List<String> reaching = new ArrayList<String>(terms);
         reaching.addAll(joins.values());
         terms.addAll(reachedHandoffs(session, reaching, interactionIds,
-                handoffs, refusals));
+                handoffs, refusals, bound));
 
         // BEFORE end(), which closes the conjunction and forgets them: a
         // refusal raised while this path was lowered is the reason the
@@ -830,16 +855,15 @@ public final class Composer {
 
         // (6) The families of every interaction this path's chain reaches,
         //     each under this path's selector.
-        composedFamilies.closeFamilies(path, ordinal, selector,
-                interactionIds);
+        List<String> familyTerms = new ArrayList<String>();
+        composedFamilies.closeFamilies(ordinal, selector, interactionIds,
+                bound, familyTerms);
         // (7) And the STATE families: which writer the read may have seen.
         //     A read a family gives alternatives to takes its value there.
         Set<String> chosen = composedFamilies.stateFamilies(path,
-                ordinal, selector, joined, interactionIds);
-        for (Map.Entry<String, String> join : joins.entrySet()) {
-            if (chosen.contains(join.getKey())) continue;
-            terms.add(join.getValue());
-        }
+                ordinal, selector, joined, interactionIds, familyTerms);
+        // (8) And the state joins this conjunction ASKS ABOUT.
+        terms.addAll(statedJoins(joins, chosen, terms, familyTerms));
 
         lowering.assertNamed("path_fatal__" + ordinal,
                 "(=> " + selector + " " + VmTermLowering.and(terms) + ")");
@@ -847,6 +871,74 @@ public final class Composer {
         observedArrivals.put(path.pathId, arrivals(session));
         return new Disjunct(path, selector, target.observedFatal(),
                 interactionIds);
+    }
+
+    /**
+     * The state joins THIS CONJUNCTION ASKS ABOUT, to a fixed point.
+     *
+     * <p>A join is {@code read := the expression of the write version it
+     * observed}.  Where no other term of the path names that read symbol,
+     * the equation binds a variable the question never asks: it is
+     * satisfiable for every value of everything it mentions, so it
+     * constrains nothing -- and it drags the whole theory its right-hand
+     * side is written in into the query.  The same reachability rule the
+     * preamble is already emitted under ({@link SmtLowering#body}), one
+     * level up, applied to the assertions instead of the declarations.</p>
+     *
+     * <p>MEASURED on hdfs-11741 campaign #4.  Seven paths each carried
+     * {@code (= |MAP_STATE/321#-3@v1337| (assoc_put ...))} -- the DataNode's
+     * {@code allKeys} map as an {@code AssocState}, joined to the refresh
+     * that put the last key in.  The anchor's own lookup does not read that
+     * variable: it reads the container DAG, an eight-deep {@code ite} over
+     * key equality, and {@code MAP_STATE/321} is named by nothing else in
+     * the file.  With every arrival pinned to a literal the equation was
+     * cheap; with the arrivals bound by their families instead (item 1) the
+     * keys became symbolic and z3 spent the whole 1800 s budget on the
+     * array-and-lambda theory {@code assoc_put} and {@code assoc_remove}
+     * are written in -- all four valuations UNDECIDED.  Dropping that one
+     * unreached join and nothing else: valuation 0 decided in 0.16 s.</p>
+     *
+     * <p>To a fixed point, and seeded by the FAMILIES as well as the path's
+     * own terms: one join's right-hand side names another join's symbol,
+     * and a family arm names symbols the path's own conjunction need
+     * not.</p>
+     */
+    private List<String> statedJoins(Map<String, String> joins,
+                                     Set<String> chosen, List<String> terms,
+                                     List<String> familyTerms) {
+        Map<String, String> pending = new LinkedHashMap<String, String>();
+        for (Map.Entry<String, String> join : joins.entrySet()) {
+            // A read a family gives alternatives to takes its value there;
+            // asserting both would make the family redundant and its
+            // alternatives unreachable.
+            if (chosen.contains(join.getKey())) continue;
+            pending.put(join.getKey(), join.getValue());
+        }
+        Set<String> asked = new LinkedHashSet<String>();
+        List<String> reaching = new ArrayList<String>(terms);
+        reaching.addAll(familyTerms);
+        while (!reaching.isEmpty()) {
+            Set<String> reached = new LinkedHashSet<String>();
+            for (String text : reaching) {
+                lowering.reachedSymbols(text, reached,
+                        new LinkedHashSet<String>());
+            }
+            reaching = new ArrayList<String>();
+            for (String symbol : reached) {
+                String join = pending.remove(symbol);
+                if (join == null) continue;
+                asked.add(symbol);
+                reaching.add(join);
+            }
+        }
+        // In the ROWS' own order, not the order the fixed point met them:
+        // the conjunction a reader compares between two runs is the one the
+        // recording is read in.
+        List<String> stated = new ArrayList<String>();
+        for (Map.Entry<String, String> join : joins.entrySet()) {
+            if (asked.contains(join.getKey())) stated.add(join.getValue());
+        }
+        return stated;
     }
 
     /**
@@ -959,29 +1051,30 @@ public final class Composer {
      * <ol>
      *   <li>an obligation answered the mint: that value;</li>
      *   <li>otherwise, where the recording states which producer endpoint
-     *       delivered it and that producer's arm is ATTESTED: the arm's
-     *       expression.  The consumer's literal is a CONSEQUENCE of what
-     *       the producer's own run decided, and pinning it would pin that
-     *       run on every such path (R-READ).  No further condition -- the
-     *       delivered expression need not mention a movable root, because
-     *       the freedom in a handoff is which world the producer was in
-     *       (P2);</li>
-     *   <li>otherwise the arrival this session recorded.  MEASURED
-     *       UNREACHABLE on both frozen corpora: hdfs-17960 campaign #8
-     *       states no attach row at all, and every one of hdfs-11741
-     *       campaign #4's 616 attach rows names a producer endpoint the
-     *       seed exported at, so {@code attestedExports} is non-empty for
-     *       all of them.</li>
+     *       delivered it and that producer's arm is ATTESTED: NOTHING is
+     *       conjoined here at all.  The attach joins its handoff's FAMILY
+     *       and nothing else (CLOSURE-V2) -- the arm this session's run
+     *       recorded is one of that family's arms and is selected by the
+     *       family's guard, not asserted as a fact.  What the path takes
+     *       from the delivery is the SORT its variable is declared at
+     *       ({@link #attestedArrival});</li>
+     *   <li>otherwise the read is REFUSED BY NAME and the path leaves the
+     *       disjunction.  MEASURED UNREACHABLE on both frozen corpora:
+     *       hdfs-17960 campaign #8 states no attach row at all, and every
+     *       one of hdfs-11741 campaign #4's 616 attach rows names a
+     *       producer endpoint the seed exported at, so {@code
+     *       attestedExports} is non-empty for all of them.</li>
      * </ol>
      */
     private List<String> handoffReads(String session,
                                       Set<String> interactionIds,
                                       Set<String> handoffs,
-                                      List<GapRow> refusals) {
+                                      List<GapRow> refusals,
+                                      List<AttachRow> bound) {
         List<String> reads = new ArrayList<String>();
         for (AttachRow attach : corpus.attachesOn(session, anchor)) {
             handoffRead(session, attach, reads, interactionIds, handoffs,
-                    refusals);
+                    refusals, bound);
         }
         return reads;
     }
@@ -1007,7 +1100,8 @@ public final class Composer {
     private List<String> reachedHandoffs(String session, List<String> terms,
                                          Set<String> interactionIds,
                                          Set<String> handoffs,
-                                         List<GapRow> refusals) {
+                                         List<GapRow> refusals,
+                                         List<AttachRow> bound) {
         List<String> reads = new ArrayList<String>();
         List<String> pending = new ArrayList<String>(terms);
         while (!pending.isEmpty()) {
@@ -1021,11 +1115,11 @@ public final class Composer {
                 if (handoffs.contains(name)) continue;
                 AttachRow attach = corpus.attach(session, name);
                 if (attach == null) continue;
-                List<String> bound = new ArrayList<String>();
-                handoffRead(session, attach, bound, interactionIds,
-                        handoffs, refusals);
-                reads.addAll(bound);
-                pending.addAll(bound);
+                List<String> stated = new ArrayList<String>();
+                handoffRead(session, attach, stated, interactionIds,
+                        handoffs, refusals, bound);
+                reads.addAll(stated);
+                pending.addAll(stated);
             }
         }
         return reads;
@@ -1041,17 +1135,18 @@ public final class Composer {
      */
     private void handoffRead(String session, AttachRow attach,
                              List<String> reads, Set<String> interactionIds,
-                             Set<String> handoffs, List<GapRow> refusals) {
+                             Set<String> handoffs, List<GapRow> refusals,
+                             List<AttachRow> bound) {
         if (!handoffs.add(attach.symbol())) return;
         Interaction interaction = attach.interaction();
         if (interaction != null) {
             interactionIds.add(interaction.id());
         } else {
             // The wire delivered something and the recording cannot say
-            // from where.  The arrival is still this path's own fact,
-            // stated below, but there is no interaction to build a
-            // family on -- and a variable no family constrains is the
-            // one thing a witness must not rest on unremarked.
+            // from where, so there is no interaction to build a family on
+            // -- and a variable no family constrains is the one thing a
+            // witness must not rest on unremarked.  The read below refuses
+            // it by name for exactly that reason.
             composedFamilies.unpaired(session, attach);
         }
         if (attach.answered()) {
@@ -1067,9 +1162,8 @@ public final class Composer {
             if (!read.isEmpty()) reads.add(read);
             return;
         }
-        String paired = pairedArm(attach);
-        if (!paired.isEmpty()) {
-            reads.add("(= " + attach.symbol() + " " + paired + ")");
+        if (attestedArrival(attach)) {
+            bound.add(attach);
             return;
         }
         // AND NOTHING ELSE.  There used to be a third rule here -- bind
@@ -1141,20 +1235,31 @@ public final class Composer {
     }
 
     /**
-     * The paired producer's delivered expression.
+     * Whether an ATTESTED arm delivers this arrival, and at what sort.
      *
-     * <p>Wherever the arm is ATTESTED, and for no further condition.  It
-     * used to be kept only when the delivered expression mentioned a root
-     * the case declared a movable domain for, and a key IDENTITY mentions
-     * none: the freedom in a handoff is not "which value a root took" but
-     * WHICH WORLD THE PRODUCER WAS IN, and the producer's own flip is what
-     * changed the delivery.  On hdfs-11741 campaign #4 that filter pinned
-     * dn1's arrived key-id to the recorded literal 182905, so nn0's
-     * rotation -- the second flip of the two-flip mechanism the case was
-     * recorded for, admitted as sessions af9801b6 and 14eb8358 -- could
-     * never change what dn1 received, and z3's own model on the same
-     * formula with that one pin dropped wants exactly that arrival
-     * different ({@code HOFF.836a0f0e = 4}).</p>
+     * <p>It states NOTHING about the value.  The arrival is bound by the
+     * handoff's FAMILY and by nothing else ({@link
+     * ComposedFamilies#closeFamilies}): the arm this session's own run
+     * recorded is one of that family's arms and is selected by the family's
+     * guard, not asserted as a fact of every path.  This used to return the
+     * first attested delivery as a conjunct of the path -- so every one of
+     * hdfs-11741 campaign #4's seven paths carried the SEED's delivery
+     * {@code (= HOFF.836a0f0e... 182905)} and {@code (= HOFF.2fb7f999...
+     * 182905)}, which put the key the token names back into the array the
+     * anchor looks it up in and made all seven unsatisfiable with every
+     * root free (PATH_SELF_CONTRADICTORY, the measured blocker).  The
+     * family already said the same thing as a disjunction over thirteen
+     * arms, so what the pin added was exactly the contradiction.</p>
+     *
+     * <p>What is still asked here is what only a delivery can answer: that
+     * SOME attested arm exists at all -- a read no attested arm delivers is
+     * refused by name below -- and the SORT the variable is declared at.
+     * The arm's own sort, never the arrival's spelling: the arrival says
+     * what the value looked like, the delivery says what it is, and one
+     * variable has one sort.  The declaration has to happen HERE, while the
+     * path is being lowered, because a leaf naming this symbol in phi or in
+     * a join is cut as a free symbol otherwise, and the families are
+     * emitted once the path's own conjunction is closed.</p>
      *
      * <p>ATTESTED IS THE PRODUCER'S PROPERTY, and {@link
      * Arms#attestedExports} is the one rule for it: any session of the
@@ -1168,20 +1273,17 @@ public final class Composer {
      * to the arrival literal 182905/182907 and nn0's symbols reached no
      * dn1 formula at all.</p>
      */
-    private String pairedArm(AttachRow attach) {
+    private boolean attestedArrival(AttachRow attach) {
         Endpoint producer = attach.producer();
-        if (producer == null) return "";
+        if (producer == null) return false;
         for (ExportRow export : arms.attestedExports(producer)) {
             Term delivered = composedFamilies.lower(export.sessionId(),
                     export, "paired-arm");
             if (delivered == null) continue;
-            // The arm's own sort declares the variable: the arrival's
-            // spelling says what it looked like, the delivery says what it
-            // is, and one variable has one sort.
             lowering.declareStated(attach.symbol(), delivered.sort);
-            return delivered.text;
+            return true;
         }
-        return "";
+        return false;
     }
 
     /**

@@ -88,6 +88,77 @@ final class ComposedFamilies {
         this.gaps = gaps;
     }
 
+    /**
+     * WHICH DELIVERY a family's selector stands for.
+     *
+     * <p>The manifest's answer to "which arm did the witness take": a
+     * selector the model set is one slot's one delivery, and without this
+     * the claim names a mechanism whose evidence is thirteen anonymous
+     * disjuncts.</p>
+     */
+    public static final class ArmChoice {
+        private final String family;
+        private final String slotId;
+        private final String sessionId;
+        private final String producerPathId;
+        private final String expressionRef;
+        private final boolean attested;
+
+        private ArmChoice(String family, String slotId, String sessionId,
+                          String producerPathId, String expressionRef,
+                          boolean attested) {
+            this.family = family;
+            this.slotId = slotId;
+            this.sessionId = sessionId;
+            this.producerPathId = producerPathId;
+            this.expressionRef = expressionRef;
+            this.attested = attested;
+        }
+
+        static ArmChoice of(String family, String slotId, Arms.Arm arm) {
+            return new ArmChoice(family, slotId, arm.sessionId(),
+                    arm.producerPathId(), arm.expressionRef(),
+                    arm.attested());
+        }
+
+        /** The named assertion this arm is one case of. */
+        public String family() {
+            return family;
+        }
+
+        /** The interaction the family is about. */
+        public String slotId() {
+            return slotId;
+        }
+
+        /** The run that delivered it. */
+        public String sessionId() {
+            return sessionId;
+        }
+
+        /** The producer path, or "" when no path condition attests it. */
+        public String producerPathId() {
+            return producerPathId;
+        }
+
+        public String expressionRef() {
+            return expressionRef;
+        }
+
+        public boolean attested() {
+            return attested;
+        }
+    }
+
+    /** Arm selector -> the delivery it stands for. */
+    private final Map<String, ArmChoice> armChoices =
+            new LinkedHashMap<String, ArmChoice>();
+
+    /** Every arm selector this composition declared, in the order made. */
+    Map<String, ArmChoice> armChoices() {
+        return Collections.unmodifiableMap(armChoices);
+    }
+
     /** The declared roots one lowered expression mentions. */
     private Set<String> declaredRootsIn(String term) {
         Set<String> found = new LinkedHashSet<String>();
@@ -103,40 +174,110 @@ final class ComposedFamilies {
     }
 
 
-    void closeFamilies(Corpus.RecordedPath path, int ordinal,
-                               String selector, Set<String> reached) {
-        for (AttachRow attach : corpus.attachesOn(path.sessionId,
-                anchor)) {
+    /**
+     * THE WIRE FAMILY of every handoff this path binds.
+     *
+     * <p>One family per slot, over the attaches the path ACTUALLY bound --
+     * the anchor's own, and every other handoff its conjunction reached
+     * ({@code Composer#reachedHandoffs}).  A wire arrival is bound HERE and
+     * nowhere else (CLOSURE-V2): the path states no arrival of its own, so
+     * a slot no arm of this corpus can fill leaves {@code v_H} free, and
+     * that is refused by name rather than pinned to what this session
+     * happened to receive.</p>
+     *
+     * <p>It used to close the ANCHOR's attaches alone, and the handoffs the
+     * path reached through them -- hdfs-11741 campaign #4's four
+     * {@code allKeys} entries, the DataNode's own refresh -- had no family
+     * at all and were pinned one by one to the seed's delivery.
+     * {@code (= HOFF.836a0f0e... 182905)} is the pin that put the key the
+     * token names back into the array the anchor looks it up in, and it was
+     * in the minimal unsat core of all seven paths.</p>
+     */
+    void closeFamilies(int ordinal, String selector, Set<String> reached,
+                       List<AttachRow> bound, List<String> stated) {
+        Map<String, List<String>> bySlot =
+                new LinkedHashMap<String, List<String>>();
+        Map<String, List<Arms.Arm>> armsBySlot =
+                new LinkedHashMap<String, List<Arms.Arm>>();
+        Map<String, Interaction> slotOf =
+                new LinkedHashMap<String, Interaction>();
+        for (AttachRow attach : bound) {
             Interaction slot = attach.interaction();
             if (slot == null) continue;
-            Map<String, List<String>> bySlot =
-                    new LinkedHashMap<String, List<String>>();
-            Map<String, List<Arm>> rowsBySlot =
-                    new LinkedHashMap<String, List<Arm>>();
+            boolean own = false;
             for (Arms.Arm arm : arms.wireArms(slot, attach.symbol())) {
                 if (replacing.contains(arm.sessionId())) continue;
                 String text = render(arm,
                         Collections.singletonList(arm.symbol()));
                 if (text.isEmpty()) continue;
+                if (arm.slotId().equals(slot.id())) own = true;
+                if (!slotOf.containsKey(arm.slotId())) {
+                    slotOf.put(arm.slotId(), slot);
+                }
+                // ONE ARM PER DISTINCT DELIVERY.  Two attaches of one path
+                // reach one slot whenever the first forwards what its own
+                // producer was handed and the path binds that handoff as
+                // well, and the same (pi, guard, e) written twice is one
+                // alternative stated twice: it doubles the case split and
+                // says nothing the first copy did not.
+                List<String> held = bySlot.get(arm.slotId());
+                if (held != null && held.contains(text)) continue;
                 add(bySlot, arm.slotId(), text);
-                add(rowsBySlot, arm.slotId(), row(arm));
+                add(armsBySlot, arm.slotId(), arm);
             }
-            for (Map.Entry<String, List<String>> family : bySlot.entrySet()) {
-                reached.add(family.getKey());
-                slotOpened(family.getKey(), slot);
-                families.put(family.getKey(), Family.of(family.getKey(),
-                        rowsBySlot.get(family.getKey())));
-                lowering.assertNamed("handoff_family__" + ordinal + "__"
-                                + ArtifactIO.digest(family.getKey(), 12),
-                        "(=> " + selector + " "
-                                + VmTermLowering.or(family.getValue()) + ")");
-            }
-            if (bySlot.isEmpty()) {
-                composer.gap(GapKind.UNPRODUCIBLE_ANSWER, GapClass.DIAGNOSTIC,
-                        slot.id(), "no session of this corpus published "
-                                + "what was delivered at this interaction");
-            }
+            if (own) continue;
+            // Nothing binds this arrival now that the path pins none, so a
+            // witness resting on it would rest on a free constant.
+            composer.gap(GapKind.UNPRODUCIBLE_ANSWER, GapClass.BLOCKING,
+                    slot.id(), "no session of this corpus published what "
+                            + "was delivered at this interaction, so the "
+                            + "arrival this path read is bound by nothing");
         }
+        for (Map.Entry<String, List<String>> family : bySlot.entrySet()) {
+            String slotId = family.getKey();
+            reached.add(slotId);
+            slotOpened(slotId, slotOf.get(slotId));
+            List<Arm> rows = new ArrayList<Arm>();
+            for (Arms.Arm arm : armsBySlot.get(slotId)) rows.add(row(arm));
+            families.put(slotId, Family.of(slotId, rows));
+            caseSplit("handoff_family", slotId, ordinal, selector,
+                    family.getValue(), armsBySlot.get(slotId), stated);
+        }
+    }
+
+    /**
+     * ONE FAMILY, as a finite case split the solver can close.
+     *
+     * <p>A selector per arm and exactly-one over them, rather than a bare
+     * disjunction of the arms: {@code sel_k => (pi_k /\ guard_k /\ v = e_k)}
+     * is the same constraint, and it is the one a solver can decide by
+     * CASES instead of searching the union of thirteen {@code ite} chains at
+     * once -- and the only one a model can be asked WHICH delivery the
+     * witness rests on.  One spelling for both kinds of family: a wire
+     * slot's arms and a location's eligible writers are the same
+     * disjunction of producer conditions, and they were written twice.</p>
+     */
+    private void caseSplit(String label, String key, int ordinal,
+                           String selector, List<String> armTexts,
+                           List<Arms.Arm> armRows, List<String> stated) {
+        String name = label + "__" + ordinal + "__"
+                + ArtifactIO.digest(key, 12);
+        List<String> selectors = new ArrayList<String>();
+        List<String> cases = new ArrayList<String>();
+        for (int index = 0; index < armTexts.size(); index++) {
+            String arm = name + "__arm" + index;
+            lowering.declare(arm, VmTermLowering.Sort.BOOL);
+            selectors.add(arm);
+            cases.add("(=> " + arm + " " + armTexts.get(index) + ")");
+            armChoices.put(arm, ArmChoice.of(name, key, armRows.get(index)));
+        }
+        cases.add(0, Arms.exactlyOne(selectors));
+        String formula = VmTermLowering.and(cases);
+        // The caller's copy, so the path can ask which of its joins this
+        // family's arms reach: a family is part of the conjunction and its
+        // arms name symbols the path's own terms need not.
+        if (stated != null) stated.add(formula);
+        lowering.assertNamed(name, "(=> " + selector + " " + formula + ")");
     }
 
     /**
@@ -304,7 +445,8 @@ final class ComposedFamilies {
     Set<String> stateFamilies(Corpus.RecordedPath path,
                                       int ordinal, String selector,
                                       List<ReadRow> joined,
-                                      Set<String> reached) {
+                                      Set<String> reached,
+                                      List<String> stated) {
         String session = path.sessionId;
         Set<String> chosen = new LinkedHashSet<String>();
         // One choice per (reader occurrence, location): a writer's writes to
@@ -340,6 +482,7 @@ final class ComposedFamilies {
             List<String> symbols = new ArrayList<String>();
             for (ReadRow read : reads) symbols.add(read.symbol());
             List<String> armTerms = new ArrayList<String>();
+            List<Arms.Arm> armRows = new ArrayList<Arms.Arm>();
             for (Arms.Arm arm : arms.stateArms(reads.get(0).endpoint(),
                     session, entry.getKey(),
                     reads.get(0).observedVersion())) {
@@ -347,6 +490,7 @@ final class ComposedFamilies {
                 String text = render(arm, symbols);
                 if (text.isEmpty()) continue;
                 armTerms.add(text);
+                armRows.add(arm);
                 reached.add(arm.slotId());
                 families.put(arm.slotId(), Family.of(arm.slotId(),
                         Collections.singletonList(row(arm))));
@@ -355,10 +499,8 @@ final class ComposedFamilies {
             // join has not already said.
             if (armTerms.size() < 2) continue;
             chosen.addAll(symbols);
-            lowering.assertNamed("state_family__" + ordinal + "__"
-                            + ArtifactIO.digest(entry.getKey(), 12),
-                    "(=> " + selector + " "
-                            + VmTermLowering.or(armTerms) + ")");
+            caseSplit("state_family", entry.getKey(), ordinal, selector,
+                    armTerms, armRows, stated);
         }
         return chosen;
     }

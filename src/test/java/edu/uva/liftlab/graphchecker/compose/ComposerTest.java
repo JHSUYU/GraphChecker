@@ -1864,11 +1864,6 @@ public class ComposerTest {
         assertTrue("phi's own leaf of that symbol IS that symbol",
                 fatalArm(composition).contains(SmtLowering.legalSymbols(
                         "(not (= " + PLACEHOLDER + " 3))")));
-        assertTrue("and so is one reaching the formula through the write "
-                        + "expression a JOINED read observed",
-                fatalArm(composition).contains(SmtLowering.legalSymbols(
-                        "(= INSTANCE/Manager#count@v2 "
-                                + PLACEHOLDER + ")")));
         assertTrue("a reference read the VM valued is the identity of the "
                         + "object it names, under the SAME name an ordinary "
                         + "identity leaf of that rid gets -- and one it "
@@ -1894,10 +1889,6 @@ public class ComposerTest {
                         + "symbol: " + fatalArm(composition),
                 fatalArm(composition).contains(SmtLowering.legalSymbols(
                         "(not (= " + MINTED + " 5))")));
-        assertTrue("so is the reader row of the same version, whose own "
-                        + "row states no value",
-                fatalArm(composition).contains(SmtLowering.legalSymbols(
-                        "(= INSTANCE/22#24@v174 " + MINTED + ")")));
         // The mint laid over a real write: matched by occurrence and
         // location, and valued by the JOIN to the version its row states.
         assertTrue("a placeholder row whose version the write log DOES "
@@ -1915,23 +1906,55 @@ public class ComposerTest {
                         + fatalArm(composition),
                 fatalArm(composition).contains(SmtLowering.legalSymbols(
                         "(not (= " + MINTED_JOINED + " 9))")));
-        assertTrue("as is the reader row of the mint version",
-                fatalArm(composition).contains(SmtLowering.legalSymbols(
-                        "(= INSTANCE/2#24@v178 " + MINTED_JOINED + ")")));
-        // A row whose stated value is a REFERENCE, through the one
-        // lowering a FieldAccess concreteValue goes through.
-        assertTrue("a row that states an identity pins its symbol to the "
-                        + "SAME identity name the rid's own leaf gets: "
+        // A ROW'S OWN SYMBOL IS STATED WHERE THE QUESTION ASKS ABOUT IT,
+        // and the five above are the rows it does not.  A read symbol is
+        // the runtime's handle for a row; a published expression names a
+        // VERSION, which the join resolves to the WRITE's expression, so a
+        // reader row's own symbol is reachable from a term only where some
+        // row's expression spells it.  These five are spelled nowhere: the
+        // equation binds a variable no other conjunct, no family arm and
+        // no side condition mentions, which is satisfiable for every value
+        // of everything it names and therefore constrains nothing -- while
+        // its right-hand side drags its whole theory into the query.  The
+        // conjunction states what the question reaches
+        // ({@code Composer#statedJoins}).
+        //
+        // MEASURED on hdfs-11741 campaign #4: 119 such joins over 7 paths,
+        // among them the anchor's OWN allKeys read as an AssocState
+        // (`(= |MAP_STATE/321#-3@v1337| (assoc_put ...))`) -- a second,
+        // parallel encoding of the container the fatal predicate reads as
+        // the ite DAG.  With the arrivals pinned to literals it was cheap;
+        // with them bound by their families it cost z3 the entire 1800 s
+        // budget on `assoc_put`/`assoc_remove` (array-and-lambda), all four
+        // valuations UNDECIDED.  Dropping the unreached joins and nothing
+        // else: every valuation decided, 6.8 s.  It cannot move a verdict
+        // -- a fresh variable's defining equation is satisfiable under
+        // every model of the rest, so the two formulas are equisatisfiable
+        // and agree on every other variable.
+        for (String unasked : new String[]{
+                "INSTANCE/Manager#count@v2", "INSTANCE/22#24@v174",
+                "INSTANCE/2#24@v178", "INSTANCE/Snapshot#32@e-1",
+                "INSTANCE/Snapshot#40@e-1"}) {
+            assertFalse("a row symbol no term of this path names is not "
+                            + "written into the query: " + unasked,
+                    composition.body().contains(
+                            SmtLowering.legalSymbols(unasked)));
+        }
+        // What it does NOT drop: the rows the question DOES reach keep
+        // every binding asserted above -- the placeholder's pin, the mint
+        // laid over a write taking the writer's chain, and a reference the
+        // VM valued "N" answering nullRef rather than an identity of its
+        // own (asserted over identity__ names, which phi's own leaves
+        // reach).
+        assertTrue("the rows the conjunction asks about are all stated: "
                         + fatalArm(composition),
-                fatalArm(composition).matches(".*\\(= \\|INSTANCE/"
-                        + "Snapshot#32@e-1\\| (identity__[0-9a-f]+)\\)"
-                        + ".*|.*\\(= (identity__[0-9a-f]+) nullRef\\)"
-                        + ".*\\(= \\|INSTANCE/Snapshot#32@e-1\\| "
-                        + "\\1\\).*"));
-        assertTrue("and one that states \"N\" pins it to nullRef, not to "
-                        + "an identity of its own",
-                fatalArm(composition).contains(
-                        "(= |INSTANCE/Snapshot#40@e-1| nullRef)"));
+                fatalArm(composition).contains(SmtLowering.legalSymbols(
+                        "(= " + PLACEHOLDER + " 2)"))
+                        && fatalArm(composition).contains(
+                        SmtLowering.legalSymbols("(= " + MINTED + " 2)"))
+                        && fatalArm(composition).contains(
+                        SmtLowering.legalSymbols("(= " + MINTED_JOINED
+                                + " (java_int_wrap (+ " + SERIAL + " 1)))")));
 
         // And the one routine says the same of either row.
         Corpus corpus = Corpus.read(iteration, null);
