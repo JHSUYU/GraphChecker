@@ -310,7 +310,6 @@ public final class ConcolicRegionRuntime {
                 // The class was instrumented under a different policy, so its
                 // loop identities cannot be trusted to account for anything.
                 cut = new ReplayLoopResourceCut(loop, 0, 0L);
-                active.replayResourceCut = true;
             } else {
                 cut = active.chargeLoopBody(loop);
             }
@@ -668,15 +667,6 @@ public final class ConcolicRegionRuntime {
                             ranOn == null ? safe(admitted.sourceKey)
                                     : ranOn.key(),
                             admitted.regionId, admitted.taskId);
-            LoopRootInvocationContext enclosingInvocation =
-                    enclosingLoopRoot(admitted);
-            if (enclosingInvocation != null) {
-                active.enclosingInvocationEvent = enclosingInvocation.token;
-                active.enclosingInvocationThread =
-                        enclosingInvocation.threadName;
-                active.enclosingInvocationOrdinal =
-                        enclosingInvocation.ordinalOf(admitted.taskId);
-            }
             ACTIVE.put(active.token, active);
             pushActiveRegion(active);
             javaRegionPushed = true;
@@ -1311,41 +1301,6 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * The name one unanswered fault-control question answers to.
-     *
-     * <p>{@link #materializeSymbolicBoolean} must hand the workload a
-     * {@code boolean}: the marker stands at a call site the program is about
-     * to branch on, so there is no third value to return and no point at
-     * which the replay can stop.  What it must not do is let the
-     * {@code false} it returns pass for an answer.</p>
-     *
-     * <p>There are two answers, and a firing is unanswered only when it has
-     * neither.  A flip replay answers from its model assignment.  A seed
-     * replay has no model by construction -- it reproduces the recording --
-     * and answers from the recording's own polarity, which the plan states as
-     * the action's {@code primitiveValue} gated on {@code observed}.  Reading
-     * "no model" alone as "unanswered" refused every seed summary that
-     * touches a declared marker and took the DEPENDENCY worklist with it
-     * ({@code NO_OBSERVED_PATH_SEED}); the recorded value is what
-     * distinguishes an answer from the default that used to stand here.</p>
-     *
-     * <p>With neither, the question the search exists to decide has no
-     * answer, and pinning the marker to the polarity the search wants to flip
-     * would be a fabricated chain element -- so the value stays concrete and
-     * the activation is flagged, which refuses the summary at import.</p>
-     *
-     * <p>A marker this plan does not control at all is a different thing: no
-     * question was put to the replay, the recording ran the same hook to the
-     * same {@code false}, and there is nothing to refuse.  Those firings are
-     * named on the diagnostic stream instead, so a corpus can still be
-     * grepped for them.</p>
-     */
-    static final String FAULT_IDLE_UNANSWERED = "FAULT_IDLE_UNANSWERED";
-
-    /** One fault firing answered from the recording rather than a model. */
-    static final String RECORDED_FAULT_ANSWER = "RECORDED_FAULT_ANSWER";
-
-    /**
      * The polarity the recording gave one fault marker, or null.
      *
      * <p>{@code recordedPrimitiveValue} is already gated on the action's
@@ -1410,7 +1365,6 @@ public final class ConcolicRegionRuntime {
                     "NO_RECORDED_VALUE");
             return false;
         }
-        active.noteRecordedFaultAnswer(name, occurrence, recorded);
         return recorded;
     }
 
@@ -1460,7 +1414,7 @@ public final class ConcolicRegionRuntime {
         List<SymbolizeAction> claimed = active.activation.symbolize;
         for (SymbolizeAction action : claimed) {
             if (!action.matchesField(method, unitIndex, owner, fieldSignature,
-                    fieldName, null)
+                    fieldName)
                     || !action.acceptsDirectFieldOccurrence(occurrence)) {
                 continue;
             }
@@ -1690,25 +1644,6 @@ public final class ConcolicRegionRuntime {
 
 
     /**
-     * The outermost shape of what the VM handed back for a minted field, for
-     * the unresolved-input line.  A mint that reads back as anything but one
-     * VM symbol means the VM kept an expression the field already carried,
-     * and the line should say what that was rather than only that the
-     * evidence contract refused it.
-     */
-    static String describeReadBack(JsonElement expression) {
-        if (expression == null || !expression.isJsonObject()) {
-            return expression == null ? "no expression"
-                    : expression.toString();
-        }
-        JsonObject node = expression.getAsJsonObject();
-        String type = optionalString(node, "_type");
-        String raw = optionalString(node, "_exp");
-        return type.isEmpty() ? "untyped expression"
-                : raw.isEmpty() ? type : type + " " + raw;
-    }
-
-    /**
      * The name one unreadable propagated producer expression answers to.
      *
      * <p>A malformed or unreadable import is not "nothing propagated".  The
@@ -1846,8 +1781,7 @@ public final class ConcolicRegionRuntime {
         String missing = missingFieldMetadata(owner, declaringClass,
                 fieldName, descriptor);
         if (!missing.isEmpty()) {
-            return record(failed("EXPORT",
-                    ConcolicVmBroker.MISSING_METADATA, 0L, missing));
+            return failed("EXPORT", ConcolicVmBroker.MISSING_METADATA, 0L);
         }
         ConcolicVmBroker api = engine();
         long handle;
@@ -1860,25 +1794,15 @@ public final class ConcolicRegionRuntime {
             handle = api.exportExpression(owner, declaringClass, fieldName,
                     descriptor, exportEvent);
         } catch (Throwable throwable) {
-            return record(failed("EXPORT",
-                    ConcolicVmBroker.INVOCATION_FAILED, 0L,
-                    rootCause(throwable)));
+            return failed("EXPORT", ConcolicVmBroker.INVOCATION_FAILED, 0L);
         }
         if (handle <= 0L) {
-            int status = exportStatus(handle);
-            HandoffResult result = failed(
-                    "EXPORT", status, 0L,
-                    "exportExpression returned " + handle);
-            if (status == ConcolicVmBroker.NOT_SYMBOLIC) return result;
-            return record(result);
+            return failed("EXPORT", exportStatus(handle), 0L);
         }
         JsonObject exported = new JsonObject();
         exported.addProperty("exportEventId", exportEvent[0]);
-        HandoffResult result = new HandoffResult(
-                "EXPORT",
-                ConcolicVmBroker.OK, handle, exported);
-        record(result);
-        return result;
+        return new HandoffResult("EXPORT", ConcolicVmBroker.OK, handle,
+                exported);
     }
 
     /**
@@ -1891,8 +1815,8 @@ public final class ConcolicRegionRuntime {
             CommunicationHandoffSpec declared) {
         beginBookkeeping();
         try {
-            HandoffResult result = record(attach(owner, declaringClass,
-                    fieldName, descriptor, carried.handle()));
+            HandoffResult result = attach(owner, declaringClass,
+                    fieldName, descriptor, carried.handle());
             if (result.ok()) {
                 recordVmHandoffEvent(declared, result, owner, declaringClass,
                         fieldName, descriptor, carried.producerTaskId(),
@@ -2682,6 +2606,11 @@ public final class ConcolicRegionRuntime {
                 identity.getBytes(StandardCharsets.UTF_8));
     }
 
+    /** The mint label of one key and port, for the caller that has both. */
+    static String handoffMintLabelFor(String mintKey, String portId) {
+        return handoffMintLabel(mintKey, portId);
+    }
+
     /**
      * The label the VM mints v_H under.
      *
@@ -2690,16 +2619,6 @@ public final class ConcolicRegionRuntime {
      * alone, because the importer recognises a configured-source mint by the
      * {@code _field_SRC.<label>_} marker inside the root it reads back.</p>
      */
-    static boolean isHandoffMintKey(String value) {
-        return value != null && value.startsWith(HANDOFF_MINT_PREFIX)
-                && value.length() > HANDOFF_MINT_PREFIX.length();
-    }
-
-    /** The mint label of one key and port, for the plan that answers it. */
-    static String handoffMintLabelFor(String mintKey, String portId) {
-        return handoffMintLabel(mintKey, portId);
-    }
-
     private static String handoffMintLabel(String mintKey, String portId) {
         return "HOFF." + ArtifactIO.sha256(mintKey + "\n"
                 + safe(portId));
@@ -2977,8 +2896,8 @@ public final class ConcolicRegionRuntime {
                     "attach needs a positive handle");
         }
         if (!missing.isEmpty()) {
-            return failed("ATTACH",
-                    ConcolicVmBroker.MISSING_METADATA, handle, missing);
+            return failed("ATTACH", ConcolicVmBroker.MISSING_METADATA,
+                    handle);
         }
         ConcolicVmBroker api = engine();
         long exportEventId;
@@ -2989,22 +2908,17 @@ public final class ConcolicRegionRuntime {
             exportEventId = api.attachExpression(owner, declaringClass,
                     fieldName, descriptor, handle, attachEvent);
         } catch (Throwable throwable) {
-            return failed("ATTACH",
-                    ConcolicVmBroker.INVOCATION_FAILED, handle,
-                    rootCause(throwable));
+            return failed("ATTACH", ConcolicVmBroker.INVOCATION_FAILED,
+                    handle);
         }
         if (exportEventId <= 0L) {
-            int status = exportStatus(exportEventId);
-            return failed("ATTACH", status, handle,
-                    "attachExpression returned " + exportEventId);
+            return failed("ATTACH", exportStatus(exportEventId), handle);
         }
         if (attachEvent[0] <= 0L) {
             // A VM that accepted the attach but named no attach event has told
             // us half an edge.
-            return failed("ATTACH",
-                    ConcolicVmBroker.MALFORMED_RESULT, handle,
-                    "attachExpression named no attach event for export "
-                            + exportEventId);
+            return failed("ATTACH", ConcolicVmBroker.MALFORMED_RESULT,
+                    handle);
         }
         JsonObject success = new JsonObject();
         success.addProperty("exportEventId", exportEventId);
@@ -3034,19 +2948,18 @@ public final class ConcolicRegionRuntime {
         return (int) handle;
     }
 
-    private static HandoffResult failed(String stage, int status, long handle,
-                                        String detail) {
-        // D2: the refusal is a GapRow published by
-        // SessionPublisher (M2); here it stays the call's own answer.
+    /**
+     * One refused broker call, as the call's own answer.
+     *
+     * <p>No {@code detail}: the string every caller used to build here was
+     * never read by anything, and the diagnostic {@code record(...)} that
+     * was to have read it had decayed to an identity function.  What the
+     * callers act on is {@link HandoffResult#ok()} and the status.</p>
+     */
+    private static HandoffResult failed(String stage, int status,
+                                        long handle) {
         return new HandoffResult(stage, status, handle, null);
     }
-
-    /** Reports every refused broker call to the diagnostic trace. */
-    private static HandoffResult record(HandoffResult result) {
-
-        return result;
-    }
-
 
 
     /**
@@ -3174,8 +3087,6 @@ public final class ConcolicRegionRuntime {
             extends SiblingHookGroupEntry {
         /** This invocation's entry event: what a loop task is bound to. */
         final long token;
-        /** The thread that ran it, as the recording names threads. */
-        final String threadName = Thread.currentThread().getName();
         /** Which k this entry was counted at, per task it was offered to. */
         private final Map<String, Integer> ordinalByTaskId;
 
@@ -3186,12 +3097,6 @@ public final class ConcolicRegionRuntime {
             this.token = token;
             this.ordinalByTaskId = Collections.unmodifiableMap(
                     new LinkedHashMap<>(ordinalByTaskId));
-        }
-
-        /** The observed activation ordinal this entry took for a task. */
-        int ordinalOf(String taskId) {
-            Integer ordinal = ordinalByTaskId.get(taskId);
-            return ordinal == null ? 0 : ordinal;
         }
     }
 
@@ -3392,8 +3297,6 @@ public final class ConcolicRegionRuntime {
         PathConditionWindow conditions = read.conditions;
         int rawPathConditionSize = exactRange ? conditions.size() : baseline;
         int attestationBaseline = noVmCondition ? 0 : baseline;
-        if (exactRange) {
-        }
         VmBranchEventAttestation vmAttestation = attestVmBranchEvent(api,
                 active, siteId, expression, observedOutcome, vmEventId,
                 occurrence, conditions, attestationBaseline, null, events);
@@ -3442,7 +3345,6 @@ public final class ConcolicRegionRuntime {
                         : negatedCondition(condition);
                 if (written != null && written.isJsonObject()) {
                     mapping.add("siteCondition", written);
-                } else if (!observedOutcome) {
                 }
             }
         }
@@ -4460,10 +4362,6 @@ public final class ConcolicRegionRuntime {
         return true;
     }
 
-    /** Named refusal: a container is not an input this plan can model. */
-    static final String CONTAINER_INPUT_NOT_MODELLED =
-            "CONTAINER_INPUT_NOT_MODELLED";
-
     private static boolean containerValue(Object value) {
         return value != null && (value.getClass().isArray()
                 || value instanceof Map<?, ?>
@@ -4570,10 +4468,6 @@ public final class ConcolicRegionRuntime {
                 && RuntimeSelectedRegionFinalizer.COMMUNICATION_SITE_PORT
                 .equals(action.sourceKind);
     }
-
-    /** Diagnostic name of one refused mint at a declared cut port. */
-    static final String DECLARED_CUT_PORT_MINT_REFUSED =
-            "DECLARED_CUT_PORT_MINT_REFUSED";
 
     private static Object readField(Object receiver, String name) {
         if (receiver == null || name == null || name.isEmpty()) {
@@ -5217,19 +5111,6 @@ public final class ConcolicRegionRuntime {
         /** The source-level outcome this decision took. */
         boolean outcome() { return outcome; }
 
-        /**
-         * Tells the replay ledger this decision ran, and whether it is the
-         * decision the recorded prefix was waiting for.  A successor is the
-         * replay authority itself, so there is no second, symbolic reading of
-         * a switch for the prefix to disagree with.
-         */
-        /** How {@code REPLAY_OBSERVE} names the decision it just observed. */
-        String replayTrace(boolean matched) {
-            return expected == null
-                    ? " outcome=" + outcome + " matched=" + matched
-                    : " successor=" + expected.observedSuccessorIndex;
-        }
-
         /** This decision's exact capture while the VM window is open. */
         boolean recordPaused(
                 ActiveRegion active, ConcolicVmBroker api, String method,
@@ -5240,22 +5121,6 @@ public final class ConcolicRegionRuntime {
                     expression, occurrence, outcome, vmEventId)
                     : recordSwitchBranchPaused(active, api, method, unitIndex,
                     expression, occurrence, expected, vmEventId);
-        }
-
-        /** What an absent replay-boundary handle is refused as. */
-        String boundaryNoun() {
-            return expected == null ? "replay loop boundary"
-                    : "replay loop switch boundary";
-        }
-
-        /** What an absent prepared event is refused as. */
-        String preparedNoun() {
-            return expected == null ? "prepared branch" : "prepared switch";
-        }
-
-        /** What a failed exact-event observation is reported as. */
-        String observationNoun() {
-            return expected == null ? "branch/PC" : "switch/PC";
         }
 
         /**
@@ -5384,17 +5249,6 @@ public final class ConcolicRegionRuntime {
     static final class ActiveRegion {
         /** The thread this activation ran on, as the recording names it. */
         final String threadName = Thread.currentThread().getName();
-        /**
-         * The request in force when this activation was entered, or "".
-         *
-         * <p>Never an admission condition -- an occurrence is (node, epoch,
-         * region, k) and the request is a circumstance -- but the circumstance
-         * has to be on the row: a task anchored to one request answered by an
-         * activation that ran under none is a divergence IMPORT must name,
-         * and nothing published it.</p>
-         */
-        final String entryRequestKey =
-                RuntimeTraceContext.current().requestKey;
         final long token;
         /** The one task whose region-local path this activation records. */
         final RuntimeTask activation;
@@ -5411,19 +5265,6 @@ public final class ConcolicRegionRuntime {
         edu.uva.liftlab.graphchecker.contract.OccurrenceAddress d3Address;
         /** Whether this activation counts against its address's set. */
         private boolean activationClaimed;
-        /**
-         * The enclosing invocation these loop bodies were charged to: its
-         * entry event, the thread that ran it, and the k it was counted at.
-         *
-         * <p>Zero and "" on a region that is not a loop body.  An
-         * occurrence is (node, epoch, region, k-th activation), and its loop
-         * bodies are its own; bodies of a different enclosing invocation --
-         * another thread, another entry event -- belong to a different k by
-         * definition, so the row says which one it was.</p>
-         */
-        long enclosingInvocationEvent;
-        String enclosingInvocationThread = "";
-        int enclosingInvocationOrdinal;
         /** VM context whose writes belong to this materialized activation. */
         long vmContextId;
         /** Exact event-ledger entry of this native region frame. */
@@ -5476,17 +5317,6 @@ public final class ConcolicRegionRuntime {
 
         /** Exact configured-source and planned-action observations. */
         final List<JsonObject> symbolizedRows = new ArrayList<>();
-        /**
-         * Mint sites, and the fields they mint, this activation reached.
-         *
-         * <p>A configured source mints one symbol per element of the walk it
-         * runs, and those occurrences are recorded here rather than in
-         * the ordinary input-action ledger: the mint hook is a call-site
-         * phase, not an instrumented field access. A capture anchored on one of those
-         * per-element ports is answered by the site having run.</p>
-         */
-        private final Set<String> reachedConfiguredSourceSites =
-                new LinkedHashSet<>();
         final List<JsonObject> branchMappings = new ArrayList<>();
         /**
          * Case-local references into the VM's own handoff ledger: the
@@ -5537,8 +5367,6 @@ public final class ConcolicRegionRuntime {
         private int lastPathConditionSize;
         /** Whether this activation's bounded local path has been cut. */
         boolean loopBoundCut;
-        /** Whether this activation has spent its replay loop resource cap. */
-        boolean replayResourceCut;
         boolean pathRecordingStarted;
 
         ActiveRegion(long token, RuntimeTask activation,
@@ -5604,7 +5432,6 @@ public final class ConcolicRegionRuntime {
                             invocation.intValue());
             long entered = loopBackedges.recordBody(budgetKey);
             if (entered <= maxBodies) return null;
-            replayResourceCut = true;
             return new ReplayLoopResourceCut(loopId, maxBodies, entered);
         }
 
@@ -5703,11 +5530,8 @@ public final class ConcolicRegionRuntime {
             edu.uva.liftlab.graphchecker.runtime.FocusedReplay
                     .observeDecision(d3Address, siteId, occurrence,
                             decision.outcome);
-            boolean contradicted = edu.uva.liftlab.graphchecker.runtime
-                    .FocusedReplay.contradicted(d3Address);
-            if (contradicted) {
-            }
-            return !contradicted;
+            return !edu.uva.liftlab.graphchecker.runtime.FocusedReplay
+                    .contradicted(d3Address);
         }
 
         /**
@@ -5773,20 +5597,6 @@ public final class ConcolicRegionRuntime {
          * one the search exists to flip.  A marker the plan never declared
          * put no question to this replay.</p>
          */
-        /**
-         * Records that one firing was answered from the recording, not from
-         * a model.
-         *
-         * <p>It is not a gap -- the question has an answer -- but a witness
-         * that moves nothing has to be distinguishable from one that moved a
-         * marker the solver chose, so which firings the seed answered is
-         * stated rather than left to be inferred from an absent
-         * assignment.</p>
-         */
-        void noteRecordedFaultAnswer(String name, int occurrence,
-                                     boolean recorded) {
-        }
-
         void noteFaultIdle(String name, int occurrence, boolean controlled,
                            String reason) {
             String subject = "marker=" + safe(name) + "#" + occurrence
@@ -5855,8 +5665,6 @@ public final class ConcolicRegionRuntime {
                                 + " the catalog site declares");
                 return null;
             }
-            reachedConfiguredSourceSites.add(matched.siteId());
-            if (!site.isEmpty()) reachedConfiguredSourceSites.add(site);
             return new SourceSiteEntry(matched, site);
         }
 
@@ -6177,17 +5985,11 @@ public final class ConcolicRegionRuntime {
     public static final class ReplayLoopResourceCut extends Error {
         private static final long serialVersionUID = 1L;
         static final String REASON = "REPLAY_LOOP_RESOURCE_CAP";
-        private final String loopId;
-        private final int maxBodies;
-        private final long attemptedBody;
 
         ReplayLoopResourceCut(String loopId, int maxBodies,
                               long attemptedBody) {
             super(REASON + " at " + safe(loopId) + ": body "
                     + attemptedBody + " exceeds " + maxBodies);
-            this.loopId = safe(loopId);
-            this.maxBodies = maxBodies;
-            this.attemptedBody = attemptedBody;
         }
 
     }
@@ -6195,17 +5997,11 @@ public final class ConcolicRegionRuntime {
     /** Non-workload control signal used solely to abort a bounded path. */
     public static final class LoopBoundCut extends Error {
         private static final long serialVersionUID = 1L;
-        private final String backedgeId;
-        private final int maxTraversals;
-        private final String reason;
 
         LoopBoundCut(String backedgeId, int maxTraversals, String reason) {
             super("concolic path cut at " + safe(backedgeId)
                     + " after " + maxTraversals
                     + " loop body iterations");
-            this.backedgeId = safe(backedgeId);
-            this.maxTraversals = maxTraversals;
-            this.reason = safe(reason);
         }
 
     }
@@ -6362,11 +6158,6 @@ public final class ConcolicRegionRuntime {
             return javaTypeDescriptor(javaType).startsWith("[");
         }
 
-        boolean declaresReferenceInput() {
-            String descriptor = javaTypeDescriptor(javaType);
-            return descriptor.startsWith("L") || descriptor.startsWith("[");
-        }
-
         boolean matchesLocal(String actualMethod,
                                      int actualUnitIndex,
                                      String actualLocal) {
@@ -6478,8 +6269,7 @@ public final class ConcolicRegionRuntime {
 
         boolean matchesField(String actualMethod,
                                      int actualUnitIndex, Object owner,
-                                     String signature, String actualField,
-                                     Boolean accessorContextOverride) {
+                                     String signature, String actualField) {
             if (!("FIELD_ACCESS".equals(bindingMode)
                     || "HEAP_OBJECT_FIELD".equals(location))) {
                 return false;
@@ -6504,13 +6294,10 @@ public final class ConcolicRegionRuntime {
                     return false;
                 }
             }
-            Boolean lightweightContext = accessorContextOverride != null
-                    ? null : lightweightAccessorContextMatches(
+            Boolean lightweightContext = lightweightAccessorContextMatches(
                     accessorCallerMethod, accessorCallUnitIndex,
                     accessorSiteId, accessorDeclaredCallee, owner);
-            boolean accessorContextMatches = accessorContextOverride != null
-                    ? accessorContextOverride
-                    : lightweightContext != null
+            boolean accessorContextMatches = lightweightContext != null
                     ? lightweightContext
                     : CausynthTraceRecorder.currentCallParentSiteMatches(
                     accessorCallerMethod, accessorCallUnitIndex,
