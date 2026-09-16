@@ -489,8 +489,28 @@ final class RowPublication {
                 condition = satisfied.getAsJsonObject();
             }
         }
-        RowRuntime.target(occurrence,
-                reach == null ? 0L : optionalLongInteger(reach, "vmEventId",
-                        0L), anchor, condition, observed == fatalArm,
+        long at = reach == null ? 0L
+                : optionalLongInteger(reach, "vmEventId", 0L);
+        // A TARGET ROW WITH NO VM CLOCK CANNOT SAY WHERE ITS PATH WAS CUT.
+        // seq == 0 states "no VM clock" and never borrows the run's latest
+        // event, and the composer cuts a path's prefix strictly before the
+        // target (P1, Arms#pathCondition(decisions, target.seq())): at 0
+        // that prefix is EMPTY, so pi_p would be weaker than the run's --
+        // the satisfiable direction, where a claim can be made on a path
+        // whose real condition was stronger.  It happens when the anchor
+        // was reached on a CONCRETE decision, which ActiveRegion
+        // #recordConcreteDecision records with vmEventId 0.  Named, so the
+        // gate withholds instead of the composer quietly composing a
+        // shorter path; 0 such rows on either kept corpus (every target
+        // seq there is positive).
+        if (at <= 0L && reached) {
+            RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.BLOCKING, anchor,
+                    "this run reached the anchor on a decision the VM gave"
+                            + " no event id, so the row states no position"
+                            + " in the event order and the path condition"
+                            + " before it cannot be cut");
+        }
+        RowRuntime.target(occurrence, at, anchor, condition,
+                observed == fatalArm,
                 reached && observed == fatalArm, reached);
     }}
