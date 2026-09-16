@@ -231,7 +231,8 @@ public class ContractTest {
         ExportRow exported = ExportRow.of("s-17897-1", 4L, export,
                 "EXPR.v1.9f2c", "I", 41L, "3");
         AttachRow attached = AttachRow.of("s-17897-1", 9L, attach,
-                "v_H_key_id", "I", "3", true, "4", export, "xch-53092d3e");
+                "v_H_key_id", "I", "3", true, "4", export, "xch-53092d3e",
+                "HANDLE");
         WriteRow written = WriteRow.of("s-17897-1", 10L,
                 Endpoint.of(anchor, Endpoint.stateSite(
                         "BlockTokenSecretManager", "addKeys", 12, true), site,
@@ -309,11 +310,16 @@ public class ContractTest {
                 AttachRow.of("s-17897-1", 11L, Endpoint.of(anchor, PORT,
                         index(frame("o.a.h.h.p.PBHelper#convert#31", 1)), 0),
                         "v_H_key_id_2", "I", "5", false, null, null,
-                        "xch-53092d3e")), RowCodec::writeAttach);
+                        "xch-53092d3e", "")), RowCodec::writeAttach);
         List<AttachRow> rows = RowCodec.readAll(session.attaches(),
                 RowCodec::readAttach);
         assertEquals(2, rows.size());
         assertEquals(attached, rows.get(0));
+        // WHICH key paired it survives the round trip, and a blank one is
+        // UNSTATED rather than a third spelling: the unpaired row already
+        // says so with a null producer.
+        assertEquals("HANDLE", rows.get(0).pairedBy());
+        assertNull(rows.get(1).pairedBy());
         assertNull(rows.get(1).producer());
         // Reading one kind never touches another kind's file.
         assertTrue(RowCodec.readAll(session.reads(), RowCodec::readRead)

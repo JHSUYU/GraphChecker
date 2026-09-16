@@ -1780,7 +1780,8 @@ public class ExploreTest {
                             Endpoint producer) {
             attaches.add(AttachRow.of(sessionId, ++seq, endpoint, symbol, "I",
                     arrival, false, null, producer,
-                    "corr-" + endpoint.siteIndex().hash()));
+                    "corr-" + endpoint.siteIndex().hash(),
+                    producer == null ? "" : "HANDLE"));
         }
 
         private void write(Endpoint endpoint, LocationId location,

@@ -315,11 +315,17 @@ public final class RowRuntime {
             String type = statedJavaType("attach", endpoint.id(), javaType,
                     null);
             if (!type.isEmpty()) {
+                // The row states WHICH key answered, so a reader does not
+                // have to re-derive it from the handle and the correlation
+                // and get "both were available" for an answer.  Blank when
+                // neither paired, which Fields.optional reads as unstated:
+                // the unpaired case is already stated by a null producer and
+                // the LINEAGE_LOST row below.
                 session.attach(AttachRow.of(sessionId(), sequence(seq),
                         endpoint, Text.safe(symbol), type,
                         Text.safe(arrival), answered,
                         answered ? Text.safe(answeredValue) : null, producer,
-                        Text.safe(correlationId)));
+                        Text.safe(correlationId), pairing.key()));
             }
             if (producer == null) {
                 session.gap(GapRow.of(sessionId(), GapKind.LINEAGE_LOST,

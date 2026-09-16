@@ -204,6 +204,20 @@ public final class RowInvariants {
                             + "observedVersion or a plain decimal "
                             + "concreteValue, never both absent)"));
         }
+        for (AttachRow row : session.attaches()) {
+            String pairedBy = row.pairedBy();
+            if (pairedBy == null || "HANDLE".equals(pairedBy)
+                    || "CORRELATION_PORT".equals(pairedBy)) {
+                continue;
+            }
+            gaps.add(violation(session, GapKind.UNSTATED_VALUE,
+                    GapClass.BLOCKING, "attaches", row.seq(), "pairedBy",
+                    row.endpoint().id() + "=" + pairedBy,
+                    "invariant 2 (INTERACTION-ID SS1: an attach is paired by "
+                            + "the handle or by correlation+port): this row "
+                            + "names a third key, so which evidence paired "
+                            + "it has no answer"));
+        }
     }
 
     // ---- 3. expression references -------------------------------------
