@@ -315,14 +315,14 @@ public final class Identity {
          * its own context ({@code Root:KEY_MANAGER_TICK#k}) and its events
          * are not a continuation of the request's counts.</p>
          *
-         * <p>What this replaces: the innermost scope frame's TOKEN.  A token
-         * changes whenever the scope is entered and left, which on
-         * hdfs-11741's balancer {@code main} is constantly -- every request
-         * it sends pushes and pops one -- so the count of the enclosing
-         * level restarted mid-run and two {@code Balancer.runOneIteration}
-         * calls of one workload request both stood at iteration 0, sharing
-         * an occurrence id and a producer endpoint.  The context does not
-         * move while the occurrence does not.</p>
+         * <p>What this replaces: the innermost scope frame's TOKEN, which
+         * changes whenever a scope is entered and left and therefore
+         * restarted an occurrence's counts while the occurrence itself had
+         * not changed.  The context does not move while the occurrence does
+         * not.  It DOES move when the thread's ambient scope does, which is
+         * why no FRAME is counted by it ({@link State#nextCall}): where a
+         * frame sits in the control structure is not a fact about the
+         * occurrence that happened to be current when it was entered.</p>
          */
         private static String degraded(String node, String regionId,
                                        CausalContext context) {
