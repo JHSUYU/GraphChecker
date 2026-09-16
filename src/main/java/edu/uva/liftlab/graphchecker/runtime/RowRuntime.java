@@ -509,16 +509,15 @@ public final class RowRuntime {
     /**
      * Enters one level of the execution index: an application method's entry.
      *
-     * <p>{@code nodeKey} is the node the activation is being entered on,
-     * the same one its address is minted with: the frame's iteration is the
-     * k-th entry at this site inside the occurrence that encloses it, and
-     * outside every region that enclosing occurrence is the node's degraded
-     * role occurrence.</p>
+     * <p>The frame's iteration is the k-th entry of this site in the level
+     * that encloses it, under the root hop that level is running in
+     * ({@code Identity.State#nextSiteEvent}).  No node is named: a level's
+     * counts are keyed by (level, root hop, site) and by nothing else.</p>
      *
      * @return the token that closes exactly this level
      */
-    public static long enterFrame(String nodeKey, String callSiteId) {
-        return Identity.enterFrame(nodeKey, callSiteId);
+    public static long enterFrame(String callSiteId) {
+        return Identity.enterFrame(callSiteId);
     }
 
     /** Leaves the level {@code token} opened. */
