@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.causynth;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
+import edu.uva.liftlab.graphchecker.plan.DeclaredSymbolicInputs;
 import edu.uva.liftlab.graphchecker.plan.DependencyRole;
 
 import java.util.ArrayList;
@@ -48,6 +49,26 @@ final class SymbolicRegionPlanner {
         Set<String> communicationAnchors = communicationEndpoints(program);
         communicationAnchors.retainAll(selected);
         Set<String> stateAnchors = new LinkedHashSet<>();
+        // Roots are manual: the case's symbolic-inputs.jsonl is the one
+        // authority on what is symbolic, so every method it names is an
+        // anchor and a region root here by declaration, whatever the
+        // backward slice from the target did or did not reach.  See
+        // DeclaredSymbolicInputs for why the two differ.
+        Set<String> declaredAnchors = new LinkedHashSet<>(
+                DeclaredSymbolicInputs.configured());
+        Set<String> unsliced = new LinkedHashSet<>(declaredAnchors);
+        unsliced.removeAll(selected);
+        if (!unsliced.isEmpty()) {
+            // SeedBackwardStaticAnalyzer seeds every declared method into
+            // the slice, so this cannot happen without one of the two rules
+            // having been weakened.  Refused rather than intersected away:
+            // planning around a declaration the slice dropped is how the
+            // declaration became invisible in the first place.
+            throw new IllegalStateException(
+                    "DECLARED_INPUT_OUTSIDE_STATIC_SLICE: declared symbolic "
+                            + "input methods are not in the static slice: "
+                            + unsliced);
+        }
         Set<String> demandedState = failureRelevantState(program.edges);
         for (String method : selected) {
             outgoing.put(method, new LinkedHashSet<>());
@@ -102,8 +123,8 @@ final class SymbolicRegionPlanner {
                     regionAuthorities);
             addSkeleton(program, root, regionAuthorities.get(root), methods,
                     failureMethods,
-                    communicationAnchors, stateAnchors, outgoing,
-                    regionAuthorities, transportBoundaries);
+                    communicationAnchors, stateAnchors, declaredAnchors,
+                    outgoing, regionAuthorities, transportBoundaries);
         }
 
         List<String> communicationEntries = new ArrayList<>(
@@ -119,7 +140,8 @@ final class SymbolicRegionPlanner {
             addSkeleton(program, endpoint, "COMMUNICATION_ENTRY",
                     forwardClosure(endpoint, outgoing, regionAuthorities),
                     failureMethods, communicationAnchors, stateAnchors,
-                    outgoing, regionAuthorities, transportBoundaries);
+                    declaredAnchors, outgoing, regionAuthorities,
+                    transportBoundaries);
         }
 
         List<String> stateEntries = new ArrayList<>(stateAnchors);
@@ -133,7 +155,28 @@ final class SymbolicRegionPlanner {
             addSkeleton(program, entry, STATE_WRITER_ENTRY,
                     forwardClosure(entry, outgoing, regionAuthorities),
                     failureMethods, communicationAnchors, stateAnchors,
-                    outgoing, regionAuthorities, transportBoundaries);
+                    declaredAnchors, outgoing, regionAuthorities,
+                    transportBoundaries);
+        }
+
+        // Last, so that a declared method some other authority already roots
+        // keeps that authority: the region id is minted from the authority
+        // and the root, and a declaration must not rename a region the rest
+        // of the pipeline already addresses.  What is left here is a
+        // declared method no other rule roots -- which is exactly the case
+        // this rule exists for.
+        List<String> declaredEntries = new ArrayList<>(declaredAnchors);
+        Collections.sort(declaredEntries);
+        for (String entry : declaredEntries) {
+            if (CausynthStaticFacts.constructor(entry)
+                    || hasSkeletonRoot(program, entry)) {
+                continue;
+            }
+            addSkeleton(program, entry, DeclaredSymbolicInputs.AUTHORITY,
+                    forwardClosure(entry, outgoing, regionAuthorities),
+                    failureMethods, communicationAnchors, stateAnchors,
+                    declaredAnchors, outgoing, regionAuthorities,
+                    transportBoundaries);
         }
 
         declareCommunicationPorts(program);
@@ -293,6 +336,7 @@ final class SymbolicRegionPlanner {
             StaticProgram program, String root, String authority,
             List<String> methods, Set<String> failureMethods,
             Set<String> communicationAnchors, Set<String> stateAnchors,
+            Set<String> declaredAnchors,
             Map<String, Set<String>> outgoing,
             Map<String, String> regionAuthorities,
             Set<String> transportBoundaries) {
@@ -300,15 +344,27 @@ final class SymbolicRegionPlanner {
         List<String> communication = intersections(methods,
                 communicationAnchors);
         List<String> state = intersections(methods, stateAnchors);
+        // Appended last, so a region whose anchor some other kind already
+        // named keeps that anchor: anchorMethod is anchors.get(0) and the
+        // plan publishes it as the region's targetMethod.  A declared method
+        // this region holds is added to the list, and a region held by
+        // nothing else is anchored on its declared root.
+        List<String> declared = intersections(methods, declaredAnchors);
         boolean explicitFault = EXPLICIT_FAULT_ENTRY.equals(authority);
         List<String> fault = explicitFault
                 ? Collections.singletonList(root)
                 : Collections.<String>emptyList();
-        List<String> anchors = union(fault, failure, communication, state);
+        List<String> anchors = union(fault, failure, communication, state,
+                declared);
         if (anchors.isEmpty()) {
             return false;
         }
         Map<String, Object> row = skeletonRow(root, authority);
+        if (declaredAnchors.contains(root)) {
+            // The declaration, published.  Every stage after this one reads
+            // it off the skeleton rather than re-reading the case file.
+            row.put(DeclaredSymbolicInputs.ROOT_FIELD, true);
+        }
         row.put("anchorMethod", anchors.get(0));
         row.put("anchorMethods", anchors);
         row.put("methods", methods);

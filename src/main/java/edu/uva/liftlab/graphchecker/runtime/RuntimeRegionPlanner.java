@@ -19,6 +19,7 @@ import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
+import edu.uva.liftlab.graphchecker.plan.DeclaredSymbolicInputs;
 import edu.uva.liftlab.graphchecker.plan.DependencyRole;
 import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.plan.MaterializationSpec;
@@ -1391,15 +1392,25 @@ final class RuntimeRegionPlanner {
             recordEdgeEvidence(result, goalByOccurrence, evidence,
                     fromOccurrence, toOccurrence);
         }
-        // The plan catalog names the planned regions and the static
-        // symbolic sources a scheduler admits inside them.  Ports, methods,
-        // branch policies and access history stay in the refined graph,
-        // which is the artifact that owns them.
+        // The plan catalog names the planned regions, the static symbolic
+        // sources a scheduler admits inside them, and the declared roots
+        // this plan honoured.  Ports, methods, branch policies and access
+        // history stay in the refined graph, which is the artifact that
+        // owns them.
         for (StaticProgram.RegionRow region : regionById.values()) {
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("schemaVersion", 3);
             row.put("kind", "SYMBOLIC_REGION");
             row.put("regionId", region.regionId);
+            // A declared symbolic input's method is a region root by
+            // declaration, so the scheduler resolves the case's rows
+            // against these two members; without them it could not tell a
+            // declaration this plan never saw from a site the recording
+            // never entered.
+            if (region.declaredInputRoot) {
+                row.put("rootMethod", region.rootMethod);
+                row.put(DeclaredSymbolicInputs.ROOT_FIELD, true);
+            }
             // Copied, not aliased: the catalog row is published on its own
             // and must not share mutable structure with the graph row that
             // later passes normalize in place.

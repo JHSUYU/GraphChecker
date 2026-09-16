@@ -6,6 +6,7 @@ import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
+import edu.uva.liftlab.graphchecker.plan.DeclaredSymbolicInputs;
 import edu.uva.liftlab.graphchecker.plan.DependencyRole;
 import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.smt.JavaContainerTypes;
@@ -134,6 +135,7 @@ public final class RuntimeSelectedRegionFinalizer {
         if (observedMethods != null) {
             observed.addAll(observedMethods);
         }
+        refuseUnactivatedDeclaredInputs(selectedSkeletons, runtimeInstances);
 
         StaticProgram program = new StaticProgram();
         program.refinedGraph = graph;
@@ -190,6 +192,7 @@ public final class RuntimeSelectedRegionFinalizer {
             // The refined row is built fresh, so anything the skeleton carries
             // has to be carried over by name.
             for (String carried : new String[]{RETAINED_LOOPS,
+                    DeclaredSymbolicInputs.ROOT_FIELD,
                     StaticSymbolicSourceDeclaration.FIELD,
                     ConfiguredSourcePhaseContract.DECLARATION_FIELD}) {
                 Object value = skeleton.json.get(carried);
@@ -908,6 +911,46 @@ public final class RuntimeSelectedRegionFinalizer {
         return new ArrayList<>(byRecordedActivation.values());
     }
 
+    /**
+     * Refuses a declared symbolic input whose method the recording never
+     * entered.
+     *
+     * <p>Roots are manual, and every other stage of PLAN honours that: the
+     * static slice holds the declared method, the skeleton weave roots a
+     * region at it, the runtime selection keeps that region whether or not
+     * pass 1 entered it, and this closure retains its activations whether or
+     * not anything demands their outputs.  The one thing none of them will
+     * do is invent an activation.  So a declared method with no recorded
+     * region activation is the workload's statement that it never reached
+     * the site -- the case's rotation count, its clock flips or its test
+     * body, not the engine -- and it is named here, with the count, rather
+     * than reported downstream as a site the plan does not cover.</p>
+     */
+    public static void refuseUnactivatedDeclaredInputs(
+            List<StaticProgram.RegionRow> selectedSkeletons,
+            Collection<Map<String, Object>> runtimeInstances)
+            throws IOException {
+        Map<String, Integer> activations = new LinkedHashMap<>();
+        for (Map<String, Object> instance : runtimeInstances == null
+                ? Collections.<Map<String, Object>>emptyList()
+                : runtimeInstances) {
+            activations.merge(text(instance.get("regionId")), 1,
+                    Integer::sum);
+        }
+        for (StaticProgram.RegionRow skeleton : selectedSkeletons) {
+            if (!skeleton.declaredInputRoot
+                    || activations.getOrDefault(skeleton.regionId, 0) > 0) {
+                continue;
+            }
+            throw new IOException("DECLARED_INPUT_NEVER_ACTIVATED: the case "
+                    + "declares a symbolic input in "
+                    + skeleton.rootMethod + ", planned as region "
+                    + skeleton.regionId + ", and the recording activated it "
+                    + "0 times; the workload never reached the declared "
+                    + "site, so no engine rule can carry it");
+        }
+    }
+
     /** True when this skeleton's methods were observed in the trace. */
     private static boolean selectedRegion(StaticProgram.RegionRow skeleton,
                                           Set<String> observed) {
@@ -1101,6 +1144,33 @@ public final class RuntimeSelectedRegionFinalizer {
         Set<String> admittedStateWriters = new LinkedHashSet<>(
                 admitSharedLocationWriters(targets, instances, demands,
                         program.regionEdges, demandDepths));
+        // Every activation of a declared symbolic input's method, admitted
+        // by declaration.  It is the same admission the bounded state
+        // writers get -- an occurrence retained although nothing demands one
+        // of its outputs yet -- and it has to be, because a declared site
+        // typically has no output to demand: hdfs-11741's removeExpiredKeys
+        // reads the clock, decides an expiry, and in a healthy recording
+        // removes nothing, so it writes no field, exports no value, and no
+        // demand-directed walk over recorded flows can ever arrive on it.
+        // The case declared it precisely because the arm it did not take is
+        // the failure.
+        Set<String> declaredInputOccurrences = new LinkedHashSet<>();
+        for (Map.Entry<String, Map<String, Object>> entry
+                : instances.entrySet()) {
+            StaticProgram.RegionRow skeleton = program.skeletons.get(
+                    text(entry.getValue().get("regionId")));
+            if (skeleton != null && skeleton.declaredInputRoot) {
+                declaredInputOccurrences.add(entry.getKey());
+            }
+        }
+        // A fatal target is already the origin of the walk, and
+        // admissionBasis means "why this activation is in the plan at all,
+        // when it is there for anything other than reaching the fatal
+        // target" -- so a declared method that is itself the annotated
+        // target (hdfs-17960's serializeSnapshotSection) states nothing
+        // here and this rule leaves its rows untouched.
+        declaredInputOccurrences.removeAll(targets);
+        admittedStateWriters.addAll(declaredInputOccurrences);
 
         Map<String, List<Map<String, Object>>> predecessors =
                 new LinkedHashMap<>();
@@ -1180,6 +1250,18 @@ public final class RuntimeSelectedRegionFinalizer {
                     predecessors, targetInteractionInputs,
                     requestFlowPrefixInputs, admittedStateWriters,
                     transitiveDemands);
+        }
+        // Stated after the fixed point, and only where no rule above has
+        // stated one: a declared occurrence the shared-location demand also
+        // reached keeps that basis, which carries the demand depth the
+        // scheduler reads.
+        for (String occurrence : declaredInputOccurrences) {
+            Map<String, Object> activation = instances.get(occurrence);
+            if (activation == null
+                    || !text(activation.get(ADMISSION_BASIS)).isEmpty()) {
+                continue;
+            }
+            activation.put(ADMISSION_BASIS, DeclaredSymbolicInputs.ADMISSION);
         }
         return union;
     }

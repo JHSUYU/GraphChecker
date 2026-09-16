@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.causynth;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
+import edu.uva.liftlab.graphchecker.plan.DeclaredSymbolicInputs;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 
@@ -585,6 +586,13 @@ public final class StaticProgram {
         public final String regionId;
         public final String rootMethod;
         public final String rootAuthority;
+        /**
+         * Whether the case's {@code symbolic-inputs.jsonl} names this
+         * region's root method.  Stamped by the skeleton planner and read
+         * by every stage after it, so the declaration travels on the
+         * artifact rather than being re-read from the case file.
+         */
+        public final boolean declaredInputRoot;
         /** The loop body this region is re-rooted at, or {@code null}. */
         public final Map<String, Object> rootLoop;
         public final String anchorMethod;
@@ -620,6 +628,8 @@ public final class StaticProgram {
             rootAuthority = stringValue(row.get(
                     LoopBoundPolicy.ROOT_AUTHORITY));
             rootLoop = asMap(row.get(LoopBoundPolicy.ROOT_LOOP));
+            declaredInputRoot = Boolean.TRUE.equals(
+                    row.get(DeclaredSymbolicInputs.ROOT_FIELD));
             anchorMethod = stringValue(row.get("anchorMethod"));
             selection = stringValue(row.get("selection"));
             graphKind = stringValue(row.get("graphKind"));
