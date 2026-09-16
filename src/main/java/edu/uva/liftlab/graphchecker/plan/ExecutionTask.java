@@ -74,7 +74,7 @@ public final class ExecutionTask extends PlanRow {
     private ExecutionTask(JsonObject source, LoopBoundPolicy bound,
                           List<ConfiguredSourcePhaseContract.Occurrence>
                                   phases) {
-        super(source, "execution task", false, phases);
+        super(source, "execution task", phases);
         require(taskId(), "taskId");
         require(goalId(), "goalId");
         inputActions = InputActionCatalog.decode(encoded);

@@ -227,7 +227,13 @@ final class RuntimeRegionPlanner {
         return retained;
     }
 
-    /** Exact executions of configured-source hook sites inside one occurrence.
+    /**
+     * Exact executions of configured-source hook sites inside one occurrence.
+     *
+     * <p>Evidence of where the recording observed each declared site, in
+     * event order.  It numbers nothing: a declared source is ONE symbol, so
+     * the rows say WHERE the sites are and how often the recording reached
+     * them, never how often a replay may.</p>
      */
     private static List<JsonObject> configuredSourcePhases(
             StaticProgram.RegionRow region, String occurrenceId,
@@ -239,7 +245,6 @@ final class RuntimeRegionPlanner {
         List<RuntimeEvent> ordered = new ArrayList<>(
                 trace.runtime(activationCalls));
         ordered.sort(Comparator.comparingLong(event -> event.seq));
-        Map<String, Integer> ordinals = new LinkedHashMap<>();
         List<JsonObject> result = new ArrayList<>();
         for (RuntimeEvent event : ordered) {
             if (!"CALL_SITE_ENTER".equals(event.kind)) continue;
@@ -253,8 +258,6 @@ final class RuntimeRegionPlanner {
                         "configured-source phase event differs "
                         + "from exact static site " + declaration.siteId());
             }
-            int ordinal = ordinals.merge(declaration.identity(), 1,
-                    Integer::sum);
             List<Long> enclosingCallIds = new ArrayList<>();
             MethodEvent owner = trace.methodByCall.get(event.callId);
             Set<Long> seen = new LinkedHashSet<>();
@@ -272,7 +275,7 @@ final class RuntimeRegionPlanner {
                         + activationRootCallId);
             }
             result.add(ConfiguredSourcePhaseContract.occurrence(
-                    declaration, occurrenceId, ordinal, event.seq,
+                    declaration, occurrenceId, event.seq,
                     event.callId, event.invocationId,
                     event.declaredCallee, enclosingCallIds));
         }

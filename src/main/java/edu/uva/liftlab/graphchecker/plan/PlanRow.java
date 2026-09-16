@@ -22,13 +22,13 @@ public abstract class PlanRow {
     private final List<ConfiguredSourcePhaseContract.Occurrence> phases;
 
     /** {@code source} is owned outright; a decoder copies before calling. */
-    PlanRow(JsonObject source, String label, boolean completeOccurrence) {
-        this(source, label, completeOccurrence, null);
+    PlanRow(JsonObject source, String label) {
+        this(source, label, null);
     }
 
     /** {@code decoded} are the phases a caller that built this row already
      *  holds: passing them keeps one decode per row. */
-    PlanRow(JsonObject source, String label, boolean completeOccurrence,
+    PlanRow(JsonObject source, String label,
             List<ConfiguredSourcePhaseContract.Occurrence> decoded) {
         this.encoded = source;
         this.label = label;
@@ -41,8 +41,7 @@ public abstract class PlanRow {
             return;
         }
         phases = ConfiguredSourcePhaseContract.occurrencesOf(
-                encoded.get(ConfiguredSourcePhaseContract.PLAN_FIELD),
-                completeOccurrence);
+                encoded.get(ConfiguredSourcePhaseContract.PLAN_FIELD));
         for (ConfiguredSourcePhaseContract.Occurrence phase : phases) {
             if (!occurrenceId().equals(phase.sourceOccurrenceId())) {
                 throw new IllegalArgumentException(
