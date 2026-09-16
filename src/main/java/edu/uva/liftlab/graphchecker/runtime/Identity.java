@@ -205,9 +205,16 @@ public final class Identity {
         private final Map<String, Map<String, Integer>> siteEvents =
                 new HashMap<String, Map<String, Integer>>();
 
-        /** The counters of one occurrence's events, opening them at zero. */
+        /**
+         * The counters of one occurrence's events, opening them at zero.
+         *
+         * <p>{@code null} is the occurrence this run can name none of -- the
+         * node was unnameable -- and it is one bucket of this thread like
+         * any other, because there is one such occurrence per thread and its
+         * address is refused anyway.</p>
+         */
         private Map<String, Integer> siteEvents(OccurrenceAddress occurrence) {
-            String key = occurrence.id();
+            String key = occurrence == null ? "" : occurrence.id();
             Map<String, Integer> events = siteEvents.get(key);
             if (events == null) {
                 events = new HashMap<String, Integer>();
@@ -387,24 +394,38 @@ public final class Identity {
     private static final String STARTED = "start\u0000";
 
     /**
-     * Enters one instrumented call site.
+     * Enters the index frame of one region activation.
      *
-     * <p>The frame's iteration is the k-th entry of THIS call site under
-     * the frame that encloses it, counted since that frame was entered.  A
-     * loop body re-entering the same site is the same site at iteration
-     * 1, 2, 3 -- which is what the innermost enclosing loop's iteration
-     * count means -- and one rule computes it in the recording and in the
-     * replay alike, because the recording weaves no loop-backedge hook and
-     * an index that differed between the two passes would name two
-     * different points for one execution point.</p>
+     * <p>The frame's iteration is the k-th entry of THIS site inside the
+     * occurrence that ENCLOSES it: the region entry is an event of the
+     * enclosing occurrence, counted by the one counter every other event of
+     * an occurrence is counted by ({@link #eventSiteIndex}).  A loop body
+     * re-entering the same region root is that root at iteration 1, 2, 3 --
+     * which is what the innermost enclosing loop's iteration count means --
+     * and one rule computes it in the recording and in the replay alike,
+     * because both weave this entry (CausynthTraceRecorder.enterMethod,
+     * ConcolicRegionRuntime.enterRegionEntry) and the recording weaves no
+     * loop-backedge hook.</p>
+     *
+     * <p>What this replaces: the k-th entry of the site under the enclosing
+     * FRAME.  A frame's own counters die when it pops, so two activations
+     * whose distinct enclosing invocations are in UNTRACED code both stood
+     * at iteration 0 and their whole addresses collided -- on hdfs-11741,
+     * 10 of the 62 region-plan rows shared an occurrence id with another
+     * row (dn1's and dn0's SASL {@code retrieveDataEncryptionKey}, and the
+     * three {@code BlockKeyProto convert} activations of each of nn0 and
+     * the balancer, entered twice under one anchor) and PLAN refused the
+     * artifact at RuntimePlanArtifact.read.  An occurrence does not die
+     * between two of its own events, so its count separates them.</p>
      */
-    public static void enterCall(String callSiteId) {
+    public static void enterCall(String nodeKey, String callSiteId) {
         State state = state();
         String site = Text.safe(callSiteId);
-        Map<String, Integer> siblings = state.children();
-        Integer seen = siblings.get(site);
+        Map<String, Integer> entered =
+                state.siteEvents(currentOccurrence(nodeKey));
+        Integer seen = entered.get(site);
         int iteration = seen == null ? 0 : seen;
-        siblings.put(site, iteration + 1);
+        entered.put(site, iteration + 1);
         state.frames.add(Frame.of(site, iteration));
         state.entries.add(new HashMap<String, Integer>());
         state.journal();

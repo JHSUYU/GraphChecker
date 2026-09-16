@@ -1131,6 +1131,14 @@ final class RuntimeRegionPlanner {
             // did not retain carries none.
             String occurrenceId = stringValue(seed.get("occurrenceId"));
             if (occurrenceId.isEmpty()) continue;
+            // One coarse occurrence is one row (README REGION-1).  A second
+            // activation that landed on this address is refused where the
+            // address is minted -- RuntimeSelectedRegionFinalizer states
+            // OCCURRENCE_ADDRESS_SHARED as a BLOCKING plan gap and retains
+            // the first -- so publishing it here would put the same
+            // contradiction in the artifact, where PLAN meets it as
+            // "duplicate region occurrence" and says nothing about why.
+            if (planByOccurrence.containsKey(occurrenceId)) continue;
             // planSkeletonGraph mints the recorded call identity once and
             // stamps it on the seed; this stage reads it rather than
             // spelling a second one to check the first against.

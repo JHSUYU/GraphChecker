@@ -197,12 +197,15 @@ public final class CausynthTraceRecorder {
         // it is in the replay.
         String address = "";
         if (!region.isEmpty()) {
-            pushMethodFrame(method);
+            // One reading of the node for the frame and for the address, as
+            // the replay takes one (ConcolicRegionRuntime.enterRegionEntry).
+            String node = RuntimeTraceContext.activationSource(receiver).key();
+            pushMethodFrame(node, method);
             // Opened, as a replay opens it: the endpoints of the events
             // inside this activation are indexed from here and name this
             // occurrence (Identity.currentOccurrence), which is how the
             // recording files the same producer endpoint a replay does.
-            address = occurrenceAddress(receiver, region);
+            address = occurrenceAddress(node, region);
         }
         RuntimeRegionPlanner.MethodEvent event =
                 new RuntimeRegionPlanner.MethodEvent(id, testName,
@@ -230,11 +233,9 @@ public final class CausynthTraceRecorder {
      * rule the replay evaluates at its own root entry.  The region is not
      * opened here: the recording indexes no endpoints from it.</p>
      */
-    private static String occurrenceAddress(Object receiver, String regionId) {
+    private static String occurrenceAddress(String nodeKey, String regionId) {
         edu.uva.liftlab.graphchecker.contract.OccurrenceAddress address =
-                Identity.occurrence(RuntimeTraceContext
-                                .activationSource(receiver).key(),
-                        regionId, true);
+                Identity.occurrence(nodeKey, regionId, true);
         return address == null ? "" : address.render();
     }
 
@@ -396,15 +397,16 @@ public final class CausynthTraceRecorder {
     /**
      * Pushes the execution-index frame of one REGION activation.
      *
-     * <p>Its iteration counts the k-th entry of this region root under the
-     * frame that encloses it, which is how two activations of one region
-     * under one enclosing occurrence are told apart (IDENTITY-V3: loop
-     * iteration, not an ordinal).  Two activations that this index cannot
-     * separate are reported as sharing an address, never renumbered.</p>
+     * <p>Its iteration counts the k-th entry of this region root inside the
+     * occurrence that encloses it, which is how two activations of one
+     * region under one enclosing occurrence are told apart (IDENTITY-V3:
+     * loop iteration, not an ordinal).  Two activations that this index
+     * cannot separate are refused as sharing an address, never
+     * renumbered.</p>
      */
-    private static void pushMethodFrame(String method) {
+    private static void pushMethodFrame(String nodeKey, String method) {
         edu.uva.liftlab.graphchecker.runtime.Identity.enterCall(
-                MapFields.safe(method));
+                nodeKey, MapFields.safe(method));
     }
 
     /** Leaves the region {@link #pushMethodFrame} opened. */

@@ -822,11 +822,15 @@ public final class RuntimeSelectedRegionFinalizer {
      *
      * <p>Two activations may still land on one address -- nothing IDENTITY-V3
      * names separates them (same node, same region, same context, same
-     * index).  They are published under that one address and the collision
-     * is stated as a named diagnostic gap; their rows keep their own events,
-     * and the declared selector's {@code k} picks among them in seed order.
-     * Renumbering them would be an ordinal, which is what v3 exists to
-     * remove.</p>
+     * index) -- and that is now a BLOCKING refusal, not a note.  One
+     * occurrence is one plan row (README REGION-1): the first activation is
+     * published and the rest are not, so the artifact never states the
+     * contradiction and PLAN never meets it as a schema complaint
+     * (RuntimePlanArtifact.read, whose duplicate check stays as the second
+     * line).  Renumbering them would be an ordinal, which is what v3 exists
+     * to remove; the rule that separates them is the entry count of {@code
+     * Identity.enterCall}, and a residual collision means that count could
+     * not, so no claim may be made over the address.</p>
      *
      * @return every recorded root call, by the occurrence it belongs to
      */
@@ -860,14 +864,15 @@ public final class RuntimeSelectedRegionFinalizer {
             program.activations.get(entry.getKey()).put(
                     SHARED_ADDRESS_ROOT_CALLS, entry.getValue());
             planGap(program.planGaps, GapKind.OCCURRENCE_ADDRESS_SHARED,
-                    GapClass.DIAGNOSTIC,
+                    GapClass.BLOCKING,
                     entry.getKey(), entry.getValue().size() + " activations "
                             + "of this region share one address: nothing "
                             + "IDENTITY-V3 names distinguishes them (same "
                             + "node, causal context and execution index); "
                             + "recorded root calls " + entry.getValue()
-                            + "; a declared selector's k picks among them in "
-                            + "seed order");
+                            + "; one occurrence is one plan row, so only the "
+                            + "first is published and no claim may be made "
+                            + "over this address");
         }
         return occurrenceByRecordedRootCall;
     }
