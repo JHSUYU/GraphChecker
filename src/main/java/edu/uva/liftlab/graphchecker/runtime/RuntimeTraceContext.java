@@ -132,7 +132,13 @@ final class RuntimeTraceContext {
         // which k-th one, instead of only which request key was in force.
         scope.lineageToken = Lineage.push(source.key(), Role.CLIENT,
                 normalizedApi);
-        edu.uva.liftlab.graphchecker.runtime.Identity.scopeStart();
+        // A root the thread opens for itself: the index of what runs inside
+        // begins at the request, and a start frame standing above it is the
+        // frame of the ROOT that carried this thread here, not of the
+        // request (Identity.Hop.SCOPE_ROOT).
+        edu.uva.liftlab.graphchecker.runtime.Identity.scopeStart(
+                edu.uva.liftlab.graphchecker.runtime.Identity.Hop
+                        .SCOPE_ROOT);
         state.scopes.push(scope);
         state.source = source;
         state.requestKey = requestKey;
@@ -361,7 +367,11 @@ final class RuntimeTraceContext {
                 ? scope.requestApi : MapFields.safe(apiName);
         frame.lineageToken = Lineage.restore(scope.lineage,
                 scope.source.key(), Role.of(roleName), api);
-        edu.uva.liftlab.graphchecker.runtime.Identity.scopeStart();
+        // The same root: the carried scope is the work's, and the pool
+        // thread that dequeued it is not (Identity.Hop.SCOPE_ROOT).
+        edu.uva.liftlab.graphchecker.runtime.Identity.scopeStart(
+                edu.uva.liftlab.graphchecker.runtime.Identity.Hop
+                        .SCOPE_ROOT);
         publishCausalSource(state);
         return token;
     }
@@ -388,7 +398,12 @@ final class RuntimeTraceContext {
         State state = CURRENT.get();
         SourceRef source = sourceFor(owner);
         if (source == null) source = state.view().source;
-        edu.uva.liftlab.graphchecker.runtime.Identity.scopeStart();
+        // A root that IS the started work, so its index begins at the start
+        // frame the work claimed: the tick's own beginning
+        // (Identity.Hop.STARTED_ROOT).
+        edu.uva.liftlab.graphchecker.runtime.Identity.scopeStart(
+                edu.uva.liftlab.graphchecker.runtime.Identity.Hop
+                        .STARTED_ROOT);
         // A ROOT hop, whatever this thread already stands in: a tick is
         // started by no message and serves none, so it descends from
         // nothing (Lineage#pushRoot).  A nested hop made
@@ -538,7 +553,13 @@ final class RuntimeTraceContext {
                 state.source == null ? "" : state.source.key(),
                 Role.of(state.exchangeTransport),
                 inboundFamily(remote.requestKey, remote.requestApi));
-        edu.uva.liftlab.graphchecker.runtime.Identity.scopeStart();
+        // An anchored request: the index of what serves it begins at the
+        // inbound scope, and the frames above it -- the pooled handler's
+        // start frame, Server$Handler.run, RpcCall.run -- are the carrier
+        // thread's (Identity.Hop.ANCHOR).  Which handler serves a request
+        // is scheduling; the anchor below already identifies it.
+        edu.uva.liftlab.graphchecker.runtime.Identity.scopeStart(
+                edu.uva.liftlab.graphchecker.runtime.Identity.Hop.ANCHOR);
         // The message that opened this scope names its producer; that
         // endpoint IS this occurrence's causal context (IDENTITY-V3).
         Lineage.anchor(edu.uva.liftlab.graphchecker.runtime.Interactions
