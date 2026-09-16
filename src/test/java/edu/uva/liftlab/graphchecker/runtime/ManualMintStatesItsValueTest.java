@@ -231,7 +231,7 @@ public class ManualMintStatesItsValueTest {
                         + "mint plants it, a clock's skew included", owed,
                 FocusedReplay.unplantedAssignments());
         assertEquals("a field mint that planted states no recordedValue", "",
-                ConcolicRegionRuntime.fieldMintRecordedValue(focused,
+                RootMint.fieldMintRecordedValue(focused,
                         new ConcolicRegionRuntime.SymbolizeAction(
                                 action("CASE.SERIAL")),
                         keys, SERIAL_FIELD, "I", Integer.valueOf(182907)));
@@ -246,7 +246,7 @@ public class ManualMintStatesItsValueTest {
         // it: the recording is what every delta is relative to.
         keys.serialNo = 182907;
         assertEquals("a mint that planted nothing states what it read",
-                "182907", ConcolicRegionRuntime.fieldMintRecordedValue(
+                "182907", RootMint.fieldMintRecordedValue(
                         focused, new ConcolicRegionRuntime.SymbolizeAction(
                                 action("CASE.OTHER")),
                         keys, SERIAL_FIELD, "I", Integer.valueOf(182907)));
@@ -302,7 +302,7 @@ public class ManualMintStatesItsValueTest {
     private static String focusedRootValue(
             ConcolicRegionRuntime.ActiveRegion active, String rootId,
             Object observed) throws Exception {
-        Method value = ConcolicRegionRuntime.class.getDeclaredMethod(
+        Method value = RootMint.class.getDeclaredMethod(
                 "focusedRootValue",
                 ConcolicRegionRuntime.ActiveRegion.class, String.class,
                 Object.class);
