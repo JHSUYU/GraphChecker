@@ -1736,15 +1736,20 @@ public class ComposerTest {
                 composition.body().contains(MARKER));
         assertTrue("the arm it did not take is the negation",
                 composition.body().contains("(not " + MARKER + ")"));
-        // The shift, quantifier-free: no indexed_insert application is
-        // left, the elements are a store chain, and the index carries the
-        // operation's own definedness -- List.add(i, v) requires
-        // 0 <= i <= size and throws otherwise, so an out-of-range index is
-        // an execution that threw and not a path that reached the anchor.
-        assertFalse("no list mutation lowers to a quantified relation "
-                        + "any more: " + composition.body(),
-                composition.body().contains("(indexed_insert ")
-                        || composition.body().contains("(indexed_remove "));
+        // The shift, quantifier-free: the elements are a store chain, and
+        // the index carries the operation's own definedness -- List.add(i,
+        // v) requires 0 <= i <= size and throws otherwise, so an
+        // out-of-range index is an execution that threw and not a path
+        // that reached the anchor.  The rule is now structural rather than
+        // a property of this query: the quantified whole-state relations
+        // are not APPLIED and are no longer DECLARED either, so no query
+        // can name them and none carries the (exists ...) that made
+        // 17960's moved valuation come back "(incomplete quantifiers)".
+        assertFalse("no list mutation lowers to a quantified relation, and "
+                        + "the preamble declares none: " + composition.body(),
+                composition.body().contains("indexed_insert")
+                        || composition.body().contains("indexed_remove")
+                        || composition.body().contains("indexed_contains"));
         assertTrue("each insertion carries the operation's own "
                         + "definedness, at the size the recording stated: "
                         + composition.body(),

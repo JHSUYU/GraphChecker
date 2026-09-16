@@ -805,13 +805,6 @@ public final class SmtLowering extends VmLoweringCore {
     }
 
     @Override
-    public VmTermLowering.RenderedInteger renderedInteger(
-            JsonElement element, String origin) {
-        return new VmTermLowering.RenderedInteger(null,
-                "ROUNDTRIP_NOT_PROVED_NO_SPLIT_EVIDENCE");
-    }
-
-    @Override
     public void assertJavaIntRange(Term integer) {
         if (integer == null || integer.sort != Sort.INT) return;
         assertJavaIntegralDomain(integer.text, Sort.INT, "I", integer.text);
@@ -1624,7 +1617,7 @@ public final class SmtLowering extends VmLoweringCore {
     public static Set<String> preambleNames() {
         if (PREAMBLE_NAMES.isEmpty()) {
             List<String> lines = new ArrayList<String>(
-                    VmTermLowering.preamble(false));
+                    VmTermLowering.preamble());
             lines.add(VmTermLowering.JAVA_INT_TO_STRING);
             lines.add(JavaPrimitiveSmtSemantics.INT_WRAP_DEFINITION);
             lines.add(JavaPrimitiveSmtSemantics.LONG_WRAP_DEFINITION);
@@ -2206,7 +2199,7 @@ public final class SmtLowering extends VmLoweringCore {
         List<String> lines = new ArrayList<String>();
         lines.add("(set-logic ALL)");
         lines.add("(set-option :produce-models true)");
-        for (String line : VmTermLowering.preamble(false)) lines.add(line);
+        for (String line : VmTermLowering.preamble()) lines.add(line);
         if (usesJavaIntString) {
             lines.add(VmTermLowering.JAVA_INT_TO_STRING);
         }
@@ -2223,7 +2216,7 @@ public final class SmtLowering extends VmLoweringCore {
         query.append("(set-option :produce-unsat-cores true)").append('\n');
         query.append("(set-logic ALL)").append('\n');
         query.append("(set-option :produce-models true)").append('\n');
-        for (String line : VmTermLowering.preamble(false)) {
+        for (String line : VmTermLowering.preamble()) {
             query.append(line).append('\n');
         }
         if (usesJavaIntString) {
