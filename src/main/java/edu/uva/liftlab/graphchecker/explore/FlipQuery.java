@@ -362,6 +362,43 @@ final class FlipQuery {
                                 + "with a value the chain does not reach",
                         flipped);
             }
+            // A QUERY THAT ASKS NOTHING IS NOT SENT.  `sorts` is this
+            // query's own variable table -- one entry per root, clock,
+            // handoff control and movable read it renamed -- and it is
+            // what z3 is asked to read back ({@code modelSymbols}).  Empty,
+            // the question is "is the complement of this decision
+            // satisfiable" over a formula in which every name is a
+            // definition or a fact the recording pins, so the answer is
+            // entailed by the recording alone and no arm of it is a world
+            // the corpus lacks: an unsat here would publish "no world of
+            // this corpus takes the other arm" about a decision nothing
+            // declared could move, and a sat would hand back a model with
+            // no value in it, which is the seed replay under another name
+            // (the same fact {@code recordedValuation} names after the
+            // solver has run).
+            //
+            // 18 of the 36 wave-0 obligations of hdfs-11741 campaign #4
+            // are this, all of them the receive loop's null test
+            // (`addKeys#u21`), and every one was sent and answered UNSAT.
+            // Their queries carry 8 to 12 declarations, all of them the
+            // session lowering's own: a `container_dag__` define-fun over
+            // a recorded `identity__` constant, with the session's own
+            // identity fact `(not (= identity__... nullRef))` beside it.
+            // So they are not a v_C or v_H question with freedom in it --
+            // there is no variable at all -- and the flip is refused here
+            // instead of being spent on the solver.
+            if (sorts.isEmpty()) {
+                return refuse(GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+                        ExploreCodec.EXPLORATION,
+                        flipped.siteId() + "#" + flipped.ordinal(),
+                        "this query declares no variable of its own: no "
+                                + "root, no clock, no handoff control and no "
+                                + "movable read reaches the flipped "
+                                + "predicate, so whichever arm it is the "
+                                + "answer is the recording's own facts and "
+                                + "not a world this corpus lacks",
+                        flipped);
+            }
             // One walk, for both read-back maps: the roots and the clocks
             // of one query are projected by one notion of reached.
             Set<String> reached = reachedVariables();
@@ -1049,8 +1086,25 @@ final class FlipQuery {
 
         private Built refuse(GapKind kind, String subject, String detail,
                              DecisionRow flipped) {
-            gaps.add(GapRow.of(path.sessionId, kind, GapClass.BLOCKING,
-                    subject, detail));
+            return refuse(kind, GapClass.BLOCKING, path.sessionId, subject,
+                    detail, flipped);
+        }
+
+        /**
+         * The same refusal, filed where the fact belongs.
+         *
+         * <p>A refusal about the RECORDING -- a flipped predicate naming
+         * something no row declares, a symbol the chain does not reach --
+         * is that session's, and blocking.  A refusal about THE QUESTION
+         * THIS WAVE ASKED is the wave's, and diagnostic: no execution went
+         * wrong, the wave offered a flip that is not an obligation.  Both
+         * end the build the same way, with the refusal in {@code Built}, so
+         * the query is not sent.</p>
+         */
+        private Built refuse(GapKind kind, GapClass cls, String sessionId,
+                             String subject, String detail,
+                             DecisionRow flipped) {
+            gaps.add(GapRow.of(sessionId, kind, cls, subject, detail));
             return new Built("", Collections.<String>emptyList(),
                     kind.name() + ":" + subject, flipped,
                     new ArrayList<Control>(controls.values()), rootVariables,
