@@ -32,7 +32,7 @@ public final class RegionInstancePlan extends PlanRow {
     private final List<Goal> goals;
 
     private RegionInstancePlan(JsonObject source) {
-        super(source, "region plan", true);
+        super(source, "region plan");
         List<Goal> decoded = new ArrayList<>();
         Set<String> ids = new LinkedHashSet<>();
         for (JsonElement element : array(encoded, "closureGoals")) {

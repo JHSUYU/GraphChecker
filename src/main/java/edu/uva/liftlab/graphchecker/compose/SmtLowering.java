@@ -1982,23 +1982,46 @@ public final class SmtLowering extends VmLoweringCore {
                 .append('\n');
         query.append(JavaPrimitiveSmtSemantics.LONG_WRAP_DEFINITION)
                 .append('\n');
-        for (Map.Entry<String, Sort> declaration
-                : declarations().entrySet()) {
-            query.append("(declare-const ").append(declaration.getKey())
-                    .append(' ').append(declaration.getValue().smt)
-                    .append(")").append('\n');
-        }
-        for (SharedTerm shared : sharedTerms.values()) {
-            query.append("(define-fun ").append(shared.name)
-                    .append(" () ").append(shared.sort.smt).append(' ')
-                    .append(shared.body).append(")").append('\n');
-        }
     }
 
     /** The query body: preamble, declarations, assertions; no check-sat. */
     public String body() {
+        return body(Collections.<String>emptyList());
+    }
+
+    /**
+     * The same body, declaring what {@code alsoAsked} reaches as well.
+     *
+     * <p>ONLY WHAT AN ASSERTION MENTIONS is declared.  A lowering is cached
+     * per session and answers many questions, and a term it lowered for a
+     * question the composition then DROPPED still left its names in the
+     * declaration table: hdfs-17960's candidate.smt2 declared
+     * {@code unsupported__d8d8220dc6}, {@code INSTANCE_FIELD/17#60@v209} and
+     * {@code path_selector__0__f65d8f3a19} -- the placeholder for a cut
+     * value, a read of the cut session, and the selector of the path that was
+     * cut -- and used none of them.  A reader cannot tell those from the
+     * names the query rests on, which is the whole point of declaring them.
+     * {@link #reachedBy} is the one implementation of "what this text
+     * reaches", dependencies first, and the flip query already used it.</p>
+     *
+     * <p>{@code alsoAsked} is the text of the questions this body will be
+     * ASKED with but does not contain -- the valuation pins, which name a
+     * declared root the body's own assertions need not mention.  They are
+     * reached for declaration and not appended: {@link Composition#query}
+     * appends the one valuation it is asking about.</p>
+     */
+    public String body(Iterable<String> alsoAsked) {
         StringBuilder query = new StringBuilder();
         appendPreamble(query);
+        List<String> texts = new ArrayList<String>(assertions);
+        if (alsoAsked != null) {
+            for (String text : alsoAsked) {
+                if (text != null && !text.isEmpty()) texts.add(text);
+            }
+        }
+        for (Declaration declaration : reachedBy(texts)) {
+            query.append(declaration.render()).append('\n');
+        }
         for (String assertion : assertions) {
             query.append(assertion).append('\n');
         }

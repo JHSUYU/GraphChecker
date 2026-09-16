@@ -1018,9 +1018,6 @@ final class ConcolicTaskPlan {
         /** Exact baseline hook executions, in recorded event order. */
         final List<ConfiguredSourcePhaseContract.Occurrence>
                 configuredSourcePhases;
-        /** Reserved source-hook ordinal across one LOOP_BODY_ROOT address. */
-        final Map<String, Integer> configuredSourcePhaseOrdinals =
-                new LinkedHashMap<>();
         /** Strict phase lookup; phase ids never alias source ids. */
         final Map<String, ConfiguredSourcePhaseContract.Occurrence>
                 configuredSourcePhasesById = new LinkedHashMap<>();
@@ -1274,41 +1271,6 @@ final class ConcolicTaskPlan {
         synchronized void claimActivation() {
             publishedActivations++;
         }
-
-        /**
-         * The planner numbers a source site inside one activation root.  An
-         * ordinary region activation is that root and therefore restarts at
-         * one.  LOOP_BODY_ROOT is different: several body activations are
-         * slices of one enclosing root-loop activation, so only that address
-         * carries a reserved ordinal across its retained turns.
-         */
-        synchronized int configuredSourcePhaseOrdinal(
-                String key, int localOrdinal) {
-            return (loopBodyRoot
-                    ? configuredSourcePhaseOrdinals.getOrDefault(
-                    safe(key), 0) : 0) + localOrdinal;
-        }
-
-        /** Reserves the phase prefix used by one retained loop-body turn. */
-        synchronized void reserveConfiguredSourcePhaseOrdinals(
-                Map<String, Integer> used) {
-            if (!loopBodyRoot) return;
-            for (Map.Entry<String, Integer> entry : used.entrySet()) {
-                configuredSourcePhaseOrdinals.merge(entry.getKey(),
-                        entry.getValue(), Integer::sum);
-            }
-        }
-
-        /**
-         * Settles the small occurrence ledger before asynchronous decoding.
-         * A later body turn is allowed to rely on this reservation; any
-         * publication failure is consequently terminal and never rolled back.
-         */
-        synchronized void reserveCompletedOccurrence(
-                Map<String, Integer> sourceOrdinals) {
-            reserveConfiguredSourcePhaseOrdinals(sourceOrdinals);
-        }
-
 
         synchronized boolean cutsBoundedLoopOccurrence() {
             if (!loopBodyRoot) return false;

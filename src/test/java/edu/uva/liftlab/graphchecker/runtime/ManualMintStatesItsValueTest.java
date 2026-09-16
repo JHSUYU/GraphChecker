@@ -216,6 +216,15 @@ public class ManualMintStatesItsValueTest {
      * applying a flip at one of them leaves every other execution on the
      * recorded value.  A configured source is declared by site, so a flip
      * of it is a flip everywhere it is read.</p>
+     *
+     * <p>And the catalog is not a budget.  It used to be: the plan listed the
+     * executions the RECORDING made, the runtime counted the reads a REPLAY
+     * made against that size, and read n+1 was refused
+     * {@code DECLARATION_MISSING ... exceeds the frozen phase catalog size n}
+     * -- two of them on the hdfs-17960 flip replays, whose second read of
+     * the marker was the wave's own re-read of the value it had just
+     * written.  So the published occurrence row states no ordinal at all,
+     * and a row set of any size names one variable.</p>
      */
     @Test
     public void everyOccurrenceOfOneSiteAnswersOneValuation()
@@ -232,6 +241,35 @@ public class ManualMintStatesItsValueTest {
                 placeable(phaseRegion(NODE + "#epoch1", PLANNED), manager));
         assertTrue("and so is the second, on the same valuation",
                 placeable(phaseRegion(NODE + "#epoch1", second), manager));
+
+        // The row says WHERE the recording observed the site, and nothing
+        // about which read of it a replay is making.
+        JsonObject row = phaseTask(NODE + "#epoch1", PLANNED)
+                .getAsJsonArray(ConfiguredSourcePhaseContract.PLAN_FIELD)
+                .get(0).getAsJsonObject();
+        assertFalse("no per-occurrence ordinal is published",
+                row.has("baselineOrdinal"));
+        assertEquals("and the symbol is the site's", 1,
+                oneSymbolPerSite(row).size());
+    }
+
+    /** Every VM label a catalog of one site asks for: exactly one. */
+    private static java.util.Set<String> oneSymbolPerSite(JsonObject row) {
+        JsonArray catalog = new JsonArray();
+        catalog.add(row.deepCopy());
+        JsonObject later = row.deepCopy();
+        // A second execution of the SAME site, as the plan records it.
+        later.addProperty("eventSeq", row.get("eventSeq").getAsLong() + 1L);
+        later.addProperty("invocationId",
+                row.get("invocationId").getAsLong() + 1L);
+        catalog.add(later);
+        java.util.Set<String> labels = new java.util.LinkedHashSet<String>();
+        for (ConfiguredSourcePhaseContract.Occurrence phase
+                : ConfiguredSourcePhaseContract.occurrencesOf(catalog)) {
+            labels.add(ConfiguredSourcePhaseContract.engineLabelForPhase(
+                    phase.phaseId(), phase.sourceId()));
+        }
+        return labels;
     }
 
     /** The published row, as the runtime writes it for one manual mint. */
@@ -399,7 +437,7 @@ public class ManualMintStatesItsValueTest {
         phases.add(ConfiguredSourcePhaseContract.occurrence(
                 ConfiguredSourcePhaseContract.declarationsOf(declarations)
                         .get(0),
-                occurrence, 1, 11L, 7L, 3L, PHASE_METHOD,
+                occurrence, 11L, 7L, 3L, PHASE_METHOD,
                 Arrays.asList(7L, 5L)));
         encoded.add(ConfiguredSourcePhaseContract.PLAN_FIELD, phases);
 
