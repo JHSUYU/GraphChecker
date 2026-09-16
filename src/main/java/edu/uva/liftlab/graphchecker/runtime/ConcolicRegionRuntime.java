@@ -5769,27 +5769,34 @@ public final class ConcolicRegionRuntime {
             row.addProperty("minted", minted);
             row.addProperty("reused", reused);
             if (recordedValue != null && !recordedValue.isEmpty()) {
-                // What THIS execution read at the mint.  For every root but
-                // a clock it is also what the recording read, and the two
-                // members carry the same value; for a clock they differ by
-                // definition, and a reader that needs this replay's own
-                // instant -- the per-path window is centred on it -- must
-                // not have to take the seed's.
+                // What THIS execution read at the mint, under both names.
+                // A clock is no exception: the seed replay IS the reference
+                // execution, so the instant it read is the one the composer's
+                // deltas are relative to, and a row that carried the PLAN's
+                // instant instead described an execution nobody ran.  A
+                // replay that planted a value read the model back and states
+                // neither (the guard above): a counterfactual is not a
+                // recording.
                 row.addProperty("observedValue", recordedValue);
                 row.addProperty("recordedValue", recordedValue);
             }
             // The case declared this read a wall clock, so the mint row
             // states it and no reader downstream has to guess a clock from a
-            // callee or a site name.  The value it states is the one the
-            // RECORDING read, not this replay's: a clock is what every
-            // replay reads differently, and pinning the root to one
-            // replay's instant is what left eleven of bug3's twelve paths
-            // unsatisfiable at every valuation.
+            // callee or a site name.  It states WHERE the plan observed the
+            // read and nothing about its value: the value is the one above,
+            // which is what THIS execution read.
+            //
+            // The plan's own instant used to be published here as
+            // recordedValue.  The seed replay is THE reference execution --
+            // the composer's clock deltas are relative to the recordedValue
+            // its rows state -- so a row that names the PLAN's instant makes
+            // every delta relative to an execution that is not the one the
+            // session describes.  A replay that planted `now + skew` states
+            // no recordedValue at all, by the rule above: a counterfactual
+            // is not a recording.
             if (action.declaresWallClockRead()) {
                 row.addProperty(InputActionCatalog.DECLARED_WALL_CLOCK, true);
                 row.addProperty("eventSeq", action.eventSeq);
-                row.addProperty("recordedValue",
-                        action.recordedPrimitiveValue);
             }
             symbolizedRows.add(row);
         }

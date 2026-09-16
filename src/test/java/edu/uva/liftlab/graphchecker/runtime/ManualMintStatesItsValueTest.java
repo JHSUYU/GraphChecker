@@ -77,10 +77,13 @@ public class ManualMintStatesItsValueTest {
     /**
      * A mint publishes the value it read -- and only a value it read.
      *
-     * <p>A clock is the one root every execution reads differently:
-     * {@code recordedValue} is the seed's reading, {@code observedValue}
-     * this run's instant.  A replay that wrote a model read it back, and
-     * calling that "recorded" makes a counterfactual the recording.</p>
+     * <p>A clock is no exception.  The seed replay IS the reference
+     * execution the composer's clock deltas are relative to, so the instant
+     * THIS run read is what both members state; the row used to publish the
+     * PLAN's instant as {@code recordedValue}, which made every delta
+     * relative to an execution nobody ran.  A replay that wrote a model read
+     * it back and states neither: calling that "recorded" makes a
+     * counterfactual the recording.</p>
      */
     @Test
     public void aMintStatesTheValueItRead() throws Exception {
@@ -102,10 +105,23 @@ public class ManualMintStatesItsValueTest {
         JsonObject clock = manualRow(clockAction(), "1789358344655");
         assertTrue("the mint states the clock the case declared",
                 clock.get("clock").getAsBoolean());
-        assertEquals("the seed's reading, which the window is centred on",
-                "1789358343989", clock.get("recordedValue").getAsString());
-        assertEquals("and this execution's own instant, beside it",
-                "1789358344655", clock.get("observedValue").getAsString());
+        assertEquals("this execution's own instant, which the window is "
+                        + "centred on", "1789358344655",
+                clock.get("observedValue").getAsString());
+        assertEquals("and the same instant as what this run recorded: the "
+                        + "seed replay is the reference execution",
+                clock.get("observedValue").getAsString(),
+                clock.get("recordedValue").getAsString());
+        assertEquals("the plan's instant is stated by nothing here",
+                7L, clock.get("eventSeq").getAsLong());
+
+        JsonObject plantedClock = manualRow(clockAction(), "");
+        assertTrue("still a declared clock",
+                plantedClock.get("clock").getAsBoolean());
+        assertFalse("a planted instant is not a recording",
+                plantedClock.has("recordedValue"));
+        assertFalse("and states no observation either",
+                plantedClock.has("observedValue"));
 
         // What the wave asks of a clock is a SKEW, and the mint applies it
         // to the instant THIS run read: a model is an instant of the
@@ -318,6 +334,7 @@ public class ManualMintStatesItsValueTest {
         encoded.addProperty("clock", true);
         encoded.addProperty("observed", true);
         encoded.addProperty("primitiveValue", "1789358343989");
+        encoded.addProperty("eventSeq", 7L);
         return encoded;
     }
 
