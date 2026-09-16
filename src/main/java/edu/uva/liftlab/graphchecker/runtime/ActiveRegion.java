@@ -230,7 +230,25 @@ final class ActiveRegion {
                         invocation.intValue());
         long entered = loopBackedges.recordBody(budgetKey);
         if (entered <= maxBodies) return null;
-        return new ReplayLoopResourceCut(loopId, maxBodies, entered);
+        return replayBodyCut(loopId, maxBodies, entered,
+                ReplayLoopResourceCut.REASON);
+    }
+
+    /**
+     * Records the terminal of this activation's spent body budget.
+     *
+     * <p>The sibling of {@link #loopBoundCut}, and now the same two
+     * statements: the activation IS cut ({@code loopBoundCut = true}), and
+     * the cut carries the REASON it was taken.  The body cut used to be
+     * built at its hook with neither -- so an activation cut for spending
+     * its budget did not read as cut, and a cut taken because the hook
+     * itself failed was indistinguishable from one taken at the bound.</p>
+     */
+    ReplayLoopResourceCut replayBodyCut(String loopId, int maxBodies,
+                                        long attemptedBody, String reason) {
+        loopBoundCut = true;
+        return new ReplayLoopResourceCut(loopId, maxBodies, attemptedBody,
+                reason);
     }
 
     /**
@@ -502,10 +520,14 @@ final class ActiveRegion {
             JsonElement expression, boolean reused,
             String recordedValue) {
         JsonObject row = new JsonObject();
-        // What the run read at the mint.  A root whose row states no
-        // value has no centre for a relative domain to resolve
-        // against -- [+0,+3] around nothing -- so the composer cannot
-        // move it at all.
+        // What the run read at the mint, whether or not a plant followed
+        // it: the mint hands the LIVE read here (RootMint#configuredSource
+        // asks for it before the assignment is written), so this is never
+        // the wave's own value.  A root whose row states no value has no
+        // centre for a relative domain to resolve against -- [+0,+3]
+        // around nothing -- so the composer cannot move it at all, and
+        // RowPlaceholderMint#roots names an unstatable one rather than
+        // letting the empty field pass.
         if (recordedValue != null && !recordedValue.isEmpty()) {
             row.addProperty("observedValue", recordedValue);
             row.addProperty("recordedValue", recordedValue);
@@ -570,11 +592,18 @@ final class ActiveRegion {
      * through a manual input had no recorded value to lower -- on lane
      * VM12 that is DelegationKey.expiryDate, minted as
      * {@code M_J_field_REGION.aaa1cfd7...}, and
-     * RECORDED_ROOT_VALUE_UNSTATED was the anchor's last refusal.  The
-     * suppression rule is the configured source's too: a replay that
-     * wrote a model into the value read the model back, and publishing
-     * that as "recorded" is how a counterfactual becomes the
-     * recording.</p>
+     * RECORDED_ROOT_VALUE_UNSTATED was the anchor's last refusal.</p>
+     *
+     * <p>And it states it whether or not the replay planted at this mint.
+     * There WAS a suppression rule -- a replay that wrote a model read the
+     * model back, so calling that "recorded" makes a counterfactual the
+     * recording -- and the mistake in it is that the value a mint hands
+     * here is the one it read BEFORE the plant, which is the recording's.
+     * What the session planted is stated by the focus row and by nothing
+     * on this row.  Suppressing it left the one root each obligation
+     * moves with an empty {@code recordedValue} in every focused session
+     * of both kept corpora (hdfs-17960 {@code seq=121}, hdfs-11741's six
+     * CLOCK rows), which IMPORT refuses under invariant 8.</p>
      */
     synchronized void recordManualSymbolization(
             SymbolizeAction action, String requestedSymbol,
@@ -626,9 +655,9 @@ final class ActiveRegion {
             // execution, so the instant it read is the one the composer's
             // deltas are relative to, and a row that carried the PLAN's
             // instant instead described an execution nobody ran.  A
-            // replay that planted a value read the model back and states
-            // neither (the guard above): a counterfactual is not a
-            // recording.
+            // replay that planted `now + skew` still states the instant
+            // it READ -- the mint asks for it before the plant -- and the
+            // skew itself is the focus row's statement.
             row.addProperty("observedValue", recordedValue);
             row.addProperty("recordedValue", recordedValue);
         }
@@ -644,8 +673,8 @@ final class ActiveRegion {
         // its rows state -- so a row that names the PLAN's instant makes
         // every delta relative to an execution that is not the one the
         // session describes.  A replay that planted `now + skew` states
-        // no recordedValue at all, by the rule above: a counterfactual
-        // is not a recording.
+        // the instant its own mint READ, by the rule above, and the skew
+        // is stated by the focus row.
         if (action.declaresWallClockRead()) {
             row.addProperty(InputActionCatalog.DECLARED_WALL_CLOCK, true);
             row.addProperty("eventSeq", action.eventSeq);
@@ -671,7 +700,14 @@ final class ActiveRegion {
             String detail) {
         RowRuntime.gap(kind, edu.uva.liftlab.graphchecker.contract
                         .GapClass.BLOCKING,
-                phase == null ? occurrenceId() : phase.phaseId(),
+                // The declared phase, else this occurrence, else the
+                // activation's own token: phaseId and occurrenceId are both
+                // read out of the plan with optionalString, so either can
+                // be blank, and a blank subject refuses inside Fields.text
+                // -- out of the mint hook, into the workload.
+                edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank(
+                        phase == null ? "" : phase.phaseId(),
+                        occurrenceId(), Long.toString(token)),
                 safe(detail));
     }
 

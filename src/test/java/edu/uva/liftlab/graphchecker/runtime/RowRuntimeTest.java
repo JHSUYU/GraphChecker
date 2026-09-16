@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
+import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
@@ -270,6 +271,16 @@ public class RowRuntimeTest {
         // with outcome=true, which is what lets a flip be seen at all.
         RowRuntime.decision(occurrence, 13L, "SnapshotManager.delete()#u7", 1,
                 false, markerJumpCondition("M_Z_marker"));
+        // A decision the VM gave no event id: taken before path recording
+        // opened, so it captured no site condition and states no term.  Its
+        // seq used to be the session's HIGH-WATER MARK -- "no VM clock" and
+        // "the latest VM event" came out as one integer, and Arms
+        // #pathCondition keeps every decision seq < before, so whether this
+        // row sat inside a prefix was decided by where the mark stood.  On
+        // the 17960 corpus 46/46/52 decision rows per session share a seq
+        // with another row and exactly one of each group owns it.
+        RowRuntime.decision(occurrence, 0L, "Klass.beforeRecording()#u2", 1,
+                true, null);
         RowRuntime.exported(occurrence, 4L, "XCH.port", 7L, "c1", 0,
                 expression, "J", "1");
         RowRuntime.attachedAt(endpoint, 9L, "XCH.port", 7L, "c1", "v_H", "J",
@@ -295,6 +306,14 @@ public class RowRuntimeTest {
         RowRuntime.target(occurrence, 15L, "Klass.m()#u8", expression, true,
                 true, true);
         RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.BLOCKING, "s", "d");
+        // THE DOOR NEVER THROWS INTO THE WORKLOAD.  GapRow.of puts subject
+        // through Fields.text, which refuses a blank one -- correctly, a
+        // refusal that reports a category is not evidence -- and that
+        // refusal would leave a woven hook and change the execution the
+        // rows describe.  An unnamed subject is answered by the session
+        // that met it, and the detail says the caller named nothing.
+        RowRuntime.gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC, "   ",
+                "a caller that named no subject");
         // A declared region input is a READ of the location it stands for,
         // spelled the way the write log spells it, so the placeholder joins
         // the write above rather than naming a second location nobody wrote.
@@ -350,9 +369,17 @@ public class RowRuntimeTest {
         SessionDir dir = session();
         List<DecisionRow> decisions = RowCodec.readAll(dir.decisions(),
                 RowCodec::readDecision);
-        assertEquals(2, decisions.size());
+        assertEquals(3, decisions.size());
         assertEquals(occurrence, decisions.get(0).occurrence());
         assertTrue(decisions.get(0).term().startsWith("EXPR."));
+        // seq == 0 IS the statement "this row carries no VM clock", and it
+        // never borrows an order it does not have.
+        assertEquals("a decision with no VM event id states 0", 0L,
+                decisions.get(2).seq());
+        assertEquals("and no term, so it is in no path condition either",
+                "", decisions.get(2).term());
+        assertFalse("a clockless decision adds no conjunct at any prefix",
+                Arms.predicate(Arms.conjunct(decisions.get(2))));
         List<ExportRow> exports = RowCodec.readAll(dir.exports(),
                 RowCodec::readExport);
         assertEquals(1, exports.size());
@@ -474,6 +501,18 @@ public class RowRuntimeTest {
         assertTrue(targets.get(0).observedFatal());
         List<GapRow> gaps = RowCodec.readAll(dir.gaps(), RowCodec::readGap);
         assertTrue(gaps.get(0).blocking());
+        boolean unnamedSubject = false;
+        for (GapRow gap : gaps) {
+            if (!gap.detail().startsWith("this LINEAGE_LOST names no"
+                    + " subject")) {
+                continue;
+            }
+            unnamedSubject = true;
+            assertEquals("the session that met it is what is left to name",
+                    gap.sessionId(), gap.subject());
+        }
+        assertTrue("a gap whose caller named nothing is a row, not a throw",
+                unnamedSubject);
         // And the refusal of the location-less mint is a row of its own, so
         // "this input read nothing the run can name" is stated rather than
         // replaced by a fabricated location.

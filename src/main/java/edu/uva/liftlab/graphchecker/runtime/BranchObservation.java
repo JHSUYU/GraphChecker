@@ -74,11 +74,38 @@ final class BranchObservation {
                     observedSuccessorIndex);
         } catch (IllegalArgumentException malformed) {
             // The weave handed static case keys this decoder refuses, so
-            // the decision is not observed at all.  Not stated here: no
-            // kind of the closed GapKind set names a plan/weave
-            // disagreement about a switch's static domain, and both kept
-            // corpora publish 0 switch rows, so there is no firing to
-            // measure a choice against.  Reported for the planner instead.
+            // this decision has no attested arm: whether the run took a
+            // case or the default is a question about a domain the two
+            // sides disagree on, and nothing here may answer it.
+            //
+            // NAMED, and the decision is recorded as CONCRETE.  It used to
+            // return silently, on the ground that no GapKind names a
+            // plan/weave disagreement about a switch's static domain and
+            // that both kept corpora publish 0 switch rows -- but silence
+            // here reads downstream exactly like a site the run never
+            // reached, and UNATTESTED_ARM is precisely the standing name
+            // for "this decision publishes no site predicate".  The
+            // concrete record charges the site its occurrence and states no
+            // term, so the row is evidence that the site ran; its outcome
+            // is not an observation, which is what the gap says.
+            ActiveRegion unattested = ConcolicRegionRuntime.activeRegion();
+            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
+                            .UNATTESTED_ARM,
+                    edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
+                    SiteId.render(method, unitIndex),
+                    "the weave states switch domain kind=" + safe(branchKind)
+                            + " keys=[" + safe(encodedCaseKeys)
+                            + "] successor=" + observedSuccessorIndex
+                            + " and this decoder refuses it ("
+                            + malformed.getMessage() + "), so the run cannot"
+                            + " say whether a case arm or the default was"
+                            + " taken: the decision is recorded as concrete,"
+                            + " states no term, and its arm is not an"
+                            + " observation");
+            if (unattested != null) {
+                unattested.recordConcreteDecision(method, unitIndex,
+                        BranchDecision.binary(false));
+            }
             return observedSuccessorIndex;
         }
         observe(BranchDecision.multiway(expected), preparedHandle,

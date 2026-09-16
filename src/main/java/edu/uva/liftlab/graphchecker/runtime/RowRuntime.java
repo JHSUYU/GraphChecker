@@ -2,6 +2,8 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import edu.uva.liftlab.graphchecker.smt.Arms;
 
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
+
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
 import com.google.gson.JsonElement;
@@ -50,17 +52,6 @@ public final class RowRuntime {
     /** This replay's clock readings so far, by root id. */
     private static final Map<String, Long> CLOCKS =
             new ConcurrentHashMap<String, Long>();
-    /**
-     * The highest VM event id this session has published.
-     *
-     * <p>{@code seq} is ONE counter for every row kind -- the VM's own
-     * session-global event id, which the decisions' {@code vmEventId} and
-     * the write log's {@code fieldVersionId} are both drawn from -- because
-     * the composer compares a decision's seq against an export's directly.
-     * Never a per-kind ordinal.</p>
-     */
-    private static final java.util.concurrent.atomic.AtomicLong LAST_SEQ =
-            new java.util.concurrent.atomic.AtomicLong();
     private static volatile SessionPublisher publisher;
     private static volatile String sessionId = "";
 
@@ -165,10 +156,11 @@ public final class RowRuntime {
         SessionPublisher session = publisher;
         if (address == null) {
             if (session != null) {
-                session.gap(GapRow.of(sessionId(), GapKind.LINEAGE_LOST,
-                        GapClass.DIAGNOSTIC, Text.safe(regionId),
+                gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC,
+                        firstNonBlank(Text.safe(regionId), Text.safe(taskId),
+                                Long.toString(token)),
                         "an activation of this region ran on a node this run"
-                                + " could not name, so it has no address"));
+                                + " could not name, so it has no address");
             }
             return null;
         }
@@ -326,11 +318,17 @@ public final class RowRuntime {
             String type = statedJavaType("attach", endpoint.id(), javaType,
                     null);
             if (!type.isEmpty()) {
+                // The row states WHICH key answered, so a reader does not
+                // have to re-derive it from the handle and the correlation
+                // and get "both were available" for an answer.  Blank when
+                // neither paired, which Fields.optional reads as unstated:
+                // the unpaired case is already stated by a null producer and
+                // the LINEAGE_LOST row below.
                 session.attach(AttachRow.of(sessionId(), sequence(seq),
                         endpoint, Text.safe(symbol), type,
                         Text.safe(arrival), answered,
                         answered ? Text.safe(answeredValue) : null, producer,
-                        Text.safe(correlationId)));
+                        Text.safe(correlationId), pairing.key()));
             }
             if (producer == null) {
                 session.gap(GapRow.of(sessionId(), GapKind.LINEAGE_LOST,
@@ -499,18 +497,40 @@ public final class RowRuntime {
                 detail);
     }
 
+    /**
+     * One refusal or diagnostic, naming its subject.
+     *
+     * <p>A GAP ROW NAMES WHAT IT IS ABOUT: {@code GapRow.of} puts {@code
+     * subject} through {@code Fields.text}, which REFUSES a blank one --
+     * correctly, a refusal that reports a category is not evidence.  That
+     * refusal is an {@code IllegalArgumentException} thrown out of a woven
+     * hook, and this class never throws into the workload (see the class
+     * javadoc): a publisher that did would change the execution it is
+     * describing.  So an unnamed subject is answered HERE, by the session
+     * that met it, with the kind and class the caller stated and a detail
+     * that says the caller named nothing.  Every caller in {@code runtime/}
+     * hands a subject that cannot be blank; this is the door holding the
+     * next one to it.</p>
+     */
     public static void gap(GapKind kind, GapClass cls, String subject,
                            String detail) {
         SessionPublisher session = publisher;
         if (session == null) return;
+        String named = Text.safe(subject).trim();
+        String says = Text.safe(detail);
+        if (named.isEmpty()) {
+            // A session is open, so sessionId() is not blank: configure()
+            // sets both under one lock.
+            named = sessionId();
+            says = "this " + kind + " names no subject, so the run cannot"
+                    + " say what it refused on: " + says;
+        }
         // One statement, stated once: the same refusal is reached from every
         // activation that met it, and a reader counts named gaps.
-        if (!claimEvent("gap", kind + "#" + cls + "#" + Text.safe(subject)
-                + "#" + Text.safe(detail))) {
+        if (!claimEvent("gap", kind + "#" + cls + "#" + named + "#" + says)) {
             return;
         }
-        session.gap(GapRow.of(sessionId(), kind, cls, Text.safe(subject),
-                Text.safe(detail)));
+        session.gap(GapRow.of(sessionId(), kind, cls, named, says));
     }
 
     /** The symbols this session minted at declared region inputs. */
@@ -604,31 +624,37 @@ public final class RowRuntime {
     }
 
     /**
-     * Where one row sits in the run: the VM's own event id.
+     * Where one row sits in the run: the VM's own event id, or 0.
      *
      * <p>One counter for every kind, so a producer's prefix can be cut at
      * its export and a read ordered against the write it saw.  The VM's
      * ledger is that counter -- decisions carry its event id, versions are
      * drawn from it -- so a row states the id it was produced at rather
-     * than a second numbering of the same events.  A row the VM gave no id
-     * states 0, which says "this row carries no VM clock" and never
-     * pretends to an order it does not have.</p>
+     * than a second numbering of the same events.</p>
+     *
+     * <p><b>{@code seq == 0} means THIS ROW CARRIES NO VM CLOCK.</b>  An
+     * ambient mint, a decision taken before path recording opened, an
+     * export the ledger did not number: the run cannot place it in the VM's
+     * event order and the row says so.  It is not a position at the start
+     * of the run and no reader may treat it as one.</p>
+     *
+     * <p>It used to answer the session's HIGH-WATER MARK instead, on the
+     * ground that such a row is "no earlier than anything already seen".
+     * That made two different statements one integer: "no VM clock" and
+     * "the latest VM event this session published" both came out as 345.
+     * On the 17960 corpus 46, 46 and 52 decision rows per session share a
+     * seq with another row, and in each group exactly ONE owns that VM
+     * event id and carries a term -- {@code
+     * FSImageFormatPBSnapshot$Saver.serializeSnapshotSection#u61#1} at 220,
+     * {@code FSImageFormatProtobuf$Saver.saveSnapshots#u13#1} at 345 -- the
+     * rest borrowed it and state no term at all.  A borrowed mark reads
+     * downstream as a real ordering: {@code Arms#pathCondition} keeps every
+     * decision {@code seq < before}, so a clockless decision was dropped
+     * from or kept in a prefix by the accident of where the mark stood when
+     * it was published.  Answering 0 states the one thing that is true.</p>
      */
     private static long sequence(long vmEventId) {
-        if (vmEventId > 0L) {
-            long seen = LAST_SEQ.get();
-            while (vmEventId > seen
-                    && !LAST_SEQ.compareAndSet(seen, vmEventId)) {
-                seen = LAST_SEQ.get();
-            }
-            return vmEventId;
-        }
-        // The VM gave this row no id of its own -- an ambient mint, an
-        // export the ledger did not number.  It is not earlier than
-        // anything already seen, and saying 0 would place it before the
-        // whole run.  A comparison against it is then "no earlier than",
-        // which is the strongest true statement available.
-        return LAST_SEQ.get();
+        return vmEventId > 0L ? vmEventId : 0L;
     }
 
     /**
@@ -643,9 +669,10 @@ public final class RowRuntime {
      * they were ints (REPORT-P2CD follow-up).  Depth-first in the tree's own
      * member order, so one tree always answers the same type.</p>
      */
-    private static String javaType(String declared, JsonObject expression) {
+    private static String javaType(String declared, JsonObject expression,
+                                   String walk) {
         String type = Text.safe(declared);
-        return type.isEmpty() ? statedType(expression, 0) : type;
+        return type.isEmpty() ? statedType(expression, 0, walk) : type;
     }
 
     /**
@@ -668,7 +695,8 @@ public final class RowRuntime {
     private static String statedJavaType(String kind, String subject,
                                          String declared,
                                          JsonObject expression) {
-        String type = javaType(declared, expression);
+        String type = javaType(declared, expression,
+                kind + " type of " + subject);
         if (!type.isEmpty()) return type;
         gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, subject,
                 "this " + kind + " states no java type and its expression"
@@ -677,8 +705,33 @@ public final class RowRuntime {
         return "";
     }
 
-    private static String statedType(JsonElement node, int depth) {
-        if (node == null || depth > 64 || !node.isJsonObject()) return "";
+    /**
+     * The walk under {@link #javaType}, with its bound NAMED when it cuts.
+     *
+     * <p>The same silent-cut shape M-R2 closed for the four
+     * {@code RowPlaceholderMint} walks ({@code RowPublication#cut}): a walk
+     * that found no {@code _java_type} and a walk that was cut before it
+     * could look both answered {@code ""}, so a row refused
+     * UNSTATED_VALUE because its expression states no sort read exactly
+     * like one refused because this walk ran out of depth.  The bound stays
+     * -- a container's expression on hdfs-17960 nests one relation per
+     * recorded operation -- and the cut says so, once per walk and
+     * subject.</p>
+     */
+    private static final int TYPE_WALK_DEPTH = 64;
+
+    private static String statedType(JsonElement node, int depth,
+                                     String walk) {
+        if (depth > TYPE_WALK_DEPTH) {
+            gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                    firstNonBlank(walk, sessionId()),
+                    "this expression walk stopped at depth "
+                            + TYPE_WALK_DEPTH + ", so \"no java type\" here"
+                            + " is the walk's bound and not the"
+                            + " expression's silence");
+            return "";
+        }
+        if (node == null || !node.isJsonObject()) return "";
         JsonObject object = node.getAsJsonObject();
         JsonElement own = object.get("_java_type");
         if (own != null && own.isJsonPrimitive()) {
@@ -687,7 +740,7 @@ public final class RowRuntime {
         }
         for (java.util.Map.Entry<String, JsonElement> member
                 : object.entrySet()) {
-            String found = statedType(member.getValue(), depth + 1);
+            String found = statedType(member.getValue(), depth + 1, walk);
             if (!found.isEmpty()) return found;
         }
         return "";
@@ -859,7 +912,9 @@ public final class RowRuntime {
         for (Map.Entry<String, String> unplanted
                 : FocusedReplay.unplantedAssignments().entrySet()) {
             gap(GapKind.ASSIGNMENT_UNPLANTED, GapClass.BLOCKING,
-                    unplanted.getKey(),
+                    // The focus row's own key for the root; JSON admits an
+                    // empty one, and this session is what is left to name.
+                    firstNonBlank(unplanted.getKey(), sessionId()),
                     "the obligation assigns this root \"" + unplanted
                             .getValue() + "\" and no mint of this replay"
                             + " planted it");
@@ -912,7 +967,6 @@ public final class RowRuntime {
             REFS.clear();
             Identity.resetForTests();
             CLOCKS.clear();
-            LAST_SEQ.set(0L);
             publisher = null;
             sessionId = "";
             Interactions.resetForTests();

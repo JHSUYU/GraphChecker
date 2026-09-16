@@ -15,6 +15,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
@@ -104,9 +105,30 @@ final class RowPlaceholderMint {
             }
             String rootId = sourceId.isEmpty()
                     ? optionalString(row, "portId") : sourceId;
+            String recorded = literal(optionalString(row, "recordedValue"));
+            // A DECLARED ROOT ROW STATES WHAT ITS MINT OBSERVED, and when
+            // the run cannot spell that value it SAYS SO here rather than
+            // publishing an empty field.  Every mint hands the live read
+            // now (RootMint#fieldMintRecordedValue and its two siblings),
+            // so a blank left here is a value ConcolicRegionRuntime
+            // #recordedScalar has no scalar spelling for -- a reference
+            // cell declared as a root -- and not a plant.  The row is
+            // still published: it is the evidence that this mint ran, and
+            // the composer's own refusal (invariant 8, "a MARKER reading
+            // is spelled true or false") is what withholds the claim.
+            if (recorded.isEmpty()) {
+                RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.BLOCKING,
+                        firstNonBlank(rootId, symbol),
+                        "this declared root's mint states no value"
+                                + " it observed, so the root has no centre"
+                                + " for its domain to resolve against:"
+                                + " kind=" + kind + " symbol=" + symbol
+                                + " field="
+                                + optionalString(row, "fieldSignature"));
+            }
             RowRuntime.rootMint(mintOccurrence(row, occurrence),
                     optionalLongInteger(row, "eventSeq", 0L), rootId, symbol,
-                    kind, literal(optionalString(row, "recordedValue")),
+                    kind, recorded,
                     optionalString(row, "domainMin"),
                     optionalString(row, "domainMax"), true);
         }

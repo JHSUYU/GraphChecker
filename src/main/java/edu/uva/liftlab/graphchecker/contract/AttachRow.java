@@ -16,6 +16,15 @@ import java.util.Objects;
  * <p>{@code seq} places the attach in its session's event order;{@code
  * javaType} is the JVM descriptor {@code v_H} is declared with, which must be
  * the descriptor of every arm's {@code e_q} in this interaction's family.</p>
+ *
+ * <p>{@code pairedBy} states WHICH of the two recorded keys answered:
+ * {@code HANDLE}, the export itself, or {@code CORRELATION_PORT}, the
+ * message the export travelled in.  They are not equal evidence
+ * (INTERACTION-ID SS1) and which one paired an attach was stated nowhere, so
+ * a row paired on the weaker key read exactly like one paired on the handle
+ * -- on the 11741 corpus all 3,554 attaches had both keys available.  It is
+ * OPTIONAL and {@code null} means UNSTATED, not unpaired: a corpus recorded
+ * before this member simply does not say.</p>
  */
 public final class AttachRow {
     private final String sessionId;
@@ -28,11 +37,12 @@ public final class AttachRow {
     private final String answeredValue;
     private final Endpoint producer;
     private final String correlationId;
+    private final String pairedBy;
 
     private AttachRow(String sessionId, long seq, Endpoint endpoint,
                       String symbol, String javaType, String arrival,
                       boolean answered, String answeredValue, Endpoint producer,
-                      String correlationId) {
+                      String correlationId, String pairedBy) {
         this.sessionId = sessionId;
         this.seq = seq;
         this.endpoint = endpoint;
@@ -43,12 +53,14 @@ public final class AttachRow {
         this.answeredValue = answeredValue;
         this.producer = producer;
         this.correlationId = correlationId;
+        this.pairedBy = pairedBy;
     }
 
     public static AttachRow of(String sessionId, long seq, Endpoint endpoint,
                                String symbol, String javaType, String arrival,
                                boolean answered, String answeredValue,
-                               Endpoint producer, String correlationId) {
+                               Endpoint producer, String correlationId,
+                               String pairedBy) {
         return new AttachRow(Fields.text(sessionId, "sessionId"),
                 Fields.sequence(seq, "seq"),
                 Fields.required(endpoint, "endpoint"),
@@ -56,7 +68,8 @@ public final class AttachRow {
                 Fields.text(javaType, "javaType"),
                 Fields.stated(arrival, "arrival"), answered,
                 Fields.optional(answeredValue), producer,
-                Fields.stated(correlationId, "correlationId"));
+                Fields.stated(correlationId, "correlationId"),
+                Fields.optional(pairedBy));
     }
 
     public String sessionId() {
@@ -107,6 +120,16 @@ public final class AttachRow {
         return correlationId;
     }
 
+    /**
+     * Which recorded key paired this attach, or {@code null} when unstated.
+     *
+     * <p>{@code HANDLE} or {@code CORRELATION_PORT}
+     * ({@code runtime/Interactions.Pairing#key}).</p>
+     */
+    public String pairedBy() {
+        return pairedBy;
+    }
+
     /** The WIRE interaction this attach is the consumer half of, or null. */
     public Interaction interaction() {
         return producer == null ? null
@@ -126,13 +149,14 @@ public final class AttachRow {
                 && arrival.equals(other.arrival)
                 && Objects.equals(answeredValue, other.answeredValue)
                 && Objects.equals(producer, other.producer)
+                && Objects.equals(pairedBy, other.pairedBy)
                 && correlationId.equals(other.correlationId);
     }
 
     @Override
     public int hashCode() {
         return Objects.hash(sessionId, seq, endpoint, symbol, javaType, arrival,
-                answered, answeredValue, producer, correlationId);
+                answered, answeredValue, producer, correlationId, pairedBy);
     }
 
     @Override

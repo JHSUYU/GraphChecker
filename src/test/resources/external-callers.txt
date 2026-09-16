@@ -32,6 +32,21 @@ runtime.CausynthTraceRecorder beginSourceRequest long object string
 runtime.CausynthTraceRecorder endSourceRequest void long string
 # not in 17899-base
 runtime.CausynthTraceRecorder startRecording void
+# ipc.CausynthMessagePropagation.{enterCarriedScope,exitCarriedScope} -- the
+# scope a queued unit of work carried from where it was made.  Called from
+# ipc/Server.java:1320 (RpcCall.run) in 11741, 17897, 17899-bug1/2/3 and
+# 17960-jdk8:1254, and from BPServiceActor.java:1484 in 11741.  Absent from
+# /opt/hadoop-hdfs-17960 and /opt/hadoop-hdfs-17899-base.
+runtime.CausynthTraceRecorder enterCarriedScope long object string string
+runtime.CausynthTraceRecorder exitCarriedScope void long
+# ipc.CausynthMessagePropagation.{beginTick,endTick} -- one daemon tick as a
+# lineage root of its own, which is what makes ticks roots (IDENTITY-V3).
+# Called from HeartbeatManager, BPServiceActor, DataXceiver and balancer
+# KeyManager in 11741 and 17960-jdk8, and from the workloads themselves
+# (TestCausynthExpiredBalancerKey in 11741, TestCausynthStripedChecksum in
+# 17897).  Same six trees.
+runtime.CausynthTraceRecorder beginDaemonTick long object string
+runtime.CausynthTraceRecorder endDaemonTick void long
 # 17960 and 17960-jdk8 only
 runtime.CausynthTraceRecorder restartSource void object string string string long
 # 17899-bug1 only

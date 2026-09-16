@@ -348,7 +348,11 @@ final class SharedStateCapture {
         RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
                         .UNSTATED_VALUE,
                 edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
-                safe(locationKey).isEmpty() ? safe(stage) : safe(locationKey),
+                // The location, else the stage that refused it; a row that
+                // named neither refuses inside Fields.text.
+                edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank(
+                        safe(locationKey), safe(stage),
+                        RowRuntime.sessionId()),
                 reason(status) + ": " + safe(detail));
         return new SharedStateResult(stage, status, safe(locationKey), null);
     }

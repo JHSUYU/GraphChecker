@@ -256,6 +256,13 @@ public final class RowCodec {
             json.add("producer", writeEndpoint(row.producer()));
         }
         json.addProperty("correlationId", row.correlationId());
+        // Absent = unstated.  A corpus recorded before the member says
+        // nothing about which key paired its attaches, and a spelling
+        // written for every row would make "unstated" indistinguishable
+        // from one of the two answers.
+        if (row.pairedBy() != null) {
+            json.addProperty("pairedBy", row.pairedBy());
+        }
         return json;
     }
 
@@ -267,7 +274,8 @@ public final class RowCodec {
                 bool(json, "answered"),
                 optionalString(json, "answeredValue"),
                 producer == null ? null : readEndpoint(producer),
-                string(json, "correlationId"));
+                string(json, "correlationId"),
+                optionalString(json, "pairedBy"));
     }
 
     public static JsonObject writeWrite(WriteRow row) {
