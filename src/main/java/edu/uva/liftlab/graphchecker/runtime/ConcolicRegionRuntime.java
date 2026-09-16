@@ -383,6 +383,26 @@ public final class ConcolicRegionRuntime {
         // What the frame was for -- telling two reads of one accessor site
         // inside one occurrence apart -- is Identity.eventSiteIndex's job,
         // which counts per occurrence and per site in both passes alike.
+        //
+        // The context itself is NOT redundant with the recorder's
+        // CausynthTraceRecorder.currentCallParentSiteMatches, and deleting
+        // it would leave every accessor-constrained action unmatchable in
+        // this pass.  That answer needs two recorder frames, and the
+        // concolic weave pushes neither: an ActiveCall (pushed by
+        // Hook.ENTER_METHOD -> CausynthTraceRecorder.enterMethod) and,
+        // under it, the ActiveCallSite its parentSiteId names (pushed by
+        // Hook.BEGIN_CALL -> beginCall).  Both hooks live in
+        // HookCatalog.trace() only -- HookCatalog.concolic() binds neither
+        // -- so in a replay ACTIVE_CALLS is empty and
+        // currentCallParentSiteMatches returns false at its first test.
+        // It could not answer even if the frames were woven: the hook this
+        // context brackets is MATERIALIZE_FIELD, emitted BEFORE the
+        // selected invoke in the CALLER's frame with the implementation
+        // method's name (CausynthPipeline.instrumentConcolicAccessor-
+        // CallContexts), so the accessor has not been entered yet, and on
+        // hdfs-17960 six of the accessor-constrained actions name
+        // <java.util.concurrent.atomic.AtomicInteger: int get()>, a JDK
+        // body Soot's application scope cannot instrument at all.
         try {
             ActiveRegion active = activeRegion();
             String caller = safe(callerMethod);
