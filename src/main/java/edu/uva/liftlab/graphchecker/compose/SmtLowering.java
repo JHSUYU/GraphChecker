@@ -903,7 +903,7 @@ public final class SmtLowering extends VmLoweringCore {
      */
     private Term nullLeaf(Sort expected) {
         if (expected == Sort.VALUE) {
-            return Term.of(ContainerSmtCodec.NULL_CELL, Sort.VALUE);
+            return Term.of(ContainerStateModel.NULL_CELL, Sort.VALUE);
         }
         if (expected != null && expected.containerState()) {
             return unstated("NullComparedToContainerState:" + expected,
@@ -1342,7 +1342,7 @@ public final class SmtLowering extends VmLoweringCore {
             @Override
             public ContainerSmtCodec.Term unbox(
                     ContainerSmtCodec.Term value, String javaType) {
-                return name(ContainerSmtCodec.unboxValue(value, javaType,
+                return name(ContainerStateModel.unboxValue(value, javaType,
                         VmTermLowering.unboxedCellSort(
                                 JavaSmtSorts.sortOfJava(javaType)), this));
             }
@@ -1360,7 +1360,7 @@ public final class SmtLowering extends VmLoweringCore {
     }
 
     private static String boxed(Term value, String javaType) {
-        String integral = ContainerSmtCodec.boxIntegral(value.text, javaType);
+        String integral = ContainerStateModel.boxIntegral(value.text, javaType);
         if (!integral.isEmpty()) return integral;
         switch (value.sort) {
             case BOOL: return "(VBool " + value.text + ")";

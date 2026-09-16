@@ -311,9 +311,9 @@ public final class VmTermLowering {
         // rather than in one caller.
         lines.add("(set-option :smt.arith.solver 2)");
         lines.add("(declare-sort Ref 0)");
-        lines.add(ContainerSmtCodec.valueDatatypeDeclaration());
+        lines.add(ContainerStateModel.valueDatatypeDeclaration());
         lines.add("(declare-const nullRef Ref)");
-        lines.addAll(ContainerSmtCodec.preamble());
+        lines.addAll(ContainerStateModel.preamble());
         return lines;
     }
 
