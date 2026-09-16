@@ -492,6 +492,20 @@ public class ContractTest {
             RowCodec.writeAll(dir.targets(), targets, RowCodec::writeTarget);
             RowCodec.writeExpressions(dir.expressions(),
                     ExpressionTable.of(expressions));
+            // The fixture STATES the role, as a campaign's own session
+            // manifest does.
+            boolean focused = false;
+            for (ActivationRow activation : activations) {
+                if (activation.focused()) focused = true;
+            }
+            RowCodec.writeManifest(dir.manifest(),
+                    SessionManifest.of(id,
+                            focused ? SessionManifest.Role.FOCUSED
+                                    : SessionManifest.Role.SEED,
+                            focused ? java.util.Collections.singletonList(
+                                    "OBL." + id)
+                                    : java.util.Collections
+                                            .<String>emptyList()));
             return SessionReader.read(dir);
         }
     }

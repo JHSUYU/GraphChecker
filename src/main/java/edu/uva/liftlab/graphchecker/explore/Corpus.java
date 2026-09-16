@@ -359,21 +359,21 @@ public final class Corpus implements Arms.Rows {
     /**
      * Which session is the recording, or "" when that has no answer.
      *
-     * <p>One rule, stated once in the contract: the seed is the session whose
-     * activations focused nothing.  A corpus with none of those, or with more
-     * than one, does not state which recording a declaration was written
-     * about, and the caller refuses with a named gap -- naming an exploration
-     * replay as the recording is how a claim comes to be about the wrong
-     * execution.</p>
+     * <p>One rule, stated once in the contract: the recording is the session
+     * whose manifest states {@code role: SEED}.  A corpus with none of those,
+     * or with more than one, does not state which recording a declaration was
+     * written about, and the caller refuses with a named gap -- naming an
+     * exploration replay as the recording is how a claim comes to be about
+     * the wrong execution.</p>
      */
     public String seedSessionId() {
         String seed = SessionReader.seedSessionId(sessions);
         return seed == null ? "" : seed;
     }
 
-    /** Every session that focused nothing: what such a refusal names. */
-    public List<String> unfocusedSessionIds() {
-        return SessionReader.unfocusedSessionIds(sessions);
+    /** Every session that states SEED: what such a refusal names. */
+    public List<String> seedSessionIds() {
+        return SessionReader.seedSessionIds(sessions);
     }
 
     /** One session's lowering: the one the composer lowers with. */

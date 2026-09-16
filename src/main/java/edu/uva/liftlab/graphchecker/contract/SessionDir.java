@@ -29,6 +29,8 @@ public final class SessionDir {
     public static final String TARGETS = "targets.jsonl";
     public static final String GAPS = "gaps.jsonl";
     public static final String EXPRESSIONS = "expressions.json";
+    /** The role this session STATES it ran as ({@link SessionManifest}). */
+    public static final String MANIFEST = "manifest.json";
 
     private final Path dir;
     private final String sessionId;
@@ -119,6 +121,10 @@ public final class SessionDir {
 
     public Path expressions() {
         return dir.resolve(EXPRESSIONS);
+    }
+
+    public Path manifest() {
+        return dir.resolve(MANIFEST);
     }
 
     @Override

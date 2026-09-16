@@ -12,6 +12,7 @@ import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.SessionDir;
+import edu.uva.liftlab.graphchecker.contract.SessionManifest;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import java.io.BufferedWriter;
@@ -83,11 +84,19 @@ public final class SessionPublisher {
     }
 
     /**
-     * Creates every file of the layout, empty.
+     * Creates every file of the layout, empty, and states this session's
+     * role.
      *
      * <p>A kind with no rows is still a kind this session published: IMPORT
      * reads one file per kind and an absent file is a session that did not
      * publish it, which is a different fact from "this run had none".</p>
+     *
+     * <p>The manifest is written HERE, at the open, and not at the close:
+     * a campaign halts the JVM the instant its result settles, and a role
+     * stated only at the end is a role the seven sessions the 11741 kill cut
+     * would never have stated.  What it says is what {@link FocusedReplay}
+     * was handed -- a replay with a focus row is FOCUSED, and the ids are
+     * the obligations that row named.</p>
      */
     private void open() {
         synchronized (LOCK) {
@@ -99,6 +108,12 @@ public final class SessionPublisher {
                         layout.roots(), layout.targets(), layout.gaps()}) {
                     if (!Files.exists(file)) Files.createFile(file);
                 }
+                RowCodec.writeManifest(layout.manifest(),
+                        SessionManifest.of(layout.sessionId(),
+                                FocusedReplay.focusedSession()
+                                        ? SessionManifest.Role.FOCUSED
+                                        : SessionManifest.Role.SEED,
+                                FocusedReplay.obligationIds()));
             } catch (IOException unwritable) {
                 fail(unwritable);
             }

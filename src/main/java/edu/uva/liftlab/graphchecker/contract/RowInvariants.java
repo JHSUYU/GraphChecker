@@ -56,7 +56,10 @@ public final class RowInvariants {
         List<GapRow> gaps = new ArrayList<GapRow>();
         if (sessions == null || sessions.isEmpty()) return gaps;
         sessionSet(sessions, gaps);
-        for (SessionReader session : sessions) check(session, gaps);
+        for (SessionReader session : sessions) {
+            complete(session, gaps);
+            check(session, gaps);
+        }
         return gaps;
     }
 
@@ -82,25 +85,65 @@ public final class RowInvariants {
     // ---- 1. the session set -------------------------------------------
 
     /**
-     * Exactly one seed session per epoch (HANDOVER SS1.3: the seed is the
-     * session whose activations are all {@code focused=false}).  With none,
+     * Exactly one session STATES it is the seed, and the seed states no
+     * obligation.
+     *
+     * <p>Read off {@code manifest.json}, never inferred.  The rule used to
+     * be "the seed is the session whose ActivationRows are all {@code
+     * focused=false}", and that has no answer for a focused replay whose
+     * occurrence never activated: on the 11741 campaign #2 corpus nine of
+     * eighty-one sessions focused nothing -- the seed, seven replays the kill
+     * cut, and one legitimately NOT_ADMITTED focused replay -- so COMPOSE
+     * refused and the anchor degraded to {@code Lost:UNKNOWN}.  With no SEED
      * no declaration has a recording it was written about; with two, nothing
-     * says which.  Every other session therefore has a focused activation.
+     * says which; and a session that states SEED while naming the
+     * obligations it ran contradicts itself, because a replay handed an
+     * obligation is a counterfactual and not the recording.</p>
      */
     private static void sessionSet(List<SessionReader> sessions,
                                    List<GapRow> gaps) {
-        List<String> unfocused = SessionReader.unfocusedSessionIds(sessions);
-        if (unfocused.size() == 1) return;
-        List<String> named = new ArrayList<String>();
-        for (SessionReader session : sessions) named.add(session.sessionId());
-        gaps.add(GapRow.of(unfocused.isEmpty() ? named.get(0)
-                        : unfocused.get(0), GapKind.ADMISSION_GAP,
-                GapClass.BLOCKING, "epoch/sessions",
-                "invariant 1 (HANDOVER SS1.3: the seed session is the one "
-                        + "whose ActivationRows are all focused=false): "
-                        + unfocused.size() + " of " + sessions.size()
-                        + " sessions focused nothing " + unfocused
-                        + "; exactly one must"));
+        List<String> stated = SessionReader.seedSessionIds(sessions);
+        for (SessionReader session : sessions) {
+            SessionManifest manifest = session.manifest();
+            if (manifest == null || !manifest.seed()
+                    || manifest.obligationIds().isEmpty()) {
+                continue;
+            }
+            gaps.add(GapRow.of(session.sessionId(), GapKind.ADMISSION_GAP,
+                    GapClass.BLOCKING, "epoch/sessions",
+                    "invariant 1: this session states role SEED and names "
+                            + "the obligations it ran "
+                            + manifest.obligationIds()
+                            + "; a replay handed an obligation is a "
+                            + "counterfactual, not the recording"));
+        }
+        if (stated.size() == 1) return;
+        gaps.add(GapRow.of(stated.isEmpty()
+                        ? sessions.get(0).sessionId() : stated.get(0),
+                GapKind.ADMISSION_GAP, GapClass.BLOCKING, "epoch/sessions",
+                "invariant 1 (CONTRACT-SPEC SS2: every session states its "
+                        + "role in manifest.json): " + stated.size() + " of "
+                        + sessions.size() + " sessions state role SEED "
+                        + stated + "; exactly one must"));
+    }
+
+    /**
+     * Every session was read whole (CONTRACT-SPEC SS2: one file per kind,
+     * and a manifest that states the role).
+     *
+     * <p>BLOCKING, and it has to be: a kind a reader could not parse comes
+     * back as no rows, which is indistinguishable from a kind this run had
+     * none of.  A replay the campaign's kill cut mid-row, or one with no
+     * manifest, therefore states less than it ran and every later stage
+     * reads the shortfall as fact.  Named with the file and the codec's own
+     * reason, so the fix is a re-run of that worker and not a hunt.</p>
+     */
+    private static void complete(SessionReader session, List<GapRow> gaps) {
+        if (session.incomplete().isEmpty()) return;
+        gaps.add(GapRow.of(session.sessionId(), GapKind.SESSION_INCOMPLETE,
+                GapClass.BLOCKING, session.sessionId(),
+                "this session could not be read whole: "
+                        + session.incomplete()));
     }
 
     /**

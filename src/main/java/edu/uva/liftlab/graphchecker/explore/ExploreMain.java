@@ -295,17 +295,18 @@ public final class ExploreMain {
                                                    List<GapRow> gaps) {
         String seed = corpus.seedSessionId();
         if (seed.isEmpty()) {
-            // The contract's rule, and no fallback under it: the seed is the
-            // session that focused nothing, and a corpus with none of those
-            // or with several does not state which recording a declaration
-            // was written about. Naming an exploration replay as the
-            // recording is how a claim comes to be about the wrong execution.
+            // The contract's rule, and no fallback under it: the recording
+            // is the session whose manifest states role SEED, and a corpus
+            // with none of those or with several does not state which
+            // recording a declaration was written about. Naming an
+            // exploration replay as the recording is how a claim comes to be
+            // about the wrong execution.
             gaps.add(GapRow.of(ExploreCodec.EXPLORATION, GapKind.ADMISSION_GAP, GapClass.BLOCKING,
                     declaredAnchor,
                     "this corpus states no single seed session: "
-                            + corpus.unfocusedSessionIds().size()
+                            + corpus.seedSessionIds().size()
                             + " of its " + corpus.sessions().size()
-                            + " sessions focused nothing"));
+                            + " sessions state role SEED"));
             return new ArrayList<OccurrenceAddress>();
         }
         SessionReader session = corpus.session(seed);

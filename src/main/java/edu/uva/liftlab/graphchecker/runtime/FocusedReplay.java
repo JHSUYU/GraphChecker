@@ -309,6 +309,9 @@ public final class FocusedReplay {
     private static void loadPlanRows() {
         Path path = focusRow();
         if (path == null) return;
+        // The role is decided HERE and by nothing else: a replay handed a
+        // focus row is a FOCUSED replay, whatever it goes on to activate.
+        handedAFocusRow = true;
         try {
             for (JsonObject row : RowCodec.readJsonl(path)) {
                 if (!row.has("flip") || !row.has("taskId")) continue;
@@ -363,6 +366,40 @@ public final class FocusedReplay {
 
     /** The Task the focus row states, when it states one. */
     private static Task focusedTask;
+
+    /** Whether this replay was handed a focus row at all. */
+    private static boolean handedAFocusRow;
+
+    /**
+     * Whether this replay is a FOCUSED one, rather than the recording.
+     *
+     * <p>The role this session STATES in its manifest.  It is "was I handed a
+     * focus row", never "did I focus anything": a focused replay whose
+     * occurrence never activated focused nothing and is still a focused
+     * replay -- what it settled is its result row's to say.  Seven of the
+     * 11741 campaign #2 sessions were exactly that, and reading them as
+     * recordings left the corpus with nine candidate seeds.</p>
+     */
+    public static boolean focusedSession() {
+        load();
+        synchronized (LOCK) {
+            return handedAFocusRow;
+        }
+    }
+
+    /** The obligations this replay was handed, by id, in the row's order. */
+    public static List<String> obligationIds() {
+        load();
+        List<String> ids = new ArrayList<String>();
+        synchronized (LOCK) {
+            for (Obligation obligation : OBLIGATIONS) {
+                String id = Text.safe(obligation.obligationId());
+                if (!id.isEmpty() && !ids.contains(id)) ids.add(id);
+            }
+        }
+        return ids;
+    }
+
 
     /** Where the focus row is, or null when this replay was handed none. */
     private static Path focusRow() {
@@ -431,6 +468,8 @@ public final class FocusedReplay {
     public static void resetForTests() {
         synchronized (LOCK) {
             loaded = false;
+            handedAFocusRow = false;
+            focusedTask = null;
             task = null;
             OBLIGATIONS.clear();
             CLOCK_DELTAS.clear();

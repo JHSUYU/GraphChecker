@@ -102,5 +102,16 @@ public enum GapKind {
      * reached once per node lifecycle, so an assignment applied at another
      * epoch rewrites a value the wave said nothing about.</p>
      */
-    EPOCH_UNMATCHED
+    EPOCH_UNMATCHED,
+    /**
+     * A session no reader could read whole.
+     *
+     * <p>BLOCKING, raised at IMPORT: a truncated row or an absent {@code
+     * manifest.json} makes a kind come back empty, which every later stage
+     * reads as "this run had none".  Seven of the 11741 campaign #2 sessions
+     * were cut by the campaign's kill, and one of them left a half-written
+     * gap row that made the whole corpus unreadable with a JSON exception
+     * instead of a named refusal.</p>
+     */
+    SESSION_INCOMPLETE
 }

@@ -32,6 +32,7 @@ import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.SessionDir;
+import edu.uva.liftlab.graphchecker.contract.SessionManifest;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.explore.Corpus;
@@ -1036,8 +1037,9 @@ public class ComposerTest {
                         "names no producer endpoint"));
         assertTrue("a Java type this lowering cannot place is refused",
                 says(gaps, GapKind.UNSTATED_VALUE, "names no scalar"));
-        assertTrue("and two recordings are not one",
-                says(gaps, GapKind.UNSTATED_VALUE, "focused nothing"));
+        assertTrue("and two recordings are not one: the sessions STATE the "
+                        + "role they ran as, and two SEEDs is no answer",
+                says(gaps, GapKind.UNSTATED_VALUE, "state role SEED"));
         assertTrue("a cell the location does not name is refused by name, "
                         + "naming the location, the version and both sorts",
                 named(gaps, "ContainerElement:MAP/4#-3@1:MAP!=INT"));
@@ -2170,6 +2172,14 @@ public class ComposerTest {
             RowCodec.writeAll(dir.targets(), targets, RowCodec::writeTarget);
             RowCodec.writeExpressions(dir.expressions(),
                     ExpressionTable.of(expressions));
+            // The fixture STATES the role, as a campaign's own session
+            // manifest does: an exploration replay is FOCUSED under the
+            // obligation it ran, the recording is SEED.
+            RowCodec.writeManifest(dir.manifest(), SessionManifest.of(id,
+                    explored ? SessionManifest.Role.FOCUSED
+                            : SessionManifest.Role.SEED,
+                    explored ? Collections.singletonList("OBL." + id)
+                            : Collections.<String>emptyList()));
         }
     }
 

@@ -450,6 +450,32 @@ public final class RowCodec {
         return ExpressionTable.fromJson(parse(text, file.toString()));
     }
 
+    /** The role this session states, as one JSON object. */
+    public static void writeManifest(Path file, SessionManifest manifest)
+            throws IOException {
+        Files.createDirectories(file.toAbsolutePath().getParent());
+        Files.write(file, GSON.toJson(manifest.toJson())
+                .getBytes(StandardCharsets.UTF_8));
+    }
+
+    /**
+     * The role this session states; a session that states none is refused.
+     *
+     * <p>Never a default.  Which session is the recording is the one fact a
+     * whole claim turns on, so an absent or unreadable manifest is a session
+     * IMPORT names {@code SESSION_INCOMPLETE} rather than a session read as
+     * the seed.</p>
+     */
+    public static SessionManifest readManifest(Path file) throws IOException {
+        if (file == null || !Files.isRegularFile(file)) {
+            throw new IllegalArgumentException(
+                    "the session states no role: no " + SessionDir.MANIFEST);
+        }
+        String text = new String(Files.readAllBytes(file),
+                StandardCharsets.UTF_8);
+        return SessionManifest.fromJson(parse(text, file.toString()));
+    }
+
     /** One row as one line: compact, and never containing a newline. */
     public static String toLine(JsonObject row) {
         return GSON.toJson(row);
