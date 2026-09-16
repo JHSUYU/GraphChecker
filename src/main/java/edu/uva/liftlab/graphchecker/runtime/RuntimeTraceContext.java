@@ -787,6 +787,16 @@ final class RuntimeTraceContext {
     /**
      * One activation's source: its own stamp, else the unique stamp among
      * its frames, else the unregistered source.  Never null.
+     *
+     * <p>The second arm is a refusal when it is not unique: two frames of
+     * one activation that name two components say the run cannot attribute
+     * the activation, and it goes to the unregistered population rather
+     * than to the first of the two.  That was already the answer and it was
+     * silent, so nothing downstream could tell it from an activation nothing
+     * had stamped at all -- and the two are different facts: one is missing
+     * evidence, the other is contradictory evidence about where an
+     * occurrence ran.  The class is every activation whose frames disagree,
+     * on either pass, since this is the one rule both evaluate.</p>
      */
     static SourceRef attributedActivationSource(
             SourceRef stamp, Collection<SourceRef> frameStamps) {
@@ -798,6 +808,15 @@ final class RuntimeTraceContext {
                 if (unique == null) {
                     unique = frame;
                 } else if (!unique.key().equals(frame.key())) {
+                    RowRuntime.gap(edu.uva.liftlab.graphchecker.contract
+                                    .GapKind.LINEAGE_LOST,
+                            edu.uva.liftlab.graphchecker.contract
+                                    .GapClass.DIAGNOSTIC,
+                            unique.key() + " vs " + frame.key(),
+                            "two frames of one activation name two"
+                                    + " components, so the run attributes it"
+                                    + " to no node and counts it in the"
+                                    + " unregistered population");
                     return UNREGISTERED_SOURCE;
                 }
             }

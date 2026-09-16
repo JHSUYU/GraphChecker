@@ -156,16 +156,27 @@ final class ConcolicVmBroker {
         }
     }
 
+    /**
+     * The VM's own context id, or a negative status.
+     *
+     * <p>A VM answer that is not a number is {@link #MALFORMED_RESULT} and
+     * not {@code 0L}: zero is what a VM with no such notion would answer,
+     * and the two used to be one value.  Both readings are refused by the
+     * caller's {@code <= 0} check, so the answer only becomes nameable --
+     * which is the whole difference between "the engine has no context
+     * here" and "the engine answered something this bridge cannot read".</p>
+     */
     long currentContextId() throws Exception {
         Object value = currentContextId.invoke(null);
         return value instanceof Number
-                ? ((Number) value).longValue() : 0L;
+                ? ((Number) value).longValue() : MALFORMED_RESULT;
     }
 
+    /** The region-enter event id, or a negative status; see above. */
     long currentRegionEnterEventId() throws Exception {
         Object value = currentRegionEnterEventId.invoke(null);
         return value instanceof Number
-                ? ((Number) value).longValue() : 0L;
+                ? ((Number) value).longValue() : MALFORMED_RESULT;
     }
 
     /**
@@ -268,14 +279,24 @@ final class ConcolicVmBroker {
         }
     }
 
-    /** Exports one field and reports its session-unique endpoint id. */
+    /**
+     * Exports one field and reports its session-unique endpoint id.
+     *
+     * <p>A non-numeric answer is {@link #MALFORMED_RESULT}, which is what
+     * the caller's {@code exportStatus} already maps a zero to: the status
+     * is the same and the value now says which reading produced it.  A
+     * legal "no handle" is still 0 and still distinguishable -- it is what
+     * a NOT_SYMBOLIC leaf is staged on the wire with, and what
+     * {@code attachDeliveredLeaf} reads as "the delivery carried no producer
+     * expression".</p>
+     */
     long exportExpression(
             Object owner, String declaringClass, String fieldName,
             String descriptor, long[] eventOut) throws Exception {
         Object handle = export.invoke(null, owner, declaringClass,
                 fieldName, descriptor, eventOut);
         return handle instanceof Number
-                ? ((Number) handle).longValue() : 0L;
+                ? ((Number) handle).longValue() : MALFORMED_RESULT;
     }
 
     /**

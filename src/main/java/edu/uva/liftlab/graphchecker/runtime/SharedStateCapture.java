@@ -545,8 +545,23 @@ final class SharedStateCapture {
      * Names the location one version-store envelope describes, as the VM's
      */
     static String locationKey(JsonObject envelope) {
-        JsonObject location = object(envelope, "location");
-        if (location.size() == 0) return "";
+        return locationKeyOf(object(envelope, "location"));
+    }
+
+    /**
+     * The same key, for a location node anywhere the VM states one.
+     *
+     * <p>ONE spelling of a location and one admission of it: the write log's
+     * envelopes and the {@code location} member of every read node the
+     * expressions carry are the same statement by the same VM, and the row
+     * publication used to have a second reader of it that admitted any
+     * {@code locationKind} at all and defaulted an unknown one to
+     * {@code INSTANCE}.  A kind this build does not declare, an owner rid of
+     * zero, an absent slot, or a whole-state location at any slot but the
+     * reserved one, names no location -- and the caller refuses.</p>
+     */
+    static String locationKeyOf(JsonObject location) {
+        if (location == null || location.size() == 0) return "";
         String kind = optionalString(location, "locationKind");
         if (!LOCATION_KINDS.contains(kind)) return "";
         long owner = optionalLongInteger(location, "ownerSymRid", 0L);
@@ -556,6 +571,41 @@ final class SharedStateCapture {
             return "";
         }
         return kind + "/" + owner + "#" + slot;
+    }
+
+    /**
+     * The contract location one VM location key names, or {@code null}.
+     *
+     * <p>The kind is the VM's declared one, mapped member for member; there
+     * is no default, because an unrecognised kind published as
+     * {@code INSTANCE} is a location the write log spells differently and
+     * therefore a read that joins nothing.</p>
+     */
+    static edu.uva.liftlab.graphchecker.contract.LocationId locationId(
+            String locationKey) {
+        String key = safe(locationKey);
+        int separator = key.indexOf('/');
+        int slot = key.lastIndexOf('#');
+        if (separator <= 0 || slot <= separator) return null;
+        String kind = key.substring(0, separator);
+        edu.uva.liftlab.graphchecker.contract.LocationKind declared;
+        if ("INSTANCE_FIELD".equals(kind)) {
+            declared = edu.uva.liftlab.graphchecker.contract
+                    .LocationKind.INSTANCE;
+        } else if ("STATIC_FIELD".equals(kind)) {
+            declared = edu.uva.liftlab.graphchecker.contract
+                    .LocationKind.STATIC;
+        } else if ("ARRAY_ELEMENT".equals(kind)) {
+            declared = edu.uva.liftlab.graphchecker.contract
+                    .LocationKind.ARRAY;
+        } else if (LOCATION_KIND_MAP_STATE.equals(kind)) {
+            declared = edu.uva.liftlab.graphchecker.contract
+                    .LocationKind.MAP;
+        } else {
+            return null;
+        }
+        return edu.uva.liftlab.graphchecker.contract.LocationId.of(declared,
+                key.substring(separator + 1, slot), key.substring(slot + 1));
     }
 
     /** The declared kind of one location key, or "". */

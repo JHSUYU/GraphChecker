@@ -39,14 +39,49 @@ public final class Interactions {
         }
     }
 
-    /** The producer endpoint this delivery was paired with, or null. */
-    public static synchronized Endpoint producer(String portId, long handle,
-                                                 String correlationId) {
+    /**
+     * The producer endpoint this delivery was paired with, or null, and the
+     * key that answered.
+     *
+     * <p>Two keys are recorded facts and they are not equal evidence: the VM
+     * handle is the export itself, the correlation with the port is the
+     * message the export travelled in.  Which of the two answered was not
+     * stated anywhere, so an attach row paired on the weaker key read
+     * exactly like one paired on the handle -- on the 11741 corpus all 3,554
+     * attaches had both available.  The pairing now carries its key; the
+     * attach row's own member for it belongs to the contract.</p>
+     */
+    public static synchronized Pairing pairing(String portId, long handle,
+                                               String correlationId) {
         for (String key : keys(portId, handle, correlationId)) {
             Endpoint producer = PRODUCERS.get(key);
-            if (producer != null) return producer;
+            if (producer != null) {
+                return new Pairing(producer, key.charAt(0) == 'H'
+                        ? "HANDLE" : "CORRELATION_PORT");
+            }
         }
-        return null;
+        return new Pairing(null, "");
+    }
+
+    /** One delivery's producer and the key that named it. */
+    public static final class Pairing {
+        private final Endpoint producer;
+        private final String key;
+
+        private Pairing(Endpoint producer, String key) {
+            this.producer = producer;
+            this.key = key;
+        }
+
+        /** The producer endpoint, or null when neither key answered. */
+        public Endpoint producer() {
+            return producer;
+        }
+
+        /** {@code HANDLE}, {@code CORRELATION_PORT}, or {@code ""}. */
+        public String key() {
+            return key;
+        }
     }
 
     /**

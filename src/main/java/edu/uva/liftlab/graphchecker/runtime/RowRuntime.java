@@ -272,9 +272,13 @@ public final class RowRuntime {
         Interactions.exported(portId, handle, correlationId, endpoint);
         SessionPublisher session = publisher;
         if (session != null) {
-            session.export(ExportRow.of(sessionId(), sequence(seq), endpoint,
-                    ref, javaType(javaType, expression), handle,
-                    Text.safe(recordedValue)));
+            String type = statedJavaType("export", endpoint.id(), javaType,
+                    expression);
+            if (!type.isEmpty()) {
+                session.export(ExportRow.of(sessionId(), sequence(seq),
+                        endpoint, ref, type, handle,
+                        Text.safe(recordedValue)));
+            }
         }
         return endpoint;
     }
@@ -301,15 +305,33 @@ public final class RowRuntime {
                                       boolean answered,
                                       String answeredValue) {
         if (endpoint == null) return null;
-        Endpoint producer = Interactions.producer(portId, handle,
+        Interactions.Pairing pairing = Interactions.pairing(portId, handle,
                 correlationId);
+        Endpoint producer = pairing.producer();
+        if (producer != null && handle > 0L
+                && !"HANDLE".equals(pairing.key())) {
+            // The strongest evidence this delivery carried did not answer,
+            // and the pairing rests on the message it travelled in.  The
+            // class is every attach that states a handle and is paired by
+            // correlation+port: the producer named here is the one that sent
+            // the MESSAGE, not the one that staged this value.
+            gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC, endpoint.id(),
+                    "this delivery states VM handle " + handle
+                            + " and was paired by " + pairing.key()
+                            + ", so the producer is the message's and not"
+                            + " the staged expression's");
+        }
         SessionPublisher session = publisher;
         if (session != null) {
-            session.attach(AttachRow.of(sessionId(), sequence(seq), endpoint,
-                    Text.safe(symbol), javaType(javaType, null),
-                    Text.safe(arrival), answered,
-                    answered ? Text.safe(answeredValue) : null, producer,
-                    Text.safe(correlationId)));
+            String type = statedJavaType("attach", endpoint.id(), javaType,
+                    null);
+            if (!type.isEmpty()) {
+                session.attach(AttachRow.of(sessionId(), sequence(seq),
+                        endpoint, Text.safe(symbol), type,
+                        Text.safe(arrival), answered,
+                        answered ? Text.safe(answeredValue) : null, producer,
+                        Text.safe(correlationId)));
+            }
             if (producer == null) {
                 session.gap(GapRow.of(sessionId(), GapKind.LINEAGE_LOST,
                         GapClass.DIAGNOSTIC, endpoint.id(),
@@ -353,10 +375,12 @@ public final class RowRuntime {
         SessionPublisher session = publisher;
         if (session == null || occurrence == null || location == null) return;
         Endpoint at = endpoint(occurrence, site, 0, siteIndex);
+        String type = statedJavaType("version", location + "#" + version,
+                javaType, expression);
+        if (type.isEmpty()) return;
         distinct(at, "write#" + location + "#" + version);
         session.write(WriteRow.of(sessionId(), sequence(seq), at, location,
-                version, expressionRef(expression),
-                javaType(javaType, expression)));
+                version, expressionRef(expression), type));
     }
 
     /** One read, at the site index the event itself stood on. */
@@ -385,9 +409,12 @@ public final class RowRuntime {
         SessionPublisher session = publisher;
         if (session == null || occurrence == null || location == null) return;
         Endpoint at = endpoint(occurrence, site, 0, siteIndex);
+        String type = statedJavaType("read", location + "#" + seq, javaType,
+                null);
+        if (type.isEmpty()) return;
         distinct(at, "read#" + location + "#" + seq);
         session.read(ReadRow.of(sessionId(), sequence(seq), at, location,
-                observedVersion, Text.safe(symbol), javaType(javaType, null),
+                observedVersion, Text.safe(symbol), type,
                 Text.safe(concreteValue).isEmpty() ? null
                         : Text.safe(concreteValue), mintVersion));
     }
@@ -618,12 +645,36 @@ public final class RowRuntime {
      */
     private static String javaType(String declared, JsonObject expression) {
         String type = Text.safe(declared);
+        return type.isEmpty() ? statedType(expression, 0) : type;
+    }
+
+    /**
+     * Names a row whose java type neither the caller nor the VM stated, and
+     * publishes no row for it.
+     *
+     * <p>It used to publish {@code Ljava/lang/Object;}, which is a type the
+     * run did not observe: on the 17960 clean corpus 2 of 100 write rows and
+     * on the 11741 corpus 419 of 25,206 went out that way, declaring a
+     * reference where the run knew nothing -- and the composer lowers a
+     * reference-sorted write against an integral read as two sorts for one
+     * location.  The class this covers is every row of every kind whose
+     * declared type is empty AND whose expression states no {@code
+     * _java_type} anywhere: the row is refused, and each read of that
+     * version then reaches the formula with no read-from arm, which is what
+     * {@code UNSTATED_VALUE} names.</p>
+     *
+     * @return the descriptor when the run stated one, else {@code ""}
+     */
+    private static String statedJavaType(String kind, String subject,
+                                         String declared,
+                                         JsonObject expression) {
+        String type = javaType(declared, expression);
         if (!type.isEmpty()) return type;
-        String stated = statedType(expression, 0);
-        if (!stated.isEmpty()) return stated;
-        // Never blank: the contract refuses one, and "the type was not
-        // stated" is a fact about the row, not an absence of a member.
-        return "Ljava/lang/Object;";
+        gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, subject,
+                "this " + kind + " states no java type and its expression"
+                        + " states none either, so the run cannot say what"
+                        + " sort it wrote and publishes no row for it");
+        return "";
     }
 
     private static String statedType(JsonElement node, int depth) {
@@ -812,6 +863,14 @@ public final class RowRuntime {
                     "the obligation assigns this root \"" + unplanted
                             .getValue() + "\" and no mint of this replay"
                             + " planted it");
+        }
+        // What this replay was handed and could not read.  A focus row the
+        // session could not read whole leaves it reporting role FOCUSED
+        // with however many obligations it parsed, so the shortfall is the
+        // session's own row rather than a line on stderr.
+        for (String shortfall : FocusedReplay.shortfalls()) {
+            gap(GapKind.SESSION_INCOMPLETE, GapClass.BLOCKING,
+                    sessionId(), shortfall);
         }
         List<ObligationResult> results =
                 FocusedReplay.results(sessionId());
