@@ -1843,9 +1843,29 @@ public final class CausynthPipeline {
      * {@code Dispatcher.dispatchBlockMoves}, shared one anchor).  The shapes
      * are {@link WorkStartSites}', which the recording's own call hooks read
      * too.</p>
+     *
+     * <p>And the other half of the same rule: the work CLAIMS that frame at
+     * its own first instruction.  A start is filed under the object that
+     * carries the work, and the thread that runs it never sees that object
+     * through a hook of its own -- a pool worker is handed a task by {@code
+     * ThreadPoolExecutor}, which is JDK code no weave touches -- so a claim
+     * that waits for a region entry never happens at all on a pool thread
+     * whose task enters no selected region.  On hdfs-11741 the two mover
+     * threads {@code pool-57-thread-1/2} send the balancer's HDFS_SASL
+     * request before any region entry: both stood on an empty index under
+     * one degraded {@code ROLE.HDFS_SASL} occurrence, each counted its site
+     * events from 0 in its own thread-local state, and the two messages
+     * carried ONE producer endpoint id -- {@code Anchor:a496e8cab387ae3c},
+     * which is the anchor dn1's {@code retrieveDataEncryptionKey} target
+     * runs under.  Claimed at the entry of the functional method the start
+     * named ({@link WorkStartSites#entersWork}), the frame is standing
+     * before the first send, so two mover tasks are two occurrences with
+     * their own counters and their own k (G8: the k of an occurrence's own
+     * events, never a cross-thread counter).</p>
      */
     private void instrumentWorkStarts(HookCatalog refs) {
         int filed = 0;
+        int claimed = 0;
         int walked = 0;
         for (SootClass type : new ArrayList<>(
                 Scene.v().getApplicationClasses())) {
@@ -1896,10 +1916,47 @@ public final class CausynthPipeline {
                     insertBeforeSequence(body, stmt, before);
                     filed += started;
                 }
+                if (claimWorkEntry(body, method, refs)) claimed++;
             }
         }
-        LOG.info("Instrumented {} work start(s) across {} method(s) of the "
-                + "application scope for the execution index", filed, walked);
+        LOG.info("Instrumented {} work start(s) and {} work entry claim(s) "
+                + "across {} method(s) of the application scope for the "
+                + "execution index", filed, claimed, walked);
+    }
+
+    /**
+     * Claims the start frame of the work this method IS, at its entry.
+     *
+     * <p>The receiver is the carrier the start was filed under, so the
+     * claim takes {@code this} and nothing else; a start nobody filed for
+     * it is a no-op ({@code Identity.claimStart}).  At the entry, because
+     * "the work's first identity event" is the rule and the entry precedes
+     * every send, read, write and region entry the work makes.</p>
+     *
+     * @return whether this method received the claim
+     */
+    private boolean claimWorkEntry(Body body, SootMethod method,
+                                   HookCatalog refs) {
+        if (method.isStatic() || method.isConstructor()
+                || !WorkStartSites.entersWork(method.getName(),
+                        method.getParameterCount(),
+                        hierarchyOf(method.getDeclaringClass()))) {
+            return false;
+        }
+        Value receiver = receiverOrNull(body, method);
+        if (receiver instanceof NullConstant) return false;
+        Unit entry = safeInstrumentationEntry(body, method);
+        if (entry == null) return false;
+        List<Unit> claim = new ArrayList<>();
+        // Paused where there is symbolic observation to pause, exactly as
+        // the start hook above is: the recording pass has none and the hook
+        // is the same one.
+        boolean observed = refs.ref(Hook.PAUSE_OBSERVATION) != null;
+        if (observed) emit(claim, refs.ref(Hook.PAUSE_OBSERVATION));
+        emit(claim, refs.ref(Hook.CLAIM_START), receiver);
+        if (observed) emit(claim, refs.ref(Hook.RESUME_OBSERVATION));
+        insertBeforeOrAppendNoRedirect(body, entry, claim);
+        return true;
     }
 
     /**
@@ -3701,6 +3758,7 @@ public final class CausynthPipeline {
         EXIT_REGION_ENTRY,
         THROW_REGION_ENTRY,
         START_WORK,
+        CLAIM_START,
         ENTER_CONFIGURED_SOURCE_PHASE_SITE,
         EXIT_CONFIGURED_SOURCE_PHASE_SITE,
         THROW_CONFIGURED_SOURCE_PHASE_SITE,
@@ -3783,9 +3841,13 @@ public final class CausynthPipeline {
                             RefType.v("java.lang.Throwable"))
                     .add(Hook.ENTER_METHOD, recorder, "enterMethod",
                             LongType.v(), string, object, string)
-                    // The one work-start hook, woven by both passes.
+                    // The one work-start hook, woven by both passes, and
+                    // the one claim: the start is filed at the site that
+                    // made it and taken by the work at its own entry.
                     .add(Hook.START_WORK, recorder, "startWork",
                             VoidType.v(), string, object)
+                    .add(Hook.CLAIM_START, recorder, "claimStart",
+                            VoidType.v(), object)
                     .add(Hook.RECORD_METHOD_ARGUMENT, recorder,
                             "recordMethodArgument", VoidType.v(), LongType.v(),
                             IntType.v(), string, object, string)
@@ -3845,6 +3907,8 @@ public final class CausynthPipeline {
                             RefType.v("java.lang.Throwable"))
                     .add(Hook.START_WORK, runtime, "startWork",
                             VoidType.v(), string, object)
+                    .add(Hook.CLAIM_START, runtime, "claimStart",
+                            VoidType.v(), object)
                     .add(Hook.ENTER_CONFIGURED_SOURCE_PHASE_SITE, runtime,
                             "enterConfiguredSourcePhaseCallSite",
                             LongType.v(), string, IntType.v(), string)

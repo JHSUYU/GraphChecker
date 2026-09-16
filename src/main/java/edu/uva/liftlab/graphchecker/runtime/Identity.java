@@ -303,10 +303,28 @@ public final class Identity {
     /**
      * This thread's state, having claimed the start that created it once.
      *
-     * <p>The claim is lazy because the start is filed after the thread's
-     * state was inherited (at construction) and before the thread runs
-     * anything: its first frame, its first region, its first event -- all
-     * go through here.</p>
+     * <p>THE claim rule, one half of it: a started work claims its start
+     * frame at its FIRST identity event on that thread -- a region entry, a
+     * message send, a read or write endpoint, another work start, whatever
+     * comes first.  Every one of them reaches this method before it answers
+     * anything ({@link #currentOccurrence}, {@link #occurrence}, {@link
+     * #endpointAt}, {@link #enterCall}, {@link #startWork}), so the frame is
+     * standing before the first address that would otherwise be computed
+     * without it.  The claim is lazy for exactly that reason: the start is
+     * filed after this thread's state was inherited (at construction) and
+     * before the thread runs anything.</p>
+     *
+     * <p>This half takes the start filed for the THREAD -- a {@code
+     * Thread.start}, where the thread is the work.  The other half is {@link
+     * #claimStart}, for work whose carrier is a task object the thread never
+     * sees through an event of its own: that claim is woven at the entry of
+     * the functional method the start named, which is the work's own first
+     * instruction.  Before this, the task claim happened only at a region
+     * entry, and hdfs-11741's mover pool threads send the balancer's
+     * HDFS_SASL request before entering any region -- so two mover tasks
+     * stood on one empty index under one degraded {@code ROLE.HDFS_SASL}
+     * occurrence, each counted its site events from 0 in its own state, and
+     * the two sends carried ONE producer endpoint id.</p>
      */
     private static State state() {
         State state = CURRENT.get();
@@ -382,9 +400,25 @@ public final class Identity {
      * Takes the start frame filed for {@code carrier}, if there is one.
      *
      * <p>The other half of {@link #startWork}: a thread claims the start
-     * filed for ITSELF the first time it does anything, and a pool thread
-     * that was created before the work claims the start filed for the task
-     * it is running -- the task object the region was entered on.</p>
+     * filed for ITSELF the first time it does anything ({@link #state}), and
+     * work whose carrier is a task object claims the start filed for that
+     * task at its own first instruction -- the entry of the functional
+     * method the start named, woven by {@code
+     * CausynthPipeline.claimWorkEntry} in BOTH passes over the same
+     * {@code WorkStartSites} list the filing half reads.</p>
+     *
+     * <p>One claim point per notion.  It used to be the region entry as
+     * well, which is neither first nor reached at all on a pool thread whose
+     * task enters no selected region.</p>
+     *
+     * <p>A thread nobody filed a start for -- started before the recording
+     * began, or from JDK code the weave cannot touch -- claims nothing and
+     * keeps the role occurrence it has today.  Two of its events that the
+     * index cannot separate then share one endpoint id, which is a named
+     * refusal at the mint (LINEAGE_LOST, DIAGNOSTIC: {@code
+     * CausynthTraceRecorder.refuseSharedProducer} for a message, {@code
+     * RowRuntime.distinct} for a read or write) and not a frame invented
+     * here.</p>
      */
     public static void claimStart(Object carrier) {
         if (carrier == null || STARTS.isEmpty()) return;
