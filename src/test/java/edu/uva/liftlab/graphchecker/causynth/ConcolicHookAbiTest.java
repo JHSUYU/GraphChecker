@@ -2,12 +2,14 @@ package edu.uva.liftlab.graphchecker.causynth;
 
 import org.junit.Test;
 
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 import static org.junit.Assert.assertEquals;
@@ -32,6 +34,14 @@ import static org.junit.Assert.fail;
  * reads the catalog out of the pipeline source and resolves every entry
  * reflectively instead.</p>
  *
+ * <p>The launcher is the third half of the same boundary: {@code
+ * JUnitMethodRunner} drives every workload's lifecycle by reflection against
+ * annotations it names as strings, so an annotation it stops recognizing, or
+ * a lifecycle it stops invoking, is a workload that quietly never ran -- and,
+ * like the woven hooks, that shows up only at campaign SEED. The fixtures
+ * below stand in for the workload classes, in both vocabularies the corpus's
+ * checkouts use.</p>
+ *
  * <p>The other half of the ABI is not woven at all: the workload checkouts
  * and Solr call GraphChecker from their own source, compiled against an
  * older jar, so a {@code git grep} of this repository returns empty for
@@ -46,13 +56,15 @@ public class ConcolicHookAbiTest {
             "edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime";
     private static final String RECORDER_CLASS =
             "edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder";
+    private static final String RUNNER_CLASS =
+            "edu.uva.liftlab.graphchecker.runtime.JUnitMethodRunner";
     private static final String PACKAGE = "edu.uva.liftlab.graphchecker.";
     /** APIs called from outside this repository; see the class javadoc. */
     private static final String EXTERNAL_CALLERS =
             "src/test/resources/external-callers.txt";
 
     @Test
-    public void everyWovenHookAndCalledApiResolves() throws Exception {
+    public void everyWovenHookAndCalledApiResolves() throws Throwable {
         assertEquals("the custom VM keeps three java.lang.System hooks",
                 3, resolveCatalog("concolic", RUNTIME_CLASS));
         // The recording's own hooks, against the recorder: startWork files
@@ -61,6 +73,7 @@ public class ConcolicHookAbiTest {
         assertEquals("no java.lang.System hook is woven by the trace pass",
                 0, resolveCatalog("trace", RECORDER_CLASS));
         assertExternalCallersResolve();
+        assertTheRunnerDrivesTheJupiterLifecycle();
     }
 
     /**
@@ -99,6 +112,150 @@ public class ConcolicHookAbiTest {
             assertEquals(name + " return type", result, hook.getReturnType());
         }
         return wovenOnSystem;
+    }
+
+    /**
+     * The launcher half of the ABI: the runner drives a workload class.
+     *
+     * <p>Three things a replay depends on and nothing else states: the whole
+     * lifecycle runs in order, in either annotation vocabulary the corpus
+     * uses (five checkouts are Jupiter, hdfs-17960's is JUnit 4); a failing
+     * test surfaces its own throwable after teardown still ran; and a method
+     * name no workload declares is refused by name instead of publishing a
+     * session for a workload that never ran.</p>
+     */
+    private static void assertTheRunnerDrivesTheJupiterLifecycle()
+            throws Throwable {
+        for (Class<?> workload : Arrays.asList(
+                JupiterWorkload.class, JUnit4Workload.class)) {
+            LIFECYCLE.clear();
+            runWorkloadMethod(workload, "theWorkloadBody");
+            assertEquals("the runner owes " + workload.getSimpleName()
+                            + " the whole lifecycle, in order",
+                    Arrays.asList("beforeAll", "beforeEach",
+                            "theWorkloadBody", "afterEach", "afterAll"),
+                    new ArrayList<>(LIFECYCLE));
+        }
+
+        LIFECYCLE.clear();
+        try {
+            runWorkloadMethod(FailingJupiterWorkload.class,
+                    "theWorkloadBody");
+            fail("a failing @Test must reach the launcher");
+        } catch (AssertionError failed) {
+            assertEquals("the workload's own throwable, not a wrapper",
+                    "the workload's own assertion", failed.getMessage());
+        }
+        assertEquals("teardown owes its turn on the failure path",
+                Arrays.asList("beforeEach", "theWorkloadBody", "afterEach"),
+                new ArrayList<>(LIFECYCLE));
+
+        try {
+            runWorkloadMethod(JupiterWorkload.class, "noSuchWorkloadBody");
+            fail("a name no workload declares must be refused");
+        } catch (NoSuchMethodException refused) {
+            assertEquals("no such test method: "
+                            + JupiterWorkload.class.getName()
+                            + "#noSuchWorkloadBody",
+                    refused.getMessage());
+        }
+    }
+
+    /** Calls the runner's one lifecycle driver, unwrapping reflection. */
+    private static void runWorkloadMethod(Class<?> workload, String method)
+            throws Throwable {
+        Method run = Class.forName(RUNNER_CLASS)
+                .getDeclaredMethod("run", String[].class);
+        run.setAccessible(true);
+        try {
+            run.invoke(null,
+                    (Object) new String[] {workload.getName(), method});
+        } catch (InvocationTargetException failure) {
+            throw failure.getCause();
+        }
+    }
+
+    /** What each fixture's lifecycle invocation appends, in order. */
+    private static final List<String> LIFECYCLE = new ArrayList<>();
+
+    /** A workload class, as five of the six checkouts are. */
+    private static class JupiterWorkload {
+        @org.junit.jupiter.api.BeforeAll
+        static void beforeAll() {
+            LIFECYCLE.add("beforeAll");
+        }
+
+        @org.junit.jupiter.api.BeforeEach
+        void beforeEach() {
+            LIFECYCLE.add("beforeEach");
+        }
+
+        @org.junit.jupiter.api.Test
+        @org.junit.jupiter.api.Timeout(1)
+        void theWorkloadBody() {
+            // The @Timeout the campaign owns instead: a one-second limit the
+            // runner obeyed would kill every replay it exists to record.
+            LIFECYCLE.add("theWorkloadBody");
+        }
+
+        @org.junit.jupiter.api.AfterEach
+        void afterEach() {
+            LIFECYCLE.add("afterEach");
+        }
+
+        @org.junit.jupiter.api.AfterAll
+        static void afterAll() {
+            LIFECYCLE.add("afterAll");
+        }
+    }
+
+    /** A workload class in the other vocabulary, as the sixth is. */
+    private static class JUnit4Workload {
+        @org.junit.BeforeClass
+        public static void beforeAll() {
+            LIFECYCLE.add("beforeAll");
+        }
+
+        @org.junit.Before
+        public void beforeEach() {
+            LIFECYCLE.add("beforeEach");
+        }
+
+        @org.junit.Test(timeout = 1L)
+        public void theWorkloadBody() {
+            // The declared timeout the campaign owns instead, here in the
+            // form the JUnit 4 checkout writes it.
+            LIFECYCLE.add("theWorkloadBody");
+        }
+
+        @org.junit.After
+        public void afterEach() {
+            LIFECYCLE.add("afterEach");
+        }
+
+        @org.junit.AfterClass
+        public static void afterAll() {
+            LIFECYCLE.add("afterAll");
+        }
+    }
+
+    /** The same, failing the way a detected bug fails. */
+    private static class FailingJupiterWorkload {
+        @org.junit.jupiter.api.BeforeEach
+        void beforeEach() {
+            LIFECYCLE.add("beforeEach");
+        }
+
+        @org.junit.jupiter.api.Test
+        void theWorkloadBody() {
+            LIFECYCLE.add("theWorkloadBody");
+            throw new AssertionError("the workload's own assertion");
+        }
+
+        @org.junit.jupiter.api.AfterEach
+        void afterEach() {
+            LIFECYCLE.add("afterEach");
+        }
     }
 
     /** The external half of the ABI: what the workload checkouts call. */
