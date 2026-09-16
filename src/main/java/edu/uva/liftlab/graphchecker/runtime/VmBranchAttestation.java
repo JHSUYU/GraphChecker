@@ -38,8 +38,11 @@ import java.util.regex.Pattern;
  * here admits a difference.</p>
  *
  * <p>A refusal is a row, not a field: {@link #noteRefused} publishes
- * {@code UNATTESTED_ARM} carrying the attestation's own sentence, which is
- * the only reader {@link Attestation#error} has.</p>
+ * {@code UNATTESTED_ARM} carrying the attestation's own sentence -- the
+ * only reader {@link Attestation#error} has -- beside the named outcome of
+ * the condition-window read ({@code BranchObservation.windowOutcome}), so
+ * a refused VM range and an event that named no condition at all are two
+ * facts on the stream instead of one empty window.</p>
  *
  * <p>Needs back from {@link ConcolicRegionRuntime}: {@code parseJson},
  * {@code rootCause}, and {@code SwitchExpectation}, which belongs to the
@@ -64,12 +67,12 @@ final class VmBranchAttestation {
      * never had.</p>
      */
     static void noteRefused(String siteId, int occurrence,
-                            Attestation attestation) {
+                            Attestation attestation, String windowOutcome) {
         RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.UNATTESTED_ARM,
                 edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
                 safe(siteId) + "#" + occurrence,
-                "this decision publishes no site predicate: "
-                        + attestation.error);
+                "this decision publishes no site predicate ("
+                        + safe(windowOutcome) + "): " + attestation.error);
     }
 
     /**

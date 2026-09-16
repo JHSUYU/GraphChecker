@@ -238,6 +238,8 @@ final class BranchObservation {
         PathConditionWindow.Read read = PathConditionWindow.forEvent(
                 active.expressionStore, api, eventConditionIndices);
         PathConditionWindow conditions = read.conditions;
+        String windowOutcome = windowOutcome(eventConditionIndices,
+                conditions);
         int rawPathConditionSize = exactRange ? conditions.size() : baseline;
         int attestationBaseline = noVmCondition ? 0 : baseline;
         VmBranchAttestation.Attestation vmAttestation =
@@ -246,7 +248,7 @@ final class BranchObservation {
                         attestationBaseline, null, events);
         if (!vmAttestation.valid) {
             VmBranchAttestation.noteRefused(siteId, occurrence,
-                    vmAttestation);
+                    vmAttestation, windowOutcome);
         }
         int conditionIndex = vmAttestation.valid
                 && vmAttestation.conditionIndices.size() == 1
@@ -320,6 +322,8 @@ final class BranchObservation {
         PathConditionWindow.Read read = PathConditionWindow.forEvent(
                 active.expressionStore, api, eventConditionIndices);
         PathConditionWindow conditions = read.conditions;
+        String windowOutcome = windowOutcome(eventConditionIndices,
+                conditions);
         VmBranchAttestation.Attestation attestation =
                 VmBranchAttestation.attest(api, active, siteId, expression,
                         expected.caseArm(), vmEventId, occurrence, conditions,
@@ -338,7 +342,8 @@ final class BranchObservation {
         mapping.addProperty("rawPathConditionSize", mappingLimit);
         mapping.addProperty("rawPathConditionBaseline", mappingBaseline);
         if (!attestation.valid) {
-            VmBranchAttestation.noteRefused(siteId, occurrence, attestation);
+            VmBranchAttestation.noteRefused(siteId, occurrence, attestation,
+                    windowOutcome);
         }
         active.branchMappings.add(mapping);
         if (attestation.valid) {
@@ -358,6 +363,37 @@ final class BranchObservation {
         active.lastPathConditionSize = Math.max(
                 active.lastPathConditionSize, mappingLimit);
         return attestation.valid;
+    }
+
+    /**
+     * Which answer the condition-window read gave, by name.
+     *
+     * <p>{@code PathConditionWindow.Read} used to carry this as a {@code
+     * source} field nothing read, so "the VM refused the exact range" and
+     * "this event names no condition at all" arrived here as one empty
+     * window.  They are not one fact.  A conditionless event contributes no
+     * branch guard and its decision is concrete and publishable; a refused
+     * range means the event names conditions THIS replay could not read, so
+     * the arm the row states has no term and the attestation refuses it --
+     * with this outcome beside its own sentence
+     * ({@link VmBranchAttestation#noteRefused}).</p>
+     *
+     * <p>Computed from what the event itself said, so the reader owns the
+     * distinction: the window is refused exactly when the event named a
+     * contiguous range whose last index the window it came back with cannot
+     * hold.</p>
+     */
+    private static String windowOutcome(List<Integer> eventConditionIndices,
+                                        PathConditionWindow conditions) {
+        if (eventConditionIndices == null) return "EVENT_NOT_UNIQUE";
+        if (eventConditionIndices.isEmpty()) return "CONDITIONLESS_EVENT";
+        if (!contiguousConditionIndices(eventConditionIndices)) {
+            return "EXACT_RANGE_UNAVAILABLE";
+        }
+        int last = eventConditionIndices.get(
+                eventConditionIndices.size() - 1);
+        return conditions.size() <= last
+                ? "EXACT_RANGE_REFUSED" : "EXACT_EVENT_RANGE";
     }
 
     /**
