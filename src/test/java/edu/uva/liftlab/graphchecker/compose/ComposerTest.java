@@ -261,6 +261,12 @@ public class ComposerTest {
         OccurrenceAddress deleting = occurrence("case/nn0",
                 "REGION.delete", CausalContext.of(Role.CLIENT, 2),
                 frame("Manager#deleteSnapshot#31", 0));
+        // The anchor region's other activation: same region, same context,
+        // one execution-index frame apart (17960's saveFSImageInAllDirs#u36
+        // @0 and @1, the two storage directories' FSImageSaver threads).
+        OccurrenceAddress sibling = occurrence("case/nn0", "REGION.saver",
+                CausalContext.of(Role.of("IPC_HANDLER"), 1),
+                frame("Saver#serializeSnapshotSection#8", 1));
         // The counter, owned by its ALLOCATION and not by a session rid,
         // so nothing about alternatives is withheld for the owner's
         // spelling: what is asked here is the attestation rule.
@@ -319,7 +325,16 @@ public class ComposerTest {
             // own symbol and both paths stand.
             String[] port = {PLACEHOLDER, PLACEHOLDER_TWO};
             for (int activation = 0; activation < 2; activation++) {
-                session.placeholder(Endpoint.of(saver,
+                // The SECOND row is published at the SIBLING activation of
+                // the same region, which is where the runtime puts it: the
+                // two FSImageSaver activations race on one AtomicInteger, so
+                // the one that mints installs the symbol and the one that
+                // closes first publishes the row -- under its own address.
+                // The anchor's phi still reads the version that mint
+                // created, and a mint's identity in a session is that
+                // version, so the row states it wherever it was published.
+                session.placeholder(Endpoint.of(
+                                activation == 0 ? saver : sibling,
                                 "INSTANCE_FIELD/counter#PLACEHOLDER#"
                                         + activation + ":READ",
                                 at("count#" + activation, 0), 0),
@@ -365,6 +380,13 @@ public class ComposerTest {
         assertFalse("nothing is refused for two rows of one location",
                 says(all.gaps(), GapKind.UNSTATED_VALUE,
                         "under different symbols"));
+        assertFalse("and nothing is cut for a mint whose row this session "
+                        + "published at ANOTHER occurrence of the region: "
+                        + all.gaps(),
+                named(all.gaps(), "PROPAGATION_CUT:UndeclaredFreeSymbol:"
+                        + PLACEHOLDER_TWO)
+                        || says(all.gaps(), GapKind.UNSTATED_VALUE,
+                        "nothing binds it"));
         // The counter read's writer is delivered and registered -- one
         // arm per exploration replay, the deleteSnapshot occurrence whose
         // write the anchor's placeholder joined -- and it gets NO

@@ -895,6 +895,53 @@ public final class Composer {
      * session's own counter.</p>
      */
     /**
+     * Every row of this session that states a value a symbol of this path
+     * may be.
+     *
+     * <p>The anchor's own reads, and every MINT ROW this session published,
+     * wherever it published it.  A mint's identity in a session is the
+     * version it installed -- the key {@link
+     * SmtLowering#mintedReadSymbol} resolves by, and the key the runtime
+     * publishes one row per (location, version) by -- and the occurrence the
+     * row was published AT is not part of it.  The two disagree whenever a
+     * sibling activation publishes first: the anchor region's two
+     * FSImageSaver activations race on one {@code AtomicInteger}, the one
+     * that mints installs the VM symbol (labelled with its own planned
+     * occurrence) and the one that CLOSES first wins the session-wide
+     * per-(location, version) claim and publishes the row, under its own
+     * address and the other's symbol.  On hdfs-17960 session
+     * e03c7d5b... that is mint v177 -- the ANCHOR's own declared input --
+     * published at {@code saveFSImageInAllDirs#u36@1}, so a loop over the
+     * anchor's rows alone bound nothing for it, the leaf naming it was cut
+     * {@code UndeclaredFreeSymbol}, and the whole flip path left the
+     * disjunction (2 paths where the corpus has 3).</p>
+     */
+    private List<ReadRow> statedRows(String session) {
+        List<ReadRow> rows = new ArrayList<ReadRow>();
+        Set<String> stated = new LinkedHashSet<String>();
+        SessionReader reader = corpus.session(session);
+        // THE MINT ROWS FIRST, wherever they were published: every other
+        // read of a version a mint installed resolves to the symbol one of
+        // these rows states, so a row bound after them would be asked about
+        // a symbol nothing had stated yet.
+        if (reader != null) {
+            for (ReadRow read : reader.reads()) {
+                if (read.mintVersion() >= 0L && read.symbol() != null
+                        && !read.symbol().isEmpty()
+                        && stated.add(read.symbol())) {
+                    rows.add(read);
+                }
+            }
+        }
+        for (ReadRow read : corpus.readsOn(session, anchor)) {
+            if (read.symbol() == null || stated.add(read.symbol())) {
+                rows.add(read);
+            }
+        }
+        return rows;
+    }
+
+    /**
      * Read := the value the ROW states it returned, before any lowering.
      *
      * <p>The PIN half of {@link #stateJoins}, hoisted: it needs no
@@ -917,7 +964,7 @@ public final class Composer {
     private void statedReads(String session, List<GapRow> refusals,
                              Map<String, String> joins,
                              Set<String> answered) {
-        for (ReadRow read : corpus.readsOn(session, anchor)) {
+        for (ReadRow read : statedRows(session)) {
             if (read.symbol() == null || read.symbol().isEmpty()) continue;
             if (joins.containsKey(read.symbol())) continue;
             if (joinable(session, read)) continue;
@@ -976,8 +1023,13 @@ public final class Composer {
                             Set<String> answered) {
         /** Name -> the one statement this path makes under it. */
         Map<String, String> statedOnce = new LinkedHashMap<String, String>();
-        for (ReadRow read : corpus.readsOn(session, anchor)) {
+        for (ReadRow read : statedRows(session)) {
             if (read.symbol() == null || read.symbol().isEmpty()) continue;
+            // WHAT this row states is session-wide; WHICH reads of the
+            // anchor a family may offer another writer to, and what the
+            // anchor's own reads returned, are the anchor's.
+            boolean atAnchor = anchor.id().equals(
+                    read.endpoint().occurrence().id());
             String key = SmtLowering.locationKey(read.location());
             WriteRow write = read.observedVersion() < 0L ? null
                     : corpus.writeOf(session, key,
@@ -1016,9 +1068,9 @@ public final class Composer {
                     lowering.declareStated(read.symbol(), value.sort);
                     joins.put(read.symbol(), "(= " + read.symbol() + " "
                             + value.text + ")");
-                    joined.add(read);
-                    String literal = smtLiteral(
-                            read.concreteValue());
+                    if (atAnchor) joined.add(read);
+                    String literal = atAnchor ? smtLiteral(
+                            read.concreteValue()) : "";
                     if (!literal.isEmpty()) {
                         // What the read RETURNED, kept beside the join: the
                         // join is the chain and moves with the roots, this
