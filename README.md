@@ -555,28 +555,93 @@ thing to revisit.
   this claim.
 - **The last LIVE 17960 run was refused** — by the new per-wave `IMPORT` gate,
   which is what `FIX1` is about. Items 1–3 of `FIX1` are merged; item 4 is not,
-  so a live run may still be refused. This is to-do 1.
+  so a live run may still be refused. This is step 1 of the minimal delta below.
 - **HDFS-11741** composes in seconds and is satisfiable at *every* valuation
   including the recorded one, so it yields no witness. The cause is measured and
-  is the `R4` to-do. **The existing 11741 corpus cannot be repaired offline** —
-  the rows the fix publishes were never written — so a fresh recording is
-  required.
+  is step 2 of the minimal delta below. **The existing 11741 corpus cannot be
+  repaired offline** — the rows the fix publishes were never written — so a
+  fresh recording is required.
 - **HDFS-17897 and the three HDFS-17899 flows are prepared and have not been
   run.**
 
+### The minimal delta (2026-09-17)
+
+**The principle**, in three rules the architecture already assumes and the code must now apply
+everywhere. (1) **External ins are decided by tracing**: an occurrence's external ins are its reads
+of a location another occurrence wrote or that a static write site in another region can write, plus
+its wire attaches and declared roots — never whichever reads happened to find a symbolic value. (2)
+**Every external in is a placeholder symbol** in that occurrence's focused replay, including where
+the recording wrote a constant. (3) **A producer occurrence's arm binds ALL its outs on ONE
+selector** — one arm per session path of that occurrence, carrying every export and every write with
+its π and its valuation, so selecting an arm pulls in that occurrence's own external ins
+recursively. A family is, for one external in, the arms of the occurrences that write it, exactly
+one selected; ordering constraints — the selected writer before the reader, no other selected write
+in between — only where a location has several writer occurrences.
+
+So linked replay, chain templates and reorder bounds are not needed; a loop is many occurrences, one
+root context (`Root:<role>/<api>#k`) per tick; the "tree" is only a view that defines the
+external-in set and the causal context. The false positive rule 3 prevents: A writes constant
+`mode=FAST` under `x>0` and exports `n=y`; C reads `mode` and `count`. If `mode` stays concrete, z3
+picks A's `x<=0` arm for the export while C still sees `FAST` — a witness `{x:-1}` no execution has.
+
+**Where the code deviates today.** Admission is by declaration only (`plan/ConcolicScheduler.java`,
+`SymbolicInputSelection.decide` marks an undeclared read `CONCRETE`/`UNDECLARED`) — rule 1
+unimplemented. A declared container cell cannot mint (`runtime/RootMint.java`,
+`declaredContainerCell`), blocking rule 2 for `allKeys[keyId]`-shaped reads. Selectors are one per
+(family, arm) (`compose/ComposedFamilies.java`, `caseSplit`) — rule 3 unimplemented. State arms are
+same-session only while wire arms are cross-session (`smt/Arms.java`, `stateArms` vs `wireArms`),
+and `stateArms` keeps only an occurrence's last write. A state read is joined to the observed
+version as an unconditional conjunct and single-writer locations get no family
+(`compose/Composer.java`, `compose/ComposedFamilies.java`). And a location written before the
+recording window has no writer occurrence in the corpus — 11741's `SERIAL_NO` and pinned keys — and
+is today silently a literal.
+
+**The delta, in order.** (1) Apply `docs/wip/FIX1`: the per-wave `IMPORT` gate over the whole
+roster, `RowInvariants.decisions` judged at the valuation the session ran under, a focused session
+whose prefix did not match or whose root never minted `NOT_ADMITTED` — target, 17960 live PASS. (2)
+Apply `docs/wip/R4` plus the pre-window rule: a root symbol without its `RootMintRow` is refused —
+the runtime keeps the value concrete and publishes `MINT_UNATTRIBUTED` when no admitted activation
+owns the mint, a new `IMPORT` invariant requires a mint row for every referenced root symbol, the
+composer refuses such an arm (`UNATTESTED_ARM`); and a location written before the window is an
+external in with an empty family, so a declared root or a named refusal. (3) Compose only,
+offline-verifiable: one selector per (producer occurrence, session), shared across its families; a
+family at every closure-reached external read, single-writer locations included; no pin to the
+observed version; all of an occurrence's writes kept. (4) Φ by tracing: PLAN publishes a new
+`PLACEHOLDER_SITE` row in `static_scope_map.jsonl` — the same family and readers as today's
+`DECLARED_SITE` — and the runtime mints there through the existing declared-site path
+(`plan/DeclaredSiteCapture`, `runtime/SymbolizeAction`); container cells may mint, bound to the
+container-state symbol. (5) Cross-session state arms — `Arms.stateArms` over the writer occurrences
+of every session — needs producer-side object identity, the one substantial engineering item. (6) A
+materialization gate in `DECIDE`: a satisfiable witness is run once with its global root assignments
+and no branch override, and must reach the target.
+
+Steps 1–3 should suffice for HDFS-11741's witness: its only multi-writer location has one in-window
+writer per node, and the witness is two arms — dn1's refresh removing the expired key, nn0's second
+rotation no longer exporting it — joined at the `block-key-id` handoff. Steps 4–6 make the method
+general. Two facts from that case's workload tree: the two NameNode rotations are forced by the
+workload under a `KEY_MANAGER_TICK` root — two `master.updateKeys(Long.MAX_VALUE)` calls inside
+`TestCausynthExpiredBalancerKey`'s recorded window — not by the heartbeat monitor, whose
+`keyUpdateInterval` never elapses there; and the Balancer mints its data-encryption key locally from
+its own `BlockTokenSecretManager` (`KeyManager.newDataEncryptionKey`), receiving the NameNode's key
+only over the declared `block-key-id` port.
+
 ### The to-do, in order
 
-1. **Apply `docs/wip/FIX1`** (`git apply uncommitted.patch`), finish item 4, and
-   re-run the 17960 acceptance campaign live. This is the one case known to pass,
-   so it is the shortest path back to a green end-to-end run.
-2. **Apply `docs/wip/R4`**, finish items 2–4, and re-run 11741 — **a fresh
-   recording is required**, not a re-composition of the old corpus.
-3. **Apply `docs/wip/PC4`** and finish items 3 and 4, honouring the retention
+1. **Steps 1–3 of the minimal delta above.** `docs/wip/FIX1` (`git apply
+   uncommitted.patch`) and its item 4, then the 17960 acceptance campaign live —
+   the one case known to pass, so the shortest path back to a green end-to-end
+   run. Then `docs/wip/R4` with the pre-window rule and a re-run of 11741 — **a
+   fresh recording is required**, not a re-composition of the old corpus. Then
+   the compose-only step, which the offline gate can judge on its own.
+2. **Apply `docs/wip/PC4`** and finish items 3 and 4, honouring the retention
    ruling: retention is a scope fact; keep all 15 activations of
    `REGION.16ba41cf` and all 63 of `REGION.1f6914ec`; accept a task-count drop
    only after a writer-coverage check — no dropped occurrence may hold a
    `WRITE_SITE` of a cell a retained occurrence reads.
-4. **Then 17897, and 17899 bug1–3.**
+3. **Then 17897, and 17899 bug1–3.**
+4. **Steps 4–6 of the minimal delta** — Φ by tracing, cross-session state arms
+   and the `DECIDE` materialization gate. These are what make the method general
+   rather than sufficient for the cases above.
 5. **Deferred identity items**: `Lost` context should address to an empty index
    rather than a weaker identity; carry lineage explicitly instead of through
    `InheritableThreadLocal`; give loop bodies their own iteration frames. Plus
