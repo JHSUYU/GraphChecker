@@ -377,6 +377,75 @@ final class RootMint {
     }
 
     /**
+     * THE ACTIVATION THAT OWNS THIS MINT, or {@code null} when no admitted
+     * activation of this session does.
+     *
+     * <p>One predicate, asked by every mint entry -- the configured source,
+     * the manual field, the heap field, the clock -- before anything is
+     * symbolized, because they all owe the same thing: a mint that
+     * symbolizes puts a SYMBOL into the VM, every later expression of the
+     * session carries it, and the only thing that makes that symbol
+     * answerable is the {@link edu.uva.liftlab.graphchecker.contract
+     * .RootMintRow} its activation publishes.  So the two are one decision:
+     * a mint this run can address is symbolized AND rowed; a mint it cannot
+     * is refused by name and the region reads the recording's own value.</p>
+     *
+     * <p>Addressed at the region whose plan OWNS the root
+     * ({@link ConcolicRegionRuntime#declaringRegion}), the same walk
+     * {@link #focusedRootValue} and {@code ActiveRegion#mintOccurrence}
+     * make, so all three resolve one mint the same way.  An activation with
+     * no {@code d3Address} was not admitted -- {@code
+     * RowRuntime#beginActivation} states LINEAGE_LOST and returns none --
+     * and a session that is not open has nowhere to publish a row at
+     * all.</p>
+     */
+    static ActiveRegion mintOwner(ActiveRegion active, String rootId) {
+        if (active == null || !RowRuntime.open()) return null;
+        ActiveRegion owner = ConcolicRegionRuntime.declaringRegion(
+                new ConcolicRegionRuntime.Declares.Root(safe(rootId)));
+        if (owner == null) owner = active;
+        return owner.d3Address == null ? null : owner;
+    }
+
+    /**
+     * Refuses one mint nothing admitted owns: the value stays concrete and
+     * the session states MINT_UNATTRIBUTED naming the root and where it
+     * stood.
+     *
+     * <p>BLOCKING when the obligation this session runs ASSIGNS the root --
+     * the replay then ran the recording's value where the wave asked for
+     * another one, which is a session that did not run what was asked --
+     * and DIAGNOSTIC otherwise, where it says only that this run read the
+     * recording's own value at a declared site.  Never a symbol without a
+     * row: the alternative branch of this one decision publishes the mint
+     * row ({@code RowPlaceholderMint#roots}), and the two are exhaustive.</p>
+     */
+    static boolean mintUnattributed(ActiveRegion active, String rootId,
+                                    String context) {
+        if (mintOwner(active, rootId) != null) return false;
+        RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
+                        .MINT_UNATTRIBUTED,
+                assignedByTheWave(rootId)
+                        ? edu.uva.liftlab.graphchecker.contract.GapClass
+                                .BLOCKING
+                        : edu.uva.liftlab.graphchecker.contract.GapClass
+                                .DIAGNOSTIC,
+                firstNonBlank(safe(rootId), safe(context)),
+                "no admitted activation of this session owns this mint ("
+                        + safe(context) + "), so the declared root is read"
+                        + " concretely and no symbol is minted for it");
+        return true;
+    }
+
+    /** Whether the obligation this session runs assigns this root. */
+    private static boolean assignedByTheWave(String rootId) {
+        return !edu.uva.liftlab.graphchecker.runtime.FocusedReplay
+                .rootAssignment(safe(rootId)).isEmpty()
+                || edu.uva.liftlab.graphchecker.runtime.FocusedReplay
+                        .clockSkew(safe(rootId)) != null;
+    }
+
+    /**
      * Mints one symbol for one entry of a declared mint site.
      *
      * <p>Every occurrence of a declared field is its own symbolic variable.
@@ -402,6 +471,13 @@ final class RootMint {
         try {
             Field field = declaredInstanceField(owner, safe(fieldSignature));
             if (field == null || !field.getType().isPrimitive()) {
+                return false;
+            }
+            // Asked before the VM is touched: a mint nothing admitted owns
+            // publishes no row, so symbolizing here would leave the session
+            // carrying a symbol no row of it resolves.
+            if (mintUnattributed(active, safe(sourceId),
+                    "configured source at " + entry.siteId)) {
                 return false;
             }
             ConcolicVmBroker api = engine();
@@ -665,6 +741,10 @@ final class RootMint {
         if (field == null) {
             return null;
         }
+        if (mintUnattributed(active, action.symbol,
+                "declared field input at " + leafFieldSignature)) {
+            return null;
+        }
         String descriptor = javaTypeDescriptor(field.type());
         String recorded = fieldMintRecordedValue(active, action, owner,
                 leafFieldSignature, descriptor, value);
@@ -769,6 +849,11 @@ final class RootMint {
                 action.symbol, exactPath, fieldSignature)) {
             return concrete;
         }
+        if (mintUnattributed(active, action.symbol,
+                "declared primitive input at "
+                        + firstNonBlank(fieldSignature, action.cell))) {
+            return concrete;
+        }
         // The wave's value reaches a manual root here, because the cell a
         // manual mint stands on IS the box the region reads back -- the
         // same decision the declared field's writer takes
@@ -867,6 +952,10 @@ final class RootMint {
                 return;
             }
             if (declaredContainerCell(value)) {
+                return;
+            }
+            if (mintUnattributed(active, action.symbol,
+                    "declared input at " + action.cell)) {
                 return;
             }
             api.symbolize(value, manualMintLabel(action.symbol,
