@@ -367,11 +367,22 @@ public final class ObligationFactory {
      * the world this obligation asks for differs from the one already on
      * disk.  A model that assigns NO root is not this case -- a clock-driven
      * flip states its skew elsewhere -- so the test is over the roots the
-     * query actually bound.</p>
+     * query actually bound.  AND A CLOCK SKEW IS A COUNTERFACTUAL OF ITS
+     * OWN: a model that moves any clock asks for a world no execution of
+     * this recording ran, whatever the other roots say, so the skew is
+     * asked FIRST and a moved clock answers the question before the root
+     * comparison is reached.  nn0's second-rotation {@code
+     * removeExpiredKeys#u15} flips were refused as "the seed replay under
+     * another name" while the same model moved two CLOCK variables, only
+     * because the query also reached a pinned integral root
+     * ({@code HDFS.BLOCK_KEY.SERIAL_NO}) and kept it where the recording
+     * minted it -- which is what a pinned root DOES.</p>
      */
     private static String recordedValuation(Corpus corpus, Candidate candidate,
                                             Map<String, String> roots,
-                                            Map<String, String> answers) {
+                                            Map<String, String> answers,
+                                            Map<String, String> clockDeltas) {
+        if (movesAClock(clockDeltas)) return "";
         if (roots.isEmpty() || !answers.isEmpty()) return "";
         List<String> same = new ArrayList<String>();
         for (Map.Entry<String, String> assignment : roots.entrySet()) {
@@ -391,6 +402,30 @@ public final class ObligationFactory {
                 + "minted -- DecisionRow.outcome must say whether the "
                 + "published term HELD (CONTRACT-SPEC SS2) -- or the query "
                 + "binds a root the flip does not depend on";
+    }
+
+    /**
+     * Whether this model asks any clock to read somewhere else.
+     *
+     * <p>A skew is {@code model - recorded} as a decimal ({@link #skew}),
+     * so the one that states "this clock stays where it was" is zero.  A
+     * delta that is not an integer is not one this map carries -- the gap
+     * for it is raised where it is computed -- and is read here as no
+     * movement rather than as a movement of unknown size.</p>
+     */
+    private static boolean movesAClock(Map<String, String> clockDeltas) {
+        if (clockDeltas == null) return false;
+        for (String delta : clockDeltas.values()) {
+            if (delta == null || delta.trim().isEmpty()) continue;
+            try {
+                if (new java.math.BigInteger(delta.trim()).signum() != 0) {
+                    return true;
+                }
+            } catch (NumberFormatException notAnInstant) {
+                continue;
+            }
+        }
+        return false;
     }
 
     /**
@@ -526,12 +561,17 @@ public final class ObligationFactory {
         // run_engine.sh campaign_write_gaps exited 3 on them.  A session's
         // gaps are the session's own.
         //
+        // Asked of the MODEL's OWN SKEWS first: a moved clock is a world of
+        // its own, so a clock-driven flip is never this refusal however its
+        // pinned roots came back.
+        //
         // Asked of the MODEL's OWN roots and answers, before the world this
         // path was cut from is merged in: "did the solver ask for anything
         // the parent's replay did not already run" is a question about this
         // query's answer, and merged values would make a child of a skewed
         // replay look like a counterfactual it is not.
-        String recorded = recordedValuation(corpus, candidate, roots, answers);
+        String recorded = recordedValuation(corpus, candidate, roots, answers,
+                clockDeltas);
         if (!recorded.isEmpty()) {
             gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
                     GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC, id,

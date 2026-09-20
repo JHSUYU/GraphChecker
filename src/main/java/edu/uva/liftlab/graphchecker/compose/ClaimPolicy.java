@@ -41,7 +41,11 @@ import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.integra
  *       only thing that can say where it had to sit.  A MARKER moved is
  *       MARKER_FLIPPED and is asked first -- {@link #mechanism} names the
  *       narrowest mechanism the evidence supports, and a clock beside a
- *       moved marker is not what made the difference.</li>
+ *       moved marker is not what made the difference.  A recorded
+ *       valuation the clock pin refutes is decided by that pin and not by
+ *       the moved-root loop, which asks whether ANOTHER declared root
+ *       explains the difference and answers "no" about every clock witness
+ *       there could be.</li>
  *   <li><b>MESSAGE_PAIRING_FLIPPED</b> -- a fatal-observed path of an
  *       EXPLORED session is satisfiable at the recorded roots through
  *       attested arms, while the seed session's own disjunct is not: the
@@ -246,10 +250,18 @@ public final class ClaimPolicy {
         // for a clock is the clock pin, asked once, in #clockNecessary; on
         // a corpus with no clock cell it is false without a solver run, so
         // nothing else changes.
+        //
+        // THE SAME ANSWER IS WHAT SAYS THE WITNESS IS CLOCK-DRIVEN, so it
+        // is asked ONCE, here, and read twice: by the alarm below and by
+        // loop 1, which steps aside for a clock-driven recorded valuation
+        // (see there).  Two asks would be two solver runs on one question.
+        boolean clockDriven = recorded != null && recorded.answer().sat()
+                && recorded.selected() != null
+                && clockNecessary(composition, solver, recorded);
         if (recorded != null && recorded.answer().sat()
                 && recorded.selected() != null
                 && !recorded.selected().fatalObserved()
-                && !clockNecessary(composition, solver, recorded)) {
+                && !clockDriven) {
             gaps.add(GapRow.of(recorded.selected().path().sessionId,
                     GapKind.FORMULA_SAT_AT_RECORDED_VALUATION,
                     GapClass.BLOCKING,
@@ -279,35 +291,51 @@ public final class ClaimPolicy {
         // unless the run as it happened does NOT reach it: a formula that is
         // satisfiable at the recorded valuation was satisfiable all along,
         // and the rotation explained nothing about the difference.
-        for (Outcome outcome : outcomes) {
-            if (outcome.valuation().ordinal() == 0) continue;
-            if (!outcome.answer().sat() || outcome.selected() == null) {
-                continue;
+        //
+        // NOT ASKED AT ALL OF A CLOCK-DRIVEN RECORDED VALUATION.  Where the
+        // clock pin is what refutes the recorded valuation, the polarity
+        // that decides the claim is the clock's own (class doc, CLOCK_SKEW)
+        // and this loop's `!polarityDecides` is a question about the moved
+        // ROOTS -- whose answer is "sat" for any other windowed root the
+        // case happens to declare, since moving one does the clock witness
+        // no harm.  11741 is exactly that corpus: ordinal 0 sat with the
+        // clocks free, ordinals >= 1 sat as well, so this loop filed the
+        // blocking FORMULA_SAT_AT_RECORDED_VALUATION about a witness whose
+        // mechanism it never asked about, and CLOCK_SKEW could not be
+        // published beside a blocking alarm.  Loop 2 asks the clock
+        // question, so a clock-driven composition goes straight there.
+        if (!clockDriven) {
+            for (Outcome outcome : outcomes) {
+                if (outcome.valuation().ordinal() == 0) continue;
+                if (!outcome.answer().sat() || outcome.selected() == null) {
+                    continue;
+                }
+                Set<String> refused = unattested(composition, outcome);
+                if (!refused.isEmpty()) {
+                    gaps.add(GapRow.of(outcome.selected().path().sessionId,
+                            GapKind.UNATTESTED_ARM, GapClass.BLOCKING,
+                            refused.toString(),
+                            "this witness moves a root that occurs inside an "
+                                    + "arm no producer path condition "
+                                    + "attests, so it is not a supported "
+                                    + "witness"));
+                    continue;
+                }
+                // This valuation MOVED a declared root, which is
+                // MARKER_FLIPPED's own evidence, so #mechanism answers with
+                // that or with the narrower slot it also replaced -- never
+                // with NO_SUPPORTED_WITNESS.
+                ClaimKind moved = mechanism(composition, solver, outcome,
+                        outcomes);
+                if (!polarityDecides) {
+                    undecidedPolarity(gaps, recorded, moved);
+                    break;
+                }
+                return new Decision(Claim.of(moved,
+                        outcome.valuation().ordinal(),
+                        movedRoots(composition, outcome), true, gaps),
+                        outcomes);
             }
-            Set<String> refused = unattested(composition, outcome);
-            if (!refused.isEmpty()) {
-                gaps.add(GapRow.of(outcome.selected().path().sessionId,
-                        GapKind.UNATTESTED_ARM, GapClass.BLOCKING,
-                        refused.toString(),
-                        "this witness moves a root that occurs inside an "
-                                + "arm no producer path condition attests, "
-                                + "so it is not a supported witness"));
-                continue;
-            }
-            // This valuation MOVED a declared root, which is
-            // MARKER_FLIPPED's own evidence, so #mechanism answers with
-            // that or with the narrower slot it also replaced -- never
-            // with NO_SUPPORTED_WITNESS.
-            ClaimKind moved = mechanism(composition, solver, outcome,
-                    outcomes);
-            if (!polarityDecides) {
-                undecidedPolarity(gaps, recorded, moved);
-                break;
-            }
-            return new Decision(Claim.of(moved,
-                    outcome.valuation().ordinal(),
-                    movedRoots(composition, outcome), true, gaps),
-                    outcomes);
         }
 
         // 2. No root moves, and the clocks are necessary -- with the same
