@@ -225,6 +225,7 @@ final class ComposedFamilies {
                 add(bySlot, arm.slotId(), text);
                 add(armsBySlot, arm.slotId(), arm);
             }
+            fileRefusals();
             if (own) continue;
             // Nothing binds this arrival now that the path pins none, so a
             // witness resting on it would rest on a free constant.
@@ -330,6 +331,27 @@ final class ComposedFamilies {
                             + "inside it");
         }
         return VmTermLowering.and(conjuncts);
+    }
+
+    /**
+     * Every arm {@link Arms} refused since the last drain (R4 item 3), filed
+     * as this composition's own gap.
+     *
+     * <p>{@code Arms} states WHICH arm it refused and why; the stage that
+     * asked for the arms is the stage that has a gap list, so the refusal is
+     * drained and filed here and never left to be counted twice by the next
+     * question.</p>
+     */
+    private void fileRefusals() {
+        for (String refusal : arms.drainRefusals()) {
+            String[] named = refusal.split("\\|", -1);
+            if (named.length != 3) continue;
+            composer.gap(GapKind.UNATTESTED_ARM, GapClass.DIAGNOSTIC,
+                    named[0], "an arm delivered by session " + named[1]
+                            + " names root " + named[2] + " and that session"
+                            + " states no RootMintRow for it, so the arm is"
+                            + " refused");
+        }
     }
 
     /**
@@ -495,6 +517,7 @@ final class ComposedFamilies {
                 families.put(arm.slotId(), Family.of(arm.slotId(),
                         Collections.singletonList(row(arm))));
             }
+            fileRefusals();
             // One arm is the run's own interleaving and says nothing the
             // join has not already said.
             if (armTerms.size() < 2) continue;

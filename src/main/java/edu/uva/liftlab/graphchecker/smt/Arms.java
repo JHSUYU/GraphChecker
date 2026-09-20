@@ -231,9 +231,34 @@ public final class Arms {
     }
 
     private final Rows rows;
+    /** {@code slotId|sessionId|rootId}, in the order the arms were refused. */
+    private final Set<String> refusals = new LinkedHashSet<String>();
 
     public Arms(Rows rows) {
         this.rows = rows;
+    }
+
+    /**
+     * The arms refused since the last drain, and clears them (R4 item 3).
+     *
+     * <p>An arm whose delivered expression NAMES a declared root that the
+     * delivering session states no {@code RootMintRow} for is refused rather
+     * than emitted with an empty guard: the arm would be available under
+     * every valuation of a quantity its own session cannot attribute, and
+     * that is how hdfs-11741 campaign #4 composed satisfiably at the
+     * recorded valuation.  A root the expression does NOT name is skipped as
+     * before -- the guard rule only ever asked about the roots the
+     * expression depends on.</p>
+     *
+     * <p>Drained rather than read, because the caller FILES it: the stage
+     * that asked for the arms is the stage that has a gap list, and a
+     * refusal left sitting here would be counted twice by the next
+     * question.</p>
+     */
+    public Set<String> drainRefusals() {
+        Set<String> drained = new LinkedHashSet<String>(refusals);
+        refusals.clear();
+        return drained;
     }
 
     // ------------------------------------------------------------------
@@ -582,7 +607,20 @@ public final class Arms {
         for (Map.Entry<String, List<RootMintRow>> entry
                 : rows.roots().entrySet()) {
             RootMintRow row = rows.root(entry.getKey(), session);
-            if (row == null) continue;
+            if (row == null) {
+                // R4: the expression NAMES this root and the delivering
+                // session states no mint row for it, so nothing of that
+                // session attributes the quantity the arm carries.  The arm
+                // is REFUSED, not emitted with an empty guard: an arm
+                // guarded by nothing is available under every valuation of a
+                // root its own session cannot answer for.
+                if (names(symbols, entry.getValue())) {
+                    refusals.add(slotId + "|" + session + "|"
+                            + entry.getKey());
+                    return null;
+                }
+                continue;
+            }
             // Never a clock: what a replay's clock read is already in the
             // decisions its prefix carries, and pinning it here would
             // close every skew witness that rests on this arm.
@@ -614,6 +652,21 @@ public final class Arms {
         return new Arm(slotId, symbol, session,
                 attested ? rows.pathIdOf(session, producer) : "",
                 expressionRef, pi, guard, guardRoots, attested, nested);
+    }
+
+    /**
+     * Whether an expression's symbols name one root, under any spelling the
+     * corpus minted it with.
+     */
+    private static boolean names(Set<String> symbols,
+                                 List<RootMintRow> minted) {
+        if (minted == null) return false;
+        for (RootMintRow row : minted) {
+            if (row.symbol() != null && symbols.contains(row.symbol())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

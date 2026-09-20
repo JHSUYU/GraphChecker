@@ -21,6 +21,9 @@ import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
+import edu.uva.liftlab.graphchecker.contract.Family;
+import edu.uva.liftlab.graphchecker.contract.Interaction;
+import edu.uva.liftlab.graphchecker.contract.InteractionKind;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
@@ -693,6 +696,59 @@ public class ComposerTest {
                 2, composition.families().size());
         assertEquals("and the disjunct reaches both", 2,
                 composition.disjuncts().get(0).interactionIds().size());
+
+        // R4 item 3: AN ARM WHOSE DELIVERED EXPRESSION NAMES A ROOT ITS OWN
+        // SESSION STATES NO MINT ROW FOR IS REFUSED, not emitted with an
+        // empty guard.  Which quantities are roots is a fact about the
+        // corpus, so the seed's mint row is what makes the marker a root;
+        // a replay that carries the marker's SYMBOL out of an activation it
+        // abandoned publishes no row of its own, and the arm it would
+        // deliver is available under every valuation of a quantity nothing
+        // of that session attributes.  hdfs-11741 campaign #4 composed
+        // satisfiably at the recorded valuation on exactly that.
+        Path unrowed = folder.newFolder("unrowed").toPath();
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key",
+                at("attach#1", 0), 0);
+        Session seed = new Session(unrowed, "s0", false);
+        seed.activation(PRODUCER);
+        seed.marker("false");
+        seed.expression("EXPR.v1.marker", symbol(MARKER, "Z"));
+        seed.decision(PRODUCER, "nn#u1", "(or " + MARKER + " (not "
+                + MARKER + "))");
+        seed.export(first, "EXPR.v1.marker", 1L, "false");
+        seed.attach(consumer, "vh1", "false", first);
+        seed.target("vh1", false, true);
+        seed.write();
+
+        Session abandoned = new Session(unrowed, "s1", true);
+        abandoned.activation(PRODUCER);
+        // The symbol, and no RootMintRow for the root it names.
+        abandoned.expression("EXPR.v1.marker", symbol(MARKER, "Z"));
+        abandoned.decision(PRODUCER, "nn#u1", "(or " + MARKER + " (not "
+                + MARKER + "))");
+        abandoned.export(first, "EXPR.v1.marker", 1L, "true");
+        abandoned.attach(consumer, "vh1", "true", first);
+        abandoned.target("vh1", true, true);
+        abandoned.write();
+
+        Composer.Composition refused = compose(unrowed, 4);
+        assertTrue("the arm that session would deliver is refused by name: "
+                        + refused.gaps(),
+                says(refused.gaps(), GapKind.UNATTESTED_ARM,
+                        "an arm delivered by session s1 names root "
+                                + MARKER_ROOT + " and that session states "
+                                + "no RootMintRow for it, so the arm is "
+                                + "refused"));
+        assertTrue("and the refusal names the slot",
+                named(refused.gaps(), Interaction.of(InteractionKind.WIRE,
+                        first, consumer).id()));
+        int delivered = 0;
+        for (Family family : refused.families()) {
+            delivered += family.arms().size();
+        }
+        assertEquals("so that session contributes no arm and the slot's "
+                        + "family carries the seed's alone: "
+                        + refused.families(), 1, delivered);
     }
 
     // ------------------------------------------------------------------

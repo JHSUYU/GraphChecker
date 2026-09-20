@@ -605,6 +605,7 @@ final class FlipQuery {
                     }
                     held.add(term);
                 }
+                fileRefusals();
             }
             for (Map.Entry<String, List<String>> family : bySlot.entrySet()) {
                 assertions.add(VmTermLowering.or(family.getValue()));
@@ -762,9 +763,34 @@ final class FlipQuery {
 
         /** The writer occurrences one read could have taken its value from. */
         private List<Arms.Arm> eligible(ReadRow row) {
-            return corpus.arms().stateArms(row.endpoint(),
+            List<Arms.Arm> eligible = corpus.arms().stateArms(row.endpoint(),
                     row.sessionId(), SmtLowering.locationKey(row.location()),
                     row.observedVersion());
+            fileRefusals();
+            return eligible;
+        }
+
+        /**
+         * Every arm {@link Arms} refused since the last drain (R4 item 3).
+         *
+         * <p>An arm whose delivered expression names a declared root the
+         * delivering session states no {@code RootMintRow} for is refused
+         * rather than emitted unguarded, and the stage that asked for the
+         * arms is the stage that files the refusal -- the same rule and the
+         * same kind COMPOSE files ({@code ComposedFamilies#fileRefusals}).
+         * </p>
+         */
+        private void fileRefusals() {
+            for (String refusal : corpus.arms().drainRefusals()) {
+                String[] named = refusal.split("\\|", -1);
+                if (named.length != 3) continue;
+                gaps.add(GapRow.of(named[1], GapKind.UNATTESTED_ARM,
+                        GapClass.DIAGNOSTIC, named[0],
+                        "an arm delivered by session " + named[1]
+                                + " names root " + named[2] + " and that"
+                                + " session states no RootMintRow for it, so"
+                                + " the arm is refused"));
+            }
         }
 
         /**
