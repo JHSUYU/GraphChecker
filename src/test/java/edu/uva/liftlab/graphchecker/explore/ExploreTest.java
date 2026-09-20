@@ -817,8 +817,26 @@ public class ExploreTest {
                 .resolve(ObligationDir.FOCUSED_TASK)).get(0);
         String skew = focus.getAsJsonObject("clockDeltas")
                 .get("CASE.NOW").getAsString();
+        // A CLOCK IS A MILLISECOND COUNT IN A JAVA long.  The query's clock
+        // variable carries the ceiling beside the floor, so the instant the
+        // model hands back is one an execution could read and the difference
+        // is a skew the replay can APPLY: FocusedReplay.clockSkew parses it
+        // with Long.valueOf, and hdfs-11741 campaign #2 handed it
+        // 18446742283726387588 -- a negative difference printed unsigned,
+        // because the query stated only (>= v 0) and z3 answered past 2^63.
+        long applied = Long.parseLong(skew);
+        assertEquals("the focus row states the skew as a Java long, which is"
+                        + " the only thing a replay can apply", skew,
+                Long.toString(applied));
+        assertTrue("and the instant it asks for is a Java long too: " + skew,
+                applied <= Long.MAX_VALUE - 700L);
         assertTrue("the skew carries a reading of 700 past 1000: " + skew,
-                Long.parseLong(skew) > 300L);
+                applied > 300L);
+        assertTrue("because the query gives the clock the domain a Java long"
+                        + " has, ceiling and all",
+                new String(Files.readAllBytes(ticked.directory
+                        .resolve("obligation_query.smt2")), "UTF-8")
+                        .contains(" 9223372036854775807))"));
 
         // AND A PINNED ROOT BESIDE THE CLOCK IS STILL A CLOCK-DRIVEN FLIP.
         // The query reaches a root with no domain, so the query pins it and
