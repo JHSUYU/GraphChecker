@@ -591,11 +591,16 @@ public class ComposerTest {
     }
 
     /**
-     * One obligation worker: the ask, and the session its replay wrote.
+     * One obligation worker: the ask, the FOCUS ROW and the session its
+     * replay wrote.
      *
      * <p>The layout the campaign publishes, because that is what the
-     * corpus reads: {@code obligations-0000/<id>/obligation.jsonl} beside
-     * the {@code obligation_result.jsonl} that names the session.</p>
+     * corpus reads: {@code obligations-0000/<id>/obligation.jsonl} and the
+     * {@code focused_task.jsonl} the replay was driven by, beside the
+     * {@code obligation_result.jsonl} that names the session.  The WORLD a
+     * session ran in is read off the focus row -- it is the only row that
+     * states the whole of it -- so a fixture that wrote only the ask left
+     * the replay's valuation stated nowhere.</p>
      */
     private static void obligation(Path iteration, String sessionId,
                                    Map<String, String> roots)
@@ -609,6 +614,30 @@ public class ComposerTest {
                                 "path-flip", "nn#u1", 1, true, roots,
                                 Collections.<String, String>emptyMap(),
                                 Collections.<String>emptyList()))));
+        com.google.gson.JsonObject focus = new com.google.gson.JsonObject();
+        focus.addProperty("schemaVersion", 1);
+        focus.addProperty("kind", "FOCUSED_TASK");
+        focus.addProperty("obligationId", "ob-" + sessionId);
+        focus.addProperty("taskId", "task-flip");
+        focus.addProperty("pathId", "path-flip");
+        com.google.gson.JsonObject flip = new com.google.gson.JsonObject();
+        flip.addProperty("siteId", "nn#u1");
+        flip.addProperty("ordinal", 1);
+        flip.addProperty("outcome", true);
+        focus.add("flip", flip);
+        com.google.gson.JsonObject assigned =
+                new com.google.gson.JsonObject();
+        for (Map.Entry<String, String> root : roots.entrySet()) {
+            assigned.addProperty(root.getKey(), root.getValue());
+        }
+        focus.add("rootAssignments", assigned);
+        focus.add("clockDeltas", new com.google.gson.JsonObject());
+        focus.add("answers", new com.google.gson.JsonObject());
+        focus.add("rootMints", new com.google.gson.JsonObject());
+        focus.add("inheritedFlips", new com.google.gson.JsonArray());
+        focus.add("unproducible", new com.google.gson.JsonArray());
+        RowCodec.writeJsonl(worker.resolve(ObligationDir.FOCUSED_TASK),
+                Collections.singletonList(focus));
         RowCodec.writeJsonl(worker.resolve(ObligationDir.RESULT),
                 Collections.singletonList(RowCodec.writeObligationResult(
                         ObligationResult.of("ob-" + sessionId,

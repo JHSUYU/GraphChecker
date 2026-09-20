@@ -340,6 +340,85 @@ public class ManualMintStatesItsValueTest {
                 gap().subject());
         assertTrue(gap().detail(),
                 gap().detail().contains("states no value it observed"));
+
+        // THE FLIPS THIS REPLAY INHERITED.  An obligation cut from a
+        // focused session's path extends that session's world, and the
+        // decisions that session was held to are part of it: 11741's
+        // witness is dn1's expiry compare flipped a second time on a
+        // refresh path that exists only because nn0's rotation was flipped
+        // first.  So the focus row carries the parent's flips, this replay
+        // is held to each of them at its own occurrence, and the ONE result
+        // row it publishes -- run_engine.sh reads exactly one verdict per
+        // worker -- is the primary obligation's.
+        inheritedFlipRow();
+        assertEquals("one obligation is answered, whatever it inherited", 1,
+                FocusedReplay.obligationIds().size());
+        assertTrue("an inherited flip's occurrence runs symbolic, so its "
+                        + "mints plant and its decisions are published",
+                FocusedReplay.focused(address(ALONGSIDE_ADDRESS)));
+        assertTrue("and it is never abandoned: only the primary flip's own "
+                        + "occurrence can complete that flip",
+                FocusedReplay.complete(address(ALONGSIDE_ADDRESS)));
+        FocusedReplay.observeDecision(address(PLANNED_ADDRESS),
+                "Arrival#u8", 1, true);
+        assertEquals("the primary flip alone does not admit: the world it "
+                        + "inherited has to hold too: "
+                        + FocusedReplay.results("s-nested").get(0).detail(),
+                edu.uva.liftlab.graphchecker.contract.Verdict.NOT_ADMITTED,
+                FocusedReplay.results("s-nested").get(0).verdict());
+        assertTrue("and the row names the flip it never reached: "
+                        + FocusedReplay.results("s-nested").get(0).detail(),
+                FocusedReplay.results("s-nested").get(0).detail()
+                        .contains("Rotate#u5#1")
+                        && FocusedReplay.results("s-nested").get(0).detail()
+                        .contains("OBL.parent"));
+        FocusedReplay.observeDecision(address(ALONGSIDE_ADDRESS),
+                "Rotate#u5", 1, true);
+        assertEquals("the inherited flip taken at its own occurrence is "
+                        + "what lets the obligation be admitted: "
+                        + FocusedReplay.results("s-nested").get(0).detail(),
+                edu.uva.liftlab.graphchecker.contract.Verdict.ADMITTED,
+                FocusedReplay.results("s-nested").get(0).verdict());
+
+        // And the other arm of it un-admits the primary obligation, naming
+        // which inherited flip was contradicted: this replay ran in a world
+        // other than the one its path was cut from, so the path it recorded
+        // is not the path the next wave would cut from it.
+        inheritedFlipRow();
+        FocusedReplay.observeDecision(address(PLANNED_ADDRESS),
+                "Arrival#u8", 1, true);
+        FocusedReplay.observeDecision(address(ALONGSIDE_ADDRESS),
+                "Rotate#u5", 1, false);
+        assertEquals(edu.uva.liftlab.graphchecker.contract.Verdict
+                        .NOT_ADMITTED,
+                FocusedReplay.results("s-nested").get(0).verdict());
+        assertTrue("and the refusal says it was the INHERITED flip: "
+                        + FocusedReplay.results("s-nested").get(0).detail(),
+                FocusedReplay.results("s-nested").get(0).detail()
+                        .contains("INHERITED")
+                        && FocusedReplay.results("s-nested").get(0).detail()
+                        .contains("Rotate#u5#1"));
+    }
+
+    /**
+     * One focus row that carries a flip inherited from the session its
+     * path was cut from, addressed at another occurrence entirely.
+     */
+    private void inheritedFlipRow() throws Exception {
+        focusRow("{\"taskId\":\"TASK.2\",\"obligationId\":\"OBL.2\","
+                + "\"pathId\":\"PATH.2\",\"seedSessionId\":\"s-seed\","
+                + "\"focused\":\"" + PLANNED_ADDRESS + "\","
+                + "\"focusedOccurrenceId\":\"" + address(PLANNED_ADDRESS)
+                .id() + "\","
+                + "\"flip\":{\"siteId\":\"Arrival#u8\",\"ordinal\":1,"
+                + "\"outcome\":true},"
+                + "\"rootAssignments\":{},\"clockDeltas\":{},"
+                + "\"rootMints\":{},\"answers\":{},"
+                + "\"inheritedFlips\":[{\"focusedOccurrenceId\":\""
+                + address(ALONGSIDE_ADDRESS).id() + "\","
+                + "\"siteId\":\"Rotate#u5\",\"ordinal\":1,"
+                + "\"outcome\":true,\"obligationId\":\"OBL.parent\"}],"
+                + "\"unproducible\":[]}");
     }
 
     /** One declared cell of each kind a case declares a root at. */
