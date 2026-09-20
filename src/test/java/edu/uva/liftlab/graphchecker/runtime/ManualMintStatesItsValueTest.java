@@ -166,8 +166,32 @@ public class ManualMintStatesItsValueTest {
                         + FocusedReplay.results("s-flip").get(0).detail(),
                 FocusedReplay.results("s-flip").get(0).detail()
                         .contains(address(PLANNED_ADDRESS).id()));
+        // THE SAME JOIN, ON THE TERMINAL SIDE.  The flip's question is
+        // asked of the occurrence the obligation names it at, and of no
+        // other -- and the FOCUSED SET is wider than that occurrence: the
+        // MINT of every assigned root is in it, and a mint usually finishes
+        // before the flip has run (17960 obligation 793875fb482a10a4 flips
+        // applyEditLogOp@8/deleteSnapshot and mints its root at @7).  Asked
+        // occurrence-blind, "is the prefix complete" is false at the mint's
+        // terminal, judgeFinishedOccurrence abandons the mint, and every
+        // row that occurrence published -- the root mint row included --
+        // goes with it: hdfs-17960's 793875fb482a10a4-4b39d011 lost 42
+        // decision rows and its whole roots.jsonl that way.
+        assertTrue("the mint of an assigned root is in the focused set",
+                FocusedReplay.focused(address(MINT_ADDRESS)));
+        assertTrue("and no flip is addressed at it, so its terminal answers"
+                        + " no obligation and is never abandoned for one",
+                FocusedReplay.complete(address(MINT_ADDRESS)));
+        assertFalse("the occurrence the flip IS addressed at has not taken"
+                        + " it yet",
+                FocusedReplay.complete(address(PLANNED_ADDRESS)));
+        assertTrue("an occurrence outside the focused set is asked nothing",
+                FocusedReplay.complete(address(ALONGSIDE_ADDRESS)));
+
         FocusedReplay.observeDecision(address(PLANNED_ADDRESS),
                 "Arrival#u8", 1, true);
+        assertTrue("and once it has, its own terminal is complete",
+                FocusedReplay.complete(address(PLANNED_ADDRESS)));
 
         // AND THE SESSION HAS TO CARRY THE EVIDENCE.  "The focused prefix
         // reproduced" is a claim about the rows a later stage reads, so the

@@ -272,17 +272,39 @@ public final class FocusedReplay {
      * Whether this occurrence has taken the decision its obligation flips.
      *
      * <p>True for a replay with no obligation: there is no prefix to
-     * complete, and a seed activation is never abandoned for one.</p>
+     * complete, and a seed activation is never abandoned for one.  True as
+     * well for a focused occurrence NO obligation's flip is addressed at:
+     * the question is not asked of it, so it has no failing answer.</p>
+     *
+     * <p>THE SAME JOIN {@link #observe} TAKES (R4a), on the other side of
+     * it.  A decision is credited to the obligation whose {@code
+     * focusedOccurrenceId} it happened at, so the terminal that answers the
+     * obligation is that same occurrence's -- and the FOCUSED SET is
+     * wider than it: every factor member, and the MINT of each assigned
+     * root.  Asked occurrence-blind, this refused the flip's own question
+     * at a mint's terminal, and {@code judgeFinishedOccurrence} abandoned
+     * the mint -- which throws away every row that occurrence published.
+     * HDFS-17960 on 39bedd768, obligation {@code 793875fb482a10a4}: its
+     * flip is at {@code applyEditLogOp@8/deleteSnapshot} ({@code
+     * focusedOccurrenceId ea10d7e883e23973}) and its {@code rootMints}
+     * name {@code applyEditLogOp@7/deleteSnapshot} ({@code
+     * 4786cb8a1d2bd655}), a DIFFERENT occurrence.  The mint at @7 finished
+     * first, its own flip had not happened and could not have, and the
+     * replay abandoned it: 42 decision rows and the session's ONLY root
+     * mint row went with it, leaving a 0-byte {@code roots.jsonl}.  The
+     * sibling obligation {@code cb67875d1d896d4d}, whose flip and mint are
+     * the same occurrence, kept everything in the same wave.</p>
      */
     public static boolean complete(OccurrenceAddress occurrence) {
         load();
-        if (task == null || !focused(occurrence)) return true;
+        if (task == null || occurrence == null) return true;
+        if (!focused(occurrence)) return true;
+        String at = occurrence.id();
         synchronized (LOCK) {
             for (Obligation obligation : OBLIGATIONS) {
-                if (!FLIPPED.contains(Text.safe(
-                        obligation.obligationId()))) {
-                    return false;
-                }
+                String id = Text.safe(obligation.obligationId());
+                if (!Text.safe(FOCUS.get(id)).equals(Text.safe(at))) continue;
+                if (!FLIPPED.contains(id)) return false;
             }
             return true;
         }
