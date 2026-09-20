@@ -106,6 +106,18 @@ public class ExploreTest {
                 null, null, true);
         seed.root(target, "CASE.COUNT", "M_COUNT", RootKind.INTEGRAL, "0",
                 "0", "10", true);
+        // Three more declared roots the recording minted, none of them named
+        // by any predicate of the seed's own path: the rotation's tick,
+        // whose guard a LATER session flips; a clock; and one root no term
+        // ever reaches.  A world is inherited whole, so the wave that
+        // extends one has to find every root of it minted here -- an
+        // assignment is planted at the recording's mint and nowhere else.
+        seed.root(PRODUCER, "CASE.TICK", "M_TICK", RootKind.INTEGRAL, "1",
+                "0", "10", true);
+        seed.root(target, "CASE.NOW", "M_NOW", RootKind.CLOCK, "1000",
+                null, null, true);
+        seed.root(target, "CASE.SPARE", "M_SPARE", RootKind.INTEGRAL, "3",
+                "0", "10", true);
         // if (a) if (b) throw: the recording took not-a and never reached b.
         // The predicate is published the way the VM publishes one over a
         // propagated value: a REFERENCE into the session's expression
@@ -226,13 +238,15 @@ public class ExploreTest {
             assertFalse("a query answered by an earlier wave is never re-asked",
                     obligation.obligationId().equals(
                             proposed.get(0).obligationId()));
-            // An arm SOME session of the epoch already took is not asked for
-            // again, whichever session holds the row and whichever prefix it
-            // was taken under: the seed took Guard#u8 false and the flip
-            // replay took it true, so both arms of that site are attested
-            // and a replay of either collects nothing the corpus lacks.  On
-            // laneA6 wave 1 this was the marker decision flipped BACK to
-            // true out of the wave-0 replays: nine minutes each.
+            // An arm SOME session of the epoch already took ON THIS PREFIX
+            // is not asked for again, whichever session holds the row: the
+            // seed took Guard#u8 false and the flip replay took it true,
+            // both under the EMPTY prefix, so both arms of that site are
+            // attested there and a replay of either collects nothing the
+            // corpus lacks.  On laneA6 wave 1 this was the marker decision
+            // flipped BACK to true out of the wave-0 replays: nine minutes
+            // each.  The same arm under a DIFFERENT prefix is another
+            // obligation, and the last part of this case is that one.
             assertFalse("an arm the corpus already holds is not re-flipped: "
                             + sites, "Guard#u8".equals(obligation.siteId()));
         }
@@ -313,6 +327,170 @@ public class ExploreTest {
         }
         assertTrue("and a planned task answered at two addresses is named",
                 moved);
+
+        // ---- the same arm, another prefix, another world ---------------
+        //
+        // A NESTED obligation extends its parent's world.  s-other-prefix
+        // reaches Guard#u19 through a prefix no session of this corpus has
+        // -- an extra concrete decision before it -- and it got there by
+        // flipping the ROTATION's own guard, under root values and a clock
+        // skew of its own.  Three things follow, and this is 11741's shape:
+        // the arm is owed again under THAT prefix (the frontier keys by
+        // it), the obligation cut from that path inherits the world its
+        // path exists in, and the query states the parent's flipped
+        // conjunct -- without which the model would answer for a path that
+        // run never had.
+        Session world = new Session(iteration, "s-other-prefix");
+        world.activation(target, true);
+        world.activation(PRODUCER, true);
+        world.root(target, "CASE.MARKER", "M_MARKER", RootKind.MARKER,
+                "true", null, null, true);
+        world.root(target, "CASE.COUNT", "M_COUNT", RootKind.INTEGRAL, "0",
+                "0", "10", true);
+        world.root(PRODUCER, "CASE.TICK", "M_TICK", RootKind.INTEGRAL, "7",
+                "0", "10", true);
+        world.decision(PRODUCER, "Rotate#u5", 1, true, "(> M_TICK 3)");
+        world.decision(target, "Concrete#u3", 1, true, "");
+        world.decision(target, "Guard#u8", 1, true, "M_MARKER");
+        world.decision(target, "Guard#u19", 1, false, "(> M_COUNT 5)");
+        world.answered(ObligationResult.of("OBL.other", Verdict.ADMITTED,
+                "s-other-prefix", "the focused prefix reproduced"));
+        world.flush();
+        // Its own focus row, where the campaign writes one: this is what
+        // the corpus reads a session's WORLD off.
+        Map<String, String> assigned = new LinkedHashMap<String, String>();
+        assigned.put("CASE.MARKER", "true");
+        assigned.put("CASE.TICK", "7");
+        assigned.put("CASE.SPARE", "9");
+        Map<String, String> skew = new LinkedHashMap<String, String>();
+        skew.put("CASE.NOW", "-4200");
+        worker(iteration, "ob-other", "OBL.other", "s-other-prefix",
+                PRODUCER, "Rotate#u5", assigned, skew);
+
+        // And a session whose replay REFUSED its own obligation: its rows
+        // still attest the arms it took, and no wave cuts a flip from its
+        // paths, because a world is only a world if the replay that ran it
+        // was admitted.
+        Session refused = new Session(iteration, "s-refused");
+        refused.activation(target, true);
+        refused.root(target, "CASE.MARKER", "M_MARKER", RootKind.MARKER,
+                "true", null, null, true);
+        refused.root(target, "CASE.COUNT", "M_COUNT", RootKind.INTEGRAL,
+                "0", "0", "10", true);
+        refused.decision(target, "Concrete#u3", 1, false, "");
+        refused.decision(target, "Concrete#u7", 1, true, "");
+        refused.decision(target, "Guard#u8", 1, true, "M_MARKER");
+        refused.decision(target, "Guard#u19", 1, false, "(> M_COUNT 5)");
+        refused.answered(ObligationResult.of("OBL.refused",
+                Verdict.NOT_ADMITTED, "s-refused",
+                "the focused occurrence's own prefix did not match"));
+        refused.flush();
+
+        Path wave3 = out.resolve("obligations-0003");
+        JsonObject fourth = plan(iteration, TARGET_SELECTOR, null, results,
+                wave3, 3);
+        assertEquals("OBLIGATIONS_PROPOSED", fourth.get("state").getAsString());
+        List<Obligation> deepened = new ArrayList<Obligation>();
+        for (Obligation obligation : obligations(wave3)) {
+            if ("Guard#u19".equals(obligation.siteId())) {
+                deepened.add(obligation);
+            }
+        }
+        assertEquals("the settled arm is owed again under the prefix no "
+                        + "session has taken it on, and exactly once: "
+                        + obligations(wave3), 1, deepened.size());
+        assertEquals("cut from the admitted session's path",
+                Corpus.pathId("s-other-prefix", target),
+                deepened.get(0).pathId());
+        for (Obligation obligation : obligations(wave3)) {
+            assertFalse("a NOT_ADMITTED session's path is not cut from: "
+                            + obligation,
+                    Corpus.pathId("s-refused", target)
+                            .equals(obligation.pathId()));
+        }
+
+        Worker nested = solve(iteration, wave3, deepened.get(0), out, "w3");
+        assertEquals(Verdict.SAT_MODEL_READY, nested.verdict);
+        JsonObject inherited = RowCodec.readJsonl(nested.directory.resolve(
+                ObligationDir.FOCUSED_TASK)).get(0);
+        assertEquals("the world's clock skew is carried whole: nothing in "
+                        + "this model moves that clock, and the path only "
+                        + "exists under it", "-4200",
+                inherited.getAsJsonObject("clockDeltas")
+                        .get("CASE.NOW").getAsString());
+        assertEquals("and so is a root this query never reaches", "9",
+                inherited.getAsJsonObject("rootAssignments")
+                        .get("CASE.SPARE").getAsString());
+        assertEquals("and the ask states the merged valuation too", "9",
+                nested.obligation.rootAssignments().get("CASE.SPARE"));
+        assertEquals("the parent's own flip travels with it", 1,
+                inherited.getAsJsonArray("inheritedFlips").size());
+        JsonObject carried = inherited.getAsJsonArray("inheritedFlips")
+                .get(0).getAsJsonObject();
+        assertEquals(PRODUCER.id(),
+                carried.get("focusedOccurrenceId").getAsString());
+        assertEquals("Rotate#u5", carried.get("siteId").getAsString());
+        assertTrue(carried.get("outcome").getAsBoolean());
+        assertEquals("named by the obligation that first asked for it",
+                "OBL.other", carried.get("obligationId").getAsString());
+        String query = new String(Files.readAllBytes(
+                nested.directory.resolve("obligation_query.smt2")), "UTF-8");
+        assertTrue("and the query ASSERTS the parent's flipped conjunct, so "
+                        + "the model answers for the world this path is in: "
+                        + query, query.contains("(> r_CASE_TICK 3)"));
+    }
+
+    /**
+     * One obligation worker of the iteration: the FOCUS ROW its replay was
+     * driven by, and the result row that names the session it published.
+     *
+     * <p>The world a session ran in is read off this row and nowhere else
+     * ({@link Corpus#world}), so a fixture that wants a session to have one
+     * writes the row the campaign writes.</p>
+     */
+    private static void worker(Path iteration, String dir,
+                               String obligationId, String sessionId,
+                               OccurrenceAddress focused, String siteId,
+                               Map<String, String> roots,
+                               Map<String, String> clockDeltas)
+            throws IOException {
+        Path at = iteration.resolve("obligations-0000").resolve(dir);
+        Files.createDirectories(at);
+        JsonObject row = new JsonObject();
+        row.addProperty("schemaVersion", 1);
+        row.addProperty("kind", "FOCUSED_TASK");
+        row.addProperty("obligationId", obligationId);
+        row.addProperty("taskId", "task-" + focused.regionId());
+        row.addProperty("pathId", Corpus.pathId(sessionId, focused));
+        row.addProperty("focused", focused.render());
+        row.addProperty("focusedOccurrenceId", focused.id());
+        row.addProperty("seedSessionId", "s-seed");
+        JsonObject flip = new JsonObject();
+        flip.addProperty("siteId", siteId);
+        flip.addProperty("ordinal", 1);
+        flip.addProperty("outcome", true);
+        row.add("flip", flip);
+        JsonObject assigned = new JsonObject();
+        for (Map.Entry<String, String> root : roots.entrySet()) {
+            assigned.addProperty(root.getKey(), root.getValue());
+        }
+        row.add("rootAssignments", assigned);
+        JsonObject skews = new JsonObject();
+        for (Map.Entry<String, String> delta : clockDeltas.entrySet()) {
+            skews.addProperty(delta.getKey(), delta.getValue());
+        }
+        row.add("clockDeltas", skews);
+        row.add("answers", new JsonObject());
+        row.add("rootMints", new JsonObject());
+        row.add("inheritedFlips", new JsonArray());
+        row.add("unproducible", new JsonArray());
+        RowCodec.writeJsonl(at.resolve(ObligationDir.FOCUSED_TASK),
+                Collections.singletonList(row));
+        RowCodec.writeJsonl(at.resolve(ObligationDir.RESULT),
+                Collections.singletonList(RowCodec.writeObligationResult(
+                        ObligationResult.of(obligationId, Verdict.ADMITTED,
+                                sessionId,
+                                "the focused prefix reproduced"))));
     }
 
     // ---- (2) a handoff is answered only with what a producer delivers --
@@ -1724,6 +1902,8 @@ public class ExploreTest {
         private final List<ReadRow> reads = new ArrayList<>();
         private final List<RootMintRow> roots = new ArrayList<>();
         private final List<TargetRow> targets = new ArrayList<>();
+        /** What this replay SETTLED, as its own obligations.jsonl states. */
+        private final List<ObligationResult> answered = new ArrayList<>();
         private final Map<String, JsonObject> expressions =
                 new LinkedHashMap<>();
         /** The session's own event order: every row takes the next one. */
@@ -1839,8 +2019,22 @@ public class ExploreTest {
             expressions.put(ref, expression);
         }
 
+        /**
+         * One verdict this replay published for itself.
+         *
+         * <p>The replay owns whether its obligation was admitted, and a
+         * wave cuts a new flip only from a session that says ADMITTED of
+         * every one of them -- so the fixture states it where the runtime
+         * does, in the session's own file.</p>
+         */
+        private void answered(ObligationResult result) {
+            answered.add(result);
+        }
+
         private void flush() throws IOException {
             dir.create();
+            RowCodec.writeAll(dir.obligations(), answered,
+                    RowCodec::writeObligationResult);
             RowCodec.writeAll(dir.activations(), activations,
                     RowCodec::writeActivation);
             RowCodec.writeAll(dir.decisions(), decisions,

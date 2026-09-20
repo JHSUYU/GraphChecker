@@ -94,6 +94,54 @@ public final class ExploreCodec {
     }
 
 
+    /**
+     * The WORLD one focus row states: what the replay it drove ran in.
+     *
+     * <p>The one reader of a focus row on this side -- {@link Corpus} indexes
+     * it and {@code runtime.FocusedReplay} enforces it -- so the members are
+     * spelled once here and once there, and never in a third place.  The
+     * flips are the row's OWN flip first (addressed at its {@code
+     * focusedOccurrenceId}, carrying its own obligation id) and then the
+     * ones it inherited, in the order the row lists them: that is the order
+     * a child of this session inherits them in.</p>
+     */
+    public static Corpus.World readWorld(JsonObject json) {
+        List<Corpus.Flip> flips = new ArrayList<Corpus.Flip>();
+        JsonObject own = object(json, "flip");
+        String at = optionalString(json, "focusedOccurrenceId");
+        if (own.has("siteId")) {
+            flips.add(new Corpus.Flip(at, optionalString(own, "siteId"),
+                    optionalInteger(own, "ordinal", 0),
+                    optionalBool(own, "outcome", false),
+                    optionalString(json, "obligationId")));
+        }
+        for (JsonElement element : array(json, "inheritedFlips")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject flip = element.getAsJsonObject();
+            flips.add(new Corpus.Flip(
+                    optionalString(flip, "focusedOccurrenceId"),
+                    optionalString(flip, "siteId"),
+                    optionalInteger(flip, "ordinal", 0),
+                    optionalBool(flip, "outcome", false),
+                    optionalString(flip, "obligationId")));
+        }
+        return new Corpus.World(map(object(json, "rootAssignments")),
+                map(object(json, "clockDeltas")),
+                map(object(json, "answers")),
+                map(object(json, "rootMints")), flips);
+    }
+
+    /** One inherited flip, as the focus row states it. */
+    public static JsonObject writeFlip(Corpus.Flip flip) {
+        JsonObject json = new JsonObject();
+        json.addProperty("focusedOccurrenceId", flip.focusedOccurrenceId);
+        json.addProperty("siteId", flip.siteId);
+        json.addProperty("ordinal", flip.ordinal);
+        json.addProperty("outcome", flip.outcome);
+        json.addProperty("obligationId", flip.obligationId);
+        return json;
+    }
+
     /** One slot of the epoch's skeleton. */
     public static JsonObject writeSlot(SlotTable.Slot slot) {
         JsonObject json = new JsonObject();
