@@ -819,6 +819,51 @@ public class ExploreTest {
                 .get("CASE.NOW").getAsString();
         assertTrue("the skew carries a reading of 700 past 1000: " + skew,
                 Long.parseLong(skew) > 300L);
+
+        // AND A PINNED ROOT BESIDE THE CLOCK IS STILL A CLOCK-DRIVEN FLIP.
+        // The query reaches a root with no domain, so the query pins it and
+        // the model hands it back where the recording minted it -- which is
+        // what a pinned root DOES, and says nothing about whether this world
+        // is one the seed already ran.  A moved clock says that, and says it
+        // first: #recordedValuation is asked the skews too, and a non-zero
+        // one answers before the root comparison.  nn0's second-rotation
+        // removeExpiredKeys#u15 flips of the 11741 campaign of 2026-09-20
+        // were refused as "the model is the recording's own valuation
+        // (HDFS.BLOCK_KEY.SERIAL_NO=182907) and answers no handoff" while
+        // the same model moved two CLOCK variables.
+        Path pinnedClock = tree.newFolder("clock-pinned").toPath();
+        Session both = new Session(pinnedClock, "s-seed");
+        both.activation(target, false);
+        both.root(target, "CASE.NOW", "M_NOW", RootKind.CLOCK, "700",
+                null, null, true);
+        both.root(target, "CASE.SERIAL", "M_SERIAL", RootKind.INTEGRAL,
+                "182907", null, null, true);
+        both.decision(target, "Arrival#u8", 1, false,
+                "(and (> M_NOW 1000) (= M_SERIAL 182907))");
+        both.flush();
+        scopeMap(pinnedClock, targetSite("REGION.target", "Throw#u30",
+                "Arrival#u8"));
+        Path bothOut = tree.newFolder("clock-pinned-out").toPath();
+        Path bothWave = bothOut.resolve("obligations-0000");
+        plan(pinnedClock, TARGET_SELECTOR, null,
+                bothOut.resolve("results.jsonl"), bothWave, 0);
+        Worker driven = solve(pinnedClock, bothWave,
+                obligations(bothWave).get(0), bothOut, "w0");
+        assertEquals("a clock skew is a counterfactual of its own",
+                Verdict.SAT_MODEL_READY, driven.verdict);
+        assertEquals("and the pinned root is where it was minted",
+                "182907",
+                driven.obligation.rootAssignments().get("CASE.SERIAL"));
+        JsonObject drivenFocus = RowCodec.readJsonl(driven.directory
+                .resolve(ObligationDir.FOCUSED_TASK)).get(0);
+        JsonObject drivenSkews = drivenFocus.getAsJsonObject("clockDeltas");
+        assertNotNull("the obligation carries the skew it is owed",
+                drivenSkews);
+        assertFalse("which is what makes it a world the seed did not run: "
+                        + drivenSkews, drivenSkews.entrySet().isEmpty());
+        assertTrue("past the instant the recording read: " + drivenSkews,
+                Long.parseLong(drivenSkews.get("CASE.NOW").getAsString())
+                        > 300L);
     }
 
     // ---- (5) the closure holds the writer of every version read -------
