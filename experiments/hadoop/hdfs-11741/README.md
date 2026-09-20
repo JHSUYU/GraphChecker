@@ -51,9 +51,12 @@ CASES=hdfs-11741 bash experiments/hadoop/accept/accept.sh
 ## What the harness expects
 
 `report.py` passes this case on `claim` `SAT_CANDIDATE`, `finalStatus` `FINAL_READY`, empty
-`blockers` and no open BLOCKING gap, `polarityDecides` true, `valuationOrdinal` >= 1,
-non-empty `movedRoots`, and a `findingKind` of `CLOCK_SKEW` or `MARKER_FLIPPED` — either the
-clocks disagreed, or the serial moved inside its declared domain.
+`blockers` and no open BLOCKING gap, `polarityDecides` true, non-empty `movedRoots`, and a
+`findingKind` of `CLOCK_SKEW` or `MARKER_FLIPPED`. The expected finding is `CLOCK_SKEW` at
+`valuationOrdinal` 0: the case declares no windowed root, so the recorded valuation is the only
+one, and the witness is the clock cells the model had to move (the NameNode's second rotation
+and the DataNode's refresh); `polarityDecides` there means pinning every clock cell to what the
+recording read makes the query unsat.
 
 ## Status
 
