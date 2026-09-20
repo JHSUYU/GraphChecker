@@ -494,9 +494,17 @@ public final class Composer {
         if (slots != null) {
             for (SlotTable.Replacement replacement
                     : slots.replacements(corpus)) {
+                // FAIL CLOSED ON THE ARMS, OPEN ON THE CLAIM.  The session
+                // goes into `replacing` either way -- two pairings of one
+                // consumer cannot both be this epoch's, so neither set of
+                // arms may reach a family -- and only an ADMITTED replay's
+                // replacement STOPS the composition ({@link
+                // SessionReader#admitted}).  One that did not run the world
+                // it was asked for states no topology, so its row is a
+                // DIAGNOSTIC and the claim is still made.
                 replacing.add(replacement.sessionId);
                 gaps.add(GapRow.of(replacement.sessionId,
-                        GapKind.TOPOLOGY_DIVERGENCE, GapClass.BLOCKING,
+                        GapKind.TOPOLOGY_DIVERGENCE, replacement.cls(),
                         replacement.consumerEndpointId,
                         replacement.detail()));
             }
@@ -656,11 +664,13 @@ public final class Composer {
         SessionReader reader = corpus.session(session);
         if (reader == null || reader.seed()) return true;
         Set<String> stated = new LinkedHashSet<String>();
-        boolean admitted = true;
+        // ONE PREDICATE, ONE PLACE ({@link SessionReader#admitted}): this
+        // stage names each refusal below, and does not keep a second
+        // opinion about what "admitted" means.
+        boolean admitted = reader.admitted();
         for (ObligationResult result : reader.obligations()) {
             stated.add(result.obligationId());
             if (result.verdict() == Verdict.ADMITTED) continue;
-            admitted = false;
             gap(GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC, session,
                     "this replay states " + result.verdict() + " for the "
                             + "obligation it ran (" + result.obligationId()
