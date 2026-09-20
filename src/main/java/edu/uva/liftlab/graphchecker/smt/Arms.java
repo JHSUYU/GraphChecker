@@ -769,9 +769,17 @@ public final class Arms {
         return sum.append(") 1)").toString();
     }
 
-    /** Every symbol a recorded expression names, whatever its depth. */
-    static void symbolsIn(JsonElement expression, Set<String> into,
-                          int depth) {
+    /**
+     * Every symbol a recorded expression names, whatever its depth.
+     *
+     * <p>Public because IMPORT asks the same question of a session's whole
+     * expression table (invariant 11, {@code RowInvariants#attributed}): the
+     * walk that decides which roots an arm's expression names is the walk
+     * that decides which roots a session references, and two spellings of it
+     * would be two answers.</p>
+     */
+    public static void symbolsIn(JsonElement expression, Set<String> into,
+                                 int depth) {
         if (expression == null || expression.isJsonNull() || depth > 512) {
             return;
         }

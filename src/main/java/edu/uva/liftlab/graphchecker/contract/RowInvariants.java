@@ -3,6 +3,8 @@ package edu.uva.liftlab.graphchecker.contract;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import edu.uva.liftlab.graphchecker.smt.Arms;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -83,6 +85,7 @@ public final class RowInvariants {
             check(session, asks == null ? null
                     : asks.get(session.sessionId()), gaps);
         }
+        attributed(sessions, gaps);
         return gaps;
     }
 
@@ -936,6 +939,124 @@ public final class RowInvariants {
                         + "outcome " + outcome + "; the obligation's own "
                         + "result row carries the verdict"));
         return gaps;
+    }
+
+    // ---- 11. a root symbol without its RootMintRow ---------------------
+
+    /**
+     * R4: every root symbol a session REFERENCES is a root that session
+     * itself MINTED a row for.
+     *
+     * <p>SET-level, the way invariant 1 is: which quantities are roots is a
+     * fact about the EPOCH -- a root is declared by the case and minted
+     * wherever the run reaches its site -- so the names are taken from every
+     * session's {@code RootMintRow}s together, and a root's symbol is the
+     * same name in every session that minted it.  What is then asked of each
+     * session on its own is whether it states the row for the roots it
+     * NAMES.</p>
+     *
+     * <p>BLOCKING, because a symbol with no row is not a gap in a report: it
+     * is a quantity the session carries and nothing of the session
+     * attributes.  The composer meets it as an arm it cannot guard and the
+     * claim meets it as a root free at every valuation, which is exactly how
+     * hdfs-11741 campaign #4 came out satisfiable at the recorded valuation
+     * and yielded no witness -- seven of thirteen sessions referenced a
+     * declared root they published no row for, {@code
+     * HDFS.BLOCK_KEY.SERIAL_NO} among them, carried out of an activation the
+     * run abandoned.  The runtime's half of the same rule is {@code
+     * RootMint#mintUnattributed}: a mint no admitted activation owns mints
+     * no symbol, and one that does is rowed.</p>
+     *
+     * <p>Referenced means named by the session's own tables: every {@code
+     * SymbolExpression} leaf of {@code expressions.json} -- the one walk
+     * {@link Arms#symbolsIn} makes, so COMPOSE and IMPORT decide "which
+     * roots does this expression name" the same way -- plus the terms the
+     * decision and target rows publish, which is where the citation comes
+     * from.</p>
+     */
+    private static void attributed(List<SessionReader> sessions,
+                                   List<GapRow> gaps) {
+        Map<String, String> roots = new LinkedHashMap<String, String>();
+        for (SessionReader session : sessions) {
+            for (RootMintRow row : session.roots()) {
+                String rootId = row.rootId() == null ? "" : row.rootId();
+                String symbol = row.symbol() == null ? "" : row.symbol();
+                if (rootId.isEmpty() || symbol.isEmpty()) continue;
+                if (!roots.containsKey(rootId)) roots.put(rootId, symbol);
+            }
+        }
+        if (roots.isEmpty()) return;
+        for (SessionReader session : sessions) {
+            Map<String, String> named = named(session);
+            Set<String> stated = new LinkedHashSet<String>();
+            for (RootMintRow row : session.roots()) {
+                stated.add(row.rootId() == null ? "" : row.rootId());
+            }
+            for (Map.Entry<String, String> root : roots.entrySet()) {
+                if (stated.contains(root.getKey())) continue;
+                String where = named.get(root.getValue());
+                if (where == null) continue;
+                gaps.add(GapRow.of(session.sessionId(),
+                        GapKind.MINT_UNATTRIBUTED, GapClass.BLOCKING,
+                        root.getKey(),
+                        "invariant 11 (R4: a root symbol without its "
+                                + "RootMintRow): session "
+                                + session.sessionId() + " references symbol "
+                                + root.getValue() + " at " + where
+                                + " and states no RootMintRow for root "
+                                + root.getKey() + ", so it carries a "
+                                + "quantity no row of it attributes"));
+            }
+        }
+    }
+
+    /**
+     * Every symbol one session names, each with ONE place it was referenced.
+     *
+     * <p>The published terms are read first so the citation is a ROW a
+     * reader can open, and the expression table fills in the rest.</p>
+     */
+    private static Map<String, String> named(SessionReader session) {
+        Map<String, String> where = new LinkedHashMap<String, String>();
+        for (DecisionRow row : session.decisions()) {
+            cite(session, row.term(), where, "decisions.jsonl seq=" + row.seq()
+                    + " field=term " + row.siteId() + "#" + row.ordinal());
+        }
+        for (TargetRow row : session.targets()) {
+            cite(session, row.phiTerm(), where, "targets.jsonl seq="
+                    + row.seq() + " field=phiTerm " + row.anchorSiteId());
+        }
+        for (Map.Entry<String, JsonObject> entry
+                : session.expressions().expressions().entrySet()) {
+            Set<String> symbols = new LinkedHashSet<String>();
+            Arms.symbolsIn(entry.getValue(), symbols, 0);
+            for (String symbol : symbols) {
+                if (!where.containsKey(symbol)) {
+                    where.put(symbol,
+                            "expressions.json ref=" + entry.getKey());
+                }
+            }
+        }
+        return where;
+    }
+
+    /** The symbols one published term names, cited at the row that holds it. */
+    private static void cite(SessionReader session, String term,
+                             Map<String, String> where, String place) {
+        String text = term == null ? "" : term.trim();
+        while (text.startsWith("(not ") && text.endsWith(")")) {
+            text = text.substring(5, text.length() - 1).trim();
+        }
+        if (text.isEmpty()) return;
+        Set<String> symbols = new LinkedHashSet<String>();
+        if (MINTED.matcher(text).matches()) {
+            symbols.add(text);
+        } else {
+            Arms.symbolsIn(session.expressions().expression(text), symbols, 0);
+        }
+        for (String symbol : symbols) {
+            if (!where.containsKey(symbol)) where.put(symbol, place);
+        }
     }
 
     // ---- shared -------------------------------------------------------
