@@ -1371,38 +1371,80 @@ public final class Composer {
      * where it happened BEFORE that occurrence's cutoff; the anchor's reads
      * are all of them, because they are its declared inputs and the target
      * row is one of them.</p>
+     *
+     * <p>P3c, the second edge: the EARLIER VERSIONS of a reached write's own
+     * location are reached with it.  The state of an object at version v is
+     * the result of every earlier mutation of that object in that run, so
+     * each earlier writer's prefix is a reason the value is what it is --
+     * not only the prefix of whichever occurrence made the last change.
+     * 11741's anchor joined the version its DataNode's put loop produced,
+     * and what the map LACKS at that version is what another occurrence
+     * removed from it earlier, under a comparison against the clock it read;
+     * no row of the session joins the two, so without this the composed
+     * query stated "the map lacks the key" as a bare fact of the recording
+     * and declared no cell of that clock.  An earlier write is reached
+     * exactly as a joined one is -- its writer at that write's seq, widening
+     * as ever -- and its own earlier versions are covered by construction,
+     * being earlier still; each (location, version) is handled once.</p>
      */
     private Map<String, Long> closure(String session, TargetRow target) {
         Map<String, Long> reached = new LinkedHashMap<String, Long>();
         reached.put(anchor.id(), target.seq());
         List<String> pending = new ArrayList<String>();
         pending.add(anchor.id());
-        while (!pending.isEmpty()) {
-            String at = pending.remove(0);
-            OccurrenceAddress occurrence = corpus.occurrence(at);
-            if (occurrence == null) continue;
-            boolean isAnchor = anchor.id().equals(at);
-            long cut = reached.get(at);
-            for (ReadRow read : corpus.readsOn(session, occurrence)) {
-                if (!isAnchor && read.seq() >= cut) continue;
-                if (read.observedVersion() < 0L) continue;
-                WriteRow write = corpus.writeOf(session,
-                        SmtLowering.locationKey(read.location()),
-                        read.observedVersion());
-                if (write == null) continue;
-                String writer = write.endpoint().occurrence().id();
-                // Never the anchor: its cutoff is the target observation
-                // and a write of its own is not a reason to widen it.
-                if (anchor.id().equals(writer)) continue;
-                Long held = reached.get(writer);
-                if (held != null && held.longValue() >= write.seq()) {
-                    continue;
+        List<WriteRow> versions = new ArrayList<WriteRow>();
+        Set<String> handled = new LinkedHashSet<String>();
+        while (!pending.isEmpty() || !versions.isEmpty()) {
+            while (!pending.isEmpty()) {
+                String at = pending.remove(0);
+                OccurrenceAddress occurrence = corpus.occurrence(at);
+                if (occurrence == null) continue;
+                boolean isAnchor = anchor.id().equals(at);
+                long cut = reached.get(at);
+                for (ReadRow read : corpus.readsOn(session, occurrence)) {
+                    if (!isAnchor && read.seq() >= cut) continue;
+                    if (read.observedVersion() < 0L) continue;
+                    WriteRow write = corpus.writeOf(session,
+                            SmtLowering.locationKey(read.location()),
+                            read.observedVersion());
+                    if (write == null) continue;
+                    reach(write, reached, pending, versions, handled);
                 }
-                reached.put(writer, write.seq());
-                pending.add(writer);
+            }
+            if (versions.isEmpty()) continue;
+            WriteRow write = versions.remove(0);
+            String key = SmtLowering.locationKey(write.location());
+            for (WriteRow under : corpus.writesOf(session, key)) {
+                if (under.version() >= write.version()) continue;
+                reach(under, reached, pending, versions, handled);
             }
         }
         return reached;
+    }
+
+    /**
+     * One write this path rests on: its writer is reached, its state swept.
+     *
+     * <p>The same rule whether the write was joined by a read row or is an
+     * earlier version of a location already reached, because it is the same
+     * fact either way -- the value this path rests on came out of that
+     * write.  The ANCHOR is never reached and no write of its own is swept:
+     * its cutoff is the target observation, and a write of its own is not a
+     * reason to widen it.</p>
+     */
+    private void reach(WriteRow write, Map<String, Long> reached,
+                       List<String> pending, List<WriteRow> versions,
+                       Set<String> handled) {
+        String writer = write.endpoint().occurrence().id();
+        if (anchor.id().equals(writer)) return;
+        if (handled.add(SmtLowering.locationKey(write.location()) + "#"
+                + write.version())) {
+            versions.add(write);
+        }
+        Long held = reached.get(writer);
+        if (held != null && held.longValue() >= write.seq()) return;
+        reached.put(writer, write.seq());
+        pending.add(writer);
     }
 
     /**

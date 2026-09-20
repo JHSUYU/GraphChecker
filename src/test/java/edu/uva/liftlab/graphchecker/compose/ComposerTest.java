@@ -2193,6 +2193,104 @@ public class ComposerTest {
     }
 
     // ------------------------------------------------------------------
+    // 15. A version rests on the earlier versions of its own location.
+    // ------------------------------------------------------------------
+
+    /**
+     * 11741's shape: the anchor reads the version the PUT loop produced,
+     * and what the map LACKS at that version is what an earlier occurrence
+     * removed from it, under a comparison against the clock it read.  No
+     * row of the session joins the two -- the put loop published no read of
+     * the map, and the version it wrote names nothing under it -- so a
+     * closure that stops at the writer the read named declared no cell of
+     * the removing occurrence's clock and stated "the map lacks the key" as
+     * a bare fact of the recording.
+     */
+    @Test
+    public void anEarlierVersionOfTheSameLocationIsReachedWithIt()
+            throws Exception {
+        LocationId keys = LocationId.of(LocationKind.MAP, "474", "-3");
+        Composer.Composition chained = versionChain(
+                folder.newFolder("version-chain").toPath(), keys);
+        assertEquals("the path is admitted", 1, chained.paths().size());
+        assertEquals("the removing occurrence's clock is a cell of the "
+                        + "composition", Collections.singletonList(CLOCK),
+                chained.clockCells());
+        assertTrue("and its decision is a conjunct of the path, before the "
+                        + "write the sweep reached it at: "
+                        + fatalArm(chained),
+                fatalArm(chained).contains(SmtLowering.legalSymbols(
+                        "(> " + CLOCK + " 300)")));
+
+        // The same corpus with that earlier write on ANOTHER location: the
+        // rule is about one object's own history, so a version of some
+        // other cell is no reason the value this path read is what it is.
+        Composer.Composition alone = versionChain(
+                folder.newFolder("version-chain-elsewhere").toPath(),
+                LocationId.of(LocationKind.MAP, "999", "-3"));
+        assertEquals("the path is admitted either way", 1,
+                alone.paths().size());
+        assertTrue("no clock cell reaches a composition whose closure stops "
+                        + "at the writer the read named",
+                alone.clockCells().isEmpty());
+        assertFalse("and no decision of that occurrence is in the path: "
+                        + fatalArm(alone),
+                fatalArm(alone).contains(SmtLowering.legalSymbols(
+                        "(> " + CLOCK + " 300)")));
+    }
+
+    /**
+     * One session: A removes a key under a clock and writes v5 of
+     * {@code removed}, B writes v9 of the map, the anchor reads v9.
+     */
+    private Composer.Composition versionChain(Path iteration,
+                                              LocationId removed)
+            throws IOException {
+        LocationId keys = LocationId.of(LocationKind.MAP, "474", "-3");
+        Session session = new Session(iteration, "s0", false);
+        session.activation(UPSTREAM);
+        session.activation(PRODUCER);
+        session.marker("false");
+        session.clock("700");
+        // A: the expiry decision, over the clock this occurrence read, and
+        // then the removal it made -- the decision BEFORE the write, so it
+        // is in the prefix the sweep reaches A at.
+        session.decision(UPSTREAM, "up#u15", "(> " + CLOCK + " 300)",
+                CLOCK_ROOT, 700L);
+        session.expression("EXPR.chain.a", removal());
+        session.write(Endpoint.of(UPSTREAM, "Manager#remove#22:WRITE",
+                at("w#a", 0), 0), removed, 5L, "EXPR.chain.a");
+        // B: the put loop, which states its own chain from a snapshot base
+        // and names neither A's write nor the version under it.
+        session.expression("EXPR.chain.b", relation("ASSOCIATIVE", "PUT",
+                "java/util/HashMap", snapshot(), integer("I", 9L),
+                integer("I", 7L)));
+        session.write(Endpoint.of(PRODUCER, "Manager#addKeys#71:WRITE",
+                at("w#b", 0), 0), keys, 9L, "EXPR.chain.b");
+        // The anchor's read of the map, at the version B produced.
+        session.read(Endpoint.of(ANCHOR, "Manager#retrieve#18:READ",
+                        at("r#1", 0), 0), keys, 9L, "MAP/474#-3@v9",
+                "java/util/HashMap", null);
+        session.target(MARKER, false, true);
+        session.write();
+        return compose(iteration, 2);
+    }
+
+    /** The map as the recording states it before anything was put in. */
+    private static JsonObject snapshot() {
+        return relation("ASSOCIATIVE", "SNAPSHOT_BASE", "java/util/HashMap",
+                relation("ASSOCIATIVE", "STATE", "java/util/HashMap",
+                        symbol("M_L'java/util/HashMap'_474",
+                                "java/util/HashMap")));
+    }
+
+    /** One removal from it, naming no event and no version under it. */
+    private static JsonObject removal() {
+        return relation("ASSOCIATIVE", "REMOVE", "java/util/HashMap",
+                snapshot(), integer("I", 5L));
+    }
+
+    // ------------------------------------------------------------------
     // Fixture.
     // ------------------------------------------------------------------
 
