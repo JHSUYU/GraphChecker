@@ -78,6 +78,11 @@ public enum GapKind {
      * <p>BLOCKING for the session that met it: the wave's value for this
      * root was NOT written, so the replay ran the recording's value under an
      * obligation that asked for another one.</p>
+     *
+     * <p>IMPORT raises it too, under invariant 11: a session whose
+     * expressions name a root's symbol and that states no {@code
+     * RootMintRow} for that root carries a quantity no row of it
+     * attributes.</p>
      */
     MINT_UNATTRIBUTED,
     /**

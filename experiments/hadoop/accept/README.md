@@ -43,7 +43,10 @@ when all of these hold:
   failed and the run that did not (only `RECORDED_FAILURE_EXPLAINED` is
   exempt, by construction);
 * `valuationOrdinal` >= 1 and `movedRoots` is non-empty — a finding at the
-  recorded valuation that moves nothing is the recording restated.
+  recorded valuation that moves nothing is the recording restated. A
+  `CLOCK_SKEW` finding is exempt from the ordinal alone: a clock has a floor
+  and no window, so the witness sits at the recorded valuation and the clock
+  cells the model moved are its `movedRoots`, which must still be non-empty.
 
 A case the table does not name cannot pass. The z3 probe is reported, never
 gated on: it asks the published formula, unpinned, about the accepted

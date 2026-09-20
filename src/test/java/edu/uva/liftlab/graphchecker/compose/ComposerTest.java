@@ -21,6 +21,9 @@ import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
+import edu.uva.liftlab.graphchecker.contract.Family;
+import edu.uva.liftlab.graphchecker.contract.Interaction;
+import edu.uva.liftlab.graphchecker.contract.InteractionKind;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
@@ -591,11 +594,16 @@ public class ComposerTest {
     }
 
     /**
-     * One obligation worker: the ask, and the session its replay wrote.
+     * One obligation worker: the ask, the FOCUS ROW and the session its
+     * replay wrote.
      *
      * <p>The layout the campaign publishes, because that is what the
-     * corpus reads: {@code obligations-0000/<id>/obligation.jsonl} beside
-     * the {@code obligation_result.jsonl} that names the session.</p>
+     * corpus reads: {@code obligations-0000/<id>/obligation.jsonl} and the
+     * {@code focused_task.jsonl} the replay was driven by, beside the
+     * {@code obligation_result.jsonl} that names the session.  The WORLD a
+     * session ran in is read off the focus row -- it is the only row that
+     * states the whole of it -- so a fixture that wrote only the ask left
+     * the replay's valuation stated nowhere.</p>
      */
     private static void obligation(Path iteration, String sessionId,
                                    Map<String, String> roots)
@@ -609,6 +617,30 @@ public class ComposerTest {
                                 "path-flip", "nn#u1", 1, true, roots,
                                 Collections.<String, String>emptyMap(),
                                 Collections.<String>emptyList()))));
+        com.google.gson.JsonObject focus = new com.google.gson.JsonObject();
+        focus.addProperty("schemaVersion", 1);
+        focus.addProperty("kind", "FOCUSED_TASK");
+        focus.addProperty("obligationId", "ob-" + sessionId);
+        focus.addProperty("taskId", "task-flip");
+        focus.addProperty("pathId", "path-flip");
+        com.google.gson.JsonObject flip = new com.google.gson.JsonObject();
+        flip.addProperty("siteId", "nn#u1");
+        flip.addProperty("ordinal", 1);
+        flip.addProperty("outcome", true);
+        focus.add("flip", flip);
+        com.google.gson.JsonObject assigned =
+                new com.google.gson.JsonObject();
+        for (Map.Entry<String, String> root : roots.entrySet()) {
+            assigned.addProperty(root.getKey(), root.getValue());
+        }
+        focus.add("rootAssignments", assigned);
+        focus.add("clockDeltas", new com.google.gson.JsonObject());
+        focus.add("answers", new com.google.gson.JsonObject());
+        focus.add("rootMints", new com.google.gson.JsonObject());
+        focus.add("inheritedFlips", new com.google.gson.JsonArray());
+        focus.add("unproducible", new com.google.gson.JsonArray());
+        RowCodec.writeJsonl(worker.resolve(ObligationDir.FOCUSED_TASK),
+                Collections.singletonList(focus));
         RowCodec.writeJsonl(worker.resolve(ObligationDir.RESULT),
                 Collections.singletonList(RowCodec.writeObligationResult(
                         ObligationResult.of("ob-" + sessionId,
@@ -693,6 +725,59 @@ public class ComposerTest {
                 2, composition.families().size());
         assertEquals("and the disjunct reaches both", 2,
                 composition.disjuncts().get(0).interactionIds().size());
+
+        // R4 item 3: AN ARM WHOSE DELIVERED EXPRESSION NAMES A ROOT ITS OWN
+        // SESSION STATES NO MINT ROW FOR IS REFUSED, not emitted with an
+        // empty guard.  Which quantities are roots is a fact about the
+        // corpus, so the seed's mint row is what makes the marker a root;
+        // a replay that carries the marker's SYMBOL out of an activation it
+        // abandoned publishes no row of its own, and the arm it would
+        // deliver is available under every valuation of a quantity nothing
+        // of that session attributes.  hdfs-11741 campaign #4 composed
+        // satisfiably at the recorded valuation on exactly that.
+        Path unrowed = folder.newFolder("unrowed").toPath();
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key",
+                at("attach#1", 0), 0);
+        Session seed = new Session(unrowed, "s0", false);
+        seed.activation(PRODUCER);
+        seed.marker("false");
+        seed.expression("EXPR.v1.marker", symbol(MARKER, "Z"));
+        seed.decision(PRODUCER, "nn#u1", "(or " + MARKER + " (not "
+                + MARKER + "))");
+        seed.export(first, "EXPR.v1.marker", 1L, "false");
+        seed.attach(consumer, "vh1", "false", first);
+        seed.target("vh1", false, true);
+        seed.write();
+
+        Session abandoned = new Session(unrowed, "s1", true);
+        abandoned.activation(PRODUCER);
+        // The symbol, and no RootMintRow for the root it names.
+        abandoned.expression("EXPR.v1.marker", symbol(MARKER, "Z"));
+        abandoned.decision(PRODUCER, "nn#u1", "(or " + MARKER + " (not "
+                + MARKER + "))");
+        abandoned.export(first, "EXPR.v1.marker", 1L, "true");
+        abandoned.attach(consumer, "vh1", "true", first);
+        abandoned.target("vh1", true, true);
+        abandoned.write();
+
+        Composer.Composition refused = compose(unrowed, 4);
+        assertTrue("the arm that session would deliver is refused by name: "
+                        + refused.gaps(),
+                says(refused.gaps(), GapKind.UNATTESTED_ARM,
+                        "an arm delivered by session s1 names root "
+                                + MARKER_ROOT + " and that session states "
+                                + "no RootMintRow for it, so the arm is "
+                                + "refused"));
+        assertTrue("and the refusal names the slot",
+                named(refused.gaps(), Interaction.of(InteractionKind.WIRE,
+                        first, consumer).id()));
+        int delivered = 0;
+        for (Family family : refused.families()) {
+            delivered += family.arms().size();
+        }
+        assertEquals("so that session contributes no arm and the slot's "
+                        + "family carries the seed's alone: "
+                        + refused.families(), 1, delivered);
     }
 
     // ------------------------------------------------------------------
@@ -1067,6 +1152,54 @@ public class ComposerTest {
         assertTrue("past the instant its session read, which is what the "
                         + "skew IS: " + at,
                 Long.parseLong(at.trim()) > 1000L);
+
+        // R3: AND A WINDOWED ROOT BESIDE THE CLOCK DOES NOT TAKE THE CLAIM
+        // AWAY.  Same clock, plus one declared counter the case gave a
+        // window: ordinal 0 is sat (a clock is free in every valuation),
+        // and so is every moved ordinal, because moving the counter does
+        // the clock witness no harm.  The moved-root loop asked
+        // `polarityDecides` of that and filed the blocking
+        // FORMULA_SAT_AT_RECORDED_VALUATION, so a clock-driven case with
+        // any other declared root could never publish CLOCK_SKEW -- which
+        // is the shape of hdfs-11741.  The clock pin is what decides a
+        // clock-driven recorded valuation, and it is asked once.
+        Path driven = folder.newFolder("clock-driven").toPath();
+        Session both = new Session(driven, "s0", false);
+        both.clock("700");
+        both.serial("119994", "+0", "+3");
+        both.decision(ANCHOR, "anchor#u1", "(or (> " + CLOCK + " 1000) "
+                + "(not (> " + CLOCK + " 1000)))", CLOCK_ROOT, 700L);
+        both.target("(and (> " + CLOCK + " 1000) (>= " + SERIAL
+                + " 119994))", false, true);
+        both.write();
+
+        Composer.Composition mixed = compose(driven, 4);
+        ClaimPolicy.Decision decided = ClaimPolicy.decide(mixed, solver());
+        assertEquals("the arm is reachable at the recorded valuation, the "
+                        + "clocks being free there as everywhere", "sat",
+                decided.outcomes().get(0).answer().status());
+        boolean movedIsSatToo = false;
+        for (ClaimPolicy.Outcome outcome : decided.outcomes()) {
+            if (outcome.valuation().ordinal() == 0) continue;
+            movedIsSatToo |= outcome.answer().sat();
+        }
+        assertTrue("and so is a valuation that moved the counter, which is "
+                + "what used to raise the alarm", movedIsSatToo);
+        assertEquals("the clock pin decides it, so the mechanism is the "
+                        + "clock and not the counter",
+                ClaimKind.CLOCK_SKEW, decided.claim().kind());
+        assertEquals("stated at the recorded valuation, where the clock is "
+                        + "already free", 0,
+                decided.claim().valuationOrdinal());
+        assertTrue("with the polarity CLOCK_SKEW carries of its own",
+                decided.claim().polarityDecides());
+        assertNotNull("and the cell the model had to move: "
+                        + decided.claim().movedRoots(),
+                decided.claim().movedRoots().get(CLOCK));
+        assertFalse("the moved-root loop files no alarm about a witness "
+                        + "whose mechanism it never asked about",
+                named(decided.claim().gaps(),
+                        GapKind.FORMULA_SAT_AT_RECORDED_VALUATION));
     }
 
     // ------------------------------------------------------------------

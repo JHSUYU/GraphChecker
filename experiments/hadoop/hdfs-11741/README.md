@@ -22,7 +22,7 @@ workload, so nothing but the declared clock and the block-key serial can open th
 | clock roots | `symbolic-inputs.jsonl`, three callee-level rows | `<org.apache.hadoop.util.Timer: long now()>`, `<org.apache.hadoop.util.Time: long now()>` and `<org.apache.hadoop.util.Time: long monotonicNow()>`, each `"kind": "CLOCK"`. A callee-level declaration makes *every* call site of that clock a root, wherever in the application scope it is called |
 | declared region roots | `symbolic-inputs.jsonl`, three method rows | `BlockTokenSecretManager.updateKeys()`, `.addKeys(ExportedBlockKeys,boolean)` and `.removeExpiredKeys()`. A declared method is a region root by declaration, whether or not the backward slice reaches it — `removeExpiredKeys` reads the clock, decides an expiry and removes nothing in a healthy run, so no demand-directed walk over recorded flows would ever reach it |
 | hook-minted roots | the Hadoop checkout, not this directory | `CausynthSymbolicSource.symbolize("HDFS.BLOCK_KEY.SERIAL_NO", …)` in `BlockTokenSecretManager.updateKeys` roots the counter each new `BlockKey` takes its id from, and `…("HDFS.BLOCK_KEY.EXPIRY_DATE", …)` roots the inherited `DelegationKey#expiryDate`. A hook site owns its field (`CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED`), which is why neither field is listed in `symbolic-inputs.jsonl` |
-| root domains | `root-domains.jsonl`, one row | `HDFS.BLOCK_KEY.SERIAL_NO`, `declaredDomainMin "+0"`, `declaredDomainMax "+3"`: the recorded value and up to three rotations past it. Relative, because the serial starts at a `SecureRandom` int and increments by one per roll, so an absolute range would state something about one recording. A root with no row is pinned to its recording; a clock has a floor of zero and no window |
+| root domains | `root-domains.jsonl`, **no rows** | The file is empty, and deliberately: a root with no row is pinned to its recording, so **`HDFS.BLOCK_KEY.SERIAL_NO` is pinned to the value the recording minted**. Its `+0..+3` window was removed on 2026-09-20, on the case owner's 2026-09-15 ruling that varying the serial cannot open this anchor: the key id `G` the Balancer presents was minted *before* the recording window and is a constant of this run, so no rotation of the serial changes which key id the DataNode is asked to look up. The mechanism this case is about is the two clocks, not the counter. The window only added three valuations that decide nothing, and in the live run its one effect was to let arms produced under a refused obligation's world (`SERIAL_NO=182910`) be selected, mislabelling a two-clock witness as `MARKER_FLIPPED`. The file stays EMPTY rather than carrying a `#` note, because `contract/RootDomain.declared` reads it through `RowCodec.readJsonl`, which parses every non-blank line as JSON. A clock has a floor of zero and no window, and is never declared here |
 | wire mappings | `communication-mappings.jsonl`, three `WIRE_FLOW` rows | `block-key-id` and `block-key-expiry-date` (`CALL_ARGUMENT` into the `BlockKeyProto` builder, `CALL_RETURN` out of the proto getter) and `data-encryption-key-id` (`CALL_ARGUMENT` at the SASL client, `METHOD_PARAMETER` 0 of `retrieveDataEncryptionKey`). Declared ports are tracked and mint nothing: the consumer gets the producer's own propagated expression |
 | loop bounds | `loop-bounds.jsonl`: three rows at `loopBodyBound: 8`; `causynth_loop_default_bound=8` | the expiry scan, the block-key reply conversion and the Balancer's key-updater loop. The file's header says which key-plumbing loops are deliberately left undeclared, and why |
 
@@ -51,9 +51,12 @@ CASES=hdfs-11741 bash experiments/hadoop/accept/accept.sh
 ## What the harness expects
 
 `report.py` passes this case on `claim` `SAT_CANDIDATE`, `finalStatus` `FINAL_READY`, empty
-`blockers` and no open BLOCKING gap, `polarityDecides` true, `valuationOrdinal` >= 1,
-non-empty `movedRoots`, and a `findingKind` of `CLOCK_SKEW` or `MARKER_FLIPPED` — either the
-clocks disagreed, or the serial moved inside its declared domain.
+`blockers` and no open BLOCKING gap, `polarityDecides` true, non-empty `movedRoots`, and a
+`findingKind` of `CLOCK_SKEW` or `MARKER_FLIPPED`. The expected finding is `CLOCK_SKEW` at
+`valuationOrdinal` 0: the case declares no windowed root, so the recorded valuation is the only
+one, and the witness is the clock cells the model had to move (the NameNode's second rotation
+and the DataNode's refresh); `polarityDecides` there means pinning every clock cell to what the
+recording read makes the query unsat.
 
 ## Status
 

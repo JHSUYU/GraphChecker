@@ -71,7 +71,37 @@ final class RowPlaceholderMint {
      */
     static void roots(ActiveRegion active,
                               OccurrenceAddress occurrence) {
-        Map<String, String[]> installed = mintedLocations(active);
+        roots(active, occurrence, true);
+    }
+
+    /**
+     * THE MINTS ALONE, for an activation that will state nothing else.
+     *
+     * <p>An activation the run ABANDONS -- one that did not take the
+     * decision its obligation flips -- publishes no decisions, no writes
+     * and no anchor, because none of those is a fact about a path anyone
+     * asked for.  Its MINTS are a different kind of fact: the mint already
+     * symbolized the cell, the symbol is in the VM, and every row the
+     * session's other activations publish carries it.  Withholding the row
+     * too is what left hdfs-11741 campaign #4 with seven sessions whose
+     * expressions name a declared root they publish no RootMintRow for --
+     * e635d55d and ed4ab35c with ten each, HDFS.BLOCK_KEY.SERIAL_NO among
+     * them -- and an arm the composer could not guard.</p>
+     *
+     * <p>Only the DECLARED ROOTS: a placeholder is the read a declared
+     * region input stands for, and an abandoned activation's reads are not
+     * published either.  Its {@code installed} table is read out of the
+     * write log, which this activation never read out.</p>
+     */
+    static void mints(ActiveRegion active, OccurrenceAddress occurrence) {
+        roots(active, occurrence, false);
+    }
+
+    private static void roots(ActiveRegion active,
+                              OccurrenceAddress occurrence, boolean whole) {
+        Map<String, String[]> installed = whole
+                ? mintedLocations(active)
+                : java.util.Collections.<String, String[]>emptyMap();
         Set<String> stated = new LinkedHashSet<String>();
         for (JsonObject row : active.symbolizedRows) {
             String symbol = vmSymbol(row);
@@ -100,7 +130,7 @@ final class RowPlaceholderMint {
             // for a range with two values in it.
             RootKind kind = kindOf(row);
             if (sourceId.isEmpty() && kind == RootKind.INTEGRAL) {
-                placeholder(occurrence, row, symbol, installed);
+                if (whole) placeholder(occurrence, row, symbol, installed);
                 continue;
             }
             String rootId = sourceId.isEmpty()
@@ -132,6 +162,7 @@ final class RowPlaceholderMint {
                     optionalString(row, "domainMin"),
                     optionalString(row, "domainMax"), true);
         }
+        if (!whole) return;
         // Every declared region input this activation never symbolized.  A
         // declaration the replay silently does not reach is the one failure
         // mode that reads downstream as "this branch is concrete":

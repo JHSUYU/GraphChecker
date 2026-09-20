@@ -1782,6 +1782,13 @@ public final class ConcolicRegionRuntime {
             if (!active.abandoned) endLiveSelectedRegion();
         }
         if (!publishRows) {
+            // The path this activation ran is withheld; the SYMBOLS it put
+            // into the VM are not, because they are already in every other
+            // activation's expressions.  One of the two, always: a mint
+            // nothing admitted owned refused itself at the mint
+            // (RootMint#mintUnattributed) and minted no symbol, and one that
+            // did is rowed here whatever this activation's own fate.
+            RowPublication.publishMints(active);
             configuration().releaseCandidate(active.activation);
             if (active.terminalGap && !active.activation.loopBodyRoot) {
                 active.activation.reserveCompletedEvidence(false);

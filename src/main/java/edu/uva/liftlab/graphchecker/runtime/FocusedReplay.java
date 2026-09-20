@@ -66,6 +66,62 @@ public final class FocusedReplay {
     private static final Set<String> ROOT_MINTS =
             new LinkedHashSet<String>();
 
+    /**
+     * One decision this replay INHERITED: its parent's flip, or one of
+     * theirs, carried down the chain by the focus row.
+     *
+     * <p>A focused replay runs inside the world of the session its path was
+     * cut from ({@code explore/Corpus.World}), and the flips that session
+     * was held to are part of that world: 11741's witness is dn1's expiry
+     * compare flipped a second time on a refresh path that exists only
+     * because nn0's rotation stopped exporting the key.  So the replay is
+     * held to every one of them, exactly as it is to its own flip -- same
+     * (occurrence, site, ordinal) join, same refusal on the wrong arm --
+     * while the RESULT ROW it publishes stays the primary obligation's
+     * alone, because one worker answers one verdict.</p>
+     */
+    private static final class Inherited {
+        private final String at;
+        private final String siteId;
+        private final int ordinal;
+        private final boolean outcome;
+        private final String obligationId;
+        /** Whether this replay has seen that occurrence take that arm. */
+        private boolean taken;
+        /** Why it cannot have, once it has taken the other one. */
+        private String refusal = "";
+
+        private Inherited(String at, String siteId, int ordinal,
+                          boolean outcome, String obligationId) {
+            this.at = at;
+            this.siteId = siteId;
+            this.ordinal = ordinal;
+            this.outcome = outcome;
+            this.obligationId = obligationId;
+        }
+
+        private String render() {
+            return siteId + "#" + ordinal + " -> " + outcome
+                    + " at occurrence " + at + " (obligation "
+                    + obligationId + ")";
+        }
+    }
+
+    /** The flips this replay inherited, in the focus row's order. */
+    private static final List<Inherited> INHERITED =
+            new ArrayList<Inherited>();
+
+    /**
+     * The occurrences those flips are addressed at, by the contract's id.
+     *
+     * <p>Focused, so their mints plant and their decisions are published --
+     * and NEVER abandoned: {@link #complete} asks only the primary flip's
+     * own occurrence, because an inherited flip is a condition this replay
+     * is judged on and not a prefix it is driven to.</p>
+     */
+    private static final Set<String> INHERITED_OCCURRENCES =
+            new LinkedHashSet<String>();
+
     private FocusedReplay() {
     }
 
@@ -87,7 +143,8 @@ public final class FocusedReplay {
         if (occurrence == null) return false;
         synchronized (LOCK) {
             if (FOCUSED_OCCURRENCES.contains(occurrence.render())
-                    || ROOT_MINTS.contains(occurrence.id())) {
+                    || ROOT_MINTS.contains(occurrence.id())
+                    || INHERITED_OCCURRENCES.contains(occurrence.id())) {
                 return true;
             }
         }
@@ -202,6 +259,28 @@ public final class FocusedReplay {
             for (Obligation obligation : OBLIGATIONS) {
                 observe(obligation, at, siteId, ordinal, outcome);
             }
+            // THE SAME JOIN for a flip this replay inherited: the occurrence
+            // the focus row addresses it at, its site and its ordinal.  It
+            // refuses nothing and abandons nothing -- it is a condition on
+            // the ADMISSION of the primary obligation, answered in
+            // {@link #results}.
+            for (Inherited flip : INHERITED) {
+                if (flip.taken || !flip.refusal.isEmpty()) continue;
+                if (!flip.at.equals(at)) continue;
+                if (!flip.siteId.equals(Text.safe(siteId))
+                        || flip.ordinal != ordinal) {
+                    continue;
+                }
+                if (outcome == flip.outcome) {
+                    flip.taken = true;
+                    continue;
+                }
+                flip.refusal = "wrong decision at " + flip.siteId + "#"
+                        + flip.ordinal + " of occurrence " + flip.at
+                        + ": took " + outcome + ", the flip this replay "
+                        + "INHERITED from the session its path was cut "
+                        + "from is " + flip.render();
+            }
         }
     }
 
@@ -272,17 +351,47 @@ public final class FocusedReplay {
      * Whether this occurrence has taken the decision its obligation flips.
      *
      * <p>True for a replay with no obligation: there is no prefix to
-     * complete, and a seed activation is never abandoned for one.</p>
+     * complete, and a seed activation is never abandoned for one.  True as
+     * well for a focused occurrence NO obligation's flip is addressed at:
+     * the question is not asked of it, so it has no failing answer.</p>
+     *
+     * <p>THE SAME JOIN {@link #observe} TAKES (R4a), on the other side of
+     * it.  A decision is credited to the obligation whose {@code
+     * focusedOccurrenceId} it happened at, so the terminal that answers the
+     * obligation is that same occurrence's -- and the FOCUSED SET is
+     * wider than it: every factor member, and the MINT of each assigned
+     * root.  Asked occurrence-blind, this refused the flip's own question
+     * at a mint's terminal, and {@code judgeFinishedOccurrence} abandoned
+     * the mint -- which throws away every row that occurrence published.
+     * HDFS-17960 on 39bedd768, obligation {@code 793875fb482a10a4}: its
+     * flip is at {@code applyEditLogOp@8/deleteSnapshot} ({@code
+     * focusedOccurrenceId ea10d7e883e23973}) and its {@code rootMints}
+     * name {@code applyEditLogOp@7/deleteSnapshot} ({@code
+     * 4786cb8a1d2bd655}), a DIFFERENT occurrence.  The mint at @7 finished
+     * first, its own flip had not happened and could not have, and the
+     * replay abandoned it: 42 decision rows and the session's ONLY root
+     * mint row went with it, leaving a 0-byte {@code roots.jsonl}.  The
+     * sibling obligation {@code cb67875d1d896d4d}, whose flip and mint are
+     * the same occurrence, kept everything in the same wave.</p>
+     *
+     * <p>AND TRUE FOR EVERY OTHER MEMBER OF THE FOCUSED SET.  Only the
+     * flip's OWN occurrence can complete it -- the same join {@link #observe}
+     * takes, on the other side of it -- so only that one is asked here: a
+     * root's mint, a factor member and the occurrence of a flip this replay
+     * INHERITED are focused so that they plant and publish, and abandoning
+     * one of them for a decision it was never asked to take would throw
+     * away every row it published.</p>
      */
     public static boolean complete(OccurrenceAddress occurrence) {
         load();
-        if (task == null || !focused(occurrence)) return true;
+        if (task == null || occurrence == null) return true;
+        if (!focused(occurrence)) return true;
+        String at = occurrence.id();
         synchronized (LOCK) {
             for (Obligation obligation : OBLIGATIONS) {
-                if (!FLIPPED.contains(Text.safe(
-                        obligation.obligationId()))) {
-                    return false;
-                }
+                String id = Text.safe(obligation.obligationId());
+                if (!Text.safe(FOCUS.get(id)).equals(Text.safe(at))) continue;
+                if (!FLIPPED.contains(id)) return false;
             }
             return true;
         }
@@ -377,6 +486,12 @@ public final class FocusedReplay {
                     // thing this gate does is refuse one: every other
                     // verdict below keeps the words it already had.
                     String unstated = unstated(obligation);
+                    // AND THE WORLD HAS TO HOLD.  A replay whose inherited
+                    // flip was contradicted, or never reached at all, ran
+                    // in a world other than the one its path was cut from,
+                    // so the path it recorded is not the path the next wave
+                    // would cut from it.
+                    if (unstated.isEmpty()) unstated = inherited();
                     results.add(unstated.isEmpty()
                             ? ObligationResult.of(id, Verdict.ADMITTED,
                                     sessionId,
@@ -422,6 +537,30 @@ public final class FocusedReplay {
      *
      * <p>Called under {@link #LOCK}.</p>
      */
+    /**
+     * Why the world this replay inherited did not hold, or {@code ""}.
+     *
+     * <p>Two ways, and the row names which flip it was either way: the
+     * occurrence took the other arm, or it never took that decision at all.
+     * Both say the path this replay recorded is not a path of the world the
+     * obligation was cut from.</p>
+     *
+     * <p>Called under {@link #LOCK}.</p>
+     */
+    private static String inherited() {
+        for (Inherited flip : INHERITED) {
+            if (!flip.refusal.isEmpty()) return flip.refusal;
+        }
+        for (Inherited flip : INHERITED) {
+            if (!flip.taken) {
+                return "this replay never reached the flip it INHERITED "
+                        + "from the session its path was cut from: "
+                        + flip.render();
+            }
+        }
+        return "";
+    }
+
     private static String unstated(Obligation obligation) {
         if (!unmatchedPrefix.isEmpty()) return unmatchedPrefix;
         List<String> missing = new ArrayList<String>();
@@ -455,8 +594,10 @@ public final class FocusedReplay {
      * clockDeltas} (root id to the skew to add to this replay's own
      * reading), {@code rootMints} (root id to the occurrence the recording
      * mints it at, which this replay focuses so that the assignment is
-     * planted there), {@code answers} (attach endpoint id to value) and
-     * {@code unproducible}.  That row IS
+     * planted there), {@code inheritedFlips} (the flips of the session this
+     * obligation's path was cut from, each {focusedOccurrenceId, siteId,
+     * ordinal, outcome, obligationId}), {@code answers} (attach endpoint id
+     * to value) and {@code unproducible}.  That row IS
      * the focused task: the replay applies the assignments at the mints of
      * the focused occurrence, the answers at its attaches, and enforces the
      * flip at the named decision.</p>
@@ -521,6 +662,39 @@ public final class FocusedReplay {
                     // OccurrenceAddress.id() is for.  The same join the
                     // flip takes (FOCUS, R4a).
                     if (at != null) ROOT_MINTS.add(at.id());
+                }
+                // THE FLIPS THIS REPLAY INHERITED, in the row's order: its
+                // parent's own flip first, then the ones its parent
+                // inherited.  Their occurrences are focused so their mints
+                // plant and their decisions are published; they are never
+                // abandoned ({@link #complete}) and they answer no result
+                // row of their own -- they are conditions on the primary
+                // obligation's admission.
+                if (row.has("inheritedFlips")
+                        && !row.get("inheritedFlips").isJsonNull()) {
+                    for (JsonElement element
+                            : row.getAsJsonArray("inheritedFlips")) {
+                        if (!element.isJsonObject()) continue;
+                        JsonObject carried = element.getAsJsonObject();
+                        if (!carried.has("ordinal") || !carried.has("outcome")) {
+                            SHORTFALLS.add("the focus row for obligation "
+                                    + obligationId + " states an inherited "
+                                    + "flip at " + string(carried, "siteId")
+                                    + " with no "
+                                    + (carried.has("ordinal") ? "outcome"
+                                    : "ordinal") + ", so this replay cannot"
+                                    + " be held to the world it was cut"
+                                    + " from");
+                            continue;
+                        }
+                        String at = string(carried, "focusedOccurrenceId");
+                        INHERITED.add(new Inherited(at,
+                                string(carried, "siteId"),
+                                carried.get("ordinal").getAsInt(),
+                                carried.get("outcome").getAsBoolean(),
+                                string(carried, "obligationId")));
+                        if (!at.isEmpty()) INHERITED_OCCURRENCES.add(at);
+                    }
                 }
                 FOCUSED_TASKS.add(string(row, "taskId"));
                 // The row states which occurrence it focuses, so the Task
@@ -760,6 +934,8 @@ public final class FocusedReplay {
             FLIPPED.clear();
             FOCUSED_TASKS.clear();
             FOCUSED_OCCURRENCES.clear();
+            INHERITED.clear();
+            INHERITED_OCCURRENCES.clear();
             SHORTFALLS.clear();
         }
     }
