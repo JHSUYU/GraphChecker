@@ -2060,6 +2060,107 @@ public class ComposerTest {
     }
 
     // ------------------------------------------------------------------
+    // 15. The closure follows the version chain INSIDE a joined write.
+    // ------------------------------------------------------------------
+
+    /**
+     * 11741's shape: the anchor reads the version the PUT loop produced,
+     * and what the map lacks is what an EARLIER occurrence removed from it
+     * under a clock it read.  No row of the session joins the two -- the
+     * put loop published no read of the map -- and the only statement that
+     * the removal is under this version is inside the version's own
+     * expression, the mutation node naming the event it was made at.
+     * Without following it the composed query declared no cell of the
+     * removing occurrence's clock and stated "the map lacks the key" as a
+     * bare fact of the recording.
+     */
+    @Test
+    public void aJoinedWritesChainReachesTheOccurrenceUnderIt()
+            throws Exception {
+        Composer.Composition chained = versionChain(
+                folder.newFolder("version-chain").toPath(), true);
+        assertEquals("the path is admitted", 1, chained.paths().size());
+        assertEquals("the removing occurrence's clock is a cell of the "
+                        + "composition", Collections.singletonList(CLOCK),
+                chained.clockCells());
+        assertTrue("and its decision is a conjunct of the path, before the "
+                        + "write the chain reached it at: "
+                        + fatalArm(chained),
+                fatalArm(chained).contains(SmtLowering.legalSymbols(
+                        "(> " + CLOCK + " 300)")));
+
+        // The same corpus, with the mutation node that names that write
+        // absent from the chain: nothing states the removal is under this
+        // version, so nothing reaches the occurrence that made it.
+        Composer.Composition alone = versionChain(
+                folder.newFolder("version-chain-flat").toPath(), false);
+        assertEquals("the path is admitted either way", 1,
+                alone.paths().size());
+        assertTrue("no clock cell reaches a composition whose closure stops "
+                        + "at the writer the read named",
+                alone.clockCells().isEmpty());
+        assertFalse("and no decision of that occurrence is in the path: "
+                        + fatalArm(alone),
+                fatalArm(alone).contains(SmtLowering.legalSymbols(
+                        "(> " + CLOCK + " 300)")));
+    }
+
+    /**
+     * One session: A removes a key under a clock, B puts one back, the
+     * anchor reads B's version.  {@code chained} says whether B's chain
+     * states the event A's write was made at.
+     */
+    private Composer.Composition versionChain(Path iteration,
+                                              boolean chained)
+            throws IOException {
+        LocationId keys = LocationId.of(LocationKind.MAP, "474", "-3");
+        Session session = new Session(iteration, "s0", false);
+        session.activation(UPSTREAM);
+        session.activation(PRODUCER);
+        session.marker("false");
+        session.clock("700");
+        // A: the expiry decision, over the clock this occurrence read, and
+        // then the removal it made -- the decision BEFORE the write, so it
+        // is in the prefix the chain reaches A at.
+        session.decision(UPSTREAM, "up#u15", "(> " + CLOCK + " 300)",
+                CLOCK_ROOT, 700L);
+        session.expression("EXPR.chain.a", removal(null));
+        session.write(Endpoint.of(UPSTREAM, "Manager#remove#22:WRITE",
+                at("w#a", 0), 0), keys, 5L, "EXPR.chain.a");
+        // B: the put loop, whose state rests on A's removal.  The event id
+        // is the VM's, and in this VM a write's version, its row's seq and
+        // that event are one counter -- so 5 here IS A's write.
+        session.expression("EXPR.chain.b", relation("ASSOCIATIVE", "PUT",
+                "java/util/HashMap", chained ? removal(Long.valueOf(5L))
+                        : snapshot(), integer("I", 9L), integer("I", 7L)));
+        session.write(Endpoint.of(PRODUCER, "Manager#addKeys#71:WRITE",
+                at("w#b", 0), 0), keys, 9L, "EXPR.chain.b");
+        // The anchor's read of the map, at the version B produced.
+        session.read(Endpoint.of(ANCHOR, "Manager#retrieve#18:READ",
+                        at("r#1", 0), 0), keys, 9L, "MAP/474#-3@v9",
+                "java/util/HashMap", null);
+        session.target(MARKER, false, true);
+        session.write();
+        return compose(iteration, 2);
+    }
+
+    /** The map as the recording states it before anything was put in. */
+    private static JsonObject snapshot() {
+        return relation("ASSOCIATIVE", "SNAPSHOT_BASE", "java/util/HashMap",
+                relation("ASSOCIATIVE", "STATE", "java/util/HashMap",
+                        symbol("M_L'java/util/HashMap'_474",
+                                "java/util/HashMap")));
+    }
+
+    /** One removal from it, at the VM event it was made at, or at none. */
+    private static JsonObject removal(Long event) {
+        JsonObject node = relation("ASSOCIATIVE", "REMOVE",
+                "java/util/HashMap", snapshot(), integer("I", 5L));
+        if (event != null) node.addProperty("eventId", event.longValue());
+        return node;
+    }
+
+    // ------------------------------------------------------------------
     // Fixture.
     // ------------------------------------------------------------------
 

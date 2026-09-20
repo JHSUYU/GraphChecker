@@ -37,6 +37,27 @@ public final class ContainerStateModel {
     }
 
     /**
+     * Whether this container operation CHANGES the state it stands on.
+     *
+     * <p>The whole mutating vocabulary {@link ContainerSmtCodec} lowers:
+     * {@code WRITE}, {@code APPEND}, {@code INSERT} and {@code REMOVE} on
+     * an indexed container, {@code PUT}, {@code REMOVE}, {@code REMOVE_AT}
+     * and {@code REMOVE_IF} on an associative one, and {@code CLEAR} on
+     * either.  Every other operation the codec names -- {@code STATE},
+     * {@code READ}, {@code SIZE}, {@code CONTAINS}, {@code IS_EMPTY}, the
+     * views and cursors, and {@code SNAPSHOT_BASE}, which states where a
+     * chain was BASED and not a change made to it -- observes and does not
+     * mutate.</p>
+     */
+    static boolean mutates(String operation) {
+        return "WRITE".equals(operation) || "APPEND".equals(operation)
+                || "INSERT".equals(operation) || "REMOVE".equals(operation)
+                || "REMOVE_AT".equals(operation)
+                || "REMOVE_IF".equals(operation) || "PUT".equals(operation)
+                || "CLEAR".equals(operation);
+    }
+
+    /**
      * The cell that holds Java null: one spelling for every caller.
      *
      * <p>It is the value an absent element denotes, the value a refused

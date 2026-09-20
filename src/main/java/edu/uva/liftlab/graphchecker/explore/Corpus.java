@@ -119,6 +119,18 @@ public final class Corpus implements Arms.Rows {
     /** session|locationKey -> every write of it, in that session. */
     private final Map<String, List<WriteRow>> writesByLocation =
             new LinkedHashMap<String, List<WriteRow>>();
+    /**
+     * session|version -> the one write of that session at that version.
+     *
+     * <p>Over ALL locations, because an expression names the write it rests
+     * on by the VM's event id and not by a location: the write's version,
+     * its row's {@code seq} and that event id are one monotone counter per
+     * session.  A session that gave two locations the same version names no
+     * write by version alone, so the entry is POISONED rather than decided
+     * by which row was read first.</p>
+     */
+    private final Map<String, WriteRow> writeAtVersion =
+            new LinkedHashMap<String, WriteRow>();
     /** interaction id -> the attaches whose own pairing names it. */
     private final Map<String, List<AttachRow>> attachesByInteraction =
             new LinkedHashMap<String, List<AttachRow>>();
@@ -316,6 +328,9 @@ public final class Corpus implements Arms.Rows {
             writeByVersion.put(versionKey(session.sessionId(),
                     SmtLowering.locationKey(row.location()),
                     row.version()), row);
+            String atVersion = session.sessionId() + "|" + row.version();
+            writeAtVersion.put(atVersion,
+                    writeAtVersion.containsKey(atVersion) ? null : row);
             add(writesOn, row.endpoint().occurrence().id(), row);
             add(writesByLocation, session.sessionId() + "|"
                     + SmtLowering.locationKey(row.location()), row);
@@ -663,6 +678,21 @@ public final class Corpus implements Arms.Rows {
                             long version) {
         return version < 0 ? null : writeByVersion.get(
                 versionKey(sessionId, locationKey, version));
+    }
+
+    /**
+     * The write one SESSION EVENT is, whatever location it wrote.
+     *
+     * <p>What {@link #writeOf} answers for a read that names a location and
+     * a version of it; this answers for an expression that names the write
+     * it rests on by event id alone.  {@code null} is the honest answer to
+     * an event this session published no write row for -- a VM event
+     * outside the write log -- and to a version two locations of one
+     * session share.</p>
+     */
+    public WriteRow writeAt(String sessionId, long version) {
+        return version < 0 ? null
+                : writeAtVersion.get(sessionId + "|" + version);
     }
 
     /** Every occurrence of one node that writes or reads one location. */
