@@ -1152,6 +1152,54 @@ public class ComposerTest {
         assertTrue("past the instant its session read, which is what the "
                         + "skew IS: " + at,
                 Long.parseLong(at.trim()) > 1000L);
+
+        // R3: AND A WINDOWED ROOT BESIDE THE CLOCK DOES NOT TAKE THE CLAIM
+        // AWAY.  Same clock, plus one declared counter the case gave a
+        // window: ordinal 0 is sat (a clock is free in every valuation),
+        // and so is every moved ordinal, because moving the counter does
+        // the clock witness no harm.  The moved-root loop asked
+        // `polarityDecides` of that and filed the blocking
+        // FORMULA_SAT_AT_RECORDED_VALUATION, so a clock-driven case with
+        // any other declared root could never publish CLOCK_SKEW -- which
+        // is the shape of hdfs-11741.  The clock pin is what decides a
+        // clock-driven recorded valuation, and it is asked once.
+        Path driven = folder.newFolder("clock-driven").toPath();
+        Session both = new Session(driven, "s0", false);
+        both.clock("700");
+        both.serial("119994", "+0", "+3");
+        both.decision(ANCHOR, "anchor#u1", "(or (> " + CLOCK + " 1000) "
+                + "(not (> " + CLOCK + " 1000)))", CLOCK_ROOT, 700L);
+        both.target("(and (> " + CLOCK + " 1000) (>= " + SERIAL
+                + " 119994))", false, true);
+        both.write();
+
+        Composer.Composition mixed = compose(driven, 4);
+        ClaimPolicy.Decision decided = ClaimPolicy.decide(mixed, solver());
+        assertEquals("the arm is reachable at the recorded valuation, the "
+                        + "clocks being free there as everywhere", "sat",
+                decided.outcomes().get(0).answer().status());
+        boolean movedIsSatToo = false;
+        for (ClaimPolicy.Outcome outcome : decided.outcomes()) {
+            if (outcome.valuation().ordinal() == 0) continue;
+            movedIsSatToo |= outcome.answer().sat();
+        }
+        assertTrue("and so is a valuation that moved the counter, which is "
+                + "what used to raise the alarm", movedIsSatToo);
+        assertEquals("the clock pin decides it, so the mechanism is the "
+                        + "clock and not the counter",
+                ClaimKind.CLOCK_SKEW, decided.claim().kind());
+        assertEquals("stated at the recorded valuation, where the clock is "
+                        + "already free", 0,
+                decided.claim().valuationOrdinal());
+        assertTrue("with the polarity CLOCK_SKEW carries of its own",
+                decided.claim().polarityDecides());
+        assertNotNull("and the cell the model had to move: "
+                        + decided.claim().movedRoots(),
+                decided.claim().movedRoots().get(CLOCK));
+        assertFalse("the moved-root loop files no alarm about a witness "
+                        + "whose mechanism it never asked about",
+                named(decided.claim().gaps(),
+                        GapKind.FORMULA_SAT_AT_RECORDED_VALUATION));
     }
 
     // ------------------------------------------------------------------
