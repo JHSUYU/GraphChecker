@@ -102,6 +102,7 @@ public final class ObligationSolverMain {
                                     + proposal.taskId()), "",
                     Collections.<String, String>emptyMap(),
                     Collections.<String, String>emptyMap(),
+                    Collections.<Corpus.Flip>emptyList(),
                     Collections.singletonList(GapRow.of(ExploreCodec.EXPLORATION,
                             GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                             obligationId, "the obligation names a path the "
@@ -112,7 +113,7 @@ public final class ObligationSolverMain {
         return publish(out, candidate.task,
                 outcome.issued() ? outcome.obligation : proposal,
                 outcome.result, outcome.smt2, outcome.clockDeltas,
-                outcome.rootMints, outcome.gaps);
+                outcome.rootMints, outcome.inheritedFlips, outcome.gaps);
     }
 
     /**
@@ -133,6 +134,7 @@ public final class ObligationSolverMain {
                                       ObligationResult result, String smt2,
                                       Map<String, String> clockDeltas,
                                       Map<String, String> rootMints,
+                                      List<Corpus.Flip> inheritedFlips,
                                       List<GapRow> gaps) throws IOException {
         JsonObject row = RowCodec.writeObligationResult(result);
         row.addProperty("schemaVersion", 1);
@@ -157,7 +159,7 @@ public final class ObligationSolverMain {
         List<JsonObject> focus = new ArrayList<JsonObject>();
         if (result.verdict() == Verdict.SAT_MODEL_READY) {
             focus.add(replayTask(task, obligation, clockDeltas,
-                    rootMints));
+                    rootMints, inheritedFlips));
         }
         RowCodec.writeJsonl(out.resolve(ObligationDir.FOCUSED_TASK), focus);
         return row;
@@ -183,7 +185,8 @@ public final class ObligationSolverMain {
     private static JsonObject replayTask(Task focused,
                                          Obligation obligation,
                                          Map<String, String> clockDeltas,
-                                         Map<String, String> rootMints) {
+                                         Map<String, String> rootMints,
+                                         List<Corpus.Flip> inheritedFlips) {
         JsonObject task = new JsonObject();
         task.addProperty("schemaVersion", 1);
         task.addProperty("kind", "FOCUSED_TASK");
@@ -208,6 +211,19 @@ public final class ObligationSolverMain {
         flip.addProperty("ordinal", obligation.ordinal());
         flip.addProperty("outcome", obligation.flippedOutcome());
         task.add("flip", flip);
+        // THE FLIPS THIS REPLAY INHERITS.  The path this obligation was cut
+        // from ran inside a world of its own, and its flips are part of it:
+        // the replay is held to each one exactly as it is to the flip above
+        // -- a wrong arm un-admits the obligation -- and their occurrences
+        // run symbolic so their mints plant.  ONE OBLIGATION ROW still:
+        // run_engine.sh reads exactly one verdict per worker, and this
+        // replay answers for the primary flip alone.  Each entry carries the
+        // obligation id that first asked for it, so the chain is readable.
+        JsonArray inherited = new JsonArray();
+        for (Corpus.Flip carried : inheritedFlips) {
+            inherited.add(ExploreCodec.writeFlip(carried));
+        }
+        task.add("inheritedFlips", inherited);
         JsonObject roots = new JsonObject();
         for (Map.Entry<String, String> assignment
                 : obligation.rootAssignments().entrySet()) {

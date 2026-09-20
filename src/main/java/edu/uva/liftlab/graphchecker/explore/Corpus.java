@@ -80,6 +80,83 @@ public final class Corpus implements Arms.Rows {
     /** What one raw symbol of one session names. */
     public enum SymbolKind { ROOT, HANDOFF, READ, UNKNOWN }
 
+    /** One decision a focused replay was held to: whose, where, which arm. */
+    public static final class Flip {
+        /** The occurrence the flip is addressed at, by the contract's id. */
+        public final String focusedOccurrenceId;
+        public final String siteId;
+        public final int ordinal;
+        public final boolean outcome;
+        /** The obligation this flip was originally asked by. */
+        public final String obligationId;
+
+        public Flip(String focusedOccurrenceId, String siteId, int ordinal,
+                    boolean outcome, String obligationId) {
+            this.focusedOccurrenceId = focusedOccurrenceId == null ? ""
+                    : focusedOccurrenceId;
+            this.siteId = siteId == null ? "" : siteId;
+            this.ordinal = ordinal;
+            this.outcome = outcome;
+            this.obligationId = obligationId == null ? "" : obligationId;
+        }
+
+        /** How a refusal names this flip. */
+        public String render() {
+            return siteId + "#" + ordinal + " -> " + outcome
+                    + " at occurrence " + focusedOccurrenceId
+                    + " (obligation " + obligationId + ")";
+        }
+    }
+
+    /**
+     * THE WORLD one session ran in, as its own focus row states it.
+     *
+     * <p>A focused replay is not a variation of the recording: it is the
+     * recording plus everything its obligation asked for -- the roots it
+     * planted, the clocks it skewed, the handoffs it answered, and the
+     * DECISIONS it was held to, its own flip and every flip it inherited.
+     * A candidate cut from one of its paths inherits all of that
+     * ({@link ObligationFactory#solve} merges it, {@link FlipQuery} asserts
+     * it), because the path it is cut from exists only in that world: 11741's
+     * witness is dn1's expiry compare flipped a second time ON the refresh
+     * path a session recorded under nn0's clock skew, and a child that
+     * dropped the skew would ask for a path that run never had.</p>
+     *
+     * <p>The SEED's world is empty -- it read its roots, answered nothing
+     * and was held to no decision -- and so is the world of a session no
+     * obligation worker of this iteration states a focus row for.</p>
+     */
+    public static final class World {
+        public final Map<String, String> rootAssignments;
+        public final Map<String, String> clockDeltas;
+        public final Map<String, String> answers;
+        public final Map<String, String> rootMints;
+        /** The row's own flip first, then the flips it inherited. */
+        public final List<Flip> flips;
+
+        World(Map<String, String> rootAssignments,
+              Map<String, String> clockDeltas,
+              Map<String, String> answers,
+              Map<String, String> rootMints,
+              List<Flip> flips) {
+            this.rootAssignments =
+                    Collections.unmodifiableMap(rootAssignments);
+            this.clockDeltas = Collections.unmodifiableMap(clockDeltas);
+            this.answers = Collections.unmodifiableMap(answers);
+            this.rootMints = Collections.unmodifiableMap(rootMints);
+            this.flips = Collections.unmodifiableList(flips);
+        }
+
+        /** The world of the seed, and of a session with no worker. */
+        static World empty() {
+            return new World(new LinkedHashMap<String, String>(),
+                    new LinkedHashMap<String, String>(),
+                    new LinkedHashMap<String, String>(),
+                    new LinkedHashMap<String, String>(),
+                    new ArrayList<Flip>());
+        }
+    }
+
     /** The iteration these sessions were read from, or null. */
     private final Path iteration;
     private final List<SessionReader> sessions;
@@ -152,9 +229,9 @@ public final class Corpus implements Arms.Rows {
     private final Map<String, RootDomain> declaredDomains =
             new LinkedHashMap<String, RootDomain>();
 
-    /** session id -> root id -> the value the wave assigned that replay. */
-    private final Map<String, Map<String, String>> assignments =
-            new LinkedHashMap<String, Map<String, String>>();
+    /** session id -> the world its focus row states it ran in. */
+    private final Map<String, World> worlds =
+            new LinkedHashMap<String, World>();
 
     private final Arms arms;
 
@@ -174,42 +251,49 @@ public final class Corpus implements Arms.Rows {
             corpus.declaredDomains.putAll(
                     RootDomain.declared(rootDomains));
         }
-        corpus.indexAssignments(iteration);
+        corpus.indexWorlds(iteration);
         return corpus;
     }
 
     /**
-     * What the wave assigned each replay's roots, by the session it ran.
+     * THE WORLD each replay of this iteration ran in, off its FOCUS ROW.
      *
      * <p>A replay handed an assignment PLANTED that value: the runtime
      * writes it into the declared field ({@code
      * ConcolicRegionRuntime#applyFocusedRootAssignment}, off {@code
-     * FocusedReplay#rootAssignment}) and then states NO {@code
-     * recordedValue} on the mint, because a counterfactual is not a
-     * recording.  So what that replay ran the root at is stated by the ASK
-     * and nowhere else, and this is where the corpus reads it.  A corpus
-     * with no obligation workers -- a seed-only one -- states none, and
-     * every root value is then a recording.</p>
+     * FocusedReplay#rootAssignment}), so what that replay ran the root at is
+     * stated by the ASK and nowhere else, and this is where the corpus reads
+     * it.  A corpus with no obligation workers -- a seed-only one -- states
+     * none, and every root value is then a recording.</p>
+     *
+     * <p>THE FOCUS ROW and not {@code obligation.jsonl}: the focus row is
+     * what the replay was DRIVEN by, and it is the only row that states the
+     * whole world -- the clock skews, the mints the assignments were planted
+     * at, and the flips the replay was held to, its own and the ones it
+     * inherited.  The ask file states a subset of it (no clocks, no flips),
+     * and reading a world out of a subset is how a child of a skewed replay
+     * came to be asked for under no skew at all.</p>
      */
-    private void indexAssignments(Path iteration) throws IOException {
+    private void indexWorlds(Path iteration) throws IOException {
         for (ObligationDir worker : ObligationDir.workersIn(iteration)) {
-            for (JsonObject row : RowCodec.readJsonl(worker.obligation())) {
-                Map<String, String> assigned =
-                        ExploreCodec.readObligation(row).rootAssignments();
-                if (assigned.isEmpty()) continue;
-                Map<String, String> bySession =
-                        assignments.get(worker.sessionId());
-                if (bySession == null) {
-                    bySession = new LinkedHashMap<String, String>();
-                    assignments.put(worker.sessionId(), bySession);
-                }
-                bySession.putAll(assigned);
+            for (JsonObject row : RowCodec.readJsonl(worker.focusedTask())) {
+                worlds.put(worker.sessionId(),
+                        ExploreCodec.readWorld(row));
             }
             for (ObligationResult result : RowCodec.readAll(worker.result(),
                     RowCodec::readObligationResult)) {
                 waveVerdicts.put(result.obligationId(), result);
             }
         }
+    }
+
+    /**
+     * The world one session ran in; empty for the seed and for a session no
+     * worker of this iteration states a focus row for.
+     */
+    public World world(String sessionId) {
+        World stated = worlds.get(sessionId == null ? "" : sessionId);
+        return stated == null ? World.empty() : stated;
     }
 
     /**
@@ -723,8 +807,7 @@ public final class Corpus implements Arms.Rows {
      */
     @Override
     public String rootValue(String sessionId, String rootId) {
-        Map<String, String> assigned = assignments.get(sessionId);
-        String wave = assigned == null ? null : assigned.get(rootId);
+        String wave = world(sessionId).rootAssignments.get(rootId);
         if (wave != null && !wave.isEmpty()) return wave;
         Map<String, RootMintRow> bySession = rootsById.get(rootId);
         RootMintRow row = bySession == null ? null : bySession.get(sessionId);
