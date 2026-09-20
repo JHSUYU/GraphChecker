@@ -46,6 +46,39 @@ public final class JavaPrimitiveSmtSemantics {
     private JavaPrimitiveSmtSemantics() {
     }
 
+    /** {@code Long.MAX_VALUE}, as an SMT-LIB numeral. */
+    public static final String JAVA_LONG_MAX = "9223372036854775807";
+
+    /**
+     * A CLOCK cell's domain: a millisecond count in a Java {@code long}.
+     *
+     * <p>ONE RULE, ONE SPELLING.  A clock is read by {@code
+     * System.currentTimeMillis()} and carried in a {@code long}, so the
+     * instants it can hold are {@code [0, Long.MAX_VALUE]} -- and a query
+     * that states only the floor lets the solver answer with an instant no
+     * execution could read.  hdfs-11741 campaign #2 obligation {@code
+     * 1d7997f38133b961} is what that costs: z3 put nn0's second rotation
+     * clock past {@code 2^63}, {@code model - recorded} came back negative,
+     * the focus row carried it as the unsigned {@code
+     * 18446742283726387588}, {@code FocusedReplay.clockSkew} could not
+     * parse it, the mint planted nothing and the session was NOT_ADMITTED
+     * for a world the wave never really asked for.</p>
+     *
+     * <p>Both places a clock variable is declared say it with this: the
+     * flip query's root facts ({@code explore.FlipQuery}) and the
+     * composition's clock cells ({@code compose.Composer}).</p>
+     */
+    public static String clockDomain(String variable) {
+        return "(and (>= " + variable + " 0) (<= " + variable + " "
+                + JAVA_LONG_MAX + "))";
+    }
+
+    /** Whether this decimal is a value a Java {@code long} can hold. */
+    public static boolean fitsJavaLong(BigInteger value) {
+        return value != null
+                && value.bitLength() < Long.SIZE;
+    }
+
     /** Normalizes a source type or VM name to one JVM descriptor. */
     public static String javaTypeDescriptor(String javaType) {
         String value = javaType == null ? ""

@@ -54,6 +54,18 @@ import java.util.Set;
  *       the campaign opens a new epoch from that replay's pairing; the old
  *       table is kept, because it is the evidence of what the epoch was.</li>
  * </ol>
+ *
+ * <p>ONLY AN ADMITTED REPLAY STATES A TOPOLOGY. All four are statements a
+ * SESSION makes about the world this epoch runs, and a session states them
+ * only when its own result rows admit every obligation it ran ({@link
+ * SessionReader#admitted}; a seed is asked nothing and is always an
+ * authority). A replay that did not run the world it was asked for neither
+ * opens a slot nor contradicts one: what it paired is reported {@code
+ * TOPOLOGY_DIVERGENCE} DIAGNOSTIC, the skeleton is unchanged, and the wave
+ * goes on. hdfs-11741 campaign #2 is why: one NOT_ADMITTED replay, whose
+ * mint had planted no clock skew, paired eight consumers with producers the
+ * skeleton does not carry, and the campaign stopped on a world no replay had
+ * run.</p>
  */
 public final class SlotTable {
     /** The file the table lives in, under the iteration directory. */
@@ -202,6 +214,12 @@ public final class SlotTable {
         boolean replaced = contextChanged(corpus, closure, gaps);
         replaced |= unretained(corpus, gaps);
         for (SessionReader session : corpus.sessions()) {
+            // ONLY AN ADMITTED REPLAY STATES A TOPOLOGY ({@link
+            // SessionReader#admitted}).  A session that did not run the
+            // world it was asked for neither grows this skeleton nor
+            // contradicts it: what it paired is REPORTED, DIAGNOSTIC, and
+            // the wave goes on planning from the skeleton it has.
+            boolean authority = session.admitted();
             for (AttachRow attach : session.attaches()) {
                 if (attach.producer() == null) continue;
                 Endpoint consumer = attach.endpoint();
@@ -216,7 +234,7 @@ public final class SlotTable {
                     continue;
                 }
                 switch (take(InteractionKind.WIRE, attach.producer(), consumer,
-                        session.sessionId(), wave, opened, gaps)) {
+                        session.sessionId(), authority, wave, opened, gaps)) {
                     case FILLED: filled++; break;
                     case REPLACED: replaced = true; break;
                     default: break;
@@ -252,20 +270,22 @@ public final class SlotTable {
                 // the causal-anchor chain, and thread start/join.
                 if (contradictsOrder(corpus, read, writer)) {
                     gaps.add(GapRow.of(session.sessionId(),
-                            GapKind.TOPOLOGY_DIVERGENCE, GapClass.BLOCKING,
+                            GapKind.TOPOLOGY_DIVERGENCE,
+                            authority ? GapClass.BLOCKING
+                                    : GapClass.DIAGNOSTIC,
                             consumer.toString(),
                             "the read observed version "
                                     + read.observedVersion() + ", written by "
                                     + writer.endpoint()
                                     + ", which this run orders after the "
-                                    + "read"));
-                    replaced = true;
+                                    + "read" + (authority ? "" : UNADMITTED)));
+                    replaced |= authority;
                     continue;
                 }
                 // No REPLACED case: a state pairing cannot contradict the
                 // catalog, so take() never answers one for a STATE slot.
                 switch (take(InteractionKind.STATE, writer.endpoint(), consumer,
-                        session.sessionId(), wave, opened, gaps)) {
+                        session.sessionId(), authority, wave, opened, gaps)) {
                     case FILLED: filled++; break;
                     default: break;
                 }
@@ -358,15 +378,31 @@ public final class SlotTable {
         public final String skeletonProducerId;
         public final String replayProducerId;
         public final String openedBySession;
+        /**
+         * Whether the replacing session STATES this topology.
+         *
+         * <p>{@link SessionReader#admitted}, read where the session is in
+         * hand.  The arms are held out either way -- the two pairings
+         * cannot both be this epoch's -- and what changes is whether the
+         * row STOPS the composition: a replay that did not run the world
+         * it was asked for contradicts nothing.</p>
+         */
+        public final boolean admitted;
 
         Replacement(String sessionId, String consumerEndpointId,
                     String skeletonProducerId, String replayProducerId,
-                    String openedBySession) {
+                    String openedBySession, boolean admitted) {
             this.sessionId = sessionId;
             this.consumerEndpointId = consumerEndpointId;
             this.skeletonProducerId = skeletonProducerId;
             this.replayProducerId = replayProducerId;
             this.openedBySession = openedBySession;
+            this.admitted = admitted;
+        }
+
+        /** BLOCKING when the session states this topology, else DIAGNOSTIC. */
+        public GapClass cls() {
+            return admitted ? GapClass.BLOCKING : GapClass.DIAGNOSTIC;
         }
 
         /** Both pairings, which is what the gap has to name. */
@@ -377,7 +413,8 @@ public final class SlotTable {
                     + sessionId + " paired it with producer "
                     + replayProducerId + ": two pairings of one consumer are"
                     + " a replacement, not growth, so this epoch's families"
-                    + " take no rows from that session";
+                    + " take no rows from that session"
+                    + (admitted ? "" : UNADMITTED);
         }
     }
 
@@ -409,7 +446,8 @@ public final class SlotTable {
                 }
                 found.add(new Replacement(session.sessionId(),
                         attach.endpoint().id(), held.producer.id(),
-                        attach.producer().id(), held.openedBySession));
+                        attach.producer().id(), held.openedBySession,
+                        session.admitted()));
             }
         }
         return found;
@@ -440,7 +478,16 @@ public final class SlotTable {
         return held.openedBySession.equals(sessionId) ? null : held;
     }
 
-    private enum Outcome { OPENED, FILLED, REPLACED, AMBIGUOUS }
+    private enum Outcome { OPENED, FILLED, REPLACED, AMBIGUOUS, REPORTED }
+
+    /**
+     * What a topology statement of a replay that was not admitted says.
+     *
+     * <p>Appended to the row's own detail, so a reader sees the pairing AND
+     * why nothing was done about it, in one line.</p>
+     */
+    static final String UNADMITTED =
+            " (this replay was not admitted, so it states no topology)";
 
     /**
      * One pair against the skeleton: grow it, fill it, or contradict it.
@@ -463,7 +510,8 @@ public final class SlotTable {
      * than forked into an epoch that no retained set could fix.</p>
      */
     private Outcome take(InteractionKind kind, Endpoint producer,
-                         Endpoint consumer, String sessionId, int wave,
+                         Endpoint consumer, String sessionId,
+                         boolean authority, int wave,
                          List<Slot> opened, List<GapRow> gaps) {
         Slot slot = new Slot(kind, producer, consumer, sessionId, wave);
         String interaction = slot.interactionId();
@@ -473,14 +521,29 @@ public final class SlotTable {
         Slot contradicted = replaced(kind, producer, consumer, sessionId);
         if (contradicted != null) {
             gaps.add(GapRow.of(sessionId, GapKind.TOPOLOGY_DIVERGENCE,
-                    GapClass.BLOCKING, consumer.toString(),
+                    authority ? GapClass.BLOCKING : GapClass.DIAGNOSTIC,
+                    consumer.toString(),
                     "the catalog pairs this consumer with producer "
                             + "endpoint " + contradicted.producer.id()
                             + ", opened by " + contradicted.openedBySession
                             + ", and this replay pairs it with "
                             + producer.id()
-                            + ": a replacement, not growth"));
-            return Outcome.REPLACED;
+                            + ": a replacement, not growth"
+                            + (authority ? "" : UNADMITTED)));
+            return authority ? Outcome.REPLACED : Outcome.REPORTED;
+        }
+        // AND IT OPENS NOTHING EITHER.  A pairing the skeleton does not
+        // hold would GROW it, and growth is a statement about the world
+        // this epoch runs; a replay that did not run the world it was asked
+        // for states that no more than it states a contradiction.
+        if (!authority) {
+            gaps.add(GapRow.of(sessionId, GapKind.TOPOLOGY_DIVERGENCE,
+                    GapClass.DIAGNOSTIC, consumer.toString(),
+                    "this replay pairs this consumer with producer endpoint "
+                            + producer.id() + ", which this epoch's skeleton "
+                            + "does not hold, and no slot is opened for it"
+                            + UNADMITTED));
+            return Outcome.REPORTED;
         }
         Slot held = kind == InteractionKind.WIRE
                 ? slotOfConsumer.get(consumer.id()) : null;
@@ -515,7 +578,11 @@ public final class SlotTable {
     private static boolean unretained(Corpus corpus, List<GapRow> gaps) {
         Set<String> named = new LinkedHashSet<String>();
         boolean divergence = false;
-        for (SessionReader session : corpus.sessions()) {
+        for (SessionReader session : authoritiesFirst(corpus)) {
+            // The same rule: a replay that was not admitted states no
+            // topology, so the region it reached is reported and the
+            // retained set is not held to it.
+            boolean authority = session.admitted();
             for (ActivationRow activation : session.activations()) {
                 if (activation.instrumented()) continue;
                 OccurrenceAddress occurrence = activation.occurrence();
@@ -537,10 +604,12 @@ public final class SlotTable {
                     continue;
                 }
                 gaps.add(GapRow.of(session.sessionId(),
-                        GapKind.TOPOLOGY_DIVERGENCE, GapClass.BLOCKING,
+                        GapKind.TOPOLOGY_DIVERGENCE,
+                        authority ? GapClass.BLOCKING : GapClass.DIAGNOSTIC,
                         occurrence.render(),
-                        "retained set must grow: " + occurrence.regionId()));
-                divergence = true;
+                        "retained set must grow: " + occurrence.regionId()
+                                + (authority ? "" : UNADMITTED)));
+                divergence |= authority;
             }
         }
         return divergence;
@@ -574,6 +643,10 @@ public final class SlotTable {
         }
         boolean replaced = false;
         for (SessionReader session : corpus.sessions()) {
+            // The same rule again: what this replay ran at a code point the
+            // closure holds is a statement about the epoch's topology, and
+            // a replay that was not admitted makes none.
+            boolean authority = session.admitted();
             Set<String> ran = new LinkedHashSet<String>();
             for (ActivationRow activation : session.activations()) {
                 ran.add(activation.occurrence().id());
@@ -589,16 +662,37 @@ public final class SlotTable {
                 // what a second request IS.
                 if (ran.contains(member.id())) continue;
                 gaps.add(GapRow.of(session.sessionId(),
-                        GapKind.TOPOLOGY_DIVERGENCE, GapClass.BLOCKING,
+                        GapKind.TOPOLOGY_DIVERGENCE,
+                        authority ? GapClass.BLOCKING : GapClass.DIAGNOSTIC,
                         occurrence.render(),
                         "the closure holds " + member.context().render()
                                 + " at this code point, this replay did not "
                                 + "run it, and it ran "
-                                + occurrence.context().render() + " there"));
-                replaced = true;
+                                + occurrence.context().render() + " there"
+                                + (authority ? "" : UNADMITTED)));
+                replaced |= authority;
             }
         }
         return replaced;
+    }
+
+    /**
+     * The corpus's sessions, the ones that state a topology first.
+     *
+     * <p>{@link #unretained} publishes ONE row per region, so the class of
+     * that row has to be the strongest statement any session makes about
+     * it: an admitted replay that reached an unretained region is a
+     * BLOCKING fact whichever session the iteration met first.</p>
+     */
+    private static List<SessionReader> authoritiesFirst(Corpus corpus) {
+        List<SessionReader> ordered = new ArrayList<SessionReader>();
+        for (SessionReader session : corpus.sessions()) {
+            if (session.admitted()) ordered.add(session);
+        }
+        for (SessionReader session : corpus.sessions()) {
+            if (!session.admitted()) ordered.add(session);
+        }
+        return ordered;
     }
 
     /** The same code point in the same control context. */

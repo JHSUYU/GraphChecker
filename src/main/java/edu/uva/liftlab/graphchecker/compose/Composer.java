@@ -7,6 +7,7 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Sort;
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Term;
 import edu.uva.liftlab.graphchecker.smt.Arms;
+import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
@@ -493,9 +494,17 @@ public final class Composer {
         if (slots != null) {
             for (SlotTable.Replacement replacement
                     : slots.replacements(corpus)) {
+                // FAIL CLOSED ON THE ARMS, OPEN ON THE CLAIM.  The session
+                // goes into `replacing` either way -- two pairings of one
+                // consumer cannot both be this epoch's, so neither set of
+                // arms may reach a family -- and only an ADMITTED replay's
+                // replacement STOPS the composition ({@link
+                // SessionReader#admitted}).  One that did not run the world
+                // it was asked for states no topology, so its row is a
+                // DIAGNOSTIC and the claim is still made.
                 replacing.add(replacement.sessionId);
                 gaps.add(GapRow.of(replacement.sessionId,
-                        GapKind.TOPOLOGY_DIVERGENCE, GapClass.BLOCKING,
+                        GapKind.TOPOLOGY_DIVERGENCE, replacement.cls(),
                         replacement.consumerEndpointId,
                         replacement.detail()));
             }
@@ -655,11 +664,13 @@ public final class Composer {
         SessionReader reader = corpus.session(session);
         if (reader == null || reader.seed()) return true;
         Set<String> stated = new LinkedHashSet<String>();
-        boolean admitted = true;
+        // ONE PREDICATE, ONE PLACE ({@link SessionReader#admitted}): this
+        // stage names each refusal below, and does not keep a second
+        // opinion about what "admitted" means.
+        boolean admitted = reader.admitted();
         for (ObligationResult result : reader.obligations()) {
             stated.add(result.obligationId());
             if (result.verdict() == Verdict.ADMITTED) continue;
-            admitted = false;
             gap(GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC, session,
                     "this replay states " + result.verdict() + " for the "
                             + "obligation it ran (" + result.obligationId()
@@ -1899,9 +1910,14 @@ public final class Composer {
                 } else {
                     readings.put(symbol, recorded);
                 }
-                lowering.assertNamed("clock_floor__"
+                // A CLOCK CELL IS A MILLISECOND COUNT IN A JAVA long:
+                // floor AND ceiling, spelled in the one place the rule
+                // lives ({@link JavaPrimitiveSmtSemantics#clockDomain}).
+                // Renamed with the fact it states -- no reader outside
+                // this line named clock_floor__.
+                lowering.assertNamed("clock_domain__"
                                 + ArtifactIO.digest(symbol, 10),
-                        "(>= " + symbol + " 0)");
+                        JavaPrimitiveSmtSemantics.clockDomain(symbol));
             }
             if (unminted == 0 && unnamed == 0) continue;
             // The same fact #valuations names for a declared root no
@@ -1964,7 +1980,8 @@ public final class Composer {
      * pairs.  What a root may be is its KIND and the case's declaration: a
      * declared MARKER is free in {recorded, flipped} by kind and needs no
      * declared domain, an INTEGRAL without one is pinned to what the
-     * recording read and is not enumerated, and a CLOCK has a floor and no
+     * recording read and is not enumerated, and a CLOCK has its Java-long
+     * domain and no
      * window.  Every root this skips is named, because which valuations
      * were asked is what the claim's polarity gate is about.</p>
      */
