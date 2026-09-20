@@ -354,21 +354,22 @@ public final class FocusedReplay {
      * complete, and a seed activation is never abandoned for one.</p>
      *
      * <p>AND TRUE FOR EVERY OTHER MEMBER OF THE FOCUSED SET.  Only the
-     * flip's OWN occurrence can complete it, so only that one is asked
-     * here: a root's mint, a factor member and the occurrence of a flip
-     * this replay INHERITED are focused so that they plant and publish,
-     * and abandoning one of them for a decision it was never asked to take
-     * would take its whole row set with it.</p>
+     * flip's OWN occurrence can complete it -- the same join {@link #observe}
+     * takes, on the other side of it -- so only that one is asked here: a
+     * root's mint, a factor member and the occurrence of a flip this replay
+     * INHERITED are focused so that they plant and publish, and abandoning
+     * one of them for a decision it was never asked to take would throw
+     * away every row it published.</p>
      */
     public static boolean complete(OccurrenceAddress occurrence) {
         load();
-        if (task == null || !focused(occurrence)) return true;
-        String at = Text.safe(occurrence.id());
+        if (task == null || occurrence == null) return true;
+        if (!focused(occurrence)) return true;
+        String at = occurrence.id();
         synchronized (LOCK) {
             for (Obligation obligation : OBLIGATIONS) {
                 String id = Text.safe(obligation.obligationId());
-                String owner = Text.safe(FOCUS.get(id));
-                if (!owner.isEmpty() && !owner.equals(at)) continue;
+                if (!Text.safe(FOCUS.get(id)).equals(Text.safe(at))) continue;
                 if (!FLIPPED.contains(id)) return false;
             }
             return true;
