@@ -1372,29 +1372,29 @@ public final class Composer {
      * are all of them, because they are its declared inputs and the target
      * row is one of them.</p>
      *
-     * <p>P3b, the second edge: a joined write's own EXPRESSION is walked
-     * too.  A read joins to ONE version of a container, and that version's
-     * expression is the chain of mutations that made it -- each naming the
-     * session event it was made at ({@link SmtLowering#writeEventsReached}),
-     * which is the version of another write of this session.  Each of those
-     * writes is reached exactly as a joined one is, and its own expression
-     * is walked in turn, so the prefix the path carries covers the
-     * occurrences that produced the state UNDER the version it read and not
-     * only the one that produced the version itself: 11741's map lacked its
-     * key because one occurrence removed it, and only that occurrence's
-     * prefix names the clock it compared against.  An event no write row of
-     * the session covers is a VM event outside the write log (a snapshot
-     * base) and is skipped, because a session that published no row for it
-     * says nothing this closure could conjoin.</p>
+     * <p>P3c, the second edge: the EARLIER VERSIONS of a reached write's own
+     * location are reached with it.  The state of an object at version v is
+     * the result of every earlier mutation of that object in that run, so
+     * each earlier writer's prefix is a reason the value is what it is --
+     * not only the prefix of whichever occurrence made the last change.
+     * 11741's anchor joined the version its DataNode's put loop produced,
+     * and what the map LACKS at that version is what another occurrence
+     * removed from it earlier, under a comparison against the clock it read;
+     * no row of the session joins the two, so without this the composed
+     * query stated "the map lacks the key" as a bare fact of the recording
+     * and declared no cell of that clock.  An earlier write is reached
+     * exactly as a joined one is -- its writer at that write's seq, widening
+     * as ever -- and its own earlier versions are covered by construction,
+     * being earlier still; each (location, version) is handled once.</p>
      */
     private Map<String, Long> closure(String session, TargetRow target) {
         Map<String, Long> reached = new LinkedHashMap<String, Long>();
         reached.put(anchor.id(), target.seq());
         List<String> pending = new ArrayList<String>();
         pending.add(anchor.id());
-        List<WriteRow> chains = new ArrayList<WriteRow>();
-        Set<String> walked = new LinkedHashSet<String>();
-        while (!pending.isEmpty() || !chains.isEmpty()) {
+        List<WriteRow> versions = new ArrayList<WriteRow>();
+        Set<String> handled = new LinkedHashSet<String>();
+        while (!pending.isEmpty() || !versions.isEmpty()) {
             while (!pending.isEmpty()) {
                 String at = pending.remove(0);
                 OccurrenceAddress occurrence = corpus.occurrence(at);
@@ -1408,40 +1408,38 @@ public final class Composer {
                             SmtLowering.locationKey(read.location()),
                             read.observedVersion());
                     if (write == null) continue;
-                    reach(write, reached, pending, chains, walked);
+                    reach(write, reached, pending, versions, handled);
                 }
             }
-            if (chains.isEmpty()) continue;
-            WriteRow write = chains.remove(0);
-            JsonObject expression = corpus.expression(session,
-                    write.expressionRef());
-            if (expression == null) continue;
-            for (Long event : SmtLowering.writeEventsReached(expression)) {
-                WriteRow under = corpus.writeAt(session, event.longValue());
-                if (under == null) continue;
-                reach(under, reached, pending, chains, walked);
+            if (versions.isEmpty()) continue;
+            WriteRow write = versions.remove(0);
+            String key = SmtLowering.locationKey(write.location());
+            for (WriteRow under : corpus.writesOf(session, key)) {
+                if (under.version() >= write.version()) continue;
+                reach(under, reached, pending, versions, handled);
             }
         }
         return reached;
     }
 
     /**
-     * One write this path rests on: its writer is reached, its chain walked.
+     * One write this path rests on: its writer is reached, its state swept.
      *
-     * <p>The same rule whether the write was joined by a read row or named
-     * by another write's expression, because it is the same fact either
-     * way -- this path's value came out of that write.  The ANCHOR is never
-     * reached and its expression is never walked: its cutoff is the target
-     * observation, and a write of its own is not a reason to widen it.</p>
+     * <p>The same rule whether the write was joined by a read row or is an
+     * earlier version of a location already reached, because it is the same
+     * fact either way -- the value this path rests on came out of that
+     * write.  The ANCHOR is never reached and no write of its own is swept:
+     * its cutoff is the target observation, and a write of its own is not a
+     * reason to widen it.</p>
      */
     private void reach(WriteRow write, Map<String, Long> reached,
-                       List<String> pending, List<WriteRow> chains,
-                       Set<String> walked) {
+                       List<String> pending, List<WriteRow> versions,
+                       Set<String> handled) {
         String writer = write.endpoint().occurrence().id();
         if (anchor.id().equals(writer)) return;
-        if (walked.add(SmtLowering.locationKey(write.location()) + "#"
+        if (handled.add(SmtLowering.locationKey(write.location()) + "#"
                 + write.version())) {
-            chains.add(write);
+            versions.add(write);
         }
         Long held = reached.get(writer);
         if (held != null && held.longValue() >= write.seq()) return;

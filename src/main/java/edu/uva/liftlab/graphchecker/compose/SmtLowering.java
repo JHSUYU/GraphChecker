@@ -1808,56 +1808,6 @@ public final class SmtLowering extends VmLoweringCore {
         return into;
     }
 
-    /**
-     * The WRITE EVENTS one recorded expression names (P3b).
-     *
-     * <p>A write's expression is a chain of container operations over the
-     * state the write rested on, and a mutation node in that chain states
-     * the VM event it was made at.  In this VM a write's version, its row's
-     * {@code seq} and that event id are one monotone per-session counter,
-     * so an event id here IS the version of another write of the same
-     * session -- which is how a path that joined to ONE version of a
-     * container reaches the occurrences that produced the versions under
-     * it, and takes their decision prefixes with it.</p>
-     *
-     * <p>Only the MUTATING operations ({@link ContainerStateModel#mutates}).
-     * A {@code STATE}, a {@code READ} or a {@code SNAPSHOT_BASE} names no
-     * change, and the {@code readEventId} a {@code ReadFromExpression}
-     * carries is the event of the READ and not of a write, so neither is a
-     * write of this session and neither is followed.</p>
-     */
-    public static Set<Long> writeEventsReached(JsonElement expression) {
-        Set<Long> events = new LinkedHashSet<Long>();
-        writeEventsReached(expression, events, 0);
-        return events;
-    }
-
-    private static void writeEventsReached(JsonElement expression,
-                                           Set<Long> events, int depth) {
-        if (expression == null || expression.isJsonNull() || depth > 512) {
-            return;
-        }
-        if (expression.isJsonArray()) {
-            for (JsonElement child : expression.getAsJsonArray()) {
-                writeEventsReached(child, events, depth + 1);
-            }
-            return;
-        }
-        if (!expression.isJsonObject()) return;
-        JsonObject node = expression.getAsJsonObject();
-        if (ContainerSmtCodec.EXPRESSION_TYPE.equals(
-                primitiveString(node, "_type"))
-                && ContainerStateModel.mutates(
-                primitiveString(node, "operation"))) {
-            long event = optionalLongInteger(node, "eventId", -1L);
-            if (event >= 0L) events.add(Long.valueOf(event));
-        }
-        for (Map.Entry<String, JsonElement> member : node.entrySet()) {
-            if ("_type".equals(member.getKey())) continue;
-            writeEventsReached(member.getValue(), events, depth + 1);
-        }
-    }
-
     private void reachedSymbols(String text, Set<String> seen,
                                 Set<String> into, Set<String> states,
                                 int depth) {
