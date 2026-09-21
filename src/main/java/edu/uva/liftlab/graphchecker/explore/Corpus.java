@@ -297,6 +297,99 @@ public final class Corpus implements Arms.Rows {
     }
 
     /**
+     * Whether one session's WORLD changed anything this region received.
+     *
+     * <p>A world is asked about an arm only where it reached the region.
+     * The occurrence itself is not the whole region: a factor member is
+     * state-connected to it -- the writers and readers of one location on
+     * one node, the {@code Task.factor()} list the planner computes with
+     * {@code ClosurePlanner.stateConnected} -- and the two run as ONE
+     * symbolic unit, so what the member received is what the occurrence
+     * reads.  HDFS-11741 is the case: dn1's expiry scan runs over the
+     * DataNode's own old map BEFORE the put loop, so its own decisions are
+     * letter for letter the seed's whether or not nn0 skewed its clock;
+     * what nn0's flip changed is the {@code addKeys} occurrence beside it
+     * (four attaches instead of five, other arrival values), and addKeys
+     * writes the very map the scan reads.  Asked of the scan alone the
+     * session looks untouched, the arm keys world-less, and the session
+     * that flipped dn1 alone settles it for every world -- which is exactly
+     * why the witness's second flip was never proposed.</p>
+     *
+     * <p>Four differences, and the SEED is what each is measured against:
+     * the sequence of decisions {@code siteId#ordinal=outcome}, the
+     * multiset of attach {@code arrival} values by endpoint site, the
+     * multiset of read {@code concreteValue}s by endpoint site, and the
+     * seed having no activation of the occurrence at all.  The seed's own
+     * sessionId is never affected -- its world is the empty one -- and a
+     * corpus that states no single recording answers "affected", which
+     * costs a re-proposal and never a lost arm.</p>
+     */
+    public boolean affected(String sessionId, OccurrenceAddress occurrence,
+                            List<OccurrenceAddress> factor) {
+        if (sessionId == null || sessionId.isEmpty()) return false;
+        String seed = seedSessionId();
+        if (seed.isEmpty()) return true;
+        if (seed.equals(sessionId)) return false;
+        if (occurrence != null && changed(sessionId, seed, occurrence)) {
+            return true;
+        }
+        if (factor == null) return false;
+        for (OccurrenceAddress member : factor) {
+            if (member == null || member.equals(occurrence)) continue;
+            if (changed(sessionId, seed, member)) return true;
+        }
+        return false;
+    }
+
+    /** Whether one session's rows at one occurrence differ from the seed's. */
+    private boolean changed(String sessionId, String seed,
+                            OccurrenceAddress occurrence) {
+        if (activation(seed, occurrence) == null) return true;
+        if (!shape(sessionId, occurrence).equals(shape(seed, occurrence))) {
+            return true;
+        }
+        if (!arrivals(sessionId, occurrence)
+                .equals(arrivals(seed, occurrence))) {
+            return true;
+        }
+        return !observed(sessionId, occurrence)
+                .equals(observed(seed, occurrence));
+    }
+
+    /** One session's local path at one occurrence, in recorded order. */
+    private List<String> shape(String sessionId,
+                               OccurrenceAddress occurrence) {
+        List<String> taken = new ArrayList<String>();
+        for (DecisionRow decision : decisionsOf(sessionId, occurrence)) {
+            taken.add(decision.siteId() + "#" + decision.ordinal() + "="
+                    + decision.outcome());
+        }
+        return taken;
+    }
+
+    /** What one session's attaches delivered here, as a sorted multiset. */
+    private List<String> arrivals(String sessionId,
+                                  OccurrenceAddress occurrence) {
+        List<String> delivered = new ArrayList<String>();
+        for (AttachRow attach : attachesOn(sessionId, occurrence)) {
+            delivered.add(attach.endpoint().site() + "=" + attach.arrival());
+        }
+        Collections.sort(delivered);
+        return delivered;
+    }
+
+    /** What one session's reads observed here, as a sorted multiset. */
+    private List<String> observed(String sessionId,
+                                  OccurrenceAddress occurrence) {
+        List<String> values = new ArrayList<String>();
+        for (ReadRow read : readsOn(sessionId, occurrence)) {
+            values.add(read.endpoint().site() + "=" + read.concreteValue());
+        }
+        Collections.sort(values);
+        return values;
+    }
+
+    /**
      * What the WAVE's own file says one obligation settled, or null.
      *
      * <p>Kept only to be checked against the SESSION's row, which is the
