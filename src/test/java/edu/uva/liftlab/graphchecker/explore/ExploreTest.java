@@ -1080,11 +1080,14 @@ public class ExploreTest {
                 applied <= Long.MAX_VALUE - 700L);
         assertTrue("the skew carries a reading of 700 past 1000: " + skew,
                 applied > 300L);
-        assertTrue("because the query gives the clock the domain a Java long"
-                        + " has, ceiling and all",
-                new String(Files.readAllBytes(ticked.directory
-                        .resolve("obligation_query.smt2")), "UTF-8")
-                        .contains(" 9223372036854775807))"));
+        String tickedQuery = new String(Files.readAllBytes(ticked.directory
+                .resolve("obligation_query.smt2")), "UTF-8");
+        assertTrue("because the query ceilings the clock a window above the"
+                        + " reading, so no model can overflow the long the"
+                        + " workload adds to it: " + tickedQuery,
+                tickedQuery.contains(" 2592000700))"));
+        assertFalse("and the Java long ceiling is not the domain any more",
+                tickedQuery.contains(" 9223372036854775807))"));
 
         // AND A PINNED ROOT BESIDE THE CLOCK IS STILL A CLOCK-DRIVEN FLIP.
         // The query reaches a root with no domain, so the query pins it and
@@ -2671,10 +2674,20 @@ public class ExploreTest {
         assertEquals(detail(worker), Verdict.SAT_MODEL_READY,
                 worker.verdict);
         String query = query(worker);
+        // FLOOR AND CEILING, both from THIS session's reading: 5000, and
+        // 5000 + the stated 30-day window.  A ceiling of Long.MAX is not a
+        // ceiling -- it lets a model satisfy "this expired" by pushing the
+        // clock close enough to the top that the workload's own
+        // `clock + interval` overflows to a negative instant, which the
+        // replay then ADMITS (hdfs-11741 campaign #5b, obligation
+        // 5ad106c42fcf45f6).
         assertTrue("the cell is floored at what THIS session read, not at "
-                        + "0: " + query,
+                        + "0, and ceilinged a window above it: " + query,
                 query.contains("(and (>= clk_CASE_NOW_s_later 5000) (<= "
-                        + "clk_CASE_NOW_s_later 9223372036854775807))"));
+                        + "clk_CASE_NOW_s_later 2592005000))"));
+        assertFalse("so the Java long ceiling is no longer the domain: "
+                        + query,
+                query.contains("clk_CASE_NOW_s_later 9223372036854775807"));
         assertFalse("and the seed's own earlier reading is not the floor",
                 query.contains("clk_CASE_NOW_s_later 1000)"));
         // The scan's own compare holds it below 200000 and nothing else

@@ -91,10 +91,90 @@ public final class JavaPrimitiveSmtSemantics {
      * hold, over a recording it does not re-run.</p>
      */
     public static String clockDomain(String variable, String floor) {
+        return clockDomain(variable, floor, JAVA_LONG_MAX);
+    }
+
+    /** The forward window a query may move a clock in: 30 days. */
+    public static final long CLOCK_SKEW_WINDOW_MS_DEFAULT = 2592000000L;
+
+    /** The property that states a window other than the default. */
+    public static final String CLOCK_SKEW_WINDOW_PROPERTY =
+            "causynth.clock.skew.window.ms";
+
+    /** The window this JVM states, in milliseconds. */
+    public static long clockSkewWindowMs() {
+        String stated = System.getProperty(CLOCK_SKEW_WINDOW_PROPERTY);
+        if (stated == null || stated.trim().isEmpty()) {
+            return CLOCK_SKEW_WINDOW_MS_DEFAULT;
+        }
+        try {
+            long value = Long.parseLong(stated.trim());
+            return value <= 0 ? CLOCK_SKEW_WINDOW_MS_DEFAULT : value;
+        } catch (NumberFormatException notAWindow) {
+            return CLOCK_SKEW_WINDOW_MS_DEFAULT;
+        }
+    }
+
+    /**
+     * The highest instant a query may answer for a cell read at {@code
+     * reading}: {@code reading + } {@link #clockSkewWindowMs()}, clamped to
+     * {@code Long.MAX_VALUE}.
+     *
+     * <p>A CEILING OF {@code Long.MAX_VALUE} IS NOT A CEILING.  An expiry
+     * in this codebase is {@code clock + k * interval + lifetime} computed
+     * by the workload in a Java {@code long}, and the SMT lowering states
+     * that sum over the integers, where it cannot wrap.  So a solver handed
+     * {@code [reading, Long.MAX]} can satisfy "this key expired" by putting
+     * the clock close enough to the top that the JVM's own addition
+     * overflows to a negative instant -- and the focused replay then
+     * ADMITS the flip, because the key really was dropped, for a reason no
+     * clock skew ever produces.  hdfs-11741 campaign #5b has one: obligation
+     * {@code 5ad106c42fcf45f6} flips nn0's second rotation at {@code
+     * removeExpiredKeys#u15} ordinal 3 by planting a clock 71,759,447 ms
+     * below {@code Long.MAX_VALUE}, under an expiry of {@code 2 *
+     * keyUpdateInterval + tokenLifetime} = 72,600,000 ms.
+     *
+     * <p>A window of 30 days is the case owner's own ruling for hdfs-11741
+     * ("clocks are flipped by brute force; no physical meaning is attached
+     * to the skew, so the window is 30 days"), and no wall-clock instant
+     * moved forward by a month can overflow a {@code long}.  A reading no
+     * row states, or one no {@code long} can hold, leaves the ceiling at
+     * {@code Long.MAX_VALUE}: a window around an instant nothing states is
+     * not a window, and inventing one would forbid the instant the run
+     * actually read.</p>
+     */
+    public static String clockSkewCeiling(String reading) {
+        if (reading == null || reading.trim().isEmpty()) {
+            return JAVA_LONG_MAX;
+        }
+        try {
+            BigInteger instant = new BigInteger(reading.trim());
+            if (instant.signum() < 0 || !fitsJavaLong(instant)) {
+                return JAVA_LONG_MAX;
+            }
+            BigInteger ceiling =
+                    instant.add(BigInteger.valueOf(clockSkewWindowMs()));
+            return fitsJavaLong(ceiling) ? ceiling.toString()
+                    : JAVA_LONG_MAX;
+        } catch (NumberFormatException notAnInstant) {
+            return JAVA_LONG_MAX;
+        }
+    }
+
+    /**
+     * The same domain over a floor and a ceiling of its own.
+     *
+     * <p>The ceiling is what keeps a model inside the arithmetic the
+     * workload runs: see {@link #clockSkewCeiling}.</p>
+     */
+    public static String clockDomain(String variable, String floor,
+                                     String ceiling) {
         String lower = floor == null || floor.trim().isEmpty() ? "0"
                 : floor.trim();
+        String upper = ceiling == null || ceiling.trim().isEmpty()
+                ? JAVA_LONG_MAX : ceiling.trim();
         return "(and (>= " + variable + " " + lower + ") (<= " + variable
-                + " " + JAVA_LONG_MAX + "))";
+                + " " + upper + "))";
     }
 
     /** Whether this decimal is a value a Java {@code long} can hold. */

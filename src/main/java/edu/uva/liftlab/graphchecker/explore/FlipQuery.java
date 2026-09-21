@@ -721,8 +721,15 @@ final class FlipQuery {
                 // place that rule is spelled.  And in a FLIP QUERY the
                 // floor is not 0 either: it is what this cell's own
                 // execution read ({@link #clockFloor}).
+                // Floor AND ceiling from the same reading: the floor is
+                // what this cell's execution read, the ceiling is that
+                // reading plus the stated window, so a model cannot flip an
+                // expiry by overflowing the JVM's own long arithmetic
+                // ({@link JavaPrimitiveSmtSemantics#clockSkewCeiling}).
+                String reading = clockReading(minted, row.rootId());
                 rootFacts.add(JavaPrimitiveSmtSemantics.clockDomain(variable,
-                        clockFloor(minted, row.rootId())));
+                        reading.isEmpty() ? "0" : reading,
+                        JavaPrimitiveSmtSemantics.clockSkewCeiling(reading)));
                 return;
             }
             rootVariables.put(variable, row.rootId());
@@ -782,18 +789,31 @@ final class FlipQuery {
          * the floor where it was.</p>
          */
         private String clockFloor(RootMintRow minted, String rootId) {
+            String reading = clockReading(minted, rootId);
+            return reading.isEmpty() ? "0" : reading;
+        }
+
+        /**
+         * The instant this cell's own execution read, or {@code ""}.
+         *
+         * <p>One resolution for both ends of the domain: the floor is this
+         * reading and the ceiling is this reading plus the window, so a
+         * reading no row states leaves BOTH where the type puts them
+         * rather than flooring at 0 under a ceiling built from nothing.</p>
+         */
+        private String clockReading(RootMintRow minted, String rootId) {
             String reading = corpus.rootValue(minted.sessionId(), rootId);
-            if (reading == null || reading.trim().isEmpty()) return "0";
+            if (reading == null || reading.trim().isEmpty()) return "";
             try {
                 java.math.BigInteger instant =
                         new java.math.BigInteger(reading.trim());
                 if (instant.signum() < 0
                         || !JavaPrimitiveSmtSemantics.fitsJavaLong(instant)) {
-                    return "0";
+                    return "";
                 }
                 return instant.toString();
             } catch (NumberFormatException notAnInstant) {
-                return "0";
+                return "";
             }
         }
 

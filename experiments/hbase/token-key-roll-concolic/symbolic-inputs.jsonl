@@ -1,0 +1,2 @@
+{"callee":"<org.apache.hadoop.hbase.util.EnvironmentEdgeManager: long currentTime()>","kind":"CLOCK"}
+{"class":"org.apache.hadoop.hbase.security.token.AuthenticationTokenSecretManager","method":"byte[] retrievePassword(org.apache.hadoop.hbase.security.token.AuthenticationTokenIdentifier)","cells":["<org.apache.hadoop.hbase.security.token.AuthenticationTokenIdentifier: long getExpirationDate()>.return"]}

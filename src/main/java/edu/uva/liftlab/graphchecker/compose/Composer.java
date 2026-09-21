@@ -2039,7 +2039,10 @@ public final class Composer {
                 // this line named clock_floor__.
                 lowering.assertNamed("clock_domain__"
                                 + ArtifactIO.digest(symbol, 10),
-                        JavaPrimitiveSmtSemantics.clockDomain(symbol));
+                        JavaPrimitiveSmtSemantics.clockDomain(symbol, "0",
+                                JavaPrimitiveSmtSemantics.clockSkewCeiling(
+                                        recorded == null ? ""
+                                                : recorded.toString())));
             }
             if (unminted == 0 && unnamed == 0) continue;
             // The same fact #valuations names for a declared root no

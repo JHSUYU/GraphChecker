@@ -1,0 +1,11 @@
+# Restore/delete manifest race candidate
+
+Status: candidate until the targeted Maven test runs. This is a handmade source-level ordering model, not GraphChecker execution over HBase bytecode.
+
+`RestoreDriver.executeRestore` calls `BackupAdminImpl.restore` without a backup-system exclusive lock (`RestoreDriver.java:58-61`, `BackupAdminImpl.java:492-503`). `RestoreTablesClient.execute` validates target tables, then loads the source manifest (`RestoreTablesClient.java:253-263`). `HBackupFileSystem.getManifestPath` throws `IOException` from `if (throwIfNotFound && !fs.exists(manifestPath))` (`HBackupFileSystem.java:123-127`). In parallel, `BackupAdminImpl.deleteBackups` acquires the exclusive backup lock (`BackupAdminImpl.java:112`) and deletes the selected image through `deleteBackup`/`BackupUtils.cleanupBackupData` (`BackupAdminImpl.java:147,237`, `BackupUtils.java:419-422,449-477`). The restore has no corresponding lock, so delete can finish after target validation and before manifest lookup.
+
+`TestBackupRestoreDeleteManifestRace` makes a real full backup, pauses a proxy restore connection after the real target-table `Admin.tableExists` call succeeds, deletes that backup through a separate real `BackupAdminImpl` connection, verifies the manifest is gone, and resumes the real `RestoreTablesClient`. It should pin the manifest-missing `IOException` and deliberately fail the final healthy assertion. The test does not run a full CLI `RestoreDriver`; the production CLI delegates directly to the same `BackupAdminImpl.restore` and `RestoreTablesClient` chain. An earlier `TestBackupDeleteRestore` restores after deleting a table row, not a backup image concurrently.
+
+[The SMT model](/u/vnr3ne/hbase/hbase-backup/src/test/resources/adhoc-coordination/backup-restore-delete-manifest-race.smt2) returns `sat/unsat/unsat` with Z3: the delete-between-check-and-read path, an exclusive-lock control, and a delete-after-read control.
+
+[HBASE-16392](https://issues.apache.org/jira/browse/HBASE-16392) describes delete isolation from other backup commands as an intended guarantee; it does not specifically report this restore manifest race. Targeted ASF Jira and apache/hbase GitHub searches found no exact predecessor. Novelty remains provisional if the test reproduces.
