@@ -13,6 +13,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -267,10 +268,52 @@ public final class StaticScopeMap {
         }
     }
 
+    /** Where PLAN publishes the region skeletons, beside {@link #FILE}. */
+    public static final String REGIONS = "region_skeletons.jsonl";
+
     private final List<Site> sites;
+    /**
+     * What each retained region HOLDS: its method set, as the skeleton row
+     * states it.
+     *
+     * <p>The same {@code Region} rows {@link #holders} reads, kept because a
+     * reader of the published map has to ask the other direction of the same
+     * relation: {@code holders} answers "which region runs this method,
+     * innermost first", and a stage joining a static site to an occurrence
+     * has the OCCURRENCE's region and needs to know whether it holds the
+     * site's method ({@code explore.ClosurePlanner#candidates}).  Under the
+     * fold rule a site of region R is recorded under an occurrence of the
+     * enclosing R' that holds it, and equality of region ids cannot see
+     * that.</p>
+     *
+     * <p>Empty when the map was read without its skeletons beside it, which
+     * is what makes the join fall back to equality rather than answer "this
+     * region holds nothing".</p>
+     */
+    private final Map<String, Set<String>> regionMethods;
 
     private StaticScopeMap(List<Site> sites) {
+        this(sites, Collections.<String, Set<String>>emptyMap());
+    }
+
+    private StaticScopeMap(List<Site> sites,
+                           Map<String, Set<String>> regionMethods) {
         this.sites = Collections.unmodifiableList(sites);
+        this.regionMethods = Collections.unmodifiableMap(regionMethods);
+    }
+
+    /**
+     * The methods one retained region holds, or an empty set.
+     *
+     * <p>Empty means "this map cannot say", never "this region holds
+     * nothing": a map read without its skeletons beside it knows no region
+     * at all, and a caller joining through this has to tell the two apart
+     * (it falls back to comparing region ids).</p>
+     */
+    public Set<String> methodsOf(String regionId) {
+        Set<String> methods = regionMethods.get(
+                regionId == null ? "" : regionId);
+        return methods == null ? Collections.<String>emptySet() : methods;
     }
 
     // ---- building (PLAN) ----------------------------------------------
@@ -696,7 +739,51 @@ public final class StaticScopeMap {
                     string(row, "portId"), string(row, "declaredCallee"),
                     string(row, "local"), declared, guards, outcomes));
         }
-        return new StaticScopeMap(sites);
+        return new StaticScopeMap(sites, readRegions(file));
+    }
+
+    /**
+     * What each region holds, from the skeleton file PLAN writes beside the
+     * map.
+     *
+     * <p>Beside it, and not from a second option: {@link #FILE} and {@link
+     * #REGIONS} are written into one directory by one stage, so a map that
+     * was found has its skeletons unless the epoch published none -- and an
+     * epoch that published none answers the empty map, which is what makes
+     * the join fall back rather than refuse.  Both spellings are read, since
+     * the discovery pass gzips its copy.</p>
+     */
+    private static Map<String, Set<String>> readRegions(Path map) {
+        Path beside = map.toAbsolutePath().getParent();
+        if (beside == null) return Collections.emptyMap();
+        Map<String, Set<String>> methods =
+                new LinkedHashMap<String, Set<String>>();
+        for (String name : new String[]{REGIONS, REGIONS + ".gz"}) {
+            Path file = beside.resolve(name);
+            if (!Files.isRegularFile(file)) continue;
+            try {
+                for (JsonObject row : ArtifactIO.readJsonl(file)) {
+                    String regionId = string(row, "regionId");
+                    if (regionId.isEmpty()) continue;
+                    Set<String> held = new LinkedHashSet<String>();
+                    JsonElement stated = row.get("methods");
+                    if (stated != null && stated.isJsonArray()) {
+                        for (JsonElement method : stated.getAsJsonArray()) {
+                            held.add(method.getAsString());
+                        }
+                    }
+                    methods.put(regionId, Collections.unmodifiableSet(held));
+                }
+            } catch (IOException | RuntimeException unreadable) {
+                // The map itself is what this stage needs; a skeleton file
+                // it cannot read leaves the join comparing region ids, which
+                // is where it stood before this relation was published at
+                // all.  Never a refusal out of a reader of a second file.
+                return Collections.emptyMap();
+            }
+            break;
+        }
+        return methods;
     }
 
     /** No map: every join answers nothing, and says so by being empty. */

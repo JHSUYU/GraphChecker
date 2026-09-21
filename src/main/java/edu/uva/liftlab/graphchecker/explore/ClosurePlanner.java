@@ -18,6 +18,7 @@ import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
+import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 
 import java.util.ArrayDeque;
@@ -573,8 +574,8 @@ public final class ClosurePlanner {
         NodeId sender = attach.producer() == null ? null
                 : attach.producer().occurrence().node();
         for (StaticScopeMap.Site site : exports) {
-            candidates(corpus, site, STATIC_CANDIDATE_PRODUCER, guards, into,
-                    gaps, attach.sessionId(), "port " + portId, sender);
+            candidates(corpus, map, site, STATIC_CANDIDATE_PRODUCER, guards,
+                    into, gaps, attach.sessionId(), "port " + portId, sender);
         }
     }
 
@@ -661,7 +662,7 @@ public final class ClosurePlanner {
         // N1: the heap this read observed is the reading JVM's own.
         for (String carrier : carriers) {
             for (StaticScopeMap.Site site : map.writersOf(carrier)) {
-                candidates(corpus, site, STATIC_CANDIDATE_WRITER,
+                candidates(corpus, map, site, STATIC_CANDIDATE_WRITER,
                         new LinkedHashSet<String>(site.guards), into, gaps,
                         sessionId, "carrier " + carrier, reader.node());
             }
@@ -724,14 +725,15 @@ public final class ClosurePlanner {
      * region another node ran and this one did not is reported as the growth
      * it would actually need.</p>
      */
-    private static void candidates(Corpus corpus, StaticScopeMap.Site site,
+    private static void candidates(Corpus corpus, StaticScopeMap map,
+                                   StaticScopeMap.Site site,
                                    String why, Set<String> guards,
                                    List<Demand> into, List<GapRow> gaps,
                                    String sessionId, String what,
                                    NodeId node) {
         boolean ran = false;
         for (OccurrenceAddress occurrence : corpus.occurrences()) {
-            if (!site.regionId.equals(occurrence.regionId())
+            if (!holds(map, occurrence.regionId(), site)
                     || (node != null && !node.equals(occurrence.node()))
                     || !activated(corpus, occurrence)) {
                 continue;
@@ -752,6 +754,34 @@ public final class ClosurePlanner {
                         + ": the retained set would have "
                         + "to grow before it can be a task (INTERACTION-ID "
                         + "SS8 case 2)"));
+    }
+
+    /**
+     * Whether one occurrence's region would RUN one static site.
+     *
+     * <p>By HOLDING, not by equality of region ids.  A declared region
+     * entered synchronously inside another region's occurrence opens none of
+     * its own, so a site of region R is recorded under an occurrence of the
+     * enclosing R' that holds R's method -- and the static map publishes a
+     * site under its INNERMOST holder alone ({@code
+     * StaticScopeMap#holders}), so R' never appears beside that site and
+     * equality found no occurrence at all.  The candidate then read as
+     * "no session activated that region" and no task was opened for a
+     * writer the corpus had run.</p>
+     *
+     * <p>The map's method set is the same {@code Region} rows {@code
+     * holders} reads, asked the other way round.  An occurrence whose region
+     * the map does not know -- no skeletons beside the map, a {@code ROLE.}
+     * occurrence no region declares -- falls back to comparing the ids,
+     * which is what this join was before.</p>
+     */
+    private static boolean holds(StaticScopeMap map, String regionId,
+                                 StaticScopeMap.Site site) {
+        Set<String> methods = map == null
+                ? Collections.<String>emptySet() : map.methodsOf(regionId);
+        return methods.isEmpty()
+                ? site.regionId.equals(regionId)
+                : methods.contains(SiteId.methodOf(site.siteId));
     }
 
     /** Whether some session of this corpus ran one occurrence. */
