@@ -32,8 +32,10 @@ import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -187,6 +189,9 @@ public final class Corpus implements Arms.Rows {
             new LinkedHashMap<String, List<AttachRow>>();
     private final Map<String, List<ReadRow>> readsOn =
             new LinkedHashMap<String, List<ReadRow>>();
+    /** occurrence id -> the exports it published, across sessions. */
+    private final Map<String, List<ExportRow>> exportsOn =
+            new LinkedHashMap<String, List<ExportRow>>();
     private final Map<String, List<TargetRow>> targetsOn =
             new LinkedHashMap<String, List<TargetRow>>();
     private final Map<String, List<WriteRow>> writesOn =
@@ -501,6 +506,7 @@ public final class Corpus implements Arms.Rows {
             remember(occurrenceById, row.endpoint().occurrence());
             endpointById.put(row.endpoint().id(), row.endpoint());
             add(exports, row.endpoint().id(), row);
+            add(exportsOn, row.endpoint().occurrence().id(), row);
         }
         for (AttachRow row : session.attaches()) {
             remember(occurrenceById, row.endpoint().occurrence());
@@ -756,6 +762,205 @@ public final class Corpus implements Arms.Rows {
     public List<WriteRow> writesOn(OccurrenceAddress occurrence) {
         List<WriteRow> rows = writesOn.get(occurrence.id());
         return rows == null ? Collections.<WriteRow>emptyList() : rows;
+    }
+
+    /** Every export any session published at one occurrence. */
+    public List<ExportRow> exportsOn(OccurrenceAddress occurrence) {
+        List<ExportRow> rows = exportsOn.get(occurrence.id());
+        return rows == null ? Collections.<ExportRow>emptyList() : rows;
+    }
+
+    // ---- The causal graph: which occurrences reach which (SS3.1) -------
+
+    /**
+     * The writes one read could have taken its value from.
+     *
+     * <p>The observed one, and every write by an occurrence HB-CONCURRENT
+     * with the reader (R-I7.1) -- the CANDIDATE shared-state dependency,
+     * which is the same set the composition offers the solver as
+     * alternatives, because the rule is {@code smt.Arms}'.  ONE
+     * implementation: the closure grows by it
+     * ({@link ClosurePlanner#writers}, through
+     * {@code ClosurePlanner.eligibleWrites}) and the causal graph's
+     * shared-state in-edge is it ({@link #upstreamOf}), so "which writer
+     * could this read have observed" has one answer in this stage.</p>
+     *
+     * @param reader the occurrence that made the read, for the concurrency
+     *               rule; the version is the one it observed
+     */
+    public List<WriteRow> eligibleWrites(String sessionId, String locationKey,
+                                         long observedVersion,
+                                         OccurrenceAddress reader) {
+        List<WriteRow> eligible = new ArrayList<WriteRow>();
+        for (WriteRow write : writesOf(sessionId, locationKey)) {
+            if (write.version() == observedVersion
+                    || arms.concurrent(reader,
+                            write.endpoint().occurrence(), sessionId)) {
+                eligible.add(write);
+            }
+        }
+        return eligible;
+    }
+
+    /** occurrence id -> every occurrence that reaches it, itself included. */
+    private final Map<String, Set<String>> upstream =
+            new LinkedHashMap<String, Set<String>>();
+
+    /**
+     * EVERY OCCURRENCE THAT REACHES ONE, ITSELF INCLUDED.
+     *
+     * <p>The in-edges are the paper's own (SS3.1, causal graph
+     * extraction), and this stage already walks both of them forward from
+     * the anchor ({@link ClosurePlanner#successors}): a MATCHED
+     * COMMUNICATION TRANSFER -- an attach and the producer occurrence its
+     * own pairing names ({@link ClosurePlanner#producers}) -- and a
+     * CANDIDATE SHARED-STATE DEPENDENCY -- a read of a concrete location
+     * and the occurrences that wrote the versions it could have observed,
+     * on the reader's own node ({@link #eligibleWrites},
+     * {@link #observed}, {@link ClosurePlanner#writers}).  A read
+     * the runtime published only INSIDE the expression of a value this
+     * occurrence contributed is one of those reads and not another kind
+     * (E2, {@link #expressionStateReads}, {@code
+     * ClosurePlanner.statedReads}); it is walked here for the same reason
+     * it is walked there -- the NameNode's export of its key set states no
+     * {@link ReadRow} for the map it rests on, and without that edge the
+     * tick that removed the key reaches nothing.</p>
+     *
+     * <p><b>Over the CORPUS's edges, never one session's.</b>  Every index
+     * this walks -- {@link #attachesOn(OccurrenceAddress)},
+     * {@link #readsOn(OccurrenceAddress)}, {@link #writesOn},
+     * {@link #exportsOn} -- holds the rows of every session, and each row
+     * is joined to writes inside its OWN session ({@link #eligibleWrites}
+     * is per session, because a location key names one object of one run).
+     * The union is a fact about the occurrence: a flip that only some
+     * session's rows connect would otherwise change an arm's identity
+     * depending on which session was asked, and the same arm would be owed
+     * twice.</p>
+     *
+     * <p>Memoized per occurrence, because a wave asks this once per
+     * candidate.</p>
+     */
+    public Set<String> upstreamOf(OccurrenceAddress occurrence) {
+        if (occurrence == null) return Collections.<String>emptySet();
+        Set<String> held = upstream.get(occurrence.id());
+        if (held != null) return held;
+        Set<String> reached = new LinkedHashSet<String>();
+        Deque<OccurrenceAddress> pending = new ArrayDeque<OccurrenceAddress>();
+        reached.add(occurrence.id());
+        pending.add(occurrence);
+        while (!pending.isEmpty()) {
+            OccurrenceAddress at = pending.remove();
+            for (String next : reaches(at)) {
+                if (!reached.add(next)) continue;
+                OccurrenceAddress address = occurrenceById.get(next);
+                if (address != null) pending.add(address);
+            }
+        }
+        Set<String> answer = Collections.unmodifiableSet(reached);
+        upstream.put(occurrence.id(), answer);
+        return answer;
+    }
+
+    /**
+     * The same, for a task: its focused occurrence AND its factor.
+     *
+     * <p>A factor member and the occurrence run as ONE symbolic unit
+     * ({@code ClosurePlanner.stateConnected}, {@link #affected}), so what
+     * reaches the member reaches the task: on hdfs-11741 dn1's expiry scan
+     * is reached by nn0's tick only through the {@code addKeys} occurrence
+     * beside it, which is the occurrence the NameNode's delivery arrives
+     * at.</p>
+     */
+    public Set<String> upstreamOf(OccurrenceAddress occurrence,
+                                  List<OccurrenceAddress> factor) {
+        Set<String> reached = new LinkedHashSet<String>(
+                upstreamOf(occurrence));
+        if (factor != null) {
+            for (OccurrenceAddress member : factor) {
+                reached.addAll(upstreamOf(member));
+            }
+        }
+        return Collections.unmodifiableSet(reached);
+    }
+
+    /** occurrence id -> its in-edges, which several walks ask for. */
+    private final Map<String, Set<String>> inEdges =
+            new LinkedHashMap<String, Set<String>>();
+
+    /** One occurrence's in-edges: who delivered to it, who wrote for it. */
+    private Set<String> reaches(OccurrenceAddress occurrence) {
+        Set<String> held = inEdges.get(occurrence.id());
+        if (held != null) return held;
+        Set<String> in = new LinkedHashSet<String>();
+        for (AttachRow attach : attachesOn(occurrence)) {
+            if (attach.producer() == null) continue;
+            OccurrenceAddress producer = attach.producer().occurrence();
+            if (producer != null) in.add(producer.id());
+        }
+        for (ReadRow read : readsOn(occurrence)) {
+            observed(read.sessionId(), SmtLowering.locationKey(read.location()),
+                    read.observedVersion(), occurrence, in);
+        }
+        // E2: the shared state a delivery this occurrence made RESTS ON,
+        // which only its expression states.
+        Set<String> walked = new LinkedHashSet<String>();
+        for (ExportRow export : exportsOn(occurrence)) {
+            stated(export.sessionId(), export.expressionRef(), occurrence,
+                    walked, in);
+        }
+        for (WriteRow write : writesOn(occurrence)) {
+            stated(write.sessionId(), write.expressionRef(), occurrence,
+                    walked, in);
+        }
+        Set<String> answer = Collections.unmodifiableSet(in);
+        inEdges.put(occurrence.id(), answer);
+        return answer;
+    }
+
+    /** The reads one published expression states, and who wrote them. */
+    private void stated(String sessionId, String expressionRef,
+                        OccurrenceAddress reader, Set<String> walked,
+                        Set<String> into) {
+        if (expressionRef == null || expressionRef.isEmpty()) return;
+        if (!walked.add(sessionId + "|" + expressionRef)) return;
+        for (StateRead read : expressionStateReads(sessionId, expressionRef)) {
+            observed(sessionId, read.locationKey(), read.write().version(),
+                    reader, into);
+        }
+    }
+
+    /**
+     * The occurrences that wrote what one read could have observed, ON THE
+     * READER'S OWN NODE.
+     *
+     * <p><b>N1 -- a concrete location lives in ONE process.</b>  A location
+     * key is {@code kind/owner#slot} and the owner is the VM's own
+     * symbolic reference id ({@code SmtLowering#locationKey}), which is
+     * minted per JVM: two processes of one run both hold an
+     * {@code INSTANCE/36#72}, and they are two objects.  Joining them makes
+     * an edge no execution has -- on the c6 corpus (2026-09-20) dn1's SASL
+     * handler "reads" {@code INSTANCE/36#72} and the only writer of that
+     * key in the session is the BALANCER's {@code updateBlockKeys}, so
+     * every balancer rotation appeared upstream of a DataNode occurrence
+     * that cannot see the Balancer's heap.  Cross-node influence is carried
+     * by the TRANSFER edge and by nothing else.</p>
+     *
+     * <p>{@link #touching} already qualifies a location by node for the
+     * same reason, and so does the closure's static half
+     * ({@code ClosurePlanner.writers}, N1); the ROW half there still joins
+     * by key alone, which is its own question and not this walk's.</p>
+     */
+    private void observed(String sessionId, String locationKey, long version,
+                          OccurrenceAddress reader, Set<String> into) {
+        for (WriteRow write : eligibleWrites(sessionId, locationKey, version,
+                reader)) {
+            OccurrenceAddress writer = write.endpoint().occurrence();
+            if (writer == null) continue;
+            if (reader != null && !reader.node().equals(writer.node())) {
+                continue;
+            }
+            into.add(writer.id());
+        }
     }
 
     // ---- Arms.Rows: what the shared arm builder asks of a corpus -------

@@ -108,6 +108,36 @@ public class ExploreTest {
             Endpoint.stateSite("BlockTokenSecretManager",
                     "retrieveDataEncryptionKey", 8, false),
             "BlockTokenSecretManager#retrieveDataEncryptionKey#8");
+    /**
+     * A second reader of that map on the target's node, started by a
+     * message of its own.
+     *
+     * <p>It is a member of the target's factor -- it touches the location
+     * the target reads -- and it is NOT upstream of the target: it reads
+     * what the target reads and writes nothing for it.  So what reaches
+     * IT reaches the task only through the factor, which is what a
+     * reaching set seeded from the focused occurrence alone would lose.
+     * dn1's SASL handler is this occurrence on hdfs-11741: it sits beside
+     * {@code addKeys} on the map, and the Balancer's token arrives at
+     * it.</p>
+     */
+    private static final OccurrenceAddress READER =
+            occurrence("hdfs-case/dn0", "REGION.reader",
+                    CausalContext.of(Role.of("DATA_XCEIVER"), "", 2),
+                    "o.a.h.h.s.d.DataXceiver#run#44");
+    /** The node whose message that second reader is started by. */
+    private static final OccurrenceAddress SIDECAR =
+            occurrence("hdfs-case/sidecar", "REGION.sidecar",
+                    CausalContext.of(Role.of("SIDECAR"), "", 1),
+                    "o.a.h.Sidecar#run#2");
+    private static final Endpoint SENT = at(SIDECAR,
+            "XCH.req.token-id", "PBHelper#convert#17");
+    private static final Endpoint RECEIVED = at(READER,
+            "XCH.req.token-id", "PBHelper#convert#17");
+    private static final Endpoint CONSULTED = at(READER,
+            Endpoint.stateSite("BlockTokenSecretManager",
+                    "checkAccess", 4, false),
+            "BlockTokenSecretManager#checkAccess#4");
 
     @Rule
     public TemporaryFolder tree = new TemporaryFolder();
@@ -702,6 +732,18 @@ public class ExploreTest {
                                Map<String, String> roots,
                                Map<String, String> clockDeltas)
             throws IOException {
+        worker(iteration, wave, dir, obligationId, sessionId, focused, siteId,
+                roots, clockDeltas, Collections.<Corpus.Flip>emptyList());
+    }
+
+    /** The same, for a replay that INHERITED a world as well as its own. */
+    private static void worker(Path iteration, String wave, String dir,
+                               String obligationId, String sessionId,
+                               OccurrenceAddress focused, String siteId,
+                               Map<String, String> roots,
+                               Map<String, String> clockDeltas,
+                               List<Corpus.Flip> inherited)
+            throws IOException {
         Path at = iteration.resolve(wave).resolve(dir);
         Files.createDirectories(at);
         JsonObject row = new JsonObject();
@@ -730,7 +772,11 @@ public class ExploreTest {
         row.add("clockDeltas", skews);
         row.add("answers", new JsonObject());
         row.add("rootMints", new JsonObject());
-        row.add("inheritedFlips", new JsonArray());
+        JsonArray carried = new JsonArray();
+        for (Corpus.Flip one : inherited) {
+            carried.add(ExploreCodec.writeFlip(one));
+        }
+        row.add("inheritedFlips", carried);
         row.add("unproducible", new JsonArray());
         RowCodec.writeJsonl(at.resolve(ObligationDir.FOCUSED_TASK),
                 Collections.singletonList(row));
@@ -739,6 +785,277 @@ public class ExploreTest {
                         ObligationResult.of(obligationId, Verdict.ADMITTED,
                                 sessionId,
                                 "the focused prefix reproduced"))));
+    }
+
+    // ---- (1b) a world is the flips that REACH the arm ------------------
+
+    /**
+     * AN ARM'S WORLD IS THE FLIPS THAT REACH ITS OCCURRENCE.
+     *
+     * <p>{@link Corpus#affected} says WHETHER a session's world changed
+     * what this region received; it cannot say WHICH flips of that world
+     * could have.  Digesting the whole world asks one question once per
+     * combination of facts that never reached the region: on the
+     * hdfs-11741 c6 corpus (2026-09-20) wave 2 asked 774 obligations for
+     * 44 distinct (task, arm) pairs, dn1's {@code removeExpiredKeys#u15
+     * -> false} 132 times, once per Balancer rotation the DataNode's scan
+     * cannot observe.</p>
+     *
+     * <p>Five worlds over one corpus, all of them AFFECTED alike -- the
+     * factor member got one handoff fewer in each, so the gate answers yes
+     * and only the projection differs:</p>
+     * <ul>
+     *   <li>the seed's, which is empty and keys {@code ""};</li>
+     *   <li>the producer's rotation, which the target's factor member
+     *       attaches from: upstream, so it keys the arm;</li>
+     *   <li>a balancer flip on a node of its own, which reaches neither
+     *       the target nor its factor: not part of this arm's world, so it
+     *       keys {@code ""} like the seed's;</li>
+     *   <li>both at once, which is the producer's world again -- the
+     *       unrelated flip adds nothing to key by, and the two collapse to
+     *       ONE obligation;</li>
+     *   <li>a sidecar's flip, which reaches this task ONLY through a
+     *       factor member -- the second reader of the map, which the
+     *       target itself is not downstream of -- and is a world of its
+     *       own all the same, because a factor member and the occurrence
+     *       are one symbolic unit.</li>
+     * </ul>
+     *
+     * <p>The relation is the CORPUS's and not one session's: the session
+     * whose world is keyed here records no attach at all (its rotation
+     * delivered nothing), and the producer is upstream of the target all
+     * the same, because the corpus holds a session where that delivery
+     * happened.  Asked per session, one arm would have as many keys as
+     * there are sessions that happen to state the edge.</p>
+     */
+    @Test
+    public void anArmIsKeyedByTheFlipsThatReachItAndByNoOthers()
+            throws Exception {
+        Path iteration = tree.newFolder("reaching").toPath();
+        Session seed = new Session(iteration, "s-seed");
+        seed.activation(TARGET, false);
+        seed.activation(WRITER, false);
+        seed.activation(PRODUCER, false);
+        seed.activation(BALANCER, false);
+        seed.activation(READER, false);
+        seed.activation(SIDECAR, false);
+        seed.root(TARGET, "CASE.MARKER", "M_MARKER", RootKind.MARKER, "false",
+                null, null, true);
+        seed.root(PRODUCER, "CASE.TICK", "M_TICK", RootKind.INTEGRAL, "1",
+                "0", "10", true);
+        seed.root(BALANCER, "CASE.MOVE", "M_MOVE", RootKind.INTEGRAL, "1",
+                "0", "10", true);
+        seed.root(SIDECAR, "CASE.SEND", "M_SEND", RootKind.INTEGRAL, "1",
+                "0", "10", true);
+        seed.symbolic("EXPR.0000000000000001", "M_MARKER", "Z");
+        seed.symbolic("e.stored", "M_HOFF_KEY");
+        seed.symbolic("e.token", "M_HOFF_TOKEN");
+        seed.constant("e.119992", "119992");
+        seed.constant("e.554433", "554433");
+        seed.decision(TARGET, "Guard#u8", 1, false, "EXPR.0000000000000001");
+        seed.decision(PRODUCER, "Rotate#u5", 1, false, "(> M_TICK 3)");
+        seed.decision(BALANCER, "Balance#u2", 1, false, "(> M_MOVE 1)");
+        seed.decision(SIDECAR, "Send#u4", 1, false, "(> M_SEND 0)");
+        // The wire: the rotation exports the key, addKeys on the target's
+        // node attaches it and writes it into the map the target reads.
+        seed.export(ROTATED, "e.119992", 11L, "119992");
+        seed.attach(DELIVERED, "M_HOFF_KEY", "119992", ROTATED);
+        seed.write(STORED, ALL_KEYS, 5L, "e.stored");
+        seed.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
+        // And a second reader of the same map, started by a message of its
+        // own: state-connected to the target, upstream of nothing it reads.
+        seed.export(SENT, "e.554433", 12L, "554433");
+        seed.attach(RECEIVED, "M_HOFF_TOKEN", "554433", SENT);
+        seed.read(CONSULTED, ALL_KEYS, 5L, "M_SEEN_KEY", "119992");
+        seed.flush();
+        scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
+                "Guard#u8"));
+
+        // Three admitted replays, whose rows AT THE TARGET are the seed's
+        // and whose factor member received one handoff fewer, so all three
+        // are affected in exactly the same way.
+        heldTo(iteration, "s-up", PRODUCER);
+        heldTo(iteration, "s-aside", BALANCER);
+        heldTo(iteration, "s-up-and-aside", PRODUCER);
+        heldTo(iteration, "s-through-factor", SIDECAR);
+        worker(iteration, "obligations-0000", "ob-up", "OBL.up", "s-up",
+                PRODUCER, "Rotate#u5",
+                Collections.singletonMap("CASE.TICK", "7"),
+                Collections.<String, String>emptyMap());
+        worker(iteration, "obligations-0000", "ob-aside", "OBL.aside",
+                "s-aside", BALANCER, "Balance#u2",
+                Collections.singletonMap("CASE.MOVE", "2"),
+                Collections.<String, String>emptyMap());
+        worker(iteration, "obligations-0000", "ob-both", "OBL.both",
+                "s-up-and-aside", PRODUCER, "Rotate#u5",
+                Collections.singletonMap("CASE.TICK", "7"),
+                Collections.<String, String>emptyMap(),
+                Collections.singletonList(new Corpus.Flip(BALANCER.id(),
+                        "Balance#u2", 1, true, "OBL.aside")));
+        worker(iteration, "obligations-0000", "ob-factor", "OBL.factor",
+                "s-through-factor", SIDECAR, "Send#u4",
+                Collections.singletonMap("CASE.SEND", "0"),
+                Collections.<String, String>emptyMap());
+
+        Corpus corpus = Corpus.read(iteration, null);
+        Task task = ClosurePlanner.taskOf(corpus,
+                ClosurePlanner.taskId(TARGET));
+        assertNotNull(task);
+        assertTrue("addKeys writes the map the target reads, so it is a "
+                        + "state-connected member of its factor: "
+                        + task.factor(), task.factor().contains(WRITER));
+        assertTrue("and so is the second reader of that map: "
+                + task.factor(), task.factor().contains(READER));
+
+        // ---- what reaches this task ---------------------------------
+        Set<String> upstream = corpus.upstreamOf(task.focused(),
+                task.factor());
+        assertTrue("the occurrence itself is in its own world",
+                upstream.contains(TARGET.id()));
+        assertTrue("and the factor member the delivery arrives at",
+                upstream.contains(WRITER.id()));
+        assertTrue("and the producer that member's attach is paired with: "
+                        + "a matched communication transfer, followed "
+                        + "backwards", upstream.contains(PRODUCER.id()));
+        // THE FACTOR IS PART OF THE SEED, and it has to be: the second
+        // reader is not upstream of the target -- it reads what the target
+        // reads and writes nothing for it -- so the sidecar that started it
+        // reaches this task through the factor ALONE.  Seeded from the
+        // focused occurrence by itself, the sidecar's flip would fall out
+        // of the key and two worlds that are not one would collapse, which
+        // is an arm lost.
+        assertTrue("the factor member the sidecar's message arrives at",
+                upstream.contains(READER.id()));
+        assertTrue("and the sidecar itself", upstream.contains(SIDECAR.id()));
+        assertFalse("which the focused occurrence alone does not reach",
+                corpus.upstreamOf(task.focused()).contains(SIDECAR.id()));
+        assertFalse("and nothing else: the balancer reaches neither the "
+                        + "target nor its factor, by a transfer or by any "
+                        + "location either of them touches",
+                upstream.contains(BALANCER.id()));
+        assertTrue("the edge is the CORPUS's: the session whose world is "
+                        + "keyed by it records no attach at all",
+                corpus.attachesOn("s-up", WRITER).isEmpty());
+
+        // ---- the gate is the same for all four ------------------------
+        for (String sessionId : Arrays.asList("s-up", "s-aside",
+                "s-up-and-aside", "s-through-factor")) {
+            assertTrue(sessionId + "'s world changed what the factor member "
+                            + "received, so the gate lets it through",
+                    corpus.affected(sessionId, task.focused(),
+                            task.factor()));
+        }
+
+        // ---- and the key is not --------------------------------------
+        String worldless = ObligationFactory.worldKey(corpus, task, "s-seed");
+        assertEquals("the seed read its roots, answered nothing and was held "
+                + "to no decision: its world is empty and digests to \"\"",
+                "", worldless);
+        assertEquals("the same for a session no worker states a focus row "
+                + "for", "", ObligationFactory.worldKey(corpus, task,
+                "s-nobody"));
+        String reaching = ObligationFactory.worldKey(corpus, task, "s-up");
+        assertFalse("a flip at an UPSTREAM occurrence is this arm's world",
+                reaching.isEmpty());
+        assertEquals("a flip that reaches nothing here is not part of this "
+                        + "arm's world, however much the world itself "
+                        + "changed for the region", "",
+                ObligationFactory.worldKey(corpus, task, "s-aside"));
+        assertFalse("though that session really does have a world",
+                ObligationFactory.worldDigest(corpus.world("s-aside"))
+                        .isEmpty());
+        assertEquals("and two worlds that differ only in a flip neither the "
+                        + "occurrence nor its factor can observe are ONE "
+                        + "world here", reaching,
+                ObligationFactory.worldKey(corpus, task, "s-up-and-aside"));
+        assertFalse("which the unprojected digests do not say: they differ, "
+                        + "and keying by them is the same question asked "
+                        + "once per unrelated flip",
+                ObligationFactory.worldDigest(corpus.world("s-up")).equals(
+                        ObligationFactory.worldDigest(
+                                corpus.world("s-up-and-aside"))));
+        String throughFactor = ObligationFactory.worldKey(corpus, task,
+                "s-through-factor");
+        assertFalse("a flip that reaches this task only through a FACTOR "
+                        + "member is this arm's world too: what the member "
+                        + "received is what the occurrence reads, and the "
+                        + "two run as one symbolic unit",
+                throughFactor.isEmpty());
+        assertFalse("and it is a world of its own, not the rotation's",
+                throughFactor.equals(reaching));
+
+        // ---- so the wave asks the arm once per world that reaches it --
+        Path out = tree.newFolder("reaching-out").toPath();
+        Path results = out.resolve("obligation_results.jsonl");
+        Files.write(results, new byte[0]);
+        Path wave = out.resolve("obligations-0001");
+        JsonObject manifest = plan(iteration, TARGET_SELECTOR, null, results,
+                wave, 1);
+        assertEquals("OBLIGATIONS_PROPOSED",
+                manifest.get("state").getAsString());
+        List<Obligation> proposed = obligations(wave);
+        assertEquals("one arm, three worlds that reach it -- the seed's, "
+                        + "the rotation's and the sidecar's -- and nothing "
+                        + "per balancer flip: " + proposed,
+                3, proposed.size());
+        String taskId = ClosurePlanner.taskId(TARGET);
+        String prefix = ObligationFactory.prefixDigest(null, 0);
+        Set<String> ids = new LinkedHashSet<String>();
+        for (Obligation obligation : proposed) {
+            assertEquals("Guard#u8", obligation.siteId());
+            assertTrue(obligation.flippedOutcome());
+            ids.add(obligation.obligationId());
+        }
+        assertTrue("the world-less arm, which the seed's path and the "
+                        + "balancer's both offer: " + proposed,
+                ids.contains(ObligationFactory.obligationId(taskId,
+                        "Guard#u8", 1, true, prefix, worldless)));
+        assertTrue("and the same arm in the world that reaches this region, "
+                        + "which is the nested flip the 11741 witness needs: "
+                        + proposed,
+                ids.contains(ObligationFactory.obligationId(taskId,
+                        "Guard#u8", 1, true, prefix, reaching)));
+        assertTrue("and in the world that reaches it through the factor: "
+                        + proposed,
+                ids.contains(ObligationFactory.obligationId(taskId,
+                        "Guard#u8", 1, true, prefix, throughFactor)));
+        for (Obligation obligation : proposed) {
+            assertFalse("and nothing is cut from the balancer's path, whose "
+                            + "arm is the world-less one the seed already "
+                            + "offers: " + obligation,
+                    Corpus.pathId("s-aside", TARGET)
+                            .equals(obligation.pathId()));
+        }
+    }
+
+    /**
+     * One admitted replay of this corpus: the target's own rows as the seed
+     * recorded them, and one handoff fewer at the factor member.
+     *
+     * <p>The rotation it was held to delivered nothing, so {@code addKeys}
+     * stored what it already had: the STRUCTURE of what the member received
+     * differs from the recording's and {@link Corpus#affected} says so,
+     * while the target's own decisions are letter for letter the seed's --
+     * which is hdfs-11741's shape, and the reason the world is part of the
+     * key at all.</p>
+     */
+    private void heldTo(Path iteration, String sessionId,
+                        OccurrenceAddress focused) throws IOException {
+        Session session = new Session(iteration, sessionId);
+        session.activation(focused, true);
+        session.activation(TARGET, false);
+        session.activation(WRITER, false);
+        session.root(TARGET, "CASE.MARKER", "M_MARKER", RootKind.MARKER,
+                "false", null, null, true);
+        session.symbolic("EXPR.0000000000000001", "M_MARKER", "Z");
+        session.constant("e.kept", "119992");
+        session.decision(TARGET, "Guard#u8", 1, false,
+                "EXPR.0000000000000001");
+        session.write(STORED, ALL_KEYS, 5L, "e.kept");
+        session.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
+        session.answered(ObligationResult.of("OBL." + sessionId,
+                Verdict.ADMITTED, sessionId, "the focused prefix reproduced"));
+        session.flush();
     }
 
     // ---- (2) a handoff is answered only with what a producer delivers --
