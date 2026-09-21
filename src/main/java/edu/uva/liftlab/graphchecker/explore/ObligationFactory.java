@@ -74,16 +74,26 @@ public final class ObligationFactory {
         public final Corpus.RecordedPath path;
         public final int index;
         public final DecisionRow decision;
+        /**
+         * The world this arm is owed in: {@code ""} unless the session's
+         * world changed what the region received
+         * ({@link Corpus#affected}).
+         */
+        public final String worldDigest;
 
-        private Candidate(Task task, Corpus.RecordedPath path, int index) {
+        private Candidate(Corpus corpus, Task task,
+                          Corpus.RecordedPath path, int index) {
             this.task = task;
             this.path = path;
             this.index = index;
             this.decision = path.decisions.get(index);
+            this.worldDigest = corpus.affected(path.sessionId, task.focused(),
+                    task.factor())
+                    ? worldDigest(corpus.world(path.sessionId)) : "";
             this.obligationId = obligationId(task.taskId(),
                     decision.siteId(), decision.ordinal(),
                     !decision.outcome(),
-                    prefixDigest(path.decisions, index));
+                    prefixDigest(path.decisions, index), worldDigest);
         }
 
         /**
@@ -229,8 +239,34 @@ public final class ObligationFactory {
     }
 
     /**
+     * One WORLD, as an obligation's identity spells it.
+     *
+     * <p>The flips the session was held to -- its own and every one it
+     * inherited -- each written {@code
+     * focusedOccurrenceId|siteId|ordinal|outcome} and sorted, so the same
+     * set of flips digests the same however a focus row happened to order
+     * them.  The SEED's world is empty and digests to {@code ""}, which is
+     * also what an arm no world reached is keyed by.</p>
+     */
+    public static String worldDigest(Corpus.World world) {
+        if (world == null || world.flips.isEmpty()) return "";
+        List<String> held = new ArrayList<String>();
+        for (Corpus.Flip flip : world.flips) {
+            held.add(flip.focusedOccurrenceId + "|" + flip.siteId + "|"
+                    + flip.ordinal + "|" + flip.outcome);
+        }
+        Collections.sort(held);
+        StringBuilder text = new StringBuilder();
+        for (String one : held) {
+            if (text.length() > 0) text.append('/');
+            text.append(one);
+        }
+        return ArtifactIO.digest(text.toString(), 16);
+    }
+
+    /**
      * One obligation's id: the PLANNED OCCURRENCE, the PREFIX it is cut
-     * under, and the arm it asks for.
+     * under, the WORLD it is cut in, and the arm it asks for.
      *
      * <p>The task is the occurrence ({@link ClosurePlanner#taskId}), so this
      * key is a fact about the occurrence and not about a session.  The
@@ -247,18 +283,31 @@ public final class ObligationFactory {
      * flips deepen.  An arm recorded under one prefix of an occurrence says
      * nothing about the same arm under another: an unexplored local path of
      * a known region is still work, and a wave that finds no NEW EDGE is
-     * not the end of the exploration.  HDFS-11741 is the case -- dn1's
-     * expiry compare has to be flipped again under nn0's skew, on the
-     * refresh path a previous session recorded -- and keyed without the
-     * prefix that obligation is settled by the session that recorded the
-     * arm under a different world, so it is never proposed.</p>
+     * not the end of the exploration.</p>
+     *
+     * <p>SO IS THE WORLD ({@link #worldDigest}), and only where that world
+     * reached the region ({@link Corpus#affected}): an unexplored local
+     * path of a known region is still work, and so is a known local path in
+     * a world that changed what the region received -- never the same path
+     * in a world that changed nothing for it.  HDFS-11741 is the case.
+     * dn1's expiry scan runs over the DataNode's own old map before the put
+     * loop, so its local prefix is letter for letter the same in the seed,
+     * in the session that flipped dn1 alone, and in the session where nn0's
+     * second rotation dropped the key; keyed by the prefix alone the first
+     * of those settles the arm for every world, and the witness's second
+     * flip -- that same compare, under nn0's skew -- is never proposed.
+     * Keyed by the world without the {@code affected} test it would be
+     * proposed once per world instead, which is every session of the epoch
+     * asking the same fact again.</p>
      */
     public static String obligationId(String taskId, String siteId,
                                       int ordinal, boolean flippedOutcome,
-                                      String prefixDigest) {
+                                      String prefixDigest,
+                                      String worldDigest) {
         return ArtifactIO.digest(taskId + "|" + siteId + "|" + ordinal + "|"
                 + flippedOutcome + "|"
-                + (prefixDigest == null ? "" : prefixDigest), 16);
+                + (prefixDigest == null ? "" : prefixDigest) + "|"
+                + (worldDigest == null ? "" : worldDigest), 16);
     }
 
     /**
@@ -319,7 +368,8 @@ public final class ObligationFactory {
                         || !flipSites.contains(decision.siteId())) {
                     continue;
                 }
-                Candidate candidate = new Candidate(task, path, index);
+                Candidate candidate =
+                        new Candidate(corpus, task, path, index);
                 // A second path of the same occurrence offering the same arm
                 // is the same obligation, not another one: one witness of an
                 // owed fact is enough, and it costs neither a gap row nor a
@@ -446,7 +496,7 @@ public final class ObligationFactory {
                 DecisionRow decision = path.decisions.get(index);
                 if (decision.siteId().equals(obligation.siteId())
                         && decision.ordinal() == obligation.ordinal()) {
-                    return new Candidate(task, path, index);
+                    return new Candidate(corpus, task, path, index);
                 }
             }
         }
