@@ -931,6 +931,85 @@ public class ComposerTest {
                 composition.body().contains("vh_up"));
         assertTrue("the upstream delivery carries the root",
                 composition.body().contains(MARKER));
+
+        // ONE RUN BEHIND EVERY OUT OF ONE OCCURRENCE (rule 3).  The
+        // producer exports at TWO ports and the anchor attaches both; one
+        // run delivered (true, false) there and the other (false, true).
+        // With a selector per family a witness takes the first port from
+        // one run and the second from the other and reads (true, true) --
+        // an export no execution made, which is how 11741's four
+        // block-key-id handoffs came back 182906, 182908, 182908, 182907
+        // out of a NameNode whose export held 182905, 182906, 182907,
+        // 182908.  One selector per (occurrence, run) is what forbids it,
+        // and the fatal predicate here IS that mixture.
+        Path positions = folder.newFolder("two-positions").toPath();
+        Endpoint portA = Endpoint.of(PRODUCER, "PORT.a", at("export#1", 0), 0);
+        Endpoint portB = Endpoint.of(PRODUCER, "PORT.b", at("export#2", 0), 0);
+        Endpoint inA = Endpoint.of(ANCHOR, "PORT.a", at("attach#1", 0), 0);
+        Endpoint inB = Endpoint.of(ANCHOR, "PORT.b", at("attach#2", 0), 0);
+        for (String[] each : new String[][]{{"s0", "true", "false"},
+                {"s1", "false", "true"}}) {
+            Session run = new Session(positions, each[0],
+                    !"s0".equals(each[0]));
+            run.activation(PRODUCER);
+            // ONE value in both runs, so the two are not told apart by a
+            // root's guard: what separates them is the selector alone.
+            run.marker("false");
+            run.expression("EXPR.v1.a", constant(each[1]));
+            run.expression("EXPR.v1.b", constant(each[2]));
+            run.export(portA, "EXPR.v1.a", 1L, each[1]);
+            run.export(portB, "EXPR.v1.b", 2L, each[2]);
+            // ONE message, two leaves: the arrival carries one
+            // correlation id on both of them, exactly as an RPC response
+            // whose body a loop converted leaf by leaf does.
+            run.attach(inA, "vh_a", "Z", each[1], portA, "rpc#1");
+            run.attach(inB, "vh_b", "Z", each[2], portB, "rpc#1");
+            run.target("(and vh_a vh_b)", false, true);
+            run.write();
+        }
+        Composer.Composition mixed = compose(positions, 4);
+        assertEquals("both runs are paths", 2, mixed.disjuncts().size());
+        assertEquals("the two leaves of one MESSAGE share ONE selector per "
+                        + "run, so two runs over two paths declare four and "
+                        + "not eight: " + mixed.armSelectors(), 4,
+                mixed.armSelectors().size());
+        assertEquals("and no witness reads an export no run made",
+                "unsat", solver().ask(mixed.query(
+                        mixed.valuations().get(0).assertions()),
+                        null, false).status());
+
+        // R3c: A RUN THAT DELIVERED FEWER OUTS IS NO OPTION.  The same two
+        // ports, and now one run exported at the first only and the other
+        // at the second only: every port has an attested delivery, and no
+        // run of this corpus made both, so nothing could have produced what
+        // this path attached and the path leaves the disjunction by name.
+        Path partial = folder.newFolder("partial-export").toPath();
+        for (String[] each : new String[][]{{"s0", "a"}, {"s1", "b"}}) {
+            Session run = new Session(partial, each[0],
+                    !"s0".equals(each[0]));
+            run.activation(PRODUCER);
+            run.marker("false");
+            run.expression("EXPR.v1.a", constant("true"));
+            run.expression("EXPR.v1.b", constant("true"));
+            if ("a".equals(each[1])) {
+                run.export(portA, "EXPR.v1.a", 1L, "true");
+            } else {
+                run.export(portB, "EXPR.v1.b", 2L, "true");
+            }
+            run.attach(inA, "vh_a", "Z", "true", portA, "rpc#1");
+            run.attach(inB, "vh_b", "Z", "true", portB, "rpc#1");
+            run.target("(and vh_a vh_b)", false, true);
+            run.write();
+        }
+        Composer.Composition short_ = compose(partial, 4);
+        assertTrue("a path no run of this corpus could have produced every "
+                        + "delivery of is out of the disjunction: "
+                        + short_.disjuncts(),
+                short_.disjuncts().isEmpty());
+        assertTrue("and the refusal names the message and the first leaf "
+                        + "it cannot answer: " + short_.gaps(),
+                says(short_.gaps(), GapKind.UNPRODUCIBLE_ANSWER,
+                        "attested delivery at every leaf of this message"));
     }
 
     // ------------------------------------------------------------------
@@ -1976,6 +2055,25 @@ public class ComposerTest {
         session.expression("EXPR.00000000000000f4", binary("!=",
                 read("INSTANCE_FIELD", 2L, 24L, 178L, "I"),
                 integer("I", 9L)));
+        // A map with three keys in it, and the three positions of the view
+        // over it: the shape 11741's NameNode exports its block keys at
+        // (`allKeys.values().toArray(...)`, one element per position).  Put
+        // in an order that is NOT the ascending one, because what a
+        // traversal hands back is the map's business and "ascending ints"
+        // is not a fact any recording of a HashMap states.
+        JsonObject held = relation("ASSOCIATIVE", "SNAPSHOT_BASE",
+                "java/util/HashMap", relation("ASSOCIATIVE", "STATE",
+                        "java/util/HashMap",
+                        symbol("M_L'java/util/HashMap'_88",
+                                "java/util/HashMap")));
+        for (long key : new long[]{30L, 10L, 20L}) {
+            held = relation("ASSOCIATIVE", "PUT", "java/util/HashMap",
+                    held, integer("I", key), integer("I", key));
+        }
+        for (int index = 0; index < 3; index++) {
+            session.expression("EXPR.0000000000000e4" + index,
+                    viewKey(held, index));
+        }
         session.target("(and EXPR.00000000000000f1 EXPR.00000000000000f2 "
                         + "EXPR.00000000000000f3 EXPR.00000000000000f4)",
                 false, true);
@@ -2184,6 +2282,69 @@ public class ComposerTest {
                             + "recording's: " + name,
                     lowering.minted(name));
         }
+
+        // AN INDEXED VIEW OF A MAP IS A BIJECTION between its positions and
+        // the keys the map holds.  Three keys put into an empty base, and
+        // the three positions of the view over it, asked with real z3: no
+        // two positions may name one key, no key the map holds may sit at
+        // no position, and the order is the map's own and not an order this
+        // lowering invented.  Stated position by position -- "this position
+        // names SOME present key" -- a formula answers every position with
+        // one key and leaves another at none, which is how hdfs-11741's
+        // composed query delivered 182906, 182908, 182908, 182907 out of an
+        // export that held 182905, 182906, 182907, 182908.
+        String[] position = new String[3];
+        for (int index = 0; index < position.length; index++) {
+            position[index] = lowering.statedTerm(
+                    "EXPR.0000000000000e4" + index, "view");
+            assertFalse("the view's position " + index + " is lowered",
+                    position[index].isEmpty());
+        }
+        assertEquals("the view hands the keys back in the map's own order, "
+                        + "and a permutation that is not the ascending one "
+                        + "is satisfiable", "sat",
+                viewAnswer(lowering, "(and (= " + position[0] + " 30) (= "
+                        + position[1] + " 10) (= " + position[2]
+                        + " 20))"));
+        assertEquals("two positions never name one key", "unsat",
+                viewAnswer(lowering, "(= " + position[0] + " "
+                        + position[1] + ")"));
+        assertEquals("and no key the map holds sits at no position",
+                "unsat",
+                viewAnswer(lowering, "(and (not (= " + position[0]
+                        + " 10)) (not (= " + position[1] + " 10)) (not (= "
+                        + position[2] + " 10)))"));
+
+        // And a view whose state the recording does not bound -- an opaque
+        // map this execution never built here -- has no positions to write
+        // those facts out at, so it is refused BY NAME rather than left
+        // with positions the solver may answer as it likes.
+        lowering.begin("s0", null);
+        lowering.term(viewKey(relation("ASSOCIATIVE", "STATE",
+                "java/util/HashMap", symbol("M_L'java/util/HashMap'_89",
+                        "java/util/HashMap")), 0), null, "view-unbounded");
+        List<String> unbounded = new ArrayList<String>(
+                lowering.openRefusals());
+        lowering.end();
+        assertTrue("a view of a map the recording does not bound is "
+                        + "refused by name: " + unbounded,
+                unbounded.contains(ContainerSmtCodec
+                        .ASSOC_VIEW_SIZE_UNSTATED + ":STATE"));
+    }
+
+    /** One element of the key view of a map, at one position. */
+    private static JsonObject viewKey(JsonObject map, long position) {
+        return relation("ASSOCIATIVE", "KEY", "I",
+                relation("ASSOCIATIVE", "NEXT", "L",
+                        relation("ASSOCIATIVE", "ITERATOR", "L", map),
+                        integer("I", position)));
+    }
+
+    /** What z3 answers this lowering's facts asked with one more question. */
+    private String viewAnswer(SmtLowering lowering, String question) {
+        String asked = SmtLowering.legalSymbols(question);
+        return solver().ask(lowering.body(Collections.singletonList(asked))
+                + "(assert " + asked + ")\n", null, false).status();
     }
 
     // ------------------------------------------------------------------
@@ -2299,6 +2460,64 @@ public class ComposerTest {
                         + fatalArm(alone),
                 fatalArm(alone).contains(SmtLowering.legalSymbols(
                         "(> " + CLOCK + " 300)")));
+
+        // R3b: AN ARM IS CLOSED LIKE A PATH.  The same corpus once more,
+        // with the put loop EXPORTING what it read and the anchor
+        // attaching it: the delivery rests on the map at the version the
+        // loop read, that version rests on the removal an earlier
+        // occurrence made under a comparison against the clock it read,
+        // and none of that is a fact about the CONSUMER's path -- it is
+        // what the producer had in hand.  Stated as a bare (pi, e) pair an
+        // arm said WHAT was delivered and not why, and no conjunct of any
+        // composed query named that clock.
+        Path delivered = folder.newFolder("arm-closure").toPath();
+        LocationId swept = LocationId.of(LocationKind.INSTANCE, "474", "8");
+        Session run = new Session(delivered, "s0", false);
+        run.activation(UPSTREAM);
+        run.activation(PRODUCER);
+        run.marker("false");
+        run.clock("700");
+        // A: the expiry decision, and then what the sweep it guards wrote.
+        run.decision(UPSTREAM, "up#u15", "(> " + CLOCK + " 300)",
+                CLOCK_ROOT, 700L);
+        run.expression("EXPR.arm.a", constant("true"));
+        run.write(Endpoint.of(UPSTREAM, "Manager#remove#22:WRITE",
+                at("w#a", 0), 0), swept, 6L, "EXPR.arm.a");
+        // B: the occurrence the anchor reads from.  It READ what A wrote
+        // and exported it; the export names the read and nothing about the
+        // occurrence behind it.
+        run.expression("EXPR.arm.b",
+                read("INSTANCE_FIELD", 474L, 8L, 6L, "Z"));
+        run.read(Endpoint.of(PRODUCER, "Manager#addKeys#70:READ",
+                        at("r#b", 0), 0), swept, 6L, "INSTANCE/474#8@v6",
+                "Z", null);
+        Endpoint port = Endpoint.of(PRODUCER, "PORT.keys",
+                at("export#1", 0), 0);
+        run.export(port, "EXPR.arm.b", 1L, "true");
+        run.attach(Endpoint.of(ANCHOR, "PORT.keys", at("attach#1", 0), 0),
+                "vh_keys", "true", port);
+        run.target("vh_keys", false, true);
+        run.write();
+
+        Composer.Composition armed = compose(delivered, 2);
+        assertEquals("the path is admitted: " + armed.gaps(), 1,
+                armed.disjuncts().size());
+        assertEquals("and the removing occurrence's clock is a cell of the "
+                        + "composition", Collections.singletonList(CLOCK),
+                armed.clockCells());
+        String clocked = "";
+        for (String line : armed.body().split("\n")) {
+            if (line.contains("message_arm__")
+                    && line.contains(SmtLowering.legalSymbols(
+                            "(> " + CLOCK + " 300)"))) {
+                clocked = line;
+            }
+        }
+        assertFalse("and its decision stands UNDER THE SELECTOR OF THE "
+                        + "MESSAGE that carried the delivery, because it is "
+                        + "a reason that delivery is what it is and not a "
+                        + "fact of the consumer's path: " + armed.body(),
+                clocked.isEmpty());
     }
 
     /**
@@ -2677,8 +2896,19 @@ public class ComposerTest {
 
         void attach(Endpoint endpoint, String symbol, String javaType,
                     String arrival, Endpoint producer) {
+            attach(endpoint, symbol, javaType, arrival, producer,
+                    "corr-" + symbol);
+        }
+
+        /**
+         * The same, on a NAMED message: one correlation id over several
+         * leaves is one arrival, which is the unit a family's selector
+         * stands for.
+         */
+        void attach(Endpoint endpoint, String symbol, String javaType,
+                    String arrival, Endpoint producer, String correlation) {
             attaches.add(AttachRow.of(id, ++seq, endpoint, symbol, javaType,
-                    arrival, false, null, producer, "corr-" + symbol,
+                    arrival, false, null, producer, correlation,
                     producer == null ? "" : "HANDLE"));
         }
 

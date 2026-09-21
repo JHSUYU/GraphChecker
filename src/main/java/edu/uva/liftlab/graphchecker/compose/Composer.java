@@ -719,7 +719,8 @@ public final class Composer {
         //      reason up to.  A row-level fixed point, computed before
         //      anything is lowered, because it is a fact about the join
         //      graph and not about SMT.
-        Map<String, Long> reached = closure(session, target);
+        Map<String, Long> reached = closure(session, anchor, target.seq(),
+                null);
 
         // (0b) Every read of the reached occurrences whose value the ROW
         //     states outright, bound BEFORE any expression of this path is
@@ -864,11 +865,23 @@ public final class Composer {
             return null;
         }
 
-        // (6) The families of every interaction this path's chain reaches,
-        //     each under this path's selector.
+        // (6) One selector per (producer occurrence, session) for every
+        //     interaction this path's chain reaches, under this path's
+        //     selector.  A producer for which NO session of this corpus
+        //     could have made every delivery this path took from it (R3c)
+        //     leaves the path out of the disjunction: a witness that mixed
+        //     two runs' deliveries of one occurrence would rest on an
+        //     export no execution produced.
         List<String> familyTerms = new ArrayList<String>();
-        composedFamilies.closeFamilies(ordinal, selector, interactionIds,
-                bound, familyTerms);
+        List<GapRow> unproducible = new ArrayList<GapRow>();
+        if (!composedFamilies.closeFamilies(ordinal, selector,
+                interactionIds, bound, familyTerms, unproducible)) {
+            gaps.addAll(unproducible);
+            if (firstRefusal.isEmpty() && !unproducible.isEmpty()) {
+                firstRefusal = unproducible.get(0).subject();
+            }
+            return null;
+        }
         // (7) And the STATE families: which writer the read may have seen.
         //     A read a family gives alternatives to takes its value there.
         Set<String> chosen = composedFamilies.stateFamilies(path,
@@ -914,7 +927,7 @@ public final class Composer {
      * and a family arm names symbols the path's own conjunction need
      * not.</p>
      */
-    private List<String> statedJoins(Map<String, String> joins,
+    List<String> statedJoins(Map<String, String> joins,
                                      Set<String> chosen, List<String> terms,
                                      List<String> familyTerms) {
         Map<String, String> pending = new LinkedHashMap<String, String>();
@@ -1398,28 +1411,35 @@ public final class Composer {
      * as ever -- and its own earlier versions are covered by construction,
      * being earlier still; each (location, version) is handled once.</p>
      */
-    private Map<String, Long> closure(String session, TargetRow target) {
+    Map<String, Long> closure(String session, OccurrenceAddress start,
+                              long cutoff, List<WriteRow> seeds) {
         Map<String, Long> reached = new LinkedHashMap<String, Long>();
-        reached.put(anchor.id(), target.seq());
+        reached.put(start.id(), cutoff);
         List<String> pending = new ArrayList<String>();
-        pending.add(anchor.id());
+        pending.add(start.id());
         List<WriteRow> versions = new ArrayList<WriteRow>();
         Set<String> handled = new LinkedHashSet<String>();
+        if (seeds != null) {
+            for (WriteRow seed : seeds) {
+                reach(seed, start, reached, pending, versions, handled);
+            }
+        }
         while (!pending.isEmpty() || !versions.isEmpty()) {
             while (!pending.isEmpty()) {
                 String at = pending.remove(0);
                 OccurrenceAddress occurrence = corpus.occurrence(at);
                 if (occurrence == null) continue;
-                boolean isAnchor = anchor.id().equals(at);
+                boolean whole = anchor.id().equals(at);
                 long cut = reached.get(at);
                 for (ReadRow read : corpus.readsOn(session, occurrence)) {
-                    if (!isAnchor && read.seq() >= cut) continue;
+                    if (!whole && read.seq() >= cut) continue;
                     if (read.observedVersion() < 0L) continue;
                     WriteRow write = corpus.writeOf(session,
                             SmtLowering.locationKey(read.location()),
                             read.observedVersion());
                     if (write == null) continue;
-                    reach(write, reached, pending, versions, handled);
+                    reach(write, start, reached, pending, versions,
+                            handled);
                 }
             }
             if (versions.isEmpty()) continue;
@@ -1427,7 +1447,7 @@ public final class Composer {
             String key = SmtLowering.locationKey(write.location());
             for (WriteRow under : corpus.writesOf(session, key)) {
                 if (under.version() >= write.version()) continue;
-                reach(under, reached, pending, versions, handled);
+                reach(under, start, reached, pending, versions, handled);
             }
         }
         return reached;
@@ -1443,11 +1463,16 @@ public final class Composer {
      * its cutoff is the target observation, and a write of its own is not a
      * reason to widen it.</p>
      */
-    private void reach(WriteRow write, Map<String, Long> reached,
+    private void reach(WriteRow write, OccurrenceAddress start,
+                       Map<String, Long> reached,
                        List<String> pending, List<WriteRow> versions,
                        Set<String> handled) {
         String writer = write.endpoint().occurrence().id();
-        if (anchor.id().equals(writer)) return;
+        // NEVER THE ANCHOR, and never the occurrence this closure starts
+        // from: the start's cutoff is the event the closure is about -- the
+        // target observation, or the export an arm delivered -- and a write
+        // of its own is not a reason to widen it past that.
+        if (anchor.id().equals(writer) || start.id().equals(writer)) return;
         if (handled.add(SmtLowering.locationKey(write.location()) + "#"
                 + write.version())) {
             versions.add(write);
@@ -1469,7 +1494,7 @@ public final class Composer {
      * kept the rest of its conjunction would rest on the free constant the
      * refusal left behind.</p>
      */
-    private List<String> closureConditions(String session,
+    List<String> closureConditions(String session,
                                            Map<String, Long> reached,
                                            List<GapRow> refusals) {
         List<String> conditions = new ArrayList<String>();
@@ -1518,7 +1543,7 @@ public final class Composer {
      * this lowering places nowhere is named here.  Either way one refusal
      * per row: {@code answered} is what the two halves say it by.</p>
      */
-    private void statedReads(String session, Set<String> occurrences,
+    void statedReads(String session, Set<String> occurrences,
                              List<GapRow> refusals,
                              Map<String, String> joins,
                              Set<String> answered) {
@@ -1574,7 +1599,7 @@ public final class Composer {
                 read.observedVersion()) != null;
     }
 
-    private void stateJoins(String session, Set<String> occurrences,
+    void stateJoins(String session, Set<String> occurrences,
                             SmtLowering.SessionJoin join,
                             List<GapRow> refusals,
                             List<ReadRow> joined, List<String> observed,
