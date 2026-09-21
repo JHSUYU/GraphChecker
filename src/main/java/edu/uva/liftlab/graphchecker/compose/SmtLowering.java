@@ -1601,16 +1601,43 @@ public final class SmtLowering extends VmLoweringCore {
         return free(sort == null ? Sort.VALUE : sort);
     }
 
-    /** One fresh unconstrained value, for a construct this refused. */
+    /**
+     * One fresh unconstrained value, for a construct this refused.
+     *
+     * <p>FRESH PER CONSTRUCT, NEVER PER REASON.  This used to mint on
+     * {@code unsupported.size()}, a set of refusal SUBJECTS -- so two
+     * constructs refused for the same reason, or over the same unstated
+     * read, got the SAME variable, and a path that asserts one of them true
+     * and another false is then unsatisfiable for no reason the recording
+     * states.  hdfs-11741 campaign #5b: the three {@code removeExpiredKeys}
+     * guards of one scan all refused as {@code
+     * MalformedJvmLcmpOperands:INT:JAVA_LONG:INT:JAVA_INT}, collapsed onto
+     * one constant, and the obligation that keeps ordinals 1 and 2 while
+     * flipping ordinal 3 asserted {@code (>= u 0)} twice and {@code (not
+     * (>= u 0))} once over that one {@code u}. 148 of the run's 336 UNSAT
+     * verdicts are that self-contradiction, including BOTH wave-1 attempts
+     * at the nn0 rotation drop the case is about -- and an UNSAT settles an
+     * arm, so the frontier never asked again.
+     *
+     * <p>A refusal states that this lowering does NOT model the construct.
+     * It therefore knows nothing about the value -- including whether two
+     * of them are equal -- so the only sound reading is a new variable each
+     * time.  Sharing one across two constructs is a strengthening nothing
+     * justifies; losing the sharing only ever makes a path easier to
+     * satisfy, which a refused construct already is.</p>
+     */
     private Term free(Sort sort) {
         Sort declared = sort == null || sort == Sort.UNKNOWN
                 ? Sort.VALUE : sort;
         String name = symbols.mint("unsupported__",
-                scope + "#" + declared + "#" + unsupported.size(), 10);
+                scope + "#" + declared + "#" + freeConstants++, 10);
         declare(name, declared);
         return Term.of(name, declared, declared == Sort.INT
                 ? IntegralWidth.JAVA_INT : IntegralWidth.NONE);
     }
+
+    /** How many refused constructs this lowering has named. */
+    private int freeConstants;
 
     /** One thing this lowering states, and the label a core reads it by. */
     private static final class Stated {
