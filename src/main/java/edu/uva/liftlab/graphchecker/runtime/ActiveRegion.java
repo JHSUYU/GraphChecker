@@ -286,7 +286,27 @@ final class ActiveRegion {
         return ordinal;
     }
 
+    /**
+     * The ordinal of the next decision this activation takes at one site.
+     *
+     * <p>I3 -- ROWS AND ORDINALS BELONG TO THE PERFORMER: the performer is
+     * the occurrence running on this thread, and the count is kept there
+     * ({@code Identity#nextBranchOrdinal}), beside the address the row
+     * carries.  Counted per ACTIVATION, two activations that fold into one
+     * occurrence (I1) each start at 1 and two of their rows collide at
+     * (occurrence, site, ordinal) -- which is the pair an obligation's flip
+     * is addressed by, and the pair {@code RowPublication#decisions} claims
+     * each decision event under.</p>
+     *
+     * <p>The activation-local count remains for an activation running
+     * outside every open region: a test that drives this class directly,
+     * and any entry whose occurrence this run could name no node for.  It is
+     * a count of this activation's own decisions, which is what it always
+     * was.</p>
+     */
     private int nextBranchOccurrence(String siteId) {
+        int onPerformer = RowRuntime.nextBranchOrdinal(siteId);
+        if (onPerformer > 0) return onPerformer;
         Integer previous = branchOccurrences.get(siteId);
         int occurrence = previous == null ? 1 : previous + 1;
         branchOccurrences.put(siteId, occurrence);

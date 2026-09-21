@@ -581,6 +581,19 @@ public final class RowRuntime {
     }
 
     /**
+     * The ordinal of one decision at {@code siteId} in the occurrence that
+     * is performing it, or {@code 0} when this thread runs none.
+     *
+     * <p>I3: a decision row is addressed by the occurrence that performed
+     * the branch and its ordinal is counted on that occurrence, which is
+     * what an obligation's {@code (siteId, ordinal)} flip is addressed
+     * by.</p>
+     */
+    public static int nextBranchOrdinal(String siteId) {
+        return Identity.nextBranchOrdinal(siteId);
+    }
+
+    /**
      * Files the frame of one work start, for the work it started.
      *
      * <p>The starter's own frames are unchanged: a start is an event, not a

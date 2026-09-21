@@ -804,6 +804,34 @@ public final class Identity {
         state.regions.remove(state.regions.size() - 1);
     }
 
+    /**
+     * The ordinal of one decision at {@code site} in the occurrence running
+     * here, or {@code 0} when this thread is running none.
+     *
+     * <p>I3 -- ROWS AND ORDINALS BELONG TO THE PERFORMER.  A decision row is
+     * addressed by the occurrence that performed the branch, so its site
+     * ordinal is counted on THAT occurrence: the count lives beside the
+     * address, on the region entry that opened it, and every entry folded
+     * into it ({@link #fold}) goes on counting there.  Counted per
+     * ACTIVATION instead, two selected activations that fold into one
+     * occurrence each start at 1 and two rows collide at (occurrence, site,
+     * ordinal) -- which is the pair an obligation's flip is addressed
+     * by.</p>
+     *
+     * <p>1-based, because an obligation's {@code ordinal} is: the first
+     * decision of a site in an occurrence is its first.</p>
+     */
+    public static int nextBranchOrdinal(String site) {
+        State state = state();
+        Region running = state.activeRegion();
+        if (running == null) return 0;
+        String key = Text.safe(site);
+        Integer previous = running.branchOrdinals.get(key);
+        int ordinal = previous == null ? 1 : previous + 1;
+        running.branchOrdinals.put(key, ordinal);
+        return ordinal;
+    }
+
     /** The site-local index of one event inside the region. */
     public static ExecutionIndex siteIndex() {
         State state = state();
@@ -1169,6 +1197,13 @@ public final class Identity {
          * the one already running on this thread.
          */
         private OccurrenceAddress occurrence;
+        /**
+         * How many decisions this OCCURRENCE has taken at each site, for the
+         * ordinal its rows carry ({@link #nextBranchOrdinal}).  Empty on a
+         * folded entry: it counts on the occurrence it folded into.
+         */
+        private final Map<String, Integer> branchOrdinals =
+                new HashMap<String, Integer>();
 
         private Region(int base) {
             this.base = base;

@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.smt.CanonicalJson;
 import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
 import org.junit.After;
@@ -15,6 +16,7 @@ import java.util.Deque;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 
 /**
  * Characterization of the branch-observation machinery a region runs for one
@@ -46,6 +48,10 @@ public class BranchDecisionRecordingTest {
             ConcolicRegionRuntime.ACTIVE.remove(opened.pop());
         }
         currentTokens().clear();
+        rootInvocationFrames().clear();
+        silenced().clear();
+        Identity.resetForTests();
+        Lineage.resetForTests();
     }
 
     /**
@@ -137,6 +143,163 @@ public class BranchDecisionRecordingTest {
         assertFalse("a decision with no recorded row states no reach",
                 ConcolicRegionRuntime.statesTargetReach(false, false, TARGET,
                         1, TARGET, 1));
+    }
+
+    /**
+     * I3: the rows and the ordinals of a folded site are the enclosing
+     * occurrence's.
+     *
+     * <p>Under I1 a declared region entered synchronously inside another
+     * region's occurrence opens none of its own, so two selected
+     * activations can be activations of ONE occurrence.  A decision row is
+     * addressed by the occurrence that performed the branch and its ordinal
+     * is counted there: counted per activation, both would start at 1 and
+     * two rows would collide at (occurrence, site, ordinal) -- the pair an
+     * obligation's flip is addressed by.</p>
+     */
+    @Test
+    public void aFoldedSitesRowsAndOrdinalsAreTheEnclosingOccurrences()
+            throws Exception {
+        Identity.resetForTests();
+        Lineage.resetForTests();
+        Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
+        Identity.enterFrame("<a.B: void addKeys()>#u1");
+        OccurrenceAddress enclosing = Identity.occurrence(NODE,
+                "REGION.ba3902cd", true);
+
+        ActiveRegion outer = region(enclosing);
+        decide(outer, 4);
+        decide(outer, 4);
+
+        // The synchronous call into the nested declared region: its entry
+        // folds, so this activation IS an activation of `enclosing`.
+        Identity.enterFrame("<a.B: void removeExpiredKeys()>#u7");
+        assertEquals(enclosing,
+                Identity.occurrence(NODE, "REGION.094a8e3d", true));
+        ActiveRegion folded = region(Identity.currentOccurrence(NODE));
+        decide(folded, 4);
+
+        assertEquals("the folded activation's row is the enclosing "
+                        + "occurrence's", enclosing.render(),
+                folded.d3Address.render());
+        assertEquals("and its ordinal goes on counting there, so no two "
+                        + "rows of this occurrence share (site, ordinal)",
+                3, ordinal(folded, 0));
+        assertEquals(1, ordinal(outer, 0));
+        assertEquals(2, ordinal(outer, 1));
+    }
+
+    /**
+     * I3: an abandoned occurrence hands its later branches to nobody.
+     *
+     * <p>A prefix contradiction ends an activation from INSIDE the region
+     * method, and the workload's call goes on running.  The activation is
+     * popped off the region stack, so every branch the rest of that call
+     * took used to be recorded on the ENCLOSING activation, under its
+     * address and with ordinals restarting at 1 -- 10 of hdfs-11741's 40
+     * nn0-focused sessions show that migration.  After the close there is
+     * no active occurrence on the thread: the rest of the frame is concrete
+     * and unrecorded, and the enclosing occurrence is the thread's again
+     * exactly when the abandoned call returns.</p>
+     */
+    @Test
+    public void anAbandonedOccurrenceHandsItsLaterBranchesToNobody()
+            throws Exception {
+        Identity.resetForTests();
+        Lineage.resetForTests();
+        ActiveRegion enclosing = region(null);
+        ActiveRegion abandoned = region(null);
+        Object frame = rootInvocationFrame(abandoned.token);
+        assertEquals("the innermost activation is the one about to close",
+                abandoned, ConcolicRegionRuntime.activeRegion());
+
+        // What #closeOccurrence states when it closes an activation whose
+        // own Java frame is still executing.
+        silenceStillRunningFrame(abandoned);
+        currentTokens().pop();
+        assertNull("no occurrence performs what the rest of that frame does",
+                ConcolicRegionRuntime.activeRegion());
+
+        // The region method returns: its root exit hook pops the frame, and
+        // the occurrence enclosing the call is the thread's again.
+        popRootInvocationFrame(frame);
+        assertEquals(enclosing, ConcolicRegionRuntime.activeRegion());
+    }
+
+    private static final String NODE = "hdfs-11741/dn1#epoch0";
+
+    /** One activation of {@code address}, on this thread's region stack. */
+    private ActiveRegion region(OccurrenceAddress address) throws Exception {
+        long token = 900000L + opened.size() + 1;
+        ActiveRegion active = new ActiveRegion(token,
+                new ConcolicTaskPlan.RuntimeTask(task()), null,
+                Thread.currentThread());
+        active.d3Address = address;
+        ConcolicRegionRuntime.ACTIVE.put(token, active);
+        currentTokens().push(token);
+        opened.push(token);
+        return active;
+    }
+
+    /** One concrete decision at {@code unitIndex} of {@link #METHOD}. */
+    private void decide(ActiveRegion active, int unitIndex) throws Exception {
+        Method record = ActiveRegion.class.getDeclaredMethod(
+                "recordConcreteDecision", String.class, int.class,
+                nested("BranchDecision"));
+        record.setAccessible(true);
+        record.invoke(active, METHOD, unitIndex, binary(true));
+    }
+
+    /** The ordinal the n-th row of this activation carries. */
+    private static int ordinal(ActiveRegion active, int row) {
+        return active.branchMappings.get(row).get("occurrence").getAsInt();
+    }
+
+    /** One open root invocation frame, as an entry hook pushes one. */
+    private static Object rootInvocationFrame(long token) throws Exception {
+        Class<?> shape = Class.forName("edu.uva.liftlab.graphchecker.runtime"
+                + ".ConcolicRegionRuntime$RootInvocationFrame");
+        java.lang.reflect.Constructor<?> open = null;
+        for (java.lang.reflect.Constructor<?> declared
+                : shape.getDeclaredConstructors()) {
+            if (declared.getParameterTypes().length == 5) open = declared;
+        }
+        open.setAccessible(true);
+        Object frame = open.newInstance("sel", METHOD, "group", 0, token);
+        rootInvocationFrames().push(frame);
+        return frame;
+    }
+
+    private static void silenceStillRunningFrame(ActiveRegion active)
+            throws Exception {
+        Method silence = ConcolicRegionRuntime.class.getDeclaredMethod(
+                "silenceStillRunningFrame", ActiveRegion.class);
+        silence.setAccessible(true);
+        silence.invoke(null, active);
+    }
+
+    private static void popRootInvocationFrame(Object frame)
+            throws Exception {
+        Method pop = ConcolicRegionRuntime.class.getDeclaredMethod(
+                "popRootInvocationFrame", String.class, String.class);
+        pop.setAccessible(true);
+        assertEquals(frame, pop.invoke(null, "sel", METHOD));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Deque<Long> silenced() throws Exception {
+        Field field = ConcolicRegionRuntime.class
+                .getDeclaredField("SILENCED");
+        field.setAccessible(true);
+        return ((ThreadLocal<Deque<Long>>) field.get(null)).get();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Deque<Object> rootInvocationFrames() throws Exception {
+        Field field = ConcolicRegionRuntime.class
+                .getDeclaredField("ROOT_INVOCATION_FRAMES");
+        field.setAccessible(true);
+        return ((ThreadLocal<Deque<Object>>) field.get(null)).get();
     }
 
     /** The transcript one concrete decision at u4 leaves in a fresh region. */
