@@ -959,16 +959,19 @@ public class ComposerTest {
             run.expression("EXPR.v1.b", constant(each[2]));
             run.export(portA, "EXPR.v1.a", 1L, each[1]);
             run.export(portB, "EXPR.v1.b", 2L, each[2]);
-            run.attach(inA, "vh_a", each[1], portA);
-            run.attach(inB, "vh_b", each[2], portB);
+            // ONE message, two leaves: the arrival carries one
+            // correlation id on both of them, exactly as an RPC response
+            // whose body a loop converted leaf by leaf does.
+            run.attach(inA, "vh_a", "Z", each[1], portA, "rpc#1");
+            run.attach(inB, "vh_b", "Z", each[2], portB, "rpc#1");
             run.target("(and vh_a vh_b)", false, true);
             run.write();
         }
         Composer.Composition mixed = compose(positions, 4);
         assertEquals("both runs are paths", 2, mixed.disjuncts().size());
-        assertEquals("the two ports of one occurrence share ONE selector "
-                        + "per run, so two runs over two paths declare four "
-                        + "and not eight: " + mixed.armSelectors(), 4,
+        assertEquals("the two leaves of one MESSAGE share ONE selector per "
+                        + "run, so two runs over two paths declare four and "
+                        + "not eight: " + mixed.armSelectors(), 4,
                 mixed.armSelectors().size());
         assertEquals("and no witness reads an export no run made",
                 "unsat", solver().ask(mixed.query(
@@ -993,8 +996,8 @@ public class ComposerTest {
             } else {
                 run.export(portB, "EXPR.v1.b", 2L, "true");
             }
-            run.attach(inA, "vh_a", "true", portA);
-            run.attach(inB, "vh_b", "true", portB);
+            run.attach(inA, "vh_a", "Z", "true", portA, "rpc#1");
+            run.attach(inB, "vh_b", "Z", "true", portB, "rpc#1");
             run.target("(and vh_a vh_b)", false, true);
             run.write();
         }
@@ -1003,10 +1006,10 @@ public class ComposerTest {
                         + "delivery of is out of the disjunction: "
                         + short_.disjuncts(),
                 short_.disjuncts().isEmpty());
-        assertTrue("and the refusal names the occurrence and the first "
-                        + "interaction it cannot answer: " + short_.gaps(),
+        assertTrue("and the refusal names the message and the first leaf "
+                        + "it cannot answer: " + short_.gaps(),
                 says(short_.gaps(), GapKind.UNPRODUCIBLE_ANSWER,
-                        "attested delivery at every interaction"));
+                        "attested delivery at every leaf of this message"));
     }
 
     // ------------------------------------------------------------------
@@ -2504,16 +2507,17 @@ public class ComposerTest {
                 armed.clockCells());
         String clocked = "";
         for (String line : armed.body().split("\n")) {
-            if (line.contains("producer_arm__")
+            if (line.contains("message_arm__")
                     && line.contains(SmtLowering.legalSymbols(
                             "(> " + CLOCK + " 300)"))) {
                 clocked = line;
             }
         }
-        assertFalse("and its decision stands UNDER THE PRODUCER SELECTOR, "
-                        + "because it is a reason that delivery is what it "
-                        + "is and not a fact of the consumer's path: "
-                        + armed.body(), clocked.isEmpty());
+        assertFalse("and its decision stands UNDER THE SELECTOR OF THE "
+                        + "MESSAGE that carried the delivery, because it is "
+                        + "a reason that delivery is what it is and not a "
+                        + "fact of the consumer's path: " + armed.body(),
+                clocked.isEmpty());
     }
 
     /**
@@ -2892,8 +2896,19 @@ public class ComposerTest {
 
         void attach(Endpoint endpoint, String symbol, String javaType,
                     String arrival, Endpoint producer) {
+            attach(endpoint, symbol, javaType, arrival, producer,
+                    "corr-" + symbol);
+        }
+
+        /**
+         * The same, on a NAMED message: one correlation id over several
+         * leaves is one arrival, which is the unit a family's selector
+         * stands for.
+         */
+        void attach(Endpoint endpoint, String symbol, String javaType,
+                    String arrival, Endpoint producer, String correlation) {
             attaches.add(AttachRow.of(id, ++seq, endpoint, symbol, javaType,
-                    arrival, false, null, producer, "corr-" + symbol,
+                    arrival, false, null, producer, correlation,
                     producer == null ? "" : "HANDLE"));
         }
 

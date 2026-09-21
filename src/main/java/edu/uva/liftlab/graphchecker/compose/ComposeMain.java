@@ -419,8 +419,10 @@ public final class ComposeMain {
                 JsonObject row = new JsonObject();
                 row.addProperty("selector", taken.getKey());
                 row.addProperty("family", arm.family());
-                row.addProperty("producerOccurrenceId",
-                        arm.producerOccurrenceId());
+                row.addProperty("groupId", arm.groupId());
+                JsonArray ports = new JsonArray();
+                for (String port : arm.attachEndpointIds()) ports.add(port);
+                row.add("attachEndpointIds", ports);
                 row.addProperty("sessionId", arm.sessionId());
                 row.addProperty("producerPathId", arm.producerPathId());
                 JsonArray slots = new JsonArray();

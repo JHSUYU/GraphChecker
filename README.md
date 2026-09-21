@@ -285,21 +285,26 @@ bound to what an obligation answered it, else to the delivery an attested arm st
 nothing: the third rule, which pinned the arrival to the literal this session happened to
 receive, is deleted, because an arrival is not a statement about why the delivery was that value
 — so a read no attested arm delivers is refused by name and its path leaves the disjunction.
-A wire arrival is bound by its family and by nothing else, and a family's selector is a
-**(producer occurrence, session)** and not an arm (rule 3 of §9). One selector per (P, S) binds
-ALL of P's outs at once — `sel_{P,S} ⇒ π_{P,S} ∧ guard_{P,S} ∧ closure_{P,S} ∧ ⋀_k v_H_k = e_{k,S}`
-— and exactly one of the ELIGIBLE sessions of P holds; S is eligible only where it has an
-attested delivery at *every* interaction the path binds of P, so a run that exported four entries
-is no option for a path that attached five, and a producer no session is eligible for refuses the
-path by name (`UNPRODUCIBLE_ANSWER`). An arm is then closed like a path: P's prefix taken to the
-LAST delivery the path takes from it, the same row-level closure the anchor gets started at P,
-the container versions the delivered expressions read, the prefixes and state joins of everything
-that closure reached, and P's own attaches as nested families under the same selector — never the
-anchor's. A refusal inside one refuses that (P, S) and not the path. The manifest names the
-(P, S) each witness valuation selected (`selectedArms`); a path states only the joins its
-conjunction reaches. State families take the same rule with the WRITER as P: one selector per
-writer occurrence, and one exactly-one per location over its writers, because a writer's writes
-move as a block and half a block cannot move.
+A wire arrival is bound by **the message it came in**: one selector per (message, session), and
+not one per arm (rule 3 of §9). A message is the attaches that share a `correlationId` in the
+path's own session — both ports of one RPC response, all five leaves a `convert` loop made of one
+response body — and its selector binds every leaf of it at once:
+`sel_{M,S} ⇒ guard_S ∧ closure_{M,S} ∧ ⋀_k v_H_k = e_{k,S}`, with exactly one of the ELIGIBLE
+sessions of M holding. S is eligible only where it has an attested delivery at *every* leaf of M,
+so a run that exported four entries is no option for a path that attached five, and a message no
+session is eligible for refuses the path by name (`UNPRODUCIBLE_ANSWER`). Grouping by producer
+*occurrence* is not enough: a loop body's iteration is part of its occurrence's execution index,
+so one response's leaves are several occurrences and a witness could take half of one run's
+response and half of another's. An arm is then closed like a path: for every occurrence the
+message came out of, that occurrence's prefix taken to its own delivery, the same row-level
+closure the anchor gets started there, the container versions the delivered expressions read, the
+prefixes and state joins of everything those closures reached, and the producer's own attaches as
+nested messages under this family's guard — never the anchor's. A refusal inside one refuses that
+(M, S) and not the path. The manifest names the message's attach endpoints and the run each
+witness valuation selected (`selectedArms`); a path states only the joins its conjunction
+reaches. State families keep the WRITER OCCURRENCE as their unit: one selector per writer, and
+one exactly-one per location over its writers, because a writer's writes move as a block and half
+a block cannot move.
 
 Root domains are exactly what the case declares: a marker free in {recorded, flipped}, an
 integral root in its declared relative window, a clock with a floor of zero and no window, any
@@ -614,8 +619,8 @@ the runtime keeps the value concrete and publishes `MINT_UNATTRIBUTED` when no a
 owns the mint, a new `IMPORT` invariant requires a mint row for every referenced root symbol, the
 composer refuses such an arm (`UNATTESTED_ARM`); and a location written before the window is an
 external in with an empty family, so a declared root or a named refusal. (3) Compose only,
-offline-verifiable: one selector per (producer occurrence, session), shared across its families
-— **done**; still open in this step: a family at every closure-reached external read,
+offline-verifiable: one selector per (message received, session), shared across its leaves
+— **done** (the unit is the message and not the producer occurrence: see §5); still open in this step: a family at every closure-reached external read,
 single-writer locations included; no pin to the observed version; all of an occurrence's writes
 kept. (4) Φ by tracing: PLAN publishes a new
 `PLACEHOLDER_SITE` row in `static_scope_map.jsonl` — the same family and readers as today's

@@ -101,19 +101,23 @@ final class ComposedFamilies {
      */
     public static final class ArmChoice {
         private final String family;
-        private final String producerOccurrenceId;
+        private final String groupId;
+        private final List<String> attachEndpointIds;
         private final String sessionId;
         private final String producerPathId;
         private final List<String> interactionIds;
         private final List<String> expressionRefs;
         private final boolean attested;
 
-        private ArmChoice(String family, String producerOccurrenceId,
-                          String sessionId, String producerPathId,
+        private ArmChoice(String family, String groupId,
+                          List<String> attachEndpointIds, String sessionId,
+                          String producerPathId,
                           List<String> interactionIds,
                           List<String> expressionRefs, boolean attested) {
             this.family = family;
-            this.producerOccurrenceId = producerOccurrenceId;
+            this.groupId = groupId;
+            this.attachEndpointIds = Collections.unmodifiableList(
+                    attachEndpointIds);
             this.sessionId = sessionId;
             this.producerPathId = producerPathId;
             this.interactionIds = Collections.unmodifiableList(
@@ -123,8 +127,9 @@ final class ComposedFamilies {
             this.attested = attested;
         }
 
-        static ArmChoice of(String family, OccurrenceAddress producer,
-                            String session, List<Arms.Arm> arms) {
+        static ArmChoice of(String family, String groupId,
+                            List<String> attachEndpointIds, String session,
+                            List<Arms.Arm> arms) {
             List<String> slots = new ArrayList<String>();
             List<String> refs = new ArrayList<String>();
             String path = "";
@@ -137,8 +142,8 @@ final class ComposedFamilies {
                 if (path.isEmpty()) path = arm.producerPathId();
                 attested = attested && arm.attested();
             }
-            return new ArmChoice(family, producer.id(), session, path,
-                    slots, refs, attested);
+            return new ArmChoice(family, groupId, attachEndpointIds,
+                    session, path, slots, refs, attested);
         }
 
         /** The named assertion this arm-set is one case of. */
@@ -146,12 +151,21 @@ final class ComposedFamilies {
             return family;
         }
 
-        /** THE OCCURRENCE whose outs this selector binds. */
-        public String producerOccurrenceId() {
-            return producerOccurrenceId;
+        /**
+         * WHAT this selector stands for having been produced by one run:
+         * the message, spelled by the leaves it was received at, or a
+         * writer occurrence for a state family.
+         */
+        public String groupId() {
+            return groupId;
         }
 
-        /** The run that delivered them. */
+        /** The attach endpoints one message was received at. */
+        public List<String> attachEndpointIds() {
+            return attachEndpointIds;
+        }
+
+        /** The run that made it. */
         public String sessionId() {
             return sessionId;
         }
@@ -201,39 +215,42 @@ final class ComposedFamilies {
 
 
     /**
-     * ONE SELECTOR PER (PRODUCER OCCURRENCE, SESSION), for every handoff
-     * this path binds.
+     * ONE SELECTOR PER (MESSAGE, SESSION), for every arrival this path
+     * binds.
      *
-     * <p>RULE 3 of the minimal delta.  A producer occurrence's arm binds
-     * ALL its outs on ONE selector: the arms of every family this path
-     * reaches are grouped by the occurrence they came out of and the
-     * session that ran it, the group's prefix, guard and closure are stated
-     * once under that selector, and exactly one of the ELIGIBLE sessions of
-     * that occurrence holds.</p>
+     * <p>RULE 3 of the minimal delta, and the unit is THE MESSAGE THE PATH
+     * RECEIVED: the attaches of one arrival carry one correlation id, and
+     * every leaf of that arrival was produced by one run of the producer.
+     * So the arms of the interactions a message covers are grouped by that
+     * message and by the session that made it, the group's bindings, guard
+     * and closure are stated once under one selector, and exactly one of
+     * the ELIGIBLE sessions of that message holds.</p>
      *
-     * <p>One selector per (family, arm) is what this replaces, and the
-     * false positive it admits is rule 3's own example: A writes the
-     * constant {@code mode=FAST} under {@code x>0} and exports {@code n=y};
-     * C reads both.  With a selector per family the solver takes A's
-     * {@code x<=0} arm for the export while C still sees {@code FAST} -- a
-     * witness {@code {x:-1}} no execution produced.  MEASURED on
-     * hdfs-11741: the four {@code block-key-id} handoffs of one NameNode
-     * export are four families, and a model bound them from two different
-     * sessions at once, delivering 182906, 182908, 182908, 182907 out of an
-     * export that held 182905, 182906, 182907, 182908.</p>
+     * <p>Grouping by PRODUCER OCCURRENCE instead is not enough, and 11741
+     * is why: {@code PBHelper.convert(ExportedBlockKeys)} converts each
+     * block key in a loop, the loop body's iteration is part of the
+     * occurrence's execution index, so the five exported leaves of ONE
+     * response are five occurrences.  Per occurrence they are five
+     * independent choices and a model answered them 182906, 182908,
+     * 182908, 182907 out of an export that held 182905, 182906, 182907,
+     * 182908 -- one id twice, and the id the target looks up nowhere.  Per
+     * MESSAGE they are one choice: one run made that response, and a
+     * witness reads the response that run made or another run's, never
+     * halves of both.</p>
      *
      * <p>A wire arrival is bound HERE and nowhere else (CLOSURE-V2): the
-     * path states no arrival of its own, so a slot no arm of this corpus
-     * can fill leaves {@code v_H} free, and that is refused by name rather
-     * than pinned to what this session happened to receive.</p>
+     * path states no arrival of its own, so a message no session of this
+     * corpus could have sent leaves its {@code v_H} free, and that is
+     * refused by name rather than pinned to what this session happened to
+     * receive.</p>
      *
-     * @return whether every producer this path binds has an eligible
+     * @return whether every message this path binds has an eligible
      *         session; a path with one that has none leaves the disjunction
      */
     boolean closeFamilies(int ordinal, String selector, Set<String> reached,
                           List<AttachRow> bound, List<String> stated,
                           List<GapRow> refusals) {
-        return closeProducers(ordinal, selector, bound, reached, stated,
+        return closeMessages(ordinal, selector, bound, reached, stated,
                 refusals, new LinkedHashSet<String>(), 0);
     }
 
@@ -241,22 +258,21 @@ final class ComposedFamilies {
     private static final int NESTING_LIMIT = 16;
 
     /**
-     * The producer groups of one set of attaches, under one guard.
+     * The message groups of one set of attaches, under one guard.
      *
      * <p>Called with the path's own selector for the attaches the path
-     * bound, and with a {@code (P, S)} selector for the attaches S's own
-     * delivery was itself handed (R3b iv) -- the same rule at every depth,
-     * because "what this delivery rests on" is the same question one
-     * occurrence further back.  A producer already closed at an outer level
-     * is not closed again: its selector already binds every out of it, and
-     * a second case split over the same occurrence would let one witness
-     * take two of its sessions at once.</p>
+     * bound, and with a {@code (message, S)} selector's family guard for
+     * the attaches S's own delivery was itself handed (R3b iv) -- the same
+     * rule at every depth, grouped by the DELIVERING session's own
+     * correlation ids, because "which message did this rest on" is the same
+     * question one hop back.  A message already closed at an outer level is
+     * not closed again: its selector already binds every leaf of it.</p>
      */
-    private boolean closeProducers(int ordinal, String guard,
-                                   List<AttachRow> attaches,
-                                   Set<String> reached, List<String> stated,
-                                   List<GapRow> refusals,
-                                   Set<String> closedProducers, int depth) {
+    private boolean closeMessages(int ordinal, String guard,
+                                  List<AttachRow> attaches,
+                                  Set<String> reached, List<String> stated,
+                                  List<GapRow> refusals,
+                                  Set<String> closedGroups, int depth) {
         if (depth > NESTING_LIMIT) {
             composer.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, guard,
                     "a delivery this path rests on was handed on more than "
@@ -264,110 +280,96 @@ final class ComposedFamilies {
                             + "no end to what it rests on");
             return false;
         }
-        // (1) The arms of each slot these attaches bind, one level deep.
-        Map<String, Interaction> slotOf =
-                new LinkedHashMap<String, Interaction>();
-        Map<String, List<Arms.Arm>> armsBySlot =
-                new LinkedHashMap<String, List<Arms.Arm>>();
+        // (1) THE MESSAGES: the path's attaches by correlation id, which is
+        //     the within-run pairing evidence one arrival carries on every
+        //     leaf of it.  An attach whose row states no correlation is a
+        //     message of its own -- nothing says it came in with another.
+        Map<String, List<AttachRow>> byMessage =
+                new LinkedHashMap<String, List<AttachRow>>();
+        Set<String> seen = new LinkedHashSet<String>();
         for (AttachRow attach : attaches) {
-            Interaction slot = attach.interaction();
-            if (slot == null) continue;
-            if (slotOf.containsKey(slot.id())) continue;
-            List<Arms.Arm> found = new ArrayList<Arms.Arm>();
-            for (Arms.Arm arm : arms.armsAt(slot, attach.symbol())) {
-                if (replacing.contains(arm.sessionId())) continue;
-                found.add(arm);
+            if (attach.interaction() == null) continue;
+            if (!seen.add(attach.endpoint().id())) continue;
+            String correlation = attach.correlationId();
+            add(byMessage, correlation == null || correlation.isEmpty()
+                    ? "@" + attach.endpoint().id() : correlation, attach);
+        }
+        for (Map.Entry<String, List<AttachRow>> message
+                : byMessage.entrySet()) {
+            List<AttachRow> leaves = message.getValue();
+            if (!closedGroups.add(groupId(leaves))) continue;
+            // (2) The arms of each leaf, one hop deep, and which sessions
+            //     attest a delivery at it.
+            Map<String, Interaction> slotOf =
+                    new LinkedHashMap<String, Interaction>();
+            Map<String, String> symbolOf =
+                    new LinkedHashMap<String, String>();
+            Map<String, List<Arms.Arm>> bySession =
+                    new LinkedHashMap<String, List<Arms.Arm>>();
+            Map<String, Set<String>> attestedAt =
+                    new LinkedHashMap<String, Set<String>>();
+            for (AttachRow attach : leaves) {
+                Interaction slot = attach.interaction();
+                if (slotOf.containsKey(slot.id())) continue;
+                slotOf.put(slot.id(), slot);
+                symbolOf.put(slot.id(), attach.symbol());
+                attestedAt.put(slot.id(), new LinkedHashSet<String>());
+                for (Arms.Arm arm : arms.armsAt(slot, attach.symbol())) {
+                    if (replacing.contains(arm.sessionId())) continue;
+                    if (arm.producer() == null) continue;
+                    if (!arm.attested()) {
+                        noteUnattested(arm, "that run is no option for this "
+                                + "message, because the arm states what was "
+                                + "delivered and not why");
+                        continue;
+                    }
+                    add(bySession, arm.sessionId(), arm);
+                    attestedAt.get(slot.id()).add(arm.sessionId());
+                }
+                fileRefusals();
             }
-            fileRefusals();
-            slotOf.put(slot.id(), slot);
-            armsBySlot.put(slot.id(), found);
-        }
-        // (2) Grouped by (producer occurrence, session).
-        Map<String, OccurrenceAddress> producerOf =
-                new LinkedHashMap<String, OccurrenceAddress>();
-        Map<String, List<String>> slotsOfProducer =
-                new LinkedHashMap<String, List<String>>();
-        Map<String, List<Arms.Arm>> byProducerSession =
-                new LinkedHashMap<String, List<Arms.Arm>>();
-        Map<String, Set<String>> attestedAt =
-                new LinkedHashMap<String, Set<String>>();
-        for (Map.Entry<String, List<Arms.Arm>> slot
-                : armsBySlot.entrySet()) {
-            for (Arms.Arm arm : slot.getValue()) {
-                OccurrenceAddress producer = arm.producer();
-                if (producer == null) continue;
-                producerOf.put(producer.id(), producer);
-                List<String> slots = slotsOfProducer.get(producer.id());
-                if (slots == null) {
-                    slots = new ArrayList<String>();
-                    slotsOfProducer.put(producer.id(), slots);
-                }
-                if (!slots.contains(slot.getKey())) {
-                    slots.add(slot.getKey());
-                }
-                add(byProducerSession, producer.id() + "|" + arm.sessionId(),
-                        arm);
-                if (!arm.attested()) {
-                    noteUnattested(arm, "that run is no option for this "
-                            + "occurrence, because the arm states what was "
-                            + "delivered and not why");
-                    continue;
-                }
-                Set<String> sessions = attestedAt.get(slot.getKey());
-                if (sessions == null) {
-                    sessions = new LinkedHashSet<String>();
-                    attestedAt.put(slot.getKey(), sessions);
-                }
-                sessions.add(arm.sessionId());
-            }
-        }
-        // (3) and (4): eligibility, then one case split per producer.
-        //
-        // EVERY PRODUCER OF THIS LEVEL IS CLAIMED BEFORE ANY OF THEM IS
-        // CLOSED.  Closing one runs the nested closure of its own attaches,
-        // which can reach a producer this level also binds; taken there
-        // first, that occurrence's outs would be bound only beneath the
-        // other one's selector and would be free whenever that selector is
-        // not the one taken -- a variable no family constrains, which is
-        // the one thing a witness must not rest on.
-        List<OccurrenceAddress> mine = new ArrayList<OccurrenceAddress>();
-        for (Map.Entry<String, OccurrenceAddress> each
-                : producerOf.entrySet()) {
-            if (!closedProducers.add(each.getKey())) continue;
-            mine.add(each.getValue());
-        }
-        for (OccurrenceAddress producer : mine) {
-            List<String> slots = slotsOfProducer.get(producer.id());
-            List<String> eligible = eligibleSessions(producer, slots,
-                    attestedAt, refusals);
+            // (3) and (4): eligibility, then one case split per message.
+            List<String> eligible = eligibleSessions(message.getKey(),
+                    slotOf.keySet(), attestedAt, refusals);
             if (eligible == null) return false;
-            if (!producerFamily(ordinal, guard, producer, slots, eligible,
-                    byProducerSession, slotOf, reached, stated, refusals,
-                    closedProducers, depth)) {
+            if (!messageFamily(ordinal, guard, message.getKey(), leaves,
+                    slotOf, symbolOf, eligible, bySession, reached, stated,
+                    refusals, closedGroups, depth)) {
                 return false;
             }
         }
         return true;
     }
 
+    /** One message's identity: the leaves it was received at. */
+    private static String groupId(List<AttachRow> leaves) {
+        List<String> ids = new ArrayList<String>();
+        for (AttachRow attach : leaves) {
+            if (!ids.contains(attach.endpoint().id())) {
+                ids.add(attach.endpoint().id());
+            }
+        }
+        Collections.sort(ids);
+        return String.join("|", ids);
+    }
+
     /**
-     * R3c: the sessions that could have produced EVERY out this path binds
-     * of one occurrence.
+     * R3c': the sessions that could have SENT this message.
      *
-     * <p>A session is an option for P only if it has an attested arm at
-     * every interaction of this path whose producer is P.  A run that
-     * exported four entries is not an option for a consumer path that
-     * attached five: taking it would leave the fifth arrival bound by a
-     * session that never delivered it, which is the mixed export rule 3
-     * exists to forbid.  This replaces the per-family "did any arm of this
-     * corpus fill the slot" check, which asked the question one slot at a
-     * time and so answered yes for every slot of a partial export.</p>
+     * <p>A session is an option for a message only if it has an attested
+     * arm at every interaction the message covers.  A run that exported
+     * four entries is not an option for a path that attached five: taking
+     * it would leave the fifth arrival bound by a run that never sent it,
+     * which is the mixed response rule 3 exists to forbid.  This replaces
+     * the per-family "did any arm of this corpus fill the slot" check,
+     * which asked the question one leaf at a time and so answered yes for
+     * every leaf of a partial response.</p>
      *
      * @return the eligible sessions, or null when none is -- the path is
      *         then refused by name and leaves the disjunction
      */
     private List<String> eligibleSessions(
-            OccurrenceAddress producer, List<String> slots,
+            String message, Set<String> slots,
             Map<String, Set<String>> attestedAt, List<GapRow> refusals) {
         Set<String> eligible = null;
         for (String slotId : slots) {
@@ -383,13 +385,12 @@ final class ComposedFamilies {
             if (eligible.isEmpty()) {
                 refusals.add(GapRow.of(corpus.seedSessionId(),
                         GapKind.UNPRODUCIBLE_ANSWER, GapClass.DIAGNOSTIC,
-                        producer.id(), "no session of this corpus states an "
-                                + "attested delivery at every interaction "
-                                + "this path binds of that occurrence: the "
-                                + "first it cannot answer is " + slotId
-                                + ", and a witness that mixed two sessions' "
-                                + "deliveries of one occurrence would rest "
-                                + "on an export no run produced"));
+                        message, "no session of this corpus states an "
+                                + "attested delivery at every leaf of this "
+                                + "message: the first it cannot answer is "
+                                + slotId + ", and a witness that took two "
+                                + "runs' halves of one message would rest "
+                                + "on a delivery no run made"));
                 return null;
             }
         }
@@ -398,33 +399,34 @@ final class ComposedFamilies {
     }
 
     /**
-     * ONE PRODUCER OCCURRENCE, as a finite case split over its sessions.
+     * ONE MESSAGE, as a finite case split over the runs that could have
+     * sent it.
      *
-     * <p>{@code sel_{P,S} => (pi /\ guard /\ closure /\ v_k = e_k for every
-     * out)} and exactly-one over the eligible sessions: the same constraint
-     * a per-family split stated, and the one a solver can decide by CASES
-     * rather than by searching the union of every family's arms at once --
-     * and the only one a model can be asked which RUN of that occurrence
-     * the witness rests on.</p>
+     * <p>{@code sel_{M,S} => (guard_S /\ closure_{M,S} /\ v_H_k = e_{k,S}
+     * for every leaf k)} and exactly-one over the eligible sessions: the
+     * same constraint a per-leaf split stated, and the one a solver can
+     * decide by CASES rather than by searching the union of every leaf's
+     * arms at once -- and the only one a model can be asked which RUN's
+     * response the witness rests on.</p>
      */
-    private boolean producerFamily(
-            int ordinal, String guard, OccurrenceAddress producer,
-            List<String> slots, List<String> eligible,
-            Map<String, List<Arms.Arm>> byProducerSession,
-            Map<String, Interaction> slotOf, Set<String> reached,
+    private boolean messageFamily(
+            int ordinal, String guard, String message,
+            List<AttachRow> leaves, Map<String, Interaction> slotOf,
+            Map<String, String> symbolOf, List<String> eligible,
+            Map<String, List<Arms.Arm>> bySession, Set<String> reached,
             List<String> stated, List<GapRow> refusals,
-            Set<String> closedProducers, int depth) {
-        String name = "producer_family__" + ordinal + "__"
-                + ArtifactIO.digest(producer.id(), 12);
+            Set<String> closedGroups, int depth) {
+        String group = groupId(leaves);
+        String name = "message_family__" + ordinal + "__"
+                + ArtifactIO.digest(group, 12);
         List<String> selectors = new ArrayList<String>();
         List<String> cases = new ArrayList<String>();
         for (String session : eligible) {
-            List<Arms.Arm> group = oneOutPerSlot(
-                    byProducerSession.get(producer.id() + "|" + session),
-                    producer, session);
-            if (group == null || group.isEmpty()) continue;
-            String selector = "producer_arm__" + ordinal + "__"
-                    + ArtifactIO.digest(producer.id() + "|" + session, 12);
+            List<Arms.Arm> held = oneArmPerLeaf(bySession.get(session),
+                    message, session);
+            if (held == null || held.isEmpty()) continue;
+            String selector = "message_arm__" + ordinal + "__"
+                    + ArtifactIO.digest(group + "|" + session, 12);
             // Declared BEFORE the body is built: the nested families the
             // body opens are asserted under this name, and they stay
             // asserted even where the arm-set is then refused -- a name an
@@ -432,39 +434,39 @@ final class ComposedFamilies {
             // whole query with an error instead of a verdict.
             lowering.declare(selector, VmTermLowering.Sort.BOOL);
             List<String> nested = new ArrayList<String>();
-            String body = producerBody(ordinal, selector, guard, producer,
-                    session, bindings(group), reached, nested,
-                    closedProducers, depth);
+            String body = producerBody(ordinal, selector, guard, message,
+                    session, bindings(held), reached, nested, closedGroups,
+                    depth);
             if (body == null) continue;
             selectors.add(selector);
             cases.add("(=> " + selector + " " + body + ")");
             stated.addAll(nested);
-            armChoices.put(selector, ArmChoice.of(name, producer, session,
-                    group));
+            armChoices.put(selector, ArmChoice.of(name, group,
+                    endpointIds(leaves), session, held));
         }
         if (selectors.isEmpty()) {
             refusals.add(GapRow.of(corpus.seedSessionId(),
                     GapKind.UNPRODUCIBLE_ANSWER, GapClass.DIAGNOSTIC,
-                    producer.id(), "every session eligible to have produced "
-                            + "this occurrence's deliveries rests on a value "
-                            + "the recording does not state, so nothing "
-                            + "binds what this path read from it"));
+                    message, "every session eligible to have sent this "
+                            + "message rests on a value the recording does "
+                            + "not state, so nothing binds what this path "
+                            + "read from it"));
             return false;
         }
-        for (String slotId : slots) {
-            reached.add(slotId);
-            Interaction slot = slotOf.get(slotId);
-            if (slot != null) slotOpened(slotId, slot);
+        for (Map.Entry<String, Interaction> slot : slotOf.entrySet()) {
+            reached.add(slot.getKey());
+            slotOpened(slot.getKey(), slot.getValue());
             List<Arm> rows = new ArrayList<Arm>();
             for (String session : eligible) {
-                List<Arms.Arm> group = byProducerSession.get(
-                        producer.id() + "|" + session);
-                if (group == null) continue;
-                for (Arms.Arm arm : group) {
-                    if (arm.slotId().equals(slotId)) rows.add(row(arm));
+                List<Arms.Arm> held = bySession.get(session);
+                if (held == null) continue;
+                for (Arms.Arm arm : held) {
+                    if (arm.slotId().equals(slot.getKey())) {
+                        rows.add(row(arm));
+                    }
                 }
             }
-            families.put(slotId, Family.of(slotId, rows));
+            families.put(slot.getKey(), Family.of(slot.getKey(), rows));
         }
         cases.add(0, Arms.exactlyOne(selectors));
         String formula = VmTermLowering.and(cases);
@@ -473,42 +475,51 @@ final class ComposedFamilies {
         return true;
     }
 
+    /** The leaves one message was received at, in the rows' own order. */
+    private static List<String> endpointIds(List<AttachRow> leaves) {
+        List<String> ids = new ArrayList<String>();
+        for (AttachRow attach : leaves) {
+            if (!ids.contains(attach.endpoint().id())) {
+                ids.add(attach.endpoint().id());
+            }
+        }
+        return ids;
+    }
+
     /**
-     * ONE delivery per out, and a refusal when the rows state two.
+     * ONE delivery per leaf, and a refusal when the rows state two.
      *
-     * <p>The selector binds every out of this occurrence at once, so two
-     * arms of one session at one slot would be conjoined -- {@code v = e1}
-     * and {@code v = e2} -- and a witness would need the two expressions to
-     * be equal.  Identical rows are one delivery stated twice and are
-     * dropped; two DIFFERENT expressions at one out of one run are a thing
-     * the recording says and this cannot compose, so the whole {@code (P,
+     * <p>The selector binds every leaf of this message at once, so two arms
+     * of one session at one leaf would be conjoined -- {@code v = e1} and
+     * {@code v = e2} -- and a witness would need the two expressions to be
+     * equal.  Identical rows are one delivery stated twice and are dropped;
+     * two DIFFERENT expressions at one leaf of one run are a thing the
+     * recording says and this cannot compose, so the whole {@code (message,
      * S)} arm-set is refused by name.  (The text dedup this replaces was
-     * blind to which slot an arm filled, so one session's arm could stand
+     * blind to which leaf an arm filled, so one session's arm could stand
      * in for another's wherever the two rendered alike.)</p>
      */
-    private List<Arms.Arm> oneOutPerSlot(List<Arms.Arm> group,
-                                         OccurrenceAddress producer,
-                                         String session) {
+    private List<Arms.Arm> oneArmPerLeaf(List<Arms.Arm> group,
+                                         String message, String session) {
         if (group == null) return null;
-        Map<String, Arms.Arm> byOut = new LinkedHashMap<String, Arms.Arm>();
+        Map<String, Arms.Arm> byLeaf = new LinkedHashMap<String, Arms.Arm>();
         for (Arms.Arm arm : group) {
-            if (!arm.attested()) continue;
-            String out = arm.slotId() + "|" + arm.symbol();
-            Arms.Arm held = byOut.get(out);
+            String leaf = arm.slotId() + "|" + arm.symbol();
+            Arms.Arm held = byLeaf.get(leaf);
             if (held == null) {
-                byOut.put(out, arm);
+                byLeaf.put(leaf, arm);
                 continue;
             }
             if (held.expressionRef().equals(arm.expressionRef())) continue;
             composer.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
-                    producer.id(), "session " + session + " states two "
-                            + "different deliveries at " + arm.slotId()
-                            + " (" + held.expressionRef() + " and "
+                    message, "session " + session + " states two different "
+                            + "deliveries at " + arm.slotId() + " ("
+                            + held.expressionRef() + " and "
                             + arm.expressionRef() + "), so which one that "
                             + "run made is not in this corpus");
             return null;
         }
-        return new ArrayList<Arms.Arm>(byOut.values());
+        return new ArrayList<Arms.Arm>(byLeaf.values());
     }
 
     /** One arm and the variables this path binds to it. */
@@ -567,17 +578,12 @@ final class ComposedFamilies {
      *         the path
      */
     private String producerBody(int ordinal, String selector,
-                                String nestedGuard,
-                                OccurrenceAddress producer,
+                                String nestedGuard, String subject,
                                 String session,
                                 List<Out> outs, Set<String> reachedSlots,
                                 List<String> nestedStated,
                                 Set<String> closedProducers, int depth) {
         List<GapRow> local = new ArrayList<GapRow>();
-        long cutoff = Long.MIN_VALUE;
-        for (Out out : outs) {
-            cutoff = Math.max(cutoff, out.arm.deliveredAt());
-        }
         SmtLowering.SessionJoin rows =
                 SmtLowering.joinOf(corpus.session(session));
         lowering.begin(session, rows, corpus.expressions(session));
@@ -611,7 +617,7 @@ final class ComposedFamilies {
             // with an error instead of a verdict.
             if (!lowering.declareStated(guard.getKey())) {
                 composer.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
-                        guard.getKey(), "an arm of " + producer.id()
+                        guard.getKey(), "an arm of " + subject
                                 + " is guarded by a symbol no row of this "
                                 + "corpus declares a sort for");
                 continue;
@@ -621,8 +627,32 @@ final class ComposedFamilies {
         List<String> nested = new ArrayList<String>();
         Map<String, String> joins = new LinkedHashMap<String, String>();
         if (stated) {
-            Map<String, Long> reached = composer.closure(session, producer,
-                    cutoff, expressionWrites(session, outs));
+            // THE CLOSURE OF EVERY OCCURRENCE THIS GROUP CAME OUT OF, each
+            // started at its OWN delivery: one message can be produced by
+            // several occurrences of one run -- five leaf occurrences of
+            // one convert(ExportedBlockKeys) loop -- and each of them had
+            // decided what it had decided by the time IT delivered.  The
+            // reached sets are merged at the widest cutoff per occurrence
+            // and the conditions are stated once.
+            Map<String, Long> reached = new LinkedHashMap<String, Long>();
+            for (Map.Entry<String, List<Out>> each
+                    : byProducer(outs).entrySet()) {
+                List<Out> its = each.getValue();
+                long cutoff = Long.MIN_VALUE;
+                for (Out out : its) {
+                    cutoff = Math.max(cutoff, out.arm.deliveredAt());
+                }
+                Map<String, Long> one = composer.closure(session,
+                        its.get(0).arm.producer(), cutoff,
+                        expressionWrites(session, its));
+                for (Map.Entry<String, Long> at : one.entrySet()) {
+                    Long was = reached.get(at.getKey());
+                    if (was == null
+                            || was.longValue() < at.getValue().longValue()) {
+                        reached.put(at.getKey(), at.getValue());
+                    }
+                }
+            }
             Set<String> answered = new LinkedHashSet<String>();
             composer.statedReads(session, reached.keySet(), local, joins,
                     answered);
@@ -639,7 +669,7 @@ final class ComposedFamilies {
             // nothing: hdfs-11741 campaign #2 came back with the DataNode's
             // `addKeys` arrival at 2, a value no session delivered, while
             // its own family sat under a selector the model had set false.
-            stated = closeProducers(ordinal, nestedGuard,
+            stated = closeMessages(ordinal, nestedGuard,
                     nestedAttaches(session, outs), reachedSlots, nested,
                     local, closedProducers, depth + 1);
         }
@@ -655,7 +685,7 @@ final class ComposedFamilies {
             gaps.addAll(local);
             for (String refusal : refused) {
                 composer.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
-                        refusal, "the closure of " + producer.id()
+                        refusal, "the closure of " + subject
                                 + " in session " + session + " rests on a "
                                 + "value the recording does not state, so "
                                 + "that run is not one of its options");
@@ -664,6 +694,16 @@ final class ComposedFamilies {
         }
         nestedStated.addAll(nested);
         return VmTermLowering.and(conjuncts);
+    }
+
+    /** One group's outs, by the occurrence each came out of. */
+    private static Map<String, List<Out>> byProducer(List<Out> outs) {
+        Map<String, List<Out>> held =
+                new LinkedHashMap<String, List<Out>>();
+        for (Out out : outs) {
+            add(held, out.arm.producer().id(), out);
+        }
+        return held;
     }
 
     /**
@@ -1010,9 +1050,9 @@ final class ComposedFamilies {
             String name = "writer_arm__" + ordinal + "__"
                     + ArtifactIO.digest(writer.getKey() + "|" + session, 12);
             lowering.declare(name, VmTermLowering.Sort.BOOL);
-            String body = producerBody(ordinal, name, selector, at, session,
-                    writer.getValue(), reached, new ArrayList<String>(),
-                    new LinkedHashSet<String>(), 0);
+            String body = producerBody(ordinal, name, selector,
+                    writer.getKey(), session, writer.getValue(), reached,
+                    new ArrayList<String>(), new LinkedHashSet<String>(), 0);
             if (body == null) continue;
             selectorOf.put(writer.getKey(), name);
             String assertion = "writer_family__" + ordinal + "__"
@@ -1021,8 +1061,9 @@ final class ComposedFamilies {
             stated.add(formula);
             lowering.assertNamed(assertion,
                     "(=> " + selector + " " + formula + ")");
-            armChoices.put(name, ArmChoice.of(assertion, at, session,
-                    armsOf(writer.getValue())));
+            armChoices.put(name, ArmChoice.of(assertion,
+                    writer.getKey(), Collections.<String>emptyList(),
+                    session, armsOf(writer.getValue())));
         }
         // And one exactly-one per location, over the writers it has.
         for (Map.Entry<String, List<String>> location
