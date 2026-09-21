@@ -151,6 +151,8 @@ public final class Arms {
         private final String slotId;
         private final String symbol;
         private final String sessionId;
+        private final OccurrenceAddress producer;
+        private final long deliveredAt;
         private final String producerPathId;
         private final String expressionRef;
         private final List<String> pi;
@@ -160,12 +162,15 @@ public final class Arms {
         private final Set<String> nested;
 
         Arm(String slotId, String symbol, String sessionId,
+            OccurrenceAddress producer, long deliveredAt,
             String producerPathId, String expressionRef, List<String> pi,
             Map<String, String> guard, Set<String> guardRoots,
             boolean attested, Set<String> nested) {
             this.slotId = slotId;
             this.symbol = symbol;
             this.sessionId = sessionId;
+            this.producer = producer;
+            this.deliveredAt = deliveredAt;
             this.producerPathId = producerPathId;
             this.expressionRef = expressionRef;
             this.pi = Collections.unmodifiableList(pi);
@@ -188,6 +193,30 @@ public final class Arms {
         /** The run that delivered it. */
         public String sessionId() {
             return sessionId;
+        }
+
+        /**
+         * THE OCCURRENCE that produced it.
+         *
+         * <p>What rule 3 groups by: one producer occurrence binds ALL its
+         * outs on one selector, so the arm has to say which occurrence it
+         * came out of and not only which slot it fills.  A wire arm's is
+         * the interaction's producer; a state arm's is the writer.</p>
+         */
+        public OccurrenceAddress producer() {
+            return producer;
+        }
+
+        /**
+         * The seq of the event that delivered it.
+         *
+         * <p>The cutoff the prefix is taken to: what the producer had
+         * decided BY THE TIME of this delivery.  A selector shared by
+         * several of one occurrence's outs is taken to the LAST of
+         * them.</p>
+         */
+        public long deliveredAt() {
+            return deliveredAt;
         }
 
         /** The producer path, or "" when no path condition attests it. */
@@ -266,19 +295,39 @@ public final class Arms {
     // ------------------------------------------------------------------
 
     /**
-     * Every arm of one WIRE slot, and of every slot reached through it.
+     * EVERY ARM OF ONE WIRE SLOT, and of that slot alone.
      *
-     * <p>Closed transitively to a fixed point: a producer forwards what it
-     * was itself handed, so an arm's expression may mention another slot's
-     * variable, and a variable no family constrains is the one thing a
-     * witness must not rest on.</p>
+     * <p>A producer forwards what it was itself handed, so an arm's
+     * expression may mention another slot's variable ({@link Arm#nested}),
+     * and a variable no family constrains is the one thing a witness must
+     * not rest on.  Closing over those nested slots HERE, into one flat
+     * list, is what rule 3 replaces: their arms belong under the selector
+     * of the (producer occurrence, session) whose delivery names them, and
+     * only the caller that owns the case split knows what that is.  The
+     * closure is {@code ComposedFamilies}'s, by the same rule, one level at
+     * a time.</p>
      *
-     * @param symbol the consumer's own variable for the first slot
+     * @param symbol the consumer's own variable for this slot
+     */
+    public List<Arm> armsAt(Interaction slot, String symbol) {
+        return armsOf(slot, symbol);
+    }
+
+    /**
+     * The same, closed transitively over the slots an arm was itself
+     * handed, as one flat list.
+     *
+     * <p>What a FLIP query wants: every delivery that could stand behind
+     * one arrival, whatever depth it came from, with no case split to
+     * place them under.  The composed query wants the other shape -- each
+     * nested slot under the selector of the delivery that names it -- and
+     * takes {@link #armsAt} one level at a time.</p>
      */
     public List<Arm> wireArms(Interaction slot, String symbol) {
         List<Arm> arms = new ArrayList<Arm>();
         List<String> queue = new ArrayList<String>();
-        Map<String, Interaction> slots = new LinkedHashMap<String, Interaction>();
+        Map<String, Interaction> slots =
+                new LinkedHashMap<String, Interaction>();
         queue.add(symbol);
         slots.put(symbol, slot);
         Set<String> closed = new LinkedHashSet<String>();
@@ -287,7 +336,7 @@ public final class Arms {
             if (!closed.add(variable)) continue;
             Interaction interaction = slots.get(variable);
             if (interaction == null) continue;
-            for (Arm arm : armsOf(interaction, variable)) {
+            for (Arm arm : armsAt(interaction, variable)) {
                 arms.add(arm);
                 for (String nested : arm.nested()) {
                     if (nested.equals(variable)) continue;
@@ -649,7 +698,7 @@ public final class Arms {
                 nested.add(named);
             }
         }
-        return new Arm(slotId, symbol, session,
+        return new Arm(slotId, symbol, session, producer, deliveredAt,
                 attested ? rows.pathIdOf(session, producer) : "",
                 expressionRef, pi, guard, guardRoots, attested, nested);
     }

@@ -419,10 +419,16 @@ public final class ComposeMain {
                 JsonObject row = new JsonObject();
                 row.addProperty("selector", taken.getKey());
                 row.addProperty("family", arm.family());
-                row.addProperty("interactionId", arm.slotId());
+                row.addProperty("producerOccurrenceId",
+                        arm.producerOccurrenceId());
                 row.addProperty("sessionId", arm.sessionId());
                 row.addProperty("producerPathId", arm.producerPathId());
-                row.addProperty("expressionRef", arm.expressionRef());
+                JsonArray slots = new JsonArray();
+                for (String slot : arm.interactionIds()) slots.add(slot);
+                row.add("interactionIds", slots);
+                JsonArray refs = new JsonArray();
+                for (String ref : arm.expressionRefs()) refs.add(ref);
+                row.add("expressionRefs", refs);
                 row.addProperty("attested", arm.attested());
                 arms.add(row);
             }
