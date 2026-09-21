@@ -970,6 +970,12 @@ final class ComposedFamilies {
                             + "not why, so no witness may move a root "
                             + "inside it");
                 }
+                // Reached and recorded whether or not a case split
+                // follows: WHICH writers a location had is what the rows
+                // state, and the unattested-arm gate reads this set.
+                reached.add(arm.slotId());
+                families.put(arm.slotId(), Family.of(arm.slotId(),
+                        Collections.singletonList(row(arm))));
                 found.add(arm);
             }
             fileRefusals();
@@ -983,9 +989,6 @@ final class ComposedFamilies {
                 writerOf.put(writer, arm.producer());
                 if (!writers.contains(writer)) writers.add(writer);
                 add(outsOfWriter, writer, new Out(arm, symbols));
-                reached.add(arm.slotId());
-                families.put(arm.slotId(), Family.of(arm.slotId(),
-                        Collections.singletonList(row(arm))));
             }
             writersOf.put(entry.getKey(), writers);
         }
