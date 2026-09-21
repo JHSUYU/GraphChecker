@@ -1207,6 +1207,120 @@ public class ExploreTest {
             assertFalse(gap.kind() == GapKind.TOPOLOGY_DIVERGENCE);
         }
 
+        // N1/N2: A STATIC CANDIDATE LIVES IN ONE PROCESS.  A carrier is a
+        // CLASS field -- BlockTokenSecretManager.allKeys -- so its write
+        // sites exist in every JVM that loaded the class; the location the
+        // anchor read is a CONCRETE object in the reader's own heap (SS4),
+        // and no occurrence in another JVM can have written it.  The same
+        // for a port: the message this attach records was put on the wire by
+        // the PAIRED producer's process.  Admitting the rest gave hdfs-11741
+        // campaign #4 (2026-09-20) a wave 1 of 246 obligations, 124 of them
+        // the Balancer's own removeExpiredKeys flips in worlds where nothing
+        // on the Balancer's path to the target changed.
+        Path perNode = tree.newFolder("closure-node-scope").toPath();
+        // A second addKeys occurrence ON THE READER'S NODE that no row pairs
+        // with this read: the static map is the only thing naming it.
+        OccurrenceAddress sibling = occurrence("hdfs-case/dn0",
+                "REGION.addkeys", CausalContext.of(Role.CLIENT, "", 9),
+                "o.a.h.h.s.d.BPServiceActor#offerService#41");
+        // The same two regions on a node of their own: another JVM's
+        // allKeys, and another JVM's wire.
+        OccurrenceAddress foreignWriter = occurrence("hdfs-case/balancer",
+                "REGION.addkeys",
+                CausalContext.of(Role.of("BALANCER"), "", 2),
+                "o.a.h.h.b.KeyManager#setKeys#7");
+        OccurrenceAddress foreignExporter = occurrence("hdfs-case/balancer",
+                "REGION.rotate",
+                CausalContext.of(Role.of("BALANCER"), "", 3),
+                "o.a.h.h.b.KeyManager#run#8");
+        // A write site of the SAME carrier whose region ONLY the balancer
+        // ran: on the reader's node there is no occurrence to focus, and
+        // that -- not the balancer's -- is what the retained set would have
+        // to grow by.
+        OccurrenceAddress elsewhereOnly = occurrence("hdfs-case/balancer",
+                "REGION.refresh",
+                CausalContext.of(Role.of("BALANCER"), "", 4),
+                "o.a.h.h.b.KeyManager#refresh#2");
+        Session spread = new Session(perNode, "s-seed");
+        spread.activation(target, false);
+        spread.activation(writer, false);
+        spread.activation(producer, false);
+        spread.activation(sibling, false);
+        spread.activation(foreignWriter, false);
+        spread.activation(foreignExporter, false);
+        spread.activation(elsewhereOnly, false);
+        spread.constant("e.119992", "119992");
+        spread.symbolic("e.stored", "M_HOFF_KEY");
+        spread.export(exported, "e.119992", 11L, "119992");
+        spread.attach(attached, "M_HOFF_KEY", "119992", exported);
+        spread.write(at(writer, Endpoint.stateSite("BlockTokenSecretManager",
+                        "addKeys", 12, true), "BlockTokenSecretManager"
+                        + "#addKeys#12"), allKeys, 5L, "e.stored");
+        spread.read(at(target, Endpoint.stateSite("BlockTokenSecretManager",
+                        "retrieveDataEncryptionKey", 8, false),
+                        "BlockTokenSecretManager"
+                                + "#retrieveDataEncryptionKey#8"), allKeys,
+                5L, "M_READ_KEY", "119992");
+        spread.target(target, "BlockTokenSecretManager"
+                + "#retrieveDataEncryptionKey#8", "(= M_READ_KEY 0)");
+        spread.flush();
+        StaticScopeMap spreadMap = StaticScopeMap.read(scopeMap(perNode,
+                targetSite("REGION.target", "BlockTokenSecretManager#u120"),
+                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
+                        "BlockTokenSecretManager#u12",
+                        "BlockTokenSecretManager#addKeys",
+                        "<example.Keys: int value>",
+                        "<example.Manager: example.Keys allKeys>", ""),
+                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.refresh",
+                        "KeyManager#u4", "KeyManager#refresh",
+                        "<example.Keys: int value>",
+                        "<example.Manager: example.Keys allKeys>", ""),
+                scopeSite(StaticScopeMap.EXPORT_SITE, "REGION.rotate",
+                        "PBHelper#convert#9", "PBHelper#convert", "", "",
+                        "XCH.resp.block-key-id")));
+        ClosurePlanner.Plan scoped = ClosurePlanner.plan(
+                Corpus.read(perNode, null), target, spreadMap);
+        Map<String, String> scopedWhy = new LinkedHashMap<String, String>();
+        for (Task task : scoped.tasks) {
+            scopedWhy.put(task.focused().render(),
+                    scoped.why.get(task.taskId()));
+        }
+        assertEquals("a static write site of the read's carrier is a "
+                        + "candidate on the READER'S node: " + scopedWhy,
+                ClosurePlanner.STATIC_CANDIDATE_WRITER,
+                scopedWhy.get(sibling.render()));
+        assertFalse("the same site on another node's occurrence is not a "
+                        + "task -- that JVM's heap holds another allKeys: "
+                        + scopedWhy,
+                scopedWhy.containsKey(foreignWriter.render()));
+        assertFalse("nor is a write site of the carrier whose region only "
+                        + "that other node ran: " + scopedWhy,
+                scopedWhy.containsKey(elsewhereOnly.render()));
+        assertFalse("and neither is a static export site of the port on a "
+                        + "node other than the PAIRED producer's: "
+                        + scopedWhy,
+                scopedWhy.containsKey(foreignExporter.render()));
+        assertEquals("while the producer the rows paired stays a member: "
+                        + scopedWhy, ClosurePlanner.CLOSURE_MEMBER,
+                scopedWhy.get(producer.render()));
+        boolean saidNeverRan = false;
+        boolean saidNotHere = false;
+        for (GapRow gap : scoped.gaps) {
+            if (gap.kind() != GapKind.ADMISSION_GAP
+                    || gap.cls() != GapClass.DIAGNOSTIC) {
+                continue;
+            }
+            saidNeverRan |= gap.subject().equals("REGION.addkeys")
+                    && gap.detail().contains("activated that region");
+            saidNotHere |= gap.subject().equals("REGION.refresh")
+                    && gap.detail().contains("activated that region on "
+                            + target.node().render());
+        }
+        assertFalse("a region the reader's own node DID run is never "
+                + "reported as one no session activated", saidNeverRan);
+        assertTrue("and the one only the other node ran is -- naming the "
+                + "node whose activations were asked about", saidNotHere);
+
         // Where they disagree, the closure follows the ROW and the reader is
         // told: the writer below was started by some other delivery than the
         // one its attach row names.
@@ -1714,7 +1828,13 @@ public class ExploreTest {
         // had the anchor's own guard to flip and nothing else.  What a term
         // RESTS ON includes the state the subterm is the value of.
         Path inlined = tree.newFolder("closure-container-demand").toPath();
-        OccurrenceAddress expiring = occurrence("hdfs-case/nn0",
+        // The expiry tick ON THE READER'S OWN NODE: the map this anchor read
+        // is an object in this JVM's heap (N1), so the occurrence that could
+        // have expired a key OUT OF IT is the data node's own tick -- which
+        // on 11741 is dn1's removeExpiredKeys#u15.  The NameNode's tick
+        // reaches this closure through the WIRE, as the producer of the key
+        // id the data node attached, and not through this read.
+        OccurrenceAddress expiring = occurrence("hdfs-case/dn0",
                 "REGION.expiry", CausalContext.of(
                         Role.of("KEY_MANAGER_TICK"), "", 2),
                 "o.a.h.h.s.b.BlockManager#run#19");
