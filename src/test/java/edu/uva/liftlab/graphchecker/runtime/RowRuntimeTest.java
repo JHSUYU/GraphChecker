@@ -285,6 +285,55 @@ public class RowRuntimeTest {
                 expression, "J", "1");
         RowRuntime.attachedAt(endpoint, 9L, "XCH.port", 7L, "c1", "v_H", "J",
                 "1", true, "2");
+        // A CLASS THE JVM MINTS PER RUN IS NOT AN IDENTITY.  The site of a
+        // state event carries the class the event stood in, and two of
+        // those are named by the runtime with a counter that starts over in
+        // every JVM: the reflection accessors, inflated on the k-th
+        // reflective call this JVM happened to make, and the lambda
+        // proxies.  Two recordings of ONE write then state two sites, and
+        // downstream that is two worlds: on the hdfs-11741 campaign #3
+        // corpus 75 of wave 2's 187 affected (task, session) pairs, and 8
+        // of the 11 worlds the witness arm was owed in, were
+        // GeneratedMethodAccessor23 against GeneratedMethodAccessor22 in
+        // one write site and nothing else.  The number goes at the mint --
+        // here, where the VM's name is converted -- so a row already
+        // written keeps its own spelling and the contract stays a codec.
+        String inflatedOnce = LoggedEventSites.site(loggedAt(
+                "sun/reflect/GeneratedMethodAccessor23", "invoke",
+                "(Ljava/lang/Object;[Ljava/lang/Object;)"
+                        + "Ljava/lang/Object;", 56), "L", -1L, true);
+        assertEquals("the accessor's inflation number is not part of where "
+                        + "the write happened",
+                inflatedOnce, LoggedEventSites.site(loggedAt(
+                        "sun/reflect/GeneratedMethodAccessor7", "invoke",
+                        "(Ljava/lang/Object;[Ljava/lang/Object;)"
+                                + "Ljava/lang/Object;", 56), "L", -1L, true));
+        assertTrue("and what is left names the accessor: " + inflatedOnce,
+                inflatedOnce.startsWith(
+                        "sun.reflect.GeneratedMethodAccessor#invoke"));
+        String proxied = LoggedEventSites.site(loggedAt(
+                "example/Keys$$Lambda$14/1234567890", "apply",
+                "(Ljava/lang/Object;)Ljava/lang/Object;", 3), "L", -1L, false);
+        assertEquals("nor is a lambda proxy's", proxied,
+                LoggedEventSites.site(loggedAt(
+                        "example/Keys$$Lambda$3/987654321", "apply",
+                        "(Ljava/lang/Object;)Ljava/lang/Object;", 3),
+                        "L", -1L, false));
+        assertTrue("and what is left names the lambda's outer class: "
+                + proxied, proxied.startsWith("example.Keys$$Lambda#apply"));
+        // A name the PROGRAM chose is untouched, counter or no counter.
+        assertTrue(LoggedEventSites.site(loggedAt(
+                "org/apache/hadoop/hdfs/security/token/block/"
+                        + "BlockTokenSecretManager", "addKeys", "()V", 21),
+                "L", -1L, true).startsWith("org.apache.hadoop.hdfs.security"
+                + ".token.block.BlockTokenSecretManager#addKeys"));
+        // And the endpoint mint puts the site and the innermost frame of
+        // its index in that ONE spelling, so the two cannot disagree.
+        assertEquals("sun.reflect.GeneratedMethodAccessor#invoke()V#56:WRITE",
+                RowRuntime.nextEndpoint(occurrence, Endpoint.stateSite(
+                        "sun.reflect.GeneratedMethodAccessor23", "invoke",
+                        "()V", 56, true), 0).site());
+
         LocationId location = LocationId.of(LocationKind.INSTANCE, "22", "24");
         // The site is spelled once, by the contract's renderer, from what the
         // VM's log states about the event -- including the descriptor, so two
@@ -669,6 +718,25 @@ public class RowRuntimeTest {
         com.google.gson.JsonElement value = object.get(field);
         return value != null && value.isJsonPrimitive()
                 ? value.getAsString() : "";
+    }
+
+    /**
+     * One logged event's node, carrying only the site the VM states for it.
+     *
+     * <p>The class is in the VM's own form, with slashes: converting it is
+     * what {@code LoggedEventSites#site} does, and it is the one place a
+     * per-run name is taken out of an identity.</p>
+     */
+    private static JsonObject loggedAt(String className, String method,
+                                       String descriptor, int bci) {
+        JsonObject site = new JsonObject();
+        site.addProperty("className", className);
+        site.addProperty("methodName", method);
+        site.addProperty("methodDescriptor", descriptor);
+        site.addProperty("bci", bci);
+        JsonObject node = new JsonObject();
+        node.add("site", site);
+        return node;
     }
 
     /** {@code Y_I_0 + Y_I_1}, as the VM publishes a linearized RMW. */
