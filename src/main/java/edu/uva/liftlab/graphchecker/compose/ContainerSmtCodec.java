@@ -12,12 +12,14 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.IntegralWidth;
 
@@ -496,6 +498,12 @@ public final class ContainerSmtCodec {
             }
             Term index = host.operand(positions.get(0), Sort.INT);
             if (index == null) return null;
+            // One arm of a choice the observation was pushed inside: this
+            // leaf IS the view, so its positions are a bijection with the
+            // keys this arm's state holds.
+            if (!requireAssociativeViewBijection(state, host, memo)) {
+                return null;
+            }
             if (SCALAR_ASSOC_MEMBER.equals(operation)) {
                 return associativeMemberAt(state, index, host, memo);
             }
@@ -839,6 +847,12 @@ public final class ContainerSmtCodec {
                     && arguments.size() == 1) {
                 Term index = host.operand(arguments.get(0), Sort.INT);
                 if (index == null) return null;
+                // Removing AT a position is a walk of the same view: which
+                // key the position names is the bijection's to say.
+                if (!requireAssociativeViewBijection(receiverIr, host,
+                        memo)) {
+                    return null;
+                }
                 requireAssociativeMember(receiver, index, host);
                 return new Term("(let ((s " + receiver.text
                         + ")) (assoc_remove s (assoc_key_at s "
@@ -913,6 +927,10 @@ public final class ContainerSmtCodec {
                 return admitted == null ? null : value;
             }
         } else if (scalarAssociativeLeaf(entry.stateExpression)) {
+            if (!requireAssociativeViewBijection(entry.stateExpression,
+                    host, memo)) {
+                return null;
+            }
             Term index = host.operand(entry.indexExpression, Sort.INT);
             Term admitted = index == null ? null : associativeMemberAt(
                     entry.stateExpression, index, host, memo);
@@ -921,7 +939,12 @@ public final class ContainerSmtCodec {
             if (admitted != null) host.require(admitted.text);
             return admitted == null ? null : value;
         }
-        // An unfamiliar choice remains exact through the whole-state model.
+        // An unfamiliar choice remains exact through the whole-state model
+        // -- but only where the recording bounds the view's positions.
+        if (!requireAssociativeViewBijection(entry.stateExpression, host,
+                memo)) {
+            return null;
+        }
         Term state = associativeState(entry.stateExpression, host);
         Term index = host.operand(entry.indexExpression, Sort.INT);
         if (state == null || index == null) return null;
@@ -1252,6 +1275,159 @@ public final class ContainerSmtCodec {
         return "(let ((s " + state.text + ") (i " + index.text
                 + ")) (and (<= 0 i) (< i (assoc_size s))"
                 + " (assoc_has s (assoc_key_at s i))))";
+    }
+
+    /**
+     * Refusal subject for an indexed view whose size the recording does not
+     * state.  A view of a map whose size nothing states leaves the
+     * positions free, and free positions are the thing this states about.
+     */
+    public static final String ASSOC_VIEW_SIZE_UNSTATED =
+            "UNSTATED_VALUE:AssociativeViewSize";
+
+    /**
+     * AN INDEXED VIEW OF AN ASSOCIATIVE STATE IS A BIJECTION between the
+     * positions {@code [0, n)} and the keys that state holds.
+     *
+     * <p>{@code values()}, {@code keySet()}, {@code entrySet()},
+     * {@code toArray} and an ITERATOR/NEXT walk are all one thing: the
+     * map's entries, each named once, at one position each.  Stated
+     * position by position -- "this position names a key that is present"
+     * -- and nothing more, a formula lets the solver answer every position
+     * with the SAME present key and leave another present key at no
+     * position at all.  That is how hdfs-11741's composed query delivered
+     * the four exported block-key ids 182906, 182908, 182908, 182907 out of
+     * a NameNode whose export really held 182905, 182906, 182907, 182908:
+     * one id twice, and the id the target looks up nowhere -- a formula
+     * stating "the exported set lacks G" with no producer decision having
+     * removed G.</p>
+     *
+     * <p>So the three facts, over the positions the recording bounds and
+     * under the size {@code n} the codec derives from the operations:</p>
+     *
+     * <pre>
+     *   (=&gt; (&lt; p n) (and (has k_p) (= (position k_p) p)))   p in [0, m)
+     *   (=&gt; (&lt; q n) (not (= k_p k_q)))                      p &lt; q &lt; m
+     *   (=&gt; (has K) (or_{p &lt; m} (and (&lt; p n) (= k_p K))))   K a put key
+     * </pre>
+     *
+     * <p>The first two say every live position names a present key, at
+     * that position, and that two positions never name one key; the third
+     * says no present key sits at no position -- from an empty base the
+     * keys a map can hold are exactly the ones put into it, so the
+     * disjunction over the chain's put keys is the whole of "every present
+     * key".  {@code m} is the number of puts the chain states, which
+     * bounds {@code n}: the recording says how many entries were added,
+     * so the facts are written out at CONCRETE positions and no quantifier
+     * is introduced -- the fragment z3 answers {@code (incomplete
+     * quantifiers)} on is the one the container lowering stays out of.</p>
+     *
+     * <p>What this does NOT state is Java's HashMap ITERATION ORDER.  A
+     * recording states which entries a map held, not that a traversal
+     * hands them back in ascending key order; the bijection is what
+     * soundness needs and the order is not a fact the recording states.</p>
+     *
+     * <p>A view whose state is not a chain the recording bounds -- an
+     * opaque {@code AssocState} the execution never built here, or a
+     * choice this codec cannot push the observation through -- has no
+     * {@code m} to write the facts out at, and is refused by name
+     * ({@link #ASSOC_VIEW_SIZE_UNSTATED}) rather than left with free
+     * positions.</p>
+     *
+     * @return whether the view's positions are stated
+     */
+    private static boolean requireAssociativeViewBijection(
+            JsonElement state, Host host, ProjectionMemo memo) {
+        if (state != null && memo.views.contains(state)) return true;
+        List<JsonElement> put = associativeViewKeys(state);
+        if (put == null) {
+            host.unsupported(ASSOC_VIEW_SIZE_UNSTATED + ":"
+                    + associativeStateSubject(state));
+            return false;
+        }
+        Term size = associativeSize(state, host, memo);
+        size = size == null ? null : shared(size, host);
+        if (size == null) return false;
+        int bound = put.size();
+        Term[] at = new Term[bound];
+        for (int position = 0; position < bound; position++) {
+            Term index = new Term(Integer.toString(position), Sort.INT,
+                    IntegralWidth.JAVA_INT);
+            Term key = associativeKeyAt(state, index, host, memo);
+            Term present = key == null ? null
+                    : associativeHas(state, key, host, memo);
+            Term where = key == null ? null
+                    : associativePosition(state, key, host, memo);
+            if (key == null || present == null || where == null) {
+                return false;
+            }
+            at[position] = key;
+            host.require("(=> (< " + position + " " + size.text
+                    + ") (and " + present.text + " (= " + where.text + " "
+                    + position + ")))");
+        }
+        for (int later = 1; later < bound; later++) {
+            for (int earlier = 0; earlier < later; earlier++) {
+                host.require("(=> (< " + later + " " + size.text
+                        + ") (not (= " + at[earlier].text + " "
+                        + at[later].text + ")))");
+            }
+        }
+        for (JsonElement each : put) {
+            Term key = memo.box(each, host);
+            Term present = key == null ? null
+                    : associativeHas(state, key, host, memo);
+            if (present == null) return false;
+            StringBuilder somewhere = new StringBuilder("(or");
+            for (int position = 0; position < bound; position++) {
+                somewhere.append(" (and (< ").append(position).append(' ')
+                        .append(size.text).append(") (= ")
+                        .append(at[position].text).append(' ')
+                        .append(key.text).append("))");
+            }
+            host.require("(=> " + present.text + " "
+                    + somewhere.append(')') + ")");
+        }
+        memo.views.add(state);
+        return true;
+    }
+
+    /**
+     * The keys one view's state was built from, or null when the recording
+     * bounds no such set.
+     *
+     * <p>A chain that ends at the exact empty container holds exactly the
+     * keys put into it above that base, so the puts bound both how many
+     * entries the view can have and which keys they can be.  A chain that
+     * ends anywhere else -- an opaque state, a choice, a Java expression
+     * this codec does not read as a map -- bounds neither.</p>
+     */
+    private static List<JsonElement> associativeViewKeys(
+            JsonElement state) {
+        List<JsonElement> keys = new ArrayList<JsonElement>();
+        JsonElement chain = state;
+        for (int depth = 0; depth < CONTAINER_CHAIN_LIMIT; depth++) {
+            Mutation mutation = associativeMutation(chain);
+            if (mutation == null) return null;
+            if (emptiesState(mutation.operation)) {
+                Collections.reverse(keys);
+                return keys;
+            }
+            if ("PUT".equals(mutation.operation)) {
+                keys.add(mutation.arguments.get(0));
+            }
+            chain = mutation.receiver;
+        }
+        return null;
+    }
+
+    /** What a refused view names itself by: its own top operation. */
+    private static String associativeStateSubject(JsonElement state) {
+        if (state == null || !state.isJsonObject()) return "no-state";
+        JsonObject object = state.getAsJsonObject();
+        String operation = optionalString(object, "operation");
+        return operation.isEmpty() ? optionalString(object, "_type")
+                : operation;
     }
 
     /**
@@ -2131,6 +2307,10 @@ public final class ContainerSmtCodec {
                 new IdentityHashMap<>();
         private final IdentityHashMap<JsonElement, Term> booleanOperands =
                 new IdentityHashMap<>();
+        /** The view states whose bijection this call already stated. */
+        private final Set<JsonElement> views =
+                Collections.newSetFromMap(
+                        new IdentityHashMap<JsonElement, Boolean>());
 
         private Term get(
                 IdentityHashMap<JsonElement, Map<String, Term>> table,

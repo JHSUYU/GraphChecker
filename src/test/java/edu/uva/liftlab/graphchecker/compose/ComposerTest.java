@@ -1914,6 +1914,25 @@ public class ComposerTest {
         session.expression("EXPR.00000000000000f4", binary("!=",
                 read("INSTANCE_FIELD", 2L, 24L, 178L, "I"),
                 integer("I", 9L)));
+        // A map with three keys in it, and the three positions of the view
+        // over it: the shape 11741's NameNode exports its block keys at
+        // (`allKeys.values().toArray(...)`, one element per position).  Put
+        // in an order that is NOT the ascending one, because what a
+        // traversal hands back is the map's business and "ascending ints"
+        // is not a fact any recording of a HashMap states.
+        JsonObject held = relation("ASSOCIATIVE", "SNAPSHOT_BASE",
+                "java/util/HashMap", relation("ASSOCIATIVE", "STATE",
+                        "java/util/HashMap",
+                        symbol("M_L'java/util/HashMap'_88",
+                                "java/util/HashMap")));
+        for (long key : new long[]{30L, 10L, 20L}) {
+            held = relation("ASSOCIATIVE", "PUT", "java/util/HashMap",
+                    held, integer("I", key), integer("I", key));
+        }
+        for (int index = 0; index < 3; index++) {
+            session.expression("EXPR.0000000000000e4" + index,
+                    viewKey(held, index));
+        }
         session.target("(and EXPR.00000000000000f1 EXPR.00000000000000f2 "
                         + "EXPR.00000000000000f3 EXPR.00000000000000f4)",
                 false, true);
@@ -2122,6 +2141,69 @@ public class ComposerTest {
                             + "recording's: " + name,
                     lowering.minted(name));
         }
+
+        // AN INDEXED VIEW OF A MAP IS A BIJECTION between its positions and
+        // the keys the map holds.  Three keys put into an empty base, and
+        // the three positions of the view over it, asked with real z3: no
+        // two positions may name one key, no key the map holds may sit at
+        // no position, and the order is the map's own and not an order this
+        // lowering invented.  Stated position by position -- "this position
+        // names SOME present key" -- a formula answers every position with
+        // one key and leaves another at none, which is how hdfs-11741's
+        // composed query delivered 182906, 182908, 182908, 182907 out of an
+        // export that held 182905, 182906, 182907, 182908.
+        String[] position = new String[3];
+        for (int index = 0; index < position.length; index++) {
+            position[index] = lowering.statedTerm(
+                    "EXPR.0000000000000e4" + index, "view");
+            assertFalse("the view's position " + index + " is lowered",
+                    position[index].isEmpty());
+        }
+        assertEquals("the view hands the keys back in the map's own order, "
+                        + "and a permutation that is not the ascending one "
+                        + "is satisfiable", "sat",
+                viewAnswer(lowering, "(and (= " + position[0] + " 30) (= "
+                        + position[1] + " 10) (= " + position[2]
+                        + " 20))"));
+        assertEquals("two positions never name one key", "unsat",
+                viewAnswer(lowering, "(= " + position[0] + " "
+                        + position[1] + ")"));
+        assertEquals("and no key the map holds sits at no position",
+                "unsat",
+                viewAnswer(lowering, "(and (not (= " + position[0]
+                        + " 10)) (not (= " + position[1] + " 10)) (not (= "
+                        + position[2] + " 10)))"));
+
+        // And a view whose state the recording does not bound -- an opaque
+        // map this execution never built here -- has no positions to write
+        // those facts out at, so it is refused BY NAME rather than left
+        // with positions the solver may answer as it likes.
+        lowering.begin("s0", null);
+        lowering.term(viewKey(relation("ASSOCIATIVE", "STATE",
+                "java/util/HashMap", symbol("M_L'java/util/HashMap'_89",
+                        "java/util/HashMap")), 0), null, "view-unbounded");
+        List<String> unbounded = new ArrayList<String>(
+                lowering.openRefusals());
+        lowering.end();
+        assertTrue("a view of a map the recording does not bound is "
+                        + "refused by name: " + unbounded,
+                unbounded.contains(ContainerSmtCodec
+                        .ASSOC_VIEW_SIZE_UNSTATED + ":STATE"));
+    }
+
+    /** One element of the key view of a map, at one position. */
+    private static JsonObject viewKey(JsonObject map, long position) {
+        return relation("ASSOCIATIVE", "KEY", "I",
+                relation("ASSOCIATIVE", "NEXT", "L",
+                        relation("ASSOCIATIVE", "ITERATOR", "L", map),
+                        integer("I", position)));
+    }
+
+    /** What z3 answers this lowering's facts asked with one more question. */
+    private String viewAnswer(SmtLowering lowering, String question) {
+        String asked = SmtLowering.legalSymbols(question);
+        return solver().ask(lowering.body(Collections.singletonList(asked))
+                + "(assert " + asked + ")\n", null, false).status();
     }
 
     // ------------------------------------------------------------------
