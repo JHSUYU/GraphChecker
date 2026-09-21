@@ -565,26 +565,43 @@ public final class RowRuntime {
     }
 
     /** The symbols this session minted at declared region inputs. */
-    private static final Map<String, Boolean> PLACEHOLDERS =
+    private static final Map<String, Boolean> DECLARED_MINTS =
             new ConcurrentHashMap<String, Boolean>();
 
     /**
-     * Records that one symbol is a read placeholder, session-wide.
+     * Records that one symbol was minted at a declared region input.
      *
-     * <p>The mint happens in the innermost activation, and every activation
-     * it runs inside sees the same field shadow afterwards.  The write log
-     * of an OUTER activation therefore offers the mint's version as a write
-     * of that location, and only a session-wide answer suppresses it: the
-     * per-activation one let hdfs-17960's version 173 through on
-     * {@code REGION.f167c8f6}.</p>
+     * <p>SESSION-WIDE, AND FILED AT THE MINT.  A mint installs its symbol
+     * into a field the VM versions, and that version is no write -- nobody
+     * stored it, the mint made it ({@link RowPublication} suppresses it and
+     * the placeholder read states it instead).  The mint happens in the
+     * innermost activation, and every activation it runs inside sees the
+     * same field shadow afterwards, so the write log of an OUTER activation
+     * offers that version as a write of the location: only a session-wide
+     * answer suppresses it, and the per-activation one let hdfs-17960's
+     * version 173 through on {@code REGION.f167c8f6}.</p>
+     *
+     * <p>WHEN it is filed is the other half, and it is what makes the
+     * suppression independent of which activation publishes first.  This is
+     * called from {@code ActiveRegion#recordManualSymbolization} and
+     * {@code ActiveRegion#recordConfiguredSourceMint} -- where the mint RUNS
+     * -- and every publication happens when an activation closes, which is
+     * strictly later than the mint of any store that activation's write log
+     * can hold.  Filed at publication instead, the answer depended on the
+     * order two activations happened to close in: on hdfs-11741 campaign #5b
+     * a second activation published 284 of the clock mints' stores as
+     * WriteRows at {@code sun.reflect.NativeMethodAccessorImpl#invoke}
+     * before the minting activation had said anything at all.  The
+     * publication-time call is kept as well, for a mint row that reached
+     * publication by some other road than the two recorders.</p>
      */
-    public static void placeholderSymbol(String symbol) {
-        PLACEHOLDERS.put(Text.safe(symbol), Boolean.TRUE);
+    public static void declaredMintSymbol(String symbol) {
+        DECLARED_MINTS.put(Text.safe(symbol), Boolean.TRUE);
     }
 
-    /** Whether one symbol is a read placeholder this session minted. */
-    public static boolean isPlaceholderSymbol(String symbol) {
-        return PLACEHOLDERS.containsKey(Text.safe(symbol));
+    /** Whether one symbol was minted at a declared region input. */
+    public static boolean isDeclaredMintSymbol(String symbol) {
+        return DECLARED_MINTS.containsKey(Text.safe(symbol));
     }
 
     /**
@@ -1084,7 +1101,7 @@ public final class RowRuntime {
         synchronized (LOCK) {
             AMBIENT.clear();
             CLAIMED_READS.clear();
-            PLACEHOLDERS.clear();
+            DECLARED_MINTS.clear();
             REFS.clear();
             Identity.resetForTests();
             CLOCK_CELLS.clear();

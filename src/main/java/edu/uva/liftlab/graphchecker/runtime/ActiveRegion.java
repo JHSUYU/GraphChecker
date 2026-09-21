@@ -642,6 +642,14 @@ final class ActiveRegion {
         row.addProperty("mintOccurrence",
                 mintOccurrence(safe(sourceId)));
         symbolizedRows.add(row);
+        // AT THE MINT, not at the publication: the store this mint just made
+        // is no write, in this activation or in any other, and only a
+        // register the session already holds when the OTHER activation reads
+        // its write log out can say so (RowRuntime#declaredMintSymbol).  The
+        // name is the VM's own, read exactly as the row's reader reads it.
+        if (!reused) {
+            RowRuntime.declaredMintSymbol(RowPlaceholderMint.vmSymbol(row));
+        }
     }
 
     /**
@@ -798,6 +806,15 @@ final class ActiveRegion {
                             ? safe(requestedSymbol) : installed,
                     safe(action.symbol),
                     RowPublication.literal(safe(recordedValue)));
+        }
+        // And the same rule for the shadow store this mint just made, filed
+        // where the mint RUNS for the same reason the clock cell is: an
+        // activation nested inside this one publishes before this row
+        // exists, and its write log already holds the version the mint
+        // installed.  A REUSED symbol is another mint's and is filed by that
+        // mint; this row made no store to suppress.
+        if (minted) {
+            RowRuntime.declaredMintSymbol(RowPlaceholderMint.vmSymbol(row));
         }
     }
 

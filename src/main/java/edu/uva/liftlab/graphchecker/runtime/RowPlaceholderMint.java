@@ -39,9 +39,16 @@ import static edu.uva.liftlab.graphchecker.runtime.RowPublication.versionOf;
  * half only the readers of the VM's own value spellings.</p>
  *
  * <p>A DECLARED root is a marker, a clock or a configured source: the case
- * names it and the search may move it.  A region's declared input is not a
+ * names it and the search may move it.  An UNATTRIBUTED region input is no
  * root at all -- it is a READ PLACEHOLDER, the symbol standing for what
  * that read returned -- and publishing it as a root is what pins it.</p>
+ *
+ * <p>EVERY mint publishes the placeholder read, because every mint's store
+ * is suppressed ({@link #mintStores}) and the placeholder is the only row
+ * that says what the suppressed version is worth.  A declared root
+ * publishes BOTH rows and they say different things: the root row states
+ * the kind, the domain and the reading, the read row states the version.
+ * </p>
  */
 final class RowPlaceholderMint {
     private RowPlaceholderMint() {
@@ -51,12 +58,21 @@ final class RowPlaceholderMint {
      * The roots this activation minted, and the placeholders it did not.
      *
      * <p>A DECLARED root is a marker, a clock or a configured source: the
-     * case names it and the search may move it.  A region's declared input
-     * is not a root at all -- it is a READ PLACEHOLDER, the symbol standing
-     * for what that read returned -- and publishing it as a root is what
-     * pins it: the composer pins every domain-less root to its recorded
-     * value, and a placeholder that is pinned AND joined to its writer's
-     * expression makes every moved valuation unsatisfiable.</p>
+     * case names it and the search may move it.  An UNATTRIBUTED region
+     * input is no root at all -- it is a READ PLACEHOLDER, the symbol
+     * standing for what that read returned -- and publishing it as a root
+     * is what pins it: the composer pins every domain-less root to its
+     * recorded value, and a placeholder that is pinned AND joined to its
+     * writer's expression makes every moved valuation unsatisfiable.</p>
+     *
+     * <p>BOTH ROWS FOR A DECLARED ROOT, never one of the two.  The store
+     * the mint made is suppressed whatever the mint was for, so a declared
+     * root with no placeholder row leaves every read of its own store
+     * bound by nothing -- which is the whole of hdfs-11741's
+     * ADMISSION_GAP.  The rows do not collide because they answer
+     * different questions: the root row states what the mint READ and what
+     * the search may move it to, the read row states the VERSION the mint
+     * installed and states no value at all (see {@link #placeholder}).</p>
      *
      * <p>ONE ROOT PER SYMBOL, and it is the mint that MADE the symbol.  A
      * declared read whose field already carried a propagated expression
@@ -129,10 +145,34 @@ final class RowPlaceholderMint {
             // declared boolean root read INTEGRAL while the composer looked
             // for a range with two values in it.
             RootKind kind = kindOf(row);
-            if (sourceId.isEmpty() && kind == RootKind.INTEGRAL) {
-                if (whole) placeholder(occurrence, row, symbol, installed);
-                continue;
+            // EVERY MINT OWES THE PLACEHOLDER READ THAT STATES IT.  The
+            // mint's store is suppressed for every mint alike (#mintStores:
+            // a mint store is no write), so for every mint alike there has
+            // to be a row that says what that version is worth -- and this
+            // is it, the only row that carries a `mintVersion`.  Published
+            // for a DECLARED ROOT as well as for an unattributed region
+            // input, and IN ADDITION to the RootMintRow below, which is a
+            // different statement: the root row carries the kind, the
+            // domain and the reading, this row carries the version.
+            //
+            // Withheld from the declared roots, the clock of hdfs-11741 was
+            // a cell nothing stated: the woven mint symbolizes the `value`
+            // of a fresh java.lang.Long and the code unboxes it at once, so
+            // every term that names the clock names a read of the mint's own
+            // store -- 877 of them in campaign #5b, 284 with no row to
+            // resolve them, in 64 of 64 sessions.  Each was `unstated
+            // Read:INSTANCE/…#24@v…` out of the lowering, and all 17 paths
+            // that reached the anchor were dropped on one: one BLOCKING
+            // ADMISSION_GAP and NO_SUPPORTED_WITNESS.  In campaign #4 the
+            // same reads bound only by accident, off a WriteRow a SECOND
+            // activation published for the very store this suppresses.
+            boolean unattributed = sourceId.isEmpty()
+                    && kind == RootKind.INTEGRAL;
+            if (whole) {
+                placeholder(occurrence, row, symbol, installed,
+                        !unattributed);
             }
+            if (unattributed) continue;
             String rootId = sourceId.isEmpty()
                     ? optionalString(row, "portId") : sourceId;
             String recorded = literal(optionalString(row, "recordedValue"));
@@ -220,13 +260,23 @@ final class RowPlaceholderMint {
      * the field it was installed on; the value is what the field held when
      * it was.  A reader joins it to the write of that location exactly as
      * it joins any other read.</p>
+     *
+     * <p>{@code declaredRoot} says this mint also publishes a RootMintRow,
+     * and that row is then the one statement of what the mint read: this
+     * row states the version the mint installed, and no value and no
+     * earlier writer, because either of those would PIN a root the case
+     * declared movable.</p>
      */
     private static void placeholder(OccurrenceAddress occurrence,
                                     JsonObject row, String symbol,
-                                    Map<String, String[]> installed) {
-        // A read placeholder, session-wide, so no activation's write log
-        // offers the mint's own version as a write of that location.
-        RowRuntime.placeholderSymbol(symbol);
+                                    Map<String, String[]> installed,
+                                    boolean declaredRoot) {
+        // A declared mint, session-wide, so no activation's write log offers
+        // the mint's own version as a write of that location.  The register
+        // is already filled -- at the mint, by ActiveRegion -- and this is
+        // the backstop for a mint row that reached publication by some other
+        // road than the two recorders.
+        RowRuntime.declaredMintSymbol(symbol);
         // The location is the VM's own -- owner rid, slot offset -- so this
         // read and every write of the same storage spell one location.
         // Naming the Java field signature instead left the read saying
@@ -251,6 +301,8 @@ final class RowPlaceholderMint {
         // counter and the anchor reads what they left.  When no write
         // precedes the mint the row states -1 and pins the plain decimal,
         // which is the never-neither rule and not an invented version.
+        long mintVersion = installedAt == null ? ReadRow.UNKNOWN_VERSION
+                : Long.parseLong(installedAt[1]);
         long observed = location == null ? ReadRow.UNKNOWN_VERSION
                 : Long.parseLong(installedAt[2]);
         if (location == null) {
@@ -330,6 +382,44 @@ final class RowPlaceholderMint {
                 value = identity;
             }
         }
+        if (declaredRoot) {
+            // A MINT THAT IS ALSO A ROOT STATES ITS VALUE ONCE, ON THE ROOT
+            // ROW.  What this mint read is the RootMintRow's recordedValue,
+            // and what the search may do with it is that row's kind and
+            // domain; this row says WHICH VERSION the mint installed, so a
+            // read of that version resolves to the symbol, and nothing else.
+            //
+            // The two statements are not the same one (Composer#placeholder
+            // says so from the other side): a value on this row is a PIN,
+            // and the composer pins no declared root -- `valuationOf` and
+            // `domains` both skip a CLOCK, and a declared MARKER is free in
+            // {recorded, flipped}.  Pinned here, a clock would equal the
+            // instant it read in every disjunct, `clockNecessary` would
+            // answer "the clocks are decoration" for every witness, and
+            // CLOCK_SKEW would be exactly as unreachable as it is now.  A
+            // JOIN to the last real write before the mint is the same pin by
+            // another road, so this row observes the mint's own version --
+            // which for a declared root is the truth about the cell as well:
+            // the woven mint symbolizes the `value` of a java.lang.Long it
+            // has just allocated, and that store is the only version the
+            // location has ever had (hdfs-11741 seed-result-db7499fe,
+            // INSTANCE/217#24: one version, 1155, and no write row at all).
+            //
+            // A mint the VM numbered no version for has no version to state,
+            // and a placeholder that states none is BLOCKING under invariant
+            // 7.  It keeps its RootMintRow and this row is named, not faked.
+            if (mintVersion < 0L) {
+                RowRuntime.gap(GapKind.DECLARATION_MISSING,
+                        GapClass.DIAGNOSTIC, symbol,
+                        "this declared root's mint states no version it"
+                                + " installed, so no placeholder read can"
+                                + " state one for it: port="
+                                + optionalString(row, "portId"));
+                return;
+            }
+            observed = mintVersion;
+            value = "";
+        }
         if (observed < 0L && literal(value).isEmpty()) {
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                     symbol, "a declared region input states no value it"
@@ -352,8 +442,6 @@ final class RowPlaceholderMint {
         // two mints for the same reason.  A second row for the SAME
         // mintVersion is the one real duplicate, and it is named.
         long event = optionalLongInteger(row, "eventSeq", 0L);
-        long mintVersion = installedAt == null ? ReadRow.UNKNOWN_VERSION
-                : Long.parseLong(installedAt[1]);
         // The key is the mint's own store: (location, version), which is
         // exactly the key #mintStores and #mintedLocations already suppress
         // and state it by, so the row, the suppression and the composer's
@@ -433,6 +521,15 @@ final class RowPlaceholderMint {
      * that knows its own {@code rawSymbol} states it outright.  The key the
      * suppression and {@code mintVersion} share is still (location,
      * version); this is only which versions are mints at all.</p>
+     *
+     * <p>And it is a question about the SESSION, not about this activation:
+     * the mint files its symbol where it runs
+     * ({@code RowRuntime#declaredMintSymbol}), so an activation that merely
+     * read the same VM record out gets the same answer as the one that
+     * minted, whichever of them publishes first.  Asked of {@code active}
+     * alone, hdfs-11741 campaign #5b published 284 clock mint stores as
+     * WriteRows of a second activation and bound 593 of 877 reads by
+     * accident.</p>
      */
     private static boolean declaredMint(ActiveRegion active, String symbol) {
         for (JsonObject row : active.symbolizedRows) {
@@ -443,7 +540,7 @@ final class RowPlaceholderMint {
                 return true;
             }
         }
-        return RowRuntime.isPlaceholderSymbol(symbol);
+        return RowRuntime.isDeclaredMintSymbol(symbol);
     }
 
     /**
@@ -585,7 +682,7 @@ final class RowPlaceholderMint {
      * nothing.  The VM's name is the one that appears in the terms, so
      * that is the one the row states.</p>
      */
-    private static String vmSymbol(JsonObject row) {
+    static String vmSymbol(JsonObject row) {
         String raw = optionalString(row, "rawSymbol");
         if (!raw.isEmpty()) return raw;
         // A configured source mints through the VM's own label and states
