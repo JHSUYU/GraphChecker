@@ -4,6 +4,7 @@ import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
 import com.google.gson.JsonObject;
 
+import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.smt.Z3;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
@@ -2634,6 +2635,226 @@ public class ComposerTest {
     private static JsonObject removal() {
         return relation("ASSOCIATIVE", "REMOVE", "java/util/HashMap",
                 snapshot(), integer("I", 5L));
+    }
+
+    // ------------------------------------------------------------------
+    // 16. A declared root binds a read by its DOMAIN, not by a value.
+    // ------------------------------------------------------------------
+
+    /**
+     * The location the DataNode's clock cell is minted at, and the two
+     * rows the runtime publishes for it.
+     *
+     * <p>Taken from hdfs-11741 campaign #6: {@code INSTANCE/216#24}, mint
+     * version 1125, javaType {@code J}, and a reader of that very version
+     * on the next seq.  The placeholder row states the SYMBOL and no
+     * {@code concreteValue} at all -- deliberately, because a value there
+     * is a pin and {@code ClaimPolicy#clockNecessary} re-asks under that
+     * same pin, so CLOCK_SKEW could never reach unsat.</p>
+     */
+    private static final LocationId CLOCK_CELL =
+            LocationId.of(LocationKind.INSTANCE, "216", "24");
+    private static final long CLOCK_MINT = 1125L;
+    private static final String CLOCK_READ = "INSTANCE_FIELD/216#24@v1125";
+    /** The instant the recording's own DataNode read. */
+    private static final long INSTANT = 1789997450091L;
+    /** A mint of the same shape whose symbol is NO root of the session. */
+    private static final LocationId COUNTER_CELL =
+            LocationId.of(LocationKind.INSTANCE, "22", "24");
+    private static final String COUNTER_READ = "INSTANCE_FIELD/22#24@v174";
+
+    @Test
+    public void aDeclaredClockRootBindsTheReadOfTheVersionItMinted()
+            throws Exception {
+        Path iteration = folder.newFolder("clock-placeholder").toPath();
+        clockMint(iteration, false);
+
+        Composer.Composition bound = compose(iteration, 4);
+        // The path is NOT refused.  Before this rule every one of
+        // campaign #6's 116 anchor paths died here, on this one row.
+        assertEquals("the path that reads the minted clock version is in "
+                        + "the disjunction: " + bound.gaps(), 1,
+                bound.disjuncts().size());
+        assertFalse("and nothing about the clock symbol is refused: "
+                        + bound.gaps(), named(bound.gaps(), CLOCK));
+
+        // The READ is joined to the ROOT'S symbol -- one name, so the
+        // domain this composition states lands on the cell the decision
+        // compares.
+        assertTrue("the read of the minted version is joined to the root's "
+                        + "own symbol: " + bound.body(),
+                bound.body().contains(SmtLowering.legalSymbols(
+                        "(= " + CLOCK_READ + " " + CLOCK + ")")));
+        assertTrue("which the query declares: " + bound.body(),
+                bound.body().contains(SmtLowering.legalSymbols(
+                        "(declare-const " + CLOCK + " Int)")));
+
+        // And its FREEDOM is stated once, as a domain: floor at 0,
+        // ceiling a window above the instant the run read.  Never as a
+        // pin to that instant -- a query that pins it cannot conclude a
+        // skew was needed.
+        assertEquals("the cell reaches the composition",
+                Collections.singletonList(CLOCK), bound.clockCells());
+        assertTrue("the clock is bounded by its domain: " + bound.body(),
+                bound.body().contains(SmtLowering.legalSymbols(
+                        JavaPrimitiveSmtSemantics.clockDomain(CLOCK, "0",
+                                JavaPrimitiveSmtSemantics.clockSkewCeiling(
+                                        Long.toString(INSTANT))))));
+        assertFalse("and NOT pinned to the instant it read: " + bound.body(),
+                bound.body().contains(SmtLowering.legalSymbols(
+                        "(= " + CLOCK + " " + INSTANT + ")")));
+
+        // THE NEGATIVE, and it is the whole rule: what binds the read is
+        // that a ROOT of this session mints the symbol.  The same corpus
+        // with a second mint of the same shape, whose symbol no root
+        // states and whose row states no value, is refused exactly as
+        // before -- nothing here widens to "any unstated symbol".
+        Path unrooted = folder.newFolder("unrooted-placeholder").toPath();
+        clockMint(unrooted, true);
+
+        Composer.Composition refused = compose(unrooted, 4);
+        assertTrue("a placeholder naming no root of its session and stating "
+                        + "no value is still refused, in the unchanged "
+                        + "words: " + refused.gaps(),
+                says(refused.gaps(), GapKind.UNSTATED_VALUE,
+                        "the read row that states this version's symbol "
+                                + "states no value for it, and no root of "
+                                + "this session mints it, so nothing binds "
+                                + "it"));
+        assertTrue("by the name of the symbol nothing binds",
+                named(refused.gaps(), MINTED));
+        assertFalse("and never by the clock's, which its root binds",
+                named(refused.gaps(), CLOCK));
+        assertTrue("so the path is out of the disjunction",
+                refused.disjuncts().isEmpty());
+    }
+
+    /**
+     * One session that mints a declared CLOCK at a version and reads it.
+     *
+     * <p>{@code alsoUnrooted} adds a second mint of the same shape whose
+     * symbol is no root of the session: the control for the rule.</p>
+     */
+    private void clockMint(Path iteration, boolean alsoUnrooted)
+            throws IOException {
+        Session session = new Session(iteration, "s0", false);
+        session.clock(Long.toString(INSTANT));
+        // The mint row: the version it created, its symbol, and NO value.
+        session.placeholder(Endpoint.of(ANCHOR,
+                        "INSTANCE_FIELD/216#24#PLACEHOLDER#0:READ",
+                        at("now#1", 0), 0),
+                CLOCK_CELL, CLOCK_MINT, CLOCK_MINT, CLOCK, "J", null);
+        // And the reader of that version: no write of the location at it,
+        // and the row states no value either.
+        session.read(Endpoint.of(ANCHOR,
+                        "INSTANCE_FIELD/216#24#READ_FROM#0:READ",
+                        at("now#2", 0), 0),
+                CLOCK_CELL, CLOCK_MINT, CLOCK_READ, "J", null);
+        if (alsoUnrooted) {
+            session.placeholder(Endpoint.of(ANCHOR,
+                            "INSTANCE_FIELD/22#24#PLACEHOLDER#0:READ",
+                            at("count#1", 0), 0),
+                    COUNTER_CELL, 174L, 174L, MINTED, "I", null);
+            session.read(Endpoint.of(ANCHOR,
+                            "INSTANCE_FIELD/22#24#READ_FROM#0:READ",
+                            at("count#2", 0), 0),
+                    COUNTER_CELL, 174L, COUNTER_READ, "I", null);
+        }
+        // The expiry comparison the case turns on, as the runtime
+        // publishes it: an expression whose leaf is a ReadFrom of the
+        // version the mint created, and the reading of the root the
+        // decision took -- which is what puts the cell in
+        // `Composer.clocks`.
+        session.expression("EXPR.00000000000000c1", binary(">",
+                read("INSTANCE_FIELD", 216L, 24L, CLOCK_MINT, "J"),
+                integer("J", 300L)));
+        session.decision(ANCHOR, "removeExpiredKeys#u7",
+                "EXPR.00000000000000c1", CLOCK_ROOT, INSTANT);
+        // And one more over a LEAF naming what the read row returned: a
+        // read symbol is a declared symbol of its session, so a leaf may
+        // name it, and a join no term asks about is dropped -- this is
+        // what makes the binding visible in the query.
+        session.expression("EXPR.00000000000000c2", binary(">",
+                symbol(CLOCK_READ, "J"), integer("J", 0L)));
+        session.decision(ANCHOR, "removeExpiredKeys#u9",
+                "EXPR.00000000000000c2");
+        session.target("true", false, true);
+        session.write();
+    }
+
+    // ------------------------------------------------------------------
+    // 17. A name a term BINDS is not a name nothing declares.
+    // ------------------------------------------------------------------
+
+    /**
+     * The associative size model, as {@code ContainerSmtCodec} writes it
+     * for a map a key was removed from.
+     */
+    private static String sizeModel(String previous, String body) {
+        return "(let ((previous_size " + previous + ")) (ite (> "
+                + previous + " 0) " + body + " (- previous_size 1)))";
+    }
+
+    @Test
+    public void aLetBoundNameIsNotFree() throws Exception {
+        // The real shape: one binder, and its name used three times.
+        String model = sizeModel(SERIAL, "previous_size");
+        assertEquals("the size model binds exactly previous_size",
+                Collections.singletonList("previous_size"),
+                new ArrayList<String>(SmtNames.letBound(model)));
+        assertEquals("and the delegator says the same",
+                SmtNames.letBound(model), SmtLowering.letBound(model));
+        // Nesting, in the order the binders appear.
+        assertEquals("a nested let binds both, outermost first",
+                Arrays.asList("outer", "inner"),
+                new ArrayList<String>(SmtNames.letBound(
+                        "(let ((outer (+ " + SERIAL + " 1))) (let "
+                                + "((inner (- outer 2))) (+ outer "
+                                + "inner)))")));
+        // A term with no let binds nothing -- so nothing it names is
+        // withheld from the caller's complaint.
+        assertTrue("a term with no let binds nothing",
+                SmtNames.letBound("(> (+ previous_size 1) 0)").isEmpty());
+
+        // And the caller.  A path whose decision carries the size model
+        // is admitted: previous_size is the term's own binder, not a
+        // symbol the recording failed to declare.  Campaign #6 refused
+        // every anchor path here, 41440 times, with "this term names
+        // symbols nothing declares: [previous_size, previous_size,
+        // previous_size]".
+        Path iteration = folder.newFolder("let-bound").toPath();
+        letCorpus(iteration, "previous_size");
+        Composer.Composition bound = compose(iteration, 4);
+        assertEquals("the path carrying the size model is in the "
+                        + "disjunction: " + bound.gaps(), 1,
+                bound.disjuncts().size());
+        assertFalse("and previous_size is named by no refusal: "
+                        + bound.gaps(),
+                says(bound.gaps(), GapKind.UNSTATED_VALUE, "previous_size"));
+
+        // The same term with ONE name the let does not bind: still
+        // refused, and by that name alone.  Declining to report anything
+        // at all once a let is seen would have lost this.
+        Path free = folder.newFolder("let-and-free").toPath();
+        letCorpus(free, "no_row_states_this");
+        Composer.Composition refused = compose(free, 4);
+        assertTrue("a name the let did NOT bind is still reported: "
+                        + refused.gaps(),
+                says(refused.gaps(), GapKind.UNSTATED_VALUE,
+                        "this term names symbols nothing declares: "
+                                + "[no_row_states_this]"));
+        assertTrue("so the path is out of the disjunction",
+                refused.disjuncts().isEmpty());
+    }
+
+    /** One session whose decision carries the size model over {@code body}. */
+    private void letCorpus(Path iteration, String body) throws IOException {
+        Session session = new Session(iteration, "s0", false);
+        session.serial("5", "+0", "+3");
+        session.decision(ANCHOR, "removeExpiredKeys#u7",
+                "(= " + SERIAL + " " + sizeModel(SERIAL, body) + ")");
+        session.target("true", false, true);
+        session.write();
     }
 
     // ------------------------------------------------------------------
