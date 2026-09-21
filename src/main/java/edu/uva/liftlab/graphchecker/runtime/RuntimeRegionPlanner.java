@@ -606,12 +606,14 @@ final class RuntimeRegionPlanner {
         // SASL handler, whose skeleton does not list the target method, and
         // the fatal branch the recording decided was bound to nothing.
         Set<Long> foldedCalls = new LinkedHashSet<>();
+        List<StaticProgram.RegionRow> foldedHere = new ArrayList<>();
         for (Long call : subtree) {
             StaticProgram.RegionRow folded = foldedRoots.get(call);
             if (folded == null || !Long.valueOf(root.callId).equals(
                     foldOwners.get(call))) {
                 continue;
             }
+            if (!foldedHere.contains(folded)) foldedHere.add(folded);
             for (Long inner : trace.subtree(call)) {
                 MethodEvent event = trace.methodByCall.get(inner);
                 if (event != null && folded.methods.contains(event.method)) {
@@ -665,7 +667,8 @@ final class RuntimeRegionPlanner {
         activation.put(
                 RuntimeSelectedRegionFinalizer
                         .OBSERVED_COMMUNICATION_CAPTURES,
-                observedCommunicationCaptures(skeleton, calls, trace));
+                observedCommunicationCaptures(skeleton, foldedHere, calls,
+                        trace));
         // What the recording states at the sites the scope map named
         // DECLARED_SITE.  Computed once, here, where the activation's call
         // set is first known: the region finalizer reads it to learn which
@@ -681,11 +684,22 @@ final class RuntimeRegionPlanner {
 
     /** Exact configured cut captures that executed in this activation. */
     private static List<Map<String, Object>> observedCommunicationCaptures(
-            StaticProgram.RegionRow skeleton, Set<Long> calls,
+            StaticProgram.RegionRow skeleton,
+            List<StaticProgram.RegionRow> folded, Set<Long> calls,
             TraceIndex trace) {
         List<RuntimeEvent> events = trace.runtime(calls);
         List<Map<String, Object>> observed = new ArrayList<>();
-        for (Map<String, Object> port : skeleton.communicationPorts) {
+        // The cuts this occurrence DECLARES: its own region's and those of
+        // every region folded into it.  The capture happened here either
+        // way -- the folded entry opened no occurrence to record it in.
+        List<Map<String, Object>> ports =
+                new ArrayList<>(skeleton.communicationPorts);
+        for (StaticProgram.RegionRow inside : folded) {
+            for (Map<String, Object> port : inside.communicationPorts) {
+                if (!ports.contains(port)) ports.add(port);
+            }
+        }
+        for (Map<String, Object> port : ports) {
             String side = stringValue(port.get(
                     RuntimeSelectedRegionFinalizer.REGION_PORT_SIDE));
             String portId = stringValue(port.get(

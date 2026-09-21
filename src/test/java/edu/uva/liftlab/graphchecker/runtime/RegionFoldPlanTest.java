@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
+import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import org.junit.Test;
 
 import java.util.ArrayList;
@@ -105,6 +106,188 @@ public class RegionFoldPlanTest {
                     activation.containsKey(RuntimeSelectedRegionFinalizer
                             .FOLDED_REGION_IDS));
         }
+    }
+
+    /**
+     * THE DECLARATION UNION: an occurrence declares what the regions folded
+     * into it declare.
+     *
+     * <p>The hdfs-11741 shape, in miniature: the enclosing skeleton names
+     * neither the folded region's method nor its cut, so before this rule
+     * the consumer side of the target's own exchange was declared by a
+     * region with no occurrence -- it was in no plan row at all -- and the
+     * folded region's PUBLISH phase went with it.  Both belong to the
+     * occurrence that RAN them, and to no other.</p>
+     */
+    @Test
+    public void anOccurrenceDeclaresWhatFoldedIntoIt() throws Exception {
+        RuntimeRegionPlanner.Result activations = RuntimeRegionPlanner
+                .planSkeletonGraph(cutSkeletons(), cutEvents(), cutRuntime(),
+                        Collections.<RuntimeRegionPlanner.ProtocolEvent>
+                                emptyList(), Collections.<String>emptySet());
+        RuntimeSelectedRegionFinalizer.Result closure =
+                RuntimeSelectedRegionFinalizer.finalizeRegions(
+                        cutGraph(), cutSkeletons(), "test",
+                        Arrays.asList(HANDLER, LEAF),
+                        activations.runtimeInstances,
+                        activations.regionFolds, cutObservations(),
+                        activations.occurrenceLinks, StaticScopeMap.empty());
+
+        assertEquals("the folded region has no row: it has no occurrence",
+                1, closure.regions.size());
+        Map<String, Object> handler = closure.regions.get(0);
+        assertEquals(HANDLER_REGION, handler.get("regionId"));
+        assertTrue("the methods it ran include the folded region's",
+                ((Collection<?>) handler.get("methods")).contains(LEAF));
+        assertTrue("the cut the folded region declared is its input",
+                declares(handler, "symbolicInputs", PORT_ID));
+        assertEquals("and the PUBLISH phase of a method its own skeleton "
+                        + "does not name", 1,
+                ((Collection<?>) handler.get(
+                        "configuredSourcePhaseDeclarations")).size());
+
+        // And both reach the occurrence's plan row, which is what the
+        // replay and the composer read.  The bound is the campaign's, and
+        // the plan builder refuses to invent one; this fixture declares no
+        // loop, so any bound serves.
+        String bound = System.getProperty("causynth.loop.default.bound");
+        System.setProperty("causynth.loop.default.bound", "8");
+        try {
+        RuntimeRegionPlanner.Result plan = RuntimeRegionPlanner.plan(
+                closure.regions, "test", activations.runtimeInstances,
+                cutEvents(), cutRuntime(),
+                Collections.<RuntimeRegionPlanner.FieldAccessEvent>
+                        emptyList(),
+                Collections.<RuntimeRegionPlanner.ProtocolEvent>emptyList(),
+                closure.gaps);
+        assertEquals(1, plan.regionPlans.size());
+        Map<String, Object> row = plan.regionPlans.get(0);
+        assertTrue("the consumer side of the cut is on the occurrence that "
+                        + "ran it", declares(row, "communicationHandoffs",
+                PORT_ID));
+        assertEquals("and so is the phase the recording executed there",
+                1, ((Collection<?>) row.get("configuredSourcePhases")).size());
+        } finally {
+            if (bound == null) {
+                System.clearProperty("causynth.loop.default.bound");
+            } else {
+                System.setProperty("causynth.loop.default.bound", bound);
+            }
+        }
+    }
+
+    /** Whether one row's named catalog states a port of this id. */
+    private static boolean declares(Map<String, Object> row, String field,
+                                    String portId) {
+        for (Object entry : (Collection<?>) row.get(field)) {
+            if (portId.equals(((Map<?, ?>) entry).get("portId"))) return true;
+        }
+        return false;
+    }
+
+    private static final String HANDLER =
+            "<o.a.h.SaslDataTransferServer: void handle()>";
+    private static final String LEAF = "<o.a.h.BlockTokenSecretManager: "
+            + "byte[] retrieveDataEncryptionKey(int,byte[])>";
+    private static final String HANDLER_REGION = "REGION.handler";
+    private static final String LEAF_REGION = "REGION.leaf";
+    private static final String EXCHANGE =
+            "XCH.da84e470-fe7e-3068-b93f-caafeef64a70";
+    private static final String PORT_ID = EXCHANGE + ".req.key-id";
+    private static final String HANDLER_ADDRESS =
+            "wl/dn1#epoch0/region/" + HANDLER_REGION + "/ctx:Root:SASL#1";
+    private static final String GUARD_SITE = LEAF + "#u5";
+    private static final String PHASE_SITE = LEAF + "#u7";
+    private static final String OPERAND = LEAF + "::r1";
+
+    /**
+     * The handler's skeleton names its own method only -- the weave stops
+     * where a region roots another one -- and the leaf declares the cut and
+     * the phase.
+     */
+    private static List<StaticProgram.RegionRow> cutSkeletons() {
+        Map<String, Object> handler = skeleton(HANDLER_REGION, HANDLER,
+                Collections.singletonList(HANDLER), false);
+        Map<String, Object> leaf = skeleton(LEAF_REGION, LEAF,
+                Collections.singletonList(LEAF), false);
+        leaf.put("selection", "EXCEPTION_CONTEXT");
+        Map<String, Object> port = new LinkedHashMap<>();
+        port.put("portId", PORT_ID);
+        port.put(RuntimeSelectedRegionFinalizer.REGION_PORT_SIDE, "IN");
+        port.put("sourceKind",
+                RuntimeSelectedRegionFinalizer.COMMUNICATION_SITE_PORT);
+        port.put("dependencyRole", "VALUE_FRONTIER");
+        port.put("name", "key-id");
+        port.put("javaType", "int");
+        port.put("transport", "HDFS_SASL");
+        port.put("direction", "REQUEST");
+        port.put("exchangeSiteKey", EXCHANGE);
+        port.put("callSiteId", LEAF);
+        port.put("handoffLeafPath", PORT_ID);
+        port.put("definitionMethod", LEAF);
+        port.put("outputCaptureKind", "METHOD_PARAMETER");
+        port.put("argumentIndex", 0);
+        leaf.put(RuntimeSelectedRegionFinalizer.COMMUNICATION_PORTS,
+                Collections.singletonList(port));
+        Map<String, Object> phase = new LinkedHashMap<>();
+        phase.put("schemaVersion", 1);
+        phase.put("kind", "CONFIGURED_SOURCE_PHASE_DECLARATION");
+        phase.put("authority", "EXACT_STATIC_SOURCE_HOOK_SITE_V1");
+        phase.put("phase", "PUBLISH");
+        phase.put("sourceId", "SRC.key");
+        phase.put("fieldSignature", "<o.a.h.BlockKey: int keyId>");
+        phase.put("declarationMethod", LEAF);
+        phase.put("declarationUnitIndex", 7);
+        phase.put("siteId", PHASE_SITE);
+        leaf.put("configuredSourcePhaseDeclarations",
+                Collections.singletonList(phase));
+        return StaticProgram.regionRows(Arrays.asList(handler, leaf),
+                RuntimeSelectedRegionFinalizer.SKELETON_KIND, "test");
+    }
+
+    /** The handler opens an occurrence; the leaf folds into it. */
+    private static List<RuntimeRegionPlanner.MethodEvent> cutEvents() {
+        return Arrays.asList(
+                entry(10L, HANDLER, 0L, HANDLER_ADDRESS, false),
+                entry(20L, LEAF, 10L, "", true));
+    }
+
+    /** The fatal guard the leaf decided, and the hook site it executed. */
+    private static List<RuntimeRegionPlanner.RuntimeEvent> cutRuntime() {
+        return Arrays.asList(
+                new RuntimeRegionPlanner.RuntimeEvent(5L, "BRANCH", LEAF,
+                        20L, 0L, GUARD_SITE, "", -1, "", 0, "", Boolean.TRUE,
+                        null, "IF", ""),
+                new RuntimeRegionPlanner.RuntimeEvent(7L, "CALL_SITE_ENTER",
+                        LEAF, 20L, 1L, PHASE_SITE, "<o.a.h.Key: int id()>",
+                        -1, "", 0, "", null, null, "", ""));
+    }
+
+    /** One exception guard, tagged with the folded region alone. */
+    private static List<Map<String, Object>> cutGraph() {
+        Map<String, Object> guard = new LinkedHashMap<>();
+        guard.put("schemaVersion", 3);
+        guard.put("kind", "exception_guard");
+        guard.put("transferKind", "GUARD");
+        guard.put("fromCell", OPERAND);
+        guard.put("toCell", LEAF + "#u5#exception:o.a.h.Invalid");
+        guard.put("method", LEAF);
+        guard.put("siteId", GUARD_SITE);
+        guard.put("unitIndex", 5);
+        guard.put("regionIds", Collections.singletonList(LEAF_REGION));
+        return new ArrayList<>(Collections.singletonList(guard));
+    }
+
+    /** The recording's own statement that the fatal guard was decided. */
+    private static List<Map<String, Object>> cutObservations() {
+        Map<String, Object> branch = new LinkedHashMap<>();
+        branch.put("kind", "BRANCH");
+        branch.put("eventSeq", 5L);
+        branch.put("method", LEAF);
+        branch.put("callId", 20L);
+        branch.put("siteId", GUARD_SITE);
+        branch.put("outcome", Boolean.TRUE);
+        return Collections.singletonList(branch);
     }
 
     private static RuntimeRegionPlanner.Result plan() {

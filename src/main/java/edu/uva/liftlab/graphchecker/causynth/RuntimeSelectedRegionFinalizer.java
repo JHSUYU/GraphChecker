@@ -256,15 +256,35 @@ public final class RuntimeSelectedRegionFinalizer {
                         skeleton.json.get("anchorMethods"));
             }
             region.put("selection", skeleton.selection);
-            region.put("methods", new ArrayList<>(skeleton.methods));
+            List<String> foldedHere = foldedIntoRegion.getOrDefault(regionId,
+                    Collections.<String>emptyList());
+            // THE DECLARATION UNION: an occurrence declares its own region's
+            // declarations and those of every region folded into it.  Same
+            // rule as the fold, same rule as ClosurePlanner#holds -- the
+            // occurrence RAN those sites, so it owns what they declare, and
+            // a folded region has no row of its own left to own them.  The
+            // methods first, because every per-occurrence filter downstream
+            // (runtimeDefinitionMethods, retained loops, the scheduler's
+            // declared ports) asks whether this occurrence's region holds
+            // the site's method, and the enclosing skeleton need not name a
+            // folded region's methods at all.
+            region.put("methods", declaredMethodUnion(program, skeleton,
+                    foldedHere));
             // The refined row is built fresh, so anything the skeleton carries
-            // has to be carried over by name.
+            // has to be carried over by name.  The catalogs are unioned; the
+            // declared-root flag is not, because it pairs with THIS row's
+            // rootMethod and a folded declaration does not rename a root.
+            Object declaredRoot = skeleton.json.get(
+                    DeclaredSymbolicInputs.ROOT_FIELD);
+            if (declaredRoot != null) {
+                region.put(DeclaredSymbolicInputs.ROOT_FIELD, declaredRoot);
+            }
             for (String carried : new String[]{RETAINED_LOOPS,
-                    DeclaredSymbolicInputs.ROOT_FIELD,
                     StaticSymbolicSourceDeclaration.FIELD,
                     ConfiguredSourcePhaseContract.DECLARATION_FIELD}) {
-                Object value = skeleton.json.get(carried);
-                if (value != null) region.put(carried, value);
+                List<Map<String, Object>> declared = declaredRowUnion(
+                        program, skeleton, foldedHere, carried);
+                if (!declared.isEmpty()) region.put(carried, declared);
             }
 
             // The region's PORTS are its declared ones and nothing else:
@@ -286,7 +306,7 @@ public final class RuntimeSelectedRegionFinalizer {
         // reach; the declaration pass after it restores the region-level
         // catalog rows used downstream.
         Map<String, List<CutPort>> cutPorts = declaredCutPorts(program);
-        declareCommunicationPorts(program, cutPorts);
+        declareCommunicationPorts(program, cutPorts, foldedIntoRegion);
         // One index over the region catalog, so the fatal-prefix pass and
         // the closure walk read the same declaration table.
         RegionDemandIndex demands = new RegionDemandIndex(program.regions,
@@ -298,7 +318,7 @@ public final class RuntimeSelectedRegionFinalizer {
         // kept slice holds its region.
         stateSharedAddressClasses(program, sharedAddresses);
         // Declared last, and deliberately after the closure filter.
-        declareCommunicationPorts(program, cutPorts);
+        declareCommunicationPorts(program, cutPorts, foldedIntoRegion);
         return new Result(program.regions, program.planGaps);
     }
 
@@ -346,13 +366,30 @@ public final class RuntimeSelectedRegionFinalizer {
         return byRegion;
     }
 
-    /** Publishes the ports of every cut this region holds a side of. */
+    /**
+     * Publishes the ports of every cut this region holds a side of.
+     *
+     * <p>Its own cuts and those of every region FOLDED into one of its
+     * occurrences.  A folded region opens no occurrence, so it has no plan
+     * row to hold its side of the cut, and the occurrence that ran its
+     * export or its attach is the only one that can: on hdfs-11741 the IN
+     * side of the data-encryption-key-id exchange is declared by {@code
+     * retrieveDataEncryptionKey}'s region alone, which folds into the
+     * DataNode's SASL handler, and without this the consumer side of the
+     * target's own exchange is in no plan at all.</p>
+     */
     private static void declareCommunicationPorts(StaticProgram program,
-            Map<String, List<CutPort>> declaredByRegion) {
+            Map<String, List<CutPort>> declaredByRegion,
+            Map<String, List<String>> foldedIntoRegion) {
         for (Map<String, Object> region : program.regions) {
-            List<CutPort> declared = declaredByRegion.get(
-                    text(region.get("regionId")));
-            if (declared == null) {
+            String regionId = text(region.get("regionId"));
+            List<CutPort> declared = new ArrayList<>();
+            for (String performed : performedRegionIds(regionId,
+                    foldedIntoRegion)) {
+                List<CutPort> held = declaredByRegion.get(performed);
+                if (held != null) declared.addAll(held);
+            }
+            if (declared.isEmpty()) {
                 continue;
             }
             List<Map<String, Object>> inputs = rows(
@@ -865,6 +902,23 @@ public final class RuntimeSelectedRegionFinalizer {
      * plan states, and the plan states the occurrence before the calls it
      * made.</p>
      */
+    /**
+     * The same union read off the region table: this region and the ones
+     * folded into its occurrences, own first.
+     */
+    private static List<String> performedRegionIds(
+            String regionId, Map<String, List<String>> foldedIntoRegion) {
+        List<String> performed = new ArrayList<>();
+        if (!regionId.isEmpty()) performed.add(regionId);
+        for (String folded : foldedIntoRegion.getOrDefault(regionId,
+                Collections.<String>emptyList())) {
+            if (!folded.isEmpty() && !performed.contains(folded)) {
+                performed.add(folded);
+            }
+        }
+        return performed;
+    }
+
     private static List<String> performedRegionIds(
             Map<String, Object> activation) {
         List<String> performed = new ArrayList<>();
@@ -1030,17 +1084,33 @@ public final class RuntimeSelectedRegionFinalizer {
         // hdfs-11741's occurrences in the plan (202 tasks against a declared
         // cap of 128) for the 22 that carried a capture.  An activation
         // states its own captures, so that is what is read.
+        //
+        // Over the regions the occurrence PERFORMED, for the same reason the
+        // ports themselves are: a cut declared by a region that folded into
+        // this occurrence is a cut this occurrence ran, and no other
+        // occurrence carries it.
         Set<String> declaredCaptureOccurrences = new LinkedHashSet<>();
         for (Map.Entry<String, Map<String, Object>> entry
                 : instances.entrySet()) {
-            StaticProgram.RegionRow skeleton = program.skeletons.get(
-                    text(entry.getValue().get("regionId")));
-            if (skeleton == null || skeleton.communicationPorts.isEmpty()) {
+            boolean declaresACut = false;
+            boolean attached = false;
+            for (String regionId : performedRegionIds(entry.getValue())) {
+                StaticProgram.RegionRow skeleton = program.skeletons.get(
+                        regionId);
+                if (skeleton == null
+                        || skeleton.communicationPorts.isEmpty()) {
+                    continue;
+                }
+                declaresACut = true;
+                attached = attached || attachedADeclaredPort(skeleton,
+                        entry.getValue());
+            }
+            if (!declaresACut) {
                 continue;
             }
             if (rows(entry.getValue().get(
                     OBSERVED_COMMUNICATION_CAPTURES)).isEmpty()
-                    && !attachedADeclaredPort(skeleton, entry.getValue())) {
+                    && !attached) {
                 continue;
             }
             declaredCaptureOccurrences.add(entry.getKey());
@@ -1240,6 +1310,60 @@ public final class RuntimeSelectedRegionFinalizer {
             }
         }
         return false;
+    }
+
+    /**
+     * The methods this region's occurrences ran: its own, and those of every
+     * region folded into one of them.
+     *
+     * <p>A folded region's methods are not in the enclosing skeleton -- the
+     * weave stops where a region roots another one, and hdfs-11741's SASL
+     * handler names the pool wrapper and not {@code
+     * retrieveDataEncryptionKey} itself.  Every per-occurrence filter
+     * downstream asks "does this occurrence's region hold the site's
+     * method", and under the fold rule the honest answer includes what it
+     * ran inside a folded entry.  The recording still decides which of these
+     * a given occurrence actually entered: the plan intersects this set with
+     * the methods that occurrence was observed in.</p>
+     */
+    private static List<String> declaredMethodUnion(
+            StaticProgram program, StaticProgram.RegionRow skeleton,
+            List<String> foldedRegionIds) {
+        List<String> methods = new ArrayList<>(skeleton.methods);
+        for (String folded : foldedRegionIds) {
+            StaticProgram.RegionRow row = program.skeletons.get(folded);
+            if (row == null) continue;
+            for (String method : row.methods) {
+                if (!methods.contains(method)) methods.add(method);
+            }
+        }
+        return methods;
+    }
+
+    /**
+     * One declaration catalog of this region, unioned with the catalogs of
+     * the regions folded into its occurrences.
+     *
+     * <p>Rows are carried verbatim and deduplicated whole: a declaration is
+     * the case's statement, and two regions naming one site state one
+     * declaration, not two.  Order is this region's own first, then the
+     * folded ones in the order the plan names them.</p>
+     */
+    private static List<Map<String, Object>> declaredRowUnion(
+            StaticProgram program, StaticProgram.RegionRow skeleton,
+            List<String> foldedRegionIds, String field) {
+        List<Map<String, Object>> declared = new ArrayList<>(
+                rows(skeleton.json.get(field)));
+        for (String folded : foldedRegionIds) {
+            StaticProgram.RegionRow row = program.skeletons.get(folded);
+            if (row == null) continue;
+            for (Map<String, Object> declaration : rows(row.json.get(field))) {
+                if (!declared.contains(declaration)) {
+                    declared.add(declaration);
+                }
+            }
+        }
+        return declared;
     }
 
     /**
