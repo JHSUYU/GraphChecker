@@ -727,7 +727,15 @@ public final class Composer {
         //     execution still happened under that value.  A root every
         //     session read the same way is pinned by its own domain and is
         //     not repeated here.
-        terms.addAll(valuationOf(session, refusals));
+        //
+        //     A declared root this session did NOT mint is collected here
+        //     and answered in (1b), once this path's own terms are what
+        //     they will be: whether the path states anything about such a
+        //     root is a fact about its terms, and none of them is lowered
+        //     yet.
+        Map<String, Set<String>> unminted =
+                new LinkedHashMap<String, Set<String>>();
+        terms.addAll(valuationOf(session, refusals, unminted));
 
         // (2) What this path read at each handoff of the anchor: the
         //     obligation's answer where one answered the mint, and
@@ -839,6 +847,17 @@ public final class Composer {
         List<String> refused = new ArrayList<String>(
                 lowering.openRefusals());
         terms.addAll(lowering.end());
+
+        // (1b) THE OTHER HALF OF (1), asked here because here is where
+        //      this path's own terms are whole: a declared root this
+        //      session minted no value for, whose SYMBOL this path's own
+        //      terms name.  Such a path rests on a quantity it states
+        //      nothing about, and the only value the corpus could give it
+        //      is another execution's reading -- so it is refused.  A root
+        //      NO term of this path names is simply not stated by this
+        //      path, and refusing it was a refusal for something the path
+        //      never asked about (see {@link #valuationOf}).
+        unstatedRoots(session, unminted, terms, joins, refusals);
         for (String refusal : refused) {
             refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
                     GapClass.DIAGNOSTIC, refusal,
@@ -954,25 +973,47 @@ public final class Composer {
      * moved.</p>
      */
     private List<String> valuationOf(String session,
-                                     List<GapRow> refusals) {
+                                     List<GapRow> refusals,
+                                     Map<String, Set<String>> unminted) {
         List<String> valuation = new ArrayList<String>();
         for (Map.Entry<String, List<RootMintRow>> entry
                 : corpus.roots().entrySet()) {
             RootMintRow any = corpus.anyRoot(entry.getKey());
             RootMintRow row = corpus.root(entry.getKey(), session);
             if (any == null || any.kind() == RootKind.CLOCK) continue;
-            boolean constrains = any.declared()
-                    && lowering.declared(any.symbol());
             if (row == null) {
                 // A root the case declares and THIS replay did not mint:
                 // the path states nothing about it, and pinning it to some
                 // other session's reading would state a fact about an
-                // execution that never read it.
-                if (constrains) {
-                    refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
-                            GapClass.BLOCKING, any.rootId(),
-                            "this session minted no value for a declared "
-                                    + "root the composition constrains"));
+                // execution that never read it.  Whether that silence is a
+                // REFUSAL is a question about this path's own terms, and it
+                // is asked once they are whole ({@link #unstatedRoots}):
+                // the symbols of every mint of the root are collected here
+                // and looked for there.
+                //
+                // It used to be asked of `lowering.declared(any.symbol())`,
+                // which is "this QUERY names the symbol" -- and the query
+                // is every path composed before this one, over a registry
+                // seeded with every symbol EVERY session of the corpus
+                // declared ({@link Corpus#declaredSymbols}).  So a root one
+                // session minted refused every other session's path,
+                // whether or not its terms had ever heard of it: on the
+                // hdfs-11741 campaign #4 corpus the three hook-minted
+                // BLOCK_KEY.EXPIRY_DATE roots -- minted only by the twelve
+                // focused replays of nn0's KEY_MANAGER_TICK, and by neither
+                // the seed nor any other replay -- filed 288 of the
+                // composition's 290 BLOCKING UNSTATED_VALUE rows, 96 per
+                // root, and every path of the corpus was refused.
+                if (any.declared()) {
+                    Set<String> symbols = new LinkedHashSet<String>();
+                    for (RootMintRow mint : entry.getValue()) {
+                        if (mint != null && !mint.symbol().isEmpty()) {
+                            symbols.add(mint.symbol());
+                        }
+                    }
+                    if (!symbols.isEmpty()) {
+                        unminted.put(any.rootId(), symbols);
+                    }
                 }
                 continue;
             }
@@ -1027,6 +1068,62 @@ public final class Composer {
             valuation.add("(= " + row.symbol() + " " + literal + ")");
         }
         return valuation;
+    }
+
+    /**
+     * The declared roots this path NAMES and its session never minted.
+     *
+     * <p>The other half of {@link #valuationOf}, and the whole of the rule
+     * a path is refused by: a path states a valuation for every varied root
+     * IT minted, and it is refused for a root it did not mint exactly when
+     * its OWN terms name that root's symbol.  A term of this path naming a
+     * symbol no row of this session states leaves the quantity free -- or,
+     * worse, joined to a pin some other session's path wrote -- and a free
+     * constant is how a model answers a question the execution never asked.
+     * A root no term of this path names is not a quantity this path is
+     * about at all, and its silence about it says nothing that needs
+     * refusing.</p>
+     *
+     * <p>"Names" is asked of the text this path will be asserted with --
+     * pi, phi, the handoff reads, the closure prefixes, the side conditions
+     * and the state joins this session published -- through the one walk
+     * that follows a named container subterm into its body
+     * ({@link SmtLowering#reachedSymbols}), and, beside it, the one
+     * tokenizer ({@link SmtLowering#names}), because a ROOT symbol reaches
+     * a term in two ways: lowered from a recorded leaf, which
+     * {@code reachedSymbols} reports, and written into a published term as
+     * text, which it reads as a name the lowering itself minted.  Whole
+     * tokens either way; a substring of a longer name is a different
+     * name.</p>
+     */
+    private void unstatedRoots(String session,
+                               Map<String, Set<String>> unminted,
+                               List<String> terms,
+                               Map<String, String> joins,
+                               List<GapRow> refusals) {
+        if (unminted.isEmpty()) return;
+        List<String> texts = new ArrayList<String>(terms);
+        texts.addAll(joins.values());
+        Set<String> named = new LinkedHashSet<String>();
+        for (String text : texts) {
+            if (text == null || text.isEmpty()) continue;
+            lowering.reachedSymbols(text, named,
+                    new LinkedHashSet<String>());
+            named.addAll(SmtLowering.names(text));
+        }
+        for (Map.Entry<String, Set<String>> root : unminted.entrySet()) {
+            for (String symbol : root.getValue()) {
+                if (!named.contains(symbol)) continue;
+                refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
+                        GapClass.BLOCKING, root.getKey(),
+                        "this path's own terms name this declared root ("
+                                + symbol + ") and this session minted no "
+                                + "value for it, so what the path rests on "
+                                + "is stated by no row of the execution it "
+                                + "is about"));
+                break;
+            }
+        }
     }
 
     /** One declared root's window around THIS session's reading, or "". */
