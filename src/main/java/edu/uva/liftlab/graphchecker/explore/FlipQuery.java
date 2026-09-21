@@ -61,6 +61,13 @@ import java.util.Set;
  * the above is an undeclared name: on the flipped decision it refuses the
  * obligation, on a prefix decision it drops that conjunct with a named gap,
  * because the flipped arm is the claim and the prefix is context.</p>
+ *
+ * <p>A DEMANDED conjunct -- this obligation's own flip and every flip the
+ * path it is cut from was run under -- is asked for with a MARGIN on each
+ * comparison atom that names a clock cell: {@code causynth.clock.flip
+ * .margin.ms} milliseconds, 60000 by default ({@link ClockMargin}).  A
+ * prefix decision kept at the arm the recording took is not strengthened.
+ * </p>
  */
 final class FlipQuery {
     private FlipQuery() {
@@ -300,6 +307,17 @@ final class FlipQuery {
         /** session -> recorded symbol -> the query's variable for it. */
         private final Map<String, Map<String, String>> renames =
                 new LinkedHashMap<String, Map<String, String>>();
+        /**
+         * Every CLOCK cell this query declared, by variable name.
+         *
+         * <p>{@link #clockVariables} is the READ-BACK map and holds only
+         * the flipped path's own cells -- a skew is a counterfactual about
+         * the execution the obligation is about -- while the MARGIN
+         * ({@link ClockMargin}) is a fact about what the demanded atom
+         * compares, whichever execution read it.  So the two are apart, and
+         * this one is exactly the set {@code clockDomain} constrains.</p>
+         */
+        private final Set<String> clockCells = new LinkedHashSet<String>();
         private final List<GapRow> gaps = new ArrayList<GapRow>();
         private String refusal = "";
 
@@ -346,8 +364,11 @@ final class FlipQuery {
                     continue;
                 }
                 // The obligation IS the complement of the arm the recording
-                // took, and nothing else.
-                assertions.add(last ? "(not " + held + ")" : held);
+                // took, and nothing else -- asked with room to spare where
+                // it rests on a clock ({@link #demanded}).
+                assertions.add(last
+                        ? demanded("(not " + held + ")", decision)
+                        : held);
             }
             Built refused = inheritedFlips(flipped);
             if (refused != null) return refused;
@@ -484,7 +505,14 @@ final class FlipQuery {
                     String held = rename(lower(pi.get(index),
                             path.sessionId), path.sessionId, unknown);
                     if (unknown.isEmpty()) {
-                        assertions.add(held);
+                        // THE INHERITED FLIP IS DEMANDED TOO.  Its conjunct
+                        // stands here at the arm the parent's obligation
+                        // asked for -- the session recorded it that way
+                        // BECAUSE it was flipped -- so it is strengthened
+                        // exactly as this query's own flip is, and the
+                        // parent's prefix around it is not.
+                        assertions.add(decision == row
+                                ? demanded(held, decision) : held);
                         continue;
                     }
                     String named = unknown.iterator().next();
@@ -506,6 +534,44 @@ final class FlipQuery {
                 }
             }
             return null;
+        }
+
+        /**
+         * One DEMANDED conjunct, with the margin on every clock atom of it.
+         *
+         * <p>A demanded outcome is one the corpus does NOT hold -- this
+         * obligation's own flip, or a flip the path it is cut from was run
+         * under -- and a demanded comparison over a clock is asked for with
+         * room to spare, because the replay does not run the instant the
+         * model names: it reads its own and moves it by the skew, while the
+         * quantity the guard compares against moves with it
+         * ({@link ClockMargin}).  A prefix decision kept at the arm the
+         * recording took is context and is never strengthened.</p>
+         *
+         * <p>ON THE LOWERED, RENAMED TEXT, which is the only form that has
+         * the whole atom in it: the published predicate is a reference into
+         * the session's expression table, its comparison is the JVM's
+         * {@code lcmp} under a {@code >= 0}, and whether a term names a
+         * CLOCK is a fact about the variable THIS query declared for it.
+         * Every atom the margin could not be put on is named here, once,
+         * as the wave's own diagnostic.</p>
+         */
+        private String demanded(String held, DecisionRow decision) {
+            ClockMargin.Strengthened asked = ClockMargin.strengthen(held,
+                    clockCells, ClockMargin.margin());
+            for (String atom : asked.unstrengthened) {
+                gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                        GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+                        decision.siteId() + "#" + decision.ordinal(),
+                        "the clock margin of " + ClockMargin.margin()
+                                + "ms was not put on the atom " + atom
+                                + ": its polarity is not resolved by this "
+                                + "query's connectives, or its operands are "
+                                + "not arithmetic, so the demanded arm is "
+                                + "asked for as the solver's model states "
+                                + "it"));
+            }
+            return asked.text;
         }
 
         /** The one refusal an unstated inherited flip is named by. */
@@ -1083,6 +1149,11 @@ final class FlipQuery {
                             : "root|" + row.rootId();
                     String name = names.name(key, (clock ? "clk_" : "r_")
                             + row.rootId() + (clock ? "_" + sessionId : ""));
+                    // Named where the variable is: the margin rule asks
+                    // which of this query's names are clock cells, and by
+                    // the time a demanded conjunct is asserted every name
+                    // in it has been through here (see #rename).
+                    if (clock) clockCells.add(name);
                     declare(name, row.kind() == RootKind.MARKER
                             ? "Bool" : "Int",
                             (clock ? "clock " : "root ") + row.rootId()

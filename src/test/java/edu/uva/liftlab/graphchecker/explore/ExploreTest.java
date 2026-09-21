@@ -2254,6 +2254,281 @@ public class ExploreTest {
         assertTrue("the anchor's absence is BLOCKING and named", named);
     }
 
+    // ---- (6) a demanded clock comparison is asked with room to spare ----
+
+    /**
+     * THE MARGIN, as a rewriting rule: every operator, both polarities.
+     *
+     * <p>A demanded atom is the proposition the QUERY asserts, so a demanded
+     * FALSE is read off the assertion the negation makes: {@code (not (>= a
+     * b))} strengthened is {@code (not (>= (+ a eps) b))}, which says
+     * {@code a + eps < b}.</p>
+     */
+    @Test
+    public void everyDemandedClockComparisonCarriesTheMargin() {
+        Set<String> clocks = Collections.singleton("clk_now");
+        // Demanded true: the margin goes on the side that has to be cleared.
+        assertEquals("(>= a (+ clk_now 5))",
+                strengthened("(>= a clk_now)", clocks));
+        assertEquals("(> a (+ clk_now 5))",
+                strengthened("(> a clk_now)", clocks));
+        assertEquals("(<= (+ a 5) clk_now)",
+                strengthened("(<= a clk_now)", clocks));
+        assertEquals("(< (+ a 5) clk_now)",
+                strengthened("(< a clk_now)", clocks));
+        // Demanded false: the same proposition, read through the negation.
+        assertEquals("(not (>= (+ a 5) clk_now))",
+                strengthened("(not (>= a clk_now))", clocks));
+        assertEquals("(not (> (+ a 5) clk_now))",
+                strengthened("(not (> a clk_now))", clocks));
+        assertEquals("(not (<= a (+ clk_now 5)))",
+                strengthened("(not (<= a clk_now))", clocks));
+        assertEquals("(not (< a (+ clk_now 5)))",
+                strengthened("(not (< a clk_now))", clocks));
+        // Pushed through the connectives a conjunct is built from, and
+        // through a double negation.
+        assertEquals("(and (< (+ a 5) clk_now) (or (> b (+ clk_now 5))"
+                        + " (not (>= (+ c 5) clk_now))))",
+                strengthened("(and (< a clk_now) (or (> b clk_now)"
+                        + " (not (>= c clk_now))))", clocks));
+        assertEquals("(not (not (< (+ a 5) clk_now)))",
+                strengthened("(not (not (< a clk_now)))", clocks));
+        // An atom no clock cell reaches is not this rule's business.
+        assertEquals("(< a b)", strengthened("(< a b)", clocks));
+        assertEquals("(< M_COUNT 5)", strengthened("(< M_COUNT 5)", clocks));
+        // THE JVM'S OWN COMPARE.  Two longs are compared with lcmp and
+        // branched on, so the atom is (>= (ite ...) 0) -- read back as the
+        // comparison the lowering says it is, and strengthened there.  The
+        // margin on the 0 would have made it unsatisfiable.
+        String compare = edu.uva.liftlab.graphchecker.smt
+                .JavaPrimitiveSmtSemantics.integralCompareResult("1500",
+                        "clk_now");
+        assertEquals("(not (>= (+ 1500 5) clk_now))",
+                strengthened("(not (>= " + compare + " 0))", clocks));
+        assertEquals("(>= 1500 (+ clk_now 5))",
+                strengthened("(>= " + compare + " 0)", clocks));
+        assertEquals("the mirrored spelling states the same comparison: "
+                        + "(<= 0 lcmp(a, b)) IS a >= b",
+                "(>= 1500 (+ clk_now 5))",
+                strengthened("(<= 0 " + compare + ")", clocks));
+        // An ite that is NOT that compare decides no polarity for what is
+        // under it, and its operands are not a millisecond count either.
+        String branch = "(>= (ite (< clk_now 3) 1 0) 0)";
+        assertEquals(branch, strengthened(branch, clocks));
+        assertEquals("(= (ite (< clk_now 3) 1 0) 1)",
+                strengthened("(= (ite (< clk_now 3) 1 0) 1)", clocks));
+        // And the caller is told which atom it was, once per atom.
+        assertEquals("the atom named is the one the rule stopped at",
+                Collections.singletonList(branch),
+                ClockMargin.strengthen(branch, clocks, 5L).unstrengthened);
+        assertEquals("and under an = it is the comparison itself",
+                Collections.singletonList("(< clk_now 3)"),
+                ClockMargin.strengthen("(= (ite (< clk_now 3) 1 0) 1)",
+                        clocks, 5L).unstrengthened);
+        assertTrue("an atom the margin DID reach is not reported",
+                ClockMargin.strengthen("(< a clk_now)", clocks, 5L)
+                        .unstrengthened.isEmpty());
+        // Zero turns the rule off, which is what the property is for.
+        assertEquals("(< a clk_now)",
+                ClockMargin.strengthen("(< a clk_now)", clocks, 0L).text);
+        assertEquals(60_000L, ClockMargin.DEFAULT_MARGIN_MS);
+    }
+
+    private static String strengthened(String term, Set<String> clocks) {
+        return ClockMargin.strengthen(term, clocks, 5L).text;
+    }
+
+    /**
+     * The same rule where it is spent: one flip over a clock, solved.
+     *
+     * <p>hdfs-11741 campaign #4's 35 refusals in one fixture -- the guard is
+     * {@code expiryDate >= now} over a wall-clock literal, the flip asks for
+     * the other arm, and the model has to clear the literal by the margin
+     * rather than by the one millisecond z3 would otherwise answer with.</p>
+     */
+    @Test
+    public void theFlipOverAClockIsSolvedWithRoomToSpare() throws Exception {
+        Assume.assumeTrue(z3Available());
+        Path iteration = tree.newFolder("margin").toPath();
+        Session seed = new Session(iteration, "s-seed");
+        seed.activation(TARGET, false);
+        seed.root(TARGET, "CASE.NOW", "M_NOW", RootKind.CLOCK, "1000",
+                null, null, true);
+        seed.decision(TARGET, "Expiry#u15", 1, true,
+                notBefore("1500", "M_NOW"));
+        seed.flush();
+        scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
+                "Expiry#u15"));
+        Path out = tree.newFolder("margin-out").toPath();
+        Path wave = out.resolve("obligations-0000");
+        plan(iteration, TARGET_SELECTOR, null,
+                out.resolve("results.jsonl"), wave, 0);
+        List<Obligation> proposed = obligations(wave);
+        assertEquals(1, proposed.size());
+        Worker worker = solve(iteration, wave, proposed.get(0), out, "w0");
+        assertEquals(detail(worker), Verdict.SAT_MODEL_READY, worker.verdict);
+        String query = query(worker);
+        assertTrue("the demanded atom carries the margin: " + query,
+                query.contains("(not (>= (+ 1500 "
+                        + ClockMargin.DEFAULT_MARGIN_MS + ") clk_"));
+        JsonObject focus = RowCodec.readJsonl(worker.directory.resolve(
+                ObligationDir.FOCUSED_TASK)).get(0);
+        long skew = Long.parseLong(focus.getAsJsonObject("clockDeltas")
+                .get("CASE.NOW").getAsString());
+        assertTrue("and the replay is owed a skew that clears the literal by "
+                        + "it, not by one millisecond: " + skew,
+                skew >= 1500L + ClockMargin.DEFAULT_MARGIN_MS - 1000L);
+
+        // An atom whose polarity no connective of the query resolves is
+        // left exactly as it was, and named once.
+        Path branched = tree.newFolder("margin-ite").toPath();
+        Session other = new Session(branched, "s-seed");
+        other.activation(TARGET, false);
+        other.root(TARGET, "CASE.NOW", "M_NOW", RootKind.CLOCK, "1000",
+                null, null, true);
+        other.decision(TARGET, "Expiry#u15", 1, false,
+                "(= (ite (< 1500 M_NOW) 1 0) 1)");
+        other.flush();
+        scopeMap(branched, targetSite("REGION.target", "Throw#u30",
+                "Expiry#u15"));
+        Path branchedOut = tree.newFolder("margin-ite-out").toPath();
+        Path branchedWave = branchedOut.resolve("obligations-0000");
+        plan(branched, TARGET_SELECTOR, null,
+                branchedOut.resolve("results.jsonl"), branchedWave, 0);
+        Worker asIs = solve(branched, branchedWave,
+                obligations(branchedWave).get(0), branchedOut, "w0");
+        assertEquals(Verdict.SAT_MODEL_READY, asIs.verdict);
+        assertFalse("no margin is invented for it: " + query(asIs),
+                query(asIs).contains("(+ "));
+        boolean named = false;
+        for (GapRow gap : RowCodec.readAll(asIs.directory.resolve(
+                "gaps.jsonl"), RowCodec::readGap)) {
+            named |= gap.kind() == GapKind.ADMISSION_GAP
+                    && gap.cls() == GapClass.DIAGNOSTIC
+                    && ExploreCodec.EXPLORATION.equals(gap.sessionId())
+                    && gap.detail().contains("clock margin")
+                    && gap.detail().contains("(< 1500 clk_");
+        }
+        assertTrue("and the wave says which atom it could not reach", named);
+    }
+
+    /**
+     * THE INHERITED FLIP IS DEMANDED TOO, and the prefix around it is not.
+     *
+     * <p>The path a child is cut from exists only in the world its parent's
+     * replay ran ({@link Corpus.World}), so the query re-asserts that flip --
+     * and a flip over a clock is a flip over a clock whoever asked for it
+     * first.  The decisions the parent's occurrence took BEFORE it, and the
+     * flipped path's own prefix, are the recording's own arms and are asked
+     * for exactly as recorded.</p>
+     */
+    @Test
+    public void anInheritedClockFlipCarriesTheMarginAndItsPrefixDoesNot()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Path iteration = tree.newFolder("inherited-margin").toPath();
+        // The recording: the rotation read its clock and took neither arm
+        // the child was later held to, and the target never reached the
+        // guard this obligation flips.
+        Session seed = new Session(iteration, "s-seed");
+        seed.activation(TARGET, false);
+        seed.activation(PRODUCER, false);
+        seed.root(PRODUCER, "CASE.NOW", "M_NOW", RootKind.CLOCK, "1000",
+                null, null, true);
+        seed.root(TARGET, "CASE.MARKER", "M_MARKER", RootKind.MARKER,
+                "false", null, null, true);
+        seed.root(TARGET, "CASE.OTHER", "M_OTHER", RootKind.MARKER,
+                "false", null, null, true);
+        seed.decision(PRODUCER, "Before#u3", 1, true,
+                notBefore("200000", "M_NOW"));
+        seed.decision(PRODUCER, "Rotate#u5", 1, false,
+                notBefore("100000", "M_NOW"));
+        seed.decision(TARGET, "Guard#u8", 1, false, "M_MARKER");
+        seed.flush();
+        // The child: the rotation's compare flipped, and on THAT path the
+        // target reached a guard the seed never did.
+        Session child = new Session(iteration, "s-inherit");
+        child.activation(PRODUCER, true);
+        child.activation(TARGET, false);
+        child.root(PRODUCER, "CASE.NOW", "M_NOW", RootKind.CLOCK, "1000",
+                null, null, true);
+        child.root(TARGET, "CASE.MARKER", "M_MARKER", RootKind.MARKER,
+                "false", null, null, true);
+        child.root(TARGET, "CASE.OTHER", "M_OTHER", RootKind.MARKER,
+                "false", null, null, true);
+        child.decision(PRODUCER, "Before#u3", 1, true,
+                notBefore("200000", "M_NOW"));
+        child.decision(PRODUCER, "Rotate#u5", 1, true,
+                notBefore("100000", "M_NOW"));
+        child.decision(TARGET, "Guard#u8", 1, false, "M_MARKER");
+        child.decision(TARGET, "Deeper#u9", 1, false, "M_OTHER");
+        child.answered(ObligationResult.of("OBL.inherit", Verdict.ADMITTED,
+                "s-inherit", "the focused prefix reproduced"));
+        child.flush();
+        worker(iteration, "obligations-0000", "ob-inherit", "OBL.inherit",
+                "s-inherit", PRODUCER, "Rotate#u5",
+                Collections.<String, String>emptyMap(),
+                Collections.singletonMap("CASE.NOW", "0"));
+        scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
+                "Guard#u8", "Deeper#u9"));
+
+        Path out = tree.newFolder("inherited-margin-out").toPath();
+        Path wave = out.resolve("obligations-0001");
+        plan(iteration, TARGET_SELECTOR, null,
+                out.resolve("results.jsonl"), wave, 1);
+        Obligation deeper = named(obligations(wave), "Deeper#u9");
+        assertNotNull("the arm only the child's path offers is proposed",
+                deeper);
+        assertEquals("and it is cut from that child's path",
+                Corpus.pathId("s-inherit", TARGET), deeper.pathId());
+        Worker worker = solve(iteration, wave, deeper, out, "w1");
+        assertEquals(detail(worker), Verdict.SAT_MODEL_READY, worker.verdict);
+        String query = query(worker);
+        assertTrue("the flip the child inherited is demanded, so it carries "
+                        + "the margin: " + query,
+                query.contains("(>= 100000 (+ clk_CASE_NOW_s_inherit "
+                        + ClockMargin.DEFAULT_MARGIN_MS + "))"));
+        assertTrue("while the decision that occurrence took BEFORE it is the "
+                        + "recording's own arm, asked for as recorded: "
+                        + query,
+                query.contains(notBefore("200000",
+                        "clk_CASE_NOW_s_inherit")));
+        assertFalse("nothing is strengthened around it",
+                query.contains("(+ 200000"));
+        JsonObject focus = RowCodec.readJsonl(worker.directory.resolve(
+                ObligationDir.FOCUSED_TASK)).get(0);
+        long skew = Long.parseLong(focus.getAsJsonObject("clockDeltas")
+                .get("CASE.NOW").getAsString());
+        assertTrue("and the model clears the inherited literal by the margin"
+                        + " too: " + skew,
+                skew + 1000L <= 100000L - ClockMargin.DEFAULT_MARGIN_MS);
+    }
+
+    /**
+     * {@code expiryDate >= now} as the JVM decides it: {@code lcmp} and a
+     * branch on its result, which is the shape every one of hdfs-11741's
+     * clock guards is published in.
+     */
+    private static String notBefore(String left, String right) {
+        return "(>= " + edu.uva.liftlab.graphchecker.smt
+                .JavaPrimitiveSmtSemantics.integralCompareResult(left, right)
+                + " 0)";
+    }
+
+    /** Why a worker said what it said, for a failure message. */
+    private static String detail(Worker worker) throws IOException {
+        List<ObligationResult> rows = RowCodec.readAll(
+                worker.directory.resolve("obligation_result.jsonl"),
+                RowCodec::readObligationResult);
+        return rows.isEmpty() ? "" : rows.get(0).detail();
+    }
+
+    private static String query(Worker worker) throws IOException {
+        return new String(Files.readAllBytes(
+                worker.directory.resolve("obligation_query.smt2")),
+                java.nio.charset.StandardCharsets.UTF_8);
+    }
+
     // ---- driving the stage the way the campaign drives it -------------
 
     /**
