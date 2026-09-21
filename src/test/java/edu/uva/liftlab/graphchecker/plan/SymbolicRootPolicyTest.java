@@ -291,7 +291,8 @@ public class SymbolicRootPolicyTest {
                 "REGION_SKELETON", "test");
         try {
             RuntimeSelectedRegionFinalizer.refuseUnactivatedDeclaredInputs(
-                    declared, Collections.<Map<String, Object>>emptyList());
+                    declared, Collections.<Map<String, Object>>emptyList(),
+                    Collections.<Map<String, Object>>emptyList());
             fail("a declared root the recording never entered was planned");
         } catch (IOException refused) {
             assertTrue(refused.getMessage(), refused.getMessage()
@@ -304,7 +305,39 @@ public class SymbolicRootPolicyTest {
         Map<String, Object> activation = new LinkedHashMap<String, Object>();
         activation.put("regionId", EXPIRE);
         RuntimeSelectedRegionFinalizer.refuseUnactivatedDeclaredInputs(
-                declared, Collections.singletonList(activation));
+                declared, Collections.singletonList(activation),
+                Collections.<Map<String, Object>>emptyList());
+
+        // F1: AND A FOLDED ENTRY IS AN ENTRY.  A declared region entered
+        // synchronously inside a running occurrence opens none of its own,
+        // so it has no activation and never will; the recording reached the
+        // declared site all the same, and its sites are planned at the
+        // occurrence that folded it.  hdfs-11741 campaign #5 died here --
+        // every entry of updateKeys() ran inside the NameNode's key-manager
+        // tick -- so the fold is what this guard reads, not only the
+        // activation.
+        Map<String, Object> fold = new LinkedHashMap<String, Object>();
+        fold.put("kind", RuntimeSelectedRegionFinalizer.REGION_FOLD_KIND);
+        fold.put("regionId", EXPIRE);
+        fold.put("enclosingRegionId", NN);
+        RuntimeSelectedRegionFinalizer.refuseUnactivatedDeclaredInputs(
+                declared, Collections.<Map<String, Object>>emptyList(),
+                Collections.singletonList(fold));
+
+        // A fold of ANOTHER region is not an entry of this one.
+        Map<String, Object> elsewhere = new LinkedHashMap<String, Object>();
+        elsewhere.put("kind",
+                RuntimeSelectedRegionFinalizer.REGION_FOLD_KIND);
+        elsewhere.put("regionId", NN);
+        try {
+            RuntimeSelectedRegionFinalizer.refuseUnactivatedDeclaredInputs(
+                    declared, Collections.<Map<String, Object>>emptyList(),
+                    Collections.singletonList(elsewhere));
+            fail("a fold of another region was read as this one's entry");
+        } catch (IOException refused) {
+            assertTrue(refused.getMessage(), refused.getMessage()
+                    .contains("DECLARED_INPUT_NEVER_ACTIVATED"));
+        }
 
         // CLK: A CALLEE DECLARATION IS ABOUT NO SITE.  It says every read of
         // that method's return is a root, wherever in the application scope

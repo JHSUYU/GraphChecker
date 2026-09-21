@@ -125,6 +125,41 @@ public final class RuntimeSelectedRegionFinalizer {
     /** Activation member listing the root calls that share its address. */
     public static final String SHARED_ADDRESS_ROOT_CALLS =
             "sharedAddressRootCallIds";
+    /**
+     * {@code kind} of one recorded region entry the run FOLDED.
+     *
+     * <p>F1 (paper SS3.1.2, {@code Identity#fold}): a declared region entered
+     * synchronously inside an occurrence already running opens NONE of its
+     * own, so the recording writes its entry with no occurrence address and
+     * {@code regionFolded}, and PLAN records no activation for it.  A row of
+     * this kind is what remains: the entry HAPPENED, and the occurrence it
+     * folded into is the one that performed everything below it.  The
+     * planner mints one per folded entry and names the enclosing occurrence
+     * on it; nothing offline re-derives either half.</p>
+     */
+    public static final String REGION_FOLD_KIND = "RUNTIME_REGION_FOLD";
+    /**
+     * Activation member: the regions whose roots FOLDED into this occurrence.
+     *
+     * <p>The region→occurrence table of the fold rule, published where the
+     * occurrence is: a declared region named here has no occurrence of its
+     * own anywhere in this plan, and this is the occurrence its mints, its
+     * sites and its tasks belong to.</p>
+     */
+    public static final String FOLDED_REGION_IDS = "foldedRegionIds";
+    /**
+     * Activation member: this occurrence is the failure the case is about.
+     *
+     * <p>README TARGET-1 binds target existence to a selected concrete
+     * branch event, and this closure is where that binding is made -- over
+     * the regions the occurrence PERFORMED, which since the fold rule is no
+     * longer the same question as which region it is an activation of.  So
+     * the answer is stated on the row rather than re-derived by the plan
+     * builder from a static {@code selection} that names the region the
+     * failure is IN and not the occurrence that ran it.</p>
+     */
+    public static final String FAILURE_TARGET_OCCURRENCE =
+            "failureTargetOccurrence";
 
     private RuntimeSelectedRegionFinalizer() {
     }
@@ -139,6 +174,7 @@ public final class RuntimeSelectedRegionFinalizer {
             List<StaticProgram.RegionRow> selectedSkeletons,
             String skeletonSource, Collection<String> observedMethods,
             Collection<Map<String, Object>> runtimeInstances,
+            Collection<Map<String, Object>> runtimeRegionFolds,
             Collection<Map<String, Object>> runtimeObservations,
             Collection<Map<String, Object>> runtimeOccurrenceLinks,
             StaticScopeMap scopeMap)
@@ -147,7 +183,8 @@ public final class RuntimeSelectedRegionFinalizer {
         if (observedMethods != null) {
             observed.addAll(observedMethods);
         }
-        refuseUnactivatedDeclaredInputs(selectedSkeletons, runtimeInstances);
+        refuseUnactivatedDeclaredInputs(selectedSkeletons, runtimeInstances,
+                runtimeRegionFolds);
 
         StaticProgram program = new StaticProgram();
         program.refinedGraph = graph;
@@ -174,6 +211,20 @@ public final class RuntimeSelectedRegionFinalizer {
         Map<String, String> occurrenceByRecordedRootCall =
                 readOccurrences(program, runtimeInstances, skeletonSource,
                         sharedAddresses);
+        // The regions whose text this region's occurrences ran without
+        // opening an occurrence for it: the fold rule, lifted from one
+        // occurrence to the region row, because a region row is what the
+        // plan states branch policies on and a folded region has no row of
+        // its own to state them.
+        Map<String, List<String>> foldedIntoRegion = new LinkedHashMap<>();
+        for (Map<String, Object> activation : program.activations.values()) {
+            List<String> held = foldedIntoRegion.computeIfAbsent(
+                    text(activation.get("regionId")),
+                    ignored -> new ArrayList<String>());
+            for (String folded : strings(activation.get(FOLDED_REGION_IDS))) {
+                if (!held.contains(folded)) held.add(folded);
+            }
+        }
 
         for (Map.Entry<String, StaticProgram.RegionRow> entry
                 : program.skeletons.entrySet()) {
@@ -224,7 +275,9 @@ public final class RuntimeSelectedRegionFinalizer {
             // one shape whether or not the region declares anything.
             region.put("symbolicInputs", new ArrayList<Map<String, Object>>());
             region.put("outputs", new ArrayList<Map<String, Object>>());
-            region.put("branchPolicies", branches(program, regionId));
+            region.put("branchPolicies", branches(program, regionId,
+                    foldedIntoRegion.getOrDefault(regionId,
+                            Collections.<String>emptyList())));
             program.regions.add(region);
         }
         bindObservedFatalTargets(program.regions, runtimeInstances,
@@ -595,39 +648,76 @@ public final class RuntimeSelectedRegionFinalizer {
      * Refuses a declared symbolic input whose method the recording never
      * entered.
      *
+     * <p>THE RECORDING ACTIVATED IT means: the recording ENTERED the
+     * declared method.  Either way of entering counts, because the fold rule
+     * says they are the same event seen from two stacks --
+     * <ul>
+     *   <li>as an occurrence of its own: a {@code
+     *   RUNTIME_REGION_ACTIVATION} of the declared region, the entry that
+     *   found no occurrence running on its thread; or</li>
+     *   <li>as a FOLDED entry inside another occurrence: a {@code
+     *   RUNTIME_REGION_FOLD} of the declared region ({@code Identity#fold},
+     *   {@code regionFolded} on the recorded entry), the entry that was
+     *   called synchronously inside an occurrence already running and so
+     *   opened none of its own.  Its mints, its sites and its tasks belong
+     *   to the occurrence it folded into, which is exactly what the fold
+     *   means; the declaration is untouched by it -- the declared method's
+     *   sites are still roots by declaration, planned at that enclosing
+     *   occurrence.</li>
+     * </ul>
+     * A count of zero across BOTH is the one thing this refuses.</p>
+     *
      * <p>Roots are manual, and every other stage of PLAN honours that: the
      * static slice holds the declared method, the skeleton weave roots a
      * region at it, the runtime selection keeps that region whether or not
      * pass 1 entered it, and this closure retains its activations whether or
      * not anything demands their outputs.  The one thing none of them will
-     * do is invent an activation.  So a declared method with no recorded
-     * region activation is the workload's statement that it never reached
-     * the site -- the case's rotation count, its clock flips or its test
-     * body, not the engine -- and it is named here, with the count, rather
-     * than reported downstream as a site the plan does not cover.</p>
+     * do is invent an entry.  So a declared method the recording entered
+     * nowhere is the workload's statement that it never reached the site --
+     * the case's rotation count, its clock flips or its test body, not the
+     * engine -- and it is named here, with the count, rather than reported
+     * downstream as a site the plan does not cover.</p>
+     *
+     * <p>Campaign #5 of hdfs-11741 is why the fold half is written down: on
+     * that recording every entry of {@code updateKeys()} (and of {@code
+     * removeExpiredKeys()}) ran inside the NameNode's key-manager tick, so
+     * the declared methods had entries, no activation, and this guard read
+     * "never activated" over a workload that had reached the site twice.</p>
+     *
+     * @param runtimeRegionFolds the {@link #REGION_FOLD_KIND} rows of this
+     *     recording: one per region entry that opened no occurrence
      */
     public static void refuseUnactivatedDeclaredInputs(
             List<StaticProgram.RegionRow> selectedSkeletons,
-            Collection<Map<String, Object>> runtimeInstances)
+            Collection<Map<String, Object>> runtimeInstances,
+            Collection<Map<String, Object>> runtimeRegionFolds)
             throws IOException {
         Map<String, Integer> activations = new LinkedHashMap<>();
+        Map<String, Integer> folds = new LinkedHashMap<>();
         for (Map<String, Object> instance : runtimeInstances == null
                 ? Collections.<Map<String, Object>>emptyList()
                 : runtimeInstances) {
             activations.merge(text(instance.get("regionId")), 1,
                     Integer::sum);
         }
+        for (Map<String, Object> fold : runtimeRegionFolds == null
+                ? Collections.<Map<String, Object>>emptyList()
+                : runtimeRegionFolds) {
+            folds.merge(text(fold.get("regionId")), 1, Integer::sum);
+        }
         for (StaticProgram.RegionRow skeleton : selectedSkeletons) {
             if (!skeleton.declaredInputRoot
-                    || activations.getOrDefault(skeleton.regionId, 0) > 0) {
+                    || activations.getOrDefault(skeleton.regionId, 0) > 0
+                    || folds.getOrDefault(skeleton.regionId, 0) > 0) {
                 continue;
             }
             throw new IOException("DECLARED_INPUT_NEVER_ACTIVATED: the case "
                     + "declares a symbolic input in "
                     + skeleton.rootMethod + ", planned as region "
-                    + skeleton.regionId + ", and the recording activated it "
-                    + "0 times; the workload never reached the declared "
-                    + "site, so no engine rule can carry it");
+                    + skeleton.regionId + ", and the recording entered it "
+                    + "0 times -- no occurrence of its own and no entry "
+                    + "folded into one; the workload never reached the "
+                    + "declared site, so no engine rule can carry it");
         }
     }
 
@@ -707,10 +797,16 @@ public final class RuntimeSelectedRegionFinalizer {
         if (targets.isEmpty() || runtimeInstances == null) return;
 
         for (Map<String, Object> instance : runtimeInstances) {
-            String regionId = text(instance.get("regionId"));
-            Map<String, Map<String, Object>> regionTargets = targets.get(
-                    regionId);
-            if (regionTargets == null || regionTargets.isEmpty()) continue;
+            // Of every region this occurrence PERFORMED: a target site
+            // inside a region that folded into this one was reached HERE,
+            // and this occurrence is the only one that can attest it.
+            Map<String, Map<String, Object>> regionTargets =
+                    new LinkedHashMap<>();
+            for (String regionId : performedRegionIds(instance)) {
+                Map<String, Map<String, Object>> held = targets.get(regionId);
+                if (held != null) regionTargets.putAll(held);
+            }
+            if (regionTargets.isEmpty()) continue;
 
             Set<Long> calls = MapFields.longValues(
                     instance.get("callIds"));
@@ -753,6 +849,37 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
+     * The regions one occurrence PERFORMED: its own, and every region that
+     * folded into it.
+     *
+     * <p>The fold rule read forwards ({@code Identity#fold}).  A region
+     * entered synchronously inside this occurrence opened none of its own,
+     * so its text ran here: its decisions were decided here, its reads were
+     * read here, its failure target -- if it has one -- was reached here.
+     * Every rule of this closure that used to ask "which region is this
+     * activation of" asks this instead, because under the fold rule the two
+     * questions stopped having one answer.  Own region first, so a rule that
+     * takes the first answer takes the occurrence's own.</p>
+     *
+     * <p>It is a list and not a set on purpose: the order is the order the
+     * plan states, and the plan states the occurrence before the calls it
+     * made.</p>
+     */
+    private static List<String> performedRegionIds(
+            Map<String, Object> activation) {
+        List<String> performed = new ArrayList<>();
+        if (activation == null) return performed;
+        String own = text(activation.get("regionId"));
+        if (!own.isEmpty()) performed.add(own);
+        for (String folded : strings(activation.get(FOLDED_REGION_IDS))) {
+            if (!folded.isEmpty() && !performed.contains(folded)) {
+                performed.add(folded);
+            }
+        }
+        return performed;
+    }
+
+    /**
      * The activations the failure's demand reaches, from the DECLARATIONS and
      * the static scope map.
      *
@@ -785,19 +912,28 @@ public final class RuntimeSelectedRegionFinalizer {
         // activation of an exception-context region inherits it, including the
         // concurrent activations that only produced inputs for the one that
         // failed.
+        //
+        // And so does every occurrence an exception-context region FOLDED
+        // into, for the reason the fold rule states: that region opened no
+        // occurrence, so the failure it is the context of happened in THIS
+        // one, and no other occurrence can attest the target branch.  On
+        // hdfs-11741 the annotated target region (retrieveDataEncryptionKey)
+        // is entered only inside the DataNode's SASL handler occurrence, so
+        // the handler is the exception context -- which is exactly what the
+        // case's declared target occurrence names.
         Set<String> contexts = new LinkedHashSet<>();
         Set<String> targets = new LinkedHashSet<>();
         Set<String> policylessRegions = new LinkedHashSet<>();
         for (Map.Entry<String, Map<String, Object>> entry
                 : program.activations.entrySet()) {
-            if (!text(entry.getValue().get("selection"))
-                    .startsWith("EXCEPTION")) {
+            String context = exceptionContextRegion(program,
+                    entry.getValue());
+            if (context.isEmpty()) {
                 continue;
             }
             contexts.add(entry.getKey());
             if (!demands.declaresExplicitFatalTarget(entry.getValue())) {
-                policylessRegions.add(text(
-                        entry.getValue().get("regionId")));
+                policylessRegions.add(context);
             } else if (demands.observedExplicitFatalTarget(
                     entry.getValue())) {
                 targets.add(entry.getKey());
@@ -826,6 +962,16 @@ public final class RuntimeSelectedRegionFinalizer {
         Map<String, Integer> demandDepths = new LinkedHashMap<>();
         for (String target : targets) {
             demandDepths.put(target, TARGET_DEMAND_DEPTH);
+            // Stated on the row, once, by the rule that decided it: the
+            // plan builder publishes a TARGET_REACH goal for exactly these
+            // occurrences and does not ask the static selection a second
+            // time -- under the fold rule the region whose selection says
+            // EXCEPTION need not be the region this occurrence is an
+            // activation of.
+            Map<String, Object> activation = instances.get(target);
+            if (activation != null) {
+                activation.put(FAILURE_TARGET_OCCURRENCE, true);
+            }
         }
         // Every activation of a declared symbolic input's method, admitted
         // by declaration.  It is an occurrence retained although nothing
@@ -841,6 +987,15 @@ public final class RuntimeSelectedRegionFinalizer {
         // READS, not why it is here: they seed the walk below, and an
         // activation that holds one but was declared by nothing is left to
         // the demand like any other.
+        //
+        // An occurrence a declared region FOLDED into is admitted by the
+        // same declaration, for the same reason one hop in: the fold rule
+        // says the declared method's entry opened no occurrence of its own,
+        // so this occurrence is the one that performed its reads, its
+        // decisions and its mints.  Refusing it would drop the declaration
+        // on the floor exactly where the recording honoured it -- hdfs-11741
+        // enters updateKeys() only inside the NameNode's key-manager tick,
+        // and the tick is where its clock read has to be planned.
         Set<String> declaredCallees =
                 DeclaredSymbolicInputs.configuredCallees().keySet();
         Set<String> declaredInputOccurrences = new LinkedHashSet<>();
@@ -848,10 +1003,11 @@ public final class RuntimeSelectedRegionFinalizer {
                 : instances.entrySet()) {
             StaticProgram.RegionRow skeleton = program.skeletons.get(
                     text(entry.getValue().get("regionId")));
-            if (skeleton != null && skeleton.declaredInputRoot) {
-                declaredInputOccurrences.add(entry.getKey());
-            } else if (declaresACapturedCallee(entry.getValue(),
-                    declaredCallees)) {
+            if ((skeleton != null && skeleton.declaredInputRoot)
+                    || declaresACapturedCallee(entry.getValue(),
+                    declaredCallees)
+                    || foldedADeclaredInputRoot(program,
+                    entry.getValue())) {
                 declaredInputOccurrences.add(entry.getKey());
             }
         }
@@ -1087,6 +1243,52 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
+     * The EXCEPTION-context region this occurrence ran, or {@code ""}.
+     *
+     * <p>Its own when its own skeleton is one, and otherwise the first
+     * exception-context region that folded into it: the selection is a
+     * statement about the static region, and the fold rule says which
+     * occurrence ran that region's text.  A folded region's own {@code
+     * selection} is read off the SKELETON, because the fold has no
+     * activation to inherit it onto.</p>
+     */
+    private static String exceptionContextRegion(
+            StaticProgram program, Map<String, Object> activation) {
+        if (text(activation.get("selection")).startsWith("EXCEPTION")) {
+            return text(activation.get("regionId"));
+        }
+        for (String regionId : strings(activation.get(FOLDED_REGION_IDS))) {
+            StaticProgram.RegionRow folded = program.skeletons.get(regionId);
+            if (folded != null && folded.selection.startsWith("EXCEPTION")) {
+                return regionId;
+            }
+        }
+        return "";
+    }
+
+    /**
+     * Whether a region the case DECLARED folded into this occurrence.
+     *
+     * <p>The other half of the declared-input admission, and the same rule:
+     * a declared method entered synchronously inside a running occurrence
+     * opens none of its own ({@code Identity#fold}), so THIS occurrence is
+     * where its sites ran and there is no other occurrence the declaration
+     * could be honoured at.  Read off {@link #FOLDED_REGION_IDS}, which the
+     * planner stamped from the recording's own {@code regionFolded} entries;
+     * nothing is re-derived here.</p>
+     */
+    private static boolean foldedADeclaredInputRoot(
+            StaticProgram program, Map<String, Object> activation) {
+        for (String regionId : strings(activation.get(FOLDED_REGION_IDS))) {
+            StaticProgram.RegionRow folded = program.skeletons.get(regionId);
+            if (folded != null && folded.declaredInputRoot) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * Whether the recording states this activation TOOK one of the declared
      * cut values its region attaches.
      *
@@ -1248,11 +1450,28 @@ public final class RuntimeSelectedRegionFinalizer {
      * EXPLORE or PATH_ASSUMPTION from a second, may-reach control-dependence
      * relation carried on the graph, and to re-derive the fatal polarity
      * from it.</p>
+     *
+     * <p>Over the region's own text AND the text of every region that
+     * folded into one of its occurrences ({@code foldedRegionIds}).  A
+     * folded region opens no occurrence, so this plan publishes no row for
+     * it and there is no other row its decisions could be stated on -- and
+     * they have to be stated somewhere, because the decision the case is
+     * about can be one of them: on hdfs-11741 the annotated target's guard
+     * lives in {@code retrieveDataEncryptionKey}, which folds into the
+     * DataNode's SASL handler occurrence.</p>
      */
     private static List<Map<String, Object>> branches(
-            StaticProgram program, String regionId) {
+            StaticProgram program, String regionId,
+            List<String> foldedRegionIds) {
+        List<Map<String, Object>> edges = new ArrayList<>(
+                program.regionGraph(regionId));
+        for (String folded : foldedRegionIds) {
+            for (Map<String, Object> edge : program.regionGraph(folded)) {
+                if (!edges.contains(edge)) edges.add(edge);
+            }
+        }
         Map<String, List<Map<String, Object>>> bySite = guardsBySite(
-                program.regionGraph(regionId), edge -> true);
+                edges, edge -> true);
         List<Map<String, Object>> result = new ArrayList<>();
         for (Map.Entry<String, List<Map<String, Object>>> entry
                 : bySite.entrySet()) {
@@ -1365,8 +1584,16 @@ public final class RuntimeSelectedRegionFinalizer {
      * failure's demand reaches.</p>
      */
     private static final class RegionDemandIndex {
-        /** Static region scope of every observed activation occurrence. */
-        private final Map<String, String> regionByOccurrence =
+        /**
+         * Static region scope of every observed activation occurrence: the
+         * regions it PERFORMED ({@link #performedRegionIds}), own first.
+         *
+         * <p>More than one since the fold rule: a region that folded into an
+         * occurrence has no occurrence of its own, and its text was walked
+         * where it ran.  An occurrence that folded nothing has exactly one,
+         * which is what every rule here used to assume.</p>
+         */
+        private final Map<String, List<String>> regionsByOccurrence =
                 new LinkedHashMap<>();
         private final Map<String, List<String>> localIncoming =
                 new LinkedHashMap<>();
@@ -1388,8 +1615,8 @@ public final class RuntimeSelectedRegionFinalizer {
             // could not name would have no text to walk.
             for (Map.Entry<String, Map<String, Object>> entry
                     : activations.entrySet()) {
-                regionByOccurrence.put(entry.getKey(),
-                        text(entry.getValue().get("regionId")));
+                regionsByOccurrence.put(entry.getKey(),
+                        performedRegionIds(entry.getValue()));
             }
             Set<String> selectedRegions = new LinkedHashSet<>();
             for (Map<String, Object> region : regions) {
@@ -1444,9 +1671,9 @@ public final class RuntimeSelectedRegionFinalizer {
                 Map<String, Object> instance) {
             Map<String, List<Map<String, Object>>> evidenceBySite =
                     new LinkedHashMap<>();
-            Map<String, List<String>> explicit = explicitFatalSeedsBySite.get(
-                    text(instance.get("regionId")));
-            if (explicit == null || explicit.isEmpty()) {
+            Map<String, List<String>> explicit =
+                    explicitFatalSeeds(instance);
+            if (explicit.isEmpty()) {
                 return evidenceBySite;
             }
             for (Map<String, Object> evidence
@@ -1486,9 +1713,27 @@ public final class RuntimeSelectedRegionFinalizer {
         /** Whether this activation's region declares a fatal target site. */
         private boolean declaresExplicitFatalTarget(
                 Map<String, Object> instance) {
-            Map<String, List<String>> explicit = explicitFatalSeedsBySite.get(
-                    text(instance.get("regionId")));
-            return explicit != null && !explicit.isEmpty();
+            return !explicitFatalSeeds(instance).isEmpty();
+        }
+
+        /**
+         * The explicit {@code failureTarget} sites this occurrence could
+         * have reached, by site: the ones declared by every region it
+         * PERFORMED.
+         *
+         * <p>A target site inside a region that folded into this occurrence
+         * is a site this occurrence executed -- the fold gave it no
+         * occurrence of its own to be attested at.</p>
+         */
+        private Map<String, List<String>> explicitFatalSeeds(
+                Map<String, Object> instance) {
+            Map<String, List<String>> explicit = new LinkedHashMap<>();
+            for (String regionId : performedRegionIds(instance)) {
+                Map<String, List<String>> held =
+                        explicitFatalSeedsBySite.get(regionId);
+                if (held != null) explicit.putAll(held);
+            }
+            return explicit;
         }
 
         /**
@@ -1504,13 +1749,18 @@ public final class RuntimeSelectedRegionFinalizer {
          */
         private List<String> targetSeedCells(Map<String, Object> instance)
                 throws IOException {
-            String regionId = text(instance.get("regionId"));
+            List<String> performed = performedRegionIds(instance);
             String occurrenceId = text(instance.get("occurrenceId"));
             Map<String, List<String>> explicit =
-                    explicitFatalSeedsBySite.get(regionId);
-            if (explicit == null || explicit.isEmpty()) {
-                List<String> seeds = fatalSeeds.getOrDefault(regionId,
-                        Collections.<String>emptyList());
+                    explicitFatalSeeds(instance);
+            if (explicit.isEmpty()) {
+                List<String> seeds = new ArrayList<>();
+                for (String regionId : performed) {
+                    for (String seed : fatalSeeds.getOrDefault(regionId,
+                            Collections.<String>emptyList())) {
+                        if (!seeds.contains(seed)) seeds.add(seed);
+                    }
+                }
                 if (seeds.isEmpty()) {
                     // Returning every observed input of the activation
                     // instead made the target slice the whole occurrence,
@@ -1518,7 +1768,7 @@ public final class RuntimeSelectedRegionFinalizer {
                     // nothing in it is bound to a decided branch event.
                     throw new IOException("FATAL_TARGET_SEED_GAP: region "
                             + "names no failure target site and no exception "
-                            + "cell: " + regionId + " " + occurrenceId);
+                            + "cell: " + performed + " " + occurrenceId);
                 }
                 return seeds;
             }
@@ -1551,16 +1801,40 @@ public final class RuntimeSelectedRegionFinalizer {
 
         /** The candidate graph's incoming cells of one cell in one region. */
         private List<String> incomingCells(String occurrenceId, String cell) {
-            return localIncoming.getOrDefault(contextKey(
-                    regionByOccurrence.getOrDefault(occurrenceId, ""), cell),
-                    Collections.<String>emptyList());
+            return edgesInto(localIncoming, occurrenceId, cell);
         }
 
         /** The same, restricted to the guards that decide the read. */
         private List<String> guardCells(String occurrenceId, String cell) {
-            return guardIncoming.getOrDefault(contextKey(
-                    regionByOccurrence.getOrDefault(occurrenceId, ""), cell),
-                    Collections.<String>emptyList());
+            return edgesInto(guardIncoming, occurrenceId, cell);
+        }
+
+        /**
+         * One occurrence's incoming cells, over the text of every region it
+         * performed.
+         *
+         * <p>The text of a region that folded into this occurrence is text
+         * this occurrence executed, so the demand walk crosses it here or
+         * nowhere: no other occurrence holds those cells.  The union is
+         * taken in the order {@link #performedRegionIds} states.</p>
+         */
+        private List<String> edgesInto(Map<String, List<String>> edges,
+                                       String occurrenceId, String cell) {
+            List<String> performed = regionsByOccurrence.getOrDefault(
+                    occurrenceId, Collections.<String>emptyList());
+            if (performed.size() == 1) {
+                return edges.getOrDefault(contextKey(performed.get(0), cell),
+                        Collections.<String>emptyList());
+            }
+            List<String> incoming = new ArrayList<>();
+            for (String regionId : performed) {
+                for (String from : edges.getOrDefault(
+                        contextKey(regionId, cell),
+                        Collections.<String>emptyList())) {
+                    if (!incoming.contains(from)) incoming.add(from);
+                }
+            }
+            return incoming;
         }
 
         private static void addUnique(Map<String, List<String>> target,

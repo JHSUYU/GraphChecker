@@ -1400,6 +1400,7 @@ public final class CausynthTraceRecorder {
                     refinement.rows, skeletons,
                     String.valueOf(selectedSkeletons),
                     observedMethods, activationGraph.runtimeInstances,
+                    activationGraph.regionFolds,
                     runtimeObservations(trace.execution, trace.methods),
                     activationGraph.occurrenceLinks, scopeMap);
             for (Map<String, Object> row : closure.regions) {

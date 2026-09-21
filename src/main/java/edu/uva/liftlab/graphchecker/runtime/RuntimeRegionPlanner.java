@@ -100,6 +100,17 @@ final class RuntimeRegionPlanner {
         }
         Map<Long, Map<String, Object>> activationByCall =
                 new LinkedHashMap<>();
+        // The region entries this run FOLDED, in recorded order: they are no
+        // activations, and the occurrence each of them belongs to is only
+        // known once every activation has been planned, so they are held
+        // here and named below (#stampFoldedRegionEntries).
+        Map<Long, StaticProgram.RegionRow> foldedRoots =
+                new LinkedHashMap<>();
+        // The roots this run publishes an activation for, chosen before any
+        // of them is built: which occurrence owns a folded entry is a
+        // question about the whole set, and an activation has to own its
+        // folded calls from the moment its call set is computed.
+        List<PlannedRoot> plannedRoots = new ArrayList<>();
         // The communication endpoints are bound after the execution-context
         // roots, so a receiver nested in one of them sees its owner already
         // claimed.
@@ -118,22 +129,130 @@ final class RuntimeRegionPlanner {
                     // RuntimeSelectedRegionFinalizer#readOccurrences keep
                     // reading a shared address as the identity failure it
                     // names.
-                    if (root.regionFolded) continue;
+                    //
+                    // Skipped as an activation, NOT dropped as an event: the
+                    // declared method was entered, and the occurrence it
+                    // folded into owns its sites.  That fact is the plan's
+                    // to state, and it is stated below rather than left for
+                    // a later stage to read back out of the trace.
+                    if (root.regionFolded) {
+                        foldedRoots.put(root.callId, skeleton);
+                        continue;
+                    }
                     Set<String> observed = trace.methodNames(
                             trace.subtree(root.callId));
                     if (Collections.disjoint(observed,
                             skeleton.anchorMethods)) {
                         continue;
                     }
-                    addSkeletonActivation(activationByCall, skeleton,
-                            root, trace, declaredSites);
+                    plannedRoots.add(new PlannedRoot(skeleton, root));
                 }
             }
         }
+        // Which occurrence each folded entry belongs to: the INNERMOST
+        // planned root it is inside, by the recorded call stack and nothing
+        // else -- the same stack the fold itself was taken on.
+        Set<Long> plannedRootCalls = new LinkedHashSet<>();
+        for (PlannedRoot planned : plannedRoots) {
+            plannedRootCalls.add(planned.root.callId);
+        }
+        Map<Long, Long> foldOwners = new LinkedHashMap<>();
+        for (Long folded : foldedRoots.keySet()) {
+            for (Long call : trace.enclosingCalls(folded)) {
+                if (call.longValue() == folded.longValue()
+                        || !plannedRootCalls.contains(call)) {
+                    continue;
+                }
+                foldOwners.put(folded, call);
+                break;
+            }
+        }
+        for (PlannedRoot planned : plannedRoots) {
+            addSkeletonActivation(activationByCall, planned.skeleton,
+                    planned.root, trace, declaredSites, foldedRoots,
+                    foldOwners);
+        }
         stampActivationContainment(activationByCall, trace);
+        stampFoldedRegionEntries(result, foldedRoots, foldOwners,
+                activationByCall, trace);
         result.runtimeInstances.addAll(activationByCall.values());
         stampRecordedExchanges(result, trace, protocolEvents);
         return result;
+    }
+
+    /** One recorded entry that opens an occurrence of one region. */
+    private static final class PlannedRoot {
+        private final StaticProgram.RegionRow skeleton;
+        private final MethodEvent root;
+
+        private PlannedRoot(StaticProgram.RegionRow skeleton,
+                            MethodEvent root) {
+            this.skeleton = skeleton;
+            this.root = root;
+        }
+    }
+
+    /**
+     * Names the occurrence every FOLDED region entry belongs to.
+     *
+     * <p>A folded entry opened no occurrence ({@code Identity#fold}), so it
+     * is no activation and this plan carries no row for it.  What it IS, is
+     * a call inside the occurrence already running on its thread -- and that
+     * occurrence performed its reads, its decisions, its writes and its
+     * mints.  One {@link RuntimeSelectedRegionFinalizer#REGION_FOLD_KIND}
+     * row per folded entry says so, and the enclosing occurrence carries the
+     * same statement as {@link
+     * RuntimeSelectedRegionFinalizer#FOLDED_REGION_IDS}, so a reader of
+     * either side of the plan can answer "where did this declared region
+     * run" without going back to the trace.</p>
+     *
+     * <p>The enclosing occurrence is the INNERMOST planned activation this
+     * entry is inside: the recorded call stack and nothing else, which is
+     * the same rule the fold itself was taken by.  An entry whose enclosing
+     * frames were all skipped -- an activation the anchor test dropped --
+     * gets a row with no occurrence on it: the entry still happened, and
+     * saying nothing about where would be the silence this row exists to
+     * remove.</p>
+     */
+    private static void stampFoldedRegionEntries(
+            Result result, Map<Long, StaticProgram.RegionRow> foldedRoots,
+            Map<Long, Long> foldOwners,
+            Map<Long, Map<String, Object>> activationByCall,
+            TraceIndex trace) {
+        List<Long> ordered = new ArrayList<>(foldedRoots.keySet());
+        Collections.sort(ordered);
+        for (Long folded : ordered) {
+            long rootCallId = folded;
+            StaticProgram.RegionRow skeleton = foldedRoots.get(folded);
+            MethodEvent root = trace.methodByCall.get(rootCallId);
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("schemaVersion", 3);
+            row.put("kind", RuntimeSelectedRegionFinalizer.REGION_FOLD_KIND);
+            row.put("regionId", skeleton.regionId);
+            row.put("rootMethod", skeleton.rootMethod);
+            row.put("rootCallId", rootCallId);
+            if (root != null) row.put("test", root.test);
+            Long owner = foldOwners.get(folded);
+            Map<String, Object> enclosing = owner == null ? null
+                    : activationByCall.get(owner);
+            if (enclosing != null) {
+                row.put("enclosingRegionId",
+                        stringValue(enclosing.get("regionId")));
+                row.put("enclosingActivationId",
+                        stringValue(enclosing.get("activationId")));
+                row.put("occurrenceAddress",
+                        stringValue(enclosing.get("occurrenceAddress")));
+                List<String> held = new ArrayList<>(strings(enclosing.get(
+                        RuntimeSelectedRegionFinalizer.FOLDED_REGION_IDS)));
+                if (!held.contains(skeleton.regionId)) {
+                    held.add(skeleton.regionId);
+                }
+                enclosing.put(
+                        RuntimeSelectedRegionFinalizer.FOLDED_REGION_IDS,
+                        held);
+            }
+            result.regionFolds.add(row);
+        }
     }
 
 
@@ -473,10 +592,36 @@ final class RuntimeRegionPlanner {
     private static void addSkeletonActivation(
             Map<Long, Map<String, Object>> activationByCall,
             StaticProgram.RegionRow skeleton, MethodEvent root,
-            TraceIndex trace, Set<String> declaredSites) {
-        Set<Long> calls = trace.subtree(root.callId);
+            TraceIndex trace, Set<String> declaredSites,
+            Map<Long, StaticProgram.RegionRow> foldedRoots,
+            Map<Long, Long> foldOwners) {
+        Set<Long> subtree = trace.subtree(root.callId);
         Set<String> allowed = new LinkedHashSet<>(skeleton.methods);
+        // F1, forwards: a region entry FOLDED inside this occurrence opened
+        // none of its own, so EVERY site executed below it -- its decisions,
+        // its reads, its writes, its declared-site captures -- is an event
+        // of this occurrence and belongs in this call set.  Without it the
+        // frames of a folded region belong to no occurrence at all: on
+        // hdfs-11741 the annotated target's region folds into the DataNode's
+        // SASL handler, whose skeleton does not list the target method, and
+        // the fatal branch the recording decided was bound to nothing.
+        Set<Long> foldedCalls = new LinkedHashSet<>();
+        for (Long call : subtree) {
+            StaticProgram.RegionRow folded = foldedRoots.get(call);
+            if (folded == null || !Long.valueOf(root.callId).equals(
+                    foldOwners.get(call))) {
+                continue;
+            }
+            for (Long inner : trace.subtree(call)) {
+                MethodEvent event = trace.methodByCall.get(inner);
+                if (event != null && folded.methods.contains(event.method)) {
+                    foldedCalls.add(inner);
+                }
+            }
+        }
+        Set<Long> calls = subtree;
         calls.removeIf(call -> {
+            if (foldedCalls.contains(call)) return false;
             MethodEvent event = trace.methodByCall.get(call);
             return event == null || !allowed.contains(event.method);
         });
@@ -1116,8 +1261,21 @@ final class RuntimeRegionPlanner {
             observedMethods.retainAll(allowedMethods);
             List<Map<String, Object>> branches = branches(
                     region.branchPolicies, trace.runtime(calls));
-            boolean target = region.selection .startsWith("EXCEPTION")
-                    && observedFailureTargetActivation(branches);
+            // The occurrence the case's failure happened in, as the region
+            // finalizer decided it (README TARGET-1: target existence binds
+            // to a selected concrete branch event).  Read off the seed
+            // first, because under the fold rule the region whose static
+            // selection says EXCEPTION is not always the region this
+            // occurrence is an activation of -- hdfs-11741's annotated
+            // target region folds into the DataNode's SASL handler, which
+            // is a STATE_CONTEXT region and is where the fatal branch was
+            // decided.  The static test stands behind it for every caller
+            // that builds a plan without that closure.
+            boolean target = Boolean.TRUE.equals(MapFields.booleanValue(
+                    seed.get(RuntimeSelectedRegionFinalizer
+                            .FAILURE_TARGET_OCCURRENCE)))
+                    || (region.selection.startsWith("EXCEPTION")
+                    && observedFailureTargetActivation(branches));
             MethodEvent semanticContext = target
                     ? trace.selectedTargetContext(root, calls, branches)
                     : root;
@@ -1242,6 +1400,17 @@ final class RuntimeRegionPlanner {
             if (!enclosingActivationIds.isEmpty()) {
                 plan.put("enclosingActivationIds",
                         new ArrayList<>(enclosingActivationIds));
+            }
+            // The regions this occurrence RAN without opening an occurrence
+            // for them (F1).  Published so a reader of the frozen plan can
+            // answer "where did region R run" for a region the plan carries
+            // no row for at all -- the only place that question is answered
+            // once the trace is gone.
+            List<String> folded = strings(seed.get(
+                    RuntimeSelectedRegionFinalizer.FOLDED_REGION_IDS));
+            if (!folded.isEmpty()) {
+                plan.put(RuntimeSelectedRegionFinalizer.FOLDED_REGION_IDS,
+                        new ArrayList<>(folded));
             }
             // The retained loops this occurrence's selected methods hold, with
             // their kind and K_L.
@@ -2278,6 +2447,15 @@ final class RuntimeRegionPlanner {
         /** Gaps the region finalizer raised while building these ports. */
         final List<Map<String, Object>> planGaps = new ArrayList<>();
         final List<Map<String, Object>> runtimeInstances = new ArrayList<>();
+        /**
+         * The region entries this recording FOLDED: one row per entry that
+         * opened no occurrence of its own, naming the occurrence it folded
+         * into ({@link #stampFoldedRegionEntries}).  They are deliberately
+         * not activations and are kept out of {@link #runtimeInstances},
+         * which is the one list "one occurrence, one activation" is counted
+         * over.
+         */
+        final List<Map<String, Object>> regionFolds = new ArrayList<>();
         /** Recorded exchange and shared-location links across occurrences. */
         final List<Map<String, Object>> occurrenceLinks = new ArrayList<>();
         int staticRegionCount;
