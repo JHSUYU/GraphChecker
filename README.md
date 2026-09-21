@@ -459,18 +459,45 @@ them, the family and diagnostic counts off a fresh composition over the same cor
 ## 8. Status and limits
 
 Six cases are prepared, in four case directories (HDFS-17899 carries three, one per request
-flow). HDFS-17960 passes cleanly end to end under the current design: one campaign, the claim
-above, no blocking gaps, and the unpinned probe answering sat at the buggy polarity and unsat at
-the other. HDFS-11741 — two nodes, where the Balancer caches a data-encryption key a DataNode
-then cannot find, and the witness needs two clock-driven flips on two nodes — exercises the
-multi-node path: the seed passes the gate, the closure reaches the DataNode's key map through
-the declared wire port and the map's static write sites, exploration converges in two waves,
-every family arm is attested and every composed path names a clock. It does not yet publish an
-accepted claim. The composition over the last 11741 corpus is decided in seconds; every
-valuation is satisfiable, including the recorded one, because two focused sessions carry the
-key-serial root's symbol without its mint row (minted at NameNode startup outside any admitted
-activation) — the R4 to-do; a witness needs a recording made after it.
-The other four cases are prepared and not yet run.
+flow). **HDFS-17960 passes as of 2026-09-21**: one campaign of 190 seconds over four hosts,
+the claim above, no blocking gaps, and the unpinned probe answering sat at the buggy polarity
+and unsat at the other. Its witness is the one the Hadoop source says it must be: with ordered
+snapshot deletion off, a duplicate deletion record replayed at startup finds no such snapshot,
+`removeSnapshot` returns without removing anything, and the counter is decremented all the
+same, so the next checkpoint's snapshot-count check disagrees. The replay that carries the
+claim printed exactly that state. Four engine defects stood in the way, each general rather
+than particular to the case, and `experiments/hadoop/hdfs-17960/README.md` names them: a loop
+body refused by the rule for region entries, three selection filters that dropped candidates in
+silence, every loop body asked whether its occurrence had taken the flip yet, and a mint that
+planted a root stating what it observed rather than what it ran at.
+
+**HDFS-11741 passes as of 2026-09-21** (campaign at `main@77ded9625`): `CLOCK_SKEW` at
+valuation 0, `polarityDecides` true, `finalStatus FINAL_READY`, 0 blocking gaps, 135 solver
+runs, and seven moved roots carrying **both** nodes' clocks — the NameNode's second rotation
+(`REGION.08ab84c9`, +40 h and +20 h) and the DataNode's `addKeys` refresh
+(`REGION.ba3902cd`). That two-node join is the point of the case, so a claim naming one node's
+clock would not have been a proof of it; the acceptance bar is the pair. Exploration converged
+in three waves over 605 obligations with ten sessions observing the real fatal and no
+wrong-decision refusal, in 22 minutes across four hosts.
+
+Eleven defects stood between the previous paragraph and that result, and each is worth knowing
+because most were invisible rather than wrong-looking: a clock domain ceilinged at `Long.MAX`,
+which let a model satisfy "this key expired" by overflowing the JVM's own `clock + interval`
+instead of by any skew; refusal constants minted per refusal REASON, so three guards refused
+alike collapsed onto one variable and a path asserting two polarities of it was unsatisfiable
+for nothing the recording stated; a CLOCK mint publishing no placeholder read, so no read of a
+clock could bind; `Composer.unknown` reading a `let` body without its binder; `FREEZE` hashing
+the whole repository whenever the tree was clean; an arm's world keyed by every flip rather
+than the flips that reach it (774 obligations for 13 distinct questions); a lock-order
+deadlock between the two wire stores; no wall clock on a focused replay; waves confined to one
+host; a `(not )` emitted for a blank conjunct, which z3 rejects whole; and — the one that
+actually blocked the witness — a region rooted at a loop **inside** its port's frame, so the
+leaf converted before that loop carried no expression and two poisoned leaves dropped all six
+of a message's arms.
+
+The other four cases are prepared and not yet run. HDFS-17897 and HDFS-17899 declare the same
+block-key ports with the same `producerFrameMethod` as 11741, so the port-frame rooting rule
+re-roots their OUT regions too; they need their own campaigns before anyone relies on them.
 
 Known limits, stated plainly:
 
@@ -643,12 +670,15 @@ only over the declared `block-key-id` port.
 
 ### The to-do, in order
 
-1. **Steps 1–3 of the minimal delta above.** `docs/wip/FIX1` (`git apply
-   uncommitted.patch`) and its item 4, then the 17960 acceptance campaign live —
-   the one case known to pass, so the shortest path back to a green end-to-end
-   run. Then `docs/wip/R4` with the pre-window rule and a re-run of 11741 — **a
-   fresh recording is required**, not a re-composition of the old corpus. Then
-   the compose-only step, which the offline gate can judge on its own.
+1. ~~**Steps 1–3 of the minimal delta above.**~~ **Done, 2026-09-21.** 11741 now
+   passes on a fresh recording (§8). The R4 symptom this item was written for —
+   every valuation satisfiable including the recorded one, because a root's
+   symbol reached a path without its mint row — was not one defect but the tail
+   of several; the ones that mattered are listed in §8. The instruction that
+   held up exactly as written is **a fresh recording is required**: a runtime
+   fix cannot be judged by re-composing an old corpus, and three times today a
+   re-composition agreed with the old behaviour because the rows it read were
+   made before the change.
 2. **Apply `docs/wip/PC4`** and finish items 3 and 4, honouring the retention
    ruling: retention is a scope fact; keep all 15 activations of
    `REGION.16ba41cf` and all 63 of `REGION.1f6914ec`; accept a task-count drop

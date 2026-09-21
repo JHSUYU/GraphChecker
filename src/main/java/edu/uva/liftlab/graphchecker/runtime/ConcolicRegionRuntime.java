@@ -953,8 +953,26 @@ public final class ConcolicRegionRuntime {
         // addressed.  The frame above is still pushed, with no token, so the
         // root exit hook pairs with this entry exactly as it does for every
         // other unadmitted one.
+        // ...except at a LOOP_BODY_ROOT's body, which is not a region entry
+        // at all: the entry that addressed this occurrence ran at the
+        // enclosing method and opened the loop-root invocation this hook
+        // stands inside, and each body is one ITERATION of that occurrence.
+        // F1 asked here answers about whatever region stands innermost at
+        // the body, which need not be this one -- see
+        // LoopAccounting#bodiesAddressedHere for what it cost on hdfs-17960.
+        // A loop root whose OWN entry folded still addresses nothing, so
+        // those bodies stay refused by the same rule as before.
+        // The loop-root contexts are keyed by loopRootHookGroupKey, which is
+        // NOT the key #rootHookGroup resolves this same selector to, so the
+        // question is asked with the loop key for this selector.  For a hook
+        // that roots no loop task that resolves to UNPLANNED_LOOP_ROOT, which
+        // no context carries, and F1 decides as before.  Consulted only when
+        // the entry folded, so the ordinary path does not resolve it.
         ActiveRegion active = edu.uva.liftlab.graphchecker.runtime.Identity
                 .foldedEntry()
+                && !LoopAccounting.bodiesAddressedHere(
+                        config.loopRootHookGroup(instrumentationSelector,
+                                rootMethod).key)
                 ? null
                 : admitRegion(config, group.key, rootMethod, receiver,
                         rootArguments);
@@ -1712,8 +1730,29 @@ public final class ConcolicRegionRuntime {
                             .refusal(active.d3Address));
             return;
         }
-        // The obligation is answered at this terminal, by the one matcher.
+        // The obligation is answered at this terminal, by the one matcher --
+        // for an occurrence this terminal ENDS.  A LOOP_BODY_ROOT's bodies
+        // all publish at one occurrence address, so this asks the same
+        // occurrence's question once per body and every body that finishes
+        // BEFORE the flipped ordinal answers "not yet" and is abandoned for
+        // it.  The abandonment is not local either: it files a
+        // REPLAY_PREFIX_UNMATCHED gap, that sets #unmatchedPrefix, and
+        // FocusedReplay#unstated returns it ahead of everything, so the
+        // session reports NOT_ADMITTED even after a later body DOES take
+        // the flip.  On hdfs-17960 that is the whole witness: the focused
+        // replay of the ordered-deletion flip printed the real fault
+        // ("post-restart snapshotListing=1 numSnapshots=0"), its decision
+        // rows show deleteSnapshot#u7 taking the other arm at both
+        // ordinals, and the obligation still came back NOT_ADMITTED with an
+        // EMPTY refusal -- nothing had contradicted anything.
+        //
+        // A body that takes the WRONG arm is a different statement and is
+        // still refused, by #replayPrefixContradicted above.  Whether the
+        // flip happened at all is a question about the whole occurrence,
+        // and FocusedReplay#results answers it fail-closed at the end of
+        // the run: no FLIPPED entry is NOT_ADMITTED there.
         if (active.d3Address != null
+                && !active.activation.loopBodyRoot
                 && !edu.uva.liftlab.graphchecker.runtime.FocusedReplay
                         .complete(active.d3Address)) {
             abandonOccurrence(active, "REPLAY_PREFIX_UNMATCHED: the"

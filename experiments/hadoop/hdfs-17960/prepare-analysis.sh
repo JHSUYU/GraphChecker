@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo=/opt/hadoop-hdfs-17960-jdk8
+repo=/u/vnr3ne/hadoop-hdfs-17960
 analysis=/tmp/graphchecker-hdfs-17960-classes
 common=${repo}/hadoop-common-project/hadoop-common/target/classes
 hdfs=${repo}/hadoop-hdfs-project/hadoop-hdfs/target/classes

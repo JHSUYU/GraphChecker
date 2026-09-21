@@ -398,16 +398,45 @@ final class ConcolicTaskPlan {
         }
         ObservedAddresses observedAddresses = new ObservedAddresses();
         for (RuntimeTask task : tasks) {
+            // Not this hook's task at all: another region's enclosing root
+            // fired, and that is no statement about this address.  Stays
+            // silent, or every enclosing invocation in the run would file a
+            // refusal against every task in the plan.
             if (!task.loopBodyRoot
                     || !task.loopRootHookGroupKey().equals(
-                    safe(loopRootHookGroupKey))
-                    || !compatibleRoot(task.rootMethod, rootMethod,
+                    safe(loopRootHookGroupKey))) {
+                continue;
+            }
+            // Past here THIS task's own enclosing hook is what ran, so a
+            // refusal is a fact about this address and is stated.  Refused
+            // in silence, the end of the run reported ROOT_NEVER_EXECUTED --
+            // "no compatible activation was offered" -- about a loop that
+            // certainly ran: on hdfs-17960 that is REGION.939f61b2, the
+            // edit-log replay body carrying the snapshotDeletionOrdered
+            // source hook, whose whole occurrence then went missing from the
+            // corpus with nothing said about why.
+            if (!compatibleRoot(task.rootMethod, rootMethod,
                     task.rootContextSelector,
                     task.enclosingRootArgumentSelector,
-                    receiver, rootArguments)
-                    || !sourceMismatch(task,
-                    registeredReceiverSource,
-                    context).isEmpty()) {
+                    receiver, rootArguments)) {
+                task.noteUnaddressedCandidate(RefusedCandidate.stated(
+                        "an enclosing invocation of " + safe(rootMethod)
+                                + " ran, and this task's enclosing root"
+                                + " selector does not fit it: receiver "
+                                + describe(receiver) + ", "
+                                + (rootArguments == null ? 0
+                                : rootArguments.length) + " argument(s)",
+                        activationSource));
+                continue;
+            }
+            String enclosingSourceMismatch = sourceMismatch(task,
+                    registeredReceiverSource, context);
+            if (!enclosingSourceMismatch.isEmpty()) {
+                task.noteUnaddressedCandidate(RefusedCandidate.stated(
+                        "an enclosing invocation of " + safe(rootMethod)
+                                + " ran and this run attributed it"
+                                + " elsewhere: " + enclosingSourceMismatch,
+                        activationSource));
                 continue;
             }
             OccurrenceAddress observed = observedAddresses.of(task,
@@ -484,20 +513,47 @@ final class ConcolicTaskPlan {
                     safe(rootHookGroupKey))) continue;
             if (task.blocksAdmissionAfterCompletedGoal()) continue;
             if (task.loopBodyRoot) {
-                if (!enclosingLoopRootAdmits(task)
-                        || candidateLive[index]) {
+                if (!enclosingLoopRootAdmits(task)) {
+                    // A body of this loop ran, and no enclosing invocation
+                    // on this thread admitted this task for it.  Said out
+                    // loud for the same reason the address refusals are:
+                    // silence here is reported at the end of the run as the
+                    // root never executing.
+                    task.noteUnaddressedCandidate(RefusedCandidate.stated(
+                            "a body of this loop ran under no enclosing"
+                                    + " invocation admitted for it: the"
+                                    + " enclosing root hook "
+                                    + task.loopRootHookGroupKey()
+                                    + " either did not run on this thread or"
+                                    + " refused this task when it did",
+                            activationSource));
                     continue;
                 }
+                if (candidateLive[index]) continue;
                 candidateLive[index] = true;
                 return task;
             }
             if (!compatibleRoot(task.rootMethod, rootMethod,
                     task.rootContextSelector, task.rootArgumentSelector,
                     receiver, rootArguments)) {
+                task.noteUnaddressedCandidate(RefusedCandidate.stated(
+                        "an invocation of " + safe(rootMethod) + " ran, and"
+                                + " this task's root selector does not fit"
+                                + " it: receiver " + describe(receiver)
+                                + ", " + (rootArguments == null ? 0
+                                : rootArguments.length) + " argument(s)",
+                        activationSource));
                 continue;
             }
-            if (!sourceMismatch(task, registeredReceiverSource,
-                    context).isEmpty()) continue;
+            String rootSourceMismatch = sourceMismatch(task,
+                    registeredReceiverSource, context);
+            if (!rootSourceMismatch.isEmpty()) {
+                task.noteUnaddressedCandidate(RefusedCandidate.stated(
+                        "a matching root ran and this run attributed it"
+                                + " elsewhere: " + rootSourceMismatch,
+                        activationSource));
+                continue;
+            }
             OccurrenceAddress observed = observedAddresses.of(task,
                     activationSource);
             if (!task.acceptsRootInvocation(observed)) {
@@ -854,6 +910,20 @@ final class ConcolicTaskPlan {
                     + "no execution task is selected");
         }
         return ids;
+    }
+
+    /**
+     * What a refusal may say about a receiver: its runtime class and nothing
+     * else.
+     *
+     * <p>A refusal is rendered while the workload runs, so it never calls
+     * {@code toString} on a live application object -- that is the
+     * workload's code, it may be expensive, it may throw, and on a
+     * half-constructed receiver it may observe state the recording never
+     * did.  The class name is the only thing the selector compared anyway.</p>
+     */
+    static String describe(Object receiver) {
+        return receiver == null ? "null" : receiver.getClass().getName();
     }
 
     static boolean compatibleRoot(

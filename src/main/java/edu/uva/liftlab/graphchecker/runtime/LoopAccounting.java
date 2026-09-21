@@ -233,8 +233,17 @@ final class LoopAccounting {
         // one.
         Map<String, Integer> admittedTasks = config.addressLoopRootInvocation(
                 group.key, rootMethod, receiver, rootArguments, token);
+        // Whether the region entry at THIS same Java entry folded, asked
+        // here because here is the only place it is still the innermost
+        // marker: the region entry hook runs immediately before this one at
+        // the same entry.  A folded entry opened no occurrence, so it
+        // addresses no bodies, and #bodiesAddressedHere answers for the
+        // whole invocation rather than re-asking F1 deeper down where the
+        // innermost marker is some other region's fold.
         contexts.push(new LoopRootInvocationContext(token, group.key,
-                Math.max(0, group.hookCount - 1), admittedTasks));
+                Math.max(0, group.hookCount - 1), admittedTasks,
+                edu.uva.liftlab.graphchecker.runtime.Identity
+                        .foldedEntry()));
         return token;
     }
 
@@ -276,6 +285,38 @@ final class LoopAccounting {
         return null;
     }
 
+    /**
+     * Whether an enclosing invocation on this thread addresses the bodies of
+     * {@code groupKey} with an occurrence of its own.
+     *
+     * <p>What {@code ConcolicRegionRuntime#enterRegionFrame} asks instead of
+     * F1 at a loop body.  F1 gates region ENTRIES -- a declared region
+     * entered inside a running occurrence opens none of its own -- and a
+     * LOOP_BODY_ROOT's body is not an entry: the entry that addressed the
+     * occurrence already ran at the enclosing method, and each body is one
+     * ITERATION of it.  Asking F1 at the body asks about whatever region
+     * happens to stand innermost there, which on hdfs-17960 is
+     * {@code FSEditLogLoader.loadEditRecords} folding between the loop root
+     * in {@code FSNamesystem.loadFSImage} and the body hook inside it.  Every
+     * body was refused, so the edit-log replay occurrence -- the one whose
+     * {@code isSnapshotDeletionOrdered} hook mints the case's single root --
+     * never ran symbolically, no root was minted, and the run reported the
+     * root as never executing.</p>
+     *
+     * <p>It answers false for a loop root whose own entry folded, which is
+     * the case F1 is actually about: that invocation opened no occurrence,
+     * so its bodies would be a second activation of the occurrence it folded
+     * into.  Those stay refused exactly as before.</p>
+     */
+    static boolean bodiesAddressedHere(String groupKey) {
+        for (LoopRootInvocationContext context : LOOP_ROOT_INVOCATIONS.get()) {
+            if (context.groupKey.equals(safe(groupKey))) {
+                return !context.foldedEntry;
+            }
+        }
+        return false;
+    }
+
     /** One real enclosing method invocation for bounded body activations. */
     static final class LoopRootInvocationContext
             extends ConcolicRegionRuntime.SiblingHookGroupEntry {
@@ -283,14 +324,17 @@ final class LoopAccounting {
         final long token;
         /** Which k this entry was counted at, per task it was offered to. */
         private final Map<String, Integer> ordinalByTaskId;
+        /** Whether the region entry at this same Java entry folded. */
+        private final boolean foldedEntry;
 
         private LoopRootInvocationContext(
                 long token, String groupKey, int remainingSiblingHooks,
-                Map<String, Integer> ordinalByTaskId) {
+                Map<String, Integer> ordinalByTaskId, boolean foldedEntry) {
             super(groupKey, remainingSiblingHooks);
             this.token = token;
             this.ordinalByTaskId = Collections.unmodifiableMap(
                     new LinkedHashMap<>(ordinalByTaskId));
+            this.foldedEntry = foldedEntry;
         }
     }
 

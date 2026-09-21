@@ -20,7 +20,7 @@ flipped decision, which is what makes this case the worked example for the whole
 | Declaration | Where | What it says |
 | --- | --- | --- |
 | the failure | `@CausynthExceptionTarget` on the constructed exception in the Hadoop checkout; `target.yaml` | `exception_target_id: hdfs-17960-snapshot-count-mismatch` |
-| the occurrence | `declared_target_occurrence` in `workflow.properties` | `hdfs-17960/nn0#epoch1/region/REGION.f0132fca-8c1f-3f7c-93e7-dc41bfc20f40#1` |
+| the occurrence | `declared_target_occurrence` in `workflow.properties` | `hdfs-17960/nn0#epoch1/region/REGION.5cf88831-22cf-3d39-88b2-258261af8fc8#1` — the checkpoint RPC handler on the restarted NameNode. The target site sits in `serializeSnapshotSection`, whose own region (`REGION.f0132fca`) is entered synchronously from inside that handler and therefore opens no occurrence of its own: its sites are events of the enclosing one. The selector carries no `@api` part, so it is read as region plus node, and `#1` names the first of the two observed instances |
 | roots | none in `symbolic-inputs.jsonl` | the one root is `HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED`, minted by a `CausynthSymbolicSource.symbolize` hook in the checkout's own `SnapshotManager`, on the `dfs.namenode.snapshot.deletion.ordered` value the restarted NameNode caches. A hook site owns its field (`CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED`), so the field is not listed here |
 | region input | `symbolic-inputs.jsonl`, one row | at `FSImageFormatPBSnapshot$Saver.serializeSnapshotSection`, the cell `<SnapshotManager: int getNumSnapshots()>.return` — the read whose value the fatal predicate compares |
 | root domains | no `root-domains.jsonl` | a `MARKER` root is free over both of its values without a domain row; every other value stands at its recording |
@@ -29,8 +29,12 @@ flipped decision, which is what makes this case the worked example for the whole
 
 ## Build and run
 
-Hadoop checkout `/opt/hadoop-hdfs-17960-jdk8`, branch `gc/hdfs-17960-snapshot-replay-jdk8`,
-compiled with Java 8. From this directory:
+Hadoop checkout `/u/vnr3ne/hadoop-hdfs-17960`, a worktree of `~/hadoop` on branch
+`gc/hdfs-17960-current`, itself branched from `origin/gc/hdfs-17960-snapshot-replay-jdk8`,
+compiled with Java 8. (It was `/opt/hadoop-hdfs-17960-jdk8` on the host this case was first
+prepared on; that host is gone. `workflow.properties`, `build.sh`, `classpath.sh` and
+`prepare-analysis.sh` all name the checkout, and `artifacts/` still records the old path
+because those are a frozen run's own provenance and are not rewritten.) From this directory:
 
 ```bash
 ./run.sh build        # installs the current GraphChecker API, builds the tree,
@@ -57,11 +61,50 @@ non-empty `movedRoots`, and `findingKind` `MARKER_FLIPPED` moving
 
 ## Status
 
-Passes end to end under the current design. The committed artifacts of that run are under
-`artifacts/` beside this file: `result.json` states `MARKER_FLIPPED` at `valuationOrdinal` 1
-with `movedRoots {HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED: false}`, `polarityDecides true`,
-`finalStatus FINAL_READY` and `gapCount` 0 (247 diagnostic rows). `valuations` records
-ordinal 0 (`= true`, the run as it happened) `unsat` and ordinal 1 (`= false`) `sat`.
+Passes end to end. Campaign of 2026-09-21, four hosts, 190 s: `MARKER_FLIPPED` at
+`valuationOrdinal` 1 with `movedRoots {HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED: false}`,
+`polarityDecides true`, `finalStatus FINAL_READY`, no blocking gap, six solver runs.
+Valuation 0 (`= true`, the run as it happened) is `unsat` and valuation 1 (`= false`) is `sat`
+on the one admitted session, which observed the fatal arm. Exploration converged in two waves
+over seven obligations; the admitted one is the flip of `isSnapshotDeletionOrdered()` at the
+first duplicate deletion record, and its replay printed the corrupted state the workload
+predicts for ordered deletion off, `snapshotListing=1 numSnapshots=0`.
+
+The other three wave-0 obligations are refused correctly and are worth reading as a check on
+the exploration rather than as noise. Two ask for one deletion to see ordered mode while a
+later one does not, which no execution can do because both read the same configuration field
+once; the third is the fatal branch itself, unsatisfiable while no session in the corpus
+carries a different counter.
+
+Four engine defects stood between the anchor re-declaration and that result, all of them
+found here and all general rather than specific to this case:
+
+1. **A loop body was refused by the rule for region entries.** A declared region entered inside
+   a running occurrence opens none of its own, and that rule was being asked at a
+   `LOOP_BODY_ROOT`'s body. Here `FSEditLogLoader.loadEditRecords` folds between the loop root
+   in `FSNamesystem.loadFSImage` and the body hook inside it, so the innermost marker at the
+   body belonged to another region and every body was refused. The edit-log replay occurrence
+   never ran symbolically, the `isSnapshotDeletionOrdered` hook fired under no occurrence, no
+   root was minted, and the run reported the root as never executing.
+2. **Three filters dropped selection candidates in silence**, so a loop that certainly ran was
+   reported as never executing and the refusal named nothing. They state their reason now, and
+   that silence is what proved defect 1: with refusals speaking the run still reported zero
+   refused candidates, which meant selection was never asked at all.
+3. **Every loop body was asked whether the occurrence had taken the flip yet.** All bodies of a
+   loop-body root publish at one occurrence address, so bodies that finish before the flipped
+   ordinal answered "not yet" and were abandoned. That abandonment sets a sticky flag the
+   end-of-run verdict consults first, so the session reported `NOT_ADMITTED` with an empty
+   reason after a later body did take the flip.
+4. **A mint that planted a root stated what it had observed rather than what it ran at.** The
+   observation is the recording's own value, read before the wave's assignment is written, so
+   the corpus stated one replay's root twice and differently and the composition refused the
+   only witness this case has. A clock is untouched: it is asked as a skew on the run's own
+   instant, and its reading is what the flip query floors and ceilings the cell by.
+
+The committed artifacts under `artifacts/` beside this file are from an earlier run on an
+earlier design and are kept as that run's own provenance. They agree with the campaign above on
+everything the harness gates: `MARKER_FLIPPED`, ordinal 1, the same root moved to `false`,
+`polarityDecides true`.
 
 Running plain `z3 candidate.smt2` on the published file answers **unsat**, and that is not a
 verdict about the case: the composer pins its own recorded valuation into the file it

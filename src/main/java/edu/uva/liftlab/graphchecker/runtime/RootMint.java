@@ -526,9 +526,10 @@ final class RootMint {
                     field.get(owner));
             // The application's Map re-key reads the assigned value back
             // through this same path, so the wave's value is written first.
+            String planted = "";
             if (!reused) {
-                applyFocusedRootAssignment(active, safe(sourceId), owner,
-                        safe(fieldSignature), descriptor);
+                planted = applyFocusedRootAssignment(active, safe(sourceId),
+                        owner, safe(fieldSignature), descriptor);
             }
             // ONE SYMBOL PER DECLARED SOURCE.  The label is derived from
             // the declared site and from nothing this read is: the same leaf
@@ -551,9 +552,28 @@ final class RootMint {
             JsonElement expression = ConcolicRegionRuntime.engineExpression(api.fieldExpression(
                     owner, declaringClass, field.getName(), descriptor,
                     value));
+            // A MINT THAT PLANTED STATES WHAT IT RAN AT, not what it
+            // observed.  0dd03aec7 left this half owed -- "the mint that
+            // PLANTS a root should state what it ran it at ... until then
+            // the ask is the only statement of it" -- and until it was paid
+            // a successful plant published the RECORDING's value, so the
+            // corpus stated one replay's root twice and differently and
+            // Composer refused the path.  That is what hdfs-17960's only
+            // witness died of: the mint said "true", the obligation
+            // assigned "false", and the replay had printed the real fault.
+            //
+            // A CLOCK is left alone.  The wave states a clock as a SKEW on
+            // this run's own instant, and the mint's reading is the instant
+            // FlipQuery floors and ceilings the cell by; overwriting it
+            // with the skewed value would move the floor off the reading it
+            // is defined against.
+            String stated = !planted.isEmpty()
+                    && edu.uva.liftlab.graphchecker.runtime.FocusedReplay
+                            .clockSkew(safe(sourceId)) == null
+                    ? planted : observed;
             active.recordConfiguredSourceMint(entry, safe(sourceId),
                     safe(fieldSignature), symbol, expression, reused,
-                    observed);
+                    stated);
             return true;
         } catch (Throwable failure) {
             return false;
@@ -623,14 +643,18 @@ final class RootMint {
 
     /**
      * Writes that value into the declared field the mint stands on.
+     *
+     * @return the value it wrote, or {@code ""} when it wrote none.  The
+     *         mint states it, because a replay that PLANTED a root ran it at
+     *         the value the wave asked and not at the one it observed.
      */
-    private static boolean applyFocusedRootAssignment(
+    private static String applyFocusedRootAssignment(
             ActiveRegion active, String sourceId, Object owner,
             String fieldSignature, String descriptor) {
         String value = focusedRootValue(active, sourceId,
                 readExactField(owner, fieldSignature));
-        if (value.isEmpty()) return false;
-        if (!active.mintIsPlaceable(owner)) return false;
+        if (value.isEmpty()) return "";
+        if (!active.mintIsPlaceable(owner)) return "";
         if (writeModeledField(owner, fieldSignature, descriptor, value)) {
             // Filed where the value was WRITTEN: a mint that asked and could
             // not place the write kept the recording's value, and the
@@ -638,7 +662,7 @@ final class RootMint {
             // the composer be the first to notice.
             edu.uva.liftlab.graphchecker.runtime.FocusedReplay.planted(
                     sourceId);
-            return true;
+            return value;
         }
         RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
                         .UNPRODUCIBLE_ANSWER,
@@ -646,7 +670,7 @@ final class RootMint {
                         .BLOCKING, sourceId,
                 "the wave's assignment for this root could not be"
                         + " written into " + fieldSignature);
-        return false;
+        return "";
     }
 
     static void symbolizeReceiverFields(ActiveRegion active,
