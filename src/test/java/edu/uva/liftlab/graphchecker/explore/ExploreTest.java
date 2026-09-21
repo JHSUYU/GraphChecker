@@ -1321,6 +1321,95 @@ public class ExploreTest {
         assertTrue("and the one only the other node ran is -- naming the "
                 + "node whose activations were asked about", saidNotHere);
 
+        // E2: A DEMANDED EXPORT STATES THE SHARED STATE IT RESTS ON.  The
+        // producer's delivered value is projected out of its own key map,
+        // and the VM publishes THAT read only inside the expression -- a
+        // ReadFromExpression carrying the location and the event id -- so no
+        // ReadRow of the rotation names it and writers() is never asked.
+        // Without this edge the removal scan the export rests on is in no
+        // closure and the clock it read is declared nowhere: on hdfs-11741
+        // campaign #4 (2026-09-20) nn0's export region records 1324 instance
+        // reads and not one map read, so once the cross-node fan-out of N1
+        // was gone nn0's removeExpiredKeys#u15 sat in no flip set at all.
+        Path restsOnState = tree.newFolder("closure-stated-read").toPath();
+        LocationId nnKeys = LocationId.of(LocationKind.MAP, "77", "allKeys");
+        // The rotation's own earlier tick, which wrote the map it exports.
+        OccurrenceAddress scanning = occurrence("hdfs-case/nn0",
+                "REGION.expiry",
+                CausalContext.of(Role.of("KEY_MANAGER_TICK"), "", 2),
+                "o.a.h.h.s.b.BlockManager#run#19");
+        // The SAME region on a node of its own: another JVM's key map, so
+        // no occurrence of it could have written the version nn0 exported.
+        OccurrenceAddress farExpiry = occurrence("hdfs-case/dn0",
+                "REGION.expiry", CausalContext.of(Role.CLIENT, "", 5),
+                "o.a.h.h.s.d.BPServiceActor#offerService#77");
+        Endpoint scanned = at(scanning, Endpoint.stateSite(
+                "BlockTokenSecretManager", "removeExpiredKeys", 16, true),
+                "BlockTokenSecretManager#removeExpiredKeys#16");
+        Session rests = new Session(restsOnState, "s-seed");
+        rests.activation(target, false);
+        rests.activation(writer, false);
+        rests.activation(producer, false);
+        rests.activation(scanning, false);
+        rests.activation(farExpiry, false);
+        rests.symbolic("e.scan", "M_SCANNED", "L");
+        rests.symbolic("e.stored", "M_HOFF_KEY");
+        // What the rotation DELIVERED: a projection out of the map, over
+        // the version the scan left it at, as the VM publishes it.
+        rests.expression("e.exported", guardedRead(nnKeys, 25L, "L",
+                leaf("M_HOFF_KEY", "I"), 30L));
+        rests.write(scanned, nnKeys, 25L, "e.scan", "L");
+        rests.export(exported, "e.exported", 11L, "119992");
+        rests.attach(attached, "M_HOFF_KEY", "119992", exported);
+        rests.write(at(writer, Endpoint.stateSite("BlockTokenSecretManager",
+                        "addKeys", 12, true), "BlockTokenSecretManager"
+                        + "#addKeys#12"), allKeys, 5L, "e.stored");
+        rests.read(at(target, Endpoint.stateSite("BlockTokenSecretManager",
+                        "retrieveDataEncryptionKey", 8, false),
+                        "BlockTokenSecretManager"
+                                + "#retrieveDataEncryptionKey#8"), allKeys,
+                5L, "M_READ_KEY", "119992");
+        rests.target(target, "BlockTokenSecretManager"
+                + "#retrieveDataEncryptionKey#8", "(= M_READ_KEY 0)");
+        rests.flush();
+        StaticScopeMap restsMap = StaticScopeMap.read(scopeMap(restsOnState,
+                targetSite("REGION.target", "BlockTokenSecretManager#u120"),
+                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
+                        "BlockTokenSecretManager#u12",
+                        "BlockTokenSecretManager#addKeys",
+                        "<example.Keys: int value>",
+                        "<example.Manager: example.Keys allKeys>", ""),
+                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.expiry",
+                        "BlockTokenSecretManager#u16",
+                        "BlockTokenSecretManager#removeExpiredKeys",
+                        "<example.Manager: java.util.Map allKeys>",
+                        "<example.Manager: java.util.Map allKeys>", "",
+                        "BlockTokenSecretManager#u15"),
+                scopeSite(StaticScopeMap.EXPORT_SITE, "REGION.rotate",
+                        "PBHelper#convert#9", "PBHelper#convert", "", "",
+                        "XCH.resp.block-key-id")));
+        ClosurePlanner.Plan viaState = ClosurePlanner.plan(
+                Corpus.read(restsOnState, null), target, restsMap);
+        Map<String, Set<String>> statedFlips =
+                new LinkedHashMap<String, Set<String>>();
+        for (Task task : viaState.tasks) {
+            statedFlips.put(task.focused().render(),
+                    viaState.flipSites.get(task.taskId()));
+        }
+        assertTrue("the occurrence that wrote the version the export rests "
+                        + "on is in the closure, although no read row of "
+                        + "the exporter names that map: " + statedFlips,
+                statedFlips.containsKey(scanning.render()));
+        assertTrue("with the guard of its write as the branch a wave may "
+                        + "flip there -- the rotation flip 11741 needs: "
+                        + statedFlips,
+                statedFlips.get(scanning.render())
+                        .contains("BlockTokenSecretManager#u15"));
+        assertFalse("and the same write site on another node is still not a "
+                        + "task: a concrete map lives in one heap (N1): "
+                        + statedFlips,
+                statedFlips.containsKey(farExpiry.render()));
+
         // Where they disagree, the closure follows the ROW and the reader is
         // told: the writer below was started by some other delivery than the
         // one its attach row names.
@@ -2062,6 +2151,29 @@ public class ExploreTest {
     private static JsonObject guardedRead(LocationId location, long version,
                                           String javaType,
                                           JsonObject projection) {
+        return guardedRead(location, version, javaType, projection, -1L);
+    }
+
+    /**
+     * The same, stating the EVENT the read happened at.
+     *
+     * <p>Which is what makes the node a statement about shared state a
+     * closure can follow (E2): the location says WHICH cell and the event
+     * id says AS OF WHEN, so the version the producer had in hand is the
+     * latest write of that location at or before it.</p>
+     */
+    private static JsonObject guardedRead(LocationId location, long version,
+                                          String javaType,
+                                          JsonObject projection,
+                                          long readEventId) {
+        JsonObject read = readNode(location, version, javaType, projection);
+        if (readEventId >= 0) read.addProperty("readEventId", readEventId);
+        return read;
+    }
+
+    private static JsonObject readNode(LocationId location, long version,
+                                       String javaType,
+                                       JsonObject projection) {
         JsonObject where = new JsonObject();
         where.addProperty("locationKind", location.kind().name());
         where.addProperty("ownerSymRid", location.owner());
