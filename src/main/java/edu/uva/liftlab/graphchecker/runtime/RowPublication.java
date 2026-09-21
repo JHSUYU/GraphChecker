@@ -111,6 +111,25 @@ final class RowPublication {
      *
      * <p>The term is the satisfied predicate as published -- no second
      * negation anywhere -- and the outcome states which arm that was.</p>
+     *
+     * <p>I3 -- THE ROW IS ADDRESSED BY THE OCCURRENCE THAT PERFORMED THE
+     * BRANCH, and that is what {@code active.d3Address} is: the occurrence
+     * running on the thread when this activation was entered
+     * ({@code Identity#currentOccurrence}, read by {@code
+     * RowRuntime#beginActivation}), which under I1 is the occurrence every
+     * site executed synchronously below it belongs to.  It is the same
+     * answer {@link #writes} gets from the VM's own statement -- {@code
+     * LoggedEventSites#performer} resolves an event's {@code
+     * regionEnterEventId} through the very address filed for it at {@code
+     * RowRuntime#journalRegion} -- so a decision and a write of one
+     * execution point now name one occurrence.  A branch this activation
+     * could not perform is not in {@code branchMappings} at all: once an
+     * activation closes, {@code ConcolicRegionRuntime#activeRegion} answers
+     * nothing for the rest of its frame (I3, silence), so no later branch is
+     * handed to another activation's list.  The ordinal beside the site is
+     * counted on the same occurrence ({@code Identity#nextBranchOrdinal}),
+     * which is what makes (occurrence, site, ordinal) the address an
+     * obligation's flip is written at.</p>
      */
     private static void decisions(ActiveRegion active,
                                   OccurrenceAddress occurrence) {

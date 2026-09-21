@@ -135,6 +135,21 @@ public class ManualMintStatesItsValueTest {
         assertEquals("the plan's instant is stated by nothing here",
                 7L, clock.get("eventSeq").getAsLong());
 
+        // I4: the mint files its clock cell WHERE IT RUNS, so a decision of
+        // an activation nested inside this one -- published first, because
+        // activations publish innermost first -- can still resolve the
+        // symbol its term names to this root and this reading.  11741's
+        // removeExpiredKeys closes before the updateKeys rotation whose
+        // clock its decisions read.
+        assertEquals("a term over the minted symbol names this cell",
+                Collections.singletonMap("PORT.now",
+                        Long.valueOf(1789358344655L)),
+                RowRuntime.clockReadings(
+                        term(clock.get("rawSymbol").getAsString())));
+        assertEquals("and a term over anything else names none",
+                Collections.emptyMap(),
+                RowRuntime.clockReadings(term("M_I_serial")));
+
         // What the wave asks of a clock is a SKEW, and the mint applies it
         // to the instant THIS run read: a model is an instant of the
         // recording's window, and writing it absolutely would rewind the
@@ -532,6 +547,95 @@ public class ManualMintStatesItsValueTest {
                 Object.class);
         value.setAccessible(true);
         return (String) value.invoke(null, active, rootId, observed);
+    }
+
+    /**
+     * I2: a refusal abandons only its own occurrence.
+     *
+     * <p>A replay runs several obligations, and the one that is refused is
+     * the one whose focus row addresses the decision that went the other
+     * way.  {@code contradicted} asked {@link FocusedReplay#focused}
+     * instead, which is true of every member of the focused set -- each
+     * assigned root's MINT, every factor member, every occurrence an
+     * inherited flip named -- so ONE obligation's refusal abandoned the next
+     * focused activation at its first decision, and the Java call went on
+     * inside the still-live enclosing activation, which counted the
+     * remaining branches as its own.  10 of hdfs-11741's 40 nn0-focused
+     * sessions show that migration.</p>
+     */
+    @Test
+    public void aRefusalAbandonsOnlyItsOwnOccurrence() throws Exception {
+        focusRow(obligation("OBL.A", PLANNED_ADDRESS, "Arrival#u8", true)
+                + System.lineSeparator()
+                + obligation("OBL.B", ALONGSIDE_ADDRESS, "Departure#u3",
+                        true));
+
+        // Both activations run symbolic, as a focused replay runs every
+        // member of its focused set: the activation row asks this of each
+        // one when it opens (RowRuntime#beginActivation).
+        assertTrue(FocusedReplay.focused("TASK.OBL.A",
+                address(PLANNED_ADDRESS)));
+        assertTrue(FocusedReplay.focused("TASK.OBL.B",
+                address(ALONGSIDE_ADDRESS)));
+
+        // The occurrence OBL.A is addressed at takes the other arm.
+        FocusedReplay.observeDecision(address(PLANNED_ADDRESS),
+                "Arrival#u8", 1, false);
+        assertTrue("the obligation's own occurrence is contradicted",
+                FocusedReplay.contradicted(address(PLANNED_ADDRESS)));
+        assertTrue(FocusedReplay.refusal(address(PLANNED_ADDRESS))
+                .startsWith("wrong decision at Arrival#u8"));
+
+        assertFalse("another obligation's occurrence is not",
+                FocusedReplay.contradicted(address(ALONGSIDE_ADDRESS)));
+        assertEquals("and has no refusal of its own to state", "",
+                FocusedReplay.refusal(address(ALONGSIDE_ADDRESS)));
+        assertFalse("nor is the mint the wave plants at, which is in the "
+                        + "focused set and carries no obligation",
+                FocusedReplay.contradicted(address(MINT_ADDRESS)));
+        assertTrue("so its terminal abandons it for no flip either",
+                FocusedReplay.complete(address(MINT_ADDRESS)));
+
+        // OBL.B is still owed at its own occurrence, and is answered there.
+        assertFalse("the occurrence OBL.B is addressed at still owes it",
+                FocusedReplay.complete(address(ALONGSIDE_ADDRESS)));
+        FocusedReplay.observeDecision(address(ALONGSIDE_ADDRESS),
+                "Departure#u3", 1, true);
+        assertTrue("and having taken the flipped arm, owes nothing",
+                FocusedReplay.complete(address(ALONGSIDE_ADDRESS)));
+        assertFalse("A's refusal never reached it",
+                FocusedReplay.contradicted(address(ALONGSIDE_ADDRESS)));
+    }
+
+    /** One decision term that reads {@code symbol}, as the VM spells one. */
+    private static JsonObject term(String symbol) {
+        JsonObject read = new JsonObject();
+        read.addProperty("_type", "SymbolExpression");
+        read.addProperty("_java_type", "J");
+        read.addProperty("_exp", symbol);
+        JsonObject predicate = new JsonObject();
+        predicate.addProperty("_type", "BinaryExpression");
+        predicate.add("_left", read);
+        predicate.addProperty("_op", "<");
+        JsonObject literal = new JsonObject();
+        literal.addProperty("_type", "ConstExpr");
+        literal.addProperty("_java_type", "J");
+        literal.addProperty("_exp", "Y_J_0");
+        predicate.add("_right", literal);
+        return predicate;
+    }
+
+    /** One focus row: which occurrence flips which decision to which arm. */
+    private static String obligation(String obligationId, String at,
+                                     String siteId, boolean outcome) {
+        return ("{'taskId':'TASK." + obligationId + "','obligationId':'"
+                + obligationId + "','pathId':'PATH.1','seedSessionId':"
+                + "'s-seed','focused':'" + at + "','focusedOccurrenceId':'"
+                + address(at).id() + "','flip':{'siteId':'" + siteId
+                + "','ordinal':1,'outcome':" + outcome + "},"
+                + "'rootAssignments':{},'clockDeltas':{},'rootMints':{"
+                + "'CASE.SERIAL':'" + MINT_ADDRESS + "'},'answers':{},"
+                + "'unproducible':[]}").replace('\'', '"');
     }
 
     /**

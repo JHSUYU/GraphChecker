@@ -765,6 +765,16 @@ public final class ConcolicRegionRuntime {
      * same skeleton file the recording read: frames and the occurrence
      * address, and no row -- an activation row belongs to the planned
      * occurrences alone.</p>
+     *
+     * <p>Whether this entry OPENS an occurrence is {@code Identity#fold}'s to
+     * decide and not this hook's: a declared region entered synchronously
+     * inside another region's occurrence is folded into it, and only an entry
+     * on a thread running no occurrence opens one (paper SS3.1.2).  The one
+     * function decides it here and in the recording alike
+     * ({@code CausynthTraceRecorder#enterMethod}), so the occurrence the plan
+     * names is the occurrence this pass opens.  The push is unconditional
+     * either way -- a folded entry pushes the marker its own exit pops -- so
+     * the balance check below is over the same two stacks as before.</p>
      */
     public static long enterRegionEntry(String regionId, String rootMethod,
                                         Object receiver) {
@@ -1481,6 +1491,7 @@ public final class ConcolicRegionRuntime {
         RootInvocationFrame frame = frames.peek();
         if (frame == null) {
             ROOT_INVOCATION_FRAMES.remove();
+            SILENCED.remove();
             return null;
         }
         boolean matches = sameHookIdentity(frame.instrumentationSelector,
@@ -1492,9 +1503,19 @@ public final class ConcolicRegionRuntime {
             return null;
         }
         frames.pop();
+        // The frame is returning, so an activation silenced for it (I3, see
+        // #silenceStillRunningFrame) is over with it and the occurrence
+        // enclosing this call is the thread's active one again.
+        Deque<Long> silenced = SILENCED.get();
+        silenced.remove(Long.valueOf(frame.token));
         if (frames.isEmpty()) {
             ROOT_INVOCATION_FRAMES.remove();
+            // No root frame is open, so nothing can still be running inside
+            // one: a token left here by a hook that never reached its exit
+            // would silence this thread for the rest of the run.
+            silenced.clear();
         }
+        if (silenced.isEmpty()) SILENCED.remove();
         return frame;
     }
 
@@ -1697,6 +1718,7 @@ public final class ConcolicRegionRuntime {
      */
     private static boolean closeOccurrence(ActiveRegion active) {
         if (!active.beginClose()) return false;
+        silenceStillRunningFrame(active);
         boolean hasEnclosingRegion = hasEnclosingActiveRegion(active);
         ActiveRegion enclosingRegion = hasEnclosingRegion
                 ? enclosingActiveRegion(active) : null;
@@ -1801,9 +1823,60 @@ public final class ConcolicRegionRuntime {
 
 
     static ActiveRegion activeRegion() {
+        // I3: an activation that ENDED while its own Java frame is still
+        // executing leaves no occurrence running on this thread, so what the
+        // rest of that frame does belongs to nobody -- see
+        // #silenceStillRunningFrame.
+        if (!SILENCED.get().isEmpty()) return null;
         Deque<Long> tokens = CURRENT_TOKENS.get();
         Long token = tokens.peek();
         return token == null ? null : ownerRegion(token);
+    }
+
+    /**
+     * The activations that ended while their own Java frame kept running.
+     *
+     * <p>One entry per such frame, dropped when that frame's root exit hook
+     * pops it ({@link #popRootInvocationFrame}), so the occurrence enclosing
+     * it resumes being the thread's active one exactly when the abandoned
+     * call returns.</p>
+     */
+    private static final ThreadLocal<Deque<Long>> SILENCED =
+            new ThreadLocal<Deque<Long>>() {
+                @Override
+                protected Deque<Long> initialValue() {
+                    return new ArrayDeque<Long>();
+                }
+            };
+
+    /**
+     * States that no occurrence is running here, when an activation closes
+     * with its own Java frame still on the stack.
+     *
+     * <p>I3 -- AN ABANDONED OCCURRENCE HANDS ITS LATER BRANCHES TO NOBODY.
+     * A prefix contradiction or a spent budget ends an activation from
+     * INSIDE the region method ({@code BranchObservation#observe} ->
+     * {@code #finish}), and the workload's call goes on running: the
+     * activation is popped off the region stack, so every branch the rest of
+     * that call takes used to be recorded on the ENCLOSING activation, under
+     * its address, with ordinals restarting at 1 and
+     * {@code RowPublication#decisions} publishing them under its {@code
+     * d3Address}.  10 of hdfs-11741's 40 nn0-focused sessions show that
+     * migration.  The occurrence that performed those branches is over, and
+     * the enclosing one did not perform them: after this, the decisions of
+     * that frame are concrete and unrecorded, and so is everything else
+     * {@link #activeRegion} gates -- mints, exports, attaches.</p>
+     *
+     * <p>Only while the frame is still open: an activation ended by its own
+     * root exit hook ({@code #exitRegionFrame}) has already been popped
+     * there, and silencing it would outlive the call it belongs to.</p>
+     */
+    private static void silenceStillRunningFrame(ActiveRegion active) {
+        for (RootInvocationFrame open : ROOT_INVOCATION_FRAMES.get()) {
+            if (open.token != active.token) continue;
+            SILENCED.get().push(Long.valueOf(active.token));
+            return;
+        }
     }
 
     private static void pushActiveRegion(ActiveRegion active) {

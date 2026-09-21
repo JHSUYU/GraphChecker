@@ -286,7 +286,27 @@ final class ActiveRegion {
         return ordinal;
     }
 
+    /**
+     * The ordinal of the next decision this activation takes at one site.
+     *
+     * <p>I3 -- ROWS AND ORDINALS BELONG TO THE PERFORMER: the performer is
+     * the occurrence running on this thread, and the count is kept there
+     * ({@code Identity#nextBranchOrdinal}), beside the address the row
+     * carries.  Counted per ACTIVATION, two activations that fold into one
+     * occurrence (I1) each start at 1 and two of their rows collide at
+     * (occurrence, site, ordinal) -- which is the pair an obligation's flip
+     * is addressed by, and the pair {@code RowPublication#decisions} claims
+     * each decision event under.</p>
+     *
+     * <p>The activation-local count remains for an activation running
+     * outside every open region: a test that drives this class directly,
+     * and any entry whose occurrence this run could name no node for.  It is
+     * a count of this activation's own decisions, which is what it always
+     * was.</p>
+     */
     private int nextBranchOccurrence(String siteId) {
+        int onPerformer = RowRuntime.nextBranchOrdinal(siteId);
+        if (onPerformer > 0) return onPerformer;
         Integer previous = branchOccurrences.get(siteId);
         int occurrence = previous == null ? 1 : previous + 1;
         branchOccurrences.put(siteId, occurrence);
@@ -760,6 +780,25 @@ final class ActiveRegion {
         row.addProperty("mintOccurrence",
                 mintOccurrence(safe(action.symbol)));
         symbolizedRows.add(row);
+        // I4: a decision row carries the clock cells its own term names, and
+        // a term names one by the VM SYMBOL this mint installed -- so the
+        // cell is filed HERE, where the mint runs, rather than where the
+        // root row is published: activations publish innermost first, and a
+        // decision of an activation nested inside this one is published
+        // before this row exists (11741's removeExpiredKeys closes before
+        // the updateKeys rotation whose clock its decisions read).
+        //
+        // The three statements the root row will carry, off this same row:
+        // only a MINT (a reused symbol is another mint's root), only a
+        // declared CLOCK, and the port id -- which is the root id of a
+        // manual mint, because it states no sourceId of its own.
+        if (minted && action.declaresWallClockRead()) {
+            String installed = optionalString(row, "rawSymbol");
+            RowRuntime.clockCell(installed.isEmpty()
+                            ? safe(requestedSymbol) : installed,
+                    safe(action.symbol),
+                    RowPublication.literal(safe(recordedValue)));
+        }
     }
 
     /**

@@ -312,43 +312,65 @@ public final class FocusedReplay {
             new LinkedHashMap<String, String>();
 
     /**
-     * Whether this occurrence has already contradicted its obligation.
+     * Whether this occurrence has already contradicted ITS OWN obligation.
      *
      * <p>The one prefix matcher: a replay is admitted or refused by what
      * {@link #observeDecision} has seen, and nothing else keeps a second
      * account of the same decisions.  A replay that was handed no
      * obligation contradicts nothing -- the seed decides by running.</p>
+     *
+     * <p>I2 -- A REFUSAL ABANDONS ONLY ITS OWN OCCURRENCE, and the
+     * obligation's own occurrence is the one its focus row addresses
+     * ({@link #FOCUS}), which is the same join {@link #observe} takes when
+     * it FILES the refusal.  This asked {@link #focused} instead, which is
+     * true of every member of the focused set -- each assigned root's mint,
+     * every factor member, every occurrence an inherited flip named -- so
+     * one obligation's refusal abandoned the next focused activation at its
+     * first decision: {@code BranchObservation#observe} finishes it
+     * REPLAY_PREFIX_CONTRADICTED, {@code closeOccurrence} publishes none of
+     * its rows, and the Java call keeps running inside the still-live
+     * enclosing activation.  10 of hdfs-11741's 40 nn0-focused sessions show
+     * that migration, always on the node of {@code inheritedFlips[0]}, and
+     * it makes an inherited flip read as "never reached" by luck.</p>
      */
     public static boolean contradicted(OccurrenceAddress occurrence) {
         load();
-        if (task == null || !focused(occurrence)) return false;
+        if (task == null || occurrence == null) return false;
         synchronized (LOCK) {
-            for (Obligation obligation : OBLIGATIONS) {
-                if (REFUSALS.containsKey(Text.safe(
-                        obligation.obligationId()))) {
-                    return true;
-                }
-            }
-            return false;
+            return !refused(occurrence.id()).isEmpty();
         }
     }
 
     /** Why it was refused, for the row that says so. */
     public static String refusal(OccurrenceAddress occurrence) {
         load();
-        if (task == null) return "";
+        if (task == null || occurrence == null) return "";
         synchronized (LOCK) {
-            for (Obligation obligation : OBLIGATIONS) {
-                String detail = REFUSALS.get(Text.safe(
-                        obligation.obligationId()));
-                if (detail != null) return detail;
-            }
-            return "";
+            return refused(occurrence.id());
         }
     }
 
     /**
-     * Whether this occurrence has taken the decision its obligation flips.
+     * The refusal filed against an obligation addressed AT {@code at}.
+     *
+     * <p>Called under {@link #LOCK}.  {@code ""} is "no obligation of this
+     * occurrence is refused", which includes "this occurrence carries no
+     * obligation at all" -- another obligation's refusal is not this
+     * occurrence's to answer for.</p>
+     */
+    private static String refused(String at) {
+        for (Obligation obligation : OBLIGATIONS) {
+            String id = Text.safe(obligation.obligationId());
+            if (!Text.safe(FOCUS.get(id)).equals(Text.safe(at))) continue;
+            String detail = REFUSALS.get(id);
+            if (detail != null) return detail;
+        }
+        return "";
+    }
+
+    /**
+     * Whether this occurrence has taken the decision ITS OWN obligation
+     * flips.
      *
      * <p>True for a replay with no obligation: there is no prefix to
      * complete, and a seed activation is never abandoned for one.  True as
@@ -381,6 +403,10 @@ public final class FocusedReplay {
      * INHERITED are focused so that they plant and publish, and abandoning
      * one of them for a decision it was never asked to take would throw
      * away every row it published.</p>
+     *
+     * <p>The other half of I2, and the same join: an occurrence is
+     * abandoned for the flip IT was asked to take and for no other
+     * obligation's.</p>
      */
     public static boolean complete(OccurrenceAddress occurrence) {
         load();

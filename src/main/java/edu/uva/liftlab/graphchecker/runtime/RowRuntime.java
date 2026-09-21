@@ -49,9 +49,32 @@ public final class RowRuntime {
     public static final String SESSIONS_ENV = "CAUSYNTH_CONCOLIC_SESSIONS";
 
     private static final Object LOCK = new Object();
-    /** This replay's clock readings so far, by root id. */
-    private static final Map<String, Long> CLOCKS =
-            new ConcurrentHashMap<String, Long>();
+    /**
+     * The clock cells this session has minted, by the VM symbol that names
+     * one: its root id and what the mint read.
+     *
+     * <p>I4 -- A DECISION ROW CARRIES EXACTLY THE CLOCK CELLS ITS TERM
+     * NAMES, so this is a lookup from a symbol a term mentions to the cell
+     * it is, and never the set of readings a row states.  Keyed by the
+     * SYMBOL because that is what an expression tree spells; filed at the
+     * MINT, because an activation nested inside the one that minted the
+     * clock publishes its own decisions first -- 11741's {@code
+     * removeExpiredKeys} closes before the {@code updateKeys} rotation that
+     * minted the clock it read.</p>
+     */
+    private static final Map<String, ClockCell> CLOCK_CELLS =
+            new ConcurrentHashMap<String, ClockCell>();
+
+    /** One clock cell: the root a symbol is, and the instant it read. */
+    private static final class ClockCell {
+        private final String rootId;
+        private final long reading;
+
+        private ClockCell(String rootId, long reading) {
+            this.rootId = rootId;
+            this.reading = reading;
+        }
+    }
     private static volatile SessionPublisher publisher;
     private static volatile String sessionId = "";
 
@@ -232,7 +255,7 @@ public final class RowRuntime {
             // and the composer conjoins (outcome ? term : (not term)).
             session.decision(DecisionRow.of(sessionId(), sequence(seq),
                     occurrence, Text.safe(siteId), ordinal, outcome, ref,
-                    clockReadings()));
+                    clockReadings(condition)));
         }
         FocusedReplay.observeDecision(occurrence, siteId, ordinal, outcome);
     }
@@ -449,8 +472,11 @@ public final class RowRuntime {
                                 String recordedValue, String domainMin,
                                 String domainMax, boolean declared) {
         if (kind == RootKind.CLOCK) {
-            Long reading = longOrNull(recordedValue);
-            if (reading != null) CLOCKS.put(Text.safe(rootId), reading);
+            // The same cell the mint filed (ActiveRegion
+            // #recordManualSymbolization), stated again where the root row
+            // is: a session that published a CLOCK row nothing filed at the
+            // mint can still resolve the symbol its decisions name.
+            clockCell(symbol, rootId, recordedValue);
         }
         SessionPublisher session = publisher;
         if (session == null || occurrence == null) return;
@@ -581,6 +607,19 @@ public final class RowRuntime {
     }
 
     /**
+     * The ordinal of one decision at {@code siteId} in the occurrence that
+     * is performing it, or {@code 0} when this thread runs none.
+     *
+     * <p>I3: a decision row is addressed by the occurrence that performed
+     * the branch and its ordinal is counted on that occurrence, which is
+     * what an obligation's {@code (siteId, ordinal)} flip is addressed
+     * by.</p>
+     */
+    public static int nextBranchOrdinal(String siteId) {
+        return Identity.nextBranchOrdinal(siteId);
+    }
+
+    /**
      * Files the frame of one work start, for the work it started.
      *
      * <p>The starter's own frames are unchanged: a start is an event, not a
@@ -623,9 +662,86 @@ public final class RowRuntime {
         return ref;
     }
 
-    /** What every clock this replay minted read, for the decisions' rows. */
-    public static Map<String, Long> clockReadings() {
-        return new java.util.LinkedHashMap<String, Long>(CLOCKS);
+    /**
+     * The clock cells one decision's term NAMES, with what each one read.
+     *
+     * <p>I4, and the whole of it: the row states the cells the decision's
+     * own expression tree mentions, resolved to their root ids through this
+     * session's mints ({@link #clockCell}), each at the instant its mint
+     * recorded.  A decision that reads no clock states none, and a
+     * concrete decision -- no term at all -- states none either.</p>
+     *
+     * <p>It used to answer a JVM-WIDE map of every clock the process had
+     * ever minted, so a row listed cells its term never read and could miss
+     * the one it did: on the hdfs-11741 corpus 14 of 17 {@code
+     * removeExpiredKeys#u15} rows lack the cell their own term reads, and 15
+     * of 17 list other NODES' cells -- one MiniDFSCluster is one JVM.
+     * Downstream that membership IS the claim: {@code explore.Corpus#index}
+     * files a cell under every session whose decision "read" it, and {@code
+     * compose.ClaimPolicy#movedRoots}/{@code #clockNecessary} read it as
+     * "this session's decision read this cell".</p>
+     */
+    static Map<String, Long> clockReadings(JsonObject term) {
+        Map<String, Long> named = new java.util.LinkedHashMap<String, Long>();
+        if (term == null || CLOCK_CELLS.isEmpty()) return named;
+        java.util.Deque<JsonElement> pending =
+                new java.util.ArrayDeque<JsonElement>();
+        // Iteratively, over an explicit stack and a seen set: a container's
+        // expression nests one relation per recorded operation, and a walk
+        // that recursed would stack-overflow into the workload or be cut
+        // before the leaves -- and a cell dropped by a cut reads downstream
+        // exactly like a cell the term never named.
+        java.util.Map<JsonElement, Boolean> seen =
+                new java.util.IdentityHashMap<JsonElement, Boolean>();
+        pending.push(term);
+        while (!pending.isEmpty()) {
+            JsonElement node = pending.pop();
+            if (node == null || node.isJsonNull()
+                    || node.isJsonPrimitive()) {
+                continue;
+            }
+            if (seen.put(node, Boolean.TRUE) != null) continue;
+            if (node.isJsonArray()) {
+                for (JsonElement element : node.getAsJsonArray()) {
+                    pending.push(element);
+                }
+                continue;
+            }
+            JsonObject object = node.getAsJsonObject();
+            JsonElement spelling = object.get("_exp");
+            if (spelling != null && spelling.isJsonPrimitive()) {
+                // Only a symbol this session MINTED as a clock resolves, so
+                // matching on the VM's spelling wherever it stands cannot
+                // name a cell that is not one.
+                ClockCell cell = CLOCK_CELLS.get(spelling.getAsString());
+                if (cell != null) {
+                    named.put(cell.rootId, Long.valueOf(cell.reading));
+                }
+            }
+            for (Map.Entry<String, JsonElement> member : object.entrySet()) {
+                pending.push(member.getValue());
+            }
+        }
+        return named;
+    }
+
+    /**
+     * Files one clock cell this session minted: the symbol that names it,
+     * the root it is, and the instant the mint read.
+     *
+     * <p>Called at the MINT ({@code ActiveRegion#recordManualSymbolization})
+     * and again when the root row is published, which are the same fact
+     * stated twice; the mint is the one that has to be first, because an
+     * activation nested inside the minting one publishes its decisions
+     * before the mint's own row exists.</p>
+     */
+    static void clockCell(String symbol, String rootId,
+                          String recordedValue) {
+        String named = Text.safe(symbol);
+        String root = Text.safe(rootId);
+        Long reading = longOrNull(recordedValue);
+        if (named.isEmpty() || root.isEmpty() || reading == null) return;
+        CLOCK_CELLS.put(named, new ClockCell(root, reading.longValue()));
     }
 
     /**
@@ -971,7 +1087,7 @@ public final class RowRuntime {
             PLACEHOLDERS.clear();
             REFS.clear();
             Identity.resetForTests();
-            CLOCKS.clear();
+            CLOCK_CELLS.clear();
             publisher = null;
             sessionId = "";
             Interactions.resetForTests();
