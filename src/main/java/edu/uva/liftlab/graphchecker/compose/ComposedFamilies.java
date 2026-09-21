@@ -1,6 +1,5 @@
 package edu.uva.liftlab.graphchecker.compose;
 
-import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Term;
@@ -741,76 +740,26 @@ final class ComposedFamilies {
      * last of the previous tick, and without this edge the removal scan
      * that ran between the ticks is in no closure and the clock it read is
      * declared nowhere.</p>
+     *
+     * <p>The resolution itself is {@link Corpus#expressionStateReads}: ONE
+     * implementation, because exploration grows its closure by the same
+     * edge (E2) and two answers to "what state is this delivery made of"
+     * would be an arm closed over writers the wave never explored.</p>
      */
     private List<WriteRow> expressionWrites(String session, List<Out> outs) {
         List<WriteRow> writes = new ArrayList<WriteRow>();
         Set<String> seen = new LinkedHashSet<String>();
-        SessionReader reader = corpus.session(session);
-        if (reader == null) return writes;
         for (Out out : outs) {
-            JsonObject expression = reader.expressions()
-                    .expression(out.arm.expressionRef());
-            if (expression == null) continue;
-            Map<String, Long> read = new LinkedHashMap<String, Long>();
-            readNodes(expression, read, 0);
-            for (Map.Entry<String, Long> each : read.entrySet()) {
-                WriteRow latest = null;
-                for (WriteRow write : corpus.writesOf(session,
-                        each.getKey())) {
-                    if (write.version() > each.getValue().longValue()) {
-                        continue;
-                    }
-                    if (latest == null
-                            || latest.version() < write.version()) {
-                        latest = write;
-                    }
-                }
-                if (latest == null) continue;
-                if (!seen.add(each.getKey() + "#" + latest.version())) {
+            for (Corpus.StateRead read : corpus.expressionStateReads(
+                    session, out.arm.expressionRef())) {
+                if (!seen.add(read.locationKey() + "#"
+                        + read.write().version())) {
                     continue;
                 }
-                writes.add(latest);
+                writes.add(read.write());
             }
         }
         return writes;
-    }
-
-    /** How deep one expression is walked for the reads inside it. */
-    private static final int EXPRESSION_DEPTH = 64;
-
-    /**
-     * Location -> the latest event id this expression read it at.
-     *
-     * <p>Every node that carries both a {@code location} and a
-     * {@code readEventId} states a read of shared state, whatever else the
-     * node is -- which is what a {@code ReadFromExpression} and the
-     * {@code ConsumerBoundaryExpression} over one are.</p>
-     */
-    private static void readNodes(JsonElement expression,
-                                  Map<String, Long> into, int depth) {
-        if (expression == null || depth > EXPRESSION_DEPTH) return;
-        if (expression.isJsonArray()) {
-            for (JsonElement each : expression.getAsJsonArray()) {
-                readNodes(each, into, depth + 1);
-            }
-            return;
-        }
-        if (!expression.isJsonObject()) return;
-        JsonObject node = expression.getAsJsonObject();
-        JsonElement location = node.get("location");
-        JsonElement at = node.get("readEventId");
-        if (location != null && location.isJsonObject() && at != null
-                && at.isJsonPrimitive()) {
-            String key = SmtLowering.locationKey(location.getAsJsonObject());
-            long event = at.getAsLong();
-            Long held = into.get(key);
-            if (held == null || held.longValue() < event) {
-                into.put(key, Long.valueOf(event));
-            }
-        }
-        for (Map.Entry<String, JsonElement> member : node.entrySet()) {
-            readNodes(member.getValue(), into, depth + 1);
-        }
     }
 
     /**

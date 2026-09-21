@@ -18,6 +18,7 @@ import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.RootDomain;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.compose.JavaSmtSorts;
@@ -770,6 +771,122 @@ public final class Corpus implements Arms.Rows {
     public ExpressionTable expressions(String sessionId) {
         SessionReader session = sessionById.get(sessionId);
         return session == null ? null : session.expressions();
+    }
+
+    /** How deep one expression is walked for the state reads inside it. */
+    private static final int EXPRESSION_DEPTH = 64;
+
+    /**
+     * One shared-state read a published expression states, and the version
+     * of that location the producer had in hand when it read.
+     */
+    public static final class StateRead {
+        private final String locationKey;
+        private final long readEventId;
+        private final WriteRow write;
+
+        private StateRead(String locationKey, long readEventId,
+                          WriteRow write) {
+            this.locationKey = locationKey;
+            this.readEventId = readEventId;
+            this.write = write;
+        }
+
+        /** The location, spelled the way a row and a join both spell it. */
+        public String locationKey() {
+            return locationKey;
+        }
+
+        /** The event id the expression states the read happened at. */
+        public long readEventId() {
+            return readEventId;
+        }
+
+        /** The latest write of that location at or before the read. */
+        public WriteRow write() {
+            return write;
+        }
+    }
+
+    /**
+     * The shared state one published expression rests on.
+     *
+     * <p>An expression that projects a value out of shared state names the
+     * READ it made -- a {@code ReadFromExpression}, or the
+     * {@code ConsumerBoundaryExpression} over one, carrying a
+     * {@code location} and a {@code readEventId} -- and never the write
+     * that produced that state.  What a closure and a composed arm both
+     * need is the WRITE: the latest version of that location at or before
+     * the read is the state the producer had in hand, and its writer's
+     * prefix is a reason the delivered value is what it is.  On hdfs-11741
+     * the NameNode's export reads its key map at event 599; the write it
+     * rests on is version 589, the last of the previous tick.</p>
+     *
+     * <p>ONE implementation of that resolution, because two would be two
+     * answers to "what state is this delivery made of": the composer closes
+     * an arm with it ({@code ComposedFamilies.expressionWrites}) and the
+     * closure grows by it ({@code ClosurePlanner.successors}, E2).</p>
+     *
+     * <p>Only reads whose location this session actually wrote are
+     * returned: a location no write row of the session names has no version
+     * to have been read at, and guessing one would state a reason nothing
+     * recorded.</p>
+     */
+    public List<StateRead> expressionStateReads(String sessionId,
+                                                String expressionRef) {
+        List<StateRead> found = new ArrayList<StateRead>();
+        JsonObject expression = expression(sessionId, expressionRef);
+        if (expression == null) return found;
+        Map<String, Long> read = new LinkedHashMap<String, Long>();
+        readNodes(expression, read, 0);
+        for (Map.Entry<String, Long> each : read.entrySet()) {
+            WriteRow latest = null;
+            for (WriteRow write : writesOf(sessionId, each.getKey())) {
+                if (write.version() > each.getValue().longValue()) continue;
+                if (latest == null || latest.version() < write.version()) {
+                    latest = write;
+                }
+            }
+            if (latest == null) continue;
+            found.add(new StateRead(each.getKey(),
+                    each.getValue().longValue(), latest));
+        }
+        return found;
+    }
+
+    /**
+     * Location key -> the latest event id one expression read it at.
+     *
+     * <p>Every node that carries both a {@code location} and a
+     * {@code readEventId} states a read of shared state, whatever else the
+     * node is -- which is what a {@code ReadFromExpression} and the
+     * {@code ConsumerBoundaryExpression} over one are.</p>
+     */
+    private static void readNodes(JsonElement expression,
+                                  Map<String, Long> into, int depth) {
+        if (expression == null || depth > EXPRESSION_DEPTH) return;
+        if (expression.isJsonArray()) {
+            for (JsonElement each : expression.getAsJsonArray()) {
+                readNodes(each, into, depth + 1);
+            }
+            return;
+        }
+        if (!expression.isJsonObject()) return;
+        JsonObject node = expression.getAsJsonObject();
+        JsonElement location = node.get("location");
+        JsonElement at = node.get("readEventId");
+        if (location != null && location.isJsonObject() && at != null
+                && at.isJsonPrimitive()) {
+            String key = SmtLowering.locationKey(location.getAsJsonObject());
+            long event = at.getAsLong();
+            Long held = into.get(key);
+            if (held == null || held.longValue() < event) {
+                into.put(key, Long.valueOf(event));
+            }
+        }
+        for (Map.Entry<String, JsonElement> member : node.entrySet()) {
+            readNodes(member.getValue(), into, depth + 1);
+        }
     }
 
     /** Every interaction any session's own pairing states. */
