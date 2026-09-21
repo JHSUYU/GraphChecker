@@ -385,6 +385,70 @@ public class SymbolicRootPolicyTest {
                 CLOCK_CELL, DeclaredSymbolicInputs.returnCell(TIMER_NOW));
     }
 
+    /**
+     * F1: a declared method that opened no occurrence is planned at the
+     * occurrence that RAN it.
+     *
+     * <p>A declared method entered synchronously inside a running occurrence
+     * folds into it ({@code Identity#fold}), so it roots no planned region
+     * and anchors none -- and resolving it by those two tests alone refused
+     * a plan that had honoured the declaration exactly, which is what
+     * hdfs-11741's {@code removeExpiredKeys()} did to campaign #5.  The
+     * occurrence that ran it is where its sites were recorded and where its
+     * ports are minted, so that is the region the declaration means.</p>
+     */
+    @Test
+    public void aFoldedDeclaredMethodIsPlannedWhereItRan() throws Exception {
+        // No catalog row roots the declared method and no plan row anchors
+        // it: the fold published neither.
+        List<JsonObject> catalog = Collections.singletonList(
+                json("{\"regionId\":\"" + NN + "\"}"));
+        ConcolicScheduler.SymbolicInputSelection selection = selection(
+                catalog, Collections.singletonList(ranPlan(REMOVE_EXPIRED)));
+        assertTrue("the occurrence that ran the folded declared method "
+                        + "carries its declaration",
+                selection.declares(NN, CLOCK_CELL));
+
+        // And an occurrence that ran something else is still not its region:
+        // the test is the recording's statement of what this occurrence ran,
+        // never a static containment.
+        try {
+            selection(catalog, Collections.singletonList(
+                    ranPlan("<" + CLASS + ": void addKeys()>")));
+            fail("a declared method no occurrence ran was resolved");
+        } catch (IOException refused) {
+            assertTrue(refused.getMessage(), refused.getMessage()
+                    .contains("DECLARED_INPUT_NOT_PLANNED"));
+            assertTrue(refused.getMessage(), refused.getMessage()
+                    .contains(REMOVE_EXPIRED));
+        }
+    }
+
+    /** The declaration of {@link #REMOVE_EXPIRED}, read against one plan. */
+    private ConcolicScheduler.SymbolicInputSelection selection(
+            List<JsonObject> catalog, List<RegionInstancePlan> plans)
+            throws IOException {
+        Path path = folder.newFolder().toPath()
+                .resolve("symbolic-inputs.jsonl");
+        Files.write(path, ("{\"class\":\"" + CLASS + "\",\"method\":\"void "
+                + "removeExpiredKeys()\",\"cells\":[\"" + CLOCK_CELL
+                + "\"]}\n").getBytes(StandardCharsets.UTF_8));
+        return ConcolicScheduler.SymbolicInputSelection.read(path, catalog,
+                plans);
+    }
+
+    /** One planned occurrence of {@link #NN}, stating the methods it ran. */
+    private static RegionInstancePlan ranPlan(String ran) {
+        String id = "wl/nn0#epoch0/region/" + NN + "#1";
+        return RegionInstancePlan.decode(json("{\"regionId\":\"" + NN
+                + "\",\"targetMethod\":\"<" + CLASS + ": " + UPDATE_KEYS
+                + ">\",\"sourceKey\":\"wl/nn0#epoch0\",\"occurrenceId\":\""
+                + id + "\",\"relationKey\":\"wl/nn0#epoch0/relation/" + NN
+                + "\",\"closureGoals\":[{\"goalId\":\"GOAL." + id + "\","
+                + "\"kind\":\"REGION_PATH_CLOSURE\","
+                + "\"runtimeDefinitionMethods\":[\"" + ran + "\"]}]}"));
+    }
+
     /** The callee hdfs-11741 and hdfs-17897 declare a CLOCK. */
     private static final String TIMER_NOW =
             "<org.apache.hadoop.util.Timer: long now()>";

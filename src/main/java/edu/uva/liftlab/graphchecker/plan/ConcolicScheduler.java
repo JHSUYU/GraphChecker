@@ -1356,11 +1356,13 @@ public final class ConcolicScheduler {
          * declared method is a region root by declaration, so it names every
          * planned region it roots, and -- since a region opens on the anchor
          * the recording selected, which need not be the root -- every region
-         * it anchors as well.  A site that matches several regions declares
-         * the root in each of them: the same Java method planned on two
-         * nodes is two regions and the declaration means both, unless it
-         * scopes itself to a node or an epoch.  The region-id form is still
-         * read.</p>
+         * it anchors as well, and -- since an entry inside a running
+         * occurrence opens none of its own -- every region whose occurrence
+         * RAN it ({@link #ranTheDeclaredMethod}).  A site that matches
+         * several regions declares the root in each of them: the same Java
+         * method planned on two nodes is two regions and the declaration
+         * means both, unless it scopes itself to a node or an epoch.  The
+         * region-id form is still read.</p>
          *
          * <p>A site that matches nothing is a hard error naming the site.
          * Under the rule it can mean only one thing -- this plan was built
@@ -1417,7 +1419,8 @@ public final class ConcolicScheduler {
                     ? Collections.<RegionInstancePlan>emptyList()
                     : regionPlans) {
                 boolean names = method.equals(optionalString(plan.json(),
-                        "targetMethod")) || rooted.contains(plan.regionId());
+                        "targetMethod")) || rooted.contains(plan.regionId())
+                        || ranTheDeclaredMethod(plan, method);
                 if (!names
                         || !scopeAdmits(plan.sourceKey(), node, epoch)
                         || !catalogRegions.contains(plan.regionId())) {
@@ -1446,6 +1449,36 @@ public final class ConcolicScheduler {
                         + "be re-planned with it");
             }
             return resolved;
+        }
+
+        /**
+         * Whether this occurrence RAN the declared method.
+         *
+         * <p>The fold rule's half of the resolution (paper SS3.1.2, {@code
+         * Identity#fold}).  A declared method called synchronously inside a
+         * running occurrence opens NO occurrence of its own, so it roots no
+         * planned region and anchors none: on hdfs-11741 campaign #5 every
+         * entry of {@code removeExpiredKeys()} ran inside another
+         * occurrence, and the two tests above resolved it to nothing at all
+         * -- a plan that honoured the declaration exactly, refused as one
+         * that had never seen it.</p>
+         *
+         * <p>The occurrence that ran it is where its sites were recorded and
+         * where its ports are minted, so it is the region the declaration
+         * means.  Read off the goal's {@code runtimeDefinitionMethods},
+         * which is the recording's own statement of the methods this
+         * occurrence ran inside its region's text -- never a static
+         * containment test, because a region holding the method statically
+         * says nothing about which occurrence entered it.</p>
+         */
+        private static boolean ranTheDeclaredMethod(
+                RegionInstancePlan plan, String method) {
+            for (RegionInstancePlan.Goal goal : plan.goals()) {
+                if (goal.runtimeDefinitionMethods().contains(method)) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         /**
