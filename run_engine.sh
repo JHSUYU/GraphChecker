@@ -1952,23 +1952,42 @@ ${blocking} blocking"
 # ImportGateMain reads the session set of an ITERATION directory
 # ({@code <iteration>/sessions}) and invariant 10 needs that directory's
 # obligation workers, so the wave is given a directory of exactly that shape:
-# the EPOCH's whole session roster, and itself as the one wave of workers.
-# Nothing is copied and nothing under sessions/ is written.
+# the EPOCH's whole session roster, and EVERY wave of workers the epoch has,
+# each under its own name.  Nothing is copied and nothing under sessions/ is
+# written.
+#
+# Every wave, not just this one: a focus row is what says a FOCUSED session
+# ran in a world, and invariant 6 asks that of each session in the set.  The
+# gate used to link this wave alone, as obligations-0000, so the rows of every
+# EARLIER wave's focused session were not in the directory at all and each of
+# them read as "no focus row this epoch".  hdfs-11741 campaign #3 is where
+# that first fired: wave 1 was the first wave of any campaign to publish a
+# session, and the wave-1 gate then refused with 13 BLOCKING invariant-6 rows,
+# one per session WAVE 0 had focused.
 #
 # The whole roster, not the wave's own new sessions: invariant 1 is a
 # SET-level rule -- exactly one session of the set states role SEED -- and a
 # set built from the wave alone never holds the seed, so every wave of every
 # case refused "0 of N sessions state role SEED".  The wave's own sessions
 # decide only WHETHER this gate runs, not what it reads.
+#
+# The gate directory sits OUTSIDE the waves it links, at
+# ${iteration_dir}/import-gates/<wave>.  Built inside the wave it would hold
+# a link to its own ancestor, and a walker that recurses would loop; the
+# wave keeps its own summary (import_gate.json) and nothing else.
 campaign_import_wave_gate() {
   local iteration_dir=$1 iteration_id=$2 wave_dir=$3 sessions=$4
   local before="${wave_dir}/sessions-before.txt"
-  local gate="${wave_dir}/import-gate"
+  local gate="${iteration_dir}/import-gates/$(basename "${wave_dir}")"
   local name count=0
   require_file "wave session roster" "${before}"
   rm -rf -- "${gate}"
   mkdir -p "${gate}/sessions"
-  ln -s "${wave_dir}" "${gate}/obligations-0000"
+  local wave
+  for wave in "${iteration_dir}"/obligations-*; do
+    [[ -d "${wave}" ]] || continue
+    ln -s "${wave}" "${gate}/$(basename "${wave}")"
+  done
   while IFS= read -r name; do
     [[ -n "${name}" && -d "${sessions}/${name}" ]] || continue
     count=$((count + 1))

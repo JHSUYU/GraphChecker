@@ -297,6 +297,149 @@ public final class Corpus implements Arms.Rows {
     }
 
     /**
+     * Whether one session's WORLD changed anything this region received.
+     *
+     * <p>A world is asked about an arm only where it reached the region.
+     * The occurrence itself is not the whole region: a factor member is
+     * state-connected to it -- the writers and readers of one location on
+     * one node, the {@code Task.factor()} list the planner computes with
+     * {@code ClosurePlanner.stateConnected} -- and the two run as ONE
+     * symbolic unit, so what the member received is what the occurrence
+     * reads.  HDFS-11741 is the case: dn1's expiry scan runs over the
+     * DataNode's own old map BEFORE the put loop, so its own decisions are
+     * letter for letter the seed's whether or not nn0 skewed its clock;
+     * what nn0's flip changed is the {@code addKeys} occurrence beside it
+     * (four attaches instead of five), and addKeys writes the very map the
+     * scan reads.  Asked of the scan alone the session looks untouched, the
+     * arm keys world-less, and the session that flipped dn1 alone settles
+     * it for every world -- which is exactly why the witness's second flip
+     * was never proposed.</p>
+     *
+     * <p><b>CONTROL and STRUCTURE only, never VALUES.</b> Six differences,
+     * each measured against the SEED: the seed has no activation of the
+     * occurrence at all; the ordered decision sequence
+     * {@code siteId#ordinal=outcome} differs; the per-site COUNT of
+     * attaches differs; the set of paired producer OCCURRENCES of its
+     * attaches differs (a new or different producer is new topology); the
+     * per-site count of reads differs; the per-site count of writes
+     * differs.</p>
+     *
+     * <p>A delivered VALUE is deliberately not one of them.  Values are
+     * carried symbolically by the families -- that is what a handoff's arm
+     * is for -- and a clock-valued handoff is a different value in every
+     * run by nature, for reasons no flip caused.  Comparing them made
+     * hdfs-11741 campaign #3's wave 2 read 196 of 208 (task, session) pairs
+     * as affected, 91 of them on an attach arrival alone: at dn1's expiry
+     * scan the ONLY difference the four balancer-only replays had from the
+     * recording, anywhere in the group, was
+     * {@code XCH.....resp.block-key-expiry-date}, a wall clock that moves
+     * about 100 seconds between runs.  Every replay then counted as its own
+     * world and the wave asked 490 obligations where the corpus owes a
+     * handful.</p>
+     *
+     * <p>The seed's own sessionId is never affected -- its world is the
+     * empty one -- and a corpus that states no single recording answers
+     * "affected", which costs a re-proposal and never a lost arm.</p>
+     */
+    public boolean affected(String sessionId, OccurrenceAddress occurrence,
+                            List<OccurrenceAddress> factor) {
+        if (sessionId == null || sessionId.isEmpty()) return false;
+        String seed = seedSessionId();
+        if (seed.isEmpty()) return true;
+        if (seed.equals(sessionId)) return false;
+        if (occurrence != null && changed(sessionId, seed, occurrence)) {
+            return true;
+        }
+        if (factor == null) return false;
+        for (OccurrenceAddress member : factor) {
+            if (member == null || member.equals(occurrence)) continue;
+            if (changed(sessionId, seed, member)) return true;
+        }
+        return false;
+    }
+
+    /** Whether one session's rows at one occurrence differ from the seed's. */
+    private boolean changed(String sessionId, String seed,
+                            OccurrenceAddress occurrence) {
+        if (activation(seed, occurrence) == null) return true;
+        if (!shape(sessionId, occurrence).equals(shape(seed, occurrence))) {
+            return true;
+        }
+        if (!attachSites(sessionId, occurrence)
+                .equals(attachSites(seed, occurrence))) {
+            return true;
+        }
+        if (!producers(sessionId, occurrence)
+                .equals(producers(seed, occurrence))) {
+            return true;
+        }
+        if (!readSites(sessionId, occurrence)
+                .equals(readSites(seed, occurrence))) {
+            return true;
+        }
+        return !writeSites(sessionId, occurrence)
+                .equals(writeSites(seed, occurrence));
+    }
+
+    /** One session's local path at one occurrence, in recorded order. */
+    private List<String> shape(String sessionId,
+                               OccurrenceAddress occurrence) {
+        List<String> taken = new ArrayList<String>();
+        for (DecisionRow decision : decisionsOf(sessionId, occurrence)) {
+            taken.add(decision.siteId() + "#" + decision.ordinal() + "="
+                    + decision.outcome());
+        }
+        return taken;
+    }
+
+    /** HOW MANY handoffs arrived here, per site: the count, not the value. */
+    private List<String> attachSites(String sessionId,
+                                     OccurrenceAddress occurrence) {
+        List<String> sites = new ArrayList<String>();
+        for (AttachRow attach : attachesOn(sessionId, occurrence)) {
+            sites.add(attach.endpoint().site());
+        }
+        Collections.sort(sites);
+        return sites;
+    }
+
+    /** WHICH occurrences delivered them: a new producer is new topology. */
+    private Set<String> producers(String sessionId,
+                                  OccurrenceAddress occurrence) {
+        Set<String> from = new LinkedHashSet<String>();
+        for (AttachRow attach : attachesOn(sessionId, occurrence)) {
+            Endpoint producer = attach.producer();
+            if (producer == null) continue;
+            OccurrenceAddress at = producer.occurrence();
+            from.add(at == null ? producer.id() : at.id());
+        }
+        return from;
+    }
+
+    /** HOW MANY reads it made, per site: the count, not the value. */
+    private List<String> readSites(String sessionId,
+                                   OccurrenceAddress occurrence) {
+        List<String> sites = new ArrayList<String>();
+        for (ReadRow read : readsOn(sessionId, occurrence)) {
+            sites.add(read.endpoint().site());
+        }
+        Collections.sort(sites);
+        return sites;
+    }
+
+    /** HOW MANY writes it made, per site: the count, not the value. */
+    private List<String> writeSites(String sessionId,
+                                    OccurrenceAddress occurrence) {
+        List<String> sites = new ArrayList<String>();
+        for (WriteRow write : writesOn(occurrence)) {
+            if (!write.sessionId().equals(sessionId)) continue;
+            sites.add(write.endpoint().site());
+        }
+        Collections.sort(sites);
+        return sites;
+    }
+
+    /**
      * What the WAVE's own file says one obligation settled, or null.
      *
      * <p>Kept only to be checked against the SESSION's row, which is the

@@ -89,6 +89,25 @@ public class ExploreTest {
             "REGION.addkeys", CausalContext.of(exportedId(),
                     "DatanodeProtocol#registerDatanode"),
             "o.a.h.h.s.d.BPServiceActor#offerService#41");
+    /** A node of its own, whose flips reach neither of the two above. */
+    private static final OccurrenceAddress BALANCER =
+            occurrence("hdfs-case/balancer", "REGION.balance",
+                    CausalContext.of(Role.of("BALANCER"), "", 1),
+                    "o.a.h.h.b.Balancer#run#3");
+    /** The map addKeys writes and the target reads: one location, one node. */
+    private static final LocationId ALL_KEYS =
+            LocationId.of(LocationKind.MAP, "21", "allKeys");
+    private static final Endpoint ROTATED = at(PRODUCER,
+            "XCH.resp.block-key-id", "PBHelper#convert#9");
+    private static final Endpoint DELIVERED = at(WRITER,
+            "XCH.resp.block-key-id", "PBHelper#convert#9");
+    private static final Endpoint STORED = at(WRITER,
+            Endpoint.stateSite("BlockTokenSecretManager", "addKeys", 12, true),
+            "BlockTokenSecretManager#addKeys#12");
+    private static final Endpoint LOOKED_UP = at(TARGET,
+            Endpoint.stateSite("BlockTokenSecretManager",
+                    "retrieveDataEncryptionKey", 8, false),
+            "BlockTokenSecretManager#retrieveDataEncryptionKey#8");
 
     @Rule
     public TemporaryFolder tree = new TemporaryFolder();
@@ -136,6 +155,18 @@ public class ExploreTest {
         seed.activation(occurrence("hdfs-case/dn0", "REGION.spare",
                 CausalContext.of(Role.of("SPARE"), "", 1),
                 "o.a.h.Spare#run#2"), false);
+        // The state edge the last part of this case rests on: addKeys on the
+        // same node writes the map the target reads, so it is a
+        // STATE-CONNECTED member of the target's factor -- one symbolic unit,
+        // and what it received is what the target reads.
+        seed.activation(WRITER, false);
+        seed.activation(PRODUCER, false);
+        seed.constant("e.119992", "119992");
+        seed.symbolic("e.stored", "M_HOFF_KEY");
+        seed.export(ROTATED, "e.119992", 11L, "119992");
+        seed.attach(DELIVERED, "M_HOFF_KEY", "119992", ROTATED);
+        seed.write(STORED, ALL_KEYS, 5L, "e.stored");
+        seed.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
         seed.flush();
         // What the wave may flip in the anchor is the guard set of the
         // annotated target, and nothing else (CLOSURE-V2 SS1/SS3).
@@ -364,8 +395,8 @@ public class ExploreTest {
         assigned.put("CASE.SPARE", "9");
         Map<String, String> skew = new LinkedHashMap<String, String>();
         skew.put("CASE.NOW", "-4200");
-        worker(iteration, "ob-other", "OBL.other", "s-other-prefix",
-                PRODUCER, "Rotate#u5", assigned, skew);
+        worker(iteration, "obligations-0000", "ob-other", "OBL.other",
+                "s-other-prefix", PRODUCER, "Rotate#u5", assigned, skew);
 
         // And a session whose replay REFUSED its own obligation: its rows
         // still attest the arms it took, and no wave cuts a flip from its
@@ -438,6 +469,223 @@ public class ExploreTest {
         assertTrue("and the query ASSERTS the parent's flipped conjunct, so "
                         + "the model answers for the world this path is in: "
                         + query, query.contains("(> r_CASE_TICK 3)"));
+
+        // ---- the same LOCAL path, in a world that changed what the region
+        //      received ---------------------------------------------------
+        //
+        // An unexplored local path of a known region is still work, and so is
+        // a KNOWN local path in a world that changed what the region
+        // received -- never the same path in a world that changed nothing for
+        // it.  11741's missing obligation is the second of those.  dn1's
+        // expiry scan runs over the DataNode's own old map BEFORE the put
+        // loop, so its own decisions are letter for letter the seed's in
+        // every world; what nn0's second rotation changed is the addKeys
+        // occurrence beside it, which writes the very map the scan reads and
+        // is therefore a member of its factor.  Three admitted sessions, each
+        // with a world of its own, say the whole rule.
+        //
+        // Z: the target's OWN earlier flip, and otherwise the seed's rows.
+        Session zed = new Session(iteration, "s-world-z");
+        zed.activation(target, true);
+        zed.activation(WRITER, false);
+        zed.root(target, "CASE.MARKER", "M_MARKER", RootKind.MARKER, "true",
+                null, null, true);
+        zed.root(target, "CASE.COUNT", "M_COUNT", RootKind.INTEGRAL, "0",
+                "0", "10", true);
+        zed.symbolic("EXPR.0000000000000001", "M_MARKER", "Z");
+        zed.symbolic("e.stored", "M_HOFF_KEY");
+        zed.constant("e.119992", "119992");
+        zed.decision(target, "Guard#u8", 1, true, "EXPR.0000000000000001");
+        zed.decision(target, "Concrete#u3", 1, false, "");
+        zed.export(ROTATED, "e.119992", 11L, "119992");
+        zed.attach(DELIVERED, "M_HOFF_KEY", "119992", ROTATED);
+        zed.write(STORED, ALL_KEYS, 5L, "e.stored");
+        zed.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
+        zed.answered(ObligationResult.of("OBL.world-z", Verdict.ADMITTED,
+                "s-world-z", "the focused prefix reproduced"));
+        zed.flush();
+        worker(iteration, "obligations-0001", "ob-world-z", "OBL.world-z",
+                "s-world-z", target, "Guard#u8",
+                Collections.singletonMap("CASE.MARKER", "true"),
+                Collections.<String, String>emptyMap());
+
+        // Y: nn0's rotation flipped.  Its rows AT THE TARGET are the seed's,
+        // letter for letter; what its world changed is the STRUCTURE of what
+        // addKeys received -- one handoff fewer, because the rotation it was
+        // held to delivered one key less -- and addKeys writes what the
+        // target reads.  (11741: four attaches instead of five.)
+        Session wye = new Session(iteration, "s-world-y");
+        wye.activation(PRODUCER, true);
+        wye.activation(target, false);
+        wye.activation(WRITER, false);
+        wye.root(PRODUCER, "CASE.TICK", "M_TICK", RootKind.INTEGRAL, "7",
+                "0", "10", true);
+        wye.root(target, "CASE.MARKER", "M_MARKER", RootKind.MARKER, "false",
+                null, null, true);
+        wye.root(target, "CASE.COUNT", "M_COUNT", RootKind.INTEGRAL, "0",
+                "0", "10", true);
+        wye.symbolic("EXPR.0000000000000001", "M_MARKER", "Z");
+        wye.constant("e.kept", "119992");
+        wye.decision(PRODUCER, "Rotate#u5", 1, true, "(> M_TICK 3)");
+        wye.decision(target, "Guard#u8", 1, false, "EXPR.0000000000000001");
+        wye.decision(target, "Concrete#u3", 1, false, "");
+        // No attach here at all: the rotation it was held to delivered
+        // nothing, so addKeys stored what it already had.
+        wye.write(STORED, ALL_KEYS, 5L, "e.kept");
+        wye.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
+        wye.answered(ObligationResult.of("OBL.world-y", Verdict.ADMITTED,
+                "s-world-y", "the focused prefix reproduced"));
+        wye.flush();
+        worker(iteration, "obligations-0001", "ob-world-y", "OBL.world-y",
+                "s-world-y", PRODUCER, "Rotate#u5",
+                Collections.singletonMap("CASE.TICK", "7"),
+                Collections.<String, String>emptyMap());
+
+        // W: a world all the same -- a flip on a node of its own -- that
+        // changed nothing this region received.  Its rows at the target and
+        // at the target's factor have the seed's SHAPE: the same decisions,
+        // the same handoffs from the same producer, the same reads and
+        // writes.  The one thing that differs is a delivered VALUE, and a
+        // value is not a difference: the families carry values
+        // symbolically, and a clock-valued handoff is a different value in
+        // every run for reasons no flip caused.
+        Session unmoved = new Session(iteration, "s-world-w");
+        unmoved.activation(BALANCER, true);
+        unmoved.activation(target, false);
+        unmoved.activation(WRITER, false);
+        unmoved.root(BALANCER, "CASE.MOVE", "M_MOVE", RootKind.INTEGRAL, "2",
+                "0", "10", true);
+        unmoved.root(target, "CASE.MARKER", "M_MARKER", RootKind.MARKER,
+                "false", null, null, true);
+        unmoved.root(target, "CASE.COUNT", "M_COUNT", RootKind.INTEGRAL, "0",
+                "0", "10", true);
+        unmoved.symbolic("EXPR.0000000000000001", "M_MARKER", "Z");
+        unmoved.symbolic("e.stored", "M_HOFF_KEY");
+        unmoved.constant("e.887766", "887766");
+        unmoved.decision(BALANCER, "Balance#u2", 1, true, "(> M_MOVE 1)");
+        unmoved.decision(target, "Guard#u8", 1, false,
+                "EXPR.0000000000000001");
+        unmoved.decision(target, "Concrete#u3", 1, false, "");
+        unmoved.export(ROTATED, "e.887766", 11L, "887766");
+        unmoved.attach(DELIVERED, "M_HOFF_KEY", "887766", ROTATED);
+        unmoved.write(STORED, ALL_KEYS, 5L, "e.stored");
+        unmoved.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "887766");
+        unmoved.answered(ObligationResult.of("OBL.world-w", Verdict.ADMITTED,
+                "s-world-w", "the focused prefix reproduced"));
+        unmoved.flush();
+        worker(iteration, "obligations-0001", "ob-world-w", "OBL.world-w",
+                "s-world-w", BALANCER, "Balance#u2",
+                Collections.<String, String>emptyMap(),
+                Collections.<String, String>emptyMap());
+
+        Corpus worlds = Corpus.read(iteration, null);
+        Task anchored = ClosurePlanner.taskOf(worlds,
+                ClosurePlanner.taskId(target));
+        assertNotNull(anchored);
+        assertTrue("addKeys writes the map the target reads, so it is a "
+                        + "state-connected member of its factor: "
+                        + anchored.factor(),
+                anchored.factor().contains(WRITER));
+        assertEquals("and s-world-y's own rows at the target are the seed's",
+                worlds.decisionsOf("s-seed", target).size(),
+                worlds.decisionsOf("s-world-y", target).size());
+        assertEquals("what its world changed is the STRUCTURE of what the "
+                        + "factor member received: one handoff fewer",
+                worlds.attachesOn("s-seed", WRITER).size() - 1,
+                worlds.attachesOn("s-world-y", WRITER).size());
+        assertTrue("so it is affected, through that member",
+                worlds.affected("s-world-y", target, anchored.factor()));
+        assertFalse("while the balancer's world changed nothing this region "
+                        + "received", worlds.affected("s-world-w", target,
+                anchored.factor()));
+        assertEquals("though every value it delivered differs -- a VALUE is "
+                        + "not a difference, because the families carry "
+                        + "values symbolically and a clock-valued handoff "
+                        + "is a different value in every run",
+                worlds.attachesOn("s-seed", WRITER).size(),
+                worlds.attachesOn("s-world-w", WRITER).size());
+        assertFalse("the delivered values really do differ",
+                worlds.attachesOn("s-world-w", WRITER).get(0).arrival()
+                        .equals(worlds.attachesOn("s-seed", WRITER).get(0)
+                                .arrival()));
+        assertFalse("and the observed values too",
+                worlds.readsOn("s-world-w", target).get(0).concreteValue()
+                        .equals(worlds.readsOn("s-seed", target).get(0)
+                                .concreteValue()));
+        assertFalse("though that session really does have a world",
+                ObligationFactory.worldDigest(worlds.world("s-world-w"))
+                        .isEmpty());
+
+        Path wave4 = out.resolve("obligations-0004");
+        JsonObject fifth = plan(iteration, TARGET_SELECTOR, null, results,
+                wave4, 4);
+        assertEquals("OBLIGATIONS_PROPOSED", fifth.get("state").getAsString());
+        String emptyPrefix = ObligationFactory.prefixDigest(null, 0);
+        String wyeWorld = ObligationFactory.worldDigest(
+                worlds.world("s-world-y"));
+        assertFalse("a world is a key, not nothing", wyeWorld.isEmpty());
+        String worldless = ObligationFactory.obligationId(
+                ClosurePlanner.taskId(target), "Guard#u8", 1, true,
+                emptyPrefix, "");
+        assertFalse("a recording in an affected session settles ITS OWN "
+                        + "world's arm and not the world-less one",
+                worldless.equals(ObligationFactory.obligationId(
+                        ClosurePlanner.taskId(target), "Guard#u8", 1, true,
+                        emptyPrefix, ObligationFactory.worldDigest(
+                                worlds.world("s-world-z")))));
+        List<Obligation> reopened = new ArrayList<Obligation>();
+        for (Obligation obligation : obligations(wave4)) {
+            if ("Guard#u8".equals(obligation.siteId())
+                    && obligation.flippedOutcome()) {
+                reopened.add(obligation);
+            }
+            assertFalse("the same local path in a world that changed nothing "
+                            + "for this region is not work, so the world-less "
+                            + "arm every unaffected session offers stays "
+                            + "settled: " + obligation,
+                    worldless.equals(obligation.obligationId()));
+            assertFalse("and nothing is cut from that session's path: "
+                            + obligation, Corpus.pathId("s-world-w", target)
+                            .equals(obligation.pathId()));
+        }
+        assertEquals("the arm s-world-z already recorded is owed again -- "
+                        + "once -- in the world that changed what the region "
+                        + "received: " + obligations(wave4),
+                1, reopened.size());
+        assertEquals("cut from that world's own path",
+                Corpus.pathId("s-world-y", target), reopened.get(0).pathId());
+        assertEquals("and keyed by it", ObligationFactory.obligationId(
+                        ClosurePlanner.taskId(target), "Guard#u8", 1, true,
+                        emptyPrefix, wyeWorld),
+                reopened.get(0).obligationId());
+        Worker owed = solve(iteration, wave4, reopened.get(0), out, "w4");
+        assertEquals(Verdict.SAT_MODEL_READY, owed.verdict);
+        JsonObject inWorld = RowCodec.readJsonl(owed.directory.resolve(
+                ObligationDir.FOCUSED_TASK)).get(0);
+        assertEquals("and the replay is held to the world it is owed in", 1,
+                inWorld.getAsJsonArray("inheritedFlips").size());
+        JsonObject rotation = inWorld.getAsJsonArray("inheritedFlips").get(0)
+                .getAsJsonObject();
+        assertEquals(PRODUCER.id(),
+                rotation.get("focusedOccurrenceId").getAsString());
+        assertEquals("Rotate#u5", rotation.get("siteId").getAsString());
+        assertTrue(rotation.get("outcome").getAsBoolean());
+
+        // And the gate's own focus-row lookup is what it was: EVERY wave's
+        // workers, walked from the iteration directory the gate is handed,
+        // so a session an earlier wave focused still states its world.
+        Map<String, JsonObject> asked = new LinkedHashMap<String, JsonObject>();
+        for (ObligationDir found : ObligationDir.workersIn(iteration)) {
+            for (JsonObject row : RowCodec.readJsonl(found.focusedTask())) {
+                if (!asked.containsKey(found.sessionId())) {
+                    asked.put(found.sessionId(), row);
+                }
+            }
+        }
+        assertTrue("an EARLIER wave's focus row is found too: "
+                + asked.keySet(), asked.containsKey("s-other-prefix"));
+        assertTrue(asked.keySet().containsAll(Arrays.asList(
+                "s-world-z", "s-world-y", "s-world-w")));
     }
 
     /**
@@ -448,13 +696,13 @@ public class ExploreTest {
      * ({@link Corpus#world}), so a fixture that wants a session to have one
      * writes the row the campaign writes.</p>
      */
-    private static void worker(Path iteration, String dir,
+    private static void worker(Path iteration, String wave, String dir,
                                String obligationId, String sessionId,
                                OccurrenceAddress focused, String siteId,
                                Map<String, String> roots,
                                Map<String, String> clockDeltas)
             throws IOException {
-        Path at = iteration.resolve("obligations-0000").resolve(dir);
+        Path at = iteration.resolve(wave).resolve(dir);
         Files.createDirectories(at);
         JsonObject row = new JsonObject();
         row.addProperty("schemaVersion", 1);
