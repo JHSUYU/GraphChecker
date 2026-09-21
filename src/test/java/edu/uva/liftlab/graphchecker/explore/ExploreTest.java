@@ -2504,6 +2504,122 @@ public class ExploreTest {
                 skew + 1000L <= 100000L - ClockMargin.DEFAULT_MARGIN_MS);
     }
 
+    // ---- (7) a clock moves forward only ------------------------------
+
+    /**
+     * The floor of a flip query's clock is what that session READ.
+     *
+     * <p>Not 0: exploration asks for a run that lasted longer or a node
+     * whose clock is ahead, and a clock turned back to 1970 is no run --
+     * the replay is handed {@code model - reading} and adds it to the
+     * instant it reads for itself, so a model below the reading tells it to
+     * read an instant its own execution had already passed.  The reading is
+     * the one the session the path was CUT FROM states, which is the world
+     * that session ran in: its mint recorded what it used, plant and
+     * all.</p>
+     */
+    @Test
+    public void aFlipQueryFloorsEveryClockAtTheReadingItWasCutFrom()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Path iteration = tree.newFolder("clock-floor").toPath();
+        Session seed = new Session(iteration, "s-seed");
+        seed.activation(TARGET, false);
+        seed.root(TARGET, "CASE.NOW", "M_NOW", RootKind.CLOCK, "1000",
+                null, null, true);
+        seed.root(TARGET, "CASE.MARKER", "M_MARKER", RootKind.MARKER,
+                "false", null, null, true);
+        seed.root(TARGET, "CASE.OTHER", "M_OTHER", RootKind.MARKER,
+                "false", null, null, true);
+        seed.decision(TARGET, "Expiry#u15", 1, true,
+                notBefore("200000", "M_NOW"));
+        seed.decision(TARGET, "Guard#u8", 1, false, "M_MARKER");
+        seed.flush();
+        // The child ran in a world that had already moved this clock: its
+        // own mint states 5000, which is the seed's 1000 plus the 4000ms
+        // its obligation asked for, because a mint plants the skew and
+        // records what it then read.
+        Session child = new Session(iteration, "s-later");
+        child.activation(TARGET, true);
+        child.root(TARGET, "CASE.NOW", "M_NOW", RootKind.CLOCK, "5000",
+                null, null, true);
+        child.root(TARGET, "CASE.MARKER", "M_MARKER", RootKind.MARKER,
+                "false", null, null, true);
+        child.root(TARGET, "CASE.OTHER", "M_OTHER", RootKind.MARKER,
+                "false", null, null, true);
+        child.decision(TARGET, "Expiry#u15", 1, true,
+                notBefore("200000", "M_NOW"));
+        child.decision(TARGET, "Guard#u8", 1, false, "M_MARKER");
+        child.decision(TARGET, "Deeper#u9", 1, false, "M_OTHER");
+        child.answered(ObligationResult.of("OBL.later", Verdict.ADMITTED,
+                "s-later", "the focused prefix reproduced"));
+        child.flush();
+        worker(iteration, "obligations-0000", "ob-later", "OBL.later",
+                "s-later", TARGET, "Expiry#u15",
+                Collections.<String, String>emptyMap(),
+                Collections.singletonMap("CASE.NOW", "4000"));
+        scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
+                "Guard#u8", "Deeper#u9"));
+        Path out = tree.newFolder("clock-floor-out").toPath();
+        Path wave = out.resolve("obligations-0001");
+        plan(iteration, TARGET_SELECTOR, null,
+                out.resolve("results.jsonl"), wave, 1);
+        Obligation deeper = named(obligations(wave), "Deeper#u9");
+        assertNotNull("the arm only the child's path offers is proposed",
+                deeper);
+        Worker worker = solve(iteration, wave, deeper, out, "w1");
+        assertEquals(detail(worker), Verdict.SAT_MODEL_READY,
+                worker.verdict);
+        String query = query(worker);
+        assertTrue("the cell is floored at what THIS session read, not at "
+                        + "0: " + query,
+                query.contains("(and (>= clk_CASE_NOW_s_later 5000) (<= "
+                        + "clk_CASE_NOW_s_later 9223372036854775807))"));
+        assertFalse("and the seed's own earlier reading is not the floor",
+                query.contains("clk_CASE_NOW_s_later 1000)"));
+        // The scan's own compare holds it below 200000 and nothing else
+        // bounds it, so a floor of 0 would let the model answer 1970.
+        JsonObject focus = RowCodec.readJsonl(worker.directory.resolve(
+                ObligationDir.FOCUSED_TASK)).get(0);
+        long skew = Long.parseLong(focus.getAsJsonObject("clockDeltas")
+                .get("CASE.NOW").getAsString());
+        assertTrue("so no replay is owed a NEGATIVE skew: " + skew,
+                skew >= 0L);
+
+        // And a flip that needs the clock EARLIER than its session read it
+        // is refused -- with the margin off, so this is the floor talking
+        // and nothing else.
+        String held = System.getProperty(ClockMargin.MARGIN_PROPERTY);
+        System.setProperty(ClockMargin.MARGIN_PROPERTY, "0");
+        try {
+            Path back = tree.newFolder("clock-back").toPath();
+            Session only = new Session(back, "s-seed");
+            only.activation(TARGET, false);
+            only.root(TARGET, "CASE.NOW", "M_NOW", RootKind.CLOCK, "5000",
+                    null, null, true);
+            only.decision(TARGET, "Early#u7", 1, false,
+                    notBefore("4000", "M_NOW"));
+            only.flush();
+            scopeMap(back, targetSite("REGION.target", "Throw#u30",
+                    "Early#u7"));
+            Path backOut = tree.newFolder("clock-back-out").toPath();
+            Path backWave = backOut.resolve("obligations-0000");
+            plan(back, TARGET_SELECTOR, null,
+                    backOut.resolve("results.jsonl"), backWave, 0);
+            Worker refused = solve(back, backWave,
+                    obligations(backWave).get(0), backOut, "w0");
+            assertEquals("4000 >= now needs a clock this execution had "
+                            + "already passed", Verdict.UNSAT,
+                    refused.verdict);
+        } finally {
+            if (held == null) {
+                System.clearProperty(ClockMargin.MARGIN_PROPERTY);
+            } else {
+                System.setProperty(ClockMargin.MARGIN_PROPERTY, held);
+            }
+        }
+    }
+
     /**
      * {@code expiryDate >= now} as the JVM decides it: {@code lcmp} and a
      * branch on its result, which is the shape every one of hdfs-11741's

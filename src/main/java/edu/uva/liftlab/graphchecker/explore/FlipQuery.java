@@ -42,8 +42,10 @@ import java.util.Set;
  *       move could never become a finding;</li>
  *   <li>a CLOCK is per path and never an equality between paths -- every
  *       execution reads it fresh -- and its domain is the one a millisecond
- *       count in a Java {@code long} has: {@code >= 0} AND {@code <=
- *       Long.MAX_VALUE};</li>
+ *       count in a Java {@code long} has, floored at the instant the
+ *       execution it belongs to READ: {@code >= that reading} AND {@code <=
+ *       Long.MAX_VALUE}, because a run that lasted longer is a run and a
+ *       clock turned back is not;</li>
  *   <li>a HANDOFF {@code v_H(I)} is bound by its family: {@code OR_q (pi_q AND
  *       guard_q AND v_H = e_q)} over the producer paths whose export endpoint
  *       is I's producer.  The walk closes over the handoffs those arms name in
@@ -714,8 +716,11 @@ final class FlipQuery {
                 // A CLOCK CELL IS A MILLISECOND COUNT IN A JAVA long, so
                 // the floor is not the whole domain: see {@link
                 // JavaPrimitiveSmtSemantics#clockDomain}, which is the one
-                // place that rule is spelled.
-                rootFacts.add(JavaPrimitiveSmtSemantics.clockDomain(variable));
+                // place that rule is spelled.  And in a FLIP QUERY the
+                // floor is not 0 either: it is what this cell's own
+                // execution read ({@link #clockFloor}).
+                rootFacts.add(JavaPrimitiveSmtSemantics.clockDomain(variable,
+                        clockFloor(minted, row.rootId())));
                 return;
             }
             rootVariables.put(variable, row.rootId());
@@ -751,6 +756,43 @@ final class FlipQuery {
             }
             rootFacts.add("(and (>= " + variable + " " + min + ") (<= "
                     + variable + " " + max + "))");
+        }
+
+        /**
+         * CLOCKS MOVE FORWARD ONLY: where one cell's floor stands.
+         *
+         * <p>The instant the execution THIS cell belongs to read, which is
+         * what the obligation's skew is stated against: a clock is one
+         * variable per session ({@link #variable}) and {@link
+         * ObligationFactory#solve} publishes {@code model - rootValue(the
+         * session, the root)}, so a model below that reading is a NEGATIVE
+         * skew -- the replay would be told to read an instant its own
+         * execution had already passed.  Exploration emulates a run that
+         * lasted longer or a node whose clock is ahead; a clock turned back
+         * to 1970 is no run.</p>
+         *
+         * <p>{@link Corpus#rootValue} is the one answer to "what did this
+         * session run this root at", so the world the session ran in is
+         * already in it: a focused replay plants {@code reading + skew} at
+         * the mint and the mint row states the instant the region then read
+         * ({@code RootMint#focusedRootValue}).  A reading no row states, or
+         * one that is not an instant a Java {@code long} can hold, leaves
+         * the floor where it was.</p>
+         */
+        private String clockFloor(RootMintRow minted, String rootId) {
+            String reading = corpus.rootValue(minted.sessionId(), rootId);
+            if (reading == null || reading.trim().isEmpty()) return "0";
+            try {
+                java.math.BigInteger instant =
+                        new java.math.BigInteger(reading.trim());
+                if (instant.signum() < 0
+                        || !JavaPrimitiveSmtSemantics.fitsJavaLong(instant)) {
+                    return "0";
+                }
+                return instant.toString();
+            } catch (NumberFormatException notAnInstant) {
+                return "0";
+            }
         }
 
         private void handoff(AttachRow attach) {

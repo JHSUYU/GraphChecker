@@ -69,8 +69,32 @@ public final class JavaPrimitiveSmtSemantics {
      * composition's clock cells ({@code compose.Composer}).</p>
      */
     public static String clockDomain(String variable) {
-        return "(and (>= " + variable + " 0) (<= " + variable + " "
-                + JAVA_LONG_MAX + "))";
+        return clockDomain(variable, "0");
+    }
+
+    /**
+     * The same domain over a floor of its own: {@code [floor, Long.MAX]}.
+     *
+     * <p>A FLIP QUERY FLOORS A CLOCK AT WHAT ITS OWN EXECUTION READ.
+     * Exploration asks for a run that lasted longer, or for a node whose
+     * clock is ahead; a clock turned BACK is no run of anything, and the
+     * model that turns one back is not even a counterfactual the replay can
+     * apply -- it plants {@code reading + (model - reading)} at the mint,
+     * so a model below the reading is a negative skew on an instant the
+     * execution already passed.  hdfs-11741 campaign #4 has 36 such models:
+     * an expiry modelled over a second clock variable constrains only the
+     * DIFFERENCE of the two, so z3 parked both near 1970 (about
+     * {@code -1.79e12}) and {@code FocusedReplay} refused the replay for an
+     * assignment nothing planted.</p>
+     *
+     * <p>The composition keeps the floor of 0: it states what a clock CAN
+     * hold, over a recording it does not re-run.</p>
+     */
+    public static String clockDomain(String variable, String floor) {
+        String lower = floor == null || floor.trim().isEmpty() ? "0"
+                : floor.trim();
+        return "(and (>= " + variable + " " + lower + ") (<= " + variable
+                + " " + JAVA_LONG_MAX + "))";
     }
 
     /** Whether this decimal is a value a Java {@code long} can hold. */
