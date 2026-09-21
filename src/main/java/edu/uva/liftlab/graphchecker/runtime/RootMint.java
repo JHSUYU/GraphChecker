@@ -392,9 +392,18 @@ final class RootMint {
     static boolean configuredSource(
             String sourceId, Object owner, String fieldSignature) {
         ActiveRegion active = ConcolicRegionRuntime.activeRegion();
-        // Nothing to mint on is not a gap: the site simply was not carrying a
+        // Nothing to mint ON is not a gap: the site simply was not carrying a
         // declared owner on this entry.
-        if (active == null || owner == null) return false;
+        if (owner == null) return false;
+        // WHERE the hook fired decides whether it may mint at all: a region
+        // running concretely contributes the literals it read, never a free
+        // root (README SS9 rule 1).  Asked first, because a catalog refusal
+        // is a statement about the occurrence that OWNS the site, and an
+        // occurrence running concretely owns no mint to refuse.
+        if (!ActiveRegion.mintsUnderSymbolicOccurrence(active, safe(sourceId),
+                safe(fieldSignature))) {
+            return false;
+        }
         SourceSiteEntry entry = active.observeConfiguredSourceEntry(
                 safe(sourceId), safe(fieldSignature));
         if (entry == null) return false;
