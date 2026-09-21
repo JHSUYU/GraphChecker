@@ -11,6 +11,7 @@ import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
+import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
@@ -54,6 +55,17 @@ import java.util.Set;
  *       deletion region in the anchor's closure, and a closure that waits
  *       for one waits for the replay it is supposed to ask for.</li>
  * </ul>
+ *
+ * <p>A static candidate is ON ONE NODE, because a CONCRETE location lives in
+ * one process and a message was sent by one process: a write site's
+ * candidates are the occurrences on the READER's node (N1, {@link #writers}),
+ * an export site's are those on the PAIRED PRODUCER's node (N2,
+ * {@link #producers}).  The class field a carrier names exists in every JVM
+ * that loaded it, and none of the others hold the heap this read observed --
+ * on the hdfs-11741 campaign #4 corpus (2026-09-20) admitting them gave wave
+ * 1 246 obligations, 124 of them the Balancer's own
+ * {@code removeExpiredKeys#u15} flips in worlds where nothing on the
+ * Balancer's path to the target changed.</p>
  *
  * <p>A static candidate is a member like any other -- it opens slots and
  * joins families -- and what it is demanded FOR is its own write or export:
@@ -437,6 +449,22 @@ public final class ClosurePlanner {
      * to a data node -- needs no walk of its own: the producer is demanded
      * FOR its export, so the leaves of that export are its demand and its
      * own attaches are found when it is processed.</p>
+     *
+     * <p><b>N2 -- a message was sent by ONE process.</b>  The static export
+     * sites of a port are candidates only on the node of the attach's PAIRED
+     * producer ({@code attach.producer().occurrence().node()}): the arrival
+     * this attach records carries the bytes some one JVM put on the wire, and
+     * an occurrence on another node did not put them there.  Unfiltered, the
+     * export sites of {@code block-key-id} made every {@code PBHelper.convert}
+     * occurrence on dn0, dn1 AND the balancer a candidate producer of a
+     * message nn0 sent -- which is how, on the hdfs-11741 campaign #4 corpus
+     * (2026-09-20), wave 1 proposed 246 obligations, 124 of them the
+     * Balancer's own {@code removeExpiredKeys#u15} flips in worlds where
+     * nothing on the Balancer's path to the target changed.</p>
+     *
+     * <p>An UNPAIRED attach states no sender, so nothing is restricted there
+     * and every node's export sites stay candidates, beside the
+     * {@code LINEAGE_LOST} row that says why.</p>
      */
     private static void producers(Corpus corpus, StaticScopeMap map,
                                   AttachRow attach, List<Demand> into,
@@ -462,9 +490,13 @@ public final class ClosurePlanner {
             }
             into.add(paired);
         }
+        // N2: the sender, or null when the attach names none -- and null is
+        // "every node", which is what an unpaired attach leaves open.
+        NodeId sender = attach.producer() == null ? null
+                : attach.producer().occurrence().node();
         for (StaticScopeMap.Site site : exports) {
             candidates(corpus, site, STATIC_CANDIDATE_PRODUCER, guards, into,
-                    gaps, attach.sessionId(), "port " + portId);
+                    gaps, attach.sessionId(), "port " + portId, sender);
         }
     }
 
@@ -478,6 +510,26 @@ public final class ClosurePlanner {
      * location's carrier, and the carrier's other write sites are the
      * candidates.  A demanded location no session ever wrote has no carrier
      * to look up, and that is said rather than guessed.</p>
+     *
+     * <p><b>N1 -- a concrete location lives in ONE process.</b>  A shared
+     * state edge is an incoming edge from Writers_W(l) where {@code l} is the
+     * CONCRETE location -- the VM's own object identity (SS4), which
+     * distinguishes the instances of one class field -- so the static
+     * candidates are restricted to occurrences on the node of the READING
+     * occurrence ({@code row.endpoint().occurrence().node()}).  The carrier is
+     * the class field the map names -- {@code BlockTokenSecretManager.allKeys}
+     * -- and its write sites exist in every JVM that loads the class, but only
+     * the reader's JVM holds the heap this read observed: no occurrence
+     * elsewhere can have written it.  Unfiltered, dn1's {@code allKeys} read
+     * admitted the Balancer's three KeyManager refreshes and dn0's refresh as
+     * candidate writers, and on the hdfs-11741 campaign #4 corpus
+     * (2026-09-20) wave 1 proposed 246 obligations, 124 of them the Balancer's
+     * own {@code removeExpiredKeys#u15} flips in worlds where nothing on the
+     * Balancer's path to the target changed.</p>
+     *
+     * <p>The ROW half is untouched: {@link #eligibleWrites} is already per
+     * session and per location KEY, and a location key names one object of one
+     * run.</p>
      */
     private static void writers(Corpus corpus, StaticScopeMap map,
                                 ReadRow row, List<Demand> into,
@@ -507,11 +559,13 @@ public final class ClosurePlanner {
                             + "candidate writer of it can be"));
             return;
         }
+        // N1: the heap this read observed is the reading JVM's own.
+        NodeId reader = row.endpoint().occurrence().node();
         for (String carrier : carriers) {
             for (StaticScopeMap.Site site : map.writersOf(carrier)) {
                 candidates(corpus, site, STATIC_CANDIDATE_WRITER,
                         new LinkedHashSet<String>(site.guards), into, gaps,
-                        row.sessionId(), "carrier " + carrier);
+                        row.sessionId(), "carrier " + carrier, reader);
             }
         }
     }
@@ -535,20 +589,38 @@ public final class ClosurePlanner {
     }
 
     /**
-     * Every occurrence of the region one static site belongs to.
+     * Every occurrence of the region one static site belongs to, ON ONE NODE.
      *
      * <p>A region the corpus holds no activation of is INTERACTION-ID SS8
      * case 2: the candidate exists in the program and not in any recording,
      * so it is named and no task is opened -- a replay cannot be focused on
      * an occurrence nothing ran.</p>
+     *
+     * <p>{@code node} is the process the candidate must have run in: the
+     * READER's node for a static write site (N1 -- a concrete location lives
+     * in one JVM's heap) and the PAIRED PRODUCER's node for a static export
+     * site (N2 -- a message was sent by one process).  A site's region runs on
+     * every node that loaded the class, and a candidate elsewhere could not
+     * have written this location or sent this message; admitting it cost the
+     * hdfs-11741 campaign #4 corpus (2026-09-20) 124 of wave 1's 246
+     * obligations, all of them Balancer flips reachable from neither.
+     * {@code null} means "no node was stated" -- an unpaired attach -- and
+     * every node's occurrences stay candidates.</p>
+     *
+     * <p>The "never activated" diagnostic follows the same restriction: it is
+     * asked of THIS node's activations, and its detail names the node, so a
+     * region another node ran and this one did not is reported as the growth
+     * it would actually need.</p>
      */
     private static void candidates(Corpus corpus, StaticScopeMap.Site site,
                                    String why, Set<String> guards,
                                    List<Demand> into, List<GapRow> gaps,
-                                   String sessionId, String what) {
+                                   String sessionId, String what,
+                                   NodeId node) {
         boolean ran = false;
         for (OccurrenceAddress occurrence : corpus.occurrences()) {
             if (!site.regionId.equals(occurrence.regionId())
+                    || (node != null && !node.equals(occurrence.node()))
                     || !activated(corpus, occurrence)) {
                 continue;
             }
@@ -563,7 +635,9 @@ public final class ClosurePlanner {
                 "a static " + (STATIC_CANDIDATE_WRITER.equals(why)
                         ? "write" : "export") + " site of " + what + " is in "
                         + site.siteId + ", and no session of this corpus "
-                        + "activated that region: the retained set would have "
+                        + "activated that region"
+                        + (node == null ? "" : " on " + node.render())
+                        + ": the retained set would have "
                         + "to grow before it can be a task (INTERACTION-ID "
                         + "SS8 case 2)"));
     }
