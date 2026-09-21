@@ -13,6 +13,9 @@ usage() {
 Usage:
   ./run_engine.sh --config FILE campaign
   ./run_engine.sh --config FILE config|validate
+  ./run_engine.sh --config FILE --run-obligation \
+      --graphchecker-jar JAR --graphchecker-jar-sha256 SHA -- \
+      ID OBLIGATIONS CLASSES WORKER SESSIONS SEED_PLAN
   ./run_engine.sh help
 
 Commands:
@@ -22,6 +25,14 @@ Commands:
   config      Print the normalized workflow configuration
   validate    Validate required workflow configuration fields
   help        Print this help message
+
+  --run-obligation
+              Execute ONE obligation of a wave that some campaign planned,
+              and nothing else.  This is what `campaign_worker_hosts` runs
+              over ssh on a peer; the campaign generates the invocation into
+              the obligation's own worker directory, so it is not a command
+              to be typed.  The six positional arguments are exactly what
+              campaign_obligation_worker takes.
 
 Environment variables matching normalized workflow keys may override values
 loaded from FILE.
@@ -50,6 +61,19 @@ workflow_config_keys=(
   "campaign_setup_command CAUSYNTH_CAMPAIGN_SETUP_COMMAND krp -"
   "concolic_replay_command CAUSYNTH_CONCOLIC_REPLAY_COMMAND krp -"
   "concolic_worker_count CAUSYNTH_CONCOLIC_JOBS krp -"
+  # The machines a wave's obligations may run on: a space-separated host
+  # list.  Within a wave the obligations are independent -- each runs its own
+  # solver and its own replay JVM, writes into its own worker directory and
+  # publishes a session under an id it mints itself -- so the only thing a
+  # second machine needs is the shared home every path in this configuration
+  # already names.  Each host gets ${concolic_worker_count} slots, so the
+  # pool is hosts x workers wide; the wave barrier (collect, gate, plan the
+  # next wave) stays on the head.
+  #
+  # EMPTY -- the default -- is exactly what this shell did before the key
+  # existed: every worker local, no ssh anywhere.  A host spelled `localhost`
+  # or spelled as this machine's own hostname runs locally too.
+  "campaign_worker_hosts CAUSYNTH_CAMPAIGN_WORKER_HOSTS krp -"
   "campaign_max_iterations CAUSYNTH_CAMPAIGN_MAX_ITERATIONS krp -"
   # The stage a measurement run stops after, once its measurement is
   # complete.  `IMPORT` returns successfully right after the IMPORT stage of
@@ -493,6 +517,20 @@ validate_config() {
     *) die "campaign_stop_after must be empty or IMPORT: \
 ${campaign_stop_after}" ;;
   esac
+  # Every host in the worker list ends up inside an `ssh <host> ...` command,
+  # so the spelling is checked before any work starts rather than discovered
+  # by a shell on the far side.  Letters, digits, dot, dash and underscore is
+  # a hostname; anything else -- a space is already a separator, and a quote,
+  # a semicolon or a `$` would be somebody putting a command where a machine
+  # belongs -- is refused by name.
+  local worker_host
+  for worker_host in ${campaign_worker_hosts}; do
+    case "${worker_host}" in
+      *[!A-Za-z0-9._-]*|-*|'')
+        die "campaign_worker_hosts must be a space-separated list of host \
+names: '${worker_host}'" ;;
+    esac
+  done
   local bound
   for bound in "${region_path_max_paths_per_region}" \
       "${region_path_max_flips_per_path}" "${region_path_max_tasks}"; do
@@ -1255,6 +1293,19 @@ campaign_preflight() {
   require_command_available jq
   require_command_available sha256sum
   campaign_log "workers=${concolic_worker_count} maxIterations=${campaign_max_iterations} maxJobs=${schedule_max_jobs}"
+  campaign_log "obligation pool: $(campaign_worker_slot_hosts | wc -l) slot(s) \
+across host(s) ${campaign_worker_hosts:-$(hostname) (local only)}"
+  # Every peer is reached once before the seed replay, not for the first time
+  # somewhere inside wave 0 with a hundred obligations already planned.
+  local worker_host
+  for worker_host in ${campaign_worker_hosts}; do
+    campaign_host_is_local "${worker_host}" && continue
+    ssh "${campaign_ssh_options[@]}" -o ConnectTimeout=20 -- "${worker_host}" \
+      "test -x $(printf '%q' "${graphchecker_dir}/run_engine.sh")" \
+      || die "campaign_worker_hosts names ${worker_host}, which this host \
+cannot reach over ssh in batch mode, or which cannot see \
+${graphchecker_dir}/run_engine.sh on the shared home"
+  done
 }
 
 require_command_available() {
@@ -1291,6 +1342,272 @@ run_under_wall_clock_bound() {
   local seconds=$1
   shift
   timeout --kill-after="${campaign_adapter_kill_grace_s}s" "${seconds}s" "$@"
+}
+
+# ---------------------------------------------------------------------------
+# DISPATCHING ONE OBLIGATION TO ANOTHER MACHINE
+#
+# Every path this configuration names is absolute and on the shared home, so
+# there is nothing to copy: the peer opens the same jar, the same woven
+# classes, the same obligations file and the same sessions directory the head
+# does.  What the peer must NOT do is work any of that out for itself.
+# ---------------------------------------------------------------------------
+
+# BatchMode: a peer that wants a password is a failure, not a prompt nothing
+# will ever answer.  ServerAlive*: a connection that has silently died is
+# noticed in ~90s rather than held open by the kernel for hours.  -n: stdin
+# from /dev/null, so forty background ssh clients do not fight over the
+# campaign's own stdin.
+campaign_ssh_options=(
+  -o BatchMode=yes
+  -o ServerAliveInterval=30
+  -o ServerAliveCountMax=3
+  -n
+)
+
+# How long the remote side has to poll for the connection that started it.
+campaign_remote_watchdog_interval_s=5
+
+# The margin over the declared budgets that the remote worker's own outer
+# wall clock allows.
+#
+# The bound the OBLIGATION answers to is still `replay_timeout_s`, applied by
+# campaign_obligation_worker around the replay exactly as it is locally; this
+# outer one is a backstop against a remote side that is wedged somewhere
+# else (a hung ssh channel, an NFS mount that stopped answering) and it is
+# therefore the sum of the two budgets a worker is allowed to spend -- its
+# solver run and its replay -- plus this margin for JVM start-up and the
+# shared home.  It is not a policy about obligations; an obligation that
+# reaches it has hit something no declared budget describes, and the wave
+# fails naming the host.
+campaign_remote_bound_margin_s=300
+
+campaign_remote_worker_bound_s() {
+  printf '%s\n' "$(( replay_timeout_s + (solver_timeout_ms + 999) / 1000 \
+    + campaign_remote_bound_margin_s ))"
+}
+
+# How long the head waits for a finished remote worker's files to become
+# visible to it.
+#
+# The peer wrote and CLOSED obligation_result.jsonl before its ssh exited,
+# and the head opens it afterwards, so close-to-open consistency says the
+# head sees the final contents -- of a file it can find.  Finding it is the
+# part close-to-open does not settle: the head CREATED the worker directory,
+# so it holds a cached listing of it and a cached negative lookup for the
+# name the peer has since created, and it keeps both until its attribute
+# cache for that directory expires.  Linux's NFS client caps that at
+# `acdirmax`, 60 seconds by default, so the wait below is bounded at twice
+# that rather than assumed away.
+campaign_remote_visibility_wait_s=120
+
+# Every workflow key's CURRENT value, under the environment override that
+# sets it.
+#
+# This is what makes the peer's configuration the HEAD's configuration
+# instead of a second derivation of it.  Two things would otherwise differ.
+# FREEZE_TOOL rebinds `graphchecker_jar` to the campaign's private read-only
+# copy, so a peer that resolved the key itself would load whatever is in
+# target/ right now -- on this cluster the shared home means that is a
+# DIFFERENT BUILD the moment anybody runs `mvn package`, and the run
+# manifest's provenance would be a lie about half the wave.  And the
+# workflow file itself lives on that same shared home and can be edited
+# mid-run; forwarding the values means an edit cannot reach a worker,
+# because every key it could change arrives already decided.
+campaign_remote_env_assignments() {
+  local row config_key config_env config_flags config_default
+  for row in "${workflow_config_keys[@]}"; do
+    read_config_key_row "${row}"
+    [[ -n "${config_env}" && "${config_flags}" == *k* ]] || continue
+    printf '%s=%s\n' "${config_env}" "${!config_key}"
+  done
+}
+
+# The script one peer runs for one obligation.
+#
+# Written into the worker directory on the shared home rather than squeezed
+# through the ssh command line, which keeps the command line trivial (so the
+# peer's login shell -- whatever it is -- has nothing to parse) and leaves
+# the exact invocation beside the logs it produced.
+#
+# KILL SAFETY.  A remote JVM must not outlive the campaign, and sshd does not
+# arrange that: with no pty, a remote command whose ssh client dies is simply
+# reparented and keeps running.  Measured on lift12 -- an ssh client killed
+# under a `sleep 500` three processes down left every one of them alive.  Two
+# things are therefore built in here.
+#
+#   1. The payload runs under `timeout`, which (not being given --foreground)
+#      calls setpgid(0,0), so its own pid IS the new process group's id and
+#      one `kill -<pgid>` reaches the replay JVM below it.
+#   2. A watchdog polls this shell's parent.  That parent is the sshd session
+#      process; when the connection drops, sshd goes and this shell is
+#      reparented -- measured at ppid 869025 -> 1 within one second of the
+#      client dying.  A parent that is no longer the one we started with means
+#      the head is gone, and the watchdog kills the payload's whole process
+#      group: TERM, then KILL after the same grace the local bound uses.
+#      Verified end to end: nothing survived on the peer.
+#
+# Comparing against the STARTING parent rather than against 1 on purpose: a
+# user-level subreaper would adopt the orphan and pid 1 would never arrive.
+campaign_write_remote_worker_script() {
+  local script=$1 obligation_id=$2 obligations=$3 classes=$4 worker=$5
+  local sessions=$6 seed_plan=$7
+  local jar_sha assignment
+  jar_sha=$(campaign_digest "${graphchecker_jar}")
+  {
+    printf '%s\n' '#!/usr/bin/env bash'
+    printf '%s\n' \
+      '# Generated by run_engine.sh for ONE obligation on ONE host.' \
+      '# Read the campaign_write_remote_worker_script comment for why each' \
+      '# line is here.  Regenerated per obligation; never edited by hand.' \
+      'set -uo pipefail' \
+      '' \
+      'wrapper_pid=$$' \
+      'wrapper_parent=$(awk "{print \$4}" "/proc/${wrapper_pid}/stat" \' \
+      '  2>/dev/null || echo 1)' \
+      ''
+    printf 'timeout --kill-after=%ss %ss \\\n' \
+      "${campaign_adapter_kill_grace_s}" "$(campaign_remote_worker_bound_s)"
+    printf '  env \\\n'
+    printf '    PATH=%q \\\n' "${PATH}"
+    printf '    HOME=%q \\\n' "${HOME}"
+    while IFS= read -r assignment; do
+      printf '    %q \\\n' "${assignment}"
+    done < <(campaign_remote_env_assignments)
+    printf '  %q --config %q --run-obligation \\\n' \
+      "${graphchecker_dir}/run_engine.sh" "${config_file}"
+    printf '    --graphchecker-jar %q \\\n' "${graphchecker_jar}"
+    printf '    --graphchecker-jar-sha256 %q \\\n' "${jar_sha}"
+    printf '    -- %q %q %q %q %q %q \\\n' \
+      "${obligation_id}" "${obligations}" "${classes}" "${worker}" \
+      "${sessions}" "${seed_plan}"
+    printf '  >%q 2>%q &\n' "${worker}/stdout.log" "${worker}/stderr.log"
+    printf '%s\n' \
+      'payload=$!' \
+      '' \
+      '(' \
+      '  while kill -0 "${payload}" 2>/dev/null; do' \
+      '    now=$(awk "{print \$4}" "/proc/${wrapper_pid}/stat" \' \
+      '      2>/dev/null || echo 1)' \
+      '    if [[ "${now}" != "${wrapper_parent}" ]]; then' \
+      '      echo "remote worker: the campaign that started this is gone" \' \
+      '        "(parent ${wrapper_parent} -> ${now}); killing process" \' \
+      '        "group ${payload}" >&2'
+    printf '%s\n' \
+      '      kill -TERM -"${payload}" 2>/dev/null' \
+      "      sleep ${campaign_adapter_kill_grace_s}" \
+      '      kill -KILL -"${payload}" 2>/dev/null' \
+      '      exit 0' \
+      '    fi' \
+      "    sleep ${campaign_remote_watchdog_interval_s}" \
+      '  done' \
+      ') &' \
+      'watchdog=$!' \
+      '' \
+      'wait "${payload}"' \
+      'status=$?' \
+      'kill "${watchdog}" 2>/dev/null' \
+      'exit "${status}"'
+  } >"${script}"
+}
+
+# One obligation on one peer, and its files back.
+campaign_dispatch_remote_obligation() {
+  local host=$1 obligation_id=$2 obligations=$3 classes=$4 worker=$5
+  local sessions=$6 seed_plan=$7
+  local script="${worker}/remote-worker.sh"
+  local status=0
+  campaign_write_remote_worker_script "${script}" "${obligation_id}" \
+    "${obligations}" "${classes}" "${worker}" "${sessions}" "${seed_plan}"
+  # The payload writes stdout.log and stderr.log itself, on the shared home,
+  # so the worker's own logs read the same whichever machine ran it.  What
+  # lands here is ssh's OWN diagnostics -- a refused connection, a host key,
+  # a peer that has no /bin/bash -- which would otherwise be the one part of
+  # a failed remote obligation that nothing recorded.
+  run_capturing_status ssh "${campaign_ssh_options[@]}" -- "${host}" \
+    "exec /bin/bash $(printf '%q' "${script}")" >"${worker}/ssh.log" 2>&1
+  if [[ "${status}" -ne 0 ]]; then
+    campaign_log "obligation ${obligation_id} on ${host}: the remote worker \
+exited ${status}; ssh's own output is in ${worker}/ssh.log"
+    return "${status}"
+  fi
+  campaign_await_remote_result "${worker}" "${host}" "${obligation_id}" \
+    "${sessions}"
+}
+
+# The peer's evidence, visible HERE.
+#
+# Bounded, never assumed: see campaign_remote_visibility_wait_s.  The
+# directory is re-listed on each turn because it is the directory's cached
+# listing, not the file's contents, that a fresh lookup has to get past.
+campaign_await_remote_result() {
+  local worker=$1 host=$2 obligation_id=$3 sessions=$4
+  local result="${worker}/obligation_result.jsonl"
+  local waited=0 session_id=""
+  while [[ ! -s "${result}" ]]; do
+    if [[ "${waited}" -ge "${campaign_remote_visibility_wait_s}" ]]; then
+      campaign_log "obligation ${obligation_id} on ${host}: its worker \
+returned successfully but ${result} is still not visible here after \
+${waited}s; the shared home did not deliver what the peer wrote"
+      return 1
+    fi
+    ls "${worker}" >/dev/null 2>&1 || true
+    sleep 1
+    waited=$((waited + 1))
+  done
+  session_id=$(jq -r '.sessionId // ""' "${result}" 2>/dev/null) || session_id=""
+  # A terminal verdict the solver reached publishes no session, and says so
+  # by naming none; only a session that was NAMED has to be here.
+  [[ -n "${session_id}" ]] || return 0
+  while [[ ! -d "${sessions}/${session_id}" ]]; do
+    if [[ "${waited}" -ge "${campaign_remote_visibility_wait_s}" ]]; then
+      campaign_log "obligation ${obligation_id} on ${host}: its result names \
+session ${session_id} but ${sessions}/${session_id} is still not visible \
+here after ${waited}s"
+      return 1
+    fi
+    ls "${sessions}" >/dev/null 2>&1 || true
+    sleep 1
+    waited=$((waited + 1))
+  done
+  return 0
+}
+
+# Anything of THIS RUN still alive on a peer, ended.
+#
+# The primary guarantee is the watchdog inside each remote worker: a head
+# that is killed -- `kill -TERM -<pgid>`, a crash, a severed network --
+# reparents every remote wrapper within seconds and each one kills its own
+# process group.  This is the second line, for the failure paths that are
+# still in a position to do something: the campaign has decided to stop, and
+# rather than trust the peers to notice, it says so.
+#
+# The pattern is the campaign root, which every process of this run carries
+# on its command line (the wrapper script's path, the --run-obligation
+# arguments, the `env` that fronts the adapter, and the replay JVM's own
+# -Dcausynth.concolic.task.plan) and no other run does.  It is fed on STDIN
+# rather than given as an argument, so the remote shell's own command line
+# does not contain the pattern and pkill cannot match the process doing the
+# matching.
+campaign_reap_remote_workers() {
+  local host reaped=0
+  [[ -n "${campaign_worker_hosts}" ]] || return 0
+  [[ -n "${campaign_root}" ]] || return 0
+  for host in ${campaign_worker_hosts}; do
+    campaign_host_is_local "${host}" && continue
+    # Not campaign_ssh_options: that list carries -n, and this one speaks to
+    # the far side through stdin.
+    ssh -o BatchMode=yes -o ConnectTimeout=20 -- "${host}" 'bash -s' \
+      >/dev/null 2>&1 <<EOF || true
+pattern=$(printf '%q' "${campaign_root}")
+pkill -TERM -u "\$(id -u)" -f "\${pattern}" 2>/dev/null || true
+sleep ${campaign_adapter_kill_grace_s}
+pkill -KILL -u "\$(id -u)" -f "\${pattern}" 2>/dev/null || true
+EOF
+    reaped=$((reaped + 1))
+  done
+  [[ "${reaped}" -eq 0 ]] || campaign_log "reaped this run's remote workers \
+on ${reaped} host(s) matching ${campaign_root}"
 }
 
 campaign_run_adapter() {
@@ -2341,9 +2658,14 @@ campaign_claim_next_obligation() {
 # hosts instead of loading the first host to capacity before the second sees
 # any work.
 campaign_worker_slot_hosts() {
-  local slot
+  local -a hosts=()
+  local host slot
+  read -r -a hosts <<<"${campaign_worker_hosts}"
+  [[ ${#hosts[@]} -gt 0 ]] || hosts=(localhost)
   for ((slot = 0; slot < concolic_worker_count; slot++)); do
-    printf '%s\n' localhost
+    for host in "${hosts[@]}"; do
+      printf '%s\n' "${host}"
+    done
   done
 }
 
@@ -2377,7 +2699,8 @@ campaign_run_obligation_on_host() {
         "${classes}" "${worker}" "${sessions}" "${seed_plan}"
     ) >"${worker}/stdout.log" 2>"${worker}/stderr.log"
   else
-    die "no worker host but this one exists yet: ${host}"
+    campaign_dispatch_remote_obligation "${host}" "${obligation_id}" \
+      "${obligations}" "${classes}" "${worker}" "${sessions}" "${seed_plan}"
   fi
 }
 
@@ -2566,7 +2889,9 @@ as the wave before it with no new verdict"
     fi
     previous_signature=${wave_signature}
     campaign_log "wave ${wave}: ${pending} obligation(s), \
-slots=${concolic_worker_count}"
+slots=$(campaign_worker_slot_hosts | wc -l) \
+(workers=${concolic_worker_count} per host, \
+hosts=${campaign_worker_hosts:-local})"
     # Which sessions existed before this wave's replays landed, so the row
     # contract below is checked over the wave's own and no other.
     campaign_session_roster "${sessions}" >"${wave_dir}/sessions-before.txt"
@@ -2578,8 +2903,13 @@ slots=${concolic_worker_count}"
       "${sessions}" "${iteration_dir}/seed-replay/execution_task_plan.jsonl" \
       "${jobs[@]}" || status=1
     campaign_log_wave_hosts "${wave_dir}" "${wave}"
-    [[ "${status}" -eq 0 ]] || campaign_fail EXPLORE CAMPAIGN \
-      "${wave_dir}" "obligation wave ${wave} did not finish"
+    if [[ "${status}" -ne 0 ]]; then
+      # Whatever is still alive on a peer is this run's to end, before the
+      # campaign exits and takes the head's own process group with it.
+      campaign_reap_remote_workers
+      campaign_fail EXPLORE CAMPAIGN "${wave_dir}" \
+        "obligation wave ${wave} did not finish"
+    fi
     # Every verdict this wave reached, appended once the wave settled, so the
     # next wave sees a complete frontier rather than a partial one.
     find "${wave_dir}" -mindepth 2 -maxdepth 2 -name obligation_result.jsonl \
@@ -3262,6 +3592,68 @@ campaign_publish_epoch_final() {
   cp -a "${epoch_final}/." "${published}/"
 }
 
+# ONE obligation of somebody else's wave, on this machine.
+#
+# The peer loads the same configuration file the campaign loaded, from the
+# same shared home, and every path in it resolves identically -- but two
+# values are NOT in that file and must arrive already decided, or this worker
+# silently does different work from the local workers of the same wave.
+#
+#   graphchecker_jar, because FREEZE_TOOL rebinds it to the campaign's
+#     private read-only copy.  Re-derived here it would be whatever is in
+#     target/ at this instant, and on a shared home that is a different build
+#     the moment anybody runs `mvn package` -- measured on this cluster: a
+#     finished campaign's frozen jar is 49e990ce while the live target jar is
+#     af34ab24.  Taken as GIVEN, and then CHECKED: the digest the campaign
+#     froze is the digest of the file about to be loaded, or this worker
+#     refuses before it starts.
+#
+#   the workflow key values, forwarded by campaign_remote_env_assignments as
+#     environment overrides.  They win over the file, so an edit to the file
+#     while the wave is in flight cannot reach a worker.
+do_run_obligation() {
+  local jar="" jar_sha="" actual_sha
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --graphchecker-jar)
+        [[ $# -ge 2 ]] || die "--graphchecker-jar requires a path"
+        jar=$2
+        shift 2
+        ;;
+      --graphchecker-jar-sha256)
+        [[ $# -ge 2 ]] || die "--graphchecker-jar-sha256 requires a digest"
+        jar_sha=$2
+        shift 2
+        ;;
+      --)
+        shift
+        break
+        ;;
+      *) break ;;
+    esac
+  done
+  [[ -n "${jar}" ]] || die "--run-obligation requires --graphchecker-jar: \
+the campaign's frozen jar is not derivable from the configuration"
+  [[ -n "${jar_sha}" ]] || die "--run-obligation requires \
+--graphchecker-jar-sha256"
+  [[ $# -eq 6 ]] || die "--run-obligation takes six positional arguments \
+(id obligations classes worker sessions seed-plan), got $#"
+  graphchecker_jar=${jar}
+  require_file "GraphChecker jar" "${graphchecker_jar}"
+  actual_sha=$(campaign_digest "${graphchecker_jar}")
+  [[ "${actual_sha}" == "${jar_sha}" ]] || die "the GraphChecker jar this \
+worker was handed is not the one the campaign froze: ${graphchecker_jar} is \
+${actual_sha}, the campaign says ${jar_sha}"
+  # The same gate the head's PREFLIGHT ran, so a peer that resolved a
+  # nonsense configuration says so here rather than inside a replay JVM.
+  validate_config >/dev/null
+  require_command_available jq
+  require_command_available sha256sum
+  campaign_log "obligation $1 on $(hostname): jar ${graphchecker_jar} \
+(${actual_sha})"
+  campaign_obligation_worker "$@"
+}
+
 # A campaign refines its topology at most this many times.  Three epochs is
 # the owner's bound: the recording, one refinement, and one more in case the
 # refinement itself found a new binding.  Beyond it the pending-refinement row
@@ -3442,7 +3834,7 @@ case "${command_name}" in
   help)
     usage
     ;;
-  campaign|config|validate)
+  campaign|config|validate|--run-obligation)
     [[ -n "${config_file}" ]] || die "${command_name} requires --config FILE"
     initialize_config "${config_file}"
     case "${command_name}" in
@@ -3452,6 +3844,7 @@ case "${command_name}" in
         ;;
       config) print_normalized_config ;;
       validate) validate_config ;;
+      --run-obligation) do_run_obligation "$@" ;;
     esac
     ;;
   *)

@@ -695,7 +695,13 @@ done
 # verdicts the wave had already reached.  How long a replay may take is part
 # of the configuration a campaign publishes: two runs of the same case that
 # bounded their replays differently did not explore under the same rules.
-[[ "$(print_normalized_config | wc -l)" -eq 45 ]] \
+# 46: `campaign_worker_hosts` joined it when a wave stopped being one
+# machine's work.  WHICH machines a run's obligations were executed on is part
+# of the configuration a campaign publishes -- it is the difference between a
+# wave of 108 costing fourteen slowest-of-eight replays and costing three --
+# and empty is the honest spelling of "this one", which is what every run
+# before the key did.
+[[ "$(print_normalized_config | wc -l)" -eq 46 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 # CONFIG-3: the region skeletons are ONE path, and every weave takes them
@@ -1495,6 +1501,7 @@ pool_dir="${test_tmp}/pool"
 mkdir -p "${pool_dir}/wave"
 reset_config
 concolic_worker_count=2
+campaign_worker_hosts=""
 pool_jobs=(LONG F1 F2 F3 F4 F5)
 for pool_job in "${pool_jobs[@]}"; do
   mkdir -p "${pool_dir}/wave/${pool_job}"
@@ -1574,6 +1581,330 @@ grep -q 'DID NOT FINISH' "${pool_fail_dir}/dispatch.log" \
   || fail "the failed obligation is not named in the wave's log: \
 $(cat "${pool_fail_dir}/dispatch.log")"
 unset -f campaign_obligation_worker
+reset_config
+
+# HOSTS-1: `campaign_worker_hosts` is a declared workflow key, registered
+# exactly like `replay_timeout_s`.
+grep -q 'CAUSYNTH_CAMPAIGN_WORKER_HOSTS' "${repo}/run_engine.sh" \
+  || fail "the environment override for campaign_worker_hosts is not declared"
+[[ "$(grep -c 'CAUSYNTH_CAMPAIGN_WORKER_HOSTS' "${repo}/run_engine.sh")" \
+    -eq 1 ]] \
+  || fail "CAUSYNTH_CAMPAIGN_WORKER_HOSTS appears outside the key table: \
+it is honoured through apply_environment_overrides only"
+known_config_key campaign_worker_hosts \
+  || fail "campaign_worker_hosts is not loadable from a workflow file"
+hosts_dir="${test_tmp}/worker-hosts"
+mkdir -p "${hosts_dir}"
+reset_config
+[[ -z "${campaign_worker_hosts}" ]] \
+  || fail "campaign_worker_hosts does not default to empty: \
+'${campaign_worker_hosts}'"
+printf 'campaign_worker_hosts=lift12 lift13\n' \
+  >"${hosts_dir}/workflow.properties"
+load_config_file "${hosts_dir}/workflow.properties"
+[[ "${campaign_worker_hosts}" == "lift12 lift13" ]] \
+  || fail "a workflow file cannot set campaign_worker_hosts: \
+'${campaign_worker_hosts}'"
+reset_config
+CAUSYNTH_CAMPAIGN_WORKER_HOSTS="lift14 lift15" apply_environment_overrides
+[[ "${campaign_worker_hosts}" == "lift14 lift15" ]] \
+  || fail "CAUSYNTH_CAMPAIGN_WORKER_HOSTS does not override the key"
+reset_config
+# A host is a machine name.  Anything that could put a command where a
+# machine belongs is refused by name before any work starts, because the
+# value ends up inside `ssh <host> ...`.
+hosts_validate() (
+  stop_after_config ""
+  campaign_worker_hosts=$1
+  validate_config
+)
+for bad in 'lift12;rm -rf /' 'lift12$(id)' 'lift12|cat' '-oProxyCommand=x' \
+    'a"b'; do
+  run_capturing_status hosts_validate "${bad}" \
+    >/dev/null 2>"${hosts_dir}/validate.err"
+  [[ "${status}" -ne 0 ]] \
+    || fail "validate accepted campaign_worker_hosts='${bad}'"
+  grep -q 'campaign_worker_hosts must be' "${hosts_dir}/validate.err" \
+    || fail "the refusal does not name campaign_worker_hosts: \
+$(cat "${hosts_dir}/validate.err")"
+done
+run_capturing_status hosts_validate "localhost lift12 lift13.cs.virginia.edu" \
+  >/dev/null 2>"${hosts_dir}/validate.err" \
+  || fail "validate refused a plain host list: \
+$(cat "${hosts_dir}/validate.err")"
+[[ "${status}" -eq 0 ]] || fail "validate refused a plain host list"
+reset_config
+
+# HOSTS-2: the slot layout.  Empty is one host's worth of slots; a list is
+# ${concolic_worker_count} slots PER HOST, laid out so the wave's opening
+# fill -- every slot claiming at once -- lands round-robin across the hosts
+# instead of filling the first host before the second sees any work.
+concolic_worker_count=3
+campaign_worker_hosts=""
+[[ "$(campaign_worker_slot_hosts | tr '\n' ' ')" \
+    == "localhost localhost localhost " ]] \
+  || fail "an empty host list is not this machine's slots: \
+$(campaign_worker_slot_hosts | tr '\n' ' ')"
+campaign_worker_hosts="lift12 lift13"
+[[ "$(campaign_worker_slot_hosts | tr '\n' ' ')" \
+    == "lift12 lift13 lift12 lift13 lift12 lift13 " ]] \
+  || fail "two hosts do not round-robin: \
+$(campaign_worker_slot_hosts | tr '\n' ' ')"
+[[ "$(campaign_worker_slot_hosts | wc -l)" -eq 6 ]] \
+  || fail "the pool is not hosts x concolic_worker_count wide"
+# localhost, and this machine's own name, are local: no ssh for either.
+campaign_local_host_names=""
+campaign_host_is_local localhost || fail "localhost is not local"
+campaign_host_is_local "$(hostname)" \
+  || fail "this machine's own hostname is not local"
+campaign_host_is_local "$(hostname -s)" \
+  || fail "this machine's own short hostname is not local"
+campaign_host_is_local "" || fail "the empty host is not local"
+! campaign_host_is_local somewhere-else \
+  || fail "another machine reads as local"
+reset_config
+
+# HOSTS-3: EMPTY MEANS NO SSH.  The default is not "ssh to localhost", it is
+# the plain background subshell this shell always used -- so a run that
+# states no hosts cannot fail for a reason ssh invented.
+nossh_dir="${test_tmp}/no-ssh"
+mkdir -p "${nossh_dir}/wave"
+for pool_job in A B C; do mkdir -p "${nossh_dir}/wave/${pool_job}"; done
+ssh() { printf '%s\n' "$*" >>"${nossh_dir}/ssh-calls.txt"; return 99; }
+campaign_obligation_worker() {
+  local id=$1 worker=$4
+  jq -n -c --arg id "${id}" '{schemaVersion: 1, kind: "OBLIGATION_RESULT",
+    obligationId: $id, verdict: "UNSAT", sessionId: "", detail: ""}' \
+    >"${worker}/obligation_result.jsonl"
+}
+concolic_worker_count=2
+campaign_worker_hosts=""
+campaign_dispatch_wave "${nossh_dir}/wave" /dev/null /dev/null /dev/null \
+  /dev/null A B C >"${nossh_dir}/dispatch.log" 2>&1 \
+  || fail "the local default did not finish its wave: \
+$(cat "${nossh_dir}/dispatch.log")"
+[[ ! -e "${nossh_dir}/ssh-calls.txt" ]] \
+  || fail "an empty campaign_worker_hosts still invoked ssh $(wc -l \
+<"${nossh_dir}/ssh-calls.txt") time(s): $(cat "${nossh_dir}/ssh-calls.txt")"
+for pool_job in A B C; do
+  [[ "$(cat "${nossh_dir}/wave/${pool_job}/host.txt")" == localhost ]] \
+    || fail "${pool_job} did not record the local host"
+  [[ -s "${nossh_dir}/wave/${pool_job}/obligation_result.jsonl" ]] \
+    || fail "${pool_job} produced no result locally"
+done
+
+# HOSTS-4: two hosts round-robin, and BOTH hosts' results are collected.
+#
+# The stub stands where the network stands and nowhere else: the wave, the
+# pool, the slot, the host decision, the generated remote script and the
+# bounded wait for what the peer wrote are all the production code.  What the
+# stub does is what a peer does -- run the script it was handed -- except
+# that it runs the payload's job directly, because the payload is a second
+# JVM-bearing campaign process and this is a shell test.
+twohost_dir="${test_tmp}/two-hosts"
+mkdir -p "${twohost_dir}/wave" "${twohost_dir}/sessions"
+for pool_job in A B C D; do mkdir -p "${twohost_dir}/wave/${pool_job}"; done
+campaign_root="${twohost_dir}"
+graphchecker_jar="${repo}/target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar"
+replay_timeout_s=2400
+solver_timeout_ms=1800000
+ssh() {
+  local host="" script=""
+  # The production call is `ssh <options> -- <host> <command>`, so `--` is
+  # where the options stop, exactly as it is for the real client.
+  while [[ $# -gt 0 ]]; do
+    [[ "$1" == "--" ]] && { shift; break; }
+    shift
+  done
+  host=${1:-}
+  script=${2:-}
+  script=${script#exec /bin/bash }
+  script=${script%\'}
+  script=${script#\'}
+  printf '%s\t%s\n' "${host}" "${script}" >>"${twohost_dir}/ssh-calls.txt"
+  # The generated script is what a peer is asked to run, so it had better be
+  # a script a peer can run.
+  [[ -s "${script}" ]] || return 91
+  bash -n "${script}" || return 92
+  grep -q -- '--run-obligation' "${script}" || return 93
+  grep -q -- "--graphchecker-jar-sha256 $(sha256sum "${graphchecker_jar}" \
+    | awk '{print $1}')" "${script}" || return 94
+  # What the peer's payload would have published, published.
+  local worker
+  worker=$(awk '$1 == "--" {print $5; exit}' "${script}")
+  jq -n -c --arg id "$(basename "${worker}")" --arg host "${host}" \
+    '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: $id,
+      verdict: "ADMITTED", sessionId: ("SESSION." + $id), detail: $host}' \
+    >"${worker}/obligation_result.jsonl"
+  mkdir -p "${twohost_dir}/sessions/SESSION.$(basename "${worker}")"
+  return 0
+}
+concolic_worker_count=2
+campaign_worker_hosts="lift12 lift13"
+campaign_local_host_names=" localhost this-machine "
+campaign_dispatch_wave "${twohost_dir}/wave" "${twohost_dir}/obligations.jsonl" \
+  "${twohost_dir}/classes" "${twohost_dir}/sessions" \
+  "${twohost_dir}/seed.jsonl" A B C D \
+  >"${twohost_dir}/dispatch.log" 2>&1 \
+  || fail "a two-host wave did not finish: $(cat "${twohost_dir}/dispatch.log")"
+[[ "$(wc -l <"${twohost_dir}/ssh-calls.txt")" -eq 4 ]] \
+  || fail "four obligations did not become four remote invocations: \
+$(cat "${twohost_dir}/ssh-calls.txt")"
+for twohost_host in lift12 lift13; do
+  [[ "$(cut -f1 <"${twohost_dir}/ssh-calls.txt" | grep -c "^${twohost_host}$")" \
+      -ge 1 ]] \
+    || fail "${twohost_host} was given no work: the pool did not round-robin: \
+$(cut -f1 <"${twohost_dir}/ssh-calls.txt" | LC_ALL=C sort | uniq -c)"
+done
+# Both hosts' results are here, and they are the peers' own rows.
+for pool_job in A B C D; do
+  [[ -s "${twohost_dir}/wave/${pool_job}/obligation_result.jsonl" ]] \
+    || fail "${pool_job}'s remote result was not collected"
+  [[ "$(jq -r '.verdict' \
+      "${twohost_dir}/wave/${pool_job}/obligation_result.jsonl")" \
+      == ADMITTED ]] \
+    || fail "${pool_job}'s collected row is not the peer's verdict"
+  case "$(cat "${twohost_dir}/wave/${pool_job}/host.txt")" in
+    lift12|lift13) ;;
+    *) fail "${pool_job} did not record which host ran it: \
+$(cat "${twohost_dir}/wave/${pool_job}/host.txt")" ;;
+  esac
+done
+[[ "$(cat "${twohost_dir}/wave"/*/host.txt | LC_ALL=C sort -u | wc -l)" \
+    -eq 2 ]] \
+  || fail "the wave's obligations all landed on one host"
+campaign_log_wave_hosts "${twohost_dir}/wave" 0 \
+  >"${twohost_dir}/hosts.log" 2>&1
+grep -q 'lift12=' "${twohost_dir}/hosts.log" \
+  || fail "the wave summary does not say how many ran on lift12: \
+$(cat "${twohost_dir}/hosts.log")"
+grep -q 'lift13=' "${twohost_dir}/hosts.log" \
+  || fail "the wave summary does not say how many ran on lift13"
+unset -f ssh
+unset -f campaign_obligation_worker
+reset_config
+
+# HOSTS-5: a remote worker whose head is gone kills its own process group.
+#
+# sshd does not do this.  Measured on lift12: an ssh client killed under a
+# `sleep 500` three processes down left every one of them alive, which is
+# forty orphan MiniDFSCluster JVMs across four machines for one interrupted
+# campaign.  So the generated script watches the parent it was started
+# under -- the sshd session process -- and a parent that is no longer that
+# one means the connection is gone.
+#
+# Here the connection is stood in for by an intermediate shell that is
+# killed: the wrapper is reparented exactly as it is when sshd dies, which is
+# the condition the watchdog actually tests.  Everything else is the
+# generated script, produced by the production function, including the
+# `timeout` that makes the payload its own process group.
+orphan_dir="${test_tmp}/remote-orphan"
+mkdir -p "${orphan_dir}/worker"
+# The payload, standing where run_engine.sh --run-obligation stands: a
+# process with a grandchild under it, which is what a replay JVM is.
+mkdir -p "${orphan_dir}/fake-repo"
+cat >"${orphan_dir}/fake-repo/run_engine.sh" <<EOF
+#!/usr/bin/env bash
+sleep 600 &
+echo "\$!" >"${orphan_dir}/grandchild.pid"
+wait
+EOF
+chmod +x "${orphan_dir}/fake-repo/run_engine.sh"
+(
+  graphchecker_dir="${orphan_dir}/fake-repo"
+  graphchecker_jar="${repo}/target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar"
+  config_file="${orphan_dir}/workflow.properties"
+  campaign_local_scratch_root="${orphan_dir}/scratch"
+  campaign_worker_hosts=""
+  replay_timeout_s=600
+  solver_timeout_ms=1000
+  : >"${config_file}"
+  campaign_write_remote_worker_script "${orphan_dir}/remote-worker.sh" \
+    OB.1 /dev/null /dev/null "${orphan_dir}/worker" /dev/null /dev/null
+)
+bash -n "${orphan_dir}/remote-worker.sh" \
+  || fail "the generated remote worker script is not valid bash"
+# The stand-in for sshd: a shell whose child is the wrapper.  Killing it is
+# what a dropped connection does.
+bash -c "exec /bin/bash '${orphan_dir}/remote-worker.sh'" \
+  >"${orphan_dir}/wrapper.log" 2>&1 &
+orphan_parent=$!
+for _ in $(seq 1 40); do
+  [[ -s "${orphan_dir}/grandchild.pid" ]] && break
+  sleep 0.25
+done
+[[ -s "${orphan_dir}/grandchild.pid" ]] \
+  || fail "the generated remote worker never started its payload"
+orphan_grandchild=$(cat "${orphan_dir}/grandchild.pid")
+kill -0 "${orphan_grandchild}" \
+  || fail "the payload's grandchild was never running"
+kill -KILL "${orphan_parent}" 2>/dev/null
+wait "${orphan_parent}" 2>/dev/null || true
+# The watchdog polls; it is allowed the poll interval plus slack, and no more.
+for _ in $(seq 1 60); do
+  kill -0 "${orphan_grandchild}" 2>/dev/null || break
+  sleep 0.5
+done
+if kill -0 "${orphan_grandchild}" 2>/dev/null; then
+  pkill -KILL -P "${orphan_grandchild}" 2>/dev/null || true
+  kill -KILL "${orphan_grandchild}" 2>/dev/null || true
+  fail "a killed head left the remote payload's grandchild \
+${orphan_grandchild} running: this is the orphan MiniDFSCluster JVM on four \
+machines that kill safety exists to prevent"
+fi
+# And it said so, naming the parent it lost, so an operator reading a peer's
+# logs can tell a killed campaign from a crashed replay.
+grep -q 'the campaign that started this is gone' "${orphan_dir}/wrapper.log" \
+  || fail "the remote worker killed its payload without saying why: \
+$(cat "${orphan_dir}/wrapper.log")"
+reset_config
+
+# HOSTS-6: what the peer is NOT allowed to work out for itself.
+#
+# FREEZE_TOOL rebinds graphchecker_jar to the campaign's private read-only
+# copy.  A peer that resolved the key from the configuration would load
+# whatever is in target/ at that instant instead -- and on this shared home
+# that is a different build the moment anybody runs `mvn package`.  So the
+# frozen path is passed, its digest is passed with it, and the worker checks
+# the second against the first before it starts.
+grep -q 'graphchecker_jar=${jar}' "${repo}/run_engine.sh" \
+  || fail "--run-obligation does not take the frozen jar as given"
+frozen_dir="${test_tmp}/frozen-jar"
+mkdir -p "${frozen_dir}"
+printf 'not the frozen jar\n' >"${frozen_dir}/live.jar"
+run_capturing_status env -u CAUSYNTH_CAMPAIGN_WORKER_HOSTS \
+  "${repo}/run_engine.sh" \
+  --config "${repo}/experiments/hadoop/hdfs-11741/workflow.properties" \
+  --run-obligation --graphchecker-jar "${frozen_dir}/live.jar" \
+  --graphchecker-jar-sha256 \
+  0000000000000000000000000000000000000000000000000000000000000000 \
+  -- OB.1 a b c d e >/dev/null 2>"${frozen_dir}/err.log"
+[[ "${status}" -ne 0 ]] \
+  || fail "a worker handed a jar that is not the frozen one still ran"
+grep -q 'is not the one the campaign froze' "${frozen_dir}/err.log" \
+  || fail "the refusal does not say the jar is not the frozen one: \
+$(cat "${frozen_dir}/err.log")"
+run_capturing_status "${repo}/run_engine.sh" \
+  --config "${repo}/experiments/hadoop/hdfs-11741/workflow.properties" \
+  --run-obligation -- OB.1 a b c d e \
+  >/dev/null 2>"${frozen_dir}/nojar.log"
+[[ "${status}" -ne 0 ]] \
+  || fail "--run-obligation ran without being told which jar to load"
+grep -q 'requires --graphchecker-jar' "${frozen_dir}/nojar.log" \
+  || fail "the refusal does not name the missing jar argument: \
+$(cat "${frozen_dir}/nojar.log")"
+# And every workflow key travels as its own environment override, so the
+# peer's configuration is the head's rather than a second derivation of it.
+reset_config
+concolic_worker_count=8
+campaign_worker_hosts="lift12"
+replay_timeout_s=1234
+[[ "$(campaign_remote_env_assignments | grep -c '^CAUSYNTH_REPLAY_TIMEOUT_S=1234$')" \
+    -eq 1 ]] \
+  || fail "the peer is not handed the head's replay_timeout_s"
+[[ "$(campaign_remote_env_assignments | wc -l)" \
+    -eq "$(campaign_remote_env_assignments | cut -d= -f1 | sort -u | wc -l)" ]] \
+  || fail "a workflow key is forwarded to the peer more than once"
 reset_config
 
 echo "run_engine campaign helper tests passed"
