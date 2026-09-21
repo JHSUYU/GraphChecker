@@ -5,6 +5,7 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
+import edu.uva.liftlab.graphchecker.contract.JvmNames;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import java.util.Map;
 
@@ -114,6 +115,13 @@ final class LoggedEventSites {
      * descriptor travels because two overloads of one name are two methods.
      * An event the VM states no site for is named as a gap and spelled by
      * its location, which distinguishes nothing and says so.</p>
+     *
+     * <p>Converting the name is also where a name the JVM minted PER RUN
+     * stops being an identity ({@link JvmNames#stable}): a write inside an
+     * inflated reflective call stands in {@code
+     * sun.reflect.GeneratedMethodAccessor23} in one recording and {@code
+     * ...Accessor22} in the next, for no reason the exploration can act
+     * on.</p>
      */
     static String site(JsonObject node, String locationKey,
                                      long eventId, boolean write) {
@@ -132,7 +140,11 @@ final class LoggedEventSites {
                             + " distinguishes no event of it");
             return Endpoint.stateSite(locationKey, "UNSTATED_SITE", 0, write);
         }
-        return Endpoint.stateSite(site.className.replace('/', '.'),
+        // The per-run number comes out BEFORE the slashes become dots: a
+        // lambda proxy's name is <Outer>$$Lambda$14/1234567890, and that
+        // slash is the VM's separator for the hash, not a package.
+        return Endpoint.stateSite(
+                JvmNames.stable(site.className).replace('/', '.'),
                 site.method, site.descriptor, Math.max(0, site.bci), write);
     }
 
