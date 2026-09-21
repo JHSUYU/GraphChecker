@@ -432,9 +432,9 @@ final class ComposedFamilies {
             // whole query with an error instead of a verdict.
             lowering.declare(selector, VmTermLowering.Sort.BOOL);
             List<String> nested = new ArrayList<String>();
-            String body = producerBody(ordinal, selector, producer, session,
-                    bindings(group), reached, nested, closedProducers,
-                    depth);
+            String body = producerBody(ordinal, selector, guard, producer,
+                    session, bindings(group), reached, nested,
+                    closedProducers, depth);
             if (body == null) continue;
             selectors.add(selector);
             cases.add("(=> " + selector + " " + body + ")");
@@ -567,7 +567,9 @@ final class ComposedFamilies {
      *         the path
      */
     private String producerBody(int ordinal, String selector,
-                                OccurrenceAddress producer, String session,
+                                String nestedGuard,
+                                OccurrenceAddress producer,
+                                String session,
                                 List<Out> outs, Set<String> reachedSlots,
                                 List<String> nestedStated,
                                 Set<String> closedProducers, int depth) {
@@ -629,7 +631,15 @@ final class ComposedFamilies {
                     joins, answered);
             conjuncts.addAll(composer.closureConditions(session, reached,
                     local));
-            stated = closeProducers(ordinal, selector,
+            // UNDER THIS FAMILY'S OWN GUARD, not under this one session's
+            // selector.  Several sessions of one occurrence can forward the
+            // SAME handoff variable -- the VM symbol is the leaf's, not the
+            // run's -- and a nested family opened under the first of them
+            // leaves that variable referenced by the others and bound by
+            // nothing: hdfs-11741 campaign #2 came back with the DataNode's
+            // `addKeys` arrival at 2, a value no session delivered, while
+            // its own family sat under a selector the model had set false.
+            stated = closeProducers(ordinal, nestedGuard,
                     nestedAttaches(session, outs), reachedSlots, nested,
                     local, closedProducers, depth + 1);
         }
@@ -1000,7 +1010,7 @@ final class ComposedFamilies {
             String name = "writer_arm__" + ordinal + "__"
                     + ArtifactIO.digest(writer.getKey() + "|" + session, 12);
             lowering.declare(name, VmTermLowering.Sort.BOOL);
-            String body = producerBody(ordinal, name, at, session,
+            String body = producerBody(ordinal, name, selector, at, session,
                     writer.getValue(), reached, new ArrayList<String>(),
                     new LinkedHashSet<String>(), 0);
             if (body == null) continue;
