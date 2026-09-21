@@ -17,6 +17,19 @@ import java.util.Map;
  * one O(n) scan: {@link #endpoint} walks the filed producers rather than
  * keeping a second index of them, which is affordable exactly because
  * nothing on the delivery path calls it.</p>
+ *
+ * <p>LOCK ORDER: {@link Interactions} then {@code InteractionRefusals},
+ * NEVER the reverse.  This class is the LOWER one: it may be entered by a
+ * thread already holding the {@code Interactions} monitor (which is how
+ * {@link Interactions#sent} and {@link Interactions#sharedProducer} reach
+ * {@link #noteMessage} and {@link #otherMessageOf}), so it must never hold
+ * its own monitor while it takes that one.  A method here that calls into
+ * {@code Interactions} is therefore not {@code synchronized}: it guards
+ * nothing of its own, because {@link #MESSAGE_OF_ENDPOINT} is untouched on
+ * that path and the store it reads is guarded over there.  {@link
+ * #filedProducers} used to be {@code synchronized} and that single reverse
+ * edge deadlocked a focused replay against a DataNode heartbeat (thread
+ * dump deadlock-21177cdb).</p>
  */
 final class InteractionRefusals {
     private InteractionRefusals() {
@@ -108,10 +121,24 @@ final class InteractionRefusals {
         return null;
     }
 
-    private static synchronized Collection<Endpoint> filedProducers() {
+    /**
+     * The producers {@link Interactions} has filed, as its own snapshot.
+     *
+     * <p>NOT {@code synchronized}, and that is the lock order stated above,
+     * not an oversight: this guards nothing of this class -- it reads no
+     * field here -- and {@link Interactions#filedProducers} is itself
+     * {@code synchronized} and hands back a fresh list.  Holding this
+     * class's monitor across that call is the reverse edge that deadlocked
+     * a replay's refusal rendering against a live heartbeat.</p>
+     */
+    private static Collection<Endpoint> filedProducers() {
         return Interactions.filedProducers();
     }
 
+    /**
+     * Clears this index.  Called by {@link Interactions#resetForTests} with
+     * that class's monitor held, which is the declared order.
+     */
     static synchronized void resetForTests() {
         MESSAGE_OF_ENDPOINT.clear();
     }
