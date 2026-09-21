@@ -228,6 +228,105 @@ final class SmtNames {
     }
 
     /**
+     * The names a {@code let} in this text BINDS.
+     *
+     * <p>A bound name is not free, so a pass that reports "nothing declares
+     * this" must not report one.  {@link #rename} already knows that and
+     * declines to report anything at all once it sees a {@code let}; this
+     * is the same fact, stated precisely enough that a caller can keep
+     * reporting the names a {@code let} did NOT bind.
+     *
+     * <p>hdfs-11741 campaign #6: the associative size model emits {@code
+     * (let ((previous_size ...)) (ite ... previous_size (- previous_size
+     * 1)))} for the map a key was removed from, and {@code Composer#unknown}
+     * -- which tokenizes without this -- refused every path that reached the
+     * anchor with "this term names symbols nothing declares:
+     * [previous_size, previous_size, previous_size]".
+     *
+     * <p>The shape is SMT-LIB's: {@code (let ((name term)+) body)}. Only the
+     * first token of each binding pair is a name; everything in the pair's
+     * term, and the body, is ordinary text this walks past. Nesting is
+     * handled by depth, and a name bound in one {@code let} is reported for
+     * the whole text rather than for its scope alone -- deliberately, since
+     * the caller's question is "is this token a binder's name somewhere in
+     * this term", and answering it too generously only ever withholds a
+     * complaint.</p>
+     */
+    public static Set<String> letBound(String text) {
+        Set<String> bound = new LinkedHashSet<String>();
+        if (text == null || !text.contains("(let ")) return bound;
+        List<String> tokens = tokens(text);
+        for (int at = 0; at < tokens.size(); at++) {
+            if (!"let".equals(tokens.get(at))) continue;
+            // (let  ((name term) (name term))  body
+            //       ^ the binding list opens here
+            int index = at + 1;
+            if (index >= tokens.size() || !"(".equals(tokens.get(index))) {
+                continue;
+            }
+            int depth = 0;
+            for (; index < tokens.size(); index++) {
+                String token = tokens.get(index);
+                if ("(".equals(token)) {
+                    depth++;
+                    // Depth 2 is a binding pair, and its next token names it.
+                    if (depth == 2 && index + 1 < tokens.size()) {
+                        String name = tokens.get(index + 1);
+                        if (name(name) && !"(".equals(name)
+                                && !")".equals(name)) {
+                            bound.add(name);
+                        }
+                    }
+                    continue;
+                }
+                if (")".equals(token)) {
+                    depth--;
+                    if (depth <= 0) break;
+                }
+            }
+        }
+        return bound;
+    }
+
+    /** The text as parentheses and names, in order. */
+    private static List<String> tokens(String text) {
+        List<String> tokens = new ArrayList<String>();
+        int index = 0;
+        while (index < text.length()) {
+            char value = text.charAt(index);
+            if (value == '"' || value == '|') {
+                int end = pastLiteral(text, index, value);
+                tokens.add(text.substring(index, end));
+                index = end;
+                continue;
+            }
+            if (value == ';') {
+                int end = text.indexOf('\n', index);
+                index = end < 0 ? text.length() : end;
+                continue;
+            }
+            if (value == '(' || value == ')') {
+                tokens.add(String.valueOf(value));
+                index++;
+                continue;
+            }
+            if (Character.isWhitespace(value)) {
+                index++;
+                continue;
+            }
+            int start = index;
+            while (index < text.length()
+                    && !Character.isWhitespace(text.charAt(index))
+                    && text.charAt(index) != '(' && text.charAt(index) != ')'
+                    && text.charAt(index) != '"' && text.charAt(index) != ';') {
+                index++;
+            }
+            tokens.add(text.substring(start, index));
+        }
+        return tokens;
+    }
+
+    /**
      * The same names, minus the ones the theory declares.
      *
      * <p>What a caller means by "the symbols of this term": the free names,

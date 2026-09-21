@@ -1825,13 +1825,44 @@ public final class Composer {
             }
             if (!minted.isEmpty()) {
                 Sort sort = lowering.declarations().get(minted);
-                if (!lowering.stated(minted) || sort == null) {
+                // A DECLARED ROOT IS BOUND BY ITS DOMAIN, NOT BY A VALUE.
+                // Requiring a stated value here is right for an ordinary
+                // read -- binding to a symbol the recording never valued
+                // would invent freedom the run did not have.  A clock is
+                // the opposite case: its mint stated a symbol and
+                // DELIBERATELY no value, because a value on that row is a
+                // pin, and a composition that pins a clock to the instant
+                // the run read can never answer "this needed a skew"
+                // ({@code ClaimPolicy#clockNecessary} re-asks with exactly
+                // that pin and never reaches unsat).  Its freedom is stated
+                // once, as a domain, by {@link #clocks} and {@link
+                // #domains}.
+                //
+                // hdfs-11741 campaign #6: every one of the 116 paths that
+                // reached the anchor was refused here, on the DataNode
+                // clock the case turns on, with 27144 diagnostics of this
+                // one kind -- the row the runtime had just been taught to
+                // publish, rejected for stating no value it was never
+                // supposed to state.
+                RootMintRow root = corpus.rootBySymbol(session, minted);
+                if (sort == null && root != null) {
+                    sort = corpus.declaredSymbols().get(minted);
+                }
+                if (sort == null || (!lowering.stated(minted)
+                        && root == null)) {
                     refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
                             GapClass.DIAGNOSTIC, minted,
                             "the read row that states this version's "
-                                    + "symbol states no value for it, so "
+                                    + "symbol states no value for it, and "
+                                    + "no root of this session mints it, so "
                                     + "nothing binds it"));
                     continue;
+                }
+                if (root != null && !lowering.stated(minted)) {
+                    // The root's own name, declared at the sort its mint
+                    // states, so the domain this composition emits for it
+                    // lands on the same symbol the read is joined to.
+                    lowering.declareStated(minted, sort);
                 }
                 lowering.declareStated(read.symbol(), sort);
                 joins.put(read.symbol(), "(= " + read.symbol() + " "
@@ -2310,8 +2341,14 @@ public final class Composer {
     boolean unknown(String term, List<GapRow> refusals,
                             String subject) {
         List<String> free = new ArrayList<String>();
+        // A name the term BINDS is not free.  The associative size model
+        // writes `(let ((previous_size ...)) ...)`, and reading its body
+        // without its binder refused every path of hdfs-11741 campaign #6
+        // that reached the anchor.
+        Set<String> bound = SmtLowering.letBound(term);
         for (String token : SmtLowering.names(term)) {
             if (SmtLowering.BUILTIN.contains(token)) continue;
+            if (bound.contains(token)) continue;
             if (lowering.defined(token)) continue;
             // The one registry says whether the recording states it, and
             // at what sort: a published term can name a recorded symbol

@@ -1883,6 +1883,12 @@ public final class SmtLowering extends VmLoweringCore {
     /** Every name SMT-LIB itself states; see {@link SmtNames#BUILTIN}. */
     public static final Set<String> BUILTIN = SmtNames.BUILTIN;
 
+    /** The names a {@code let} in this term binds; see {@link
+     * SmtNames#letBound}. */
+    public static Set<String> letBound(String term) {
+        return SmtNames.letBound(term);
+    }
+
     /** Every token of one SMT-LIB text; see {@link SmtNames#names}. */
     public static List<String> names(String text) {
         return SmtNames.names(text);
