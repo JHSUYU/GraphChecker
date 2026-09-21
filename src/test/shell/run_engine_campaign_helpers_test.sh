@@ -1708,6 +1708,7 @@ campaign_root="${twohost_dir}"
 graphchecker_jar="${repo}/target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar"
 replay_timeout_s=2400
 solver_timeout_ms=1800000
+campaign_init_local_scratch_root
 ssh() {
   local host="" script=""
   # The production call is `ssh <options> -- <host> <command>`, so `--` is
@@ -1729,6 +1730,8 @@ ssh() {
   grep -q -- '--run-obligation' "${script}" || return 93
   grep -q -- "--graphchecker-jar-sha256 $(sha256sum "${graphchecker_jar}" \
     | awk '{print $1}')" "${script}" || return 94
+  grep -q "CAUSYNTH_LOCAL_SCRATCH=${campaign_local_scratch_root}" \
+    "${script}" || return 95
   # What the peer's payload would have published, published.
   local worker
   worker=$(awk '$1 == "--" {print $5; exit}' "${script}")
@@ -1906,5 +1909,70 @@ replay_timeout_s=1234
     -eq "$(campaign_remote_env_assignments | cut -d= -f1 | sort -u | wc -l)" ]] \
   || fail "a workflow key is forwarded to the peer more than once"
 reset_config
+
+# SCRATCH-1: the replay's scratch root is per user, per RUN and per
+# obligation, because two campaigns may share a cluster and a shared
+# /localtmp/graphchecker would have them writing into each other.
+scratch_probe="${test_tmp}/scratch-root"
+mkdir -p "${scratch_probe}"
+(
+  unset CAUSYNTH_LOCAL_SCRATCH
+  campaign_root="${scratch_probe}/run-one"
+  campaign_init_local_scratch_root
+  one=${campaign_local_scratch_root}
+  campaign_root="${scratch_probe}/run-two"
+  campaign_init_local_scratch_root
+  two=${campaign_local_scratch_root}
+  [[ "${one}" != "${two}" ]] \
+    || fail "two campaigns share one local scratch root: ${one}"
+  [[ "${one}" == /localtmp/* ]] \
+    || fail "the replay scratch is not on a local disk: ${one}"
+  [[ "${one}" == */"$(id -un)"/* ]] \
+    || fail "the replay scratch root is not per user: ${one}"
+) || exit 1
+# An explicitly EMPTY CAUSYNTH_LOCAL_SCRATCH turns it off; that is what
+# `${VAR+x}` is for and what `${VAR:-default}` would have got wrong.
+(
+  CAUSYNTH_LOCAL_SCRATCH=""
+  campaign_root="${scratch_probe}/run-three"
+  campaign_init_local_scratch_root
+  [[ -z "${campaign_local_scratch_root}" ]] \
+    || fail "an empty CAUSYNTH_LOCAL_SCRATCH did not turn local scratch off: \
+${campaign_local_scratch_root}"
+) || exit 1
+# And a stated one is taken as the root, which is how the peer gets the
+# head's.
+(
+  CAUSYNTH_LOCAL_SCRATCH=/localtmp/stated
+  campaign_root="${scratch_probe}/run-four"
+  campaign_init_local_scratch_root
+  [[ "${campaign_local_scratch_root}" == /localtmp/stated ]] \
+    || fail "a stated CAUSYNTH_LOCAL_SCRATCH was not taken as the root"
+) || exit 1
+
+# SCRATCH-2: the case adapter puts java.io.tmpdir and test.build.data under
+# it, in a directory of the worker's own, and REMOVES that directory when the
+# replay exits -- including when it fails.  Only temporary bytes move: the
+# session and the result rows are still written to the shared home.
+execute_sh="${repo}/experiments/hadoop/hdfs-11741/execute.sh"
+grep -q -- '-Djava.io.tmpdir="${tmpdir}" -Dtest.build.data="${datadir}"' \
+  "${execute_sh}" \
+  || fail "the adapter no longer takes its scratch paths from one place"
+grep -q 'CAUSYNTH_LOCAL_SCRATCH' "${execute_sh}" \
+  || fail "the adapter does not honour CAUSYNTH_LOCAL_SCRATCH"
+grep -q 'rm -rf -- "${scratch_owned}"' "${execute_sh}" \
+  || fail "the adapter does not remove its scratch subdirectory"
+grep -q '^trap remove_local_scratch EXIT$\|trap remove_local_scratch EXIT' \
+  "${execute_sh}" \
+  || fail "the adapter's scratch removal is not on EXIT, so a failed replay \
+would leave its MiniDFSCluster data behind on every host it ran on"
+bash -n "${execute_sh}" || fail "the adapter is not valid bash"
+# The campaign hands it one, per obligation, and hands the peers the same
+# root so a remote replay's scratch is on the PEER's local disk.
+grep -q 'CAUSYNTH_LOCAL_SCRATCH=${campaign_local_scratch_root:+' \
+  "${repo}/run_engine.sh" \
+  || fail "the campaign does not hand the adapter a per-worker scratch path"
+grep -q 'CAUSYNTH_LOCAL_SCRATCH=%q' "${repo}/run_engine.sh" \
+  || fail "the peers are not handed the run's local scratch root"
 
 echo "run_engine campaign helper tests passed"

@@ -1295,6 +1295,8 @@ campaign_preflight() {
   campaign_log "workers=${concolic_worker_count} maxIterations=${campaign_max_iterations} maxJobs=${schedule_max_jobs}"
   campaign_log "obligation pool: $(campaign_worker_slot_hosts | wc -l) slot(s) \
 across host(s) ${campaign_worker_hosts:-$(hostname) (local only)}"
+  campaign_log "replay scratch: \
+${campaign_local_scratch_root:-<shared home, as before>}"
   # Every peer is reached once before the seed replay, not for the first time
   # somewhere inside wave 0 with a hundred obligations already planned.
   local worker_host
@@ -1342,6 +1344,45 @@ run_under_wall_clock_bound() {
   local seconds=$1
   shift
   timeout --kill-after="${campaign_adapter_kill_grace_s}s" "${seconds}s" "$@"
+}
+
+# ---------------------------------------------------------------------------
+# REPLAY SCRATCH ON LOCAL DISK
+#
+# A focused replay stands up a MiniDFSCluster, and the cluster's name
+# directories, edit logs and block files go wherever `test.build.data` and
+# `java.io.tmpdir` point.  Those defaulted to the worker directory, which is
+# on the shared home: with eight concurrent replays that is eight fsync-heavy
+# little filesystems on one NFS mount, and with forty it is forty.
+#
+# None of those bytes is READ or PUBLISHED by anything downstream.  The
+# evidence a replay produces is its session under ${sessions}/<sessionId>/,
+# its ${worker}/obligation_result.jsonl, its region results and its
+# replay.log -- every one of them written straight to the shared home and
+# none of them under temp/ or data/.  (Checked against 11741 campaign #5b's
+# finished corpus: every replayed worker's temp/ and data/ hold zero files at
+# the end of the run, only the empty directory skeleton MiniDFSCluster left.)
+# So only genuinely temporary bytes move; everything a later stage opens
+# stays exactly where it was.
+#
+# The root is per USER and per RUN, because two campaigns may share a
+# cluster, and the per-obligation leaf below makes it per OBLIGATION as well.
+# Stated by the environment when the operator states one -- and an explicitly
+# EMPTY CAUSYNTH_LOCAL_SCRATCH turns the whole thing off, which is why this
+# tests for the variable being SET rather than for it being non-empty.
+campaign_local_scratch_root=""
+
+campaign_init_local_scratch_root() {
+  local run_key
+  if [[ -n "${CAUSYNTH_LOCAL_SCRATCH+x}" ]]; then
+    campaign_local_scratch_root=${CAUSYNTH_LOCAL_SCRATCH}
+    return 0
+  fi
+  # The campaign root is this run's unique name -- `mkdir frozen-inputs` is
+  # the atomic claim on it -- so its digest is a run id no second campaign on
+  # this cluster can collide with.
+  run_key=$(printf '%s' "${campaign_root}" | sha256sum | cut -c1-16)
+  campaign_local_scratch_root="/localtmp/$(id -un)/graphchecker/${run_key}"
 }
 
 # ---------------------------------------------------------------------------
@@ -1471,6 +1512,7 @@ campaign_write_remote_worker_script() {
     printf '  env \\\n'
     printf '    PATH=%q \\\n' "${PATH}"
     printf '    HOME=%q \\\n' "${HOME}"
+    printf '    CAUSYNTH_LOCAL_SCRATCH=%q \\\n' "${campaign_local_scratch_root}"
     while IFS= read -r assignment; do
       printf '    %q \\\n' "${assignment}"
     done < <(campaign_remote_env_assignments)
@@ -2159,6 +2201,8 @@ campaign_replay() {
     "CAUSYNTH_TRACE_TEST=${trace_test}" \
     "CAUSYNTH_TRACE_MODE=replay-context" \
     "CAUSYNTH_STATIC_SCOPE_MAP=${causynth_static_scope_map}" \
+    "CAUSYNTH_LOCAL_SCRATCH=${campaign_local_scratch_root:+\
+${campaign_local_scratch_root}/$(basename "${worker}")}" \
     >"${worker}/replay.log" 2>&1
   # The one exit code that is NOT the workload's own: this replay outlived
   # the wall clock its caller gave it and the process group was killed.  Said
@@ -3649,8 +3693,12 @@ ${actual_sha}, the campaign says ${jar_sha}"
   validate_config >/dev/null
   require_command_available jq
   require_command_available sha256sum
+  # Set from the CAUSYNTH_LOCAL_SCRATCH the campaign forwarded, so this
+  # worker's replay scratch lands on THIS machine's local disk under the same
+  # per-run root every other worker of the run uses.
+  campaign_init_local_scratch_root
   campaign_log "obligation $1 on $(hostname): jar ${graphchecker_jar} \
-(${actual_sha})"
+(${actual_sha}), scratch ${campaign_local_scratch_root:-<shared home>}"
   campaign_obligation_worker "$@"
 }
 
@@ -3682,6 +3730,9 @@ do_campaign() {
     FREEZE_TOOL CAMPAIGN "${campaign_root}" \
     "the campaign root is already reserved by another run"
   : >"${campaign_stage_metrics}"
+  # Named now that the campaign root is claimed, because the root is what
+  # makes it this run's and no other run's.
+  campaign_init_local_scratch_root
 
   campaign_stage PREFLIGHT campaign_preflight
   campaign_stage FREEZE_TOOL campaign_freeze_graphchecker_jar
