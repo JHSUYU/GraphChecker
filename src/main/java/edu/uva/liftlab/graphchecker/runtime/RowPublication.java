@@ -55,6 +55,24 @@ final class RowPublication {
     }
 
     /**
+     * The MINTS of an activation whose other rows are withheld.
+     *
+     * <p>An abandoned activation states no path -- its decisions, writes and
+     * anchor are about a replay that did not run what it was asked -- but
+     * its mints are already in the VM, and a symbol the session carries with
+     * no row to resolve it is what every later stage then reads as "this
+     * quantity is nobody's".  One of the two, never neither: either the mint
+     * was refused at the mint ({@code RootMint#mintUnattributed}, no symbol)
+     * or it is rowed here.</p>
+     */
+    static void publishMints(ActiveRegion active) {
+        if (active == null || !RowRuntime.open()) return;
+        OccurrenceAddress occurrence = active.d3Address;
+        if (occurrence == null) return;
+        publishKind("mints", active, occurrence);
+    }
+
+    /**
      * One kind, and its own refusal.
      *
      * <p>A row kind that cannot be built is that kind's gap: publishing them
@@ -69,6 +87,8 @@ final class RowPublication {
                 decisions(active, occurrence);
             } else if ("roots".equals(kind)) {
                 RowPlaceholderMint.roots(active, occurrence);
+            } else if ("mints".equals(kind)) {
+                RowPlaceholderMint.mints(active, occurrence);
             } else if ("state".equals(kind)) {
                 writes(active);
             } else {

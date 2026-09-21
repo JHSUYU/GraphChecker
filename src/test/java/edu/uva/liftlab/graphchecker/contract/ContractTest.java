@@ -455,6 +455,40 @@ public class ContractTest {
         concrete.targets.set(0, TargetRow.of("s-gate", 15L, concrete.anchor,
                 "Guard#u8", "", false, true));
         assertInvariant(9, GapClass.DIAGNOSTIC, "field=phiTerm", concrete);
+        // 11 (R4): a root symbol without its RootMintRow.  WHICH quantities
+        // are roots is a fact about the SET -- CASE.MARKER is a root because
+        // some session of the epoch minted a row naming it -- and a session
+        // that NAMES that root's symbol while publishing no mint row of its
+        // own carries a quantity nothing of it attributes.  That is 11741
+        // campaign #4: the symbol reached the expressions out of an
+        // activation the run abandoned, and the composer met it as an arm it
+        // could not guard.
+        Rows unattributed = clean();
+        unattributed.id = "s-abandoned";
+        unattributed.roots.clear();
+        assertInvariant(11, GapClass.BLOCKING, "CASE.MARKER",
+                clean(), unattributed);
+        assertEquals("one row per (session, root), naming both: "
+                        + names(gate(clean(), unattributed)),
+                1, stating(gate(clean(), unattributed),
+                        GapKind.MINT_UNATTRIBUTED, GapClass.BLOCKING));
+        // And the same corpus with the mint row present states none.
+        Rows attributed = clean();
+        attributed.id = "s-abandoned";
+        assertEquals("a session that states the mint row is not refused: "
+                        + names(gate(clean(), attributed)),
+                0, stating(gate(clean(), attributed),
+                        GapKind.MINT_UNATTRIBUTED, GapClass.BLOCKING));
+    }
+
+    /** How many rows of one kind and class a gate stated. */
+    private static int stating(List<GapRow> gaps, GapKind kind,
+                               GapClass cls) {
+        int count = 0;
+        for (GapRow gap : gaps) {
+            if (gap.kind() == kind && gap.cls() == cls) count++;
+        }
+        return count;
     }
 
     /** No violation of that rule at all, whatever its class. */

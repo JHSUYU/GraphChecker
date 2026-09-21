@@ -11,3 +11,6 @@ __pycache__/
 /scratchpad/
 hs_err_pid*.log
 /experiments/shrink/scan/
+
+# Claude Code agent worktrees and session state: tooling, never an input of a campaign
+.claude/

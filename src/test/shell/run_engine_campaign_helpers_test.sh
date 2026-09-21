@@ -688,7 +688,14 @@ done
 # applied silently to 54 of hdfs-17960's retained loops, which README LOOP-1
 # forbids a retained condition loop doing, so the case states it and the
 # campaign publishes what it stated.
-[[ "$(print_normalized_config | wc -l)" -eq 44 ]] \
+# 45: `replay_timeout_s` joined it when the focused replay got a wall clock.
+# The solver had a budget and the replay had none, so one replay JVM that
+# deadlocked on two class monitors held 11741 campaign #4's wave 1 open until
+# the campaign's own outer timeout killed everything and discarded the
+# verdicts the wave had already reached.  How long a replay may take is part
+# of the configuration a campaign publishes: two runs of the same case that
+# bounded their replays differently did not explore under the same rules.
+[[ "$(print_normalized_config | wc -l)" -eq 45 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 # CONFIG-3: the region skeletons are ONE path, and every weave takes them
@@ -950,6 +957,7 @@ stop_after_config() {
   causynth_symbolic_inputs=""
   causynth_root_domains=""
   solver_timeout_ms=1000
+  replay_timeout_s=2400
   schedule_max_jobs=1
   concolic_worker_count=1
   campaign_max_iterations=1
@@ -1090,17 +1098,20 @@ mkdir -p "${wave_gate}/sessions/focus-a"
   run_java_main() {
     # The gate is handed a session directory of its own, holding the
     # epoch's whole roster, and the wave itself as the one wave of
-    # obligation workers behind it.
-    [[ "$3" == "${wave_gate}/obligations-0000/import-gate/sessions" ]] \
+    # obligation workers behind it.  It is built BESIDE the waves, never
+    # inside one: a gate under its own wave links its own ancestor.
+    [[ "$3" == "${wave_gate}/import-gates/obligations-0000/sessions" ]] \
       || fail "the wave gate did not name its own session set: $3"
     [[ -d "$3/focus-a" ]] \
       || fail "the wave gate did not gate the session its wave published"
     [[ -d "$3/seed-result-0" ]] \
       || fail "the wave gate left the epoch's seed out of the set it gated, \
 so invariant 1 has no SEED to find"
-    [[ -f "${wave_gate}/obligations-0000/import-gate/obligations-0000/\
+    [[ -f "${wave_gate}/import-gates/obligations-0000/obligations-0000/\
 OBL.a/obligation_result.jsonl" ]] \
       || fail "the wave gate hid its own obligation workers"
+    [[ ! -e "${wave_gate}/obligations-0000/import-gate" ]] \
+      || fail "the wave gate was built inside the wave it links"
     printf '%s\n' '{"violations":1,"blocking":1,'\
 '"firstBlockingSubject":"roots.jsonl seq=3 field=recordedValue"}'
     printf '{"schemaVersion":1,"cls":"BLOCKING"}\n' \
@@ -1118,6 +1129,48 @@ grep -q 'roots.jsonl seq=3 field=recordedValue' "${wave_gate}/error.log" \
   || fail "the wave gate's failure does not name the first blocking subject"
 [[ -s "${wave_gate}/obligations-0000/import_gate.json" ]] \
   || fail "the wave gate wrote no summary of its own"
+
+# And EVERY wave of the epoch is behind the set it gates, not just the one
+# being gated.  Invariant 6 asks of each FOCUSED session which world it ran
+# in, and its worker's focus row is the only thing that says so; a gate that
+# links this wave alone hides every earlier wave's focus rows, so each session
+# an earlier wave focused reads as "no focus row this epoch".  hdfs-11741
+# campaign #3: wave 1 was the first wave of any campaign to publish a session,
+# and its gate refused with 13 BLOCKING invariant-6 rows, one per session that
+# wave 0 had focused.
+mkdir -p "${wave_gate}/obligations-0001/OBL.b"
+printf '{"sessionId":"focus-b"}\n' \
+  >"${wave_gate}/obligations-0001/OBL.b/obligation_result.jsonl"
+campaign_session_roster "${wave_gate}/sessions" \
+  >"${wave_gate}/obligations-0001/sessions-before.txt"
+mkdir -p "${wave_gate}/sessions/focus-b"
+(
+  run_java_main() {
+    [[ -f "${wave_gate}/import-gates/obligations-0001/obligations-0000/\
+OBL.a/obligation_result.jsonl" ]] \
+      || fail "the wave gate hid an EARLIER wave's obligation workers, so \
+every session that wave focused reads as having no focus row"
+    [[ -f "${wave_gate}/import-gates/obligations-0001/obligations-0001/\
+OBL.b/obligation_result.jsonl" ]] \
+      || fail "the wave gate hid its own obligation workers"
+    printf '%s\n' '{"violations":0,"blocking":0,"firstBlockingSubject":""}'
+  }
+  campaign_import_wave_gate "${wave_gate}" iteration-0000 \
+    "${wave_gate}/obligations-0001" "${wave_gate}/sessions" >/dev/null
+) || fail "a wave gate over two waves did not link both waves"
+[[ -s "${wave_gate}/obligations-0001/import_gate.json" ]] \
+  || fail "the wave gate's summary does not stay with its wave"
+# NO LINK INTO ITS OWN ANCESTOR: the gate is beside the waves, so nothing
+# under it resolves to a directory that contains it -- a walker that
+# recurses cannot loop.
+for gate_link in "${wave_gate}"/import-gates/*/*; do
+  [[ -L "${gate_link}" ]] || continue
+  gate_target=$(readlink -f "${gate_link}")
+  gate_holder=$(readlink -f "$(dirname "${gate_link}")")
+  [[ "${gate_holder}" != "${gate_target}"/* \
+     && "${gate_holder}" != "${gate_target}" ]] \
+    || fail "the wave gate links its own ancestor: ${gate_link}"
+done
 
 # INSTRUMENT-VERIFY: the woven classes are put to the JVM verifier in the
 # stage that wrote them.  9d2761c17 asked it for the first time inside the
@@ -1200,5 +1253,228 @@ grep -q 'stage=IMPORT' "${gate_empty}/error.log" \
 grep -q "is not a count: 'null'" "${gate_empty}/error.log" \
   || fail "the unreadable gate summary does not name the value it read: \
 $(cat "${gate_empty}/error.log")"
+
+# REPLAY-BOUND-1: `replay_timeout_s` is a declared workflow key, registered
+# exactly like `solver_timeout_ms` -- it answers the four table questions, it
+# resolves from a config file, it resolves from its one environment override,
+# and validate_config refuses a value that is not a positive integer.  The
+# solver had a budget and the replay had none, which is how one deadlocked
+# replay JVM held 11741 campaign #4's wave 1 open until the campaign's own
+# outer timeout killed everything.
+grep -q 'CAUSYNTH_REPLAY_TIMEOUT_S' "${repo}/run_engine.sh" \
+  || fail "the environment override for replay_timeout_s is not declared"
+[[ "$(grep -c 'CAUSYNTH_REPLAY_TIMEOUT_S' "${repo}/run_engine.sh")" -eq 1 ]] \
+  || fail "CAUSYNTH_REPLAY_TIMEOUT_S appears outside the key table: \
+it is honoured through apply_environment_overrides only"
+known_config_key replay_timeout_s \
+  || fail "replay_timeout_s is not loadable from a workflow file"
+bound_dir="${test_tmp}/replay-bound"
+mkdir -p "${bound_dir}"
+reset_config
+[[ "${replay_timeout_s}" == 2400 ]] \
+  || fail "replay_timeout_s does not default to 2400: ${replay_timeout_s}"
+printf 'replay_timeout_s=60\n' >"${bound_dir}/workflow.properties"
+load_config_file "${bound_dir}/workflow.properties"
+[[ "${replay_timeout_s}" == 60 ]] \
+  || fail "a workflow file cannot set replay_timeout_s"
+reset_config
+CAUSYNTH_REPLAY_TIMEOUT_S=90 apply_environment_overrides
+[[ "${replay_timeout_s}" == 90 ]] \
+  || fail "CAUSYNTH_REPLAY_TIMEOUT_S does not override replay_timeout_s"
+reset_config
+# The same gate every other bound answers to: a campaign that states a
+# nonsense wall clock is refused by name before any work starts.
+replay_bound_validate() (
+  stop_after_config ""
+  replay_timeout_s=$1
+  validate_config
+)
+for bad in "" "0" "x" "-1"; do
+  run_capturing_status replay_bound_validate "${bad}" \
+    >/dev/null 2>"${bound_dir}/validate.err"
+  [[ "${status}" -ne 0 ]] \
+    || fail "validate accepted replay_timeout_s='${bad}'"
+  grep -q 'replay_timeout_s must be' "${bound_dir}/validate.err" \
+    || fail "the refusal does not name replay_timeout_s: \
+$(cat "${bound_dir}/validate.err")"
+done
+
+# REPLAY-BOUND-2: the bound kills the adapter's whole PROCESS GROUP, not the
+# shell it started.  The hung replay was a JVM two processes below the
+# adapter's login shell, so a bound that signalled only the shell would have
+# left it running and the worker still waiting on it.
+mkdir -p "${bound_dir}/work"
+workload_work_dir="${bound_dir}/work"
+custom_jdk_home=""
+campaign_adapter_timeout_s=1
+run_capturing_status campaign_run_adapter "replay(test)" \
+  "sleep 120 & echo \$! >'${bound_dir}/grandchild.pid'; wait" \
+  >"${bound_dir}/adapter.log" 2>&1
+[[ "${status}" -eq 124 ]] \
+  || fail "a bounded adapter that outlived its bound did not report the \
+timeout (exit ${status})"
+grandchild=$(cat "${bound_dir}/grandchild.pid")
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  kill -0 "${grandchild}" 2>/dev/null || break
+  sleep 0.3
+done
+if kill -0 "${grandchild}" 2>/dev/null; then
+  kill -9 "${grandchild}" 2>/dev/null || true
+  fail "the bound left the adapter's grandchild ${grandchild} running: the \
+process group was not killed"
+fi
+# An empty bound is the unbounded call this was before: no `timeout` at all.
+campaign_adapter_timeout_s=""
+run_capturing_status campaign_run_adapter "replay(test)" "exit 3" \
+  >"${bound_dir}/adapter-unbounded.log" 2>&1
+[[ "${status}" -eq 3 ]] \
+  || fail "an unbounded adapter no longer reports the workload's own exit \
+code (${status})"
+if grep -q 'adapter bound' "${bound_dir}/adapter-unbounded.log"; then
+  fail "an unbounded adapter logs a bound it does not have"
+fi
+# One setter: the declaration and campaign_obligation_worker.  The SEED
+# replay goes through campaign_session_replay, which sets no bound -- the
+# seed is the iteration's only source of observed cases and a truncated one
+# is a campaign failure, not a recorded verdict.
+[[ "$(grep -c 'campaign_adapter_timeout_s=' "${repo}/run_engine.sh")" -eq 2 ]] \
+  || fail "the replay bound has more than one setter: \
+$(grep -n 'campaign_adapter_timeout_s=' "${repo}/run_engine.sh")"
+
+# REPLAY-BOUND-3: what one obligation whose replay never returns records.
+# The same terminal NOT_ADMITTED row the worker writes for a solver that
+# failed -- one obligation's own answer, never the wave's death -- naming the
+# bound it exceeded.  The worker must also RETURN, which is the whole point:
+# campaign_wait_workers waited on the hung one forever.
+worker_dir="${bound_dir}/obligation"
+mkdir -p "${worker_dir}" "${bound_dir}/sessions" "${bound_dir}/classes"
+printf '{"taskId":"TASK.1"}\n' >"${bound_dir}/seed_plan.jsonl"
+: >"${bound_dir}/obligations.jsonl"
+replay_timeout_s=1
+concolic_replay_command="sleep 120"
+causynth_root_domains=""
+causynth_static_scope_map=""
+z3_bin=z3
+solver_timeout_ms=1000
+schedule_max_jobs=1
+trace_test=T
+(
+  # The solver settled it: a model is ready and the replay is what decides.
+  run_java_main() {
+    jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT",
+      obligationId: "OB.1", verdict: "SAT_MODEL_READY", sessionId: "",
+      detail: ""}' >"${worker_dir}/obligation_result.jsonl"
+    printf '{"taskId":"TASK.1"}\n' >"${worker_dir}/focused_task.jsonl"
+    printf '(assert true)\n' >"${worker_dir}/obligation_query.smt2"
+  }
+  campaign_obligation_worker OB.1 "${bound_dir}/obligations.jsonl" \
+    "${bound_dir}/classes" "${worker_dir}" "${bound_dir}/sessions" \
+    "${bound_dir}/seed_plan.jsonl"
+) >"${worker_dir}/worker.log" 2>&1 \
+  || fail "the worker did not return when its replay outlived the bound: \
+$(cat "${worker_dir}/worker.log")"
+[[ "$(jq -r '.verdict' "${worker_dir}/obligation_result.jsonl")" \
+    == NOT_ADMITTED ]] \
+  || fail "a replay killed on its bound did not record NOT_ADMITTED: \
+$(cat "${worker_dir}/obligation_result.jsonl")"
+[[ "$(jq -r '.detail' "${worker_dir}/obligation_result.jsonl")" \
+    == "replay exceeded replay_timeout_s=1" ]] \
+  || fail "the recorded row does not name the bound it exceeded: \
+$(cat "${worker_dir}/obligation_result.jsonl")"
+[[ "$(jq -r '.kind' "${worker_dir}/obligation_result.jsonl")" \
+    == OBLIGATION_RESULT ]] \
+  || fail "the recorded row is not an obligation result: \
+$(cat "${worker_dir}/obligation_result.jsonl")"
+# This replay was killed before it opened a session, which is a case of its
+# own: nothing to withdraw, and the worker says so rather than passing over
+# it.
+grep -q 'nothing withdrawn' "${worker_dir}/worker.log" \
+  || fail "a replay killed before it opened a session does not say so: \
+$(cat "${worker_dir}/worker.log")"
+[[ ! -e "${worker_dir}/timed-out-sessions" ]] \
+  || fail "the worker made a quarantine for a session that never existed"
+
+# REPLAY-BOUND-4: the session a killed replay left behind leaves the corpus.
+# SessionPublisher writes manifest.json at the OPEN, so a replay killed at
+# work has a session that NAMES its obligation and states no verdict for it
+# -- which Composer.settled reads as UNSTATED_VALUE/BLOCKING.  The wave now
+# closes on the NOT_ADMITTED row, so without this the campaign would trade a
+# stopped wave for a withheld candidate: one hung JVM, no claim.  The
+# directory is moved under the worker, never deleted, and the lookup is the
+# manifest -- eight workers write into one sessions directory, so a session
+# naming somebody else's obligation must not be touched.
+withdraw_dir="${bound_dir}/withdraw"
+withdraw_sessions="${withdraw_dir}/sessions"
+withdraw_worker="${withdraw_dir}/obligation"
+mkdir -p "${withdraw_worker}" "${withdraw_sessions}" "${withdraw_dir}/classes"
+printf '{"taskId":"TASK.1"}\n' >"${withdraw_dir}/seed_plan.jsonl"
+: >"${withdraw_dir}/obligations.jsonl"
+# Another worker's session, open at the same moment and naming its own
+# obligation: untouched, whatever happens to ours.
+mkdir -p "${withdraw_sessions}/SESSION.other"
+jq -n -c '{schemaVersion: 1, kind: "SESSION_MANIFEST",
+  sessionId: "SESSION.other", role: "FOCUSED",
+  obligationIds: ["OB.OTHER"]}' \
+  >"${withdraw_sessions}/SESSION.other/manifest.json"
+: >"${withdraw_sessions}/SESSION.other/activations.jsonl"
+# The replay opens its session -- manifest first, as SessionPublisher does --
+# and then hangs, exactly like the JVM that deadlocked on two class monitors.
+cat >"${withdraw_dir}/replay.sh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+mkdir -p "\${CAUSYNTH_CONCOLIC_SESSIONS}/SESSION.mine"
+jq -n -c '{schemaVersion: 1, kind: "SESSION_MANIFEST",
+  sessionId: "SESSION.mine", role: "FOCUSED", obligationIds: ["OB.1"]}' \\
+  >"\${CAUSYNTH_CONCOLIC_SESSIONS}/SESSION.mine/manifest.json"
+sleep 120
+EOF
+chmod +x "${withdraw_dir}/replay.sh"
+replay_timeout_s=1
+concolic_replay_command="${withdraw_dir}/replay.sh"
+(
+  run_java_main() {
+    jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT",
+      obligationId: "OB.1", verdict: "SAT_MODEL_READY", sessionId: "",
+      detail: ""}' >"${withdraw_worker}/obligation_result.jsonl"
+    printf '{"taskId":"TASK.1"}\n' >"${withdraw_worker}/focused_task.jsonl"
+    printf '(assert true)\n' >"${withdraw_worker}/obligation_query.smt2"
+  }
+  campaign_obligation_worker OB.1 "${withdraw_dir}/obligations.jsonl" \
+    "${withdraw_dir}/classes" "${withdraw_worker}" "${withdraw_sessions}" \
+    "${withdraw_dir}/seed_plan.jsonl"
+) >"${withdraw_worker}/worker.log" 2>&1 \
+  || fail "the worker did not return when its replay outlived the bound: \
+$(cat "${withdraw_worker}/worker.log")"
+[[ ! -e "${withdraw_sessions}/SESSION.mine" ]] \
+  || fail "the timed-out replay's session is still in the corpus, where \
+COMPOSE reads it and refuses the candidate BLOCKING: \
+$(find "${withdraw_sessions}" -maxdepth 2 | LC_ALL=C sort)"
+[[ -f "${withdraw_worker}/timed-out-sessions/SESSION.mine/manifest.json" ]] \
+  || fail "the withdrawn session is not kept under the worker that owned it: \
+$(find "${withdraw_worker}" -maxdepth 3 | LC_ALL=C sort)"
+[[ "$(jq -r '.obligationIds[0]' \
+    "${withdraw_worker}/timed-out-sessions/SESSION.mine/manifest.json")" \
+    == OB.1 ]] \
+  || fail "the withdrawn session is not the one that named this obligation"
+# The other worker's session, and every row in it, exactly where it was.
+[[ -f "${withdraw_sessions}/SESSION.other/manifest.json" ]] \
+  || fail "another worker's session was withdrawn with ours"
+[[ -f "${withdraw_sessions}/SESSION.other/activations.jsonl" ]] \
+  || fail "another worker's session lost rows"
+[[ ! -e "${withdraw_worker}/timed-out-sessions/SESSION.other" ]] \
+  || fail "another worker's session was moved under our worker"
+grep -q 'withdrew session SESSION.mine' "${withdraw_worker}/worker.log" \
+  || fail "the withdrawal is not logged: $(cat "${withdraw_worker}/worker.log")"
+# The verdict row is untouched by any of this: it is still the one terminal
+# answer this obligation reached.
+[[ "$(jq -r '.verdict' "${withdraw_worker}/obligation_result.jsonl")" \
+    == NOT_ADMITTED ]] \
+  || fail "withdrawing the session changed the verdict row: \
+$(cat "${withdraw_worker}/obligation_result.jsonl")"
+[[ "$(jq -r '.detail' "${withdraw_worker}/obligation_result.jsonl")" \
+    == "replay exceeded replay_timeout_s=1" ]] \
+  || fail "withdrawing the session changed the recorded detail: \
+$(cat "${withdraw_worker}/obligation_result.jsonl")"
+reset_config
 
 echo "run_engine campaign helper tests passed"

@@ -471,6 +471,84 @@ final class ActiveRegion {
     }
 
     /**
+     * Whether a configured-source hook may mint where it just fired.
+     *
+     * <p>A CONCRETELY RUN REGION CONTRIBUTES LITERALS, NEVER FREEDOM
+     * (README SS9 rule 1).  The hook fires wherever its site runs, and it
+     * used to mint on whatever activation was on the thread -- so an
+     * occurrence whose every read is a literal handed the export a FREE
+     * root the recording never had.  On hdfs-11741 that is {@code
+     * HDFS.BLOCK_KEY.EXPIRY_DATE{,.CURRENT,.RETIRED}}: in the seed the
+     * field arrives as {@code clock + k*keyUpdateInterval + tokenLifetime}
+     * and the mint is a no-op publishing {@code reused}; where {@code
+     * updateKeys} ran concrete the field was a literal and three fresh
+     * INTEGRAL roots were minted beside it, which decouples the expiry
+     * from the clock it is computed from -- twelve wave-1 obligations
+     * refused {@code ASSIGNMENT_UNMINTABLE} on roots no replay could
+     * plant, and a composer that cannot relate expiry to the clock.</p>
+     *
+     * <p>THE OCCURRENCE THAT OWNS THE SITE IS THE THREAD'S ACTIVE ONE.
+     * Occurrences do not nest: entering a declared region below an active
+     * occurrence opens none, so every site executed synchronously beneath
+     * it -- {@code updateKeys}, {@code removeExpiredKeys} -- belongs to
+     * that occurrence.  So the mint asks one question of it, the same one
+     * {@code FocusedReplay} answers everywhere else: is this occurrence
+     * one of the ones that run SYMBOLIC in this replay?  A replay handed
+     * no focus row is the seed, where every planned occurrence does; a
+     * focused replay runs its focused set and nothing else.</p>
+     *
+     * <p>A hook under no active occurrence at all, or under one that runs
+     * concretely, mints nothing, plants nothing and says so once: the row
+     * names the source and the occurrence that was active, or {@code
+     * none}.  DIAGNOSTIC, because nothing was rewritten -- the region
+     * reads the literal its own execution produced, which is what it read
+     * in the recording; what the row answers is why no root row stands
+     * here.  An activation this run could give no address is not focused
+     * either, so it refuses by the same rule: a mint is addressed at an
+     * occurrence, and one that cannot be named cannot be the focused
+     * one.</p>
+     */
+    static boolean mintsUnderSymbolicOccurrence(
+            ActiveRegion active, String sourceId, String fieldSignature) {
+        if (active != null && active.symbolicallyActive()) return true;
+        RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
+                        .DECLARATION_MISSING,
+                edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
+                edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank(
+                        safe(sourceId), safe(fieldSignature)),
+                "this configured-source hook fired under "
+                        + (active == null ? "none" : active.mintAddress())
+                        + ", which is not an occurrence this replay runs"
+                        + " symbolically, so the field it stands on holds"
+                        + " the literal this execution produced and no root"
+                        + " is minted for " + safe(sourceId) + " here"
+                        + " (field " + safe(fieldSignature) + ")");
+        return false;
+    }
+
+    /**
+     * Whether THIS occurrence is one of the ones that run symbolic.
+     *
+     * <p>One implementation of the notion, and it is {@code
+     * FocusedReplay}'s: the focused occurrence, a member of its
+     * state-connected factor, or the mint of a root the obligation
+     * assigns.  A replay handed no focus row is the recording, and every
+     * planned occurrence of it runs symbolic.</p>
+     */
+    boolean symbolicallyActive() {
+        if (!FocusedReplay.focusedSession()) return true;
+        return FocusedReplay.focused(activation.taskId, d3Address);
+    }
+
+    /** This activation, as a row about its mint names it. */
+    private String mintAddress() {
+        return edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank(
+                d3Address == null ? "" : d3Address.render(), occurrenceId(),
+                Long.toString(token)) + " of region "
+                + safe(activation.regionId);
+    }
+
+    /**
      * The declared mint site one hook execution stands at, or null.
      *
      * <p>The catalog is a list of mint SITES, not a selection and not a

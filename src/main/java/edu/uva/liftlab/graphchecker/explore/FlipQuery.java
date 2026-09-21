@@ -4,6 +4,7 @@ import edu.uva.liftlab.graphchecker.compose.JavaSmtSorts;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering;
 import edu.uva.liftlab.graphchecker.smt.Arms;
+import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
@@ -11,6 +12,7 @@ import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
 import edu.uva.liftlab.graphchecker.contract.InteractionKind;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
@@ -38,8 +40,10 @@ import java.util.Set;
  *       marker, and PINNED to what the recording read when it has no domain,
  *       because the composition pins it there too and a flip that needs it to
  *       move could never become a finding;</li>
- *   <li>a CLOCK is per path, unbounded, with a {@code >= 0} floor only: every
- *       execution reads it fresh, so it is never an equality between paths;</li>
+ *   <li>a CLOCK is per path and never an equality between paths -- every
+ *       execution reads it fresh -- and its domain is the one a millisecond
+ *       count in a Java {@code long} has: {@code >= 0} AND {@code <=
+ *       Long.MAX_VALUE};</li>
  *   <li>a HANDOFF {@code v_H(I)} is bound by its family: {@code OR_q (pi_q AND
  *       guard_q AND v_H = e_q)} over the producer paths whose export endpoint
  *       is I's producer.  The walk closes over the handoffs those arms name in
@@ -345,6 +349,8 @@ final class FlipQuery {
                 // took, and nothing else.
                 assertions.add(last ? "(not " + held + ")" : held);
             }
+            Built refused = inheritedFlips(flipped);
+            if (refused != null) return refused;
             drain();
             stateFacts();
             if (!refusal.isEmpty()) {
@@ -410,6 +416,106 @@ final class FlipQuery {
                     new ArrayList<Control>(controls.values()),
                     reached(rootVariables, reached),
                     reached(clockVariables, reached), gaps);
+        }
+
+        /**
+         * THE PARENT'S FLIPS, asserted: the world this cut path ran in.
+         *
+         * <p>A path of a focused session exists only inside the world its
+         * own replay ran -- the flip that replay was asked for, and every
+         * flip IT inherited ({@link Corpus.World}).  A child cut from that
+         * path therefore states them too: for each inherited flip, the
+         * parent occurrence's own prefix THROUGH the flipped decision, in
+         * the session the path was cut from, lowered and renamed in that
+         * session's scope exactly as this path's own prefix is.  Without
+         * them the query asks for dn1's second expiry flip under no clock
+         * skew at all, and the model it answers with is a world no
+         * execution had.</p>
+         *
+         * <p>These are {@code assertions} and not facts, so the model
+         * projection reaches the clocks and roots they name: what the child
+         * has to be run at includes what its parent was run at.</p>
+         *
+         * <p>Fail closed, though an ADMITTED session cannot be any of
+         * these: an occurrence the corpus does not hold, a decision the
+         * session does not state at that site and ordinal, one stating the
+         * other arm, or a flipped conjunct over a name nothing declares --
+         * each refuses the obligation by name.  An unknown name in an
+         * inherited PREFIX conjunct drops that conjunct with the same
+         * DIAGNOSTIC gap a conjunct of this path's own prefix is dropped
+         * with; the flipped conjunct is the claim and is never dropped.</p>
+         *
+         * @return the refusal, or null when every inherited flip is stated
+         */
+        private Built inheritedFlips(DecisionRow flipped) {
+            for (Corpus.Flip inherited
+                    : corpus.world(path.sessionId).flips) {
+                OccurrenceAddress at =
+                        corpus.occurrence(inherited.focusedOccurrenceId);
+                if (at == null) {
+                    return refuseInherited(inherited, flipped);
+                }
+                List<DecisionRow> decisions =
+                        corpus.decisionsOf(path.sessionId, at);
+                DecisionRow row = null;
+                for (DecisionRow candidate : decisions) {
+                    if (candidate.siteId().equals(inherited.siteId)
+                            && candidate.ordinal() == inherited.ordinal) {
+                        row = candidate;
+                    }
+                }
+                if (row == null || row.outcome() != inherited.outcome) {
+                    return refuseInherited(inherited, flipped);
+                }
+                // The parent's prefix THROUGH its flipped decision: what
+                // that occurrence had decided by the time it took the arm
+                // this path rests on.  Arms.pathCondition owns the
+                // polarity, here as in the composition.
+                List<DecisionRow> taken = new ArrayList<DecisionRow>();
+                for (DecisionRow candidate : decisions) {
+                    if (candidate.seq() < row.seq() + 1) taken.add(candidate);
+                }
+                List<String> pi = Arms.pathCondition(decisions,
+                        row.seq() + 1);
+                for (int index = 0; index < pi.size(); index++) {
+                    DecisionRow decision = taken.get(index);
+                    if (!Arms.predicate(decision.term())) continue;
+                    Set<String> unknown = new LinkedHashSet<String>();
+                    String held = rename(lower(pi.get(index),
+                            path.sessionId), path.sessionId, unknown);
+                    if (unknown.isEmpty()) {
+                        assertions.add(held);
+                        continue;
+                    }
+                    String named = unknown.iterator().next();
+                    if (decision == row) {
+                        return refuse(GapKind.ADMISSION_GAP,
+                                inherited.siteId + "#" + inherited.ordinal,
+                                "the flipped conjunct of the flip this path "
+                                        + "inherited names " + named
+                                        + ", which no mint, attach or read "
+                                        + "of " + path.sessionId
+                                        + " declares: " + inherited.render(),
+                                flipped);
+                    }
+                    gaps.add(GapRow.of(path.sessionId,
+                            GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                            decision.siteId() + "#" + decision.ordinal(),
+                            "prefix conjunct dropped: " + named
+                                    + " is undeclared"));
+                }
+            }
+            return null;
+        }
+
+        /** The one refusal an unstated inherited flip is named by. */
+        private Built refuseInherited(Corpus.Flip inherited,
+                                      DecisionRow flipped) {
+            return refuse(GapKind.ADMISSION_GAP,
+                    inherited.siteId + "#" + inherited.ordinal,
+                    "the session this path was cut from states no decision "
+                            + "for the flip it inherited: "
+                            + inherited.render(), flipped);
         }
 
         /**
@@ -539,7 +645,11 @@ final class FlipQuery {
                 if (minted.sessionId().equals(path.sessionId)) {
                     clockVariables.put(variable, row.rootId());
                 }
-                rootFacts.add("(>= " + variable + " 0)");
+                // A CLOCK CELL IS A MILLISECOND COUNT IN A JAVA long, so
+                // the floor is not the whole domain: see {@link
+                // JavaPrimitiveSmtSemantics#clockDomain}, which is the one
+                // place that rule is spelled.
+                rootFacts.add(JavaPrimitiveSmtSemantics.clockDomain(variable));
                 return;
             }
             rootVariables.put(variable, row.rootId());
@@ -605,6 +715,7 @@ final class FlipQuery {
                     }
                     held.add(term);
                 }
+                fileRefusals();
             }
             for (Map.Entry<String, List<String>> family : bySlot.entrySet()) {
                 assertions.add(VmTermLowering.or(family.getValue()));
@@ -762,9 +873,34 @@ final class FlipQuery {
 
         /** The writer occurrences one read could have taken its value from. */
         private List<Arms.Arm> eligible(ReadRow row) {
-            return corpus.arms().stateArms(row.endpoint(),
+            List<Arms.Arm> eligible = corpus.arms().stateArms(row.endpoint(),
                     row.sessionId(), SmtLowering.locationKey(row.location()),
                     row.observedVersion());
+            fileRefusals();
+            return eligible;
+        }
+
+        /**
+         * Every arm {@link Arms} refused since the last drain (R4 item 3).
+         *
+         * <p>An arm whose delivered expression names a declared root the
+         * delivering session states no {@code RootMintRow} for is refused
+         * rather than emitted unguarded, and the stage that asked for the
+         * arms is the stage that files the refusal -- the same rule and the
+         * same kind COMPOSE files ({@code ComposedFamilies#fileRefusals}).
+         * </p>
+         */
+        private void fileRefusals() {
+            for (String refusal : corpus.arms().drainRefusals()) {
+                String[] named = refusal.split("\\|", -1);
+                if (named.length != 3) continue;
+                gaps.add(GapRow.of(named[1], GapKind.UNATTESTED_ARM,
+                        GapClass.DIAGNOSTIC, named[0],
+                        "an arm delivered by session " + named[1]
+                                + " names root " + named[2] + " and that"
+                                + " session states no RootMintRow for it, so"
+                                + " the arm is refused"));
+            }
         }
 
         /**

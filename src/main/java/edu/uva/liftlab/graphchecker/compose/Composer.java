@@ -7,6 +7,7 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Sort;
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Term;
 import edu.uva.liftlab.graphchecker.smt.Arms;
+import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
@@ -493,9 +494,17 @@ public final class Composer {
         if (slots != null) {
             for (SlotTable.Replacement replacement
                     : slots.replacements(corpus)) {
+                // FAIL CLOSED ON THE ARMS, OPEN ON THE CLAIM.  The session
+                // goes into `replacing` either way -- two pairings of one
+                // consumer cannot both be this epoch's, so neither set of
+                // arms may reach a family -- and only an ADMITTED replay's
+                // replacement STOPS the composition ({@link
+                // SessionReader#admitted}).  One that did not run the world
+                // it was asked for states no topology, so its row is a
+                // DIAGNOSTIC and the claim is still made.
                 replacing.add(replacement.sessionId);
                 gaps.add(GapRow.of(replacement.sessionId,
-                        GapKind.TOPOLOGY_DIVERGENCE, GapClass.BLOCKING,
+                        GapKind.TOPOLOGY_DIVERGENCE, replacement.cls(),
                         replacement.consumerEndpointId,
                         replacement.detail()));
             }
@@ -655,11 +664,13 @@ public final class Composer {
         SessionReader reader = corpus.session(session);
         if (reader == null || reader.seed()) return true;
         Set<String> stated = new LinkedHashSet<String>();
-        boolean admitted = true;
+        // ONE PREDICATE, ONE PLACE ({@link SessionReader#admitted}): this
+        // stage names each refusal below, and does not keep a second
+        // opinion about what "admitted" means.
+        boolean admitted = reader.admitted();
         for (ObligationResult result : reader.obligations()) {
             stated.add(result.obligationId());
             if (result.verdict() == Verdict.ADMITTED) continue;
-            admitted = false;
             gap(GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC, session,
                     "this replay states " + result.verdict() + " for the "
                             + "obligation it ran (" + result.obligationId()
@@ -708,7 +719,8 @@ public final class Composer {
         //      reason up to.  A row-level fixed point, computed before
         //      anything is lowered, because it is a fact about the join
         //      graph and not about SMT.
-        Map<String, Long> reached = closure(session, target);
+        Map<String, Long> reached = closure(session, anchor, target.seq(),
+                null);
 
         // (0b) Every read of the reached occurrences whose value the ROW
         //     states outright, bound BEFORE any expression of this path is
@@ -727,7 +739,15 @@ public final class Composer {
         //     execution still happened under that value.  A root every
         //     session read the same way is pinned by its own domain and is
         //     not repeated here.
-        terms.addAll(valuationOf(session, refusals));
+        //
+        //     A declared root this session did NOT mint is collected here
+        //     and answered in (1b), once this path's own terms are what
+        //     they will be: whether the path states anything about such a
+        //     root is a fact about its terms, and none of them is lowered
+        //     yet.
+        Map<String, Set<String>> unminted =
+                new LinkedHashMap<String, Set<String>>();
+        terms.addAll(valuationOf(session, refusals, unminted));
 
         // (2) What this path read at each handoff of the anchor: the
         //     obligation's answer where one answered the mint, and
@@ -839,6 +859,17 @@ public final class Composer {
         List<String> refused = new ArrayList<String>(
                 lowering.openRefusals());
         terms.addAll(lowering.end());
+
+        // (1b) THE OTHER HALF OF (1), asked here because here is where
+        //      this path's own terms are whole: a declared root this
+        //      session minted no value for, whose SYMBOL this path's own
+        //      terms name.  Such a path rests on a quantity it states
+        //      nothing about, and the only value the corpus could give it
+        //      is another execution's reading -- so it is refused.  A root
+        //      NO term of this path names is simply not stated by this
+        //      path, and refusing it was a refusal for something the path
+        //      never asked about (see {@link #valuationOf}).
+        unstatedRoots(session, unminted, terms, joins, refusals);
         for (String refusal : refused) {
             refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
                     GapClass.DIAGNOSTIC, refusal,
@@ -853,11 +884,23 @@ public final class Composer {
             return null;
         }
 
-        // (6) The families of every interaction this path's chain reaches,
-        //     each under this path's selector.
+        // (6) One selector per (producer occurrence, session) for every
+        //     interaction this path's chain reaches, under this path's
+        //     selector.  A producer for which NO session of this corpus
+        //     could have made every delivery this path took from it (R3c)
+        //     leaves the path out of the disjunction: a witness that mixed
+        //     two runs' deliveries of one occurrence would rest on an
+        //     export no execution produced.
         List<String> familyTerms = new ArrayList<String>();
-        composedFamilies.closeFamilies(ordinal, selector, interactionIds,
-                bound, familyTerms);
+        List<GapRow> unproducible = new ArrayList<GapRow>();
+        if (!composedFamilies.closeFamilies(ordinal, selector,
+                interactionIds, bound, familyTerms, unproducible)) {
+            gaps.addAll(unproducible);
+            if (firstRefusal.isEmpty() && !unproducible.isEmpty()) {
+                firstRefusal = unproducible.get(0).subject();
+            }
+            return null;
+        }
         // (7) And the STATE families: which writer the read may have seen.
         //     A read a family gives alternatives to takes its value there.
         Set<String> chosen = composedFamilies.stateFamilies(path,
@@ -903,7 +946,7 @@ public final class Composer {
      * and a family arm names symbols the path's own conjunction need
      * not.</p>
      */
-    private List<String> statedJoins(Map<String, String> joins,
+    List<String> statedJoins(Map<String, String> joins,
                                      Set<String> chosen, List<String> terms,
                                      List<String> familyTerms) {
         Map<String, String> pending = new LinkedHashMap<String, String>();
@@ -954,25 +997,47 @@ public final class Composer {
      * moved.</p>
      */
     private List<String> valuationOf(String session,
-                                     List<GapRow> refusals) {
+                                     List<GapRow> refusals,
+                                     Map<String, Set<String>> unminted) {
         List<String> valuation = new ArrayList<String>();
         for (Map.Entry<String, List<RootMintRow>> entry
                 : corpus.roots().entrySet()) {
             RootMintRow any = corpus.anyRoot(entry.getKey());
             RootMintRow row = corpus.root(entry.getKey(), session);
             if (any == null || any.kind() == RootKind.CLOCK) continue;
-            boolean constrains = any.declared()
-                    && lowering.declared(any.symbol());
             if (row == null) {
                 // A root the case declares and THIS replay did not mint:
                 // the path states nothing about it, and pinning it to some
                 // other session's reading would state a fact about an
-                // execution that never read it.
-                if (constrains) {
-                    refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
-                            GapClass.BLOCKING, any.rootId(),
-                            "this session minted no value for a declared "
-                                    + "root the composition constrains"));
+                // execution that never read it.  Whether that silence is a
+                // REFUSAL is a question about this path's own terms, and it
+                // is asked once they are whole ({@link #unstatedRoots}):
+                // the symbols of every mint of the root are collected here
+                // and looked for there.
+                //
+                // It used to be asked of `lowering.declared(any.symbol())`,
+                // which is "this QUERY names the symbol" -- and the query
+                // is every path composed before this one, over a registry
+                // seeded with every symbol EVERY session of the corpus
+                // declared ({@link Corpus#declaredSymbols}).  So a root one
+                // session minted refused every other session's path,
+                // whether or not its terms had ever heard of it: on the
+                // hdfs-11741 campaign #4 corpus the three hook-minted
+                // BLOCK_KEY.EXPIRY_DATE roots -- minted only by the twelve
+                // focused replays of nn0's KEY_MANAGER_TICK, and by neither
+                // the seed nor any other replay -- filed 288 of the
+                // composition's 290 BLOCKING UNSTATED_VALUE rows, 96 per
+                // root, and every path of the corpus was refused.
+                if (any.declared()) {
+                    Set<String> symbols = new LinkedHashSet<String>();
+                    for (RootMintRow mint : entry.getValue()) {
+                        if (mint != null && !mint.symbol().isEmpty()) {
+                            symbols.add(mint.symbol());
+                        }
+                    }
+                    if (!symbols.isEmpty()) {
+                        unminted.put(any.rootId(), symbols);
+                    }
                 }
                 continue;
             }
@@ -1027,6 +1092,62 @@ public final class Composer {
             valuation.add("(= " + row.symbol() + " " + literal + ")");
         }
         return valuation;
+    }
+
+    /**
+     * The declared roots this path NAMES and its session never minted.
+     *
+     * <p>The other half of {@link #valuationOf}, and the whole of the rule
+     * a path is refused by: a path states a valuation for every varied root
+     * IT minted, and it is refused for a root it did not mint exactly when
+     * its OWN terms name that root's symbol.  A term of this path naming a
+     * symbol no row of this session states leaves the quantity free -- or,
+     * worse, joined to a pin some other session's path wrote -- and a free
+     * constant is how a model answers a question the execution never asked.
+     * A root no term of this path names is not a quantity this path is
+     * about at all, and its silence about it says nothing that needs
+     * refusing.</p>
+     *
+     * <p>"Names" is asked of the text this path will be asserted with --
+     * pi, phi, the handoff reads, the closure prefixes, the side conditions
+     * and the state joins this session published -- through the one walk
+     * that follows a named container subterm into its body
+     * ({@link SmtLowering#reachedSymbols}), and, beside it, the one
+     * tokenizer ({@link SmtLowering#names}), because a ROOT symbol reaches
+     * a term in two ways: lowered from a recorded leaf, which
+     * {@code reachedSymbols} reports, and written into a published term as
+     * text, which it reads as a name the lowering itself minted.  Whole
+     * tokens either way; a substring of a longer name is a different
+     * name.</p>
+     */
+    private void unstatedRoots(String session,
+                               Map<String, Set<String>> unminted,
+                               List<String> terms,
+                               Map<String, String> joins,
+                               List<GapRow> refusals) {
+        if (unminted.isEmpty()) return;
+        List<String> texts = new ArrayList<String>(terms);
+        texts.addAll(joins.values());
+        Set<String> named = new LinkedHashSet<String>();
+        for (String text : texts) {
+            if (text == null || text.isEmpty()) continue;
+            lowering.reachedSymbols(text, named,
+                    new LinkedHashSet<String>());
+            named.addAll(SmtLowering.names(text));
+        }
+        for (Map.Entry<String, Set<String>> root : unminted.entrySet()) {
+            for (String symbol : root.getValue()) {
+                if (!named.contains(symbol)) continue;
+                refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
+                        GapClass.BLOCKING, root.getKey(),
+                        "this path's own terms name this declared root ("
+                                + symbol + ") and this session minted no "
+                                + "value for it, so what the path rests on "
+                                + "is stated by no row of the execution it "
+                                + "is about"));
+                break;
+            }
+        }
     }
 
     /** One declared root's window around THIS session's reading, or "". */
@@ -1371,38 +1492,92 @@ public final class Composer {
      * where it happened BEFORE that occurrence's cutoff; the anchor's reads
      * are all of them, because they are its declared inputs and the target
      * row is one of them.</p>
+     *
+     * <p>P3c, the second edge: the EARLIER VERSIONS of a reached write's own
+     * location are reached with it.  The state of an object at version v is
+     * the result of every earlier mutation of that object in that run, so
+     * each earlier writer's prefix is a reason the value is what it is --
+     * not only the prefix of whichever occurrence made the last change.
+     * 11741's anchor joined the version its DataNode's put loop produced,
+     * and what the map LACKS at that version is what another occurrence
+     * removed from it earlier, under a comparison against the clock it read;
+     * no row of the session joins the two, so without this the composed
+     * query stated "the map lacks the key" as a bare fact of the recording
+     * and declared no cell of that clock.  An earlier write is reached
+     * exactly as a joined one is -- its writer at that write's seq, widening
+     * as ever -- and its own earlier versions are covered by construction,
+     * being earlier still; each (location, version) is handled once.</p>
      */
-    private Map<String, Long> closure(String session, TargetRow target) {
+    Map<String, Long> closure(String session, OccurrenceAddress start,
+                              long cutoff, List<WriteRow> seeds) {
         Map<String, Long> reached = new LinkedHashMap<String, Long>();
-        reached.put(anchor.id(), target.seq());
+        reached.put(start.id(), cutoff);
         List<String> pending = new ArrayList<String>();
-        pending.add(anchor.id());
-        while (!pending.isEmpty()) {
-            String at = pending.remove(0);
-            OccurrenceAddress occurrence = corpus.occurrence(at);
-            if (occurrence == null) continue;
-            boolean isAnchor = anchor.id().equals(at);
-            long cut = reached.get(at);
-            for (ReadRow read : corpus.readsOn(session, occurrence)) {
-                if (!isAnchor && read.seq() >= cut) continue;
-                if (read.observedVersion() < 0L) continue;
-                WriteRow write = corpus.writeOf(session,
-                        SmtLowering.locationKey(read.location()),
-                        read.observedVersion());
-                if (write == null) continue;
-                String writer = write.endpoint().occurrence().id();
-                // Never the anchor: its cutoff is the target observation
-                // and a write of its own is not a reason to widen it.
-                if (anchor.id().equals(writer)) continue;
-                Long held = reached.get(writer);
-                if (held != null && held.longValue() >= write.seq()) {
-                    continue;
+        pending.add(start.id());
+        List<WriteRow> versions = new ArrayList<WriteRow>();
+        Set<String> handled = new LinkedHashSet<String>();
+        if (seeds != null) {
+            for (WriteRow seed : seeds) {
+                reach(seed, start, reached, pending, versions, handled);
+            }
+        }
+        while (!pending.isEmpty() || !versions.isEmpty()) {
+            while (!pending.isEmpty()) {
+                String at = pending.remove(0);
+                OccurrenceAddress occurrence = corpus.occurrence(at);
+                if (occurrence == null) continue;
+                boolean whole = anchor.id().equals(at);
+                long cut = reached.get(at);
+                for (ReadRow read : corpus.readsOn(session, occurrence)) {
+                    if (!whole && read.seq() >= cut) continue;
+                    if (read.observedVersion() < 0L) continue;
+                    WriteRow write = corpus.writeOf(session,
+                            SmtLowering.locationKey(read.location()),
+                            read.observedVersion());
+                    if (write == null) continue;
+                    reach(write, start, reached, pending, versions,
+                            handled);
                 }
-                reached.put(writer, write.seq());
-                pending.add(writer);
+            }
+            if (versions.isEmpty()) continue;
+            WriteRow write = versions.remove(0);
+            String key = SmtLowering.locationKey(write.location());
+            for (WriteRow under : corpus.writesOf(session, key)) {
+                if (under.version() >= write.version()) continue;
+                reach(under, start, reached, pending, versions, handled);
             }
         }
         return reached;
+    }
+
+    /**
+     * One write this path rests on: its writer is reached, its state swept.
+     *
+     * <p>The same rule whether the write was joined by a read row or is an
+     * earlier version of a location already reached, because it is the same
+     * fact either way -- the value this path rests on came out of that
+     * write.  The ANCHOR is never reached and no write of its own is swept:
+     * its cutoff is the target observation, and a write of its own is not a
+     * reason to widen it.</p>
+     */
+    private void reach(WriteRow write, OccurrenceAddress start,
+                       Map<String, Long> reached,
+                       List<String> pending, List<WriteRow> versions,
+                       Set<String> handled) {
+        String writer = write.endpoint().occurrence().id();
+        // NEVER THE ANCHOR, and never the occurrence this closure starts
+        // from: the start's cutoff is the event the closure is about -- the
+        // target observation, or the export an arm delivered -- and a write
+        // of its own is not a reason to widen it past that.
+        if (anchor.id().equals(writer) || start.id().equals(writer)) return;
+        if (handled.add(SmtLowering.locationKey(write.location()) + "#"
+                + write.version())) {
+            versions.add(write);
+        }
+        Long held = reached.get(writer);
+        if (held != null && held.longValue() >= write.seq()) return;
+        reached.put(writer, write.seq());
+        pending.add(writer);
     }
 
     /**
@@ -1416,7 +1591,7 @@ public final class Composer {
      * kept the rest of its conjunction would rest on the free constant the
      * refusal left behind.</p>
      */
-    private List<String> closureConditions(String session,
+    List<String> closureConditions(String session,
                                            Map<String, Long> reached,
                                            List<GapRow> refusals) {
         List<String> conditions = new ArrayList<String>();
@@ -1465,7 +1640,7 @@ public final class Composer {
      * this lowering places nowhere is named here.  Either way one refusal
      * per row: {@code answered} is what the two halves say it by.</p>
      */
-    private void statedReads(String session, Set<String> occurrences,
+    void statedReads(String session, Set<String> occurrences,
                              List<GapRow> refusals,
                              Map<String, String> joins,
                              Set<String> answered) {
@@ -1521,7 +1696,7 @@ public final class Composer {
                 read.observedVersion()) != null;
     }
 
-    private void stateJoins(String session, Set<String> occurrences,
+    void stateJoins(String session, Set<String> occurrences,
                             SmtLowering.SessionJoin join,
                             List<GapRow> refusals,
                             List<ReadRow> joined, List<String> observed,
@@ -1857,9 +2032,14 @@ public final class Composer {
                 } else {
                     readings.put(symbol, recorded);
                 }
-                lowering.assertNamed("clock_floor__"
+                // A CLOCK CELL IS A MILLISECOND COUNT IN A JAVA long:
+                // floor AND ceiling, spelled in the one place the rule
+                // lives ({@link JavaPrimitiveSmtSemantics#clockDomain}).
+                // Renamed with the fact it states -- no reader outside
+                // this line named clock_floor__.
+                lowering.assertNamed("clock_domain__"
                                 + ArtifactIO.digest(symbol, 10),
-                        "(>= " + symbol + " 0)");
+                        JavaPrimitiveSmtSemantics.clockDomain(symbol));
             }
             if (unminted == 0 && unnamed == 0) continue;
             // The same fact #valuations names for a declared root no
@@ -1922,7 +2102,8 @@ public final class Composer {
      * pairs.  What a root may be is its KIND and the case's declaration: a
      * declared MARKER is free in {recorded, flipped} by kind and needs no
      * declared domain, an INTEGRAL without one is pinned to what the
-     * recording read and is not enumerated, and a CLOCK has a floor and no
+     * recording read and is not enumerated, and a CLOCK has its Java-long
+     * domain and no
      * window.  Every root this skips is named, because which valuations
      * were asked is what the claim's polarity gate is about.</p>
      */

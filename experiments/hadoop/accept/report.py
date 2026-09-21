@@ -16,7 +16,9 @@ finalStatus FINAL_READY, a findingKind among the five mechanisms a composition
 may conclude, polarityDecides -- the seed disjunct unsat at the recorded
 valuation -- the case's EXPECTED mechanism from the table at the top, and an
 accepted valuation past the recorded one (ordinal >= 1) with at least one root
-moved off the value the recording had.
+moved off the value the recording had -- except for CLOCK_SKEW, where ordinal 0
+is legitimate because a clock has a floor and no window, so the witness sits at
+the recorded valuation and the clock cells the model moved are its movedRoots.
 
 The last two conditions are why that table exists.  Before them the gate asked
 only whether the composer had concluded *something* it could name, so
@@ -211,9 +213,17 @@ else:
     if finding_kind not in expected["kinds"]:
         reasons.append("findingKind %s != expected %s"
                        % (finding_kind, spell_kinds(expected["kinds"])))
-    ordinal_ok = (isinstance(valuation_ordinal, int)
-                  and not isinstance(valuation_ordinal, bool)
-                  and valuation_ordinal >= 1)
+    # A CLOCK HAS A FLOOR AND NO WINDOW, so there is no perturbed valuation
+    # for it to sit at: the witness stands at the recorded valuation and the
+    # difference it names is which clock cells the model placed elsewhere,
+    # which is exactly movedRoots.  Ordinal 0 is legitimate for CLOCK_SKEW
+    # and for nothing else; movedRoots must still be non-empty, because a
+    # finding that moves nothing at valuation 0 is the recording restated
+    # whatever kind it carries.
+    ordinal_ok = (finding_kind == "CLOCK_SKEW"
+                  or (isinstance(valuation_ordinal, int)
+                      and not isinstance(valuation_ordinal, bool)
+                      and valuation_ordinal >= 1))
     if not moved_roots:
         # Valuation 0 is the recording.  A finding that moves nothing there
         # explains nothing, so it does not matter which kind it carries.

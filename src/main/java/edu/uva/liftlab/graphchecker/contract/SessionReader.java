@@ -201,6 +201,33 @@ public final class SessionReader {
         return obligations;
     }
 
+    /**
+     * ONLY AN ADMITTED REPLAY STATES A TOPOLOGY, AND THIS IS THAT RULE.
+     *
+     * <p>Whether this session RAN the world it was asked for, read off its
+     * own result rows and nothing else -- never the wave's aggregate file,
+     * which is the planner's copy and not the run's statement.  The rule:
+     * a session states the world it ran only when every obligation it ran
+     * came back {@link Verdict#ADMITTED}; one that states no result row at
+     * all states nothing, because an absence is not a verdict.  A SEED is
+     * asked nothing and is always an authority: it IS the recording.</p>
+     *
+     * <p>What it costs to skip it: hdfs-11741 campaign #2's NOT_ADMITTED
+     * session -- its mint planted nothing, so it never ran the clock skew
+     * the wave asked of it -- paired eight consumers with producers the
+     * skeleton does not carry.  Read as a topology, that emptied wave 1 of
+     * every candidate and filed eight BLOCKING rows, and one replay that
+     * did not run the world it was asked halted the campaign.</p>
+     */
+    public boolean admitted() {
+        if (seed()) return true;
+        if (obligations.isEmpty()) return false;
+        for (ObligationResult result : obligations) {
+            if (result.verdict() != Verdict.ADMITTED) return false;
+        }
+        return true;
+    }
+
     public ExpressionTable expressions() {
         return expressions;
     }

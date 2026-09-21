@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.explore;
 
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
+import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.smt.Z3;
 
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
@@ -10,6 +11,7 @@ import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
+import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
 
@@ -72,15 +74,26 @@ public final class ObligationFactory {
         public final Corpus.RecordedPath path;
         public final int index;
         public final DecisionRow decision;
+        /**
+         * The world this arm is owed in: {@code ""} unless the session's
+         * world changed what the region received
+         * ({@link Corpus#affected}).
+         */
+        public final String worldDigest;
 
-        private Candidate(Task task, Corpus.RecordedPath path, int index) {
+        private Candidate(Corpus corpus, Task task,
+                          Corpus.RecordedPath path, int index) {
             this.task = task;
             this.path = path;
             this.index = index;
             this.decision = path.decisions.get(index);
+            this.worldDigest = corpus.affected(path.sessionId, task.focused(),
+                    task.factor())
+                    ? worldDigest(corpus.world(path.sessionId)) : "";
             this.obligationId = obligationId(task.taskId(),
                     decision.siteId(), decision.ordinal(),
-                    !decision.outcome());
+                    !decision.outcome(),
+                    prefixDigest(path.decisions, index), worldDigest);
         }
 
         /**
@@ -135,12 +148,25 @@ public final class ObligationFactory {
          * statement of that, not the first.</p>
          */
         public final Map<String, String> rootMints;
+        /**
+         * The flips this replay inherits: the parent's own and its
+         * inherited ones, in that order.
+         *
+         * <p>The world a cut path ran in is not a fact the child can drop
+         * ({@link Corpus.World}).  The replay is held to every one of them
+         * ({@code runtime/FocusedReplay}), and the chain carries each
+         * flip's ORIGINAL obligation id so a report can name which
+         * obligation first asked for it.</p>
+         */
+        public final List<Corpus.Flip> inheritedFlips;
         public final List<GapRow> gaps;
 
         private Outcome(String obligationId, String taskId,
                         Obligation obligation, ObligationResult result,
                         String smt2, Map<String, String> clockDeltas,
-                        Map<String, String> rootMints, List<GapRow> gaps) {
+                        Map<String, String> rootMints,
+                        List<Corpus.Flip> inheritedFlips,
+                        List<GapRow> gaps) {
             this.obligationId = obligationId;
             this.taskId = taskId;
             this.obligation = obligation;
@@ -148,6 +174,8 @@ public final class ObligationFactory {
             this.smt2 = smt2;
             this.clockDeltas = Collections.unmodifiableMap(clockDeltas);
             this.rootMints = Collections.unmodifiableMap(rootMints);
+            this.inheritedFlips =
+                    Collections.unmodifiableList(inheritedFlips);
             this.gaps = Collections.unmodifiableList(gaps);
         }
 
@@ -168,6 +196,10 @@ public final class ObligationFactory {
     private static final Map<String, String> NO_MINTS =
             Collections.<String, String>emptyMap();
 
+    /** No world is extended, which is every outcome but a satisfied one. */
+    private static final List<Corpus.Flip> NO_FLIPS =
+            Collections.<Corpus.Flip>emptyList();
+
     /** {@code model - recorded} as a decimal, or "" if either is not one. */
     private static String skew(String model, String recorded) {
         if (model == null || recorded == null) return "";
@@ -181,7 +213,60 @@ public final class ObligationFactory {
     }
 
     /**
-     * One obligation's id: the PLANNED OCCURRENCE and the arm it asks for.
+     * One PATH PREFIX, as an obligation's identity spells it.
+     *
+     * <p>The decisions {@code [0, uptoExclusive)} of the path, in list
+     * order, each written {@code siteId#ordinal=outcome} and joined by
+     * {@code /}.  A CONCRETE decision -- one the recording published with no
+     * term -- is in it: it is part of the path's SHAPE, and two runs of one
+     * occurrence that differ only in a concrete branch are two local paths,
+     * not one.  An empty prefix digests the empty string, so the first
+     * decision of every path has one id whichever path it was cut from.</p>
+     */
+    public static String prefixDigest(List<DecisionRow> decisions,
+                                      int uptoExclusive) {
+        StringBuilder text = new StringBuilder();
+        int bound = decisions == null ? 0
+                : Math.min(uptoExclusive, decisions.size());
+        for (int index = 0; index < bound; index++) {
+            DecisionRow decision = decisions.get(index);
+            if (text.length() > 0) text.append('/');
+            text.append(decision.siteId()).append('#')
+                    .append(decision.ordinal()).append('=')
+                    .append(decision.outcome());
+        }
+        return ArtifactIO.digest(text.toString(), 16);
+    }
+
+    /**
+     * One WORLD, as an obligation's identity spells it.
+     *
+     * <p>The flips the session was held to -- its own and every one it
+     * inherited -- each written {@code
+     * focusedOccurrenceId|siteId|ordinal|outcome} and sorted, so the same
+     * set of flips digests the same however a focus row happened to order
+     * them.  The SEED's world is empty and digests to {@code ""}, which is
+     * also what an arm no world reached is keyed by.</p>
+     */
+    public static String worldDigest(Corpus.World world) {
+        if (world == null || world.flips.isEmpty()) return "";
+        List<String> held = new ArrayList<String>();
+        for (Corpus.Flip flip : world.flips) {
+            held.add(flip.focusedOccurrenceId + "|" + flip.siteId + "|"
+                    + flip.ordinal + "|" + flip.outcome);
+        }
+        Collections.sort(held);
+        StringBuilder text = new StringBuilder();
+        for (String one : held) {
+            if (text.length() > 0) text.append('/');
+            text.append(one);
+        }
+        return ArtifactIO.digest(text.toString(), 16);
+    }
+
+    /**
+     * One obligation's id: the PLANNED OCCURRENCE, the PREFIX it is cut
+     * under, the WORLD it is cut in, and the arm it asks for.
      *
      * <p>The task is the occurrence ({@link ClosurePlanner#taskId}), so this
      * key is a fact about the occurrence and not about a session.  The
@@ -191,13 +276,38 @@ public final class ObligationFactory {
      * came back as 706 obligations on wave 1 because the answers to them
      * were filed under the seed's path.  The obligation ROW still carries a
      * {@code pathId}: the prefix a flip is cut from is what the query is
-     * built over, and the composition reads it.  Only the IDENTITY drops the
-     * session (see {@link Frontier}).</p>
+     * built over, and the composition reads it.  The IDENTITY drops the
+     * session and keeps the prefix ({@link #prefixDigest}).</p>
+     *
+     * <p>THE PREFIX IS PART OF THE KEY, and it is what lets a chain of
+     * flips deepen.  An arm recorded under one prefix of an occurrence says
+     * nothing about the same arm under another: an unexplored local path of
+     * a known region is still work, and a wave that finds no NEW EDGE is
+     * not the end of the exploration.</p>
+     *
+     * <p>SO IS THE WORLD ({@link #worldDigest}), and only where that world
+     * reached the region ({@link Corpus#affected}): an unexplored local
+     * path of a known region is still work, and so is a known local path in
+     * a world that changed what the region received -- never the same path
+     * in a world that changed nothing for it.  HDFS-11741 is the case.
+     * dn1's expiry scan runs over the DataNode's own old map before the put
+     * loop, so its local prefix is letter for letter the same in the seed,
+     * in the session that flipped dn1 alone, and in the session where nn0's
+     * second rotation dropped the key; keyed by the prefix alone the first
+     * of those settles the arm for every world, and the witness's second
+     * flip -- that same compare, under nn0's skew -- is never proposed.
+     * Keyed by the world without the {@code affected} test it would be
+     * proposed once per world instead, which is every session of the epoch
+     * asking the same fact again.</p>
      */
     public static String obligationId(String taskId, String siteId,
-                                      int ordinal, boolean flippedOutcome) {
+                                      int ordinal, boolean flippedOutcome,
+                                      String prefixDigest,
+                                      String worldDigest) {
         return ArtifactIO.digest(taskId + "|" + siteId + "|" + ordinal + "|"
-                + flippedOutcome, 16);
+                + flippedOutcome + "|"
+                + (prefixDigest == null ? "" : prefixDigest) + "|"
+                + (worldDigest == null ? "" : worldDigest), 16);
     }
 
     /**
@@ -213,6 +323,20 @@ public final class ObligationFactory {
      * the closure demands two.  The guard set comes from the wave's closure
      * plan, which took it from the epoch's static map, so "why is this
      * occurrence a task" and "which of its branches may be flipped" are one
+     * answer.</p>
+     *
+     * <p>WHICH PATHS A WAVE MAY CUT FROM: the SEED's, and the paths of a
+     * FOCUSED session every {@code ObligationResult} of whose own {@code
+     * obligations.jsonl} states {@link Verdict#ADMITTED}.  A candidate cut
+     * from a path INHERITS that session's world -- its root assignments,
+     * its clock skews, its answers and the flips it enforced (R5, R6) -- and
+     * a world is only a world if the replay that ran it was admitted: a
+     * NOT_ADMITTED session's path is a prefix its own replay did not
+     * reproduce, so a child of it would be asked to extend a world nothing
+     * ran.  Such a session's rows still ATTEST the arms they hold
+     * ({@link Frontier} spans every session of the epoch); they are only
+     * not cut from.  No gap row: a wave that does not cut from a refused
+     * replay is the rule working, not a question the corpus could not
      * answer.</p>
      *
      * @param flipSites the site ids this task's demand names; a task with
@@ -231,6 +355,7 @@ public final class ObligationFactory {
         Set<String> offered = new LinkedHashSet<String>();
         int paths = 0;
         for (Corpus.RecordedPath path : corpus.pathsOf(task.focused())) {
+            if (!cuttable(corpus, path.sessionId)) continue;
             if (paths++ >= bounds.maxPathsPerTask) break;
             int flips = 0;
             for (int index = 0; index < path.decisions.size()
@@ -243,7 +368,8 @@ public final class ObligationFactory {
                         || !flipSites.contains(decision.siteId())) {
                     continue;
                 }
-                Candidate candidate = new Candidate(task, path, index);
+                Candidate candidate =
+                        new Candidate(corpus, task, path, index);
                 // A second path of the same occurrence offering the same arm
                 // is the same obligation, not another one: one witness of an
                 // owed fact is enough, and it costs neither a gap row nor a
@@ -266,6 +392,25 @@ public final class ObligationFactory {
     }
 
     /**
+     * Whether a wave may cut a flip from this session's paths.
+     *
+     * <p>The seed always: it is the recording, and its world is empty.  A
+     * focused session only while its own {@code obligations.jsonl} states
+     * ADMITTED for every result in it -- one verdict per worker, published
+     * by the replay itself ({@code runtime/FocusedReplay#results}), so this
+     * asks the replay and not the wave's copy of its answer.</p>
+     */
+    private static boolean cuttable(Corpus corpus, String sessionId) {
+        if (sessionId.equals(corpus.seedSessionId())) return true;
+        SessionReader session = corpus.session(sessionId);
+        if (session == null) return false;
+        for (ObligationResult result : session.obligations()) {
+            if (result.verdict() != Verdict.ADMITTED) return false;
+        }
+        return true;
+    }
+
+    /**
      * Why this model is the recording's own valuation, or {@code ""}.
      *
      * <p>Every root the model assigns carries the value that session's
@@ -273,11 +418,22 @@ public final class ObligationFactory {
      * the world this obligation asks for differs from the one already on
      * disk.  A model that assigns NO root is not this case -- a clock-driven
      * flip states its skew elsewhere -- so the test is over the roots the
-     * query actually bound.</p>
+     * query actually bound.  AND A CLOCK SKEW IS A COUNTERFACTUAL OF ITS
+     * OWN: a model that moves any clock asks for a world no execution of
+     * this recording ran, whatever the other roots say, so the skew is
+     * asked FIRST and a moved clock answers the question before the root
+     * comparison is reached.  nn0's second-rotation {@code
+     * removeExpiredKeys#u15} flips were refused as "the seed replay under
+     * another name" while the same model moved two CLOCK variables, only
+     * because the query also reached a pinned integral root
+     * ({@code HDFS.BLOCK_KEY.SERIAL_NO}) and kept it where the recording
+     * minted it -- which is what a pinned root DOES.</p>
      */
     private static String recordedValuation(Corpus corpus, Candidate candidate,
                                             Map<String, String> roots,
-                                            Map<String, String> answers) {
+                                            Map<String, String> answers,
+                                            Map<String, String> clockDeltas) {
+        if (movesAClock(clockDeltas)) return "";
         if (roots.isEmpty() || !answers.isEmpty()) return "";
         List<String> same = new ArrayList<String>();
         for (Map.Entry<String, String> assignment : roots.entrySet()) {
@@ -300,6 +456,30 @@ public final class ObligationFactory {
     }
 
     /**
+     * Whether this model asks any clock to read somewhere else.
+     *
+     * <p>A skew is {@code model - recorded} as a decimal ({@link #skew}),
+     * so the one that states "this clock stays where it was" is zero.  A
+     * delta that is not an integer is not one this map carries -- the gap
+     * for it is raised where it is computed -- and is read here as no
+     * movement rather than as a movement of unknown size.</p>
+     */
+    private static boolean movesAClock(Map<String, String> clockDeltas) {
+        if (clockDeltas == null) return false;
+        for (String delta : clockDeltas.values()) {
+            if (delta == null || delta.trim().isEmpty()) continue;
+            try {
+                if (new java.math.BigInteger(delta.trim()).signum() != 0) {
+                    return true;
+                }
+            } catch (NumberFormatException notAnInstant) {
+                continue;
+            }
+        }
+        return false;
+    }
+
+    /**
      * Finds the flip one published obligation names.
      *
      * <p>The worker that solves an obligation is handed the row and the
@@ -316,7 +496,7 @@ public final class ObligationFactory {
                 DecisionRow decision = path.decisions.get(index);
                 if (decision.siteId().equals(obligation.siteId())
                         && decision.ordinal() == obligation.ordinal()) {
-                    return new Candidate(task, path, index);
+                    return new Candidate(corpus, task, path, index);
                 }
             }
         }
@@ -335,7 +515,7 @@ public final class ObligationFactory {
             return new Outcome(id, candidate.task.taskId(), null,
                     ObligationResult.of(id, Verdict.NOT_ADMITTED, "",
                             "the query was refused: " + built.refusal),
-                    "", NO_SKEW, NO_MINTS, gaps);
+                    "", NO_SKEW, NO_MINTS, NO_FLIPS, gaps);
         }
         long budget = timeoutMillis <= 0 ? Z3.DEFAULT_TIMEOUT_MILLIS
                 : timeoutMillis;
@@ -352,7 +532,7 @@ public final class ObligationFactory {
             return new Outcome(id, candidate.task.taskId(), null,
                     ObligationResult.of(id, Verdict.NOT_ADMITTED, "",
                             "SOLVER_TIMEOUT after " + budget + "ms"),
-                    query, NO_SKEW, NO_MINTS, gaps);
+                    query, NO_SKEW, NO_MINTS, NO_FLIPS, gaps);
         }
         // An answer that is neither sat nor unsat is not a verdict about the
         // corpus: an "(error ...)" says z3 could not READ the query and an
@@ -369,7 +549,7 @@ public final class ObligationFactory {
                                     : " " + answer.reason())
                                     + (solver.errors().isEmpty() ? ""
                                     : " " + solver.errors())),
-                    query, NO_SKEW, NO_MINTS, gaps);
+                    query, NO_SKEW, NO_MINTS, NO_FLIPS, gaps);
         }
         if (!answer.sat()) {
             return new Outcome(id, candidate.task.taskId(), null,
@@ -377,7 +557,7 @@ public final class ObligationFactory {
                             "no world of this corpus takes the other arm at "
                                     + decision.siteId() + "#"
                                     + decision.ordinal()),
-                    query, NO_SKEW, NO_MINTS, gaps);
+                    query, NO_SKEW, NO_MINTS, NO_FLIPS, gaps);
         }
         Map<String, String> roots = new LinkedHashMap<String, String>();
         for (Map.Entry<String, String> variable
@@ -392,8 +572,10 @@ public final class ObligationFactory {
         for (Map.Entry<String, String> variable
                 : built.clockVariables.entrySet()) {
             String rootId = variable.getValue();
+            String recorded = corpus.rootValue(candidate.path.sessionId,
+                    rootId);
             String delta = skew(answer.values().get(variable.getKey()),
-                    corpus.rootValue(candidate.path.sessionId, rootId));
+                    recorded);
             if (delta.isEmpty()) {
                 gaps.add(GapRow.of(candidate.path.sessionId,
                         GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, rootId,
@@ -402,6 +584,38 @@ public final class ObligationFactory {
                                 + "replay is owed no skew and reads its own "
                                 + "instant"));
                 continue;
+            }
+            // FAIL CLOSED: NEVER WRITE A SKEW THE REPLAY CANNOT APPLY.
+            // A CLOCK cell is a millisecond count in a Java long
+            // (JavaPrimitiveSmtSemantics.clockDomain), so both the skew the
+            // focus row carries and the instant the mint plants have to be
+            // one.  With the ceiling on the query's clock variables this is
+            // unreachable -- it is the door held to the next declaration
+            // that forgets it, and to the answer hdfs-11741 campaign #2 got
+            // when the ceiling was missing: an instant past 2^63, a
+            // negative difference printed as the unsigned
+            // 18446742283726387588, a skew FocusedReplay.clockSkew could
+            // not parse, and a mint that planted nothing.
+            java.math.BigInteger skewed = new java.math.BigInteger(delta);
+            java.math.BigInteger instant =
+                    skewed.add(new java.math.BigInteger(recorded.trim()));
+            if (!JavaPrimitiveSmtSemantics.fitsJavaLong(skewed)
+                    || !JavaPrimitiveSmtSemantics.fitsJavaLong(instant)) {
+                gaps.add(GapRow.of(candidate.path.sessionId,
+                        GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, rootId,
+                        "the model asks clock root " + rootId + " for "
+                                + "instant " + instant + ", a skew of "
+                                + skewed + " on the " + recorded.trim()
+                                + " this replay read, and a clock is a "
+                                + "millisecond count in a Java long: no "
+                                + "replay could apply it"));
+                return new Outcome(id, candidate.task.taskId(), null,
+                        ObligationResult.of(id, Verdict.NOT_ADMITTED, "",
+                                "clock root " + rootId + " is owed a skew of "
+                                        + skewed + ", which is not a Java "
+                                        + "long, so the obligation states a "
+                                        + "world no replay can run"),
+                        query, NO_SKEW, NO_MINTS, NO_FLIPS, gaps);
             }
             clockDeltas.put(rootId, delta);
         }
@@ -414,9 +628,6 @@ public final class ObligationFactory {
                 unproducible.add(control.attachEndpointId);
             }
         }
-        Obligation solved = Obligation.of(id, candidate.task.taskId(),
-                candidate.path.pathId, decision.siteId(), decision.ordinal(),
-                !decision.outcome(), roots, answers, unproducible);
         // Exploration exists to collect an arm the seed does NOT have
         // (HANDOVER SS1.5).  A model that hands every root back the value the
         // recording minted, and answers no handoff, asks for the seed replay
@@ -434,15 +645,44 @@ public final class ObligationFactory {
         // own ledger saying the recording had a blocking defect, and
         // run_engine.sh campaign_write_gaps exited 3 on them.  A session's
         // gaps are the session's own.
-        String recorded = recordedValuation(corpus, candidate, roots, answers);
+        //
+        // Asked of the MODEL's OWN SKEWS first: a moved clock is a world of
+        // its own, so a clock-driven flip is never this refusal however its
+        // pinned roots came back.
+        //
+        // Asked of the MODEL's OWN roots and answers, before the world this
+        // path was cut from is merged in: "did the solver ask for anything
+        // the parent's replay did not already run" is a question about this
+        // query's answer, and merged values would make a child of a skewed
+        // replay look like a counterfactual it is not.
+        String recorded = recordedValuation(corpus, candidate, roots, answers,
+                clockDeltas);
         if (!recorded.isEmpty()) {
             gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
                     GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC, id,
                     recorded));
             return new Outcome(id, candidate.task.taskId(), null,
                     ObligationResult.of(id, Verdict.NOT_ADMITTED, "",
-                            recorded), query, NO_SKEW, NO_MINTS, gaps);
+                            recorded), query, NO_SKEW, NO_MINTS, NO_FLIPS, gaps);
         }
+        // THE WORLD THIS FLIP EXTENDS.  The path was cut from a session that
+        // ran in a world of its own ({@link Corpus.World}), and the replay
+        // of this obligation has to run in that world too, plus whatever
+        // this model asks on top: the path only exists there.  So the
+        // parent's assignments, skews and answers are the floor and the
+        // model overlays them -- the model wins on a key both state, because
+        // that key is exactly what this obligation moves further -- and the
+        // parent's FLIPS travel whole, to be enforced by the replay
+        // ({@code runtime/FocusedReplay}) and asserted by the query
+        // ({@link FlipQuery}).  The seed's world is empty, so a wave-0 flip
+        // merges nothing.
+        Corpus.World inherited = corpus.world(candidate.path.sessionId);
+        roots = overlay(inherited.rootAssignments, roots);
+        clockDeltas = overlay(inherited.clockDeltas, clockDeltas);
+        answers = overlay(inherited.answers, answers);
+        Obligation solved = Obligation.of(id, candidate.task.taskId(),
+                candidate.path.pathId, decision.siteId(), decision.ordinal(),
+                !decision.outcome(), roots, answers, unproducible);
         // THE FOCUSED SET.  A replay plants an assignment at the MINT of
         // the root and nowhere else, so the obligation states WHERE every
         // root it assigns is minted and the focus row lists those
@@ -483,7 +723,7 @@ public final class ObligationFactory {
                                     + corpus.seedSessionId()
                                     + " mints nowhere, so no occurrence of a "
                                     + "replay can be focused to plant it"),
-                    query, NO_SKEW, NO_MINTS, gaps);
+                    query, NO_SKEW, NO_MINTS, NO_FLIPS, gaps);
         }
         return new Outcome(id, candidate.task.taskId(), solved,
                 ObligationResult.of(id, Verdict.SAT_MODEL_READY, "",
@@ -492,6 +732,14 @@ public final class ObligationFactory {
                                 + roots.size() + " root value(s) and "
                                 + answers.size() + " answered handoff(s), "
                                 + "planted at " + mints.size() + " mint(s)"),
-                query, clockDeltas, mints, gaps);
+                query, clockDeltas, mints, inherited.flips, gaps);
+    }
+
+    /** {@code base} with {@code over} laid on top: {@code over} wins. */
+    private static Map<String, String> overlay(Map<String, String> base,
+                                               Map<String, String> over) {
+        Map<String, String> merged = new LinkedHashMap<String, String>(base);
+        merged.putAll(over);
+        return merged;
     }
 }

@@ -151,6 +151,8 @@ public final class Arms {
         private final String slotId;
         private final String symbol;
         private final String sessionId;
+        private final OccurrenceAddress producer;
+        private final long deliveredAt;
         private final String producerPathId;
         private final String expressionRef;
         private final List<String> pi;
@@ -160,12 +162,15 @@ public final class Arms {
         private final Set<String> nested;
 
         Arm(String slotId, String symbol, String sessionId,
+            OccurrenceAddress producer, long deliveredAt,
             String producerPathId, String expressionRef, List<String> pi,
             Map<String, String> guard, Set<String> guardRoots,
             boolean attested, Set<String> nested) {
             this.slotId = slotId;
             this.symbol = symbol;
             this.sessionId = sessionId;
+            this.producer = producer;
+            this.deliveredAt = deliveredAt;
             this.producerPathId = producerPathId;
             this.expressionRef = expressionRef;
             this.pi = Collections.unmodifiableList(pi);
@@ -188,6 +193,30 @@ public final class Arms {
         /** The run that delivered it. */
         public String sessionId() {
             return sessionId;
+        }
+
+        /**
+         * THE OCCURRENCE that produced it.
+         *
+         * <p>What rule 3 groups by: one producer occurrence binds ALL its
+         * outs on one selector, so the arm has to say which occurrence it
+         * came out of and not only which slot it fills.  A wire arm's is
+         * the interaction's producer; a state arm's is the writer.</p>
+         */
+        public OccurrenceAddress producer() {
+            return producer;
+        }
+
+        /**
+         * The seq of the event that delivered it.
+         *
+         * <p>The cutoff the prefix is taken to: what the producer had
+         * decided BY THE TIME of this delivery.  A selector shared by
+         * several of one occurrence's outs is taken to the LAST of
+         * them.</p>
+         */
+        public long deliveredAt() {
+            return deliveredAt;
         }
 
         /** The producer path, or "" when no path condition attests it. */
@@ -231,9 +260,34 @@ public final class Arms {
     }
 
     private final Rows rows;
+    /** {@code slotId|sessionId|rootId}, in the order the arms were refused. */
+    private final Set<String> refusals = new LinkedHashSet<String>();
 
     public Arms(Rows rows) {
         this.rows = rows;
+    }
+
+    /**
+     * The arms refused since the last drain, and clears them (R4 item 3).
+     *
+     * <p>An arm whose delivered expression NAMES a declared root that the
+     * delivering session states no {@code RootMintRow} for is refused rather
+     * than emitted with an empty guard: the arm would be available under
+     * every valuation of a quantity its own session cannot attribute, and
+     * that is how hdfs-11741 campaign #4 composed satisfiably at the
+     * recorded valuation.  A root the expression does NOT name is skipped as
+     * before -- the guard rule only ever asked about the roots the
+     * expression depends on.</p>
+     *
+     * <p>Drained rather than read, because the caller FILES it: the stage
+     * that asked for the arms is the stage that has a gap list, and a
+     * refusal left sitting here would be counted twice by the next
+     * question.</p>
+     */
+    public Set<String> drainRefusals() {
+        Set<String> drained = new LinkedHashSet<String>(refusals);
+        refusals.clear();
+        return drained;
     }
 
     // ------------------------------------------------------------------
@@ -241,19 +295,39 @@ public final class Arms {
     // ------------------------------------------------------------------
 
     /**
-     * Every arm of one WIRE slot, and of every slot reached through it.
+     * EVERY ARM OF ONE WIRE SLOT, and of that slot alone.
      *
-     * <p>Closed transitively to a fixed point: a producer forwards what it
-     * was itself handed, so an arm's expression may mention another slot's
-     * variable, and a variable no family constrains is the one thing a
-     * witness must not rest on.</p>
+     * <p>A producer forwards what it was itself handed, so an arm's
+     * expression may mention another slot's variable ({@link Arm#nested}),
+     * and a variable no family constrains is the one thing a witness must
+     * not rest on.  Closing over those nested slots HERE, into one flat
+     * list, is what rule 3 replaces: their arms belong under the selector
+     * of the (producer occurrence, session) whose delivery names them, and
+     * only the caller that owns the case split knows what that is.  The
+     * closure is {@code ComposedFamilies}'s, by the same rule, one level at
+     * a time.</p>
      *
-     * @param symbol the consumer's own variable for the first slot
+     * @param symbol the consumer's own variable for this slot
+     */
+    public List<Arm> armsAt(Interaction slot, String symbol) {
+        return armsOf(slot, symbol);
+    }
+
+    /**
+     * The same, closed transitively over the slots an arm was itself
+     * handed, as one flat list.
+     *
+     * <p>What a FLIP query wants: every delivery that could stand behind
+     * one arrival, whatever depth it came from, with no case split to
+     * place them under.  The composed query wants the other shape -- each
+     * nested slot under the selector of the delivery that names it -- and
+     * takes {@link #armsAt} one level at a time.</p>
      */
     public List<Arm> wireArms(Interaction slot, String symbol) {
         List<Arm> arms = new ArrayList<Arm>();
         List<String> queue = new ArrayList<String>();
-        Map<String, Interaction> slots = new LinkedHashMap<String, Interaction>();
+        Map<String, Interaction> slots =
+                new LinkedHashMap<String, Interaction>();
         queue.add(symbol);
         slots.put(symbol, slot);
         Set<String> closed = new LinkedHashSet<String>();
@@ -262,7 +336,7 @@ public final class Arms {
             if (!closed.add(variable)) continue;
             Interaction interaction = slots.get(variable);
             if (interaction == null) continue;
-            for (Arm arm : armsOf(interaction, variable)) {
+            for (Arm arm : armsAt(interaction, variable)) {
                 arms.add(arm);
                 for (String nested : arm.nested()) {
                     if (nested.equals(variable)) continue;
@@ -582,7 +656,20 @@ public final class Arms {
         for (Map.Entry<String, List<RootMintRow>> entry
                 : rows.roots().entrySet()) {
             RootMintRow row = rows.root(entry.getKey(), session);
-            if (row == null) continue;
+            if (row == null) {
+                // R4: the expression NAMES this root and the delivering
+                // session states no mint row for it, so nothing of that
+                // session attributes the quantity the arm carries.  The arm
+                // is REFUSED, not emitted with an empty guard: an arm
+                // guarded by nothing is available under every valuation of a
+                // root its own session cannot answer for.
+                if (names(symbols, entry.getValue())) {
+                    refusals.add(slotId + "|" + session + "|"
+                            + entry.getKey());
+                    return null;
+                }
+                continue;
+            }
             // Never a clock: what a replay's clock read is already in the
             // decisions its prefix carries, and pinning it here would
             // close every skew witness that rests on this arm.
@@ -611,9 +698,24 @@ public final class Arms {
                 nested.add(named);
             }
         }
-        return new Arm(slotId, symbol, session,
+        return new Arm(slotId, symbol, session, producer, deliveredAt,
                 attested ? rows.pathIdOf(session, producer) : "",
                 expressionRef, pi, guard, guardRoots, attested, nested);
+    }
+
+    /**
+     * Whether an expression's symbols name one root, under any spelling the
+     * corpus minted it with.
+     */
+    private static boolean names(Set<String> symbols,
+                                 List<RootMintRow> minted) {
+        if (minted == null) return false;
+        for (RootMintRow row : minted) {
+            if (row.symbol() != null && symbols.contains(row.symbol())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -769,9 +871,17 @@ public final class Arms {
         return sum.append(") 1)").toString();
     }
 
-    /** Every symbol a recorded expression names, whatever its depth. */
-    static void symbolsIn(JsonElement expression, Set<String> into,
-                          int depth) {
+    /**
+     * Every symbol a recorded expression names, whatever its depth.
+     *
+     * <p>Public because IMPORT asks the same question of a session's whole
+     * expression table (invariant 11, {@code RowInvariants#attributed}): the
+     * walk that decides which roots an arm's expression names is the walk
+     * that decides which roots a session references, and two spellings of it
+     * would be two answers.</p>
+     */
+    public static void symbolsIn(JsonElement expression, Set<String> into,
+                                 int depth) {
         if (expression == null || expression.isJsonNull() || depth > 512) {
             return;
         }

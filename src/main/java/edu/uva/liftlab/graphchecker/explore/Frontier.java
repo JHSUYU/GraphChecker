@@ -18,23 +18,37 @@ import java.util.Set;
 /**
  * The one ledger of owed arms, and the wave that is what is still owed.
  *
- * <p><b>An arm is a fact about a PLANNED OCCURRENCE, not about a session.</b>
+ * <p><b>An arm is a fact about a PLANNED OCCURRENCE ON ONE PREFIX, not about
+ * a session.</b>
  * Its key is {@link ObligationFactory#obligationId} -- the task (which is the
- * occurrence, {@link ClosurePlanner#taskId}), the site, the ordinal and the
- * flipped outcome -- and it is owed ONCE across the whole corpus.  It stops
- * being owed when either of two things is true, and this class is the one
- * place that holds both:</p>
+ * occurrence, {@link ClosurePlanner#taskId}), the site, the ordinal, the
+ * flipped outcome, the digest of the prefix the flip is cut under
+ * ({@link ObligationFactory#prefixDigest}) and the digest of the WORLD it is
+ * cut in ({@link ObligationFactory#worldDigest}) -- and it is owed ONCE
+ * across the whole corpus.  It stops being owed when either of two things is
+ * true, and this class is the one place that holds both:</p>
  *
  * <ul>
- *   <li><b>some session recorded it.</b> A {@link DecisionRow} of that
- *       occurrence at that site and ordinal with that outcome, in ANY session
- *       of the epoch ({@link Corpus#pathsOf} spans them) -- because an arm is
- *       attested by the identity that took it, not by the session that holds
- *       the row.  The PREFIX is deliberately not part of the key: an arm
- *       recorded under a different prefix of the same occurrence is recorded,
- *       so that combination of prefix and flip is never replayed.  A family's
- *       arm is a path condition, and a second prefix over the same arm adds a
- *       disjunct to a formula that already has one, not an arm it lacks.</li>
+ *   <li><b>some session recorded it, on that prefix.</b> A
+ *       {@link DecisionRow} of that occurrence at that site and ordinal with
+ *       that outcome, under the same prefix, in ANY session of the epoch
+ *       ({@link Corpus#pathsOf} spans them) -- because an arm is attested by
+ *       the identity that took it, not by the session that holds the row.
+ *       The PREFIX and the WORLD are part of the key: an unexplored local
+ *       path of a known region is still work, and so is a known local path
+ *       in a world that changed what the region received -- never the same
+ *       path in a world that changed nothing for it.  A wave that adds no
+ *       new edge to the region graph is not the end of the exploration.
+ *       HDFS-11741 is why: its witness needs dn1's expiry compare flipped
+ *       again in the world where nn0's second rotation dropped the key, and
+ *       dn1's own prefix there is letter for letter the seed's -- the scan
+ *       runs over the DataNode's old map before the put loop -- so keyed by
+ *       the prefix alone that obligation is settled by the session that took
+ *       the arm in another world, and the two flips are never joined.  The
+ *       world is asked only where it AFFECTED the region
+ *       ({@link Corpus#affected}: the occurrence's own rows or those of any
+ *       state-connected member of its factor), or every session of the epoch
+ *       would re-ask every arm it holds.</li>
  *   <li><b>a wave answered it.</b> ADMITTED, UNSAT or NOT_ADMITTED in
  *       {@code obligation_results.jsonl}.  Every verdict closes its own arm:
  *       an ADMITTED replay's session is in the corpus by now, and
@@ -110,13 +124,32 @@ public final class Frontier {
         this.tasks = Collections.unmodifiableList(new ArrayList<Task>(tasks));
         for (Task task : this.tasks) {
             for (Corpus.RecordedPath path : corpus.pathsOf(task.focused())) {
-                for (DecisionRow decision : path.decisions) {
+                // AND IN THE WORLD IT WAS TAKEN IN, where that world reached
+                // the region at all: a recording in a session whose world
+                // changed nothing for this occurrence or its factor settles
+                // the world-less arm -- the one every other such session
+                // offers -- and a recording in a session whose world DID
+                // change what the region received settles only its own
+                // world's arm.
+                String world = corpus.affected(path.sessionId, task.focused(),
+                        task.factor())
+                        ? ObligationFactory.worldDigest(
+                                corpus.world(path.sessionId)) : "";
+                for (int index = 0; index < path.decisions.size(); index++) {
+                    DecisionRow decision = path.decisions.get(index);
+                    // UNDER THE PREFIX IT WAS TAKEN ON: the same arm on
+                    // another prefix of the same occurrence is another
+                    // obligation, and this one settles nothing about it.
                     settle(ObligationFactory.obligationId(task.taskId(),
                                     decision.siteId(), decision.ordinal(),
-                                    decision.outcome()),
+                                    decision.outcome(),
+                                    ObligationFactory.prefixDigest(
+                                            path.decisions, index),
+                                    world),
                             "arm already recorded by " + path.sessionId
                                     + ": this occurrence took that arm at "
-                                    + "that site in that session, so a "
+                                    + "that site on that prefix in that "
+                                    + "session, so a "
                                     + "focused replay of it would collect "
                                     + "nothing the corpus lacks (HANDOVER "
                                     + "SS1.5: exploration collects the arms "

@@ -18,6 +18,7 @@ import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.RootDomain;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.compose.JavaSmtSorts;
@@ -79,6 +80,83 @@ public final class Corpus implements Arms.Rows {
 
     /** What one raw symbol of one session names. */
     public enum SymbolKind { ROOT, HANDOFF, READ, UNKNOWN }
+
+    /** One decision a focused replay was held to: whose, where, which arm. */
+    public static final class Flip {
+        /** The occurrence the flip is addressed at, by the contract's id. */
+        public final String focusedOccurrenceId;
+        public final String siteId;
+        public final int ordinal;
+        public final boolean outcome;
+        /** The obligation this flip was originally asked by. */
+        public final String obligationId;
+
+        public Flip(String focusedOccurrenceId, String siteId, int ordinal,
+                    boolean outcome, String obligationId) {
+            this.focusedOccurrenceId = focusedOccurrenceId == null ? ""
+                    : focusedOccurrenceId;
+            this.siteId = siteId == null ? "" : siteId;
+            this.ordinal = ordinal;
+            this.outcome = outcome;
+            this.obligationId = obligationId == null ? "" : obligationId;
+        }
+
+        /** How a refusal names this flip. */
+        public String render() {
+            return siteId + "#" + ordinal + " -> " + outcome
+                    + " at occurrence " + focusedOccurrenceId
+                    + " (obligation " + obligationId + ")";
+        }
+    }
+
+    /**
+     * THE WORLD one session ran in, as its own focus row states it.
+     *
+     * <p>A focused replay is not a variation of the recording: it is the
+     * recording plus everything its obligation asked for -- the roots it
+     * planted, the clocks it skewed, the handoffs it answered, and the
+     * DECISIONS it was held to, its own flip and every flip it inherited.
+     * A candidate cut from one of its paths inherits all of that
+     * ({@link ObligationFactory#solve} merges it, {@link FlipQuery} asserts
+     * it), because the path it is cut from exists only in that world: 11741's
+     * witness is dn1's expiry compare flipped a second time ON the refresh
+     * path a session recorded under nn0's clock skew, and a child that
+     * dropped the skew would ask for a path that run never had.</p>
+     *
+     * <p>The SEED's world is empty -- it read its roots, answered nothing
+     * and was held to no decision -- and so is the world of a session no
+     * obligation worker of this iteration states a focus row for.</p>
+     */
+    public static final class World {
+        public final Map<String, String> rootAssignments;
+        public final Map<String, String> clockDeltas;
+        public final Map<String, String> answers;
+        public final Map<String, String> rootMints;
+        /** The row's own flip first, then the flips it inherited. */
+        public final List<Flip> flips;
+
+        World(Map<String, String> rootAssignments,
+              Map<String, String> clockDeltas,
+              Map<String, String> answers,
+              Map<String, String> rootMints,
+              List<Flip> flips) {
+            this.rootAssignments =
+                    Collections.unmodifiableMap(rootAssignments);
+            this.clockDeltas = Collections.unmodifiableMap(clockDeltas);
+            this.answers = Collections.unmodifiableMap(answers);
+            this.rootMints = Collections.unmodifiableMap(rootMints);
+            this.flips = Collections.unmodifiableList(flips);
+        }
+
+        /** The world of the seed, and of a session with no worker. */
+        static World empty() {
+            return new World(new LinkedHashMap<String, String>(),
+                    new LinkedHashMap<String, String>(),
+                    new LinkedHashMap<String, String>(),
+                    new LinkedHashMap<String, String>(),
+                    new ArrayList<Flip>());
+        }
+    }
 
     /** The iteration these sessions were read from, or null. */
     private final Path iteration;
@@ -152,9 +230,9 @@ public final class Corpus implements Arms.Rows {
     private final Map<String, RootDomain> declaredDomains =
             new LinkedHashMap<String, RootDomain>();
 
-    /** session id -> root id -> the value the wave assigned that replay. */
-    private final Map<String, Map<String, String>> assignments =
-            new LinkedHashMap<String, Map<String, String>>();
+    /** session id -> the world its focus row states it ran in. */
+    private final Map<String, World> worlds =
+            new LinkedHashMap<String, World>();
 
     private final Arms arms;
 
@@ -174,42 +252,192 @@ public final class Corpus implements Arms.Rows {
             corpus.declaredDomains.putAll(
                     RootDomain.declared(rootDomains));
         }
-        corpus.indexAssignments(iteration);
+        corpus.indexWorlds(iteration);
         return corpus;
     }
 
     /**
-     * What the wave assigned each replay's roots, by the session it ran.
+     * THE WORLD each replay of this iteration ran in, off its FOCUS ROW.
      *
      * <p>A replay handed an assignment PLANTED that value: the runtime
      * writes it into the declared field ({@code
      * ConcolicRegionRuntime#applyFocusedRootAssignment}, off {@code
-     * FocusedReplay#rootAssignment}) and then states NO {@code
-     * recordedValue} on the mint, because a counterfactual is not a
-     * recording.  So what that replay ran the root at is stated by the ASK
-     * and nowhere else, and this is where the corpus reads it.  A corpus
-     * with no obligation workers -- a seed-only one -- states none, and
-     * every root value is then a recording.</p>
+     * FocusedReplay#rootAssignment}), so what that replay ran the root at is
+     * stated by the ASK and nowhere else, and this is where the corpus reads
+     * it.  A corpus with no obligation workers -- a seed-only one -- states
+     * none, and every root value is then a recording.</p>
+     *
+     * <p>THE FOCUS ROW and not {@code obligation.jsonl}: the focus row is
+     * what the replay was DRIVEN by, and it is the only row that states the
+     * whole world -- the clock skews, the mints the assignments were planted
+     * at, and the flips the replay was held to, its own and the ones it
+     * inherited.  The ask file states a subset of it (no clocks, no flips),
+     * and reading a world out of a subset is how a child of a skewed replay
+     * came to be asked for under no skew at all.</p>
      */
-    private void indexAssignments(Path iteration) throws IOException {
+    private void indexWorlds(Path iteration) throws IOException {
         for (ObligationDir worker : ObligationDir.workersIn(iteration)) {
-            for (JsonObject row : RowCodec.readJsonl(worker.obligation())) {
-                Map<String, String> assigned =
-                        ExploreCodec.readObligation(row).rootAssignments();
-                if (assigned.isEmpty()) continue;
-                Map<String, String> bySession =
-                        assignments.get(worker.sessionId());
-                if (bySession == null) {
-                    bySession = new LinkedHashMap<String, String>();
-                    assignments.put(worker.sessionId(), bySession);
-                }
-                bySession.putAll(assigned);
+            for (JsonObject row : RowCodec.readJsonl(worker.focusedTask())) {
+                worlds.put(worker.sessionId(),
+                        ExploreCodec.readWorld(row));
             }
             for (ObligationResult result : RowCodec.readAll(worker.result(),
                     RowCodec::readObligationResult)) {
                 waveVerdicts.put(result.obligationId(), result);
             }
         }
+    }
+
+    /**
+     * The world one session ran in; empty for the seed and for a session no
+     * worker of this iteration states a focus row for.
+     */
+    public World world(String sessionId) {
+        World stated = worlds.get(sessionId == null ? "" : sessionId);
+        return stated == null ? World.empty() : stated;
+    }
+
+    /**
+     * Whether one session's WORLD changed anything this region received.
+     *
+     * <p>A world is asked about an arm only where it reached the region.
+     * The occurrence itself is not the whole region: a factor member is
+     * state-connected to it -- the writers and readers of one location on
+     * one node, the {@code Task.factor()} list the planner computes with
+     * {@code ClosurePlanner.stateConnected} -- and the two run as ONE
+     * symbolic unit, so what the member received is what the occurrence
+     * reads.  HDFS-11741 is the case: dn1's expiry scan runs over the
+     * DataNode's own old map BEFORE the put loop, so its own decisions are
+     * letter for letter the seed's whether or not nn0 skewed its clock;
+     * what nn0's flip changed is the {@code addKeys} occurrence beside it
+     * (four attaches instead of five), and addKeys writes the very map the
+     * scan reads.  Asked of the scan alone the session looks untouched, the
+     * arm keys world-less, and the session that flipped dn1 alone settles
+     * it for every world -- which is exactly why the witness's second flip
+     * was never proposed.</p>
+     *
+     * <p><b>CONTROL and STRUCTURE only, never VALUES.</b> Six differences,
+     * each measured against the SEED: the seed has no activation of the
+     * occurrence at all; the ordered decision sequence
+     * {@code siteId#ordinal=outcome} differs; the per-site COUNT of
+     * attaches differs; the set of paired producer OCCURRENCES of its
+     * attaches differs (a new or different producer is new topology); the
+     * per-site count of reads differs; the per-site count of writes
+     * differs.</p>
+     *
+     * <p>A delivered VALUE is deliberately not one of them.  Values are
+     * carried symbolically by the families -- that is what a handoff's arm
+     * is for -- and a clock-valued handoff is a different value in every
+     * run by nature, for reasons no flip caused.  Comparing them made
+     * hdfs-11741 campaign #3's wave 2 read 196 of 208 (task, session) pairs
+     * as affected, 91 of them on an attach arrival alone: at dn1's expiry
+     * scan the ONLY difference the four balancer-only replays had from the
+     * recording, anywhere in the group, was
+     * {@code XCH.....resp.block-key-expiry-date}, a wall clock that moves
+     * about 100 seconds between runs.  Every replay then counted as its own
+     * world and the wave asked 490 obligations where the corpus owes a
+     * handful.</p>
+     *
+     * <p>The seed's own sessionId is never affected -- its world is the
+     * empty one -- and a corpus that states no single recording answers
+     * "affected", which costs a re-proposal and never a lost arm.</p>
+     */
+    public boolean affected(String sessionId, OccurrenceAddress occurrence,
+                            List<OccurrenceAddress> factor) {
+        if (sessionId == null || sessionId.isEmpty()) return false;
+        String seed = seedSessionId();
+        if (seed.isEmpty()) return true;
+        if (seed.equals(sessionId)) return false;
+        if (occurrence != null && changed(sessionId, seed, occurrence)) {
+            return true;
+        }
+        if (factor == null) return false;
+        for (OccurrenceAddress member : factor) {
+            if (member == null || member.equals(occurrence)) continue;
+            if (changed(sessionId, seed, member)) return true;
+        }
+        return false;
+    }
+
+    /** Whether one session's rows at one occurrence differ from the seed's. */
+    private boolean changed(String sessionId, String seed,
+                            OccurrenceAddress occurrence) {
+        if (activation(seed, occurrence) == null) return true;
+        if (!shape(sessionId, occurrence).equals(shape(seed, occurrence))) {
+            return true;
+        }
+        if (!attachSites(sessionId, occurrence)
+                .equals(attachSites(seed, occurrence))) {
+            return true;
+        }
+        if (!producers(sessionId, occurrence)
+                .equals(producers(seed, occurrence))) {
+            return true;
+        }
+        if (!readSites(sessionId, occurrence)
+                .equals(readSites(seed, occurrence))) {
+            return true;
+        }
+        return !writeSites(sessionId, occurrence)
+                .equals(writeSites(seed, occurrence));
+    }
+
+    /** One session's local path at one occurrence, in recorded order. */
+    private List<String> shape(String sessionId,
+                               OccurrenceAddress occurrence) {
+        List<String> taken = new ArrayList<String>();
+        for (DecisionRow decision : decisionsOf(sessionId, occurrence)) {
+            taken.add(decision.siteId() + "#" + decision.ordinal() + "="
+                    + decision.outcome());
+        }
+        return taken;
+    }
+
+    /** HOW MANY handoffs arrived here, per site: the count, not the value. */
+    private List<String> attachSites(String sessionId,
+                                     OccurrenceAddress occurrence) {
+        List<String> sites = new ArrayList<String>();
+        for (AttachRow attach : attachesOn(sessionId, occurrence)) {
+            sites.add(attach.endpoint().site());
+        }
+        Collections.sort(sites);
+        return sites;
+    }
+
+    /** WHICH occurrences delivered them: a new producer is new topology. */
+    private Set<String> producers(String sessionId,
+                                  OccurrenceAddress occurrence) {
+        Set<String> from = new LinkedHashSet<String>();
+        for (AttachRow attach : attachesOn(sessionId, occurrence)) {
+            Endpoint producer = attach.producer();
+            if (producer == null) continue;
+            OccurrenceAddress at = producer.occurrence();
+            from.add(at == null ? producer.id() : at.id());
+        }
+        return from;
+    }
+
+    /** HOW MANY reads it made, per site: the count, not the value. */
+    private List<String> readSites(String sessionId,
+                                   OccurrenceAddress occurrence) {
+        List<String> sites = new ArrayList<String>();
+        for (ReadRow read : readsOn(sessionId, occurrence)) {
+            sites.add(read.endpoint().site());
+        }
+        Collections.sort(sites);
+        return sites;
+    }
+
+    /** HOW MANY writes it made, per site: the count, not the value. */
+    private List<String> writeSites(String sessionId,
+                                    OccurrenceAddress occurrence) {
+        List<String> sites = new ArrayList<String>();
+        for (WriteRow write : writesOn(occurrence)) {
+            if (!write.sessionId().equals(sessionId)) continue;
+            sites.add(write.endpoint().site());
+        }
+        Collections.sort(sites);
+        return sites;
     }
 
     /**
@@ -545,6 +773,122 @@ public final class Corpus implements Arms.Rows {
         return session == null ? null : session.expressions();
     }
 
+    /** How deep one expression is walked for the state reads inside it. */
+    private static final int EXPRESSION_DEPTH = 64;
+
+    /**
+     * One shared-state read a published expression states, and the version
+     * of that location the producer had in hand when it read.
+     */
+    public static final class StateRead {
+        private final String locationKey;
+        private final long readEventId;
+        private final WriteRow write;
+
+        private StateRead(String locationKey, long readEventId,
+                          WriteRow write) {
+            this.locationKey = locationKey;
+            this.readEventId = readEventId;
+            this.write = write;
+        }
+
+        /** The location, spelled the way a row and a join both spell it. */
+        public String locationKey() {
+            return locationKey;
+        }
+
+        /** The event id the expression states the read happened at. */
+        public long readEventId() {
+            return readEventId;
+        }
+
+        /** The latest write of that location at or before the read. */
+        public WriteRow write() {
+            return write;
+        }
+    }
+
+    /**
+     * The shared state one published expression rests on.
+     *
+     * <p>An expression that projects a value out of shared state names the
+     * READ it made -- a {@code ReadFromExpression}, or the
+     * {@code ConsumerBoundaryExpression} over one, carrying a
+     * {@code location} and a {@code readEventId} -- and never the write
+     * that produced that state.  What a closure and a composed arm both
+     * need is the WRITE: the latest version of that location at or before
+     * the read is the state the producer had in hand, and its writer's
+     * prefix is a reason the delivered value is what it is.  On hdfs-11741
+     * the NameNode's export reads its key map at event 599; the write it
+     * rests on is version 589, the last of the previous tick.</p>
+     *
+     * <p>ONE implementation of that resolution, because two would be two
+     * answers to "what state is this delivery made of": the composer closes
+     * an arm with it ({@code ComposedFamilies.expressionWrites}) and the
+     * closure grows by it ({@code ClosurePlanner.successors}, E2).</p>
+     *
+     * <p>Only reads whose location this session actually wrote are
+     * returned: a location no write row of the session names has no version
+     * to have been read at, and guessing one would state a reason nothing
+     * recorded.</p>
+     */
+    public List<StateRead> expressionStateReads(String sessionId,
+                                                String expressionRef) {
+        List<StateRead> found = new ArrayList<StateRead>();
+        JsonObject expression = expression(sessionId, expressionRef);
+        if (expression == null) return found;
+        Map<String, Long> read = new LinkedHashMap<String, Long>();
+        readNodes(expression, read, 0);
+        for (Map.Entry<String, Long> each : read.entrySet()) {
+            WriteRow latest = null;
+            for (WriteRow write : writesOf(sessionId, each.getKey())) {
+                if (write.version() > each.getValue().longValue()) continue;
+                if (latest == null || latest.version() < write.version()) {
+                    latest = write;
+                }
+            }
+            if (latest == null) continue;
+            found.add(new StateRead(each.getKey(),
+                    each.getValue().longValue(), latest));
+        }
+        return found;
+    }
+
+    /**
+     * Location key -> the latest event id one expression read it at.
+     *
+     * <p>Every node that carries both a {@code location} and a
+     * {@code readEventId} states a read of shared state, whatever else the
+     * node is -- which is what a {@code ReadFromExpression} and the
+     * {@code ConsumerBoundaryExpression} over one are.</p>
+     */
+    private static void readNodes(JsonElement expression,
+                                  Map<String, Long> into, int depth) {
+        if (expression == null || depth > EXPRESSION_DEPTH) return;
+        if (expression.isJsonArray()) {
+            for (JsonElement each : expression.getAsJsonArray()) {
+                readNodes(each, into, depth + 1);
+            }
+            return;
+        }
+        if (!expression.isJsonObject()) return;
+        JsonObject node = expression.getAsJsonObject();
+        JsonElement location = node.get("location");
+        JsonElement at = node.get("readEventId");
+        if (location != null && location.isJsonObject() && at != null
+                && at.isJsonPrimitive()) {
+            String key = SmtLowering.locationKey(location.getAsJsonObject());
+            long event = at.getAsLong();
+            Long held = into.get(key);
+            if (held == null || held.longValue() < event) {
+                into.put(key, Long.valueOf(event));
+            }
+        }
+        for (Map.Entry<String, JsonElement> member : node.entrySet()) {
+            readNodes(member.getValue(), into, depth + 1);
+        }
+    }
+
     /** Every interaction any session's own pairing states. */
     public Map<String, Interaction> interactions() {
         return Collections.unmodifiableMap(interactions);
@@ -723,8 +1067,7 @@ public final class Corpus implements Arms.Rows {
      */
     @Override
     public String rootValue(String sessionId, String rootId) {
-        Map<String, String> assigned = assignments.get(sessionId);
-        String wave = assigned == null ? null : assigned.get(rootId);
+        String wave = world(sessionId).rootAssignments.get(rootId);
         if (wave != null && !wave.isEmpty()) return wave;
         Map<String, RootMintRow> bySession = rootsById.get(rootId);
         RootMintRow row = bySession == null ? null : bySession.get(sessionId);
