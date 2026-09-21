@@ -331,6 +331,39 @@ final class FlipQuery {
             this.path = path;
         }
 
+        /**
+         * Whether a lowered conjunct is one this query can put in a query.
+         *
+         * <p>Blank, or carrying an application whose arguments are missing
+         * -- {@code (not )}, {@code (and )}, {@code (= )}.  Either is a term
+         * the lowering could not state, and z3 answers a query holding one
+         * with {@code (error "invalid function application, arguments
+         * missing")} and decides nothing at all, so the obligation is lost
+         * rather than answered.</p>
+         */
+        private static boolean malformed(String term) {
+            if (term == null || term.trim().isEmpty()) return true;
+            for (int at = term.indexOf('('); at >= 0;
+                    at = term.indexOf('(', at + 1)) {
+                int index = at + 1;
+                while (index < term.length()
+                        && !Character.isWhitespace(term.charAt(index))
+                        && term.charAt(index) != '('
+                        && term.charAt(index) != ')') {
+                    index++;
+                }
+                if (index == at + 1) continue;
+                while (index < term.length()
+                        && Character.isWhitespace(term.charAt(index))) {
+                    index++;
+                }
+                if (index < term.length() && term.charAt(index) == ')') {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         private Built build(int flipIndex) {
             DecisionRow flipped = path.decisions.get(flipIndex);
             for (int index = 0; index <= flipIndex; index++) {
@@ -365,6 +398,36 @@ final class FlipQuery {
                             decision.siteId() + "#" + decision.ordinal(),
                             "prefix conjunct dropped: " + named
                                     + " is undeclared"));
+                    continue;
+                }
+                // A TERM THIS QUERY CANNOT STATE IS REFUSED BY NAME, never
+                // wrapped.  The guard above catches a term that NAMES
+                // something undeclared; a term that is blank, or that
+                // carries an application with its arguments missing, walked
+                // straight past it and was negated anyway.  hdfs-11741
+                // campaign #9 wave 1: 22 of 260 obligations came back
+                // `the solver did not decide this flip: (error "line 68
+                // column 18: invalid function application, arguments
+                // missing")` over `(assert (and (not ) (not ) (= vH_... 
+                // 182905)))`.  z3 rejects the whole query, so the arm is
+                // thrown away -- a flip lost to a spelling, with nothing
+                // said about it.
+                if (malformed(held)) {
+                    if (last) {
+                        return refuse(GapKind.DECLARATION_MISSING,
+                                decision.siteId() + "#" + decision.ordinal(),
+                                "the flipped predicate lowers to a term this "
+                                        + "query cannot state (\"" + held
+                                        + "\"), so the flip is refused rather "
+                                        + "than asked as a malformed query",
+                                flipped);
+                    }
+                    gaps.add(GapRow.of(path.sessionId,
+                            GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                            decision.siteId() + "#" + decision.ordinal(),
+                            "prefix conjunct dropped: it lowers to a term "
+                                    + "this query cannot state (\"" + held
+                                    + "\")"));
                     continue;
                 }
                 // The obligation IS the complement of the arm the recording
