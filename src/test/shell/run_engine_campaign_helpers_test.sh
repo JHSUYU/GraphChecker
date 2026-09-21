@@ -1477,4 +1477,53 @@ $(cat "${withdraw_worker}/obligation_result.jsonl")"
 $(cat "${withdraw_worker}/obligation_result.jsonl")"
 reset_config
 
+# ---- CHECKOUT-STATE-1: a clean tree hashes nothing -------------------------
+#
+# `printf '%s\n' ""` emits one empty line, awk prints an empty field for it,
+# and "${repo}/" exists -- so before the guard a CLEAN checkout walked the
+# whole repository, including the multi-GB agent git worktrees under .claude/,
+# and digested files no commit of the repo contains.  hdfs-11741 campaign #6
+# sat in FREEZE for over seven minutes on a tree that had just gone clean.
+checkout_repo="${test_tmp}/checkout-state"
+mkdir -p "${checkout_repo}/heavy"
+git -C "${checkout_repo}" init -q
+git -C "${checkout_repo}" config user.email t@t
+git -C "${checkout_repo}" config user.name t
+printf 'tracked\n' >"${checkout_repo}/tracked.txt"
+git -C "${checkout_repo}" add tracked.txt
+git -C "${checkout_repo}" -c commit.gpgsign=false commit -q -m seed
+# An untrackable heap that no clean-tree digest may ever reach.
+printf 'ignored\n' >"${checkout_repo}/.gitignore"
+printf 'heavy/\n' >>"${checkout_repo}/.gitignore"
+git -C "${checkout_repo}" add .gitignore
+git -C "${checkout_repo}" -c commit.gpgsign=false commit -q -m ignore
+for i in 1 2 3; do printf 'noise %s\n' "${i}" >"${checkout_repo}/heavy/f${i}"; done
+
+clean_state=$(campaign_checkout_state "${checkout_repo}") \
+  || fail "CHECKOUT-STATE-1: a clean checkout state failed"
+[[ "$(printf '%s' "${clean_state}" | jq -r '.branch')" != "" ]] \
+  || fail "CHECKOUT-STATE-1: the clean state states no branch"
+
+# The digest of a clean tree is the digest of nothing but its one empty line,
+# so it must NOT change when an ignored file underneath it changes.
+printf 'noise changed\n' >"${checkout_repo}/heavy/f1"
+clean_again=$(campaign_checkout_state "${checkout_repo}") \
+  || fail "CHECKOUT-STATE-1: the second clean checkout state failed"
+[[ "$(printf '%s' "${clean_state}" | jq -r '.worktreeDigest')" \
+    == "$(printf '%s' "${clean_again}" | jq -r '.worktreeDigest')" ]] \
+  || fail "CHECKOUT-STATE-1: a clean tree's digest followed a file the \
+repository does not track, so the walk reached the repository root"
+
+# And a tree that DOES state an entry still digests that entry's content.
+printf 'untracked\n' >"${checkout_repo}/loose.txt"
+dirty_state=$(campaign_checkout_state "${checkout_repo}") \
+  || fail "CHECKOUT-STATE-1: a dirty checkout state failed"
+[[ "$(printf '%s' "${dirty_state}" | jq -r '.worktreeDigest')" \
+    != "$(printf '%s' "${clean_state}" | jq -r '.worktreeDigest')" ]] \
+  || fail "CHECKOUT-STATE-1: an untracked file did not change the digest"
+printf 'untracked, differently\n' >"${checkout_repo}/loose.txt"
+[[ "$(campaign_checkout_state "${checkout_repo}" | jq -r '.worktreeDigest')" \
+    != "$(printf '%s' "${dirty_state}" | jq -r '.worktreeDigest')" ]] \
+  || fail "CHECKOUT-STATE-1: the content of a stated entry is not digested"
+
 echo "run_engine campaign helper tests passed"

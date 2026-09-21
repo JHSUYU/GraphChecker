@@ -1121,6 +1121,16 @@ campaign_checkout_state() {
   if ! worktree=$( { printf '%s\n' "${porcelain}"
       printf '%s\n' "${porcelain}" | awk '{print $NF}' \
         | while IFS= read -r entry; do
+            # A CLEAN TREE STATES NO ENTRY, and an empty one is not the
+            # repository root.  `printf '%s\n' ""` emits one empty line, awk
+            # prints an empty field for it, and `${repo}/` then exists -- so
+            # a clean checkout hashed the WHOLE tree, agent git worktrees and
+            # all.  hdfs-11741 campaign #6: FREEZE ran 15 s while the tree
+            # carried one untracked directory and was still walking several
+            # GB of vendored OpenJDK sources seven minutes after the tree
+            # went clean.  The digest it computed was meaningless too, being
+            # taken over files no commit of this repository contains.
+            [[ -n "${entry}" ]] || continue
             [[ -e "${repo}/${entry}" ]] || continue
             find "${repo}/${entry}" -type f -print0 | LC_ALL=C sort -z \
               | xargs -0 -r sha256sum
