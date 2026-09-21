@@ -510,8 +510,10 @@ public class ExploreTest {
                 Collections.<String, String>emptyMap());
 
         // Y: nn0's rotation flipped.  Its rows AT THE TARGET are the seed's,
-        // letter for letter; what its world changed is the delivery addKeys
-        // received, and addKeys writes what the target reads.
+        // letter for letter; what its world changed is the STRUCTURE of what
+        // addKeys received -- one handoff fewer, because the rotation it was
+        // held to delivered one key less -- and addKeys writes what the
+        // target reads.  (11741: four attaches instead of five.)
         Session wye = new Session(iteration, "s-world-y");
         wye.activation(PRODUCER, true);
         wye.activation(target, false);
@@ -523,14 +525,13 @@ public class ExploreTest {
         wye.root(target, "CASE.COUNT", "M_COUNT", RootKind.INTEGRAL, "0",
                 "0", "10", true);
         wye.symbolic("EXPR.0000000000000001", "M_MARKER", "Z");
-        wye.symbolic("e.stored", "M_HOFF_KEY");
-        wye.constant("e.119993", "119993");
+        wye.constant("e.kept", "119992");
         wye.decision(PRODUCER, "Rotate#u5", 1, true, "(> M_TICK 3)");
         wye.decision(target, "Guard#u8", 1, false, "EXPR.0000000000000001");
         wye.decision(target, "Concrete#u3", 1, false, "");
-        wye.export(ROTATED, "e.119993", 11L, "119993");
-        wye.attach(DELIVERED, "M_HOFF_KEY", "119993", ROTATED);
-        wye.write(STORED, ALL_KEYS, 5L, "e.stored");
+        // No attach here at all: the rotation it was held to delivered
+        // nothing, so addKeys stored what it already had.
+        wye.write(STORED, ALL_KEYS, 5L, "e.kept");
         wye.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
         wye.answered(ObligationResult.of("OBL.world-y", Verdict.ADMITTED,
                 "s-world-y", "the focused prefix reproduced"));
@@ -541,8 +542,13 @@ public class ExploreTest {
                 Collections.<String, String>emptyMap());
 
         // W: a world all the same -- a flip on a node of its own -- that
-        // changed nothing this region received.  Its rows at the target AND
-        // at the target's factor are the seed's.
+        // changed nothing this region received.  Its rows at the target and
+        // at the target's factor have the seed's SHAPE: the same decisions,
+        // the same handoffs from the same producer, the same reads and
+        // writes.  The one thing that differs is a delivered VALUE, and a
+        // value is not a difference: the families carry values
+        // symbolically, and a clock-valued handoff is a different value in
+        // every run for reasons no flip caused.
         Session unmoved = new Session(iteration, "s-world-w");
         unmoved.activation(BALANCER, true);
         unmoved.activation(target, false);
@@ -555,15 +561,15 @@ public class ExploreTest {
                 "0", "10", true);
         unmoved.symbolic("EXPR.0000000000000001", "M_MARKER", "Z");
         unmoved.symbolic("e.stored", "M_HOFF_KEY");
-        unmoved.constant("e.119992", "119992");
+        unmoved.constant("e.887766", "887766");
         unmoved.decision(BALANCER, "Balance#u2", 1, true, "(> M_MOVE 1)");
         unmoved.decision(target, "Guard#u8", 1, false,
                 "EXPR.0000000000000001");
         unmoved.decision(target, "Concrete#u3", 1, false, "");
-        unmoved.export(ROTATED, "e.119992", 11L, "119992");
-        unmoved.attach(DELIVERED, "M_HOFF_KEY", "119992", ROTATED);
+        unmoved.export(ROTATED, "e.887766", 11L, "887766");
+        unmoved.attach(DELIVERED, "M_HOFF_KEY", "887766", ROTATED);
         unmoved.write(STORED, ALL_KEYS, 5L, "e.stored");
-        unmoved.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
+        unmoved.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "887766");
         unmoved.answered(ObligationResult.of("OBL.world-w", Verdict.ADMITTED,
                 "s-world-w", "the focused prefix reproduced"));
         unmoved.flush();
@@ -583,12 +589,29 @@ public class ExploreTest {
         assertEquals("and s-world-y's own rows at the target are the seed's",
                 worlds.decisionsOf("s-seed", target).size(),
                 worlds.decisionsOf("s-world-y", target).size());
-        assertTrue("affected all the same, through the factor member whose "
-                        + "delivery its world changed",
+        assertEquals("what its world changed is the STRUCTURE of what the "
+                        + "factor member received: one handoff fewer",
+                worlds.attachesOn("s-seed", WRITER).size() - 1,
+                worlds.attachesOn("s-world-y", WRITER).size());
+        assertTrue("so it is affected, through that member",
                 worlds.affected("s-world-y", target, anchored.factor()));
         assertFalse("while the balancer's world changed nothing this region "
                         + "received", worlds.affected("s-world-w", target,
                 anchored.factor()));
+        assertEquals("though every value it delivered differs -- a VALUE is "
+                        + "not a difference, because the families carry "
+                        + "values symbolically and a clock-valued handoff "
+                        + "is a different value in every run",
+                worlds.attachesOn("s-seed", WRITER).size(),
+                worlds.attachesOn("s-world-w", WRITER).size());
+        assertFalse("the delivered values really do differ",
+                worlds.attachesOn("s-world-w", WRITER).get(0).arrival()
+                        .equals(worlds.attachesOn("s-seed", WRITER).get(0)
+                                .arrival()));
+        assertFalse("and the observed values too",
+                worlds.readsOn("s-world-w", target).get(0).concreteValue()
+                        .equals(worlds.readsOn("s-seed", target).get(0)
+                                .concreteValue()));
         assertFalse("though that session really does have a world",
                 ObligationFactory.worldDigest(worlds.world("s-world-w"))
                         .isEmpty());
