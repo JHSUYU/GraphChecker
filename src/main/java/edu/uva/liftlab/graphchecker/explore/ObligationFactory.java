@@ -424,13 +424,35 @@ public final class ObligationFactory {
         List<Candidate> candidates = new ArrayList<Candidate>();
         Set<String> offered = new LinkedHashSet<String>();
         int paths = 0;
+        int unread = 0;
+        int cappedPaths = 0;
         for (Corpus.RecordedPath path : smallestWorldFirst(corpus,
                 corpus.pathsOf(task.focused()))) {
             if (!cuttable(corpus, path.sessionId)) continue;
-            if (paths++ >= bounds.maxPathsPerTask) break;
+            // A BOUND THAT DROPS WORK SAYS SO.  This used to be a bare
+            // `break`: of hdfs-11741 campaign #6's 137 cuttable paths at one
+            // task, 32 were planned and 105 were discarded in silence -- no
+            // log line, no gap row, nothing a reader of the manifest could
+            // tell apart from "the corpus offered 32".  Two (task, arm)
+            // pairs of that run went missing this way and it took an
+            // offline re-plan with the bound lifted to find out why.
+            // The paths are ordered smallest-world-first, so what a cap
+            // keeps is the closest to the recording and not an arbitrary
+            // prefix -- which is worth stating too, because it is the
+            // reason the cap is survivable at all.
+            if (paths >= bounds.maxPathsPerTask) {
+                unread++;
+                continue;
+            }
+            paths++;
+            cappedPaths++;
             int flips = 0;
-            for (int index = 0; index < path.decisions.size()
-                    && flips < bounds.maxFlipsPerPath; index++) {
+            int unflipped = 0;
+            for (int index = 0; index < path.decisions.size(); index++) {
+                if (flips >= bounds.maxFlipsPerPath) {
+                    unflipped++;
+                    continue;
+                }
                 DecisionRow decision = path.decisions.get(index);
                 if (!FlipQuery.flippable(corpus, path.sessionId, decision)) {
                     continue;
@@ -461,6 +483,28 @@ public final class ObligationFactory {
                 candidates.add(candidate);
                 flips++;
             }
+            if (unflipped > 0) {
+                gaps.add(GapRow.of(path.sessionId,
+                        GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+                        task.taskId() + " max-flips-per-path="
+                                + bounds.maxFlipsPerPath,
+                        "this path offered more flippable decisions than one "
+                                + "wave takes from it: " + unflipped
+                                + " decision(s) after the "
+                                + bounds.maxFlipsPerPath
+                                + " this wave cut, left unasked"));
+            }
+        }
+        if (unread > 0) {
+            gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                    GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+                    task.taskId() + " max-paths-per-region="
+                            + bounds.maxPathsPerTask,
+                    "this task has " + (cappedPaths + unread) + " cuttable "
+                            + "recorded path(s) and this wave planned from "
+                            + cappedPaths + ": " + unread + " path(s), the "
+                            + "ones carrying the largest worlds, were not "
+                            + "read at all"));
         }
         return candidates;
     }

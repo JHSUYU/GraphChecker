@@ -170,6 +170,35 @@ public final class Z3 {
      */
     public Answer ask(String query, List<String> modelSymbols,
                       boolean wantCore) {
+        return ask(query, modelSymbols, wantCore, 0L);
+    }
+
+    /**
+     * The same ask under a budget of its own.
+     *
+     * <p>ONE SOLVER, TWO KINDS OF QUESTION.  A composition's witness search
+     * is worth minutes; the per-path sanity checks beside it are not, and
+     * they are asked once per disjunct.  A budget of {@code <= 0} means the
+     * instance's own, so every existing caller is unchanged, and the run
+     * counter and the error set stay this solver's -- a separate {@code Z3}
+     * would have split both, and the claim reads them after.</p>
+     */
+    public Answer ask(String query, List<String> modelSymbols,
+                      boolean wantCore, long budgetMillis) {
+        long held = askBudgetMillis;
+        askBudgetMillis = budgetMillis > 0L ? budgetMillis : 0L;
+        try {
+            return asked(query, modelSymbols, wantCore);
+        } finally {
+            askBudgetMillis = held;
+        }
+    }
+
+    /** The budget the ask in flight states, or 0 for this solver's own. */
+    private long askBudgetMillis;
+
+    private Answer asked(String query, List<String> modelSymbols,
+                         boolean wantCore) {
         String text = query == null ? "" : query;
         String output = run(text + "(check-sat)\n");
         String status = firstLine(output);
@@ -230,7 +259,8 @@ public final class Z3 {
      */
     private String run(String input) {
         runs++;
-        long budget = TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
+        long budget = TimeUnit.MILLISECONDS.toNanos(
+                askBudgetMillis > 0L ? askBudgetMillis : timeoutMillis);
         Process process;
         try {
             ProcessBuilder builder = new ProcessBuilder(z3.toString(),

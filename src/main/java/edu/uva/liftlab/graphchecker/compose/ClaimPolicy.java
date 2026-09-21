@@ -450,16 +450,49 @@ public final class ClaimPolicy {
      * same way and states nothing: the claim it publishes is about the
      * formula it built.</p>
      */
+    /** The budget one self-refutation run gets, in milliseconds. */
+    static long selfContradictoryBudgetMillis() {
+        String stated = System.getProperty(SELF_CHECK_BUDGET_PROPERTY);
+        if (stated == null || stated.trim().isEmpty()) {
+            return DEFAULT_SELF_CHECK_BUDGET_MS;
+        }
+        try {
+            long value = Long.parseLong(stated.trim());
+            return value <= 0L ? DEFAULT_SELF_CHECK_BUDGET_MS : value;
+        } catch (NumberFormatException notABudget) {
+            return DEFAULT_SELF_CHECK_BUDGET_MS;
+        }
+    }
+
+    /** One minute: long enough to decide a path, short enough to scan. */
+    static final long DEFAULT_SELF_CHECK_BUDGET_MS = 60000L;
+
+    /** The property that states a budget other than the default. */
+    static final String SELF_CHECK_BUDGET_PROPERTY =
+            "causynth.compose.self.check.budget.ms";
+
     private static void selfContradictory(Composer.Composition composition,
                                           Z3 solver, List<GapRow> gaps) {
         int inert = 0;
+        int undecided = 0;
+        // A SANITY CHECK IS NOT THE WITNESS SEARCH, so it does not get the
+        // witness search's budget.  This is one run per disjunct and the
+        // composition's own solver carries `solver_timeout_ms`, which on
+        // hdfs-11741 is thirty minutes: 145 disjuncts against that bound is
+        // three days of worst case for a question whose undecided answer is
+        // already harmless.  `!unsat()` continues, so a run that does not
+        // finish leaves the path in the disjunction, which is the safe
+        // direction -- the only cost is that a genuinely inert path is not
+        // named.  Campaign #8 spent over an hour here.
         for (Composer.Disjunct disjunct : composition.disjuncts()) {
             List<String> forced = new ArrayList<String>();
             forced.add("(assert (! " + disjunct.selector()
                     + " :named path_alone__"
                     + ArtifactIO.digest(disjunct.path().pathId, 10) + "))");
             Z3.Answer answer = solver.ask(composition.query(forced),
-                    Collections.<String>emptyList(), false);
+                    Collections.<String>emptyList(), false,
+                    selfContradictoryBudgetMillis());
+            if (!answer.decided()) undecided++;
             if (!answer.unsat()) continue;
             inert++;
             // DIAGNOSTIC per path, because one such path is a statement
@@ -478,6 +511,21 @@ public final class ClaimPolicy {
                             + "could have satisfied it and it contributes "
                             + "nothing to the disjunction; z3 closed on "
                             + answer.core()));
+        }
+        if (undecided > 0) {
+            // A BUDGET THAT DROPS A QUESTION SAYS SO.  These paths were not
+            // shown to be satisfiable; the scan simply ran out of time on
+            // them and left them in the disjunction, which is the safe
+            // direction but not a silent one -- a reader comparing two runs
+            // must be able to see that this one asked less.
+            gaps.add(GapRow.of(Composer.COMPOSITION,
+                    GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+                    "self-check budget " + selfContradictoryBudgetMillis()
+                            + "ms",
+                    undecided + " of " + composition.disjuncts().size()
+                            + " path(s) were not decided within the "
+                            + "self-refutation budget and stay in the "
+                            + "disjunction unexamined"));
         }
         if (inert > 0 && inert == composition.disjuncts().size()) {
             // EVERY path inert: the disjunction is false in every world of
