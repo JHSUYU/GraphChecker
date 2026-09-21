@@ -56,6 +56,14 @@ import java.util.Set;
  *       for one waits for the replay it is supposed to ask for.</li>
  * </ul>
  *
+ * <p>And a third way, because the first two ask only about what a ROW says:
+ * a value this occurrence contributed -- its export, its write -- states the
+ * shared state it RESTS ON inside its own expression, and no read row of
+ * this occurrence names it ({@link #statedReads}, E2).  The NameNode's
+ * export of its key set is the removal scan of the previous tick; without
+ * that edge no closure holds the scan and no query declares the clock it
+ * read.</p>
+ *
  * <p>A static candidate is ON ONE NODE, because a CONCRETE location lives in
  * one process and a message was sent by one process: a write site's
  * candidates are the occurrences on the READER's node (N1, {@link #writers}),
@@ -305,7 +313,60 @@ public final class ClosurePlanner {
                 writers(corpus, map, row, next, gaps);
             }
         }
+        statedReads(corpus, map, demand, next, gaps);
         return next;
+    }
+
+    /**
+     * E2 -- A DEMANDED EXPORT STATES THE SHARED STATE IT RESTS ON.
+     *
+     * <p>What an occurrence is demanded FOR is its own write or export
+     * ({@link Demand#contributed}), and the VM publishes that value's reads
+     * of shared state only INSIDE the expression: a
+     * {@code ReadFromExpression}, or the {@code ConsumerBoundaryExpression}
+     * over one, carrying a {@code location} and a {@code readEventId}.  No
+     * {@code ReadRow} of the producing occurrence names them, so
+     * {@link #writers} was never asked about them and the state the
+     * delivery is MADE OF was in no closure.</p>
+     *
+     * <p>So each resolved read grows the closure exactly as a read row
+     * would: the writer of the version the producer had in hand, and the
+     * static write sites of that location's carrier ON THE PRODUCER'S OWN
+     * NODE (N1 -- the map it read is an object in its own heap).  The
+     * writer is demanded for ITS expression in turn, so a chain of ticks
+     * closes by the same rule.  {@link Corpus#expressionStateReads} is the
+     * one resolution, shared with the composer's
+     * {@code ComposedFamilies.expressionWrites}.</p>
+     *
+     * <p>Never the anchor: the anchor is demanded for its fatal predicate,
+     * whose operands are what {@link #demanded} already walks, and it
+     * contributes no delivery of its own.</p>
+     *
+     * <p>Without this edge, on the hdfs-11741 campaign #4 corpus
+     * (2026-09-20), the NameNode's export region records no state read at
+     * all -- 1324 instance reads and not one map read -- so once the
+     * cross-node static fan-out of N1 was gone, nn0's
+     * {@code removeExpiredKeys#u15} and {@code updateKeys#u2} were in no
+     * flip set and the rotation flip the witness needs was proposed
+     * nowhere.</p>
+     */
+    private static void statedReads(Corpus corpus, StaticScopeMap map,
+                                    Demand demand, List<Demand> into,
+                                    List<GapRow> gaps) {
+        if (demand.anchor) return;
+        for (String contributed : demand.contributed) {
+            int split = contributed.indexOf('|');
+            if (split < 0) continue;
+            String sessionId = contributed.substring(0, split);
+            for (Corpus.StateRead read : corpus.expressionStateReads(
+                    sessionId, contributed.substring(split + 1))) {
+                writersOfVersion(corpus, map, sessionId, demand.occurrence,
+                        read.locationKey(), read.write().version(),
+                        demand.occurrence.render(),
+                        read.locationKey() + " (read at event "
+                                + read.readEventId() + ")", into, gaps);
+            }
+        }
     }
 
     /**
@@ -420,12 +481,29 @@ public final class ClosurePlanner {
      * composition will offer the solver as alternatives.</p>
      */
     private static List<WriteRow> eligibleWrites(Corpus corpus, ReadRow row) {
+        return eligibleWrites(corpus, row.sessionId(),
+                SmtLowering.locationKey(row.location()),
+                row.observedVersion(), row.endpoint().occurrence());
+    }
+
+    /**
+     * The same, for a read stated by an expression rather than by a row.
+     *
+     * <p>One rule and one implementation: a read is a session, a location
+     * key, the version it observed and the occurrence that made it,
+     * whether the runtime published it as a {@link ReadRow} or only inside
+     * the expression of the value it fed (E2).</p>
+     */
+    private static List<WriteRow> eligibleWrites(Corpus corpus,
+                                                 String sessionId,
+                                                 String locationKey,
+                                                 long observedVersion,
+                                                 OccurrenceAddress reader) {
         List<WriteRow> eligible = new ArrayList<WriteRow>();
-        for (WriteRow write : corpus.writesOf(row.sessionId(),
-                SmtLowering.locationKey(row.location()))) {
-            if (write.version() == row.observedVersion()
-                    || corpus.arms().concurrent(row.endpoint().occurrence(),
-                            write.endpoint().occurrence(), row.sessionId())) {
+        for (WriteRow write : corpus.writesOf(sessionId, locationKey)) {
+            if (write.version() == observedVersion
+                    || corpus.arms().concurrent(reader,
+                            write.endpoint().occurrence(), sessionId)) {
                 eligible.add(write);
             }
         }
@@ -534,15 +612,36 @@ public final class ClosurePlanner {
     private static void writers(Corpus corpus, StaticScopeMap map,
                                 ReadRow row, List<Demand> into,
                                 List<GapRow> gaps) {
-        Set<String> carriers = new LinkedHashSet<String>();
-        for (SessionReader session : corpus.sessions()) {
-            for (WriteRow write : corpus.writesOf(session.sessionId(),
-                    SmtLowering.locationKey(row.location()))) {
-                carriers.addAll(map.carriersAt(write.endpoint().site(),
-                        write.javaType()));
-            }
-        }
-        for (WriteRow write : eligibleWrites(corpus, row)) {
+        writersOfVersion(corpus, map, row.sessionId(),
+                row.endpoint().occurrence(),
+                SmtLowering.locationKey(row.location()),
+                row.observedVersion(), row.endpoint().toString(),
+                String.valueOf(row.location()), into, gaps);
+    }
+
+    /**
+     * The closure's growth by ONE read of ONE version of ONE location.
+     *
+     * <p>The body of {@link #writers}, taken as its own routine because E2
+     * asks the same question of a read the runtime published only inside an
+     * expression: a read is a session, a location key, the version it
+     * observed and the occurrence that made it, and the answer must not
+     * depend on which file the runtime happened to state it in.</p>
+     *
+     * @param subject what a diagnostic about this read is addressed at
+     * @param located how the location reads in that diagnostic
+     */
+    private static void writersOfVersion(Corpus corpus, StaticScopeMap map,
+                                         String sessionId,
+                                         OccurrenceAddress reader,
+                                         String locationKey,
+                                         long observedVersion,
+                                         String subject, String located,
+                                         List<Demand> into,
+                                         List<GapRow> gaps) {
+        Set<String> carriers = carriersOf(corpus, map, locationKey);
+        for (WriteRow write : eligibleWrites(corpus, sessionId, locationKey,
+                observedVersion, reader)) {
             Demand paired = new Demand(write.endpoint().occurrence(),
                     CLOSURE_MEMBER, false);
             paired.contributed.add(write.sessionId() + "|"
@@ -551,23 +650,36 @@ public final class ClosurePlanner {
             into.add(paired);
         }
         if (carriers.isEmpty() && map.stated()) {
-            gaps.add(GapRow.of(row.sessionId(), GapKind.DECLARATION_MISSING,
-                    GapClass.DIAGNOSTIC, row.endpoint().toString(),
-                    "no recorded write of " + row.location() + " matches a "
+            gaps.add(GapRow.of(sessionId, GapKind.DECLARATION_MISSING,
+                    GapClass.DIAGNOSTIC, subject,
+                    "no recorded write of " + located + " matches a "
                             + "write site of the static map, so this "
                             + "location's carrier is unnamed and no static "
                             + "candidate writer of it can be"));
             return;
         }
         // N1: the heap this read observed is the reading JVM's own.
-        NodeId reader = row.endpoint().occurrence().node();
         for (String carrier : carriers) {
             for (StaticScopeMap.Site site : map.writersOf(carrier)) {
                 candidates(corpus, site, STATIC_CANDIDATE_WRITER,
                         new LinkedHashSet<String>(site.guards), into, gaps,
-                        row.sessionId(), "carrier " + carrier, reader);
+                        sessionId, "carrier " + carrier, reader.node());
             }
         }
+    }
+
+    /** Every carrier the static map names for one location key. */
+    private static Set<String> carriersOf(Corpus corpus, StaticScopeMap map,
+                                          String locationKey) {
+        Set<String> carriers = new LinkedHashSet<String>();
+        for (SessionReader session : corpus.sessions()) {
+            for (WriteRow write : corpus.writesOf(session.sessionId(),
+                    locationKey)) {
+                carriers.addAll(map.carriersAt(write.endpoint().site(),
+                        write.javaType()));
+            }
+        }
+        return carriers;
     }
 
     /**
