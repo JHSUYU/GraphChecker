@@ -602,6 +602,33 @@ final class RowPlaceholderMint {
     }
 
     /**
+     * Files one mint row's clock cell, where the mint happens.
+     *
+     * <p>I4: a decision row carries the clock cells its own term names, and
+     * a term names a cell by the VM SYMBOL the mint installed -- so the
+     * symbol has to resolve to its root and its reading from the moment the
+     * mint runs.  The row's own publication ({@link #roots}) is too late for
+     * an activation nested inside the minting one: activations publish
+     * innermost first, and 11741's {@code removeExpiredKeys} closes before
+     * the {@code updateKeys} rotation whose clock its decisions read.</p>
+     *
+     * <p>Every predicate is the one {@link #roots} applies to the same row,
+     * evaluated on the same row, so the cell filed here and the {@code
+     * RootMintRow} published later are the same statement: only a MINT (a
+     * reused symbol is another mint's root), only a CLOCK, and the same
+     * root id and recorded value the row will carry.</p>
+     */
+    static void noteClockCell(JsonObject row) {
+        if (row == null || !minted(row) || kindOf(row) != RootKind.CLOCK) {
+            return;
+        }
+        String sourceId = optionalString(row, "sourceId");
+        RowRuntime.clockCell(vmSymbol(row),
+                sourceId.isEmpty() ? optionalString(row, "portId") : sourceId,
+                literal(optionalString(row, "recordedValue")));
+    }
+
+    /**
      * What kind of root one mint row states.
      *
      * <p>The case declares which reads are clocks, a marker mints a boolean,

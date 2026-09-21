@@ -123,6 +123,21 @@ public class ManualMintStatesItsValueTest {
         assertEquals("the plan's instant is stated by nothing here",
                 7L, clock.get("eventSeq").getAsLong());
 
+        // I4: the mint files its clock cell WHERE IT RUNS, so a decision of
+        // an activation nested inside this one -- published first, because
+        // activations publish innermost first -- can still resolve the
+        // symbol its term names to this root and this reading.  11741's
+        // removeExpiredKeys closes before the updateKeys rotation whose
+        // clock its decisions read.
+        assertEquals("a term over the minted symbol names this cell",
+                Collections.singletonMap("PORT.now",
+                        Long.valueOf(1789358344655L)),
+                RowRuntime.clockReadings(
+                        term(clock.get("rawSymbol").getAsString())));
+        assertEquals("and a term over anything else names none",
+                Collections.emptyMap(),
+                RowRuntime.clockReadings(term("M_I_serial")));
+
         // What the wave asks of a clock is a SKEW, and the mint applies it
         // to the instant THIS run read: a model is an instant of the
         // recording's window, and writing it absolutely would rewind the
@@ -475,6 +490,24 @@ public class ManualMintStatesItsValueTest {
                 FocusedReplay.complete(address(ALONGSIDE_ADDRESS)));
         assertFalse("A's refusal never reached it",
                 FocusedReplay.contradicted(address(ALONGSIDE_ADDRESS)));
+    }
+
+    /** One decision term that reads {@code symbol}, as the VM spells one. */
+    private static JsonObject term(String symbol) {
+        JsonObject read = new JsonObject();
+        read.addProperty("_type", "SymbolExpression");
+        read.addProperty("_java_type", "J");
+        read.addProperty("_exp", symbol);
+        JsonObject predicate = new JsonObject();
+        predicate.addProperty("_type", "BinaryExpression");
+        predicate.add("_left", read);
+        predicate.addProperty("_op", "<");
+        JsonObject literal = new JsonObject();
+        literal.addProperty("_type", "ConstExpr");
+        literal.addProperty("_java_type", "J");
+        literal.addProperty("_exp", "Y_J_0");
+        predicate.add("_right", literal);
+        return predicate;
     }
 
     /** One focus row: which occurrence flips which decision to which arm. */

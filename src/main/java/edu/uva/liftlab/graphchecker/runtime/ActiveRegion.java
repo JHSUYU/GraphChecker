@@ -702,6 +702,13 @@ final class ActiveRegion {
         row.addProperty("mintOccurrence",
                 mintOccurrence(safe(action.symbol)));
         symbolizedRows.add(row);
+        // I4: a decision row carries the clock cells its own term names, and
+        // a term names one by the symbol this mint installed -- so the cell
+        // is filed here, where the mint runs, and not at the publication of
+        // the row: activations publish innermost first, and a decision of an
+        // activation nested inside this one is published before this row
+        // exists.
+        RowPlaceholderMint.noteClockCell(row);
     }
 
     /**

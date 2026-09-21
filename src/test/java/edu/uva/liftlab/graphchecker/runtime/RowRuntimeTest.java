@@ -821,6 +821,86 @@ public class RowRuntimeTest {
     }
 
     /**
+     * I4: a decision row carries exactly the clock cells its term names.
+     *
+     * <p>The readings were a JVM-WIDE map of every clock the process had
+     * ever minted, snapshotted into every decision row -- and one
+     * MiniDFSCluster is one JVM, so on hdfs-11741 14 of 17 {@code
+     * removeExpiredKeys#u15} rows lack the cell their own term reads and 15
+     * of 17 list other NODES' cells.  Membership is what the downstream
+     * stages read as "this session's decision read this cell" ({@code
+     * explore.Corpus#index}, {@code compose.ClaimPolicy#movedRoots} and
+     * {@code #clockNecessary}), so the row has to state the cells the term
+     * names and nothing else.</p>
+     */
+    @Test
+    public void aDecisionCarriesTheClockCellsItsTermNames() throws Exception {
+        RowRuntime.configure(sessionFile());
+        OccurrenceAddress occurrence = address(
+                "hdfs-11741/nn0#epoch0", "REGION.aaa1cfd7",
+                CausalContext.of(Role.of("KEY_MANAGER_TICK"),
+                        "updateKeys", 1),
+                ExecutionIndex.parse("KeyManager.updateKeys()#u3@0"));
+        // Two clocks of one JVM -- the cluster's nodes run in one process --
+        // and one root that is not a clock at all.
+        RowRuntime.rootMint(occurrence, 3L, "HDFS.KEY.NOW@nn0", "M_J_now_nn0",
+                RootKind.CLOCK, "1789358344655", "", "", true);
+        RowRuntime.rootMint(occurrence, 4L, "HDFS.KEY.NOW@dn1", "M_J_now_dn1",
+                RootKind.CLOCK, "1789358344999", "", "", true);
+        RowRuntime.rootMint(occurrence, 5L, "HDFS.BLOCK_KEY.SERIAL_NO",
+                "M_I_serial", RootKind.INTEGRAL, "3", "3", "6", true);
+
+        // `key.getExpiryDate() < now`, over nn0's clock alone.
+        RowRuntime.decision(occurrence, 12L,
+                "<a.BlockTokenSecretManager: void removeExpiredKeys()>#u15",
+                1, true, comparison("M_J_now_nn0", "J"));
+        // A decision over a root that is no clock states no cell.
+        RowRuntime.decision(occurrence, 13L, "<a.KeyManager: void"
+                + " updateKeys()>#u9", 1, false,
+                comparison("M_I_serial", "I"));
+        // And a concrete decision names nothing at all.
+        RowRuntime.decision(occurrence, 0L, "<a.KeyManager: void"
+                + " updateKeys()>#u2", 1, true, null);
+        RowRuntime.closeSession();
+
+        List<DecisionRow> decisions = RowCodec.readAll(session().decisions(),
+                RowCodec::readDecision);
+        assertEquals(3, decisions.size());
+        assertEquals("the cell this term reads, at what its mint recorded",
+                Collections.singletonMap("HDFS.KEY.NOW@nn0",
+                        Long.valueOf(1789358344655L)),
+                decisions.get(0).clockReadings());
+        assertEquals("and not the other node's, which this decision never"
+                        + " read", Collections.emptyMap(),
+                decisions.get(1).clockReadings());
+        assertEquals("a decision with no term names no cell",
+                Collections.emptyMap(), decisions.get(2).clockReadings());
+    }
+
+    /** {@code <symbol> < 0}, as the VM publishes a compared read. */
+    private static JsonObject comparison(String symbol, String javaType) {
+        JsonObject read = new JsonObject();
+        read.addProperty("_type", "SymbolExpression");
+        read.addProperty("_java_type", javaType);
+        read.addProperty("_exp", symbol);
+        JsonObject boundary = new JsonObject();
+        boundary.addProperty("_type", "ConsumerBoundaryExpression");
+        boundary.addProperty("boundaryKind", "FIELD_READ");
+        boundary.addProperty("_java_type", javaType);
+        boundary.add("expression", read);
+        JsonObject literal = new JsonObject();
+        literal.addProperty("_type", "ConstExpr");
+        literal.addProperty("_java_type", javaType);
+        literal.addProperty("_exp", "Y_" + javaType + "_0");
+        JsonObject predicate = new JsonObject();
+        predicate.addProperty("_type", "BinaryExpression");
+        predicate.add("_left", boundary);
+        predicate.addProperty("_op", "<");
+        predicate.add("_right", literal);
+        return predicate;
+    }
+
+    /**
      * I1: the enclosing occurrence wins.
      *
      * <p>A declared region method called synchronously inside another
