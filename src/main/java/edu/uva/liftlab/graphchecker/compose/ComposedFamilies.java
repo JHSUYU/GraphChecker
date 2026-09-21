@@ -322,10 +322,21 @@ final class ComposedFamilies {
             }
         }
         // (3) and (4): eligibility, then one case split per producer.
+        //
+        // EVERY PRODUCER OF THIS LEVEL IS CLAIMED BEFORE ANY OF THEM IS
+        // CLOSED.  Closing one runs the nested closure of its own attaches,
+        // which can reach a producer this level also binds; taken there
+        // first, that occurrence's outs would be bound only beneath the
+        // other one's selector and would be free whenever that selector is
+        // not the one taken -- a variable no family constrains, which is
+        // the one thing a witness must not rest on.
+        List<OccurrenceAddress> mine = new ArrayList<OccurrenceAddress>();
         for (Map.Entry<String, OccurrenceAddress> each
                 : producerOf.entrySet()) {
-            OccurrenceAddress producer = each.getValue();
-            if (!closedProducers.add(producer.id())) continue;
+            if (!closedProducers.add(each.getKey())) continue;
+            mine.add(each.getValue());
+        }
+        for (OccurrenceAddress producer : mine) {
             List<String> slots = slotsOfProducer.get(producer.id());
             List<String> eligible = eligibleSessions(producer, slots,
                     attestedAt, refusals);
@@ -414,12 +425,17 @@ final class ComposedFamilies {
             if (group == null || group.isEmpty()) continue;
             String selector = "producer_arm__" + ordinal + "__"
                     + ArtifactIO.digest(producer.id() + "|" + session, 12);
+            // Declared BEFORE the body is built: the nested families the
+            // body opens are asserted under this name, and they stay
+            // asserted even where the arm-set is then refused -- a name an
+            // assertion holds and nothing declares makes z3 answer the
+            // whole query with an error instead of a verdict.
+            lowering.declare(selector, VmTermLowering.Sort.BOOL);
             List<String> nested = new ArrayList<String>();
             String body = producerBody(ordinal, selector, producer, session,
                     bindings(group), reached, nested, closedProducers,
                     depth);
             if (body == null) continue;
-            lowering.declare(selector, VmTermLowering.Sort.BOOL);
             selectors.add(selector);
             cases.add("(=> " + selector + " " + body + ")");
             stated.addAll(nested);
@@ -980,11 +996,11 @@ final class ComposedFamilies {
             OccurrenceAddress at = writerOf.get(writer.getKey());
             String name = "writer_arm__" + ordinal + "__"
                     + ArtifactIO.digest(writer.getKey() + "|" + session, 12);
+            lowering.declare(name, VmTermLowering.Sort.BOOL);
             String body = producerBody(ordinal, name, at, session,
                     writer.getValue(), reached, new ArrayList<String>(),
                     new LinkedHashSet<String>(), 0);
             if (body == null) continue;
-            lowering.declare(name, VmTermLowering.Sort.BOOL);
             selectorOf.put(writer.getKey(), name);
             String assertion = "writer_family__" + ordinal + "__"
                     + ArtifactIO.digest(writer.getKey() + "|" + session, 12);
