@@ -200,6 +200,7 @@ public final class CausynthTraceRecorder {
         // at one entry would add a frame the replay does not have and move
         // every address below it.
         String address = "";
+        boolean folded = false;
         if (!region.isEmpty()) {
             // No claim here.  A started work claims its start frame at its
             // FIRST identity event, which is the entry of the functional
@@ -214,6 +215,18 @@ public final class CausynthTraceRecorder {
             // occurrence (Identity.currentOccurrence), which is how the
             // recording files the same producer endpoint a replay does.
             address = occurrenceAddress(node, region);
+            // F1: an entry that FOLDED into the occurrence already running
+            // opened none, so it is no activation and this row states no
+            // address -- the trace carries it as the plain frame it is, and
+            // PLAN builds one activation per occurrence
+            // (RuntimeRegionPlanner#regionRoots).  The marker the fold
+            // pushed is still popped by this call's own exit, which is what
+            // the region frame above is for.
+            //
+            // Asked of the identity, not read off the empty address: an
+            // entry the run could name no NODE for also states none, and
+            // that one is a hole PLAN refuses rather than a fold it skips.
+            folded = Identity.foldedEntry();
         }
         RuntimeRegionPlanner.MethodEvent event =
                 new RuntimeRegionPlanner.MethodEvent(id, testName,
@@ -222,7 +235,8 @@ public final class CausynthTraceRecorder {
                         context.laneId, context.spanId,
                         context.remoteParentSpanId, context.source,
                         receiverAttributed,
-                        context.requestKey, context.requestApi, address);
+                        context.requestKey, context.requestApi, address,
+                        folded);
         if (contextOnlyConcolicReplay) {
             return id;
         }
@@ -252,6 +266,14 @@ public final class CausynthTraceRecorder {
     private static String occurrenceAddress(String nodeKey, String regionId) {
         edu.uva.liftlab.graphchecker.contract.OccurrenceAddress address =
                 Identity.occurrence(nodeKey, regionId, true);
+        // F1: a folded entry is a method call inside the occurrence already
+        // running, not the entry of one, so this row states no address --
+        // the occurrence it folded into stated its own when it was entered,
+        // and a second row carrying that address would be a second
+        // activation of one occurrence.  The call above still runs: it is
+        // what PUSHES the fold's marker, and the marker is what makes this
+        // entry's exit close nothing.
+        if (Identity.foldedEntry()) return "";
         return address == null ? "" : address.render();
     }
 
@@ -2068,7 +2090,8 @@ public final class CausynthTraceRecorder {
                     row.longValue("receiverAttributed", 0L) != 0L,
                     row.stringValue("requestKey"),
                     row.stringValue("requestApi"),
-                    row.stringValue("occurrenceAddress")));
+                    row.stringValue("occurrenceAddress"),
+                    row.longValue("regionFolded", 0L) != 0L));
         } else if (!skeletonOnly && ("FIELD_READ".equals(eventKind)
                 || "FIELD_WRITE".equals(eventKind))) {
             trace.fields.add(
@@ -2187,7 +2210,13 @@ public final class CausynthTraceRecorder {
                 // the entry of a region root; every other entry is a plain
                 // frame of the trace.
                 "occurrenceAddress", event.occurrenceAddress.isEmpty()
-                        ? null : event.occurrenceAddress);
+                        ? null : event.occurrenceAddress,
+                // F1: this entry folded into the occurrence already running,
+                // so it states no address and PLAN builds no activation for
+                // it.  Absent rather than false, like every other flag here:
+                // an entry that opens its own occurrence is the ordinary
+                // case and the trace is written per call.
+                "regionFolded", event.regionFolded ? 1 : null);
     }
 
     private static void writeFieldTraceLine(

@@ -981,7 +981,8 @@ public class RowRuntimeTest {
      * read and mint of the call with it.</p>
      */
     @Test
-    public void aNestedDeclaredRegionFoldsIntoTheRunningOccurrence() {
+    public void aNestedDeclaredRegionFoldsIntoTheRunningOccurrence()
+            throws Exception {
         Identity.resetForTests();
         Lineage.resetForTests();
         RuntimeTraceContext.resetForTests();
@@ -1029,6 +1030,32 @@ public class RowRuntimeTest {
                 1, Identity.regionDepth());
         assertEquals("and it is still the occurrence this thread runs",
                 addKeys, Identity.currentOccurrence(NN.key()));
+
+        // F1: A FOLDED ENTRY IS NOT AN ENTRY OF AN OCCURRENCE.  Neither pass
+        // records an activation for it -- the recording states no occurrence
+        // address on its trace row, so PLAN builds one activation per
+        // occurrence and a SHARED_ADDRESS_ROOT_CALLS row keeps meaning a
+        // real identity failure.
+        Identity.resetForTests();
+        Lineage.resetForTests();
+        Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
+        Identity.enterFrame("<a.BlockTokenSecretManager: void addKeys()>#u1");
+        assertFalse("nothing is running here, so this entry opens an"
+                        + " occurrence and the recording states its address",
+                recordedAddress("REGION.ba3902cd").isEmpty());
+        assertFalse("it is no fold", Identity.foldedEntry());
+
+        Identity.enterFrame(
+                "<a.BlockTokenSecretManager: void removeExpiredKeys()>#u7");
+        assertEquals("the nested entry folds, so the recording states no"
+                        + " address for it and PLAN records no activation",
+                "", recordedAddress("REGION.094a8e3d"));
+        assertTrue("and while the fold stands, no activation starts here",
+                Identity.foldedEntry());
+        Identity.regionExit();
+        Identity.regionExit();
+        assertFalse("and the enclosing occurrence is no fold",
+                Identity.foldedEntry());
 
         // A declared region on a thread running no occurrence opens its own.
         Identity.resetForTests();
@@ -1560,6 +1587,19 @@ public class RowRuntimeTest {
             Thread.currentThread().interrupt();
         }
         return created.get();
+    }
+
+    /**
+     * What the RECORDING writes onto this entry's trace row: the one
+     * function both passes compute an occurrence with, through the
+     * recorder's own door, so the fold is asserted where PLAN reads it.
+     */
+    private static String recordedAddress(String regionId) throws Exception {
+        java.lang.reflect.Method address = CausynthTraceRecorder.class
+                .getDeclaredMethod("occurrenceAddress", String.class,
+                        String.class);
+        address.setAccessible(true);
+        return (String) address.invoke(null, NN.key(), regionId);
     }
 
     private Path sessionFile() throws Exception {

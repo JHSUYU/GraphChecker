@@ -941,8 +941,23 @@ public final class ConcolicRegionRuntime {
         // keyed by the token that frame holds (#enterRegionEntry) -- so a
         // second plan row at one entry cannot push a second frame and a
         // recursive entry cannot be mistaken for one.
-        ActiveRegion active = admitRegion(config, group.key, rootMethod,
-                receiver, rootArguments);
+        //
+        // F1 -- A FOLDED ENTRY STARTS NO ACTIVATION.  The entry hook at this
+        // same Java entry has already run, and when it folded (I1: a
+        // declared region entered synchronously inside another region's
+        // occurrence opens none of its own) this call is a method call
+        // INSIDE the occurrence already running, not the entry of one.  An
+        // activation here would be a second activation of that occurrence --
+        // two ActivationRows for one address, two branch-ordinal counters to
+        // reconcile, and a candidate consumed for an occurrence nothing
+        // addressed.  The frame above is still pushed, with no token, so the
+        // root exit hook pairs with this entry exactly as it does for every
+        // other unadmitted one.
+        ActiveRegion active = edu.uva.liftlab.graphchecker.runtime.Identity
+                .foldedEntry()
+                ? null
+                : admitRegion(config, group.key, rootMethod, receiver,
+                        rootArguments);
         long token = active == null ? 0L : active.token;
         frame.token = token;
         return token;
