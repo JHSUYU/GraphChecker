@@ -246,11 +246,12 @@ final class ComposedFamilies {
      * @return whether every message this path binds has an eligible
      *         session; a path with one that has none leaves the disjunction
      */
-    boolean closeFamilies(int ordinal, String selector, Set<String> reached,
+    boolean closeFamilies(int ordinal, String selector, String owner,
+                          Set<String> reached,
                           List<AttachRow> bound, List<String> stated,
                           List<GapRow> refusals) {
-        return closeMessages(ordinal, selector, bound, reached, stated,
-                refusals, new LinkedHashSet<String>(), 0);
+        return closeMessages(ordinal, selector, owner, bound, reached,
+                stated, refusals, new LinkedHashSet<String>(), 0);
     }
 
     /** How deep one delivery may be handed on before this refuses. */
@@ -267,7 +268,7 @@ final class ComposedFamilies {
      * question one hop back.  A message already closed at an outer level is
      * not closed again: its selector already binds every leaf of it.</p>
      */
-    private boolean closeMessages(int ordinal, String guard,
+    private boolean closeMessages(int ordinal, String guard, String owner,
                                   List<AttachRow> attaches,
                                   Set<String> reached, List<String> stated,
                                   List<GapRow> refusals,
@@ -307,16 +308,20 @@ final class ComposedFamilies {
                     new LinkedHashMap<String, List<Arms.Arm>>();
             Map<String, Set<String>> attestedAt =
                     new LinkedHashMap<String, Set<String>>();
+            Map<String, Set<String>> concreteAt =
+                    new LinkedHashMap<String, Set<String>>();
             for (AttachRow attach : leaves) {
                 Interaction slot = attach.interaction();
                 if (slotOf.containsKey(slot.id())) continue;
                 slotOf.put(slot.id(), slot);
                 symbolOf.put(slot.id(), attach.symbol());
                 attestedAt.put(slot.id(), new LinkedHashSet<String>());
+                concreteAt.put(slot.id(), new LinkedHashSet<String>());
                 for (Arms.Arm arm : arms.armsAt(slot, attach.symbol())) {
                     if (replacing.contains(arm.sessionId())) continue;
                     if (arm.producer() == null) continue;
                     if (!arm.attested()) {
+                        concreteAt.get(slot.id()).add(arm.sessionId());
                         noteUnattested(arm, "that run is no option for this "
                                 + "message, because the arm states what was "
                                 + "delivered and not why");
@@ -331,9 +336,10 @@ final class ComposedFamilies {
             List<String> eligible = eligibleSessions(message.getKey(),
                     slotOf.keySet(), attestedAt, refusals);
             if (eligible == null) return false;
-            if (!messageFamily(ordinal, guard, message.getKey(), leaves,
-                    slotOf, symbolOf, eligible, bySession, reached, stated,
-                    refusals, closedGroups, depth)) {
+            if (!messageFamily(ordinal, guard, owner, message.getKey(),
+                    leaves, slotOf, symbolOf, eligible, attestedAt,
+                    concreteAt, bySession, reached, stated, refusals,
+                    closedGroups, depth)) {
                 return false;
             }
         }
@@ -409,18 +415,23 @@ final class ComposedFamilies {
      * response the witness rests on.</p>
      */
     private boolean messageFamily(
-            int ordinal, String guard, String message,
+            int ordinal, String guard, String owner, String message,
             List<AttachRow> leaves, Map<String, Interaction> slotOf,
             Map<String, String> symbolOf, List<String> eligible,
+            Map<String, Set<String>> attestedAt,
+            Map<String, Set<String>> concreteAt,
             Map<String, List<Arms.Arm>> bySession, Set<String> reached,
             List<String> stated, List<GapRow> refusals,
             Set<String> closedGroups, int depth) {
         String group = groupId(leaves);
+        // R3d: THE SENDER IS THE PATH'S OWN RUN where that run is eligible.
+        List<String> senders = senders(owner, message, group, eligible,
+                slotOf.keySet(), attestedAt, concreteAt);
         String name = "message_family__" + ordinal + "__"
                 + ArtifactIO.digest(group, 12);
         List<String> selectors = new ArrayList<String>();
         List<String> cases = new ArrayList<String>();
-        for (String session : eligible) {
+        for (String session : senders) {
             List<Arms.Arm> held = oneArmPerLeaf(bySession.get(session),
                     message, session);
             if (held == null || held.isEmpty()) continue;
@@ -446,17 +457,19 @@ final class ComposedFamilies {
         if (selectors.isEmpty()) {
             refusals.add(GapRow.of(corpus.seedSessionId(),
                     GapKind.UNPRODUCIBLE_ANSWER, GapClass.DIAGNOSTIC,
-                    message, "every session eligible to have sent this "
-                            + "message rests on a value the recording does "
-                            + "not state, so nothing binds what this path "
-                            + "read from it"));
+                    message, "every session this family binds to as the "
+                            + "sender of this message (" + senders.size()
+                            + " of the " + eligible.size() + " eligible) "
+                            + "rests on a value the recording does not "
+                            + "state, so nothing binds what this path read "
+                            + "from it"));
             return false;
         }
         for (Map.Entry<String, Interaction> slot : slotOf.entrySet()) {
             reached.add(slot.getKey());
             slotOpened(slot.getKey(), slot.getValue());
             List<Arm> rows = new ArrayList<Arm>();
-            for (String session : eligible) {
+            for (String session : senders) {
                 List<Arms.Arm> held = bySession.get(session);
                 if (held == null) continue;
                 for (Arms.Arm arm : held) {
@@ -473,6 +486,76 @@ final class ComposedFamilies {
         lowering.assertNamed(name, "(=> " + guard + " " + formula + ")");
         return true;
     }
+
+    /**
+     * R3d: THE RUN THIS PATH'S MESSAGE CAME FROM.
+     *
+     * <p>A disjunct is ONE session's path, and the message it bound came
+     * in on that session's own delivery: the attach row carries its paired
+     * producer, and the causal graph already states that edge.  So where
+     * the path's own run is ELIGIBLE -- attested at every leaf of the
+     * message (R3c', unchanged) -- this family binds to that one run and
+     * states no case split at all.  Disjoining over the other runs that
+     * could have sent a message this one did send is redundancy: on
+     * hdfs-11741 the response carries {@code ExportedBlockKeys}, every
+     * array position is its own handoff leaf, and one message split into
+     * an arm per session of the corpus -- 242 family assertions over 25
+     * paths, arms scaling with the corpus and not with the graph.  It is
+     * also where a witness gets invented: campaign #2's spurious one took
+     * another run's delivery through an unconstrained assoc-to-array view
+     * and dropped a key no producer decision removed.</p>
+     *
+     * <p>It widens to the other eligible runs for one reason only: the
+     * path's own run is not among them, the usual cause being that its
+     * producer occurrence ran CONCRETELY, so its arm states what was
+     * delivered and not why and R3c' does not admit it.  What that path
+     * read then has to be answered by a run that says why, and the answer
+     * is another run's -- so it is filed, every time, naming the message,
+     * the path's own session, the leaf that ruled it out and how many arms
+     * the family fell back to.  A family that widens in SILENCE is exactly
+     * the shape that hid campaign #2's witness.</p>
+     *
+     * @return the sessions this family binds as the sender: the path's own
+     *         alone, or every eligible one
+     */
+    private List<String> senders(String owner, String message, String group,
+                                 List<String> eligible, Set<String> slots,
+                                 Map<String, Set<String>> attestedAt,
+                                 Map<String, Set<String>> concreteAt) {
+        if (eligible.contains(owner)) {
+            return Collections.singletonList(owner);
+        }
+        if (!widened.add(owner + "|" + group)) return eligible;
+        // WHICH LEAF ruled this run out, and which of the two absences it
+        // is: an arm that states what was delivered and not why, or no
+        // delivery of this leaf from that run at all.
+        String leaf = "";
+        boolean concrete = false;
+        for (String slotId : slots) {
+            Set<String> sessions = attestedAt.get(slotId);
+            if (sessions != null && sessions.contains(owner)) continue;
+            leaf = slotId;
+            Set<String> ran = concreteAt.get(slotId);
+            concrete = ran != null && ran.contains(owner);
+            break;
+        }
+        gaps.add(GapRow.of(owner, concrete ? GapKind.UNATTESTED_ARM
+                        : GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                message, "this path's own session is not eligible to have "
+                        + "sent the message it bound: " + (concrete
+                        ? "its producer occurrence ran concretely at leaf "
+                        + leaf + ", so its arm states what was delivered "
+                        + "and not why"
+                        : "it states no attested delivery at leaf " + leaf)
+                        + ".  The family widens to the " + eligible.size()
+                        + " eligible session(s) instead, so what this path "
+                        + "read here is bound by another run's delivery "
+                        + "and not by its own send"));
+        return eligible;
+    }
+
+    /** The (session, message) pairs already filed as widened. */
+    private final Set<String> widened = new LinkedHashSet<String>();
 
     /** The leaves one message was received at, in the rows' own order. */
     private static List<String> endpointIds(List<AttachRow> leaves) {
@@ -668,7 +751,7 @@ final class ComposedFamilies {
             // nothing: hdfs-11741 campaign #2 came back with the DataNode's
             // `addKeys` arrival at 2, a value no session delivered, while
             // its own family sat under a selector the model had set false.
-            stated = closeMessages(ordinal, nestedGuard,
+            stated = closeMessages(ordinal, nestedGuard, session,
                     nestedAttaches(session, outs), reachedSlots, nested,
                     local, closedProducers, depth + 1);
         }

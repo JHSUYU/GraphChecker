@@ -6,10 +6,15 @@
 # FIXED_COUNT_INDEXED (authority STATIC_ARRAY_INDEXED_FOR_V1), i.e. their trip
 # count is the array length and is exact, so they must stay undeclared.
 # They no longer say nothing: the planner publishes
-# BOUNDED_LOOP_FIXED_COUNT_BOUND_UNDECLARED for each of them, which GapLedger
-# classes DIAGNOSTIC against the check that actually bounds them --
-# BoundedLoopComposition raises the blocking PATH_LOCAL_ARRAY_CARDINALITY_MISSING
-# for any replayed case that published no dense exact cardinality vector.
+# BOUNDED_LOOP_FIXED_COUNT_BOUND_UNDECLARED for each of them, and that row is
+# the whole statement: it is DIAGNOSTIC and nothing blocks on an array's
+# cardinality.  This paragraph used to promise that BoundedLoopComposition
+# raised a blocking PATH_LOCAL_ARRAY_CARDINALITY_MISSING against any case
+# publishing no dense exact cardinality vector.  That class was deleted whole
+# as unreachable (c0e8aab6e, docs/design/REPORT-CLEANUP.md) and the gap kind
+# it named exists nowhere in src/, so the sentence described a guard that had
+# stopped existing.  What the run actually does with these three loops is
+# take each trip count from the array it indexes.
 # The loops:
 #   <...BlockTokenSecretManager: void addKeys(ExportedBlockKeys,boolean)>#u19
 #     -- the allKeys PUT loop, receivedKeys.length

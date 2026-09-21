@@ -51,10 +51,6 @@ public final class LoopBoundPolicy {
     /** {@link #ROOT_LOOP} member naming the original unit this region needs. */
     public static final String DEMANDED_UNIT_INDEX = "demandedUnitIndex";
 
-    /** One replay path states two different counts for one loop body. */
-    public static final String PATH_LOOP_COUNT_AMBIGUOUS =
-            "PATH_LOCAL_LOOP_COUNT_AMBIGUOUS";
-
     /** An array-backed indexed {@code for}; a local early exit is a guarded
      *  path effect, not a semantic unroll bound. */
     public static final String LOOP_FIXED_COUNT_INDEXED =

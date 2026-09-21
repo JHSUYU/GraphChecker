@@ -482,7 +482,13 @@ public class ComposerTest {
         }
         Composer.Composition armed = compose(guarded, 8);
         assertEquals(1, armed.families().size());
-        assertEquals(2, armed.families().get(0).arms().size());
+        // ONE arm, because a family binds the SENDER OF THE PATH'S OWN
+        // MESSAGE (R3d): each of these two paths reads what its own run
+        // sent, and the family the manifest keeps for this slot is the one
+        // the last path built.  What the guard has to carry is unchanged,
+        // and both replays' valuations are in the query below -- one under
+        // each path's own selector.
+        assertEquals(1, armed.families().get(0).arms().size());
         for (Arm arm : armed.families().get(0).arms()) {
             assertTrue("an arm carries the delivering replay's valuation "
                             + "of the varied root its expression never "
@@ -970,9 +976,14 @@ public class ComposerTest {
         }
         Composer.Composition mixed = compose(positions, 4);
         assertEquals("both runs are paths", 2, mixed.disjuncts().size());
-        assertEquals("the two leaves of one MESSAGE share ONE selector per "
-                        + "run, so two runs over two paths declare four and "
-                        + "not eight: " + mixed.armSelectors(), 4,
+        // The two leaves of one MESSAGE share ONE selector, so the eight
+        // a per-leaf split declared are two: one per path, each binding
+        // the run whose own send that path received (R3d).  What this case
+        // is about survives either count -- a model may not answer the two
+        // leaves out of two different runs -- and with one arm per message
+        // it cannot even be stated.
+        assertEquals("one selector per path, binding its own run's send: "
+                        + mixed.armSelectors(), 2,
                 mixed.armSelectors().size());
         assertEquals("and no witness reads an export no run made",
                 "unsat", solver().ask(mixed.query(
@@ -2855,6 +2866,230 @@ public class ComposerTest {
                 "(= " + SERIAL + " " + sizeModel(SERIAL, body) + ")");
         session.target("true", false, true);
         session.write();
+    }
+
+    // ------------------------------------------------------------------
+    // 16. A disjunct is one session's path, and its message is that
+    //     session's own send (R3d).
+    // ------------------------------------------------------------------
+
+    @Test
+    public void aMessageBindsToThePathsOwnSend() throws Exception {
+        Path iteration = folder.newFolder("own-send").toPath();
+        Endpoint producer = Endpoint.of(PRODUCER, "PORT.id",
+                at("export#1", 0), 0);
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.id",
+                at("attach#1", 0), 0);
+        // Two runs, both of which attest what their own producer
+        // delivered: each path's message came in on its own session's
+        // send, and the causal graph already states that edge.
+        for (String[] each : new String[][]{{"s0", "10", "false"},
+                {"s1", "20", "true"}}) {
+            Session session = new Session(iteration, each[0],
+                    "true".equals(each[2]));
+            session.activation(PRODUCER);
+            session.marker("false");
+            session.expression("EXPR.v1.id", integer("I",
+                    Long.parseLong(each[1])));
+            session.decision(PRODUCER, "nn#u1", "(or " + MARKER + " (not "
+                    + MARKER + "))");
+            session.export(producer, "EXPR.v1.id", 1L, each[1]);
+            session.attach(consumer, "vh", "I", each[1], producer);
+            session.target("true", false, true);
+            session.write();
+        }
+
+        Composer.Composition composition = compose(iteration, 4);
+        assertEquals(2, composition.disjuncts().size());
+        // ONE ARM PER PATH, not one per session of the corpus: the other
+        // run's delivery of the same message is redundancy, and it is
+        // where a witness gets invented.
+        assertEquals("one arm per path and no disjunction: "
+                        + composition.armSelectors(),
+                2, composition.armSelectors().size());
+        Map<String, String> ofPath = new LinkedHashMap<String, String>();
+        for (Composer.Disjunct disjunct : composition.disjuncts()) {
+            ofPath.put(ordinal(disjunct.selector()),
+                    disjunct.path().sessionId);
+        }
+        for (String selector : composition.armSelectors()) {
+            ComposedFamilies.ArmChoice choice = composition.arm(selector);
+            assertEquals("the arm this path binds is its own session's "
+                            + "send: " + selector,
+                    ofPath.get(ordinal(selector)), choice.sessionId());
+        }
+        for (Family family : composition.families()) {
+            assertEquals("and the family states that one delivery: "
+                    + family, 1, family.arms().size());
+        }
+        assertFalse("a family that did not widen says nothing: "
+                        + composition.gaps(),
+                says(composition.gaps(), GapKind.UNATTESTED_ARM,
+                        "is not eligible to have sent the message it bound")
+                        || says(composition.gaps(), GapKind.UNSTATED_VALUE,
+                        "is not eligible to have sent the message it "
+                                + "bound"));
+    }
+
+    @Test
+    public void aFamilyThatWidensSaysWhichLeafRuledThePathOut()
+            throws Exception {
+        Path iteration = folder.newFolder("widened").toPath();
+        // ONE MESSAGE, TWO LEAVES, under one correlation id -- the shape
+        // an array payload has: every position is its own handoff leaf.
+        Endpoint head = Endpoint.of(PRODUCER, "PORT.keys",
+                at("export#1", 0), 0);
+        Endpoint tail = Endpoint.of(UPSTREAM, "PORT.keys",
+                at("export#2", 0), 0);
+        Endpoint first = Endpoint.of(ANCHOR, "PORT.keys",
+                at("attach#1", 0), 0);
+        Endpoint second = Endpoint.of(ANCHOR, "PORT.keys",
+                at("attach#2", 0), 0);
+        // s0 attests both leaves; s1 instrumented the head's occurrence
+        // and ran the TAIL's concretely, so its arm there states what was
+        // delivered and not why -- R3c' does not admit it, and the path it
+        // owns has to be answered by a run that says why.
+        for (String[] each : new String[][]{{"s0", "10", "false"},
+                {"s1", "20", "true"}}) {
+            boolean flip = "true".equals(each[1 + 1]);
+            Session session = new Session(iteration, each[0], flip);
+            session.activation(PRODUCER);
+            session.activation(UPSTREAM, "thread#" + UPSTREAM.regionId(),
+                    flip, !flip);
+            session.marker("false");
+            session.expression("EXPR.v1.id", integer("I",
+                    Long.parseLong(each[1])));
+            session.decision(PRODUCER, "nn#u1", "(or " + MARKER + " (not "
+                    + MARKER + "))");
+            if (!flip) {
+                session.decision(UPSTREAM, "up#u1", "(or " + MARKER
+                        + " (not " + MARKER + "))");
+            }
+            session.export(head, "EXPR.v1.id", 1L, each[1]);
+            session.export(tail, "EXPR.v1.id", 2L, each[1]);
+            session.attach(first, "vh1", "I", each[1], head, "corr-m");
+            session.attach(second, "vh2", "I", each[1], tail, "corr-m");
+            session.target("true", false, true);
+            session.write();
+        }
+
+        Composer.Composition composition = compose(iteration, 4);
+        String leaf = Interaction.of(InteractionKind.WIRE, tail, second)
+                .id();
+        assertTrue("the widening is filed, naming the message, the path's "
+                        + "own session and the leaf that ruled it out: "
+                        + composition.gaps(),
+                widened(composition.gaps(), "s1", "corr-m",
+                        "its producer occurrence ran concretely at leaf "
+                                + leaf));
+        assertTrue("and how many arms it fell back to: "
+                        + composition.gaps(),
+                widened(composition.gaps(), "s1", "corr-m",
+                        "widens to the 1 eligible session(s)"));
+        assertFalse("the path whose own run is eligible widens in "
+                        + "nothing: " + composition.gaps(),
+                widened(composition.gaps(), "s0", "corr-m", ""));
+        for (String selector : composition.armSelectors()) {
+            assertEquals("every arm of this corpus is s0's, because s0 is "
+                            + "the only run attested at every leaf",
+                    "s0", composition.arm(selector).sessionId());
+        }
+    }
+
+    @Test
+    public void aRunMissingALeafIsStillNoOptionForTheMessage()
+            throws Exception {
+        Path iteration = folder.newFolder("missing-leaf").toPath();
+        Endpoint head = Endpoint.of(PRODUCER, "PORT.keys",
+                at("export#1", 0), 0);
+        Endpoint tail = Endpoint.of(UPSTREAM, "PORT.keys",
+                at("export#2", 0), 0);
+        Endpoint first = Endpoint.of(ANCHOR, "PORT.keys",
+                at("attach#1", 0), 0);
+        Endpoint second = Endpoint.of(ANCHOR, "PORT.keys",
+                at("attach#2", 0), 0);
+        // s0 attests both leaves.  s2 ran the tail's occurrence
+        // concretely, so its own two-leaf message widens.  s1 exported a
+        // SHORTER response -- one leaf, attested -- and R3c' is unchanged
+        // by this ruling: a run that never sent the second leaf is no
+        // option for a message that has one, so the widening reaches s0
+        // and s0 alone.
+        Session seed = new Session(iteration, "s0", false);
+        seed.activation(PRODUCER);
+        seed.activation(UPSTREAM);
+        seed.marker("false");
+        seed.expression("EXPR.v1.id", integer("I", 10L));
+        seed.decision(PRODUCER, "nn#u1", "(or " + MARKER + " (not "
+                + MARKER + "))");
+        seed.decision(UPSTREAM, "up#u1", "(or " + MARKER + " (not "
+                + MARKER + "))");
+        seed.export(head, "EXPR.v1.id", 1L, "10");
+        seed.export(tail, "EXPR.v1.id", 2L, "10");
+        seed.attach(first, "vh1", "I", "10", head, "corr-m");
+        seed.attach(second, "vh2", "I", "10", tail, "corr-m");
+        seed.target("true", false, true);
+        seed.write();
+
+        Session shorter = new Session(iteration, "s1", true);
+        shorter.activation(PRODUCER);
+        shorter.marker("false");
+        shorter.expression("EXPR.v1.id", integer("I", 30L));
+        shorter.decision(PRODUCER, "nn#u1", "(or " + MARKER + " (not "
+                + MARKER + "))");
+        shorter.export(head, "EXPR.v1.id", 1L, "30");
+        shorter.attach(first, "vh1", "I", "30", head, "corr-m");
+        shorter.target("true", false, true);
+        shorter.write();
+
+        Session concrete = new Session(iteration, "s2", true);
+        concrete.activation(PRODUCER);
+        concrete.activation(UPSTREAM, "thread#" + UPSTREAM.regionId(),
+                true, false);
+        concrete.marker("false");
+        concrete.expression("EXPR.v1.id", integer("I", 20L));
+        concrete.decision(PRODUCER, "nn#u1", "(or " + MARKER + " (not "
+                + MARKER + "))");
+        concrete.export(head, "EXPR.v1.id", 1L, "20");
+        concrete.export(tail, "EXPR.v1.id", 2L, "20");
+        concrete.attach(first, "vh1", "I", "20", head, "corr-m");
+        concrete.attach(second, "vh2", "I", "20", tail, "corr-m");
+        concrete.target("true", false, true);
+        concrete.write();
+
+        Composer.Composition composition = compose(iteration, 4);
+        assertTrue("s2's family widens: " + composition.gaps(),
+                widened(composition.gaps(), "s2", "corr-m",
+                        "widens to the 1 eligible session(s)"));
+        for (String selector : composition.armSelectors()) {
+            ComposedFamilies.ArmChoice choice = composition.arm(selector);
+            // The two-leaf message alone: s1's own one-leaf arrival is a
+            // message of its own, and s1 is eligible to have sent that.
+            if (choice.attachEndpointIds().size() < 2) continue;
+            assertFalse("and never to the run that sent a shorter "
+                            + "response: " + selector,
+                    "s1".equals(choice.sessionId()));
+        }
+    }
+
+    /** Whether the widening of one (session, message) was filed. */
+    private static boolean widened(List<GapRow> gaps, String session,
+                                   String message, String fragment) {
+        for (GapRow gap : gaps) {
+            if (!gap.sessionId().equals(session)) continue;
+            if (!gap.subject().equals(message)) continue;
+            if (!gap.detail().contains("is not eligible to have sent the "
+                    + "message it bound")) {
+                continue;
+            }
+            if (gap.detail().contains(fragment)) return true;
+        }
+        return false;
+    }
+
+    /** The ordinal one selector was made under. */
+    private static String ordinal(String selector) {
+        String[] parts = selector.split("__");
+        return parts.length < 2 ? "" : parts[1];
     }
 
     // ------------------------------------------------------------------

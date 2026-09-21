@@ -893,7 +893,7 @@ public final class Composer {
         //     export no execution produced.
         List<String> familyTerms = new ArrayList<String>();
         List<GapRow> unproducible = new ArrayList<GapRow>();
-        if (!composedFamilies.closeFamilies(ordinal, selector,
+        if (!composedFamilies.closeFamilies(ordinal, selector, session,
                 interactionIds, bound, familyTerms, unproducible)) {
             gaps.addAll(unproducible);
             if (firstRefusal.isEmpty() && !unproducible.isEmpty()) {
