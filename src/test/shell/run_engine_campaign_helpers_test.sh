@@ -1119,6 +1119,35 @@ grep -q 'roots.jsonl seq=3 field=recordedValue' "${wave_gate}/error.log" \
 [[ -s "${wave_gate}/obligations-0000/import_gate.json" ]] \
   || fail "the wave gate wrote no summary of its own"
 
+# And EVERY wave of the epoch is behind the set it gates, not just the one
+# being gated.  Invariant 6 asks of each FOCUSED session which world it ran
+# in, and its worker's focus row is the only thing that says so; a gate that
+# links this wave alone hides every earlier wave's focus rows, so each session
+# an earlier wave focused reads as "no focus row this epoch".  hdfs-11741
+# campaign #3: wave 1 was the first wave of any campaign to publish a session,
+# and its gate refused with 13 BLOCKING invariant-6 rows, one per session that
+# wave 0 had focused.
+mkdir -p "${wave_gate}/obligations-0001/OBL.b"
+printf '{"sessionId":"focus-b"}\n' \
+  >"${wave_gate}/obligations-0001/OBL.b/obligation_result.jsonl"
+campaign_session_roster "${wave_gate}/sessions" \
+  >"${wave_gate}/obligations-0001/sessions-before.txt"
+mkdir -p "${wave_gate}/sessions/focus-b"
+(
+  run_java_main() {
+    [[ -f "${wave_gate}/obligations-0001/import-gate/obligations-0000/\
+OBL.a/obligation_result.jsonl" ]] \
+      || fail "the wave gate hid an EARLIER wave's obligation workers, so \
+every session that wave focused reads as having no focus row"
+    [[ -f "${wave_gate}/obligations-0001/import-gate/obligations-0001/\
+OBL.b/obligation_result.jsonl" ]] \
+      || fail "the wave gate hid its own obligation workers"
+    printf '%s\n' '{"violations":0,"blocking":0,"firstBlockingSubject":""}'
+  }
+  campaign_import_wave_gate "${wave_gate}" iteration-0000 \
+    "${wave_gate}/obligations-0001" "${wave_gate}/sessions" >/dev/null
+) || fail "a wave gate over two waves did not link both waves"
+
 # INSTRUMENT-VERIFY: the woven classes are put to the JVM verifier in the
 # stage that wrote them.  9d2761c17 asked it for the first time inside the
 # seed replay, which died on woven FSNamesystem.allowSnapshot @142 before any
