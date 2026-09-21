@@ -31,12 +31,47 @@ else
     "-Dcausynth.trace.start.paused=true")
 fi
 
-mkdir -p "${work}/temp" "${work}/data" ${trace:+"${trace}"} \
-  ${results:+"$(dirname "${results}")"}
+mkdir -p ${trace:+"${trace}"} ${results:+"$(dirname "${results}")"}
+
+# Where the JVM puts its temp files and MiniDFSCluster its name directories,
+# edit logs and block data.  The worker directory is on the shared home, so
+# by default this is an fsync-heavy little filesystem per concurrent replay
+# on one NFS mount; CAUSYNTH_LOCAL_SCRATCH moves it to a local disk instead.
+#
+# Nothing downstream reads either of these.  What this replay PUBLISHES is
+# its session under CAUSYNTH_CONCOLIC_SESSIONS and its rows at
+# CAUSYNTH_CONCOLIC_RESULTS, both under the worker directory on the shared
+# home and neither of them beneath temp/ or data/.  So the subdirectory goes
+# away when the replay exits, however it exits.
+#
+# Opt-in, and it degrades rather than fails: a host without a usable scratch
+# root says so on stderr and keeps the old paths, because a replay that
+# cannot find a local disk is still a replay.
+scratch_owned=""
+remove_local_scratch() {
+  [[ -z ${scratch_owned} ]] || rm -rf -- "${scratch_owned}"
+}
+tmpdir="${work}/temp"
+datadir="${work}/data"
+if [[ -n ${CAUSYNTH_LOCAL_SCRATCH:-} ]]; then
+  if mkdir -p "${CAUSYNTH_LOCAL_SCRATCH}" 2>/dev/null \
+      && scratch_owned=$(mktemp -d "${CAUSYNTH_LOCAL_SCRATCH}/replay.XXXXXXXX" \
+        2>/dev/null); then
+    tmpdir="${scratch_owned}/temp"
+    datadir="${scratch_owned}/data"
+    trap remove_local_scratch EXIT
+  else
+    scratch_owned=""
+    echo "hdfs-11741: CAUSYNTH_LOCAL_SCRATCH=${CAUSYNTH_LOCAL_SCRATCH} is not\
+ usable on $(hostname); replay scratch stays under ${work}" >&2
+  fi
+fi
+mkdir -p "${tmpdir}" "${datadir}"
+
 set +e
 "${jdk}/bin/java" -ea -Xmx2g -Djava.awt.headless=true \
   -Dorg.slf4j.simpleLogger.defaultLogLevel=warn \
-  -Djava.io.tmpdir="${work}/temp" -Dtest.build.data="${work}/data" \
+  -Djava.io.tmpdir="${tmpdir}" -Dtest.build.data="${datadir}" \
   "${properties[@]}" -cp "${classes}:${jar}:${cp}" \
   edu.uva.liftlab.graphchecker.runtime.JUnitMethodRunner \
   "${test_class}" "${test_method}"
