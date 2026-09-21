@@ -1234,6 +1234,71 @@ public class ComposerTest {
     }
 
     // ------------------------------------------------------------------
+    // 7b. A path states the roots IT minted, and a root its own terms
+    //     never name is not something it is refused for.
+    // ------------------------------------------------------------------
+
+    @Test
+    public void aPathIsNotRefusedForARootItsOwnTermsNeverName()
+            throws Exception {
+        Path iteration = folder.newFolder("unminted").toPath();
+        // s0 and s1 mint the declared counter at two readings, so the
+        // corpus VARIES it and each path carries its own valuation of it.
+        for (String[] each : new String[][]{{"s0", "119994", "false"},
+                {"s1", "119997", "true"}}) {
+            Session session = new Session(iteration, each[0],
+                    "true".equals(each[2]));
+            session.serial(each[1], "+0", "+3");
+            session.target("true", false, true);
+            session.write();
+        }
+        // s2 replayed an occurrence that never mints the counter: no row
+        // of it states the root and no term of its path names the symbol.
+        // hdfs-11741's three hook-minted BLOCK_KEY.EXPIRY_DATE roots are
+        // exactly this shape -- twelve focused replays of nn0's
+        // KEY_MANAGER_TICK mint them and neither the seed nor any other
+        // replay does.
+        Session quiet = new Session(iteration, "s2", true);
+        quiet.target("true", false, true);
+        quiet.write();
+
+        Composer.Composition composition = compose(iteration, 8);
+        assertEquals("the path that says nothing about the root is in the "
+                        + "disjunction with the two that do: "
+                        + composition.gaps(), 3,
+                composition.disjuncts().size());
+        assertFalse("and nothing about that root is BLOCKING",
+                blocking(composition.gaps(), SERIAL_ROOT));
+        assertTrue("each minting path still states its own reading",
+                composition.body().contains("(>= " + SERIAL + " 119994)")
+                        && composition.body().contains(
+                                "(>= " + SERIAL + " 119997)"));
+
+        // The same corpus, where s2's OWN phi names the counter.  Now the
+        // path does rest on a quantity no row of its session states -- the
+        // symbol would be free, or worse, answered by another execution's
+        // reading -- and it is refused by the root's name.
+        Path naming = folder.newFolder("unminted-named").toPath();
+        for (String[] each : new String[][]{{"s0", "119994", "false"},
+                {"s1", "119997", "true"}}) {
+            Session session = new Session(naming, each[0],
+                    "true".equals(each[2]));
+            session.serial(each[1], "+0", "+3");
+            session.target("true", false, true);
+            session.write();
+        }
+        Session names = new Session(naming, "s2", true);
+        names.target("(> " + SERIAL + " 0)", false, true);
+        names.write();
+
+        Composer.Composition refused = compose(naming, 8);
+        assertEquals("the path whose own term names the root is out of the "
+                        + "disjunction", 2, refused.disjuncts().size());
+        assertTrue("and the refusal is BLOCKING and names the root",
+                blocking(refused.gaps(), SERIAL_ROOT));
+    }
+
+    // ------------------------------------------------------------------
     // 8. A mechanism the recording does not decide is not a finding.
     // ------------------------------------------------------------------
 
