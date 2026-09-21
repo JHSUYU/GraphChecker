@@ -442,6 +442,23 @@ public final class StaticProgram {
      * iteration adds no unbounded path space; and {@link #loopBodyRoot}
      * still requires the demanded call to sit lexically inside the loop and
      * the trace to have seen the loop iterate inside one activation.</p>
+     *
+     * <p>A port that names a FRAME METHOD bounds the first arm: the frame is
+     * the one call that builds one instance of that port's value, and {@code
+     * SymbolicMessageEnvelope} addresses the value's leaves by {@code (frame,
+     * port, ordinal)} within it.  A loop in that very method therefore walks
+     * the leaves of ONE message, and an iteration produces part of a wire
+     * value rather than one -- so it is not the unit of demanded work and the
+     * region belongs at the frame.  Rooting it at the loop instead left every
+     * leaf the frame builds OUTSIDE the loop with no activation at all: on
+     * 11741 the {@code currentKey} of an {@code ExportedBlockKeys} (PBHelper
+     * line 262, before the {@code allKeys} loop) was exported under a
+     * degraded role occurrence, which the VM can only give a concrete typed
+     * constant, so its {@code ExportRow} carried no expression, {@code
+     * Arms.arm} refused the arm, and {@code ComposedFamilies.eligibleSessions}
+     * then emptied the whole message -- the four good leaves beside it
+     * included.  The region and the envelope have one answer for what the
+     * unit of a message is.</p>
      */
     private boolean serviceLoopCandidate(RegionRow skeleton,
                                          Map<String, Object> loop,
@@ -471,6 +488,14 @@ public final class StaticProgram {
             String definition = text(port.get(CommunicationCatalogContract
                     .PORT_DEFINITION_METHOD));
             if (definition.isEmpty()) continue;
+            // The loop is inside this port's frame: it walks one message's
+            // leaves, so no iteration of it is one wire value.  The port says
+            // nothing about this loop being a service loop, and the region
+            // stays rooted at the frame that builds the whole message.
+            if (owner.equals(text(port.get(CommunicationCatalogContract
+                    .PORT_FRAME_METHOD)))) {
+                continue;
+            }
             if (calledInLoop.contains(definition)) {
                 return true;
             }
