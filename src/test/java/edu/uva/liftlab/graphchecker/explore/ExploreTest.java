@@ -817,8 +817,26 @@ public class ExploreTest {
                 .resolve(ObligationDir.FOCUSED_TASK)).get(0);
         String skew = focus.getAsJsonObject("clockDeltas")
                 .get("CASE.NOW").getAsString();
+        // A CLOCK IS A MILLISECOND COUNT IN A JAVA long.  The query's clock
+        // variable carries the ceiling beside the floor, so the instant the
+        // model hands back is one an execution could read and the difference
+        // is a skew the replay can APPLY: FocusedReplay.clockSkew parses it
+        // with Long.valueOf, and hdfs-11741 campaign #2 handed it
+        // 18446742283726387588 -- a negative difference printed unsigned,
+        // because the query stated only (>= v 0) and z3 answered past 2^63.
+        long applied = Long.parseLong(skew);
+        assertEquals("the focus row states the skew as a Java long, which is"
+                        + " the only thing a replay can apply", skew,
+                Long.toString(applied));
+        assertTrue("and the instant it asks for is a Java long too: " + skew,
+                applied <= Long.MAX_VALUE - 700L);
         assertTrue("the skew carries a reading of 700 past 1000: " + skew,
-                Long.parseLong(skew) > 300L);
+                applied > 300L);
+        assertTrue("because the query gives the clock the domain a Java long"
+                        + " has, ceiling and all",
+                new String(Files.readAllBytes(ticked.directory
+                        .resolve("obligation_query.smt2")), "UTF-8")
+                        .contains(" 9223372036854775807))"));
 
         // AND A PINNED ROOT BESIDE THE CLOCK IS STILL A CLOCK-DRIVEN FLIP.
         // The query reaches a root with no domain, so the query pins it and
@@ -1040,6 +1058,54 @@ public class ExploreTest {
         assertTrue("and it is BLOCKING: the campaign opens an epoch",
                 blocking);
 
+        // ONLY AN ADMITTED REPLAY STATES A TOPOLOGY.  The same foreign
+        // pairing, from a replay whose own result row says NOT_ADMITTED, is
+        // a replay that did not run the world it was asked for: it states
+        // no topology at all, so the skeleton is untouched, the wave is not
+        // emptied, and the pairing is REPORTED.  hdfs-11741 campaign #2:
+        // one such session -- its mint had planted no clock skew -- paired
+        // eight consumers with producers the skeleton does not carry, and
+        // wave 1 opened with zero candidates.
+        Path unadmitted = tree.newFolder("closure-replaced-unadmitted")
+                .toPath();
+        Session held = new Session(unadmitted, "s-seed");
+        held.activation(target, false);
+        held.activation(writer, false);
+        held.activation(producer, false);
+        held.constant("e.119992", "119992");
+        held.export(exported, "e.119992", 11L, "119992");
+        held.attach(attached, "M_HOFF_KEY", "119992", exported);
+        held.flush();
+        Session wrongWorld = new Session(unadmitted, "s-unadmitted");
+        wrongWorld.activation(writer, true);
+        wrongWorld.activation(producer, true);
+        wrongWorld.constant("e.119993", "119993");
+        wrongWorld.export(otherPort, "e.119993", 13L, "119993");
+        wrongWorld.attach(attached, "M_HOFF_KEY", "119993", otherPort);
+        wrongWorld.answered(ObligationResult.of("OBL.s-unadmitted",
+                Verdict.NOT_ADMITTED, "s-unadmitted",
+                "the obligation assigns a root no mint of this replay "
+                        + "planted"));
+        wrongWorld.flush();
+        SlotTable.Reconciliation stands = new SlotTable()
+                .reconcile(Corpus.read(unadmitted, null), pairedMembers, 2);
+        assertFalse("a replay that was not admitted states no topology, so "
+                        + "it contradicts none and the next wave keeps its "
+                        + "candidates", stands.replaced);
+        boolean reported = false;
+        for (GapRow gap : stands.gaps) {
+            if (gap.kind() != GapKind.TOPOLOGY_DIVERGENCE) continue;
+            assertFalse("and nothing it says is BLOCKING: " + gap.detail(),
+                    gap.cls() == GapClass.BLOCKING);
+            reported |= gap.sessionId().equals("s-unadmitted")
+                    && gap.cls() == GapClass.DIAGNOSTIC
+                    && gap.detail().contains("the catalog pairs this consumer")
+                    && gap.detail().endsWith("(this replay was not admitted, "
+                            + "so it states no topology)");
+        }
+        assertTrue("the pairing is still REPORTED, naming why nothing was "
+                + "done about it", reported);
+
         // R-I7 against R-I6: a STATE reader that joined ANOTHER writer in
         // another session is not a replacement, it is that family's second
         // arm.  A flip is expected to change which writer delivers -- that
@@ -1071,6 +1137,11 @@ public class ExploreTest {
                         "BlockTokenSecretManager#removeKeys#19"), allKeys,
                 9L, "e.b");
         flipping.read(reader, allKeys, 9L, "M_READ_KEY_2", "0");
+        // AND IT WAS ADMITTED: only a replay that ran the world it was asked
+        // for states a topology, so a second arm is an arm because the
+        // session says its obligation reproduced.
+        flipping.answered(ObligationResult.of("OBL.s-flip", Verdict.ADMITTED,
+                "s-flip", "the focused prefix reproduced"));
         flipping.flush();
         Set<String> readers = new LinkedHashSet<String>();
         readers.add(target.id());
@@ -1168,6 +1239,8 @@ public class ExploreTest {
         ranIt.flush();
         Session ranOther = new Session(instead, "s-flip");
         ranOther.activation(secondRequest, true);
+        ranOther.answered(ObligationResult.of("OBL.s-flip", Verdict.ADMITTED,
+                "s-flip", "the focused prefix reproduced"));
         ranOther.flush();
         assertTrue("a replay that did not run the member and ran another "
                         + "context in its place IS a replacement",

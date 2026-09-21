@@ -4,6 +4,7 @@ import edu.uva.liftlab.graphchecker.compose.JavaSmtSorts;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering;
 import edu.uva.liftlab.graphchecker.smt.Arms;
+import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
@@ -39,8 +40,10 @@ import java.util.Set;
  *       marker, and PINNED to what the recording read when it has no domain,
  *       because the composition pins it there too and a flip that needs it to
  *       move could never become a finding;</li>
- *   <li>a CLOCK is per path, unbounded, with a {@code >= 0} floor only: every
- *       execution reads it fresh, so it is never an equality between paths;</li>
+ *   <li>a CLOCK is per path and never an equality between paths -- every
+ *       execution reads it fresh -- and its domain is the one a millisecond
+ *       count in a Java {@code long} has: {@code >= 0} AND {@code <=
+ *       Long.MAX_VALUE};</li>
  *   <li>a HANDOFF {@code v_H(I)} is bound by its family: {@code OR_q (pi_q AND
  *       guard_q AND v_H = e_q)} over the producer paths whose export endpoint
  *       is I's producer.  The walk closes over the handoffs those arms name in
@@ -642,7 +645,11 @@ final class FlipQuery {
                 if (minted.sessionId().equals(path.sessionId)) {
                     clockVariables.put(variable, row.rootId());
                 }
-                rootFacts.add("(>= " + variable + " 0)");
+                // A CLOCK CELL IS A MILLISECOND COUNT IN A JAVA long, so
+                // the floor is not the whole domain: see {@link
+                // JavaPrimitiveSmtSemantics#clockDomain}, which is the one
+                // place that rule is spelled.
+                rootFacts.add(JavaPrimitiveSmtSemantics.clockDomain(variable));
                 return;
             }
             rootVariables.put(variable, row.rootId());

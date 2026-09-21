@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.explore;
 
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
+import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.smt.Z3;
 
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
@@ -521,8 +522,10 @@ public final class ObligationFactory {
         for (Map.Entry<String, String> variable
                 : built.clockVariables.entrySet()) {
             String rootId = variable.getValue();
+            String recorded = corpus.rootValue(candidate.path.sessionId,
+                    rootId);
             String delta = skew(answer.values().get(variable.getKey()),
-                    corpus.rootValue(candidate.path.sessionId, rootId));
+                    recorded);
             if (delta.isEmpty()) {
                 gaps.add(GapRow.of(candidate.path.sessionId,
                         GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, rootId,
@@ -531,6 +534,38 @@ public final class ObligationFactory {
                                 + "replay is owed no skew and reads its own "
                                 + "instant"));
                 continue;
+            }
+            // FAIL CLOSED: NEVER WRITE A SKEW THE REPLAY CANNOT APPLY.
+            // A CLOCK cell is a millisecond count in a Java long
+            // (JavaPrimitiveSmtSemantics.clockDomain), so both the skew the
+            // focus row carries and the instant the mint plants have to be
+            // one.  With the ceiling on the query's clock variables this is
+            // unreachable -- it is the door held to the next declaration
+            // that forgets it, and to the answer hdfs-11741 campaign #2 got
+            // when the ceiling was missing: an instant past 2^63, a
+            // negative difference printed as the unsigned
+            // 18446742283726387588, a skew FocusedReplay.clockSkew could
+            // not parse, and a mint that planted nothing.
+            java.math.BigInteger skewed = new java.math.BigInteger(delta);
+            java.math.BigInteger instant =
+                    skewed.add(new java.math.BigInteger(recorded.trim()));
+            if (!JavaPrimitiveSmtSemantics.fitsJavaLong(skewed)
+                    || !JavaPrimitiveSmtSemantics.fitsJavaLong(instant)) {
+                gaps.add(GapRow.of(candidate.path.sessionId,
+                        GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, rootId,
+                        "the model asks clock root " + rootId + " for "
+                                + "instant " + instant + ", a skew of "
+                                + skewed + " on the " + recorded.trim()
+                                + " this replay read, and a clock is a "
+                                + "millisecond count in a Java long: no "
+                                + "replay could apply it"));
+                return new Outcome(id, candidate.task.taskId(), null,
+                        ObligationResult.of(id, Verdict.NOT_ADMITTED, "",
+                                "clock root " + rootId + " is owed a skew of "
+                                        + skewed + ", which is not a Java "
+                                        + "long, so the obligation states a "
+                                        + "world no replay can run"),
+                        query, NO_SKEW, NO_MINTS, NO_FLIPS, gaps);
             }
             clockDeltas.put(rootId, delta);
         }

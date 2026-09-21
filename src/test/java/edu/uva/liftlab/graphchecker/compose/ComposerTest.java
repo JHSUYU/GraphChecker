@@ -41,6 +41,7 @@ import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.explore.Corpus;
 import edu.uva.liftlab.graphchecker.explore.ExploreCodec;
+import edu.uva.liftlab.graphchecker.explore.SlotTable;
 
 import org.junit.Assume;
 import org.junit.Rule;
@@ -778,6 +779,67 @@ public class ComposerTest {
         assertEquals("so that session contributes no arm and the slot's "
                         + "family carries the seed's alone: "
                         + refused.families(), 1, delivered);
+
+        // ONLY AN ADMITTED REPLAY STATES A TOPOLOGY.  A session pairing
+        // this epoch's consumer with ANOTHER producer is a replacement
+        // either way -- the two pairings cannot both be this epoch's, so
+        // its arms stay out of every family -- and only an ADMITTED
+        // replay's replacement STOPS the composition.  FAIL CLOSED ON THE
+        // ARMS, OPEN ON THE CLAIM: hdfs-11741 campaign #2 filed eight
+        // BLOCKING rows for one replay whose mint had planted nothing, so
+        // a replay that did not run the world it was asked for refused a
+        // claim about the world that did run.
+        Path unadmitted = folder.newFolder("replaced-unadmitted").toPath();
+        Session held = new Session(unadmitted, "s0", false);
+        held.activation(PRODUCER);
+        held.marker("false");
+        held.expression("EXPR.v1.marker", symbol(MARKER, "Z"));
+        held.decision(PRODUCER, "nn#u1", "(or " + MARKER + " (not "
+                + MARKER + "))");
+        held.export(first, "EXPR.v1.marker", 1L, "false");
+        held.attach(consumer, "vh1", "false", first);
+        held.target("vh1", false, true);
+        held.write();
+        // The epoch's skeleton, where EXPLORE publishes it: the seed's
+        // pairing, and the composition reads it from that file.
+        SlotTable skeleton = SlotTable.read(unadmitted);
+        skeleton.reconcile(Corpus.read(unadmitted, null),
+                Collections.singleton(ANCHOR.id()), 0);
+        skeleton.write(unadmitted);
+
+        Session wrongWorld = new Session(unadmitted, "s1", true);
+        wrongWorld.activation(PRODUCER);
+        wrongWorld.marker("true");
+        wrongWorld.expression("EXPR.v1.marker", symbol(MARKER, "Z"));
+        wrongWorld.decision(PRODUCER, "nn#u1", "(or " + MARKER + " (not "
+                + MARKER + "))");
+        wrongWorld.export(second, "EXPR.v1.marker", 2L, "true");
+        wrongWorld.attach(consumer, "vh1", "true", second);
+        wrongWorld.target("vh1", true, true);
+        wrongWorld.refused("the obligation assigns a root no mint of this "
+                + "replay planted");
+        wrongWorld.write();
+
+        Composer.Composition stands = compose(unadmitted, 4);
+        boolean diagnostic = false;
+        for (GapRow gap : stands.gaps()) {
+            if (gap.kind() != GapKind.TOPOLOGY_DIVERGENCE) continue;
+            assertFalse("a replay that was not admitted stops nothing: "
+                    + gap.detail(), gap.cls() == GapClass.BLOCKING);
+            diagnostic |= gap.sessionId().equals("s1")
+                    && gap.cls() == GapClass.DIAGNOSTIC
+                    && gap.detail().endsWith("(this replay was not "
+                            + "admitted, so it states no topology)");
+        }
+        assertTrue("the replacement is still filed, naming why it stops "
+                + "nothing: " + stands.gaps(), diagnostic);
+        int standing = 0;
+        for (Family family : stands.families()) {
+            standing += family.arms().size();
+        }
+        assertEquals("and its arms are out of every family all the same, "
+                        + "so only the seed's arm stands: "
+                        + stands.families(), 1, standing);
     }
 
     // ------------------------------------------------------------------
