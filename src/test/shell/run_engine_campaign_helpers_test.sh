@@ -1385,6 +1385,96 @@ $(cat "${worker_dir}/obligation_result.jsonl")"
     == OBLIGATION_RESULT ]] \
   || fail "the recorded row is not an obligation result: \
 $(cat "${worker_dir}/obligation_result.jsonl")"
+# This replay was killed before it opened a session, which is a case of its
+# own: nothing to withdraw, and the worker says so rather than passing over
+# it.
+grep -q 'nothing withdrawn' "${worker_dir}/worker.log" \
+  || fail "a replay killed before it opened a session does not say so: \
+$(cat "${worker_dir}/worker.log")"
+[[ ! -e "${worker_dir}/timed-out-sessions" ]] \
+  || fail "the worker made a quarantine for a session that never existed"
+
+# REPLAY-BOUND-4: the session a killed replay left behind leaves the corpus.
+# SessionPublisher writes manifest.json at the OPEN, so a replay killed at
+# work has a session that NAMES its obligation and states no verdict for it
+# -- which Composer.settled reads as UNSTATED_VALUE/BLOCKING.  The wave now
+# closes on the NOT_ADMITTED row, so without this the campaign would trade a
+# stopped wave for a withheld candidate: one hung JVM, no claim.  The
+# directory is moved under the worker, never deleted, and the lookup is the
+# manifest -- eight workers write into one sessions directory, so a session
+# naming somebody else's obligation must not be touched.
+withdraw_dir="${bound_dir}/withdraw"
+withdraw_sessions="${withdraw_dir}/sessions"
+withdraw_worker="${withdraw_dir}/obligation"
+mkdir -p "${withdraw_worker}" "${withdraw_sessions}" "${withdraw_dir}/classes"
+printf '{"taskId":"TASK.1"}\n' >"${withdraw_dir}/seed_plan.jsonl"
+: >"${withdraw_dir}/obligations.jsonl"
+# Another worker's session, open at the same moment and naming its own
+# obligation: untouched, whatever happens to ours.
+mkdir -p "${withdraw_sessions}/SESSION.other"
+jq -n -c '{schemaVersion: 1, kind: "SESSION_MANIFEST",
+  sessionId: "SESSION.other", role: "FOCUSED",
+  obligationIds: ["OB.OTHER"]}' \
+  >"${withdraw_sessions}/SESSION.other/manifest.json"
+: >"${withdraw_sessions}/SESSION.other/activations.jsonl"
+# The replay opens its session -- manifest first, as SessionPublisher does --
+# and then hangs, exactly like the JVM that deadlocked on two class monitors.
+cat >"${withdraw_dir}/replay.sh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+mkdir -p "\${CAUSYNTH_CONCOLIC_SESSIONS}/SESSION.mine"
+jq -n -c '{schemaVersion: 1, kind: "SESSION_MANIFEST",
+  sessionId: "SESSION.mine", role: "FOCUSED", obligationIds: ["OB.1"]}' \\
+  >"\${CAUSYNTH_CONCOLIC_SESSIONS}/SESSION.mine/manifest.json"
+sleep 120
+EOF
+chmod +x "${withdraw_dir}/replay.sh"
+replay_timeout_s=1
+concolic_replay_command="${withdraw_dir}/replay.sh"
+(
+  run_java_main() {
+    jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT",
+      obligationId: "OB.1", verdict: "SAT_MODEL_READY", sessionId: "",
+      detail: ""}' >"${withdraw_worker}/obligation_result.jsonl"
+    printf '{"taskId":"TASK.1"}\n' >"${withdraw_worker}/focused_task.jsonl"
+    printf '(assert true)\n' >"${withdraw_worker}/obligation_query.smt2"
+  }
+  campaign_obligation_worker OB.1 "${withdraw_dir}/obligations.jsonl" \
+    "${withdraw_dir}/classes" "${withdraw_worker}" "${withdraw_sessions}" \
+    "${withdraw_dir}/seed_plan.jsonl"
+) >"${withdraw_worker}/worker.log" 2>&1 \
+  || fail "the worker did not return when its replay outlived the bound: \
+$(cat "${withdraw_worker}/worker.log")"
+[[ ! -e "${withdraw_sessions}/SESSION.mine" ]] \
+  || fail "the timed-out replay's session is still in the corpus, where \
+COMPOSE reads it and refuses the candidate BLOCKING: \
+$(find "${withdraw_sessions}" -maxdepth 2 | LC_ALL=C sort)"
+[[ -f "${withdraw_worker}/timed-out-sessions/SESSION.mine/manifest.json" ]] \
+  || fail "the withdrawn session is not kept under the worker that owned it: \
+$(find "${withdraw_worker}" -maxdepth 3 | LC_ALL=C sort)"
+[[ "$(jq -r '.obligationIds[0]' \
+    "${withdraw_worker}/timed-out-sessions/SESSION.mine/manifest.json")" \
+    == OB.1 ]] \
+  || fail "the withdrawn session is not the one that named this obligation"
+# The other worker's session, and every row in it, exactly where it was.
+[[ -f "${withdraw_sessions}/SESSION.other/manifest.json" ]] \
+  || fail "another worker's session was withdrawn with ours"
+[[ -f "${withdraw_sessions}/SESSION.other/activations.jsonl" ]] \
+  || fail "another worker's session lost rows"
+[[ ! -e "${withdraw_worker}/timed-out-sessions/SESSION.other" ]] \
+  || fail "another worker's session was moved under our worker"
+grep -q 'withdrew session SESSION.mine' "${withdraw_worker}/worker.log" \
+  || fail "the withdrawal is not logged: $(cat "${withdraw_worker}/worker.log")"
+# The verdict row is untouched by any of this: it is still the one terminal
+# answer this obligation reached.
+[[ "$(jq -r '.verdict' "${withdraw_worker}/obligation_result.jsonl")" \
+    == NOT_ADMITTED ]] \
+  || fail "withdrawing the session changed the verdict row: \
+$(cat "${withdraw_worker}/obligation_result.jsonl")"
+[[ "$(jq -r '.detail' "${withdraw_worker}/obligation_result.jsonl")" \
+    == "replay exceeded replay_timeout_s=1" ]] \
+  || fail "withdrawing the session changed the recorded detail: \
+$(cat "${withdraw_worker}/obligation_result.jsonl")"
 reset_config
 
 echo "run_engine campaign helper tests passed"

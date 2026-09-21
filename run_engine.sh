@@ -2107,6 +2107,62 @@ campaign_session_roster() {
 }
 
 
+# The session a killed replay left behind, out of the corpus and into the
+# worker that owned it.
+#
+# A replay that is killed has opened its session -- SessionPublisher writes
+# manifest.json at the OPEN -- and will never close it, so its rows state no
+# verdict for the obligation the manifest names.  Composer.settled reads
+# exactly that pair and calls it UNSTATED_VALUE/BLOCKING: the session ran the
+# obligation and cannot say what happened.  That is the right reading of a
+# session nobody withdrew, and it means one hung JVM would withhold the whole
+# candidate -- the wave now closes, and the claim is blocked instead.  So the
+# worker withdraws its own leavings: the directory is MOVED under the worker,
+# never deleted, because it is evidence of why this obligation is
+# NOT_ADMITTED and the campaign keeps what it saw.
+#
+# Found by the manifest, which is the same lookup settled() does -- read the
+# document and match one element of obligationIds exactly -- and never by
+# diffing the session directory, because eight workers write into that one
+# directory at once and every session but this obligation's belongs to
+# somebody else.  A manifest that cannot be read is somebody else's, half
+# written: skipped, not guessed at.
+campaign_withdraw_timed_out_sessions() {
+  local obligation_id=$1 sessions=$2 worker=$3
+  local quarantine="${worker}/timed-out-sessions"
+  local manifest session_dir session_id withdrawn=0
+  # SessionDir.MANIFEST, one directory down: <sessions>/<sessionId>/.
+  for manifest in "${sessions}"/*/manifest.json; do
+    [[ -f "${manifest}" ]] || continue
+    # `any(...; . == $id)` is an exact element match: an obligation id that
+    # is a prefix of another's does not answer for it.
+    jq -e --arg id "${obligation_id}" \
+      'any((.obligationIds // [])[]; . == $id)' "${manifest}" \
+      >/dev/null 2>&1 || continue
+    session_dir=$(dirname "${manifest}")
+    session_id=$(basename "${session_dir}")
+    mkdir -p "${quarantine}"
+    if mv -- "${session_dir}" "${quarantine}/${session_id}"; then
+      withdrawn=$((withdrawn + 1))
+      campaign_log "obligation ${obligation_id}: withdrew session \
+${session_id} from ${sessions} to ${quarantine}/${session_id}; its manifest \
+names this obligation and its rows state no verdict, which no later stage \
+may read as a corpus session"
+    else
+      # Not the wave's death, and not silent either: the session stays where
+      # COMPOSE will refuse it BLOCKING and this line says why.
+      campaign_log "obligation ${obligation_id}: could not withdraw session \
+${session_id} from ${sessions}; it states no verdict and COMPOSE will refuse \
+it"
+    fi
+  done
+  if [[ "${withdrawn}" -eq 0 ]]; then
+    campaign_log "obligation ${obligation_id}: no session under ${sessions} \
+names it, so the replay was killed before it opened one; nothing withdrawn"
+  fi
+}
+
+
 # One obligation: solve it, replay it focused, record its verdict.
 #
 # The obligation names ONE focused occurrence, the decision it flips, the root
@@ -2188,11 +2244,8 @@ campaign_obligation_worker() {
   if [[ "${campaign_replay_timed_out}" == true ]]; then
     campaign_log "obligation ${obligation_id}: \
 replay exceeded replay_timeout_s=${replay_timeout_s}"
-    # The session the killed replay was writing is not admitted, and nothing
-    # new says so: Composer.settled reads the obligations the session's
-    # manifest names (written at the OPEN) against the verdicts its rows
-    # state (written at the CLOSE, which never came), and a named obligation
-    # with no verdict row is refused there.
+    campaign_withdraw_timed_out_sessions "${obligation_id}" "${sessions}" \
+      "${worker}"
     jq -n -c --arg id "${obligation_id}" \
       --arg detail "replay exceeded replay_timeout_s=${replay_timeout_s}" \
       '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: $id,
