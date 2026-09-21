@@ -224,9 +224,12 @@ final class RowPlaceholderMint {
     private static void placeholder(OccurrenceAddress occurrence,
                                     JsonObject row, String symbol,
                                     Map<String, String[]> installed) {
-        // A read placeholder, session-wide, so no activation's write log
-        // offers the mint's own version as a write of that location.
-        RowRuntime.placeholderSymbol(symbol);
+        // A declared mint, session-wide, so no activation's write log offers
+        // the mint's own version as a write of that location.  The register
+        // is already filled -- at the mint, by ActiveRegion -- and this is
+        // the backstop for a mint row that reached publication by some other
+        // road than the two recorders.
+        RowRuntime.declaredMintSymbol(symbol);
         // The location is the VM's own -- owner rid, slot offset -- so this
         // read and every write of the same storage spell one location.
         // Naming the Java field signature instead left the read saying
@@ -433,6 +436,15 @@ final class RowPlaceholderMint {
      * that knows its own {@code rawSymbol} states it outright.  The key the
      * suppression and {@code mintVersion} share is still (location,
      * version); this is only which versions are mints at all.</p>
+     *
+     * <p>And it is a question about the SESSION, not about this activation:
+     * the mint files its symbol where it runs
+     * ({@code RowRuntime#declaredMintSymbol}), so an activation that merely
+     * read the same VM record out gets the same answer as the one that
+     * minted, whichever of them publishes first.  Asked of {@code active}
+     * alone, hdfs-11741 campaign #5b published 284 clock mint stores as
+     * WriteRows of a second activation and bound 593 of 877 reads by
+     * accident.</p>
      */
     private static boolean declaredMint(ActiveRegion active, String symbol) {
         for (JsonObject row : active.symbolizedRows) {
@@ -443,7 +455,7 @@ final class RowPlaceholderMint {
                 return true;
             }
         }
-        return RowRuntime.isPlaceholderSymbol(symbol);
+        return RowRuntime.isDeclaredMintSymbol(symbol);
     }
 
     /**
@@ -585,7 +597,7 @@ final class RowPlaceholderMint {
      * nothing.  The VM's name is the one that appears in the terms, so
      * that is the one the row states.</p>
      */
-    private static String vmSymbol(JsonObject row) {
+    static String vmSymbol(JsonObject row) {
         String raw = optionalString(row, "rawSymbol");
         if (!raw.isEmpty()) return raw;
         // A configured source mints through the VM's own label and states
