@@ -4,6 +4,7 @@ import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.Frame;
+import edu.uva.liftlab.graphchecker.contract.JvmNames;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.Role;
@@ -487,7 +488,7 @@ public final class Identity {
      */
     public static void startWork(String startSiteId, Object carrier,
                                  String starterNodeKey) {
-        String site = Text.safe(startSiteId);
+        String site = JvmNames.stable(Text.safe(startSiteId));
         if (site.isEmpty() || carrier == null) return;
         State state = state();
         int iteration = state.nextSiteEvent(site);
@@ -585,7 +586,7 @@ public final class Identity {
      */
     public static long enterFrame(String callSiteId) {
         State state = state();
-        String site = Text.safe(callSiteId);
+        String site = JvmNames.stable(Text.safe(callSiteId));
         int iteration = state.nextSiteEvent(site);
         long token = TOKENS.getAndIncrement();
         state.levels.add(new Level(Frame.of(site, iteration), token));
@@ -904,12 +905,20 @@ public final class Identity {
         return endpointAt(currentOccurrence(nodeKey), site, attempt);
     }
 
-    /** The same endpoint, for an occurrence the caller already holds. */
+    /**
+     * The same endpoint, for an occurrence the caller already holds.
+     *
+     * <p>The site is put in its stable spelling ONCE, here, and the index
+     * is taken over that same string: a class the JVM minted per run is not
+     * an identity ({@link JvmNames#stable}), and the site of an endpoint
+     * and the innermost frame of its index are the same site.</p>
+     */
     public static Endpoint endpointAt(OccurrenceAddress occurrence,
                                       String site, int attempt) {
-        return occurrence == null ? null
-                : Endpoint.of(occurrence, Text.safe(site),
-                        eventSiteIndex(occurrence, site), attempt);
+        if (occurrence == null) return null;
+        String stable = JvmNames.stable(Text.safe(site));
+        return Endpoint.of(occurrence, stable,
+                eventSiteIndex(occurrence, stable), attempt);
     }
 
     /**
@@ -934,7 +943,7 @@ public final class Identity {
     private static ExecutionIndex eventSiteIndex(OccurrenceAddress occurrence,
                                                  String site) {
         State state = state();
-        String key = Text.safe(site);
+        String key = JvmNames.stable(Text.safe(site));
         if (key.isEmpty()) return state.from(state.regionBase());
         int iteration = state.nextSiteEvent(key);
         List<Frame> frames = new ArrayList<Frame>(
