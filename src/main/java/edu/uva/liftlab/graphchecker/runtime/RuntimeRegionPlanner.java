@@ -110,6 +110,15 @@ final class RuntimeRegionPlanner {
                     continue;
                 }
                 for (MethodEvent root : trace.methods(skeleton.rootMethod)) {
+                    // F1: an entry FOLDED into the occurrence already
+                    // running on its thread opened none of its own, so it is
+                    // a method call inside that occurrence and not an
+                    // activation of this region.  One activation per
+                    // occurrence, which is what lets
+                    // RuntimeSelectedRegionFinalizer#readOccurrences keep
+                    // reading a shared address as the identity failure it
+                    // names.
+                    if (root.regionFolded) continue;
                     Set<String> observed = trace.methodNames(
                             trace.subtree(root.callId));
                     if (Collections.disjoint(observed,
@@ -2336,6 +2345,18 @@ final class RuntimeRegionPlanner {
          * (REPORT-M2 §5).</p>
          */
         final String occurrenceAddress;
+        /**
+         * Whether this entry was FOLDED into the occurrence already running
+         * on its thread (F1).
+         *
+         * <p>Told apart from an empty {@link #occurrenceAddress} on purpose,
+         * because the two are different facts with different owners: a fold
+         * is an entry that IS no occurrence -- a method call inside one, and
+         * PLAN records no activation for it -- while an address the
+         * recording could not compute is a hole the finalizer refuses
+         * ({@code RuntimeSelectedRegionFinalizer#readOccurrences}).</p>
+         */
+        final boolean regionFolded;
         MethodEvent(long seq, String test, String threadName,
                     long tid, String method, int objectId, String receiverType,
                     long callId, long parentCallId, long parentSiteId,
@@ -2355,7 +2376,21 @@ final class RuntimeRegionPlanner {
                     SourceRef source, boolean receiverAttributed,
                     String requestKey, String requestApi,
                     String occurrenceAddress) {
+            this(seq, test, threadName, tid, method, objectId, receiverType,
+                    callId, parentCallId, parentSiteId, laneId, spanId,
+                    remoteParentSpanId, source, receiverAttributed,
+                    requestKey, requestApi, occurrenceAddress, false);
+        }
+
+        MethodEvent(long seq, String test, String threadName,
+                    long tid, String method, int objectId, String receiverType,
+                    long callId, long parentCallId, long parentSiteId,
+                    long laneId, long spanId, long remoteParentSpanId,
+                    SourceRef source, boolean receiverAttributed,
+                    String requestKey, String requestApi,
+                    String occurrenceAddress, boolean regionFolded) {
             this.occurrenceAddress = safe(occurrenceAddress);
+            this.regionFolded = regionFolded;
             this.seq = seq;
             this.test = safe(test);
             this.threadName = safe(threadName);

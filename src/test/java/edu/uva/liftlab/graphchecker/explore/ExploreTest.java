@@ -2275,6 +2275,131 @@ public class ExploreTest {
      * <p>Written as the artifact's own text, so what these cases exercise is
      * the published shape and not a builder's idea of it.</p>
      */
+    /**
+     * F2: a static site is found at the occurrence whose region HOLDS it.
+     *
+     * <p>A declared region entered synchronously inside another region's
+     * occurrence opens none of its own, so a site of region R is recorded
+     * under an occurrence of the enclosing R' -- and the static map publishes
+     * a site under its INNERMOST holder alone ({@code
+     * StaticScopeMap#holders}), so R' never appears beside that site.
+     * Matching region ids for equality then found no occurrence at all and
+     * the candidate read as "no session activated that region", which is a
+     * writer the corpus HAD run, lost.</p>
+     */
+    @Test
+    public void aStaticSiteIsACandidateWhereItsMethodIsHeld()
+            throws Exception {
+        Path iteration = tree.newFolder("holding").toPath();
+        // The writer ran as an occurrence of the ENCLOSING region, which is
+        // what a fold leaves in the corpus.
+        OccurrenceAddress enclosing = occurrence("hdfs-case/dn0",
+                "REGION.outer", CausalContext.of(Role.of("DATA_XCEIVER"), "",
+                        2), "o.a.h.h.s.d.BPServiceActor#offerService#41");
+        // The occurrence the site's method is held BY, which wrote nothing
+        // the anchor read and is therefore no member of the closure yet.
+        OccurrenceAddress holder = occurrence("hdfs-case/dn0",
+                "REGION.holder", CausalContext.of(Role.of("KEY_MANAGER_TICK"),
+                        "", 1), "o.a.h.h.s.b.KeyManager#run#3");
+        OccurrenceAddress unrelated = occurrence("hdfs-case/dn0",
+                "REGION.elsewhere", CausalContext.of(Role.of("DATA_XCEIVER"),
+                        "", 3), "o.a.h.h.s.d.DataXceiver#run#77");
+        Endpoint stored = at(enclosing, Endpoint.stateSite(
+                        "BlockTokenSecretManager", "addKeys", 12, true),
+                "BlockTokenSecretManager#addKeys#12");
+
+        Session seed = new Session(iteration, "s-seed");
+        seed.activation(TARGET, false);
+        seed.activation(enclosing, false);
+        seed.activation(holder, false);
+        seed.activation(unrelated, false);
+        seed.symbolic("e.stored", "M_HOFF_KEY");
+        seed.write(stored, ALL_KEYS, 5L, "e.stored");
+        seed.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
+        seed.target(TARGET, "BlockTokenSecretManager"
+                + "#retrieveDataEncryptionKey#8", "(= M_READ_KEY 0)");
+        seed.flush();
+
+        // The map names the carrier at the recorded write's own site, and a
+        // SECOND write site of that carrier -- KeyManager#refresh -- under
+        // the innermost region that holds it.  No occurrence of REGION.inner
+        // is in this corpus; the occurrence that RAN that method is the one
+        // addressed as REGION.holder.
+        String[] rows = {
+                targetSite("REGION.target", "BlockTokenSecretManager#u120"),
+                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.outer",
+                        "BlockTokenSecretManager#u12",
+                        "BlockTokenSecretManager#addKeys",
+                        "<example.Keys: int value>",
+                        "<example.Manager: example.Keys allKeys>", ""),
+                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.inner",
+                        "KeyManager#u4", "KeyManager#refresh",
+                        "<example.Keys: int value>",
+                        "<example.Manager: example.Keys allKeys>", "")};
+        Path mapFile = scopeMap(iteration, rows);
+
+        // Without the skeletons beside it the map can say nothing about
+        // holding, and the join is the region-id equality it always was:
+        // nothing runs REGION.inner, so nothing is a candidate.
+        Map<String, String> blind = why(ClosurePlanner.plan(
+                Corpus.read(iteration, null), TARGET,
+                StaticScopeMap.read(mapFile)));
+        assertFalse("with no skeletons, equality finds no occurrence of the"
+                        + " region the site is published under: " + blind,
+                blind.containsKey(holder.render()));
+
+        // With them, the enclosing region's own method set answers: it holds
+        // the site's method, so its occurrence is the candidate writer.
+        skeletons(iteration,
+                skeleton("REGION.inner", "KeyManager"),
+                skeleton("REGION.holder", "KeyManager", "BPServiceActor"),
+                skeleton("REGION.outer", "BlockTokenSecretManager"),
+                skeleton("REGION.elsewhere", "DataXceiver"),
+                skeleton("REGION.target", "BlockTokenSecretManager"));
+        Map<String, String> held = why(ClosurePlanner.plan(
+                Corpus.read(iteration, null), TARGET,
+                StaticScopeMap.read(mapFile)));
+        assertEquals("the occurrence whose region holds the site's method is"
+                        + " the static candidate writer: " + held,
+                ClosurePlanner.STATIC_CANDIDATE_WRITER,
+                held.get(holder.render()));
+        assertFalse("and an occurrence of a region that does not hold it is"
+                        + " not, though it ran on the same node: " + held,
+                held.containsKey(unrelated.render()));
+    }
+
+    /** Which rule proposed each task of one plan, by focused occurrence. */
+    private static Map<String, String> why(ClosurePlanner.Plan plan) {
+        Map<String, String> reasons = new LinkedHashMap<String, String>();
+        for (Task task : plan.tasks) {
+            reasons.put(task.focused().render(),
+                    plan.why.get(task.taskId()));
+        }
+        return reasons;
+    }
+
+    /** The region skeletons PLAN writes beside the static map. */
+    private Path skeletons(Path iteration, String... regions)
+            throws IOException {
+        Path file = iteration.resolve(StaticScopeMap.REGIONS);
+        Files.write(file, (String.join(System.lineSeparator(),
+                Arrays.asList(regions))
+                + System.lineSeparator()).getBytes("UTF-8"));
+        return file;
+    }
+
+    /** One skeleton row: the region, and the methods it holds. */
+    private static String skeleton(String regionId, String... methods) {
+        JsonObject row = new JsonObject();
+        row.addProperty("schemaVersion", 1);
+        row.addProperty("kind", "REGION_SKELETON");
+        row.addProperty("regionId", regionId);
+        JsonArray held = new JsonArray();
+        for (String method : methods) held.add(method);
+        row.add("methods", held);
+        return row.toString();
+    }
+
     private Path scopeMap(Path iteration, String... sites)
             throws IOException {
         List<String> lines = new ArrayList<String>(Arrays.asList(sites));

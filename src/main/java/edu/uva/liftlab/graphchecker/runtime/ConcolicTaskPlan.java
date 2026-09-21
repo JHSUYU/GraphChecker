@@ -1484,18 +1484,10 @@ final class ConcolicTaskPlan {
             // session publisher opens the region, and opening it twice would
             // move the base every endpoint inside is indexed from.
             //
-            // I1, the fold rule: this root's entry hook has already run, and
-            // when it FOLDED -- a declared region entered synchronously
-            // inside another region's occurrence opens none of its own
-            // (Identity#fold) -- the activation starting here is an
-            // activation of the occurrence it folded into.  That is the
-            // occurrence the plan names, because the recording folded at the
-            // same entry in the same function, so admission compares the two
-            // passes' answers and not a fresh address minted under this
-            // task's own region id, which no folded activation ever carries.
-            OccurrenceAddress folded = edu.uva.liftlab.graphchecker.runtime
-                    .Identity.foldedOccurrence();
-            if (folded != null) return folded;
+            // Nothing about the FOLD is asked here any more: a folded entry
+            // starts no activation at all (F1), so admission is never
+            // reached at one and there is no folded address for it to
+            // answer with (ConcolicRegionRuntime#enterRegionFrame).
             return edu.uva.liftlab.graphchecker.runtime.Identity.occurrence(
                     safe(lifecycle).isEmpty() ? sourceKey : lifecycle,
                     regionId, false);

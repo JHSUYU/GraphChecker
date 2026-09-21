@@ -977,22 +977,28 @@ public final class Identity {
     }
 
     /**
-     * The occurrence the entry standing here folded into, or null.
+     * Whether the region entry standing on this thread was FOLDED.
      *
-     * <p>Null when the innermost entry OPENED an occurrence of its own, and
-     * null when this thread has entered no region at all: the answer is only
-     * ever "this entry is not an occurrence, that one is".  Admission asks it
-     * ({@code ConcolicTaskPlan.RuntimeTask#observedAddress}) because the
-     * activation a folded entry starts is an activation OF the occurrence it
-     * folded into, and the plan names that occurrence -- the recording folded
-     * at the same entry, by the same rule, in the same function.</p>
+     * <p>F1 -- A FOLDED ENTRY IS NOT AN ENTRY OF AN OCCURRENCE, it is a
+     * method call inside the one already running, so neither pass records an
+     * activation for it: the recording states no occurrence address on its
+     * trace row ({@code CausynthTraceRecorder#enterMethod}) and the replay
+     * starts no ActiveRegion at it ({@code
+     * ConcolicRegionRuntime#enterRegionFrame}).  What remains is the marker
+     * this class pushed, so the two index stacks balance and the fold's own
+     * exit closes nothing ({@link #fold}).</p>
+     *
+     * <p>Asked at the entry, where the marker is innermost -- both hooks sit
+     * at one Java entry and the region entry hook runs first.  It stays true
+     * for everything executed below that entry, which is the same statement:
+     * no activation is started while the innermost entry on this thread is a
+     * fold, so one occurrence has one activation.</p>
      */
-    public static OccurrenceAddress foldedOccurrence() {
+    public static boolean foldedEntry() {
         State state = state();
         Region innermost = state.region();
-        if (innermost == null || innermost.occurrence != null) return null;
-        Region running = state.activeRegion();
-        return running == null ? null : running.occurrence;
+        return innermost != null && innermost.occurrence == null
+                && state.activeRegion() != null;
     }
 
     /**

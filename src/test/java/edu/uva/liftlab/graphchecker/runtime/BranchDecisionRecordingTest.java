@@ -17,6 +17,7 @@ import java.util.Deque;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 /**
  * Characterization of the branch-observation machinery a region runs for one
@@ -156,6 +157,12 @@ public class BranchDecisionRecordingTest {
      * is counted there: counted per activation, both would start at 1 and
      * two rows would collide at (occurrence, site, ordinal) -- the pair an
      * obligation's flip is addressed by.</p>
+     *
+     * <p>F1 now stops the second activation from being STARTED at a fold at
+     * all, so the two here are built by hand.  The rule they hold is the one
+     * that survives it: the count belongs to the occurrence, not to whatever
+     * activation happens to be innermost, and a folded site's rows are the
+     * enclosing occurrence's.</p>
      */
     @Test
     public void aFoldedSitesRowsAndOrdinalsAreTheEnclosingOccurrences()
@@ -224,6 +231,97 @@ public class BranchDecisionRecordingTest {
         // the occurrence enclosing the call is the thread's again.
         popRootInvocationFrame(frame);
         assertEquals(enclosing, ConcolicRegionRuntime.activeRegion());
+    }
+
+    /**
+     * F1: a folded entry starts no activation.
+     *
+     * <p>The entry hook at one Java entry runs before the plan row's hook,
+     * so by the time admission is asked the fold is already standing: this
+     * call is a method call INSIDE the occurrence already running, not the
+     * entry of one.  An activation here would be a SECOND activation of that
+     * occurrence -- two ActivationRows for one address, two branch-ordinal
+     * counters to reconcile, and a candidate consumed for an occurrence
+     * nothing addressed.  The control is the same call with no fold
+     * standing, which does reach admission and gets as far as the VM this
+     * unit test has none of.</p>
+     */
+    @Test
+    public void aFoldedEntryStartsNoActivation() throws Exception {
+        Identity.resetForTests();
+        Lineage.resetForTests();
+        RuntimeTraceContext.resetForTests();
+        RowRuntime.resetForTests();
+        installPlan();
+        broker().set(null, null);
+        try {
+            Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
+            Identity.enterFrame("<a.B: void outer()>#u1");
+            assertEquals("the enclosing entry opens the occurrence",
+                    "REGION.1", Identity.occurrence(NODE, "REGION.1", true)
+                            .regionId());
+
+            Identity.enterFrame(METHOD + "#u0");
+            Identity.occurrence(NODE, "REGION.2", true);
+            assertTrue(Identity.foldedEntry());
+            int live = ConcolicRegionRuntime.ACTIVE.size();
+            assertEquals("no token, so no activation",
+                    0L, ConcolicRegionRuntime.enterRegionFrame("sel", METHOD,
+                            null, new Object[0]));
+            assertEquals("and nothing was started", live,
+                    ConcolicRegionRuntime.ACTIVE.size());
+            assertNull("nor is one running on this thread",
+                    ConcolicRegionRuntime.activeRegion());
+            assertFalse("admission was never asked: the fold never reached"
+                            + " the engine this region would start in",
+                    brokerLoaded());
+            ConcolicRegionRuntime.exitRegionFrame("sel", METHOD);
+
+            // The control: no fold, so the same call does reach admission.
+            Identity.resetForTests();
+            Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
+            Identity.enterFrame(METHOD + "#u0");
+            Identity.occurrence(NODE, "REGION.2", true);
+            assertFalse(Identity.foldedEntry());
+            try {
+                ConcolicRegionRuntime.enterRegionFrame("sel", METHOD, null,
+                        new Object[0]);
+            } catch (Throwable withoutAVm) {
+                // A unit test has no custom VM to start a region in; what
+                // matters is that admission was reached at all.
+            }
+            assertTrue("the control did reach admission, and admission is"
+                            + " what asks the engine for a region",
+                    brokerLoaded());
+        } finally {
+            ConcolicRegionRuntime.exitRegionFrame("sel", METHOD);
+            installedPlan(null);
+            Identity.resetForTests();
+            RowRuntime.resetForTests();
+        }
+    }
+
+    /** Whether anything on this run has asked for the custom VM yet. */
+    private static boolean brokerLoaded() throws Exception {
+        return broker().get(null) != null;
+    }
+
+    private static Field broker() throws Exception {
+        Field field = ConcolicVmBroker.class.getDeclaredField("engineApi");
+        field.setAccessible(true);
+        return field;
+    }
+
+    /** Installs one plan for {@link ConcolicRegionRuntime} to admit from. */
+    private void installPlan() throws Exception {
+        installedPlan(new ConcolicTaskPlan(null, Collections.singletonList(
+                new ConcolicTaskPlan.RuntimeTask(task()))));
+    }
+
+    private void installedPlan(ConcolicTaskPlan plan) throws Exception {
+        Field field = ConcolicTaskPlan.class.getDeclaredField("plan");
+        field.setAccessible(true);
+        field.set(null, plan);
     }
 
     private static final String NODE = "hdfs-11741/dn1#epoch0";
