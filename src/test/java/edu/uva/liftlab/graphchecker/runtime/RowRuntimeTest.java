@@ -814,11 +814,22 @@ public class RowRuntimeTest {
                                     JsonObject row, String symbol,
                                     java.util.Map<String, String[]> installed)
             throws Exception {
+        placeholder(occurrence, row, symbol, installed, false);
+    }
+
+    /** The same mint, as one that also publishes a RootMintRow. */
+    private static void placeholder(OccurrenceAddress occurrence,
+                                    JsonObject row, String symbol,
+                                    java.util.Map<String, String[]> installed,
+                                    boolean declaredRoot)
+            throws Exception {
         java.lang.reflect.Method publish = RowPlaceholderMint.class
                 .getDeclaredMethod("placeholder", OccurrenceAddress.class,
-                        JsonObject.class, String.class, java.util.Map.class);
+                        JsonObject.class, String.class, java.util.Map.class,
+                        boolean.class);
         publish.setAccessible(true);
-        publish.invoke(null, occurrence, row, symbol, installed);
+        publish.invoke(null, occurrence, row, symbol, installed,
+                Boolean.valueOf(declaredRoot));
     }
 
     /** The same declaration, met where the field was already symbolic. */
