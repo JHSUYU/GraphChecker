@@ -309,20 +309,37 @@ public final class Corpus implements Arms.Rows {
      * DataNode's own old map BEFORE the put loop, so its own decisions are
      * letter for letter the seed's whether or not nn0 skewed its clock;
      * what nn0's flip changed is the {@code addKeys} occurrence beside it
-     * (four attaches instead of five, other arrival values), and addKeys
-     * writes the very map the scan reads.  Asked of the scan alone the
-     * session looks untouched, the arm keys world-less, and the session
-     * that flipped dn1 alone settles it for every world -- which is exactly
-     * why the witness's second flip was never proposed.</p>
+     * (four attaches instead of five), and addKeys writes the very map the
+     * scan reads.  Asked of the scan alone the session looks untouched, the
+     * arm keys world-less, and the session that flipped dn1 alone settles
+     * it for every world -- which is exactly why the witness's second flip
+     * was never proposed.</p>
      *
-     * <p>Four differences, and the SEED is what each is measured against:
-     * the sequence of decisions {@code siteId#ordinal=outcome}, the
-     * multiset of attach {@code arrival} values by endpoint site, the
-     * multiset of read {@code concreteValue}s by endpoint site, and the
-     * seed having no activation of the occurrence at all.  The seed's own
-     * sessionId is never affected -- its world is the empty one -- and a
-     * corpus that states no single recording answers "affected", which
-     * costs a re-proposal and never a lost arm.</p>
+     * <p><b>CONTROL and STRUCTURE only, never VALUES.</b> Six differences,
+     * each measured against the SEED: the seed has no activation of the
+     * occurrence at all; the ordered decision sequence
+     * {@code siteId#ordinal=outcome} differs; the per-site COUNT of
+     * attaches differs; the set of paired producer OCCURRENCES of its
+     * attaches differs (a new or different producer is new topology); the
+     * per-site count of reads differs; the per-site count of writes
+     * differs.</p>
+     *
+     * <p>A delivered VALUE is deliberately not one of them.  Values are
+     * carried symbolically by the families -- that is what a handoff's arm
+     * is for -- and a clock-valued handoff is a different value in every
+     * run by nature, for reasons no flip caused.  Comparing them made
+     * hdfs-11741 campaign #3's wave 2 read 196 of 208 (task, session) pairs
+     * as affected, 91 of them on an attach arrival alone: at dn1's expiry
+     * scan the ONLY difference the four balancer-only replays had from the
+     * recording, anywhere in the group, was
+     * {@code XCH.....resp.block-key-expiry-date}, a wall clock that moves
+     * about 100 seconds between runs.  Every replay then counted as its own
+     * world and the wave asked 490 obligations where the corpus owes a
+     * handful.</p>
+     *
+     * <p>The seed's own sessionId is never affected -- its world is the
+     * empty one -- and a corpus that states no single recording answers
+     * "affected", which costs a re-proposal and never a lost arm.</p>
      */
     public boolean affected(String sessionId, OccurrenceAddress occurrence,
                             List<OccurrenceAddress> factor) {
@@ -348,12 +365,20 @@ public final class Corpus implements Arms.Rows {
         if (!shape(sessionId, occurrence).equals(shape(seed, occurrence))) {
             return true;
         }
-        if (!arrivals(sessionId, occurrence)
-                .equals(arrivals(seed, occurrence))) {
+        if (!attachSites(sessionId, occurrence)
+                .equals(attachSites(seed, occurrence))) {
             return true;
         }
-        return !observed(sessionId, occurrence)
-                .equals(observed(seed, occurrence));
+        if (!producers(sessionId, occurrence)
+                .equals(producers(seed, occurrence))) {
+            return true;
+        }
+        if (!readSites(sessionId, occurrence)
+                .equals(readSites(seed, occurrence))) {
+            return true;
+        }
+        return !writeSites(sessionId, occurrence)
+                .equals(writeSites(seed, occurrence));
     }
 
     /** One session's local path at one occurrence, in recorded order. */
@@ -367,26 +392,51 @@ public final class Corpus implements Arms.Rows {
         return taken;
     }
 
-    /** What one session's attaches delivered here, as a sorted multiset. */
-    private List<String> arrivals(String sessionId,
-                                  OccurrenceAddress occurrence) {
-        List<String> delivered = new ArrayList<String>();
+    /** HOW MANY handoffs arrived here, per site: the count, not the value. */
+    private List<String> attachSites(String sessionId,
+                                     OccurrenceAddress occurrence) {
+        List<String> sites = new ArrayList<String>();
         for (AttachRow attach : attachesOn(sessionId, occurrence)) {
-            delivered.add(attach.endpoint().site() + "=" + attach.arrival());
+            sites.add(attach.endpoint().site());
         }
-        Collections.sort(delivered);
-        return delivered;
+        Collections.sort(sites);
+        return sites;
     }
 
-    /** What one session's reads observed here, as a sorted multiset. */
-    private List<String> observed(String sessionId,
+    /** WHICH occurrences delivered them: a new producer is new topology. */
+    private Set<String> producers(String sessionId,
                                   OccurrenceAddress occurrence) {
-        List<String> values = new ArrayList<String>();
-        for (ReadRow read : readsOn(sessionId, occurrence)) {
-            values.add(read.endpoint().site() + "=" + read.concreteValue());
+        Set<String> from = new LinkedHashSet<String>();
+        for (AttachRow attach : attachesOn(sessionId, occurrence)) {
+            Endpoint producer = attach.producer();
+            if (producer == null) continue;
+            OccurrenceAddress at = producer.occurrence();
+            from.add(at == null ? producer.id() : at.id());
         }
-        Collections.sort(values);
-        return values;
+        return from;
+    }
+
+    /** HOW MANY reads it made, per site: the count, not the value. */
+    private List<String> readSites(String sessionId,
+                                   OccurrenceAddress occurrence) {
+        List<String> sites = new ArrayList<String>();
+        for (ReadRow read : readsOn(sessionId, occurrence)) {
+            sites.add(read.endpoint().site());
+        }
+        Collections.sort(sites);
+        return sites;
+    }
+
+    /** HOW MANY writes it made, per site: the count, not the value. */
+    private List<String> writeSites(String sessionId,
+                                    OccurrenceAddress occurrence) {
+        List<String> sites = new ArrayList<String>();
+        for (WriteRow write : writesOn(occurrence)) {
+            if (!write.sessionId().equals(sessionId)) continue;
+            sites.add(write.endpoint().site());
+        }
+        Collections.sort(sites);
+        return sites;
     }
 
     /**
