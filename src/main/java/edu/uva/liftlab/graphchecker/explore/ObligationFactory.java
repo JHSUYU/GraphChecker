@@ -18,6 +18,7 @@ import edu.uva.liftlab.graphchecker.contract.Verdict;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -77,7 +78,8 @@ public final class ObligationFactory {
         /**
          * The world this arm is owed in: {@code ""} unless the session's
          * world changed what the region received
-         * ({@link Corpus#affected}).
+         * ({@link Corpus#affected}), and then the flips of it that REACH
+         * this task ({@link #worldKey}).
          */
         public final String worldDigest;
 
@@ -87,9 +89,7 @@ public final class ObligationFactory {
             this.path = path;
             this.index = index;
             this.decision = path.decisions.get(index);
-            this.worldDigest = corpus.affected(path.sessionId, task.focused(),
-                    task.factor())
-                    ? worldDigest(corpus.world(path.sessionId)) : "";
+            this.worldDigest = worldKey(corpus, task, path.sessionId);
             this.obligationId = obligationId(task.taskId(),
                     decision.siteId(), decision.ordinal(),
                     !decision.outcome(),
@@ -239,22 +239,56 @@ public final class ObligationFactory {
     }
 
     /**
-     * One WORLD, as an obligation's identity spells it.
+     * One WHOLE WORLD, digested: every flip the session was held to.
      *
-     * <p>The flips the session was held to -- its own and every one it
-     * inherited -- each written {@code
-     * focusedOccurrenceId|siteId|ordinal|outcome} and sorted, so the same
-     * set of flips digests the same however a focus row happened to order
-     * them.  The SEED's world is empty and digests to {@code ""}, which is
-     * also what an arm no world reached is keyed by.</p>
+     * <p>The flips -- its own and every one it inherited -- each written
+     * {@code focusedOccurrenceId|siteId|ordinal|outcome} and sorted, so
+     * the same set of flips digests the same however a focus row happened
+     * to order them.  The SEED's world is empty and digests to {@code ""},
+     * which is also what an arm no world reached is keyed by.</p>
+     *
+     * <p>This is the SPELLING of a world and not an arm's key: an arm is
+     * keyed by the part of the world that reaches it
+     * ({@link #worldDigest(Corpus.World, Set)}, {@link #worldKey}).</p>
      */
     public static String worldDigest(Corpus.World world) {
+        return worldDigest(world, null);
+    }
+
+    /**
+     * ONE WORLD AS ONE ARM SEES IT: the flips of it that REACH the arm.
+     *
+     * <p>A flip belongs in an arm's key when the occurrence it was focused
+     * at is the arm's own occurrence, or is upstream of it in the corpus's
+     * own causal graph ({@link Corpus#upstreamOf}: a matched communication
+     * transfer, a candidate shared-state dependency, followed backwards).
+     * A flip anywhere else is not part of this task's world and keying by
+     * it asks one question once per combination of facts that have nothing
+     * to do with it: on the hdfs-11741 c6 corpus (2026-09-20) that was
+     * wave 2 asking dn1's {@code removeExpiredKeys#u15 -> false} 132
+     * times, because the digest was over EVERY flip of the world -- a
+     * balancer rotation among them, which reaches neither dn1's scan nor
+     * the {@code addKeys} beside it, the Balancer's export resting on its
+     * own key map.</p>
+     *
+     * <p>{@code reaching} is null for the unprojected spelling, and a
+     * world whose flips all fall outside it digests to {@code ""} -- the
+     * key of an arm no world reached, which is what such a world is for
+     * this arm.</p>
+     */
+    public static String worldDigest(Corpus.World world,
+                                     Set<String> reaching) {
         if (world == null || world.flips.isEmpty()) return "";
         List<String> held = new ArrayList<String>();
         for (Corpus.Flip flip : world.flips) {
+            if (reaching != null
+                    && !reaching.contains(flip.focusedOccurrenceId)) {
+                continue;
+            }
             held.add(flip.focusedOccurrenceId + "|" + flip.siteId + "|"
                     + flip.ordinal + "|" + flip.outcome);
         }
+        if (held.isEmpty()) return "";
         Collections.sort(held);
         StringBuilder text = new StringBuilder();
         for (String one : held) {
@@ -262,6 +296,33 @@ public final class ObligationFactory {
             text.append(one);
         }
         return ArtifactIO.digest(text.toString(), 16);
+    }
+
+    /**
+     * THE WORLD PART OF ONE ARM'S KEY: the gate, then the projection.
+     *
+     * <p>The gate is {@link Corpus#affected} and is unchanged -- a world
+     * that changed nothing this region received is not a world this region
+     * is asked about again, and it keys the arm by {@code ""} -- and what
+     * a gated world digests to is its flips ON THIS TASK'S UPSTREAM SET
+     * ({@link #worldDigest(Corpus.World, Set)}).  The two questions are
+     * different and both are needed: {@code affected} says WHETHER this
+     * world changed the region's own rows, the projection says WHICH flips
+     * of it could have.</p>
+     *
+     * <p>The ONE answer for both readers of it: the candidate a wave cuts
+     * ({@link Candidate}) and the ledger of what is owed
+     * ({@link Frontier}), which have to agree or an arm is proposed under
+     * a key the recording settled under another.</p>
+     */
+    public static String worldKey(Corpus corpus, Task task,
+                                  String sessionId) {
+        if (corpus == null || task == null) return "";
+        if (!corpus.affected(sessionId, task.focused(), task.factor())) {
+            return "";
+        }
+        return worldDigest(corpus.world(sessionId),
+                corpus.upstreamOf(task.focused(), task.factor()));
     }
 
     /**
@@ -299,6 +360,15 @@ public final class ObligationFactory {
      * Keyed by the world without the {@code affected} test it would be
      * proposed once per world instead, which is every session of the epoch
      * asking the same fact again.</p>
+     *
+     * <p>AND THE WORLD IS THE PART OF IT THAT REACHES THE TASK
+     * ({@link #worldKey}).  The gate says whether the world mattered here;
+     * it cannot say which of its flips did, and digesting all of them keys
+     * one arm by every combination of facts that never reached it.  On the
+     * c6 corpus (2026-09-20) wave 2 asked 774 obligations for 44 distinct
+     * (task, arm) pairs, dn1's {@code removeExpiredKeys#u15 -> false} 132
+     * times, once per world of a Balancer rotation the DataNode's scan
+     * cannot observe.</p>
      */
     public static String obligationId(String taskId, String siteId,
                                       int ordinal, boolean flippedOutcome,
@@ -354,7 +424,8 @@ public final class ObligationFactory {
         List<Candidate> candidates = new ArrayList<Candidate>();
         Set<String> offered = new LinkedHashSet<String>();
         int paths = 0;
-        for (Corpus.RecordedPath path : corpus.pathsOf(task.focused())) {
+        for (Corpus.RecordedPath path : smallestWorldFirst(corpus,
+                corpus.pathsOf(task.focused()))) {
             if (!cuttable(corpus, path.sessionId)) continue;
             if (paths++ >= bounds.maxPathsPerTask) break;
             int flips = 0;
@@ -373,8 +444,11 @@ public final class ObligationFactory {
                 // A second path of the same occurrence offering the same arm
                 // is the same obligation, not another one: one witness of an
                 // owed fact is enough, and it costs neither a gap row nor a
-                // flip of the budget.  The first path in corpus order is the
-                // prefix the query is built over.
+                // flip of the budget.  The first path of the SMALLEST world
+                // that offers it is the prefix the query is built over
+                // ({@link #smallestWorldFirst}): the replay inherits the
+                // world of the path it is cut from, and a flip that is not
+                // part of this arm's key is a constraint it does not need.
                 if (!offered.add(candidate.obligationId)) continue;
                 String reason = owed.settled(candidate.obligationId);
                 if (!reason.isEmpty()) {
@@ -408,6 +482,35 @@ public final class ObligationFactory {
             if (result.verdict() != Verdict.ADMITTED) return false;
         }
         return true;
+    }
+
+    /**
+     * The paths of one occurrence, SMALLEST WORLD FIRST.
+     *
+     * <p>Two paths that offer the same arm offer the same obligation, and
+     * the first one in this order is the prefix the query is built over.
+     * A candidate INHERITS the world of the path it is cut from -- every
+     * flip of it, whether or not that flip is part of the arm's key
+     * ({@link #worldKey}) -- and the replay is held to all of them, so the
+     * representative is the path whose world holds the fewest: the same
+     * question, asked with the fewest constraints on the run that answers
+     * it.  Corpus order decides between worlds of one size, as it did
+     * before, and the seed's world is empty and therefore first.</p>
+     */
+    private static List<Corpus.RecordedPath> smallestWorldFirst(
+            final Corpus corpus, List<Corpus.RecordedPath> paths) {
+        List<Corpus.RecordedPath> ordered =
+                new ArrayList<Corpus.RecordedPath>(paths);
+        // Stable: paths of equally sized worlds keep the corpus's own order.
+        Collections.sort(ordered, new Comparator<Corpus.RecordedPath>() {
+            @Override
+            public int compare(Corpus.RecordedPath left,
+                               Corpus.RecordedPath right) {
+                return corpus.world(left.sessionId).flips.size()
+                        - corpus.world(right.sessionId).flips.size();
+            }
+        });
+        return ordered;
     }
 
     /**

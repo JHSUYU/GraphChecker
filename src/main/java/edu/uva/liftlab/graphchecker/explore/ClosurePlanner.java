@@ -493,22 +493,19 @@ public final class ClosurePlanner {
      * <p>One rule and one implementation: a read is a session, a location
      * key, the version it observed and the occurrence that made it,
      * whether the runtime published it as a {@link ReadRow} or only inside
-     * the expression of the value it fed (E2).</p>
+     * the expression of the value it fed (E2).  It is the CORPUS's
+     * ({@link Corpus#eligibleWrites}), because the same relation is the
+     * causal graph's shared-state in-edge ({@link Corpus#upstreamOf}) and
+     * two spellings of it would be two answers to "which writer could this
+     * read have observed".</p>
      */
     private static List<WriteRow> eligibleWrites(Corpus corpus,
                                                  String sessionId,
                                                  String locationKey,
                                                  long observedVersion,
                                                  OccurrenceAddress reader) {
-        List<WriteRow> eligible = new ArrayList<WriteRow>();
-        for (WriteRow write : corpus.writesOf(sessionId, locationKey)) {
-            if (write.version() == observedVersion
-                    || corpus.arms().concurrent(reader,
-                            write.endpoint().occurrence(), sessionId)) {
-                eligible.add(write);
-            }
-        }
-        return eligible;
+        return corpus.eligibleWrites(sessionId, locationKey, observedVersion,
+                reader);
     }
 
     /** A delivery this anchor's paths never read: recorded, not planned. */

@@ -48,7 +48,11 @@ import java.util.Set;
  *       world is asked only where it AFFECTED the region
  *       ({@link Corpus#affected}: the occurrence's own rows or those of any
  *       state-connected member of its factor), or every session of the epoch
- *       would re-ask every arm it holds.</li>
+ *       would re-ask every arm it holds -- and what is then asked is the
+ *       part of that world which REACHES the task
+ *       ({@link ObligationFactory#worldKey}, over
+ *       {@link Corpus#upstreamOf}), or every combination of flips
+ *       elsewhere in the topology would re-ask it just as often.</li>
  *   <li><b>a wave answered it.</b> ADMITTED, UNSAT or NOT_ADMITTED in
  *       {@code obligation_results.jsonl}.  Every verdict closes its own arm:
  *       an ADMITTED replay's session is in the corpus by now, and
@@ -130,11 +134,12 @@ public final class Frontier {
                 // the world-less arm -- the one every other such session
                 // offers -- and a recording in a session whose world DID
                 // change what the region received settles only its own
-                // world's arm.
-                String world = corpus.affected(path.sessionId, task.focused(),
-                        task.factor())
-                        ? ObligationFactory.worldDigest(
-                                corpus.world(path.sessionId)) : "";
+                // world's arm, that world being the flips of it that REACH
+                // this task (ObligationFactory.worldKey).  The candidate a
+                // wave cuts is keyed by the same call, because a ledger and
+                // a proposal that key one arm differently never meet.
+                String world = ObligationFactory.worldKey(corpus, task,
+                        path.sessionId);
                 for (int index = 0; index < path.decisions.size(); index++) {
                     DecisionRow decision = path.decisions.get(index);
                     // UNDER THE PREFIX IT WAS TAKEN ON: the same arm on
