@@ -2504,6 +2504,106 @@ public class ExploreTest {
                 skew + 1000L <= 100000L - ClockMargin.DEFAULT_MARGIN_MS);
     }
 
+    // ---- (6b) a handoff nobody can answer is pinned -------------------
+
+    /**
+     * A handoff that is not a CONTROL is held to what its own path received.
+     *
+     * <p>An obligation's answers are applied at the attaches of the occurrence
+     * it flips and nowhere else, so a family over a delivery somewhere else
+     * is freedom the replay does not have: the model picks one of the
+     * recorded arrivals, nothing plants it, and the replay receives whatever
+     * its own run produces.  hdfs-11741 campaign #4 has three of those --
+     * the block-key expiry date of a balance-block delivery, free over an OR
+     * of 20 arrivals, answered with the minimum and 105291 to 203751ms below
+     * what the replay then got.  The handoff of the occurrence this
+     * obligation DOES flip is still answered out of its family (case 2).</p>
+     */
+    @Test
+    public void aHandoffThisObligationCannotAnswerIsPinnedToItsArrival()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Path iteration = tree.newFolder("pinned-handoff").toPath();
+        Session seed = new Session(iteration, "s-seed");
+        seed.activation(TARGET, false);
+        seed.activation(WRITER, false);
+        seed.activation(PRODUCER, false);
+        seed.root(PRODUCER, "CASE.SERIAL", "M_SERIAL", RootKind.INTEGRAL,
+                "119992", null, null, true);
+        seed.constant("e.119992", "119992");
+        seed.symbolic("e.stored", "M_HOFF_KEY");
+        seed.export(ROTATED, "e.119992", 11L, "119992");
+        // The delivery is received by addKeys -- a member of the target's
+        // factor, and NOT the occurrence the flip is about.
+        seed.attach(DELIVERED, "M_HOFF_KEY", "119992", ROTATED);
+        seed.write(STORED, ALL_KEYS, 5L, "e.stored");
+        seed.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
+        seed.decision(TARGET, "Lookup#u8", 1, false, "(= M_READ_KEY 119995)");
+        seed.flush();
+        // A second recording of the same interaction delivered 119995.
+        Session rotated = new Session(iteration, "s-rot");
+        rotated.activation(PRODUCER, true);
+        rotated.activation(WRITER, false);
+        rotated.activation(TARGET, false);
+        rotated.root(PRODUCER, "CASE.SERIAL", "M_SERIAL", RootKind.INTEGRAL,
+                "119995", null, null, false);
+        rotated.decision(PRODUCER, "Rotate#u3", 1, true, "(> M_SERIAL 0)");
+        rotated.constant("e.119995", "119995");
+        rotated.export(ROTATED, "e.119995", 12L, "119995");
+        rotated.attach(DELIVERED, "M_HOFF_KEY", "119995", ROTATED);
+        rotated.flush();
+        scopeMap(iteration,
+                targetSite("REGION.target", "Throw#u30", "Lookup#u8"),
+                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
+                        "BlockTokenSecretManager#u12",
+                        "BlockTokenSecretManager#addKeys",
+                        "<example.Keys: int value>",
+                        "<example.Manager: example.Keys allKeys>", ""),
+                scopeSite(StaticScopeMap.EXPORT_SITE, "REGION.rotate",
+                        "PBHelper#convert#9", "PBHelper#convert", "", "",
+                        "XCH.resp.block-key-id", "Rotate#u3"));
+        Path out = tree.newFolder("pinned-handoff-out").toPath();
+        Path wave = out.resolve("obligations-0000");
+        plan(iteration, TARGET_SELECTOR, null,
+                out.resolve("results.jsonl"), wave, 0);
+        Obligation lookup = named(obligations(wave), "Lookup#u8");
+        assertNotNull(lookup);
+        Worker worker = solve(iteration, wave, lookup, out, "w0");
+        String query = query(worker);
+        List<String> aboutTheDelivery = new ArrayList<String>();
+        for (String line : query.split("\n")) {
+            if (line.startsWith("(assert") && line.contains("vH_")) {
+                aboutTheDelivery.add(line);
+            }
+        }
+        assertEquals("one assertion binds the delivery, and it is the pin "
+                        + "to the arrival this path's own attach row states: "
+                        + aboutTheDelivery, 1,
+                aboutTheDelivery.size() - countOf(aboutTheDelivery,
+                        "wchoice_"));
+        boolean pinned = false;
+        for (String line : aboutTheDelivery) {
+            if (line.contains("wchoice_")) continue;
+            pinned = line.endsWith(" 119992))") || line.endsWith(" 119992)");
+            assertFalse("no other recorded arrival of that slot binds it: "
+                    + line, line.contains("119995"));
+        }
+        assertTrue("and the value it is pinned to is the one that arrived: "
+                + aboutTheDelivery, pinned);
+        assertEquals("so a flip that needs another delivery is refused, "
+                        + "rather than answered with a value nothing would "
+                        + "plant", Verdict.UNSAT, worker.verdict);
+    }
+
+    /** How many of these lines mention this name. */
+    private static int countOf(List<String> lines, String name) {
+        int found = 0;
+        for (String line : lines) {
+            if (line.contains(name)) found++;
+        }
+        return found;
+    }
+
     // ---- (7) a clock moves forward only ------------------------------
 
     /**

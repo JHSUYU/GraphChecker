@@ -46,14 +46,16 @@ import java.util.Set;
  *       execution it belongs to READ: {@code >= that reading} AND {@code <=
  *       Long.MAX_VALUE}, because a run that lasted longer is a run and a
  *       clock turned back is not;</li>
- *   <li>a HANDOFF {@code v_H(I)} is bound by its family: {@code OR_q (pi_q AND
- *       guard_q AND v_H = e_q)} over the producer paths whose export endpoint
- *       is I's producer.  The walk closes over the handoffs those arms name in
- *       turn -- a producer forwards what it was handed -- to a fixed point.  A
- *       control with no arm stays free and is named {@code unproducible}; a
- *       NESTED handoff with no arm is pinned to the arrival the recording
- *       states, which is what the composition does with an unproduced
- *       delivery;</li>
+ *   <li>a CONTROL handoff -- one attached at the occurrence this obligation
+ *       flips, which is where a replay can be answered -- is bound by its
+ *       family: {@code OR_q (pi_q AND guard_q AND v_H = e_q)} over the
+ *       producer paths whose export endpoint is I's producer.  The walk
+ *       closes over the handoffs those arms name in turn -- a producer
+ *       forwards what it was handed -- to a fixed point.  A control with no
+ *       arm stays free and is named {@code unproducible}.  EVERY OTHER
+ *       HANDOFF IS PINNED to the arrival its own path recorded: nothing
+ *       plants a value at a delivery the obligation cannot answer at, so a
+ *       family there is freedom the replay does not have;</li>
  *   <li>a STATE read is joined to the write version it observed, else pinned
  *       to the value the recording states, else the obligation is refused
  *       naming it ({@code UNSTATED_VALUE}).</li>
@@ -803,6 +805,27 @@ final class FlipQuery {
                 if (control) registerControl(attach, variable, false);
                 return;
             }
+            // A HANDOFF NOBODY CAN ANSWER IS PINNED TO WHAT ARRIVED.  A
+            // Control is the one kind of handoff a replay can be held to:
+            // the obligation's answers are applied at the focused
+            // occurrence's attaches and nowhere else (the loop over {@code
+            // built.controls} in {@link ObligationFactory#solve}).  Every
+            // other handoff of the query is a delivery the replay will
+            // receive as its own run produces it, so a family that leaves
+            // it free lets the model pick ANY recorded arrival of that slot
+            // and nothing plants the one it picked.  hdfs-11741 campaign #4
+            // has three of those: the block-key expiry date of a
+            // balance-block delivery, free over an OR of 20 recorded
+            // arrivals, and z3 answered with the minimum -- 105291 to
+            // 203751ms below what the replay then received, which is the
+            // whole margin of the flip it was meant to satisfy.  Pinned
+            // here to the arrival THIS path recorded, by the same rule an
+            // arm-less nested handoff has always been pinned by.
+            if (!control) {
+                pinArrival(attach, variable, "a handoff of an occurrence "
+                        + "this obligation cannot answer at");
+                return;
+            }
             List<String> disjuncts = new ArrayList<String>();
             Set<String> seen = new LinkedHashSet<String>();
             Map<String, List<String>> bySlot =
@@ -831,25 +854,39 @@ final class FlipQuery {
                     disjuncts.addAll(family.getValue());
                 }
             }
+            // Only a control reaches here, so the family it is bound by is
+            // one this obligation can be answered out of.
             if (!disjuncts.isEmpty()) {
-                if (control) registerControl(attach, variable, false);
+                registerControl(attach, variable, false);
                 return;
             }
-            if (control) {
-                registerControl(attach, variable, true);
-                gaps.add(GapRow.of(attach.sessionId(),
-                        GapKind.UNPRODUCIBLE_ANSWER, GapClass.DIAGNOSTIC,
-                        attach.endpoint().toString(),
-                        "no producer arm in this corpus for this slot"));
-                return;
-            }
+            registerControl(attach, variable, true);
+            gaps.add(GapRow.of(attach.sessionId(),
+                    GapKind.UNPRODUCIBLE_ANSWER, GapClass.DIAGNOSTIC,
+                    attach.endpoint().toString(),
+                    "no producer arm in this corpus for this slot"));
+        }
+
+        /**
+         * One handoff held to the value the recording states arrived.
+         *
+         * <p>The one pin, for the two handoffs that get it: a nested one no
+         * arm of this corpus produces, and one attached where this
+         * obligation cannot answer.  An arrival the query cannot spell as a
+         * literal of the variable's sort pins nothing and is named -- the
+         * symbol then stays unbound, and the closure check refuses the
+         * obligation by its name rather than leaving it free.</p>
+         */
+        private void pinArrival(AttachRow attach, String variable,
+                                String why) {
             String arrival = SmtText.literal(attach.arrival(),
                     sorts.get(variable));
             if (arrival.isEmpty()) {
                 gaps.add(GapRow.of(attach.sessionId(),
                         GapKind.UNPRODUCIBLE_ANSWER, GapClass.DIAGNOSTIC,
                         attach.endpoint().toString(),
-                        "nested handoff with neither an arm nor an arrival"));
+                        why + ", and the recording states no arrival to pin "
+                                + "it to"));
                 return;
             }
             assertions.add("(= " + variable + " " + arrival + ")");
