@@ -2275,6 +2275,184 @@ replay exceeded replay_timeout_s=${replay_timeout_s}"
 # Region-path obligations are coordinated in closure-wide waves below.
 
 
+# ---------------------------------------------------------------------------
+# THE WAVE'S WORK POOL
+#
+# Within a wave the obligations are independent: each runs its own solver,
+# then its own replay JVM, writes into its own ${wave_dir}/${obligationId}/
+# worker directory, and publishes a session under an id it mints itself.
+# Nothing is merged until COMPOSE, so the only coordination a wave needs is
+# "who takes the next one" and "has everybody finished".
+#
+# It used to be a BATCH BARRIER: fill an array of ${concolic_worker_count}
+# background pids, wait for ALL of them, then start the next array.  One slow
+# obligation idled every other slot for its whole duration -- on 11741
+# campaign #5b's wave 1 the batch of eight was paced by its slowest member
+# every time, so a wave of 114 obligations cost fourteen slowest-of-eight
+# replays rather than 114/8 average ones.
+#
+# A POOL instead: one long-lived runner per slot, each pulling the next
+# unclaimed obligation the moment its previous one returns.  A slot that
+# frees takes the next obligation immediately; no slot waits on another.
+#
+# The claim is a `mkdir` on a per-index directory, which is the one atomic
+# "exactly one of us gets this" primitive available to a set of plain
+# background shells with no shared memory (and the one that also holds over
+# NFS, which matters when the slots are on five machines).  Each slot's
+# cursor only ever moves forward, so the whole wave costs at most
+# slots x obligations mkdir attempts and no slot ever rescans behind itself.
+# ---------------------------------------------------------------------------
+
+# One slot's cursor into the wave's job list, and the index it last claimed.
+# Every slot runs in its own background subshell, so these are private to it
+# even though they are spelled as globals -- the same arrangement
+# campaign_replay_timed_out already uses to answer its one caller.
+campaign_claim_cursor=0
+campaign_claimed_index=""
+
+# Claims the next unclaimed obligation index for this slot, or returns 1 when
+# the wave has none left.  The claim is the directory: `mkdir` fails with
+# EEXIST for every slot but the one that created it, and that slot owns the
+# index.
+campaign_claim_next_obligation() {
+  local queue_dir=$1 count=$2
+  local index
+  campaign_claimed_index=""
+  while [[ "${campaign_claim_cursor}" -lt "${count}" ]]; do
+    index=${campaign_claim_cursor}
+    campaign_claim_cursor=$((index + 1))
+    if mkdir "${queue_dir}/$(printf '%06d' "${index}")" 2>/dev/null; then
+      campaign_claimed_index=${index}
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Which host runs each slot, one per line.
+#
+# `campaign_worker_hosts` empty is exactly what this shell did before there
+# was a key: one host, ${concolic_worker_count} slots, every worker local and
+# no ssh anywhere.  A stated list gives ${concolic_worker_count} slots PER
+# HOST, so the pool is as wide as hosts x workers.
+#
+# The hosts are interleaved rather than blocked, so the wave's opening fill
+# -- which is every slot claiming at once -- lands round-robin across the
+# hosts instead of loading the first host to capacity before the second sees
+# any work.
+campaign_worker_slot_hosts() {
+  local slot
+  for ((slot = 0; slot < concolic_worker_count; slot++)); do
+    printf '%s\n' localhost
+  done
+}
+
+# This machine's own names, resolved once.  A host the operator spelled
+# `localhost`, or spelled as this machine's own hostname, runs in a plain
+# background subshell with no ssh in the picture at all.
+campaign_local_host_names=""
+
+campaign_host_is_local() {
+  local host=$1
+  if [[ -z "${campaign_local_host_names}" ]]; then
+    campaign_local_host_names=" localhost $(hostname 2>/dev/null) \
+$(hostname -s 2>/dev/null) "
+  fi
+  [[ -z "${host}" || "${campaign_local_host_names}" == *" ${host} "* ]]
+}
+
+# One obligation, on the host its slot belongs to.
+#
+# The local branch is character-for-character what campaign_explore's inner
+# loop was: a subshell under `set -euo pipefail`, its stdout and stderr in
+# the worker directory, so the worker sees exactly the environment and the
+# log files it saw before any of this existed.
+campaign_run_obligation_on_host() {
+  local host=$1 obligation_id=$2 obligations=$3 classes=$4 worker=$5
+  local sessions=$6 seed_plan=$7
+  if campaign_host_is_local "${host}"; then
+    (
+      set -euo pipefail
+      campaign_obligation_worker "${obligation_id}" "${obligations}" \
+        "${classes}" "${worker}" "${sessions}" "${seed_plan}"
+    ) >"${worker}/stdout.log" 2>"${worker}/stderr.log"
+  else
+    die "no worker host but this one exists yet: ${host}"
+  fi
+}
+
+# One slot: claim, run, claim again, until the wave is empty.
+#
+# A failed obligation does not stop the slot.  That is the batch barrier's
+# behaviour kept exactly: the remaining obligations of the wave still ran
+# after one of them failed, and the WAVE failed at the end.  The slot carries
+# the failure out in its own exit status, which campaign_wait_workers reads
+# the same way it read a batch's.
+campaign_wave_slot() {
+  local host=$1 queue_dir=$2 count=$3 jobs_file=$4 wave_dir=$5
+  local obligations=$6 classes=$7 sessions=$8 seed_plan=$9
+  local status=0 job worker_dir
+  campaign_claim_cursor=0
+  while campaign_claim_next_obligation "${queue_dir}" "${count}"; do
+    job=$(sed -n "$((campaign_claimed_index + 1))p" "${jobs_file}")
+    [[ -n "${job}" ]] || continue
+    worker_dir="${wave_dir}/${job}"
+    printf '%s\n' "${host}" >"${worker_dir}/host.txt"
+    if campaign_run_obligation_on_host "${host}" "${job}" "${obligations}" \
+        "${classes}" "${worker_dir}" "${sessions}" "${seed_plan}"; then
+      campaign_log "obligation ${job}: host=${host} verdict=$(jq -r \
+        '.verdict // "?"' "${worker_dir}/obligation_result.jsonl" \
+        2>/dev/null || echo '?')"
+    else
+      status=1
+      campaign_log "obligation ${job}: host=${host} DID NOT FINISH"
+    fi
+  done
+  return "${status}"
+}
+
+# The whole wave, through the pool.
+#
+# Results are still collected by the caller once the wave has SETTLED -- this
+# returns only when every slot has returned -- so the frontier the next wave
+# plans against is a complete one, exactly as before.
+campaign_dispatch_wave() {
+  local wave_dir=$1 obligations=$2 classes=$3 sessions=$4 seed_plan=$5
+  shift 5
+  local -a jobs=("$@")
+  local -a pids=() slot_hosts=()
+  local queue_dir="${wave_dir}/work-queue"
+  local jobs_file="${wave_dir}/work-queue.txt"
+  local host slot count=${#jobs[@]} status=0
+  mkdir -p "${queue_dir}"
+  printf '%s\n' "${jobs[@]}" >"${jobs_file}"
+  while IFS= read -r host; do
+    slot_hosts+=("${host}")
+  done < <(campaign_worker_slot_hosts)
+  # A pool wider than the wave starts only the slots that can claim work; the
+  # rest would claim nothing and return immediately anyway, and starting them
+  # would put ${hosts} x ${workers} ssh connections on the wire for a wave of
+  # three.
+  for ((slot = 0; slot < ${#slot_hosts[@]} && slot < count; slot++)); do
+    campaign_wave_slot "${slot_hosts[${slot}]}" "${queue_dir}" "${count}" \
+      "${jobs_file}" "${wave_dir}" "${obligations}" "${classes}" \
+      "${sessions}" "${seed_plan}" &
+    pids+=("$!")
+  done
+  campaign_wait_workers "${pids[@]}" || status=1
+  return "${status}"
+}
+
+# Where each of this wave's obligations ran, in one line.
+campaign_log_wave_hosts() {
+  local wave_dir=$1 wave=$2
+  local distribution
+  distribution=$(cat "${wave_dir}"/*/host.txt 2>/dev/null | LC_ALL=C sort \
+    | uniq -c | awk '{printf "%s=%s ", $2, $1}') || distribution=""
+  campaign_log "wave ${wave} ran on: ${distribution:-(nothing recorded)}"
+}
+
+
 # EXPLORE: waves of focused obligations until the frontier stops moving.
 #
 # One JVM plans the wave -- explore.ExploreMain reads every session this
@@ -2296,10 +2474,10 @@ campaign_explore() {
   local sessions="${iteration_dir}/sessions"
   local results="${iteration_dir}/obligation_results.jsonl"
   local classes="${iteration_dir}/instrumented-classes"
-  local wave=0 pending=0 status=0 obligation_id worker_dir wave_dir job
+  local wave=0 pending=0 status=0 obligation_id wave_dir job
   local wave_signature="" previous_signature="" stop_kind="" stop_reason=""
   local obligations
-  local -a bound_args=() domain_args=() anchor_args=() jobs=() pids=()
+  local -a bound_args=() domain_args=() anchor_args=() jobs=()
   local declared
   declared=$(campaign_declared_target_occurrence)
   [[ -z "${declared}" ]] || anchor_args+=(--target-occurrence "${declared}")
@@ -2388,32 +2566,20 @@ as the wave before it with no new verdict"
     fi
     previous_signature=${wave_signature}
     campaign_log "wave ${wave}: ${pending} obligation(s), \
-workers=${concolic_worker_count}"
+slots=${concolic_worker_count}"
     # Which sessions existed before this wave's replays landed, so the row
     # contract below is checked over the wave's own and no other.
     campaign_session_roster "${sessions}" >"${wave_dir}/sessions-before.txt"
-    pids=()
-    status=0
     for job in "${jobs[@]}"; do
-      worker_dir="${wave_dir}/${job}"
-      mkdir -p "${worker_dir}"
-      (
-        set -euo pipefail
-        campaign_obligation_worker "${job}" "${obligations}" "${classes}" \
-          "${worker_dir}" "${sessions}" \
-          "${iteration_dir}/seed-replay/execution_task_plan.jsonl"
-      ) >"${worker_dir}/stdout.log" 2>"${worker_dir}/stderr.log" &
-      pids+=("$!")
-      if [[ ${#pids[@]} -eq ${concolic_worker_count} ]]; then
-        campaign_wait_workers "${pids[@]}" || status=1
-        pids=()
-      fi
+      mkdir -p "${wave_dir}/${job}"
     done
-    if [[ ${#pids[@]} -gt 0 ]]; then
-      campaign_wait_workers "${pids[@]}" || status=1
-    fi
-    [[ "${status}" -eq 0 ]] || campaign_fail EXPLORE CAMPAIGN "${wave_dir}" \
-      "obligation wave ${wave} did not finish"
+    status=0
+    campaign_dispatch_wave "${wave_dir}" "${obligations}" "${classes}" \
+      "${sessions}" "${iteration_dir}/seed-replay/execution_task_plan.jsonl" \
+      "${jobs[@]}" || status=1
+    campaign_log_wave_hosts "${wave_dir}" "${wave}"
+    [[ "${status}" -eq 0 ]] || campaign_fail EXPLORE CAMPAIGN \
+      "${wave_dir}" "obligation wave ${wave} did not finish"
     # Every verdict this wave reached, appended once the wave settled, so the
     # next wave sees a complete frontier rather than a partial one.
     find "${wave_dir}" -mindepth 2 -maxdepth 2 -name obligation_result.jsonl \

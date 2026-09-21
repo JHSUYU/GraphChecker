@@ -1477,4 +1477,103 @@ $(cat "${withdraw_worker}/obligation_result.jsonl")"
 $(cat "${withdraw_worker}/obligation_result.jsonl")"
 reset_config
 
+# POOL-1: a slot that frees takes the next obligation IMMEDIATELY.
+#
+# What this replaces was a batch barrier: fill ${concolic_worker_count}
+# background pids, wait for ALL of them, start the next array.  One slow
+# obligation then idled every other slot for its whole duration -- and on
+# 11741 every wave has one, because a replay that reaches its target runs a
+# MiniDFSCluster and one that refuses at the solver does not.
+#
+# One long job and five short ones over two slots.  The barrier pairs the
+# long one with a short one and nothing else may start until the long one
+# ends; the pool runs all five short ones on the other slot WHILE the long
+# one is still going.  Both claims are checked, because either alone is weak:
+# the wall clock alone is a race on a loaded machine, and the start times
+# alone do not say the wave was actually faster.
+pool_dir="${test_tmp}/pool"
+mkdir -p "${pool_dir}/wave"
+reset_config
+concolic_worker_count=2
+pool_jobs=(LONG F1 F2 F3 F4 F5)
+for pool_job in "${pool_jobs[@]}"; do
+  mkdir -p "${pool_dir}/wave/${pool_job}"
+done
+# The stub stands where campaign_obligation_worker stands, so everything
+# between the pool and it -- the claim, the slot, the local branch of
+# campaign_run_obligation_on_host, the log redirection -- is the real thing.
+campaign_obligation_worker() {
+  local id=$1 worker=$4
+  date +%s.%N >"${worker}/started-at"
+  if [[ "${id}" == LONG ]]; then sleep 4; else sleep 0.3; fi
+  date +%s.%N >"${worker}/ended-at"
+  jq -n -c --arg id "${id}" '{schemaVersion: 1, kind: "OBLIGATION_RESULT",
+    obligationId: $id, verdict: "UNSAT", sessionId: "", detail: ""}' \
+    >"${worker}/obligation_result.jsonl"
+}
+pool_started=$(date +%s.%N)
+campaign_dispatch_wave "${pool_dir}/wave" /dev/null /dev/null /dev/null \
+  /dev/null "${pool_jobs[@]}" >"${pool_dir}/dispatch.log" 2>&1 \
+  || fail "the pool did not finish a wave of six: $(cat "${pool_dir}/dispatch.log")"
+pool_elapsed=$(awk -v a="$(date +%s.%N)" -v b="${pool_started}" \
+  'BEGIN{printf "%.2f", a - b}')
+for pool_job in "${pool_jobs[@]}"; do
+  [[ -s "${pool_dir}/wave/${pool_job}/obligation_result.jsonl" ]] \
+    || fail "the pool did not run ${pool_job}"
+done
+# NOT THE SUM.  Six jobs end to end is 5.5s; the barrier is 4.6s; the pool is
+# the long job plus change.  5 is below the sum with room to spare and the
+# claim the brief makes.
+awk -v e="${pool_elapsed}" 'BEGIN{exit !(e < 5)}' \
+  || fail "the pool took ${pool_elapsed}s for one 4s job and five 0.3s ones: \
+that is the sum of the work, not the length of its longest piece"
+# NOT THE BARRIER.  Every short job started before the long one finished,
+# which is exactly what a barrier cannot do: under it, four of the five would
+# start only once the long job's batch had been waited on.
+pool_long_end=$(cat "${pool_dir}/wave/LONG/ended-at")
+for pool_job in F1 F2 F3 F4 F5; do
+  pool_start=$(cat "${pool_dir}/wave/${pool_job}/started-at")
+  awk -v s="${pool_start}" -v e="${pool_long_end}" 'BEGIN{exit !(s < e)}' \
+    || fail "${pool_job} did not start until the long obligation had \
+finished: the slot was idle behind a barrier, not pulling work"
+done
+# And the pool laid the work out over both slots rather than serialising it.
+[[ "$(wc -l <"${pool_dir}/wave/work-queue.txt")" -eq 6 ]] \
+  || fail "the wave's job list is not the six obligations it was given"
+[[ "$(find "${pool_dir}/wave/work-queue" -mindepth 1 -maxdepth 1 -type d \
+    | wc -l)" -eq 6 ]] \
+  || fail "the work queue does not hold one claim per obligation"
+unset -f campaign_obligation_worker
+
+# POOL-2: a failed obligation still fails the WAVE, and still lets the wave
+# finish.  campaign_wait_workers' semantics are what the barrier had: the
+# remaining obligations ran after one of them failed, and the wave failed at
+# the end.  A pool that stopped its slot on the first failure would discard
+# verdicts the wave had already paid for -- the same loss REPLAY-BOUND-1
+# exists to prevent.
+pool_fail_dir="${test_tmp}/pool-fail"
+mkdir -p "${pool_fail_dir}/wave"
+for pool_job in A B C D; do mkdir -p "${pool_fail_dir}/wave/${pool_job}"; done
+campaign_obligation_worker() {
+  local id=$1 worker=$4
+  : >"${worker}/ran"
+  [[ "${id}" != B ]] || return 7
+  jq -n -c --arg id "${id}" '{schemaVersion: 1, kind: "OBLIGATION_RESULT",
+    obligationId: $id, verdict: "UNSAT", sessionId: "", detail: ""}' \
+    >"${worker}/obligation_result.jsonl"
+}
+concolic_worker_count=2
+campaign_dispatch_wave "${pool_fail_dir}/wave" /dev/null /dev/null /dev/null \
+  /dev/null A B C D >"${pool_fail_dir}/dispatch.log" 2>&1 \
+  && fail "one failed obligation did not fail the wave"
+for pool_job in A B C D; do
+  [[ -f "${pool_fail_dir}/wave/${pool_job}/ran" ]] \
+    || fail "obligation ${pool_job} never ran: one failure stopped its slot"
+done
+grep -q 'DID NOT FINISH' "${pool_fail_dir}/dispatch.log" \
+  || fail "the failed obligation is not named in the wave's log: \
+$(cat "${pool_fail_dir}/dispatch.log")"
+unset -f campaign_obligation_worker
+reset_config
+
 echo "run_engine campaign helper tests passed"
