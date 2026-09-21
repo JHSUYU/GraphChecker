@@ -42,16 +42,20 @@ import java.util.Set;
  *       move could never become a finding;</li>
  *   <li>a CLOCK is per path and never an equality between paths -- every
  *       execution reads it fresh -- and its domain is the one a millisecond
- *       count in a Java {@code long} has: {@code >= 0} AND {@code <=
- *       Long.MAX_VALUE};</li>
- *   <li>a HANDOFF {@code v_H(I)} is bound by its family: {@code OR_q (pi_q AND
- *       guard_q AND v_H = e_q)} over the producer paths whose export endpoint
- *       is I's producer.  The walk closes over the handoffs those arms name in
- *       turn -- a producer forwards what it was handed -- to a fixed point.  A
- *       control with no arm stays free and is named {@code unproducible}; a
- *       NESTED handoff with no arm is pinned to the arrival the recording
- *       states, which is what the composition does with an unproduced
- *       delivery;</li>
+ *       count in a Java {@code long} has, floored at the instant the
+ *       execution it belongs to READ: {@code >= that reading} AND {@code <=
+ *       Long.MAX_VALUE}, because a run that lasted longer is a run and a
+ *       clock turned back is not;</li>
+ *   <li>a CONTROL handoff -- one attached at the occurrence this obligation
+ *       flips, which is where a replay can be answered -- is bound by its
+ *       family: {@code OR_q (pi_q AND guard_q AND v_H = e_q)} over the
+ *       producer paths whose export endpoint is I's producer.  The walk
+ *       closes over the handoffs those arms name in turn -- a producer
+ *       forwards what it was handed -- to a fixed point.  A control with no
+ *       arm stays free and is named {@code unproducible}.  EVERY OTHER
+ *       HANDOFF IS PINNED to the arrival its own path recorded: nothing
+ *       plants a value at a delivery the obligation cannot answer at, so a
+ *       family there is freedom the replay does not have;</li>
  *   <li>a STATE read is joined to the write version it observed, else pinned
  *       to the value the recording states, else the obligation is refused
  *       naming it ({@code UNSTATED_VALUE}).</li>
@@ -61,6 +65,13 @@ import java.util.Set;
  * the above is an undeclared name: on the flipped decision it refuses the
  * obligation, on a prefix decision it drops that conjunct with a named gap,
  * because the flipped arm is the claim and the prefix is context.</p>
+ *
+ * <p>A DEMANDED conjunct -- this obligation's own flip and every flip the
+ * path it is cut from was run under -- is asked for with a MARGIN on each
+ * comparison atom that names a clock cell: {@code causynth.clock.flip
+ * .margin.ms} milliseconds, 60000 by default ({@link ClockMargin}).  A
+ * prefix decision kept at the arm the recording took is not strengthened.
+ * </p>
  */
 final class FlipQuery {
     private FlipQuery() {
@@ -300,6 +311,17 @@ final class FlipQuery {
         /** session -> recorded symbol -> the query's variable for it. */
         private final Map<String, Map<String, String>> renames =
                 new LinkedHashMap<String, Map<String, String>>();
+        /**
+         * Every CLOCK cell this query declared, by variable name.
+         *
+         * <p>{@link #clockVariables} is the READ-BACK map and holds only
+         * the flipped path's own cells -- a skew is a counterfactual about
+         * the execution the obligation is about -- while the MARGIN
+         * ({@link ClockMargin}) is a fact about what the demanded atom
+         * compares, whichever execution read it.  So the two are apart, and
+         * this one is exactly the set {@code clockDomain} constrains.</p>
+         */
+        private final Set<String> clockCells = new LinkedHashSet<String>();
         private final List<GapRow> gaps = new ArrayList<GapRow>();
         private String refusal = "";
 
@@ -346,8 +368,11 @@ final class FlipQuery {
                     continue;
                 }
                 // The obligation IS the complement of the arm the recording
-                // took, and nothing else.
-                assertions.add(last ? "(not " + held + ")" : held);
+                // took, and nothing else -- asked with room to spare where
+                // it rests on a clock ({@link #demanded}).
+                assertions.add(last
+                        ? demanded("(not " + held + ")", decision)
+                        : held);
             }
             Built refused = inheritedFlips(flipped);
             if (refused != null) return refused;
@@ -484,7 +509,14 @@ final class FlipQuery {
                     String held = rename(lower(pi.get(index),
                             path.sessionId), path.sessionId, unknown);
                     if (unknown.isEmpty()) {
-                        assertions.add(held);
+                        // THE INHERITED FLIP IS DEMANDED TOO.  Its conjunct
+                        // stands here at the arm the parent's obligation
+                        // asked for -- the session recorded it that way
+                        // BECAUSE it was flipped -- so it is strengthened
+                        // exactly as this query's own flip is, and the
+                        // parent's prefix around it is not.
+                        assertions.add(decision == row
+                                ? demanded(held, decision) : held);
                         continue;
                     }
                     String named = unknown.iterator().next();
@@ -506,6 +538,44 @@ final class FlipQuery {
                 }
             }
             return null;
+        }
+
+        /**
+         * One DEMANDED conjunct, with the margin on every clock atom of it.
+         *
+         * <p>A demanded outcome is one the corpus does NOT hold -- this
+         * obligation's own flip, or a flip the path it is cut from was run
+         * under -- and a demanded comparison over a clock is asked for with
+         * room to spare, because the replay does not run the instant the
+         * model names: it reads its own and moves it by the skew, while the
+         * quantity the guard compares against moves with it
+         * ({@link ClockMargin}).  A prefix decision kept at the arm the
+         * recording took is context and is never strengthened.</p>
+         *
+         * <p>ON THE LOWERED, RENAMED TEXT, which is the only form that has
+         * the whole atom in it: the published predicate is a reference into
+         * the session's expression table, its comparison is the JVM's
+         * {@code lcmp} under a {@code >= 0}, and whether a term names a
+         * CLOCK is a fact about the variable THIS query declared for it.
+         * Every atom the margin could not be put on is named here, once,
+         * as the wave's own diagnostic.</p>
+         */
+        private String demanded(String held, DecisionRow decision) {
+            ClockMargin.Strengthened asked = ClockMargin.strengthen(held,
+                    clockCells, ClockMargin.margin());
+            for (String atom : asked.unstrengthened) {
+                gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                        GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+                        decision.siteId() + "#" + decision.ordinal(),
+                        "the clock margin of " + ClockMargin.margin()
+                                + "ms was not put on the atom " + atom
+                                + ": its polarity is not resolved by this "
+                                + "query's connectives, or its operands are "
+                                + "not arithmetic, so the demanded arm is "
+                                + "asked for as the solver's model states "
+                                + "it"));
+            }
+            return asked.text;
         }
 
         /** The one refusal an unstated inherited flip is named by. */
@@ -648,8 +718,11 @@ final class FlipQuery {
                 // A CLOCK CELL IS A MILLISECOND COUNT IN A JAVA long, so
                 // the floor is not the whole domain: see {@link
                 // JavaPrimitiveSmtSemantics#clockDomain}, which is the one
-                // place that rule is spelled.
-                rootFacts.add(JavaPrimitiveSmtSemantics.clockDomain(variable));
+                // place that rule is spelled.  And in a FLIP QUERY the
+                // floor is not 0 either: it is what this cell's own
+                // execution read ({@link #clockFloor}).
+                rootFacts.add(JavaPrimitiveSmtSemantics.clockDomain(variable,
+                        clockFloor(minted, row.rootId())));
                 return;
             }
             rootVariables.put(variable, row.rootId());
@@ -687,12 +760,70 @@ final class FlipQuery {
                     + variable + " " + max + "))");
         }
 
+        /**
+         * CLOCKS MOVE FORWARD ONLY: where one cell's floor stands.
+         *
+         * <p>The instant the execution THIS cell belongs to read, which is
+         * what the obligation's skew is stated against: a clock is one
+         * variable per session ({@link #variable}) and {@link
+         * ObligationFactory#solve} publishes {@code model - rootValue(the
+         * session, the root)}, so a model below that reading is a NEGATIVE
+         * skew -- the replay would be told to read an instant its own
+         * execution had already passed.  Exploration emulates a run that
+         * lasted longer or a node whose clock is ahead; a clock turned back
+         * to 1970 is no run.</p>
+         *
+         * <p>{@link Corpus#rootValue} is the one answer to "what did this
+         * session run this root at", so the world the session ran in is
+         * already in it: a focused replay plants {@code reading + skew} at
+         * the mint and the mint row states the instant the region then read
+         * ({@code RootMint#focusedRootValue}).  A reading no row states, or
+         * one that is not an instant a Java {@code long} can hold, leaves
+         * the floor where it was.</p>
+         */
+        private String clockFloor(RootMintRow minted, String rootId) {
+            String reading = corpus.rootValue(minted.sessionId(), rootId);
+            if (reading == null || reading.trim().isEmpty()) return "0";
+            try {
+                java.math.BigInteger instant =
+                        new java.math.BigInteger(reading.trim());
+                if (instant.signum() < 0
+                        || !JavaPrimitiveSmtSemantics.fitsJavaLong(instant)) {
+                    return "0";
+                }
+                return instant.toString();
+            } catch (NumberFormatException notAnInstant) {
+                return "0";
+            }
+        }
+
         private void handoff(AttachRow attach) {
             String variable = variable(attach.sessionId(), attach.symbol());
             boolean control = attach.endpoint().occurrence()
                     .equals(task.focused());
             if (!explained.add(variable)) {
                 if (control) registerControl(attach, variable, false);
+                return;
+            }
+            // A HANDOFF NOBODY CAN ANSWER IS PINNED TO WHAT ARRIVED.  A
+            // Control is the one kind of handoff a replay can be held to:
+            // the obligation's answers are applied at the focused
+            // occurrence's attaches and nowhere else (the loop over {@code
+            // built.controls} in {@link ObligationFactory#solve}).  Every
+            // other handoff of the query is a delivery the replay will
+            // receive as its own run produces it, so a family that leaves
+            // it free lets the model pick ANY recorded arrival of that slot
+            // and nothing plants the one it picked.  hdfs-11741 campaign #4
+            // has three of those: the block-key expiry date of a
+            // balance-block delivery, free over an OR of 20 recorded
+            // arrivals, and z3 answered with the minimum -- 105291 to
+            // 203751ms below what the replay then received, which is the
+            // whole margin of the flip it was meant to satisfy.  Pinned
+            // here to the arrival THIS path recorded, by the same rule an
+            // arm-less nested handoff has always been pinned by.
+            if (!control) {
+                pinArrival(attach, variable, "a handoff of an occurrence "
+                        + "this obligation cannot answer at");
                 return;
             }
             List<String> disjuncts = new ArrayList<String>();
@@ -723,25 +854,39 @@ final class FlipQuery {
                     disjuncts.addAll(family.getValue());
                 }
             }
+            // Only a control reaches here, so the family it is bound by is
+            // one this obligation can be answered out of.
             if (!disjuncts.isEmpty()) {
-                if (control) registerControl(attach, variable, false);
+                registerControl(attach, variable, false);
                 return;
             }
-            if (control) {
-                registerControl(attach, variable, true);
-                gaps.add(GapRow.of(attach.sessionId(),
-                        GapKind.UNPRODUCIBLE_ANSWER, GapClass.DIAGNOSTIC,
-                        attach.endpoint().toString(),
-                        "no producer arm in this corpus for this slot"));
-                return;
-            }
+            registerControl(attach, variable, true);
+            gaps.add(GapRow.of(attach.sessionId(),
+                    GapKind.UNPRODUCIBLE_ANSWER, GapClass.DIAGNOSTIC,
+                    attach.endpoint().toString(),
+                    "no producer arm in this corpus for this slot"));
+        }
+
+        /**
+         * One handoff held to the value the recording states arrived.
+         *
+         * <p>The one pin, for the two handoffs that get it: a nested one no
+         * arm of this corpus produces, and one attached where this
+         * obligation cannot answer.  An arrival the query cannot spell as a
+         * literal of the variable's sort pins nothing and is named -- the
+         * symbol then stays unbound, and the closure check refuses the
+         * obligation by its name rather than leaving it free.</p>
+         */
+        private void pinArrival(AttachRow attach, String variable,
+                                String why) {
             String arrival = SmtText.literal(attach.arrival(),
                     sorts.get(variable));
             if (arrival.isEmpty()) {
                 gaps.add(GapRow.of(attach.sessionId(),
                         GapKind.UNPRODUCIBLE_ANSWER, GapClass.DIAGNOSTIC,
                         attach.endpoint().toString(),
-                        "nested handoff with neither an arm nor an arrival"));
+                        why + ", and the recording states no arrival to pin "
+                                + "it to"));
                 return;
             }
             assertions.add("(= " + variable + " " + arrival + ")");
@@ -1083,6 +1228,11 @@ final class FlipQuery {
                             : "root|" + row.rootId();
                     String name = names.name(key, (clock ? "clk_" : "r_")
                             + row.rootId() + (clock ? "_" + sessionId : ""));
+                    // Named where the variable is: the margin rule asks
+                    // which of this query's names are clock cells, and by
+                    // the time a demanded conjunct is asserted every name
+                    // in it has been through here (see #rename).
+                    if (clock) clockCells.add(name);
                     declare(name, row.kind() == RootKind.MARKER
                             ? "Bool" : "Int",
                             (clock ? "clock " : "root ") + row.rootId()

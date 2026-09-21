@@ -2254,6 +2254,497 @@ public class ExploreTest {
         assertTrue("the anchor's absence is BLOCKING and named", named);
     }
 
+    // ---- (6) a demanded clock comparison is asked with room to spare ----
+
+    /**
+     * THE MARGIN, as a rewriting rule: every operator, both polarities.
+     *
+     * <p>A demanded atom is the proposition the QUERY asserts, so a demanded
+     * FALSE is read off the assertion the negation makes: {@code (not (>= a
+     * b))} strengthened is {@code (not (>= (+ a eps) b))}, which says
+     * {@code a + eps < b}.</p>
+     */
+    @Test
+    public void everyDemandedClockComparisonCarriesTheMargin() {
+        Set<String> clocks = Collections.singleton("clk_now");
+        // Demanded true: the margin goes on the side that has to be cleared.
+        assertEquals("(>= a (+ clk_now 5))",
+                strengthened("(>= a clk_now)", clocks));
+        assertEquals("(> a (+ clk_now 5))",
+                strengthened("(> a clk_now)", clocks));
+        assertEquals("(<= (+ a 5) clk_now)",
+                strengthened("(<= a clk_now)", clocks));
+        assertEquals("(< (+ a 5) clk_now)",
+                strengthened("(< a clk_now)", clocks));
+        // Demanded false: the same proposition, read through the negation.
+        assertEquals("(not (>= (+ a 5) clk_now))",
+                strengthened("(not (>= a clk_now))", clocks));
+        assertEquals("(not (> (+ a 5) clk_now))",
+                strengthened("(not (> a clk_now))", clocks));
+        assertEquals("(not (<= a (+ clk_now 5)))",
+                strengthened("(not (<= a clk_now))", clocks));
+        assertEquals("(not (< a (+ clk_now 5)))",
+                strengthened("(not (< a clk_now))", clocks));
+        // Pushed through the connectives a conjunct is built from, and
+        // through a double negation.
+        assertEquals("(and (< (+ a 5) clk_now) (or (> b (+ clk_now 5))"
+                        + " (not (>= (+ c 5) clk_now))))",
+                strengthened("(and (< a clk_now) (or (> b clk_now)"
+                        + " (not (>= c clk_now))))", clocks));
+        assertEquals("(not (not (< (+ a 5) clk_now)))",
+                strengthened("(not (not (< a clk_now)))", clocks));
+        // An atom no clock cell reaches is not this rule's business.
+        assertEquals("(< a b)", strengthened("(< a b)", clocks));
+        assertEquals("(< M_COUNT 5)", strengthened("(< M_COUNT 5)", clocks));
+        // THE JVM'S OWN COMPARE.  Two longs are compared with lcmp and
+        // branched on, so the atom is (>= (ite ...) 0) -- read back as the
+        // comparison the lowering says it is, and strengthened there.  The
+        // margin on the 0 would have made it unsatisfiable.
+        String compare = edu.uva.liftlab.graphchecker.smt
+                .JavaPrimitiveSmtSemantics.integralCompareResult("1500",
+                        "clk_now");
+        assertEquals("(not (>= (+ 1500 5) clk_now))",
+                strengthened("(not (>= " + compare + " 0))", clocks));
+        assertEquals("(>= 1500 (+ clk_now 5))",
+                strengthened("(>= " + compare + " 0)", clocks));
+        assertEquals("the mirrored spelling states the same comparison: "
+                        + "(<= 0 lcmp(a, b)) IS a >= b",
+                "(>= 1500 (+ clk_now 5))",
+                strengthened("(<= 0 " + compare + ")", clocks));
+        // An ite that is NOT that compare decides no polarity for what is
+        // under it, and its operands are not a millisecond count either.
+        String branch = "(>= (ite (< clk_now 3) 1 0) 0)";
+        assertEquals(branch, strengthened(branch, clocks));
+        assertEquals("(= (ite (< clk_now 3) 1 0) 1)",
+                strengthened("(= (ite (< clk_now 3) 1 0) 1)", clocks));
+        // And the caller is told which atom it was, once per atom.
+        assertEquals("the atom named is the one the rule stopped at",
+                Collections.singletonList(branch),
+                ClockMargin.strengthen(branch, clocks, 5L).unstrengthened);
+        assertEquals("and under an = it is the comparison itself",
+                Collections.singletonList("(< clk_now 3)"),
+                ClockMargin.strengthen("(= (ite (< clk_now 3) 1 0) 1)",
+                        clocks, 5L).unstrengthened);
+        assertTrue("an atom the margin DID reach is not reported",
+                ClockMargin.strengthen("(< a clk_now)", clocks, 5L)
+                        .unstrengthened.isEmpty());
+        // Zero turns the rule off, which is what the property is for.
+        assertEquals("(< a clk_now)",
+                ClockMargin.strengthen("(< a clk_now)", clocks, 0L).text);
+        assertEquals(60_000L, ClockMargin.DEFAULT_MARGIN_MS);
+    }
+
+    private static String strengthened(String term, Set<String> clocks) {
+        return ClockMargin.strengthen(term, clocks, 5L).text;
+    }
+
+    /**
+     * The same rule where it is spent: one flip over a clock, solved.
+     *
+     * <p>hdfs-11741 campaign #4's 35 refusals in one fixture -- the guard is
+     * {@code expiryDate >= now} over a wall-clock literal, the flip asks for
+     * the other arm, and the model has to clear the literal by the margin
+     * rather than by the one millisecond z3 would otherwise answer with.</p>
+     */
+    @Test
+    public void theFlipOverAClockIsSolvedWithRoomToSpare() throws Exception {
+        Assume.assumeTrue(z3Available());
+        Path iteration = tree.newFolder("margin").toPath();
+        Session seed = new Session(iteration, "s-seed");
+        seed.activation(TARGET, false);
+        seed.root(TARGET, "CASE.NOW", "M_NOW", RootKind.CLOCK, "1000",
+                null, null, true);
+        seed.decision(TARGET, "Expiry#u15", 1, true,
+                notBefore("1500", "M_NOW"));
+        seed.flush();
+        scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
+                "Expiry#u15"));
+        Path out = tree.newFolder("margin-out").toPath();
+        Path wave = out.resolve("obligations-0000");
+        plan(iteration, TARGET_SELECTOR, null,
+                out.resolve("results.jsonl"), wave, 0);
+        List<Obligation> proposed = obligations(wave);
+        assertEquals(1, proposed.size());
+        Worker worker = solve(iteration, wave, proposed.get(0), out, "w0");
+        assertEquals(detail(worker), Verdict.SAT_MODEL_READY, worker.verdict);
+        String query = query(worker);
+        assertTrue("the demanded atom carries the margin: " + query,
+                query.contains("(not (>= (+ 1500 "
+                        + ClockMargin.DEFAULT_MARGIN_MS + ") clk_"));
+        JsonObject focus = RowCodec.readJsonl(worker.directory.resolve(
+                ObligationDir.FOCUSED_TASK)).get(0);
+        long skew = Long.parseLong(focus.getAsJsonObject("clockDeltas")
+                .get("CASE.NOW").getAsString());
+        assertTrue("and the replay is owed a skew that clears the literal by "
+                        + "it, not by one millisecond: " + skew,
+                skew >= 1500L + ClockMargin.DEFAULT_MARGIN_MS - 1000L);
+
+        // An atom whose polarity no connective of the query resolves is
+        // left exactly as it was, and named once.
+        Path branched = tree.newFolder("margin-ite").toPath();
+        Session other = new Session(branched, "s-seed");
+        other.activation(TARGET, false);
+        other.root(TARGET, "CASE.NOW", "M_NOW", RootKind.CLOCK, "1000",
+                null, null, true);
+        other.decision(TARGET, "Expiry#u15", 1, false,
+                "(= (ite (< 1500 M_NOW) 1 0) 1)");
+        other.flush();
+        scopeMap(branched, targetSite("REGION.target", "Throw#u30",
+                "Expiry#u15"));
+        Path branchedOut = tree.newFolder("margin-ite-out").toPath();
+        Path branchedWave = branchedOut.resolve("obligations-0000");
+        plan(branched, TARGET_SELECTOR, null,
+                branchedOut.resolve("results.jsonl"), branchedWave, 0);
+        Worker asIs = solve(branched, branchedWave,
+                obligations(branchedWave).get(0), branchedOut, "w0");
+        assertEquals(Verdict.SAT_MODEL_READY, asIs.verdict);
+        assertFalse("no margin is invented for it: " + query(asIs),
+                query(asIs).contains("(+ "));
+        boolean named = false;
+        for (GapRow gap : RowCodec.readAll(asIs.directory.resolve(
+                "gaps.jsonl"), RowCodec::readGap)) {
+            named |= gap.kind() == GapKind.ADMISSION_GAP
+                    && gap.cls() == GapClass.DIAGNOSTIC
+                    && ExploreCodec.EXPLORATION.equals(gap.sessionId())
+                    && gap.detail().contains("clock margin")
+                    && gap.detail().contains("(< 1500 clk_");
+        }
+        assertTrue("and the wave says which atom it could not reach", named);
+    }
+
+    /**
+     * THE INHERITED FLIP IS DEMANDED TOO, and the prefix around it is not.
+     *
+     * <p>The path a child is cut from exists only in the world its parent's
+     * replay ran ({@link Corpus.World}), so the query re-asserts that flip --
+     * and a flip over a clock is a flip over a clock whoever asked for it
+     * first.  The decisions the parent's occurrence took BEFORE it, and the
+     * flipped path's own prefix, are the recording's own arms and are asked
+     * for exactly as recorded.</p>
+     */
+    @Test
+    public void anInheritedClockFlipCarriesTheMarginAndItsPrefixDoesNot()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Path iteration = tree.newFolder("inherited-margin").toPath();
+        // The recording: the rotation read its clock and took neither arm
+        // the child was later held to, and the target never reached the
+        // guard this obligation flips.
+        Session seed = new Session(iteration, "s-seed");
+        seed.activation(TARGET, false);
+        seed.activation(PRODUCER, false);
+        seed.root(PRODUCER, "CASE.NOW", "M_NOW", RootKind.CLOCK, "1000",
+                null, null, true);
+        seed.root(TARGET, "CASE.MARKER", "M_MARKER", RootKind.MARKER,
+                "false", null, null, true);
+        seed.root(TARGET, "CASE.OTHER", "M_OTHER", RootKind.MARKER,
+                "false", null, null, true);
+        seed.decision(PRODUCER, "Before#u3", 1, true,
+                notBefore("200000", "M_NOW"));
+        seed.decision(PRODUCER, "Rotate#u5", 1, false,
+                notBefore("100000", "M_NOW"));
+        seed.decision(TARGET, "Guard#u8", 1, false, "M_MARKER");
+        seed.flush();
+        // The child: the rotation's compare flipped, and on THAT path the
+        // target reached a guard the seed never did.
+        Session child = new Session(iteration, "s-inherit");
+        child.activation(PRODUCER, true);
+        child.activation(TARGET, false);
+        child.root(PRODUCER, "CASE.NOW", "M_NOW", RootKind.CLOCK, "1000",
+                null, null, true);
+        child.root(TARGET, "CASE.MARKER", "M_MARKER", RootKind.MARKER,
+                "false", null, null, true);
+        child.root(TARGET, "CASE.OTHER", "M_OTHER", RootKind.MARKER,
+                "false", null, null, true);
+        child.decision(PRODUCER, "Before#u3", 1, true,
+                notBefore("200000", "M_NOW"));
+        child.decision(PRODUCER, "Rotate#u5", 1, true,
+                notBefore("100000", "M_NOW"));
+        child.decision(TARGET, "Guard#u8", 1, false, "M_MARKER");
+        child.decision(TARGET, "Deeper#u9", 1, false, "M_OTHER");
+        child.answered(ObligationResult.of("OBL.inherit", Verdict.ADMITTED,
+                "s-inherit", "the focused prefix reproduced"));
+        child.flush();
+        worker(iteration, "obligations-0000", "ob-inherit", "OBL.inherit",
+                "s-inherit", PRODUCER, "Rotate#u5",
+                Collections.<String, String>emptyMap(),
+                Collections.singletonMap("CASE.NOW", "0"));
+        scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
+                "Guard#u8", "Deeper#u9"));
+
+        Path out = tree.newFolder("inherited-margin-out").toPath();
+        Path wave = out.resolve("obligations-0001");
+        plan(iteration, TARGET_SELECTOR, null,
+                out.resolve("results.jsonl"), wave, 1);
+        Obligation deeper = named(obligations(wave), "Deeper#u9");
+        assertNotNull("the arm only the child's path offers is proposed",
+                deeper);
+        assertEquals("and it is cut from that child's path",
+                Corpus.pathId("s-inherit", TARGET), deeper.pathId());
+        Worker worker = solve(iteration, wave, deeper, out, "w1");
+        assertEquals(detail(worker), Verdict.SAT_MODEL_READY, worker.verdict);
+        String query = query(worker);
+        assertTrue("the flip the child inherited is demanded, so it carries "
+                        + "the margin: " + query,
+                query.contains("(>= 100000 (+ clk_CASE_NOW_s_inherit "
+                        + ClockMargin.DEFAULT_MARGIN_MS + "))"));
+        assertTrue("while the decision that occurrence took BEFORE it is the "
+                        + "recording's own arm, asked for as recorded: "
+                        + query,
+                query.contains(notBefore("200000",
+                        "clk_CASE_NOW_s_inherit")));
+        assertFalse("nothing is strengthened around it",
+                query.contains("(+ 200000"));
+        JsonObject focus = RowCodec.readJsonl(worker.directory.resolve(
+                ObligationDir.FOCUSED_TASK)).get(0);
+        long skew = Long.parseLong(focus.getAsJsonObject("clockDeltas")
+                .get("CASE.NOW").getAsString());
+        assertTrue("and the model clears the inherited literal by the margin"
+                        + " too: " + skew,
+                skew + 1000L <= 100000L - ClockMargin.DEFAULT_MARGIN_MS);
+    }
+
+    // ---- (6b) a handoff nobody can answer is pinned -------------------
+
+    /**
+     * A handoff that is not a CONTROL is held to what its own path received.
+     *
+     * <p>An obligation's answers are applied at the attaches of the occurrence
+     * it flips and nowhere else, so a family over a delivery somewhere else
+     * is freedom the replay does not have: the model picks one of the
+     * recorded arrivals, nothing plants it, and the replay receives whatever
+     * its own run produces.  hdfs-11741 campaign #4 has three of those --
+     * the block-key expiry date of a balance-block delivery, free over an OR
+     * of 20 arrivals, answered with the minimum and 105291 to 203751ms below
+     * what the replay then got.  The handoff of the occurrence this
+     * obligation DOES flip is still answered out of its family (case 2).</p>
+     */
+    @Test
+    public void aHandoffThisObligationCannotAnswerIsPinnedToItsArrival()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Path iteration = tree.newFolder("pinned-handoff").toPath();
+        Session seed = new Session(iteration, "s-seed");
+        seed.activation(TARGET, false);
+        seed.activation(WRITER, false);
+        seed.activation(PRODUCER, false);
+        seed.root(PRODUCER, "CASE.SERIAL", "M_SERIAL", RootKind.INTEGRAL,
+                "119992", null, null, true);
+        seed.constant("e.119992", "119992");
+        seed.symbolic("e.stored", "M_HOFF_KEY");
+        seed.export(ROTATED, "e.119992", 11L, "119992");
+        // The delivery is received by addKeys -- a member of the target's
+        // factor, and NOT the occurrence the flip is about.
+        seed.attach(DELIVERED, "M_HOFF_KEY", "119992", ROTATED);
+        seed.write(STORED, ALL_KEYS, 5L, "e.stored");
+        seed.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
+        seed.decision(TARGET, "Lookup#u8", 1, false, "(= M_READ_KEY 119995)");
+        seed.flush();
+        // A second recording of the same interaction delivered 119995.
+        Session rotated = new Session(iteration, "s-rot");
+        rotated.activation(PRODUCER, true);
+        rotated.activation(WRITER, false);
+        rotated.activation(TARGET, false);
+        rotated.root(PRODUCER, "CASE.SERIAL", "M_SERIAL", RootKind.INTEGRAL,
+                "119995", null, null, false);
+        rotated.decision(PRODUCER, "Rotate#u3", 1, true, "(> M_SERIAL 0)");
+        rotated.constant("e.119995", "119995");
+        rotated.export(ROTATED, "e.119995", 12L, "119995");
+        rotated.attach(DELIVERED, "M_HOFF_KEY", "119995", ROTATED);
+        rotated.flush();
+        scopeMap(iteration,
+                targetSite("REGION.target", "Throw#u30", "Lookup#u8"),
+                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
+                        "BlockTokenSecretManager#u12",
+                        "BlockTokenSecretManager#addKeys",
+                        "<example.Keys: int value>",
+                        "<example.Manager: example.Keys allKeys>", ""),
+                scopeSite(StaticScopeMap.EXPORT_SITE, "REGION.rotate",
+                        "PBHelper#convert#9", "PBHelper#convert", "", "",
+                        "XCH.resp.block-key-id", "Rotate#u3"));
+        Path out = tree.newFolder("pinned-handoff-out").toPath();
+        Path wave = out.resolve("obligations-0000");
+        plan(iteration, TARGET_SELECTOR, null,
+                out.resolve("results.jsonl"), wave, 0);
+        Obligation lookup = named(obligations(wave), "Lookup#u8");
+        assertNotNull(lookup);
+        Worker worker = solve(iteration, wave, lookup, out, "w0");
+        String query = query(worker);
+        List<String> aboutTheDelivery = new ArrayList<String>();
+        for (String line : query.split("\n")) {
+            if (line.startsWith("(assert") && line.contains("vH_")) {
+                aboutTheDelivery.add(line);
+            }
+        }
+        assertEquals("one assertion binds the delivery, and it is the pin "
+                        + "to the arrival this path's own attach row states: "
+                        + aboutTheDelivery, 1,
+                aboutTheDelivery.size() - countOf(aboutTheDelivery,
+                        "wchoice_"));
+        boolean pinned = false;
+        for (String line : aboutTheDelivery) {
+            if (line.contains("wchoice_")) continue;
+            pinned = line.endsWith(" 119992))") || line.endsWith(" 119992)");
+            assertFalse("no other recorded arrival of that slot binds it: "
+                    + line, line.contains("119995"));
+        }
+        assertTrue("and the value it is pinned to is the one that arrived: "
+                + aboutTheDelivery, pinned);
+        assertEquals("so a flip that needs another delivery is refused, "
+                        + "rather than answered with a value nothing would "
+                        + "plant", Verdict.UNSAT, worker.verdict);
+    }
+
+    /** How many of these lines mention this name. */
+    private static int countOf(List<String> lines, String name) {
+        int found = 0;
+        for (String line : lines) {
+            if (line.contains(name)) found++;
+        }
+        return found;
+    }
+
+    // ---- (7) a clock moves forward only ------------------------------
+
+    /**
+     * The floor of a flip query's clock is what that session READ.
+     *
+     * <p>Not 0: exploration asks for a run that lasted longer or a node
+     * whose clock is ahead, and a clock turned back to 1970 is no run --
+     * the replay is handed {@code model - reading} and adds it to the
+     * instant it reads for itself, so a model below the reading tells it to
+     * read an instant its own execution had already passed.  The reading is
+     * the one the session the path was CUT FROM states, which is the world
+     * that session ran in: its mint recorded what it used, plant and
+     * all.</p>
+     */
+    @Test
+    public void aFlipQueryFloorsEveryClockAtTheReadingItWasCutFrom()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Path iteration = tree.newFolder("clock-floor").toPath();
+        Session seed = new Session(iteration, "s-seed");
+        seed.activation(TARGET, false);
+        seed.root(TARGET, "CASE.NOW", "M_NOW", RootKind.CLOCK, "1000",
+                null, null, true);
+        seed.root(TARGET, "CASE.MARKER", "M_MARKER", RootKind.MARKER,
+                "false", null, null, true);
+        seed.root(TARGET, "CASE.OTHER", "M_OTHER", RootKind.MARKER,
+                "false", null, null, true);
+        seed.decision(TARGET, "Expiry#u15", 1, true,
+                notBefore("200000", "M_NOW"));
+        seed.decision(TARGET, "Guard#u8", 1, false, "M_MARKER");
+        seed.flush();
+        // The child ran in a world that had already moved this clock: its
+        // own mint states 5000, which is the seed's 1000 plus the 4000ms
+        // its obligation asked for, because a mint plants the skew and
+        // records what it then read.
+        Session child = new Session(iteration, "s-later");
+        child.activation(TARGET, true);
+        child.root(TARGET, "CASE.NOW", "M_NOW", RootKind.CLOCK, "5000",
+                null, null, true);
+        child.root(TARGET, "CASE.MARKER", "M_MARKER", RootKind.MARKER,
+                "false", null, null, true);
+        child.root(TARGET, "CASE.OTHER", "M_OTHER", RootKind.MARKER,
+                "false", null, null, true);
+        child.decision(TARGET, "Expiry#u15", 1, true,
+                notBefore("200000", "M_NOW"));
+        child.decision(TARGET, "Guard#u8", 1, false, "M_MARKER");
+        child.decision(TARGET, "Deeper#u9", 1, false, "M_OTHER");
+        child.answered(ObligationResult.of("OBL.later", Verdict.ADMITTED,
+                "s-later", "the focused prefix reproduced"));
+        child.flush();
+        worker(iteration, "obligations-0000", "ob-later", "OBL.later",
+                "s-later", TARGET, "Expiry#u15",
+                Collections.<String, String>emptyMap(),
+                Collections.singletonMap("CASE.NOW", "4000"));
+        scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
+                "Guard#u8", "Deeper#u9"));
+        Path out = tree.newFolder("clock-floor-out").toPath();
+        Path wave = out.resolve("obligations-0001");
+        plan(iteration, TARGET_SELECTOR, null,
+                out.resolve("results.jsonl"), wave, 1);
+        Obligation deeper = named(obligations(wave), "Deeper#u9");
+        assertNotNull("the arm only the child's path offers is proposed",
+                deeper);
+        Worker worker = solve(iteration, wave, deeper, out, "w1");
+        assertEquals(detail(worker), Verdict.SAT_MODEL_READY,
+                worker.verdict);
+        String query = query(worker);
+        assertTrue("the cell is floored at what THIS session read, not at "
+                        + "0: " + query,
+                query.contains("(and (>= clk_CASE_NOW_s_later 5000) (<= "
+                        + "clk_CASE_NOW_s_later 9223372036854775807))"));
+        assertFalse("and the seed's own earlier reading is not the floor",
+                query.contains("clk_CASE_NOW_s_later 1000)"));
+        // The scan's own compare holds it below 200000 and nothing else
+        // bounds it, so a floor of 0 would let the model answer 1970.
+        JsonObject focus = RowCodec.readJsonl(worker.directory.resolve(
+                ObligationDir.FOCUSED_TASK)).get(0);
+        long skew = Long.parseLong(focus.getAsJsonObject("clockDeltas")
+                .get("CASE.NOW").getAsString());
+        assertTrue("so no replay is owed a NEGATIVE skew: " + skew,
+                skew >= 0L);
+
+        // And a flip that needs the clock EARLIER than its session read it
+        // is refused -- with the margin off, so this is the floor talking
+        // and nothing else.
+        String held = System.getProperty(ClockMargin.MARGIN_PROPERTY);
+        System.setProperty(ClockMargin.MARGIN_PROPERTY, "0");
+        try {
+            Path back = tree.newFolder("clock-back").toPath();
+            Session only = new Session(back, "s-seed");
+            only.activation(TARGET, false);
+            only.root(TARGET, "CASE.NOW", "M_NOW", RootKind.CLOCK, "5000",
+                    null, null, true);
+            only.decision(TARGET, "Early#u7", 1, false,
+                    notBefore("4000", "M_NOW"));
+            only.flush();
+            scopeMap(back, targetSite("REGION.target", "Throw#u30",
+                    "Early#u7"));
+            Path backOut = tree.newFolder("clock-back-out").toPath();
+            Path backWave = backOut.resolve("obligations-0000");
+            plan(back, TARGET_SELECTOR, null,
+                    backOut.resolve("results.jsonl"), backWave, 0);
+            Worker refused = solve(back, backWave,
+                    obligations(backWave).get(0), backOut, "w0");
+            assertEquals("4000 >= now needs a clock this execution had "
+                            + "already passed", Verdict.UNSAT,
+                    refused.verdict);
+        } finally {
+            if (held == null) {
+                System.clearProperty(ClockMargin.MARGIN_PROPERTY);
+            } else {
+                System.setProperty(ClockMargin.MARGIN_PROPERTY, held);
+            }
+        }
+    }
+
+    /**
+     * {@code expiryDate >= now} as the JVM decides it: {@code lcmp} and a
+     * branch on its result, which is the shape every one of hdfs-11741's
+     * clock guards is published in.
+     */
+    private static String notBefore(String left, String right) {
+        return "(>= " + edu.uva.liftlab.graphchecker.smt
+                .JavaPrimitiveSmtSemantics.integralCompareResult(left, right)
+                + " 0)";
+    }
+
+    /** Why a worker said what it said, for a failure message. */
+    private static String detail(Worker worker) throws IOException {
+        List<ObligationResult> rows = RowCodec.readAll(
+                worker.directory.resolve("obligation_result.jsonl"),
+                RowCodec::readObligationResult);
+        return rows.isEmpty() ? "" : rows.get(0).detail();
+    }
+
+    private static String query(Worker worker) throws IOException {
+        return new String(Files.readAllBytes(
+                worker.directory.resolve("obligation_query.smt2")),
+                java.nio.charset.StandardCharsets.UTF_8);
+    }
+
     // ---- driving the stage the way the campaign drives it -------------
 
     /**
