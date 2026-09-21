@@ -781,12 +781,24 @@ final class ActiveRegion {
                 mintOccurrence(safe(action.symbol)));
         symbolizedRows.add(row);
         // I4: a decision row carries the clock cells its own term names, and
-        // a term names one by the symbol this mint installed -- so the cell
-        // is filed here, where the mint runs, and not at the publication of
-        // the row: activations publish innermost first, and a decision of an
-        // activation nested inside this one is published before this row
-        // exists.
-        RowPlaceholderMint.noteClockCell(row);
+        // a term names one by the VM SYMBOL this mint installed -- so the
+        // cell is filed HERE, where the mint runs, rather than where the
+        // root row is published: activations publish innermost first, and a
+        // decision of an activation nested inside this one is published
+        // before this row exists (11741's removeExpiredKeys closes before
+        // the updateKeys rotation whose clock its decisions read).
+        //
+        // The three statements the root row will carry, off this same row:
+        // only a MINT (a reused symbol is another mint's root), only a
+        // declared CLOCK, and the port id -- which is the root id of a
+        // manual mint, because it states no sourceId of its own.
+        if (minted && action.declaresWallClockRead()) {
+            String installed = optionalString(row, "rawSymbol");
+            RowRuntime.clockCell(installed.isEmpty()
+                            ? safe(requestedSymbol) : installed,
+                    safe(action.symbol),
+                    RowPublication.literal(safe(recordedValue)));
+        }
     }
 
     /**
