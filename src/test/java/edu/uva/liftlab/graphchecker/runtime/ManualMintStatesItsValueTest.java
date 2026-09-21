@@ -56,6 +56,18 @@ public class ManualMintStatesItsValueTest {
     private static final String REGION = "REGION.9492ec77";
     private static final String PLANNED =
             NODE + "#epoch1/region/" + REGION + "#1";
+    /** The tick frame every occurrence of this fixture stands on. */
+    private static final String TICK_FRAME = "<a.Manager: void tick()>@0";
+    /** The occurrence a focused replay runs symbolic, and its task. */
+    private static final String FOCUSED_TASK = "TASK.FOCUSED";
+    private static final String FOCUSED_ADDRESS =
+            NODE + "#epoch1/region/" + REGION + "/ctx:Root:CLIENT#1/idx:"
+                    + TICK_FRAME;
+    /** And one that merely runs alongside it, concretely. */
+    private static final String CONCRETE_TASK = "TASK.CONCRETE";
+    private static final String CONCRETE_ADDRESS =
+            NODE + "#epoch1/region/" + REGION + "/ctx:Root:CLIENT#2/idx:"
+                    + TICK_FRAME;
 
     private final List<Long> opened = new ArrayList<>();
     private String occurrenceId = PLANNED;
@@ -614,6 +626,177 @@ public class ManualMintStatesItsValueTest {
                 oneSymbolPerSite(row).size());
     }
 
+    /**
+     * A configured source mints where its occurrence runs SYMBOLIC.
+     *
+     * <p>README SS9 rule 1: a concretely run region contributes literals,
+     * never freedom.  The hook fires wherever its site runs -- occurrences
+     * do not nest, so everything executed synchronously below an
+     * occurrence belongs to it -- and the mint used to be made on whatever
+     * activation was on the thread.  On hdfs-11741 that is {@code
+     * HDFS.BLOCK_KEY.EXPIRY_DATE{,.CURRENT,.RETIRED}} and {@code
+     * SERIAL_NO}: where {@code updateKeys} ran concrete the expiry field
+     * was a literal and three fresh INTEGRAL roots were minted beside it,
+     * which decouples the expiry from the clock it is computed from and
+     * left twelve wave-1 obligations {@code ASSIGNMENT_UNMINTABLE} on
+     * roots no replay could plant.</p>
+     */
+    @Test
+    public void aHookMintsOnlyWhereItsOccurrenceRunsSymbolic()
+            throws Exception {
+        openSession();
+        CausynthTraceRecorder.setRecordingStartedForTests(true);
+        ActiveRegion concrete = addressed(open(taskAt(CONCRETE_TASK,
+                CONCRETE_ADDRESS)), CONCRETE_ADDRESS);
+        ActiveRegion focused = addressed(open(taskAt(FOCUSED_TASK,
+                FOCUSED_ADDRESS)), FOCUSED_ADDRESS);
+
+        // THE SEED FOCUSES NOTHING, so every planned occurrence of it runs
+        // symbolic and every mint it makes stands: this rule changes no
+        // recording.
+        FocusedReplay.resetForTests();
+        assertTrue("a replay handed no focus row mints at every planned "
+                        + "occurrence",
+                ActiveRegion.mintsUnderSymbolicOccurrence(concrete,
+                        SOURCE_ID, FIELD));
+        assertTrue("and says nothing about it", gaps().isEmpty());
+
+        focusRow("{\"taskId\":\"" + FOCUSED_TASK + "\",\"obligationId\":"
+                + "\"OBL.9\",\"pathId\":\"PATH.9\",\"seedSessionId\":"
+                + "\"s-seed\",\"focused\":\"" + FOCUSED_ADDRESS + "\","
+                + "\"focusedOccurrenceId\":\"" + address(FOCUSED_ADDRESS)
+                .id() + "\","
+                + "\"flip\":{\"siteId\":\"Arrival#u8\",\"ordinal\":1,"
+                + "\"outcome\":true},\"rootAssignments\":{},"
+                + "\"clockDeltas\":{},\"rootMints\":{},"
+                + "\"answers\":{},\"unproducible\":[]}");
+
+        long invocation = CausynthTraceRecorder.beginCall(0L, PHASE_METHOD,
+                UNIT, PHASE_METHOD, new Object());
+        try {
+            // A HOOK UNDER NO OCCURRENCE AT ALL.  Nothing to mint on and
+            // nothing to attribute to, so it mints nothing and says which
+            // source it left concrete.
+            assertFalse("a hook outside every occurrence mints nothing",
+                    ConcolicRegionRuntime.symbolizeConfiguredSourceField(
+                            SOURCE_ID, new Object(), FIELD));
+            assertEquals(GapKind.DECLARATION_MISSING, gap().kind());
+            assertFalse("nothing was rewritten, so nothing blocks",
+                    gap().blocking());
+            assertEquals("named by the root it is about", SOURCE_ID,
+                    gap().subject());
+            assertTrue(gap().detail(), gap().detail().contains("none"));
+
+            // AND UNDER ONE THIS REPLAY RUNS CONCRETELY.  The row names the
+            // occurrence that was active; nothing is minted and nothing is
+            // planted, so the region reads its own literal back.
+            entered(concrete);
+            assertFalse("a concretely run occurrence mints no root",
+                    ConcolicRegionRuntime.symbolizeConfiguredSourceField(
+                            SOURCE_ID, new Object(), FIELD));
+            left(concrete);
+            assertTrue("and publishes no mint row to plant into",
+                    symbolizedRows(concrete).isEmpty());
+            assertTrue(gap().detail(),
+                    gap().detail().contains(CONCRETE_ADDRESS));
+            assertEquals("one row per occurrence, however often the hook "
+                    + "fires", 2, gaps().size());
+
+            // THE FOCUSED OCCURRENCE MINTS AS BEFORE.  Both halves of the
+            // hook: a concrete value mints this site's one symbol, and a
+            // field that arrived carrying an expression of its own mints
+            // none and says {@code reused}.
+            assertTrue("the occurrence this replay runs symbolic mints",
+                    ActiveRegion.mintsUnderSymbolicOccurrence(focused,
+                            SOURCE_ID, FIELD));
+            RootMint.SourceSiteEntry entry =
+                    focused.observeConfiguredSourceEntry(SOURCE_ID, FIELD);
+            assertNotNull("at its own declared site", entry);
+            assertEquals("and files nothing to explain itself", 2,
+                    gaps().size());
+            String symbol = ConfiguredSourcePhaseContract
+                    .engineLabelForPhase(phaseId(FOCUSED_ADDRESS), SOURCE_ID);
+            focused.recordConfiguredSourceMint(entry, SOURCE_ID, FIELD,
+                    symbol, symbolExpression(symbol), false, "true");
+            RowPlaceholderMint.roots(focused, address(FOCUSED_ADDRESS));
+            List<edu.uva.liftlab.graphchecker.contract.RootMintRow> minted =
+                    roots();
+            assertEquals("the concrete value is this site's root", 1,
+                    minted.size());
+            assertEquals(SOURCE_ID, minted.get(0).rootId());
+            assertEquals(symbol, minted.get(0).symbol());
+            assertEquals("true", minted.get(0).recordedValue());
+
+            ActiveRegion again = addressed(open(taskAt(FOCUSED_TASK,
+                    FOCUSED_ADDRESS)), FOCUSED_ADDRESS);
+            RootMint.SourceSiteEntry reused =
+                    again.observeConfiguredSourceEntry(SOURCE_ID, FIELD);
+            assertNotNull("a symbolic arrival is the same declared site",
+                    reused);
+            again.recordConfiguredSourceMint(reused, SOURCE_ID, FIELD,
+                    symbol, symbolExpression(symbol), true, "true");
+            assertTrue("the row states what the region read back",
+                    symbolizedRows(again).get(0).get("reused")
+                            .getAsBoolean());
+            RowPlaceholderMint.roots(again, address(FOCUSED_ADDRESS));
+            assertEquals("one symbol, one root: a reused read mints none",
+                    1, roots().size());
+        } finally {
+            CausynthTraceRecorder.endCall(invocation, null, "");
+        }
+    }
+
+    /** One expression naming one VM symbol, as a mint publishes it. */
+    private static JsonObject symbolExpression(String symbol) {
+        JsonObject expression = new JsonObject();
+        expression.addProperty("_type", "SymbolExpression");
+        expression.addProperty("_java_type", "Z");
+        expression.addProperty("_exp", symbol);
+        return expression;
+    }
+
+    /** The activation, carrying the v3 address its rows are keyed by. */
+    private static ActiveRegion addressed(ActiveRegion active,
+                                          String rendered) {
+        active.d3Address = address(rendered);
+        return active;
+    }
+
+    /** Enters one activation on this thread's region stack. */
+    private static void entered(ActiveRegion active) throws Exception {
+        tokens().push(Long.valueOf(active.token));
+    }
+
+    /** And leaves it, the way the region hook's exit does. */
+    private static void left(ActiveRegion active) throws Exception {
+        tokens().remove(Long.valueOf(active.token));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static java.util.Deque<Long> tokens() throws Exception {
+        Field stack = ConcolicRegionRuntime.class
+                .getDeclaredField("CURRENT_TOKENS");
+        stack.setAccessible(true);
+        return ((ThreadLocal<java.util.Deque<Long>>) stack.get(null)).get();
+    }
+
+    /** The root mint rows this session published. */
+    private List<edu.uva.liftlab.graphchecker.contract.RootMintRow> roots()
+            throws Exception {
+        return RowCodec.readAll(SessionDir.of(
+                        session.getRoot().toPath().resolve("iteration-0000"),
+                        RowRuntime.sessionId()).roots(),
+                RowCodec::readRootMint);
+    }
+
+    /** Every gap ROW this session published. */
+    private List<GapRow> gaps() throws Exception {
+        return RowCodec.readAll(SessionDir.of(
+                        session.getRoot().toPath().resolve("iteration-0000"),
+                        RowRuntime.sessionId()).gaps(),
+                RowCodec::readGap);
+    }
+
     /** Every VM label a catalog of one site asks for: exactly one. */
     private static java.util.Set<String> oneSymbolPerSite(JsonObject row) {
         JsonArray catalog = new JsonArray();
@@ -733,10 +916,7 @@ public class ManualMintStatesItsValueTest {
 
     /** The last gap ROW this session published: one gap vocabulary. */
     private GapRow gap() throws Exception {
-        List<GapRow> rows = RowCodec.readAll(SessionDir.of(
-                        session.getRoot().toPath().resolve("iteration-0000"),
-                        RowRuntime.sessionId()).gaps(),
-                RowCodec::readGap);
+        List<GapRow> rows = gaps();
         return rows.isEmpty() ? null : rows.get(rows.size() - 1);
     }
 
@@ -786,6 +966,13 @@ public class ManualMintStatesItsValueTest {
         loopBound.addProperty("schemaVersion", 1);
         loopBound.addProperty("defaultBackedgeTraversals", 8);
         encoded.add("loopBound", loopBound);
+        return encoded;
+    }
+
+    /** The same row, as a named task of one addressed occurrence. */
+    private static JsonObject taskAt(String taskId, String occurrence) {
+        JsonObject encoded = phaseTask(NODE + "#epoch1", occurrence);
+        encoded.addProperty("taskId", taskId);
         return encoded;
     }
 
