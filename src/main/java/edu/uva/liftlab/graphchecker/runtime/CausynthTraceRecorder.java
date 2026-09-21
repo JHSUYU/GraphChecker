@@ -240,6 +240,14 @@ public final class CausynthTraceRecorder {
      * the node by {@code RuntimeTraceContext.activationSource}, which is the
      * rule the replay evaluates at its own root entry.  The region is not
      * opened here: the recording indexes no endpoints from it.</p>
+     *
+     * <p>Which means the FOLD is the same one the replay takes: a declared
+     * region entered synchronously inside another region's occurrence opens
+     * none of its own ({@code Identity#fold}, paper SS3.1.2), so the address
+     * this row carries for such an entry is the enclosing occurrence's -- and
+     * the plan built from these rows names the occurrence the replay will
+     * open.  Two passes cannot disagree about it because neither of them
+     * decides it.</p>
      */
     private static String occurrenceAddress(String nodeKey, String regionId) {
         edu.uva.liftlab.graphchecker.contract.OccurrenceAddress address =

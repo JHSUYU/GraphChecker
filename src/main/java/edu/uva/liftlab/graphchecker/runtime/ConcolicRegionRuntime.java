@@ -765,6 +765,16 @@ public final class ConcolicRegionRuntime {
      * same skeleton file the recording read: frames and the occurrence
      * address, and no row -- an activation row belongs to the planned
      * occurrences alone.</p>
+     *
+     * <p>Whether this entry OPENS an occurrence is {@code Identity#fold}'s to
+     * decide and not this hook's: a declared region entered synchronously
+     * inside another region's occurrence is folded into it, and only an entry
+     * on a thread running no occurrence opens one (paper SS3.1.2).  The one
+     * function decides it here and in the recording alike
+     * ({@code CausynthTraceRecorder#enterMethod}), so the occurrence the plan
+     * names is the occurrence this pass opens.  The push is unconditional
+     * either way -- a folded entry pushes the marker its own exit pops -- so
+     * the balance check below is over the same two stacks as before.</p>
      */
     public static long enterRegionEntry(String regionId, String rootMethod,
                                         Object receiver) {

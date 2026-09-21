@@ -182,6 +182,25 @@ public final class Identity {
         }
 
         /**
+         * The occurrence running on this thread right now, or null.
+         *
+         * <p>THE test the fold rule asks ({@link #occurrence}): an entry
+         * opens an occurrence only when there is none.  A region entry
+         * inherited across a thread boundary carries its DEPTH and not its
+         * occurrence ({@link #copy}), so a child thread answers null here
+         * and the first declared region it enters opens its own -- which is
+         * what "an occurrence ends when execution crosses a thread or
+         * process boundary" means (paper SS3.1.2).</p>
+         */
+        private Region activeRegion() {
+            for (int index = regions.size() - 1; index >= 0; index--) {
+                Region open = regions.get(index);
+                if (open.occurrence != null) return open;
+            }
+            return null;
+        }
+
+        /**
          * Journals the frames now standing, for the VM's logged events.
          *
          * <p>Every open region, not only the innermost: an enclosing
@@ -746,6 +765,12 @@ public final class Identity {
      * and every read it logs from inside this activation, so an event and the
      * frames it stood on are joined by the VM's statement rather than by the
      * runtime guessing which activation was live.</p>
+     *
+     * <p>A FOLDED entry keys a journal of its own -- the VM numbers its
+     * region entry whether or not this class opens an occurrence for it --
+     * and that journal measures from the base of the occurrence the entry
+     * folded into, which is the occurrence that performed the events it
+     * holds ({@link #fold}).</p>
      */
     public static void regionKey(long vmRegionEnterEventId) {
         State state = state();
@@ -756,7 +781,12 @@ public final class Identity {
     }
 
     /**
-     * Closes the innermost open region.
+     * Closes the innermost open region entry.
+     *
+     * <p>One pop per entry, folded or not: a folded entry pushed a marker
+     * ({@link #fold}) and this pops that marker, so the exit hook of a region
+     * that was folded cannot close the occurrence it folded into.  Only the
+     * entry that opened an occurrence pops the region that carries it.</p>
      *
      * <p>No counter cleanup, and nothing here to clean: counts live in the
      * levels, keyed by (level, root hop, site), and a region holds none.
@@ -839,10 +869,11 @@ public final class Identity {
      * <p>{@code null} when this run can name no node to put the occurrence
      * on -- a guessed node is a wrong causal chain.</p>
      *
-     * @param open whether the region is opened here (the replay: every
-     *             endpoint inside is indexed from this entry) or only read
-     *             (the recording and admission, which must not move the base
-     *             the endpoints of an already-open region are indexed from)
+     * @param open whether this is a region ENTRY -- which opens an occurrence
+     *             when the thread runs none and is folded into the running
+     *             one when it does ({@link #fold}) -- or only a read (the
+     *             recording and admission, which must not move the base the
+     *             endpoints of an already-open region are indexed from)
      */
     public static OccurrenceAddress occurrence(String nodeKey, String regionId,
                                                boolean open) {
@@ -852,6 +883,10 @@ public final class Identity {
             return null;
         }
         nodeKey = node;
+        if (open) {
+            OccurrenceAddress enclosing = fold();
+            if (enclosing != null) return enclosing;
+        }
         ExecutionIndex index = open ? regionEnter() : atScope();
         OccurrenceAddress address = OccurrenceAddress.of(
                 NodeId.parse(Text.safe(nodeKey)), Text.safe(regionId),
@@ -862,6 +897,73 @@ public final class Identity {
             if (region != null) region.occurrence = address;
         }
         return address;
+    }
+
+    /**
+     * Folds one declared region entry into the occurrence already running.
+     *
+     * <p>THE FOLD RULE (paper SS3.1.2: sites connected by synchronous calls
+     * are one region, and an occurrence ends only when execution crosses a
+     * thread or process boundary).  A declared region method called
+     * synchronously inside another region's occurrence opens NO occurrence
+     * of its own: its entry is folded, and every site executed below it --
+     * decisions, reads, writes, exports, attaches, hook mints -- is an event
+     * of the occurrence that was already running.  A declared region opens
+     * its own occurrence only on a thread where none is.</p>
+     *
+     * <p>Decided by the CALL STACK and by nothing else: which obligation a
+     * replay focuses, which task a plan named, what a region is called -- all
+     * out.  So the recording and the replay fold at the same entries, which
+     * they must, because the plan names the occurrences the replay is asked
+     * to open ({@code CausynthTraceRecorder#enterMethod} and {@code
+     * ConcolicRegionRuntime#enterRegionEntry} both reach this one function).
+     * Before this, dn1's {@code addKeys} (REGION.ba3902cd) calling {@code
+     * removeExpiredKeys} (REGION.094a8e3d) opened a NESTED occurrence
+     * {@code 845fa3841a35af67} inside one synchronous call.</p>
+     *
+     * <p>OWNERSHIP is the pushed marker.  A folded entry still pushes a
+     * region -- with the enclosing occurrence's base and no occurrence of its
+     * own -- so the one exit hook that pairs with this entry pops the marker
+     * and cannot close the occurrence it folded into.  An entry that OPENS
+     * an occurrence is the only entry whose exit closes one, and the two
+     * stacks stay balanced for the check {@code
+     * ConcolicRegionRuntime#closeRegionEntry} makes.</p>
+     *
+     * <p>The folded region's base is the enclosing entry's, so the site
+     * index of an event below it -- and the frames its journal hands the VM's
+     * logged events -- are measured from the occurrence that performed it
+     * (IDENTITY-IMPL SSA).  The enclosing occurrence's own address does not
+     * move: nothing is pushed above its base and its address was minted when
+     * it was entered.</p>
+     *
+     * @return the occurrence this entry folded into, or null when this
+     *         thread runs none and the entry opens its own
+     */
+    private static OccurrenceAddress fold() {
+        State state = state();
+        Region running = state.activeRegion();
+        if (running == null) return null;
+        state.regions.add(new Region(running.base));
+        return running.occurrence;
+    }
+
+    /**
+     * The occurrence the entry standing here folded into, or null.
+     *
+     * <p>Null when the innermost entry OPENED an occurrence of its own, and
+     * null when this thread has entered no region at all: the answer is only
+     * ever "this entry is not an occurrence, that one is".  Admission asks it
+     * ({@code ConcolicTaskPlan.RuntimeTask#observedAddress}) because the
+     * activation a folded entry starts is an activation OF the occurrence it
+     * folded into, and the plan names that occurrence -- the recording folded
+     * at the same entry, by the same rule, in the same function.</p>
+     */
+    public static OccurrenceAddress foldedOccurrence() {
+        State state = state();
+        Region innermost = state.region();
+        if (innermost == null || innermost.occurrence != null) return null;
+        Region running = state.activeRegion();
+        return running == null ? null : running.occurrence;
     }
 
     /**
@@ -1051,11 +1153,21 @@ public final class Identity {
 
     private static volatile FrameJournal.Clock CLOCK = UNAVAILABLE;
 
-    /** One open region activation: where its endpoints are indexed from. */
+    /**
+     * One open region entry: where its endpoints are indexed from.
+     *
+     * <p>Two kinds, one stack.  An entry that OPENED an occurrence carries
+     * it; an entry that was FOLDED into the occurrence already running
+     * ({@link #fold}) carries none and inherits the opener's base, so it is
+     * a pure ownership marker: its exit pops it and closes nothing.</p>
+     */
     private static final class Region {
         private final int base;
         private FrameJournal journal;
-        /** The occurrence this activation is, for the endpoints inside it. */
+        /**
+         * The occurrence this entry opened, or null when it was folded into
+         * the one already running on this thread.
+         */
         private OccurrenceAddress occurrence;
 
         private Region(int base) {

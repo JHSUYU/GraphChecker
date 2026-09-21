@@ -821,6 +821,82 @@ public class RowRuntimeTest {
     }
 
     /**
+     * I1: the enclosing occurrence wins.
+     *
+     * <p>A declared region method called synchronously inside another
+     * region's occurrence opens NO occurrence of its own -- sites connected
+     * by synchronous calls are one region, and an occurrence ends only when
+     * execution crosses a thread or process boundary (paper SS3.1.2).  On
+     * hdfs-11741 dn1 that is {@code addKeys} (REGION.ba3902cd) calling
+     * {@code removeExpiredKeys} (REGION.094a8e3d), which used to open the
+     * nested occurrence {@code 845fa3841a35af67} and take every decision,
+     * read and mint of the call with it.</p>
+     */
+    @Test
+    public void aNestedDeclaredRegionFoldsIntoTheRunningOccurrence() {
+        Identity.resetForTests();
+        Lineage.resetForTests();
+        RuntimeTraceContext.resetForTests();
+        Object keyManager = new Object();
+        RuntimeTraceContext.registerSource(keyManager, NN);
+        Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
+
+        Identity.enterFrame("<a.BlockTokenSecretManager: void addKeys()>#u1");
+        OccurrenceAddress addKeys = Identity.occurrence(NN.key(),
+                "REGION.ba3902cd", true);
+        assertNotNull(addKeys);
+        String opened = addKeys.render();
+
+        // The synchronous call into the nested declared region, through the
+        // woven entry hook itself.
+        long nestedFrame = Identity.enterFrame(
+                "<a.BlockTokenSecretManager: void removeExpiredKeys()>#u7");
+        long entry = ConcolicRegionRuntime.enterRegionEntry(
+                "REGION.094a8e3d",
+                "<a.BlockTokenSecretManager: void removeExpiredKeys()>",
+                keyManager);
+        assertEquals("the entry is an event of the occurrence already"
+                        + " running, so it opens none of its own",
+                addKeys, Identity.currentOccurrence(NN.key()));
+        assertEquals("both entries stand on the region stack: the folded one"
+                        + " pushed the marker its own exit pops", 2,
+                Identity.regionDepth());
+        assertEquals("and the enclosing occurrence's address never moved",
+                opened, addKeys.render());
+
+        // A site below the fold is indexed from the entry that OPENED the
+        // occurrence, so its idx: frames carry the folded region's own
+        // method -- the call path is what the index is for.
+        long deeper = Identity.enterFrame("<a.Key: long getExpiryDate()>#u2");
+        assertEquals("<a.BlockTokenSecretManager: void"
+                        + " removeExpiredKeys()>#u7@0"
+                        + "/<a.Key: long getExpiryDate()>#u2@0",
+                Identity.siteIndex().render());
+        Identity.exitFrame(deeper);
+
+        // The folded region's exit closes nothing.
+        ConcolicRegionRuntime.exitRegionEntry(entry);
+        Identity.exitFrame(nestedFrame);
+        assertEquals("one region open: the one that opened the occurrence",
+                1, Identity.regionDepth());
+        assertEquals("and it is still the occurrence this thread runs",
+                addKeys, Identity.currentOccurrence(NN.key()));
+
+        // A declared region on a thread running no occurrence opens its own.
+        Identity.resetForTests();
+        Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
+        Identity.enterFrame(
+                "<a.BlockTokenSecretManager: void removeExpiredKeys()>#u7");
+        OccurrenceAddress alone = Identity.occurrence(NN.key(),
+                "REGION.094a8e3d", true);
+        assertNotNull("no occurrence was running, so this entry opens one",
+                alone);
+        assertEquals("REGION.094a8e3d", alone.regionId());
+        assertEquals(1, Identity.regionDepth());
+        assertEquals(alone, Identity.currentOccurrence(NN.key()));
+    }
+
+    /**
      * The execution index, and why it is not an ordinal.
      *
      * <p>Folded into the daemon-tick case because it is the same question:
