@@ -127,6 +127,17 @@ workflow_config_keys=(
   # Per solver run, in milliseconds.  The composer runs z3 once per
   # valuation while it composes, so this is the budget of one of those runs.
   "solver_timeout_ms CAUSYNTH_SOLVER_TIMEOUT_MS krp -"
+  # The wall clock ONE focused replay may take, in seconds.  The solver had a
+  # budget and the replay had none: on 11741 campaign #4 one replay JVM
+  # deadlocked on two class monitors (Interactions/InteractionRefusals) and
+  # its worker never returned, so campaign_wait_workers held wave 1 open
+  # until accept.sh's own `timeout 21600` killed the campaign six hours
+  # later, discarding every verdict the wave had already reached.  A replay
+  # that exceeds this is that obligation's own NOT_ADMITTED row, not the
+  # wave's death.  Defaulted rather than required: every shipped config
+  # predates the key, and an absent bound is exactly the unbounded wait this
+  # exists to end.
+  "replay_timeout_s CAUSYNTH_REPLAY_TIMEOUT_S krp 2400"
   # How many root valuations the composer enumerates around the recorded one.
   # The composer runs z3 per valuation while it composes, so this bounds the
   # solving a campaign does, not a separate stage's budget.
@@ -466,7 +477,7 @@ validate_config() {
   # name -- a truncated schedule, an unbounded solve -- so a run without them
   # does not start.
   local key
-  for key in solver_timeout_ms schedule_max_jobs \
+  for key in solver_timeout_ms replay_timeout_s schedule_max_jobs \
       concolic_worker_count campaign_max_iterations \
       region_path_max_waves compose_max_valuations \
       campaign_max_epochs causynth_loop_default_bound; do
@@ -1250,6 +1261,38 @@ require_command_available() {
   command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
 }
 
+# How long this adapter run may take, in seconds, or empty for unbounded.
+#
+# One variable, read in one place (campaign_run_adapter), set by the one
+# caller that has a bound to impose: campaign_obligation_worker, around the
+# focused replay.  SETUP and the SEED replay leave it empty, which is what
+# they had before.
+campaign_adapter_timeout_s=""
+
+# What an adapter that outlived its bound exits with.  124 is `timeout`'s own
+# code for "the command timed out"; 137 is the command killed by SIGKILL,
+# which is what --kill-after sends to anything that ignored the TERM.
+campaign_adapter_timeout_status=124
+campaign_adapter_killed_status=137
+
+# How long a bounded adapter is given to die of SIGTERM before SIGKILL.
+campaign_adapter_kill_grace_s=30
+
+# One command under a wall-clock bound, in its own process group.
+#
+# `timeout` is not given --foreground, so it puts itself and the command in a
+# NEW process group and signals that whole group on expiry: the adapter's
+# login shell, the workload's launcher and the replay JVM it forked all
+# receive it, which is the point -- the hung replay of 11741 campaign #4 was
+# a JVM three processes below the worker, and signalling only the shell would
+# have left it running.  Verified on coreutils 8.32: a grandchild of the
+# bounded command is gone when it returns 124.
+run_under_wall_clock_bound() {
+  local seconds=$1
+  shift
+  timeout --kill-after="${campaign_adapter_kill_grace_s}s" "${seconds}s" "$@"
+}
+
 campaign_run_adapter() {
   local label=$1
   local command=$2
@@ -1261,8 +1304,17 @@ campaign_run_adapter() {
     "GRAPHCHECKER_JAR=${graphchecker_jar}"
     "$@"
   )
+  # The bound, as a command prefix: an empty one is the unbounded call this
+  # was before, with no `timeout` in the picture at all.
+  local -a bound=()
+  if [[ -n "${campaign_adapter_timeout_s}" ]]; then
+    bound=(run_under_wall_clock_bound "${campaign_adapter_timeout_s}")
+    campaign_log "${label} adapter bound: ${campaign_adapter_timeout_s}s"
+  fi
   campaign_log "${label} adapter: ${command}"
-  (cd "${workload_work_dir}" && env "${adapter_env[@]}" bash -lc "${command}")
+  (cd "${workload_work_dir}" \
+    && "${bound[@]+"${bound[@]}"}" env "${adapter_env[@]}" \
+      bash -lc "${command}")
 }
 
 campaign_setup() {
@@ -1753,10 +1805,16 @@ campaign_verify_woven_classes() {
 # model the workload never realized, and campaign_obligation_worker already records
 # that as REPLAY_NOT_ADMITTED, so it passes "tolerated" and keeps that
 # recorded outcome instead of ending the campaign.
+# Whether the last campaign_replay was killed on its wall-clock bound.  Read
+# by the caller that set the bound; every other caller leaves the bound empty
+# and this false.
+campaign_replay_timed_out=false
+
 campaign_replay() {
   local role=$1 plan=$2 ids=$3 classes=$4 results=$5 worker=$6
   local region_results=${7:-required}
   local status=0
+  campaign_replay_timed_out=false
   # Where this replay writes its per-kind rows.  A focused replay is a
   # session: every row it publishes is keyed by it, and every later stage
   # reads the session rather than a folded result.
@@ -1785,6 +1843,31 @@ campaign_replay() {
     "CAUSYNTH_TRACE_MODE=replay-context" \
     "CAUSYNTH_STATIC_SCOPE_MAP=${causynth_static_scope_map}" \
     >"${worker}/replay.log" 2>&1
+  # The one exit code that is NOT the workload's own: this replay outlived
+  # the wall clock its caller gave it and the process group was killed.  Said
+  # here, as a fact of the run, and answered by the caller that set the bound
+  # -- campaign_replay is not the place that owns what an unfinished
+  # obligation means.
+  if [[ -n "${campaign_adapter_timeout_s}" ]] \
+      && { [[ "${status}" -eq "${campaign_adapter_timeout_status}" ]] \
+        || [[ "${status}" -eq "${campaign_adapter_killed_status}" ]]; }; then
+    campaign_replay_timed_out=true
+    campaign_log "replay role=${role} exceeded \
+replay_timeout_s=${campaign_adapter_timeout_s} (exit ${status}); its process \
+group was killed and its session states no verdict: ${sessions}"
+    # A caller whose replay is the iteration's only source of observed cases
+    # cannot absorb a truncated one, and a killed JVM may well have published
+    # rows before it died -- enough for the evidence gate below to pass on a
+    # recording that stopped halfway.  Fail closed for those; the caller that
+    # says `tolerated` owns the outcome and reads it back.
+    if [[ "${region_results}" == required ]]; then
+      campaign_fail REPLAY WORKLOAD "${sessions}" \
+        "the concolic replay exceeded its wall-clock bound of \
+${campaign_adapter_timeout_s}s and was killed; what it published is a \
+truncated run and its log is in ${worker}/replay.log"
+    fi
+    return 0
+  fi
   # A workload whose target branch throws exits nonzero by design, so the gate
   # is the evidence it published and not its exit code.  That evidence is the
   # session: one JSONL file per row kind (CONTRACT-SPEC SS2), and a session
@@ -2091,9 +2174,32 @@ campaign_obligation_worker() {
   replay_tasks=$(campaign_task_ids "${plan}")
   [[ -n "${replay_tasks}" ]] \
     || die "the seed plan names no task to replay: ${plan}"
+  # Under a wall clock, because a replay JVM that never returns is not a slow
+  # obligation but a stopped wave: campaign_wait_workers waits on this worker
+  # forever, the wave never closes, and the campaign's own outer timeout
+  # eventually discards every verdict the wave DID reach.  On expiry the
+  # whole process group goes (the JVM is a grandchild of this worker) and
+  # this obligation records the same terminal NOT_ADMITTED row a failed
+  # solver records -- one obligation's answer, not the wave's death.
   campaign_sessions_dir="${sessions}" \
+    campaign_adapter_timeout_s="${replay_timeout_s}" \
     campaign_replay worker "${plan}" "${replay_tasks}" "${classes}" \
       "${results}" "${worker}" tolerated
+  if [[ "${campaign_replay_timed_out}" == true ]]; then
+    campaign_log "obligation ${obligation_id}: \
+replay exceeded replay_timeout_s=${replay_timeout_s}"
+    # The session the killed replay was writing is not admitted, and nothing
+    # new says so: Composer.settled reads the obligations the session's
+    # manifest names (written at the OPEN) against the verdicts its rows
+    # state (written at the CLOSE, which never came), and a named obligation
+    # with no verdict row is refused there.
+    jq -n -c --arg id "${obligation_id}" \
+      --arg detail "replay exceeded replay_timeout_s=${replay_timeout_s}" \
+      '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: $id,
+        verdict: "NOT_ADMITTED", sessionId: "", detail: $detail}' \
+      >"${result_row}"
+    return 0
+  fi
   # THE REPLAY OWNS THE VERDICT.  RowRuntime.closeSession rewrites this
   # file with the rows FocusedReplay.results built -- the same rows it
   # publishes into the session, which is the evidence -- so there is

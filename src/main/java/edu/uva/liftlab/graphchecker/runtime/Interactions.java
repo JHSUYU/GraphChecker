@@ -13,6 +13,20 @@ import java.util.Map;
  * files its endpoint here when it stages the value; the consumer asks for
  * it when it mints, and a consumer that finds nothing publishes an unpaired
  * row rather than guessing a producer.</p>
+ *
+ * <p>LOCK ORDER: {@code Interactions} then {@link InteractionRefusals},
+ * NEVER the reverse.  Both classes guard their store with their own class
+ * monitor and each calls into the other, so the pair has exactly one safe
+ * order and it is this one: a thread may hold the {@code Interactions}
+ * monitor and take the {@code InteractionRefusals} monitor -- which is what
+ * {@link #sent} and {@link #sharedProducer} do -- and a thread inside
+ * {@code InteractionRefusals} must own nothing of its own when it calls back
+ * here.  The reverse edge was real: {@code InteractionRefusals.filedProducers}
+ * was {@code synchronized} and delegated to {@link #filedProducers}, so a
+ * refusal being rendered on the main thread and a DataNode heartbeat inside
+ * {@link #sharedProducer} deadlocked on the two class monitors (thread dump
+ * deadlock-21177cdb: "Found one Java-level deadlock", 11741 campaign #4,
+ * which held wave 1 open until the campaign's own wall clock ran out).</p>
  */
 public final class Interactions {
     /** Bounded: a long run must not retain every message it ever sent. */
@@ -212,6 +226,13 @@ public final class Interactions {
                 }
             };
 
+    /**
+     * Clears both stores.
+     *
+     * <p>Takes the two monitors in the declared order -- this one, then
+     * {@link InteractionRefusals}'s -- so it is one more edge of the same
+     * direction and cannot close a cycle.</p>
+     */
     public static synchronized void resetForTests() {
         MESSAGES.clear();
         InteractionRefusals.resetForTests();
