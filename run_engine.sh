@@ -1970,10 +1970,15 @@ ${blocking} blocking"
 # set built from the wave alone never holds the seed, so every wave of every
 # case refused "0 of N sessions state role SEED".  The wave's own sessions
 # decide only WHETHER this gate runs, not what it reads.
+#
+# The gate directory sits OUTSIDE the waves it links, at
+# ${iteration_dir}/import-gates/<wave>.  Built inside the wave it would hold
+# a link to its own ancestor, and a walker that recurses would loop; the
+# wave keeps its own summary (import_gate.json) and nothing else.
 campaign_import_wave_gate() {
   local iteration_dir=$1 iteration_id=$2 wave_dir=$3 sessions=$4
   local before="${wave_dir}/sessions-before.txt"
-  local gate="${wave_dir}/import-gate"
+  local gate="${iteration_dir}/import-gates/$(basename "${wave_dir}")"
   local name count=0
   require_file "wave session roster" "${before}"
   rm -rf -- "${gate}"
