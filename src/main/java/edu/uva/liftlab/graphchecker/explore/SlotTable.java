@@ -661,14 +661,31 @@ public final class SlotTable {
      * and under IDENTITY-V3 every concurrent request of one entry point is.
      * Reading that as a contradiction closed the frontier of every wave and
      * proposed nothing.</p>
+     *
+     * <p>So the rule is per code point: a code point the closure holds is
+     * REPLACED in a replay that ran it only under contexts the closure does
+     * not hold there.  The closure may hold several members at one code
+     * point, and a member that ran is never a replacement of one that did
+     * not.</p>
      */
     private static boolean contextChanged(Corpus corpus, Set<String> closure,
                                           List<GapRow> gaps) {
-        Map<String, OccurrenceAddress> byCodePoint =
-                new LinkedHashMap<String, OccurrenceAddress>();
+        // EVERY member at a code point, not the last one filed: the closure
+        // may hold two occurrences of one code point -- hdfs-17897's dn0
+        // serves the client's handshake and the checksum leader's own at one
+        // SASL callback, both members -- and a map to one member read a
+        // replay that ran the other as a REPLACEMENT of the one it kept.
+        Map<String, List<OccurrenceAddress>> byCodePoint =
+                new LinkedHashMap<String, List<OccurrenceAddress>>();
         for (String id : closure) {
             OccurrenceAddress member = corpus.occurrence(id);
-            if (member != null) byCodePoint.put(codePoint(member), member);
+            if (member == null) continue;
+            List<OccurrenceAddress> members = byCodePoint.get(codePoint(member));
+            if (members == null) {
+                members = new ArrayList<OccurrenceAddress>();
+                byCodePoint.put(codePoint(member), members);
+            }
+            members.add(member);
         }
         boolean replaced = false;
         for (SessionReader session : corpus.sessions()) {
@@ -682,22 +699,32 @@ public final class SlotTable {
             }
             for (ActivationRow activation : session.activations()) {
                 OccurrenceAddress occurrence = activation.occurrence();
-                OccurrenceAddress member =
+                List<OccurrenceAddress> members =
                         byCodePoint.get(codePoint(occurrence));
-                if (member == null || member.id().equals(occurrence.id())) {
-                    continue;
+                if (members == null) continue;
+                // A closure member is never the replacement of another: what
+                // stands there is itself held.
+                if (closure.contains(occurrence.id())) continue;
+                // Some member ran here too: two occurrences of one code
+                // point, which is what a second request IS.
+                boolean memberRan = false;
+                for (OccurrenceAddress member : members) {
+                    if (ran.contains(member.id())) memberRan = true;
                 }
-                // Both ran here: two occurrences of one code point, which is
-                // what a second request IS.
-                if (ran.contains(member.id())) continue;
+                if (memberRan) continue;
+                StringBuilder held = new StringBuilder();
+                for (OccurrenceAddress member : members) {
+                    if (held.length() > 0) held.append(", ");
+                    held.append(member.context().render());
+                }
                 gaps.add(GapRow.of(session.sessionId(),
                         GapKind.TOPOLOGY_DIVERGENCE,
                         authority ? GapClass.BLOCKING : GapClass.DIAGNOSTIC,
                         occurrence.render(),
-                        "the closure holds " + member.context().render()
-                                + " at this code point, this replay did not "
-                                + "run it, and it ran "
-                                + occurrence.context().render() + " there"
+                        "the closure holds " + held
+                                + " at this code point, and this replay ran "
+                                + "it only under "
+                                + occurrence.context().render()
                                 + (authority ? "" : UNADMITTED)));
                 replaced |= authority;
             }

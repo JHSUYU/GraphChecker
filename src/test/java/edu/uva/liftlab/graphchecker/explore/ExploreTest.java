@@ -2038,6 +2038,73 @@ public class ExploreTest {
                         Collections.singleton(firstRequest.id()), 6)
                         .replaced);
 
+        // The closure may hold TWO occurrences of one code point: hdfs-17897's
+        // dn0 serves the client's SASL handshake and the checksum leader's
+        // own at one callback, and the leader's co-reads the key map the
+        // client's reads.  A replay that ran one member and not the other
+        // ran that code point under a context the closure holds -- nothing
+        // stands in the absent one's place.  Each order is asked, because a
+        // table that kept one member per code point read exactly one of
+        // them as a replacement.
+        Set<String> bothMembers = new LinkedHashSet<String>(Arrays.asList(
+                firstRequest.id(), secondRequest.id()));
+        for (OccurrenceAddress alone
+                : Arrays.asList(firstRequest, secondRequest)) {
+            Path oneMember = tree.newFolder("closure-one-member-"
+                    + alone.context().render().hashCode()).toPath();
+            Session seedBoth = new Session(oneMember, "s-seed");
+            seedBoth.activation(firstRequest, false);
+            seedBoth.activation(secondRequest, false);
+            seedBoth.flush();
+            Session ranOne = new Session(oneMember, "s-flip");
+            ranOne.activation(alone, true);
+            ranOne.answered(ObligationResult.of("OBL.s-flip",
+                    Verdict.ADMITTED, "s-flip",
+                    "the focused prefix reproduced"));
+            ranOne.flush();
+            assertFalse("a closure member is never another member's "
+                            + "replacement",
+                    new SlotTable().reconcile(Corpus.read(oneMember, null),
+                            bothMembers, 7).replaced);
+        }
+        // With two members held there, a context the closure does NOT hold
+        // is still a replacement when it ran the code point alone, and still
+        // growth beside a member that ran.
+        OccurrenceAddress stranger = occurrence("hdfs-case/dn0",
+                "REGION.checksum",
+                CausalContext.of("ffeeddccbbaa9988", "HDFS_SASL/checksum"),
+                "o.a.h.h.s.d.DataXceiver#run#44");
+        Path strangerAlone = tree.newFolder("closure-stranger-alone").toPath();
+        Session seedTwo = new Session(strangerAlone, "s-seed");
+        seedTwo.activation(firstRequest, false);
+        seedTwo.activation(secondRequest, false);
+        seedTwo.flush();
+        Session ranStranger = new Session(strangerAlone, "s-flip");
+        ranStranger.activation(stranger, true);
+        ranStranger.answered(ObligationResult.of("OBL.s-flip",
+                Verdict.ADMITTED, "s-flip", "the focused prefix reproduced"));
+        ranStranger.flush();
+        assertTrue("a code point the closure holds, run under no context "
+                        + "it holds there, IS a replacement",
+                new SlotTable().reconcile(Corpus.read(strangerAlone, null),
+                        bothMembers, 8).replaced);
+        Path strangerBeside = tree.newFolder("closure-stranger-beside")
+                .toPath();
+        Session seedThree = new Session(strangerBeside, "s-seed");
+        seedThree.activation(firstRequest, false);
+        seedThree.activation(secondRequest, false);
+        seedThree.flush();
+        Session ranBeside = new Session(strangerBeside, "s-flip");
+        ranBeside.activation(secondRequest, true);
+        ranBeside.activation(stranger, false);
+        ranBeside.answered(ObligationResult.of("OBL.s-flip",
+                Verdict.ADMITTED, "s-flip", "the focused prefix reproduced"));
+        ranBeside.flush();
+        assertFalse("beside a member that ran, another context is a second "
+                        + "request",
+                new SlotTable().reconcile(Corpus.read(strangerBeside, null),
+                        bothMembers, 9).replaced);
+
         // An occurrence the corpus names ONLY in a write row -- no
         // activation, no decision -- cannot be a task: there is no recorded
         // run to focus a replay on.  It used to reach Task.of with an empty
