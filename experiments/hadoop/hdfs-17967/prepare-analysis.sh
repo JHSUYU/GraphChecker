@@ -66,9 +66,22 @@ case "${case_id}" in
     copy_family "${client}" org/apache/hadoop/hdfs/DFSClient
     ;;
   pathB)
-    # Same narrow scope as path A, and for the same reason.  This case has no
-    # client at all: the mover is the test, which does its own SASL send, and
-    # the two DataNode roles are already covered by the shared families.
+    # The mover is the test, so no client family is needed.  DataXceiver IS,
+    # and that is the whole of this case's second hop: the key the proxy has
+    # to resolve is PRODUCED by the target's DataXceiver.replaceBlock, whose
+    # occurrence is a ROLE.DATA_XCEIVER root.  Left out of the scope, no
+    # session states that occurrence's rows and every path through the target
+    # occurrence is an UNATTESTED_ARM on a HandoffLeafCarrier -- 40 of them,
+    # measured 2026-09-22 -- "what was delivered is stated and why is not".
+    # With the read unpinned the clocks are not NECESSARY and ClaimPolicy
+    # falls past CLOCK_SKEW to NO_SUPPORTED_WITNESS.
+    #
+    # The three cases that pass with no such gap each state their producer a
+    # different way: hdfs-17899 bug1's is the mover itself (a registered
+    # EXTERNAL_APP), bug3's is DataNode.DataTransfer with DataNode in scope,
+    # and path C's is the erasure-coding pool thread with
+    # StripedBlockReconstructor in scope.
+    copy_family "${hdfs}" org/apache/hadoop/hdfs/server/datanode/DataXceiver
     ;;
   pathC)
     # The annotated site is StripedWriter's "All targets are failed.", so the
