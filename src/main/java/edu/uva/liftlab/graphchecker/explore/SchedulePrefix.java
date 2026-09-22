@@ -18,11 +18,12 @@ import java.util.Map;
  *
  * <p>A task's world is (planted values, schedule prefix).  The planted values
  * are the model and what the path's session was itself handed; the prefix is
- * that session's schedule, CUT where the replay stops being that session: at
- * the first event of any occurrence the obligation changes -- the focused
- * occurrence and its factor, where the flip is, and the mints where a value
- * is planted.  Everything before the cut is the discovering run, in its
- * order; from the cut the replay runs free.</p>
+ * that session's schedule, CUT at the TARGET: the first event of the focused
+ * occurrence, its factor, or the occurrence where the flip is.  Everything
+ * before the cut is the discovering run, in its order, with the planted
+ * values in it -- a value planted before the target changes what the run
+ * computes, and its order only where the value takes another branch, which
+ * the turnstile states and lets go; from the cut the replay runs free.</p>
  *
  * <p>The cut is the earliest of each such occurrence's opening mark (where it
  * began, whether or not it made any event) and its first event.  A session

@@ -111,11 +111,11 @@ public final class ObligationSolverMain {
         ObligationFactory.Outcome outcome = ObligationFactory.solve(corpus,
                 candidate, z3, timeoutMillis);
         // The schedule half of the world: the discovering session's order,
-        // cut where this obligation changes the run.
+        // cut at the target.
         SchedulePrefix.Cut cut = null;
         if (outcome.result.verdict() == Verdict.SAT_MODEL_READY) {
             cut = SchedulePrefix.write(iteration, candidate.path.sessionId,
-                    changedOccurrences(candidate, outcome.rootMints), out);
+                    targetOccurrences(candidate), out);
         }
         return publish(out, candidate.task,
                 outcome.issued() ? outcome.obligation : proposal,
@@ -124,22 +124,26 @@ public final class ObligationSolverMain {
     }
 
     /**
-     * The occurrences this obligation's replay runs differently from the
-     * session it was cut from: where the flip is -- the path's occurrence,
-     * the task's focus and its factor -- and where a value is planted.
+     * The occurrences the prefix is cut at: the TARGET -- where the flip is,
+     * the path's occurrence, the task's focus and its factor.
+     *
+     * <p>Not where a value is planted.  A planted value changes what the run
+     * computes, and the order of its events only where the new value takes
+     * another branch -- which the turnstile then states as a divergence and
+     * lets go.  Cutting there instead let everything after an early mint run
+     * free: hdfs-17967 path B's obligations that plant SERIAL_NO, minted at
+     * the NameNode's first key-manager tick, got a one-event prefix, the
+     * DataNodes' daemon heartbeats then outran the workload's own refresh
+     * and delivered its keys, and the addKeys occurrence each obligation was
+     * for never ran (ASSIGNMENT_UNPLANTED on its inputs).</p>
      */
-    private static List<String> changedOccurrences(
-            ObligationFactory.Candidate candidate,
-            Map<String, String> rootMints) {
+    private static List<String> targetOccurrences(
+            ObligationFactory.Candidate candidate) {
         List<String> ids = new ArrayList<String>();
         ids.add(candidate.path.occurrence.id());
         ids.add(candidate.task.focused().id());
         for (OccurrenceAddress member : candidate.task.factor()) {
             ids.add(member.id());
-        }
-        for (String mint : rootMints.values()) {
-            OccurrenceAddress at = OccurrenceAddress.parse(mint);
-            if (at != null) ids.add(at.id());
         }
         return ids;
     }
