@@ -227,6 +227,37 @@ public class RowRuntimeTest {
     }
 
     /**
+     * Frames too: an iteration counted before the window stands at 0 in an
+     * address made inside it.  hdfs-17899-bug1's DataXceiver threads inherit
+     * {@code instantiateDataNode@k} for the k-th DataNode started, and which
+     * started node plays the case's target was random -- @0 in the
+     * recording, @1 in the replay.
+     */
+    @Test
+    public void aFrameEnteredBeforeTheWindowStandsAtIterationZero() {
+        Identity.resetForTests();
+        long first = Identity.enterFrame("Cluster.startDataNodes()#u1", null);
+        Identity.exitFrame(first);
+        long second = Identity.enterFrame("Cluster.startDataNodes()#u1",
+                null);
+        assertEquals("Cluster.startDataNodes()#u1@1",
+                Identity.siteIndex().render());
+        Identity.openWindow();
+        assertEquals("set-up history is not part of the address",
+                "Cluster.startDataNodes()#u1@0",
+                Identity.siteIndex().render());
+        Identity.exitFrame(second);
+        long third = Identity.enterFrame("Cluster.startDataNodes()#u1", null);
+        Identity.exitFrame(third);
+        long fourth = Identity.enterFrame("Cluster.startDataNodes()#u1",
+                null);
+        assertEquals("inside the window the count stands",
+                "Cluster.startDataNodes()#u1@1",
+                Identity.siteIndex().render());
+        Identity.exitFrame(fourth);
+    }
+
+    /**
      * The entry rule: a delivery with no selected region still mints, and
      * the row pairs it to the producer the run staged the value from.
      */

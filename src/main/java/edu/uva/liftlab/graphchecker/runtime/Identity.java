@@ -142,6 +142,26 @@ public final class Identity {
             return levels.get(index + 1).frame;
         }
 
+        /**
+         * The same frame as an ADDRESS states it: a frame entered before the
+         * recording window stands at iteration 0.
+         *
+         * <p>The window rule for frames, as {@link Identity#window} is for
+         * counts and {@link Lineage#openWindow} for root k: an iteration
+         * counted before the window is set-up history neither run controls.
+         * hdfs-17899-bug1 is why: every DataXceiver thread inherits the main
+         * thread's frames from DataNode start-up, {@code
+         * instantiateDataNode} among them at the k-th DataNode started, and
+         * which started DataNode plays the case's target is the cluster's
+         * random block placement -- so the target's SASL response had the
+         * producer endpoint {@code instantiateDataNode@0} in the recording
+         * and {@code @1} in the replay, and the balancer's receive of it was
+         * a different anchor in every run.</p>
+         */
+        private Frame addressedFrame(int index) {
+            return levels.get(index + 1).addressed();
+        }
+
         /** The level events minted right now are counted in. */
         private Level top() {
             return levels.get(levels.size() - 1);
@@ -155,7 +175,8 @@ public final class Identity {
             for (int index = 1; index < levels.size(); index++) {
                 child.levels.add(new Level(levels.get(index).frame,
                         levels.get(index).token,
-                        levels.get(index).receiver));
+                        levels.get(index).receiver,
+                        levels.get(index).window));
             }
             child.scopeBase = scopeBase;
             // The start frame of the work THIS thread runs is not the start
@@ -193,7 +214,7 @@ public final class Identity {
          * <p>Its level carries no token: nothing the work returns from
          * opened it, so no frame exit may close it.</p>
          */
-        private void openStart(Frame frame) {
+        private void openStart(Frame frame, int startedIn) {
             // A pool thread that finished its last task drops that task's
             // start frame before it takes the next: the work that frame
             // named is over, and the next task was started elsewhere.  A
@@ -204,7 +225,9 @@ public final class Identity {
                 RuntimeTraceContext.releaseCarried();
             }
             startDepth = depth();
-            levels.add(new Level(frame, 0L, null));
+            // The start was COUNTED where it was made, so its frame belongs
+            // to that window, whenever the work claims it.
+            levels.add(new Level(frame, 0L, null, startedIn));
         }
 
         /** The frame depth an endpoint inside the innermost region is from. */
@@ -268,7 +291,7 @@ public final class Identity {
             int start = Math.max(0, Math.min(base, depth()));
             Frame[] standing = new Frame[depth() - start];
             for (int index = start; index < depth(); index++) {
-                standing[index - start] = frame(index);
+                standing[index - start] = addressedFrame(index);
             }
             return standing;
         }
@@ -322,7 +345,7 @@ public final class Identity {
             if (start >= depth()) return ExecutionIndex.empty();
             List<Frame> standing = new ArrayList<Frame>(depth() - start);
             for (int index = start; index < depth(); index++) {
-                standing.add(frame(index));
+                standing.add(addressedFrame(index));
             }
             return ExecutionIndex.of(standing);
         }
@@ -367,10 +390,31 @@ public final class Identity {
          */
         private final List<Counters> counters = new ArrayList<Counters>();
 
+        /**
+         * The window {@link #frame} was entered in ({@link Identity#window}).
+         * A frame entered before the window stands in no in-window address
+         * with the iteration it was counted at ({@link State#from}).
+         */
+        private final int window;
+
         private Level(Frame frame, long token, Object receiver) {
+            this(frame, token, receiver, Identity.window);
+        }
+
+        private Level(Frame frame, long token, Object receiver, int window) {
             this.frame = frame;
             this.token = token;
             this.receiver = receiver;
+            this.window = window;
+        }
+
+        /** The frame as an address states it in the current window. */
+        private Frame addressed() {
+            if (frame == null || window == Identity.window
+                    || frame.iteration() == 0) {
+                return frame;
+            }
+            return Frame.of(frame.callSite(), 0);
         }
 
         /**
@@ -396,7 +440,7 @@ public final class Identity {
                     // Counted before the recording window opened: what the
                     // hop made there is nothing either run states
                     // (Identity#window), so it counts again from here.
-                    if (filed.window != window) {
+                    if (filed.window != Identity.window) {
                         filed = new Counters(rootToken);
                         counters.set(index, filed);
                     }
@@ -453,6 +497,8 @@ public final class Identity {
     private static final class Start {
         private final Frame frame;
         private final Attribution.Reference starter;
+        /** The window the start was counted in ({@link Level#window}). */
+        private final int window = Identity.window;
 
         private Start(Frame frame, Attribution.Reference starter) {
             this.frame = frame;
@@ -532,7 +578,7 @@ public final class Identity {
         if (carrier == null || STARTS.isEmpty()) return;
         Start start = STARTS.remove(new Carrier(carrier, null));
         if (start == null) return;
-        state.openStart(start.frame);
+        state.openStart(start.frame, start.window);
         state.starter = start.starter;
         state.adopted = true;
         // The scope the starter was in comes with the work, whatever thread
