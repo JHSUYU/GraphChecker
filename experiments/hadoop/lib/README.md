@@ -33,4 +33,14 @@ The Hadoop side of a case calls the GraphChecker Hadoop shim
 (`src/shim/java`, the `hadoop-shim` classifier jar): no tree carries its own
 facade.  A workload registers every node through
 `org.apache.hadoop.hdfs.server.datanode.CausynthCluster` before any traffic,
-and opens the recorded window with it.
+and opens the recorded window with it.  Daemons are not suppressed: the
+schedule prefix reproduces them.  Two more rules keep the world the window
+starts from the same in every run, because the prefix orders only the window
+itself:
+
+- the cluster's configuration goes through `CausynthCluster.configure`, so
+  nothing set up before the window expires on the wall clock (the recording
+  runs on a JIT, every replay on an interpreter many times slower);
+- a per-node loop inside the window takes `CausynthCluster.dataNodes()`,
+  which is in the order of the nodes' registered names, because which
+  physical node plays which role is the cluster's random choice.
