@@ -48,6 +48,7 @@ set -uo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 
 ACCEPT_ALL_CASES=(hdfs-17899-bug3 hdfs-17899-bug2 hdfs-17899-bug1 \
+                  hdfs-17967-pathA \
                   hdfs-17960 hdfs-17897 hdfs-11741)
 ACCEPT_JAR_NAME=GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar
 ACCEPT_Z3=${Z3_BIN:-z3}
@@ -78,11 +79,19 @@ acc_dir_mb() { du -sm "$1" 2>/dev/null | cut -f1; }
 
 # The experiment directory a case id lives in (17899 shares one for bug1-3).
 acc_experiment_of() {
-  case "$1" in hdfs-17899-*) echo hdfs-17899 ;; *) echo "$1" ;; esac
+  case "$1" in
+    hdfs-17899-*) echo hdfs-17899 ;;
+    hdfs-17967-*) echo hdfs-17967 ;;
+    *) echo "$1" ;;
+  esac
 }
 # The leading run.sh argument a case needs ("" for most).
 acc_case_arg_of() {
-  case "$1" in hdfs-17899-*) echo "${1#hdfs-17899-}" ;; *) echo "" ;; esac
+  case "$1" in
+    hdfs-17899-*) echo "${1#hdfs-17899-}" ;;
+    hdfs-17967-*) echo "${1#hdfs-17967-}" ;;
+    *) echo "" ;;
+  esac
 }
 acc_case_dir() {
   local root=$1 c=$2 d

@@ -90,6 +90,12 @@ EXPECTED_MECHANISM = {
     "hdfs-17899-bug2": {"kinds": ("MARKER_FLIPPED", "CLOCK_SKEW")},
     "hdfs-17899-bug3": {"kinds": ("MARKER_FLIPPED", "CLOCK_SKEW")},
     "hdfs-17897":      {"kinds": ("CLOCK_SKEW",)},
+    # HDFS-17967's three paths share one annotated site and are told apart by
+    # their target occurrence, so they share this row.  CLOCK_SKEW is the
+    # mechanism the workloads are written for: the key the failing party puts
+    # on the wire is serials behind the master's, and a witness has to move
+    # the clock past its expiry.
+    "hdfs-17967-pathA": {"kinds": ("CLOCK_SKEW", "MARKER_FLIPPED")},
 }
 
 
