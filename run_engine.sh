@@ -3641,8 +3641,24 @@ campaign_publish_epoch_final() {
   local epoch_final="${iteration_dir}/final"
   local published="${campaign_root}/final"
   [[ -d "${epoch_final}" ]] || return 0
-  rm -rf -- "${published}"
   mkdir -p "${published}"
+  # REPLACE THE CONTENTS, NOT THE DIRECTORY.  On NFS every file that is still
+  # open when it is unlinked is silly-renamed to .nfsXXXXXXXX in place, so
+  # `rm -rf` on the published directory fails with "Directory not empty" -- and
+  # it failed AFTER the campaign had written a complete answer, so the run
+  # exited non-zero and report.py, finding no schedule/final, called it
+  # claim=MISSING.  Two runs that had already published
+  # `claim=SAT_CANDIDATE ... blockers=0 gaps=0 finalStatus=FINAL_READY` were
+  # reported as failures that way (hdfs-11741 and hdfs-17899-bug3), and the
+  # first cost a false regression scare.
+  #
+  # The leftovers are harmless: the kernel removes each one when its last
+  # handle closes, and they are never read by a later stage, which asks for
+  # named artifacts.  Everything else is cleared, so a stale artifact of a
+  # previous epoch cannot survive into the published set.  Publishing never
+  # fails the campaign over them.
+  find "${published}" -mindepth 1 -maxdepth 1 ! -name '.nfs*' \
+    -exec rm -rf -- {} + 2>/dev/null || true
   cp -a "${epoch_final}/." "${published}/"
 }
 
