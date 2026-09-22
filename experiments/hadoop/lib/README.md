@@ -36,7 +36,7 @@ facade.  A workload registers every node through
 and opens the recorded window with it.  Daemons are not suppressed: the
 schedule prefix reproduces them.  Two more rules keep the world the window
 starts from the same in every run, because the prefix orders only the window
-itself -- four, in fact:
+itself -- five, in fact:
 
 - the cluster's configuration goes through `CausynthCluster.configure`, so
   nothing set up before the window expires on the wall clock (the recording
@@ -53,4 +53,8 @@ itself -- four, in fact:
   `CausynthCluster.createOnNode(fs, path, holder)` and the workload asserts
   it landed on `holder`, because random replication-1 placement makes a
   different started node play each role in every run.  A case whose roles
-  come from an erasure-coded group names its nodes by block index instead.
+  come from an erasure-coded group names its nodes by block index instead;
+- every wait the workload makes inside its window for its own results is
+  bounded by `CausynthCluster.WINDOW_WAIT_MS` (60 s): a replay that cannot
+  hold its prefix stalls every thread for the watchdog's 15 s before it runs
+  free, and a workload that gives up first fails for the engine's reason.
