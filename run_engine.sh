@@ -2959,7 +2959,7 @@ as the wave before it with no new verdict"
     if [[ -n "${stop_kind}" ]]; then
       jq -n -c --arg kind "${stop_kind}" --arg detail "${stop_reason}" \
         --arg epoch "${iteration_id}" \
-        '{schemaVersion: 1, sessionId: "",
+        '{schemaVersion: 1, sessionId: "", stage: "EXPLORE",
           kind: "ADMISSION_GAP", cls: "DIAGNOSTIC",
           subject: $kind, detail: $detail, topologyEpoch: $epoch}' \
         >>"${iteration_dir}/campaign_gaps.jsonl"
@@ -3277,11 +3277,25 @@ campaign_write_gaps() {
   campaign_json_file "${scratch}/plan-gaps.json" \
     "$(campaign_plan_gaps_json)" >/dev/null \
     || { rm -rf -- "${scratch}"; return 1; }
-  # Every session's own gap rows, plus the campaign's.
-  find "${iteration_dir}" -type f -name 'gaps.jsonl' -print0 \
-    | LC_ALL=C sort -z | xargs -0 -r cat >"${scratch}/session-gaps.jsonl"
+  # Every session's own gap rows, plus the campaign's, each labelled with the
+  # stage that raised it: a replay session's rows are REPLAY, an obligation
+  # worker's or a wave's are EXPLORE, and a campaign row states its own stage
+  # (IMPORT's gate is the one writer that states none).
+  local gapfile gapstage
+  : >"${scratch}/session-gaps.jsonl"
+  while IFS= read -r -d '' gapfile; do
+    case "${gapfile}" in
+      */sessions/*/gaps.jsonl) gapstage=REPLAY ;;
+      */obligations-*/gaps.jsonl) gapstage=EXPLORE ;;
+      *) gapstage=REPLAY ;;
+    esac
+    jq -c --arg stage "${gapstage}" '. + {stage: (.stage // $stage)}' \
+      "${gapfile}" >>"${scratch}/session-gaps.jsonl"
+  done < <(find "${iteration_dir}" -type f -name 'gaps.jsonl' -print0 \
+    | LC_ALL=C sort -z)
   [[ ! -s "${iteration_dir}/campaign_gaps.jsonl" ]] \
-    || cat "${iteration_dir}/campaign_gaps.jsonl" \
+    || jq -c '. + {stage: (.stage // "IMPORT")}' \
+      "${iteration_dir}/campaign_gaps.jsonl" \
       >>"${scratch}/session-gaps.jsonl"
   jq -n \
     --argjson provenance "${campaign_provenance}" \
@@ -3294,7 +3308,9 @@ campaign_write_gaps() {
     $composedDocuments[0] as $composed |
     # A row that states its own class is taken at its word.
     (($sessionGaps | split("\n") | map(select(length > 0) | fromjson))
-      | map({stage: "REPLAY", source: (.sessionId // "RUNTIME"),
+      | map({stage: (.stage // "REPLAY"),
+             source: (if (.sessionId // "") == "" then "RUNTIME"
+                      else .sessionId end),
              code: (.kind // "ADMISSION_GAP"),
              subject: (.subject // ""), detail: (.detail // ""),
              class: (if (.cls // "BLOCKING") == "DIAGNOSTIC"
@@ -3588,7 +3604,7 @@ campaign_emit() {
 campaign_publish_pending_refinement() {
   local iteration_dir=$1 iteration_id=$2 rows=$3
   jq -n -c --arg epoch "${iteration_id}" --argjson rows "${rows}" \
-    '{schemaVersion: 1, sessionId: "",
+    '{schemaVersion: 1, sessionId: "", stage: "REPLAY",
       kind: "TOPOLOGY_DIVERGENCE", cls: "DIAGNOSTIC",
       subject: $epoch,
       detail: ("\($rows) topology divergence row(s) hold sessions for the "

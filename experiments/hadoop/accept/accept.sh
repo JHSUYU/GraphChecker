@@ -68,6 +68,8 @@ else
   JAR=$REPO/target/$ACCEPT_JAR_NAME
 fi
 IMG=${CAUSYNTH_CUSTOM_JDK_HOME:-}
+# Every case runs through the one launcher; a case directory is declarations.
+ACCEPT_LIB="$REPO/experiments/hadoop/lib"
 OUT=${OUT:-$SELF_REPO/target/accept}
 read -r -a CASE_LIST <<<"${CASES-${ACCEPT_ALL_CASES[*]}}"
 CASE_TIMEOUT=${CASE_TIMEOUT_SECONDS:-21600}
@@ -155,7 +157,7 @@ acc_run_case() {  # acc_run_case <case-id>
     cd "$dir" || exit 97
     export CAUSYNTH_OUTPUT_DIR="$out" CAUSYNTH_CACHE_DIR="$cache"
     export CAUSYNTH_CUSTOM_JDK_HOME="$IMG"
-    if [[ -n "$arg" ]]; then ./run.sh "$arg" validate; else ./run.sh validate; fi
+    bash "$ACCEPT_LIB/run.sh" "$dir" "$arg" validate
   ) >>"$log" 2>&1
   rc=$?
   if (( rc == 0 )); then
@@ -164,7 +166,7 @@ acc_run_case() {  # acc_run_case <case-id>
       cd "$dir" || exit 97
       export CAUSYNTH_OUTPUT_DIR="$out" CAUSYNTH_CACHE_DIR="$cache"
       export CAUSYNTH_CUSTOM_JDK_HOME="$IMG"
-      if [[ -n "$arg" ]]; then ./run.sh "$arg" campaign; else ./run.sh campaign; fi
+      bash "$ACCEPT_LIB/run.sh" "$dir" "$arg" campaign
     ) >>"$log" 2>&1
     rc=$?
   else
@@ -317,9 +319,9 @@ for tool in jq python3 setsid timeout mvn; do
 done
 for c in "${CASE_LIST[@]}"; do
   d="$REPO/experiments/hadoop/$(acc_experiment_of "$c")"
-  [[ -x "$d/run.sh" && -x "$d/execute.sh" ]] \
-    && check "experiment $c" ok "$d/run.sh $(acc_case_arg_of "$c") campaign" \
-    || check "experiment $c" no "no run.sh + execute.sh at $d"
+  [[ -f "$d/case.sh" && -f "$d/workflow.properties" ]] \
+    && check "experiment $c" ok "lib/run.sh $d $(acc_case_arg_of "$c") campaign" \
+    || check "experiment $c" no "no case.sh + workflow.properties at $d"
 done
 free=$(acc_free_gb)
 (( free >= ACCEPT_MIN_FREE_GB )) \
@@ -331,10 +333,11 @@ echo "== commands per case"
 for c in "${CASE_LIST[@]}"; do
   cat <<CMD
   --- $c
-  (cd $REPO/experiments/hadoop/$(acc_experiment_of "$c") && \\
-     CAUSYNTH_OUTPUT_DIR=$OUT/out/$c CAUSYNTH_CACHE_DIR=$OUT/out/$c-cache \\
-     CAUSYNTH_CUSTOM_JDK_HOME=$IMG \\
-     ./run.sh $(acc_case_arg_of "$c") validate && ./run.sh $(acc_case_arg_of "$c") campaign)
+  (d=$REPO/experiments/hadoop/$(acc_experiment_of "$c"); \\
+     export CAUSYNTH_OUTPUT_DIR=$OUT/out/$c CAUSYNTH_CACHE_DIR=$OUT/out/$c-cache \\
+     CAUSYNTH_CUSTOM_JDK_HOME=$IMG; \\
+     bash $ACCEPT_LIB/run.sh \$d "$(acc_case_arg_of "$c")" validate && \\
+     bash $ACCEPT_LIB/run.sh \$d "$(acc_case_arg_of "$c")" campaign)
   bash $here/probe.sh $c $(acc_case_dir "$OUT" "$c") $OUT/report/$c
   python3 $here/fatalread.py $(acc_case_dir "$OUT" "$c") $OUT/report/$c
   python3 $here/report.py $c $(acc_case_dir "$OUT" "$c") $OUT/report/$c

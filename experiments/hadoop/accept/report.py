@@ -11,7 +11,7 @@ of the fatal read with the one the model chose marked, so the causal chain can
 be narrated from the model rather than inferred from a verdict.
 
 A case passes when the claim layer accepted it AND the mechanism it concluded
-is the one this case is known to fail by: claim SAT_CANDIDATE, no blockers,
+is the one this case is known to fail by: claim SAT_CANDIDATE, no BLOCKING gap in gaps.json, not withheld,
 finalStatus FINAL_READY, a findingKind among the five mechanisms a composition
 may conclude, polarityDecides -- the seed disjunct unsat at the recorded
 valuation -- the case's EXPECTED mechanism from the table at the top, and an
@@ -157,8 +157,21 @@ final_status = result.get("finalStatus", "MISSING")
 # ComposeMain.refusals() as {kind, subject, detail, sessionId} -- "kind", not
 # "code": reading the wrong key named every refusal "?" and left the harness
 # unable to say why a case failed.
-blockers = [blocker_name(b) for b in result.get("blockers", []) or []]
-gaps = result.get("gapCount", "?")
+# THE criterion's gap half is gaps.json, the one document every stage's gaps
+# land in with the class their producer stated: a PLAN or REPLAY blocker is
+# not in result.json's composer blockers, and reading only those printed PASS
+# over runs the campaign itself withheld.
+gaps_doc = load("gaps.json")
+blocking = [g for g in (gaps_doc.get("gaps") or [])
+            if g.get("class", "BLOCKING") == "BLOCKING"]
+blocking_by_stage = {}
+for gap in blocking:
+    stage = gap.get("stage", "?")
+    blocking_by_stage[stage] = blocking_by_stage.get(stage, 0) + 1
+gaps = len(blocking) if gaps_doc else result.get("gapCount", "?")
+# ...and the campaign's own acceptance: a candidate the campaign withheld is
+# not a pass whatever else the result says.
+withheld = result.get("accepted") is not True
 # WHICH mechanism the composition concluded, and the condition it rests on.
 # EMIT copies both out of the ClaimPolicy decision; "MISSING" here means the
 # run predates that, and is reported as itself rather than read as a default.
@@ -197,8 +210,13 @@ expected = EXPECTED_MECHANISM.get(case_id)
 reasons = []
 if claim != "SAT_CANDIDATE":
     reasons.append("claim=%s" % claim)
-if blockers:
-    reasons.append("blockers=%s" % ",".join(blockers))
+if blocking:
+    reasons.append("BLOCKING gaps=%d (%s)" % (len(blocking), ", ".join(
+        "%s %d" % (stage, count)
+        for stage, count in sorted(blocking_by_stage.items()))))
+if withheld:
+    reasons.append("candidate withheld (accepted=%s)"
+                   % result.get("accepted", "MISSING"))
 if final_status != "FINAL_READY":
     reasons.append("finalStatus=%s" % final_status)
 if finding_kind == "NO_SUPPORTED_WITNESS":
@@ -288,7 +306,8 @@ if os.path.exists(status_path):
 with open(os.path.join(work, "row.tsv"), "w") as handle:
     handle.write("\t".join([
         case_id, str(exit_code), str(elapsed), claim, final_status,
-        ",".join(blockers) or "-", str(gaps), plain, buggy, other,
+        ("%d BLOCKING" % len(blocking)) if blocking else "-", str(gaps),
+        plain, buggy, other,
         verdict, reason, note]) + "\n")
 
 # ---- the readable report --------------------------------------------------
@@ -388,12 +407,13 @@ elif polarity.get("terms"):
                 polarity.get("otherMode", "-")),
             ""]
 
-if blockers:
-    out += ["## Blockers", ""]
-    for row in result.get("blockers", []) or []:
-        out.append("* **%s** `%s` -- %s" % (blocker_name(row),
-                                            row.get("subject", ""),
-                                            row.get("detail", "")))
+if blocking:
+    out += ["## Blocking gaps", ""]
+    for row in blocking:
+        out.append("* **%s** %s `%s` -- %s" % (row.get("stage", "?"),
+                                               row.get("code", "?"),
+                                               row.get("subject", ""),
+                                               row.get("detail", "")))
     out.append("")
 
 if findings:

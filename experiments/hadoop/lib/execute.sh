@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
+# execute.sh <case-dir> <case-id> -- one workload JVM: the recording when the
+# campaign names a trace directory, a concolic replay when it names a task
+# plan.  The same script for every case.
 set -euo pipefail
-
-here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+lib=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+source "${lib}/case-env.sh" "${1:?missing case directory}" "${2-}"
 jar=${GRAPHCHECKER_JAR:?missing GraphChecker jar}
-cp=$("${here}/classpath.sh")
-test_class=org.apache.hadoop.hdfs.server.balancer.TestCausynthExpiredBalancerKey
-test_method=testEncryptedBalancerAfterKeyRotations
-test_name=${test_class}#${test_method}
+cp=$(bash "${lib}/classpath.sh" "${case_dir}" "${case_id}")
 
 if [[ -n ${CAUSYNTH_CONCOLIC_TASK_PLAN:-} ]]; then
   classes=${CAUSYNTH_CONCOLIC_CLASSES:?missing concolic classes}
@@ -23,7 +23,7 @@ if [[ -n ${CAUSYNTH_CONCOLIC_TASK_PLAN:-} ]]; then
     -Dcausynth.concolic.halt.after.selected.result=true)
 else
   classes=${CAUSYNTH_INSTRUMENTED_CLASSES_DIR:?missing instrumented classes}
-  work=$(mktemp -d /tmp/hdfs-11741-trace.XXXXXX)
+  work=$(mktemp -d "/tmp/${tag}-trace.XXXXXX")
   trace=${CAUSYNTH_TRACE_OUTPUT_DIR:?missing trace output directory}
   jdk=/usr/lib/jvm/java-8-openjdk-amd64
   properties=(
@@ -37,16 +37,9 @@ mkdir -p ${trace:+"${trace}"} ${results:+"$(dirname "${results}")"}
 # edit logs and block data.  The worker directory is on the shared home, so
 # by default this is an fsync-heavy little filesystem per concurrent replay
 # on one NFS mount; CAUSYNTH_LOCAL_SCRATCH moves it to a local disk instead.
-#
-# Nothing downstream reads either of these.  What this replay PUBLISHES is
-# its session under CAUSYNTH_CONCOLIC_SESSIONS and its rows at
-# CAUSYNTH_CONCOLIC_RESULTS, both under the worker directory on the shared
-# home and neither of them beneath temp/ or data/.  So the subdirectory goes
-# away when the replay exits, however it exits.
-#
-# Opt-in, and it degrades rather than fails: a host without a usable scratch
-# root says so on stderr and keeps the old paths, because a replay that
-# cannot find a local disk is still a replay.
+# Nothing downstream reads either: what a replay PUBLISHES is its session and
+# its result rows, both under the worker directory.  Opt-in, and it degrades
+# rather than fails.
 scratch_owned=""
 remove_local_scratch() {
   [[ -z ${scratch_owned} ]] || rm -rf -- "${scratch_owned}"
@@ -62,7 +55,7 @@ if [[ -n ${CAUSYNTH_LOCAL_SCRATCH:-} ]]; then
     trap remove_local_scratch EXIT
   else
     scratch_owned=""
-    echo "hdfs-11741: CAUSYNTH_LOCAL_SCRATCH=${CAUSYNTH_LOCAL_SCRATCH} is not\
+    echo "${tag}: CAUSYNTH_LOCAL_SCRATCH=${CAUSYNTH_LOCAL_SCRATCH} is not\
  usable on $(hostname); replay scratch stays under ${work}" >&2
   fi
 fi
