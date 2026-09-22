@@ -3678,6 +3678,20 @@ campaign_explorer_divergence_rows() {
                     and (.cls // "") != "DIAGNOSTIC")' 2>/dev/null || true
 }
 
+# The regions of a comma-separated list that this iteration's plan names no
+# task for.  PLAN re-plans an epoch from the SAME recording, and it refuses to
+# retain a region no candidate of that recording carries
+# (RETAINED_SET_CANNOT_GROW), so growth to such a region cannot be an epoch:
+# only a new recording could reach it.
+campaign_unplannable_regions() {
+  local iteration_dir=$1 regions=$2 region planned
+  planned=$(jq -r '.regionId // empty' \
+    "${iteration_dir}/execution_task_plan.jsonl" 2>/dev/null | LC_ALL=C sort -u)
+  for region in ${regions//,/ }; do
+    grep -qxF -- "${region}" <<<"${planned}" || printf '%s\n' "${region}"
+  done | paste -sd, - 2>/dev/null || true
+}
+
 # Two comma-separated region lists as one, each region once.
 campaign_union_regions() {
   printf '%s\n%s\n' "$1" "$2" | tr ',' '\n' | sed '/^$/d' \
@@ -3804,7 +3818,7 @@ campaign_max_epochs=3
 
 do_campaign() {
   local iteration=0 iteration_id="" parent="" retain="" previous_retain=""
-  local grown=""
+  local grown="" unplannable=""
   local iteration_dir
   local divergences=0 seeding_replay="" seeding_results=""
   campaign_root="${schedule_output_dir}"
@@ -3892,6 +3906,14 @@ campaign_stop_after=IMPORT"
     # The retained set only ever grows: epoch e+1 instruments what every
     # earlier epoch's admitted replays reached, not only this one's.
     grown=$(campaign_retained_growth "${iteration_dir}")
+    unplannable=$(campaign_unplannable_regions "${iteration_dir}" "${grown}")
+    if [[ -n "${unplannable}" ]]; then
+      campaign_log "the retained set cannot grow to ${unplannable}: no task of \
+this recording's plan names them, so re-planning the same recording would \
+refuse them; the growth rows stand as this epoch's gaps"
+      grown=$(campaign_union_regions "" "$(tr ',' '\n' <<<"${grown}" \
+        | grep -vxF -f <(tr ',' '\n' <<<"${unplannable}") | paste -sd, -)")
+    fi
     retain=$(campaign_union_regions "${previous_retain}" "${grown}")
     if [[ -n "${grown}" ]]; then
       campaign_log "the retained set must grow by ${grown}, so epoch \

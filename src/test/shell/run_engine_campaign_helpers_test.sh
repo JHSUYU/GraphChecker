@@ -864,6 +864,22 @@ $(campaign_retained_growth "${wave_dir}")"
 [[ "$(campaign_union_regions "" "")" == "" ]] \
   || fail "two empty retained sets merged into something"
 
+# EPOCH-3: an epoch re-plans the SAME recording, so it can only grow to a
+# region some task of that recording's plan names; PLAN refuses any other
+# (RETAINED_SET_CANNOT_GROW), and the loop must not ask it to.
+plan_dir="${test_tmp}/epoch-plannable"
+mkdir -p "${plan_dir}"
+printf '%s\n' '{"regionId":"REGION.a"}' '{"regionId":"REGION.b"}' \
+  '{"regionId":"REGION.a"}' >"${plan_dir}/execution_task_plan.jsonl"
+[[ "$(campaign_unplannable_regions "${plan_dir}" "REGION.a,REGION.z")" \
+    == "REGION.z" ]] \
+  || fail "a region no task names was not found unplannable: \
+$(campaign_unplannable_regions "${plan_dir}" "REGION.a,REGION.z")"
+[[ -z "$(campaign_unplannable_regions "${plan_dir}" "REGION.b")" ]] \
+  || fail "a planned region was found unplannable"
+[[ -z "$(campaign_unplannable_regions "${plan_dir}" "")" ]] \
+  || fail "no growth named an unplannable region"
+
 # A divergent epoch names the replay the next one is seeded from, and the
 # harness reads that name off the row rather than re-deriving which replay
 # diverged.  Both helpers answer empty when the topology closed, which is what
