@@ -846,6 +846,24 @@ $(campaign_retained_growth "${pair_dir}")"
 [[ -z "$(campaign_retained_growth "${test_tmp}/epoch-absent")" ]] \
   || fail "an iteration with no sessions grew the retained set"
 
+# EPOCH-2: the explorer states growth on the wave it was planning, not on a
+# session, and only an admitted replay's statement (BLOCKING) is owed.
+wave_dir="${test_tmp}/epoch-wave-growth"
+mkdir -p "${wave_dir}/obligations-0001"
+printf '%s\n' \
+  '{"kind":"TOPOLOGY_DIVERGENCE","cls":"BLOCKING","detail":"retained set must grow: REGION.w"}' \
+  '{"kind":"TOPOLOGY_DIVERGENCE","cls":"DIAGNOSTIC","detail":"retained set must grow: REGION.u (not admitted)"}' \
+  >"${wave_dir}/obligations-0001/gaps.jsonl"
+[[ "$(campaign_retained_growth "${wave_dir}")" == "REGION.w" ]] \
+  || fail "the explorer's growth row was not read, or an unadmitted one was: \
+$(campaign_retained_growth "${wave_dir}")"
+# The retained set only ever grows across epochs.
+[[ "$(campaign_union_regions "REGION.b,REGION.a" "REGION.a,REGION.c")" \
+    == "REGION.a,REGION.b,REGION.c" ]] \
+  || fail "two retained sets were not merged into one"
+[[ "$(campaign_union_regions "" "")" == "" ]] \
+  || fail "two empty retained sets merged into something"
+
 # A divergent epoch names the replay the next one is seeded from, and the
 # harness reads that name off the row rather than re-deriving which replay
 # diverged.  Both helpers answer empty when the topology closed, which is what
@@ -2002,7 +2020,7 @@ ${campaign_local_scratch_root}"
 # it, in a directory of the worker's own, and REMOVES that directory when the
 # replay exits -- including when it fails.  Only temporary bytes move: the
 # session and the result rows are still written to the shared home.
-execute_sh="${repo}/experiments/hadoop/hdfs-11741/execute.sh"
+execute_sh="${repo}/experiments/hadoop/lib/execute.sh"
 grep -q -- '-Djava.io.tmpdir="${tmpdir}" -Dtest.build.data="${datadir}"' \
   "${execute_sh}" \
   || fail "the adapter no longer takes its scratch paths from one place"

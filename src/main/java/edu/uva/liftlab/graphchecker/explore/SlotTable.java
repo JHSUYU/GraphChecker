@@ -574,10 +574,35 @@ public final class SlotTable {
      * region retained, which is the campaign's to do; this stage states the
      * fact under the name run_engine acts on.  Case 3 needs nothing: a region
      * outside the static candidate graph publishes no activation at all.</p>
+     *
+     * <p>{@code instrumented == false} is not by itself that fact.  An
+     * AMBIENT activation says it too -- an export or a handoff inside an
+     * occurrence no task planned ({@code RowRuntime#ambientActivation}) --
+     * and an occurrence no task planned may well be one of a region the
+     * workload DOES retain.  hdfs-17899 bug1-3 are why: every focused replay
+     * ran on past its prefix, a daemon heartbeat's response left the
+     * NameNode through its command conversion -- a region the plan retains,
+     * whose seed occurrences ran instrumented -- and the new occurrence was
+     * read as a region that must be retained, which PLAN then refused to
+     * grow to (RETAINED_SET_CANNOT_GROW: it already had it).  A region that
+     * ran instrumented anywhere in the corpus is retained; another
+     * occurrence of it is new work the waves plan, not a retained set to
+     * grow.</p>
      */
     private static boolean unretained(Corpus corpus, List<GapRow> gaps) {
         Set<String> named = new LinkedHashSet<String>();
         boolean divergence = false;
+        // The regions the weave retained, as the corpus shows them: an
+        // instrumented activation is published only by a retained region's
+        // entry hook.
+        Set<String> woven = new LinkedHashSet<String>();
+        for (SessionReader session : corpus.sessions()) {
+            for (ActivationRow activation : session.activations()) {
+                if (activation.instrumented()) {
+                    woven.add(activation.occurrence().regionId());
+                }
+            }
+        }
         // The regions the RECORDING reached: a seed session replays it, so
         // an unretained region it ran is one the plan saw and chose not to
         // retain.  Reaching it again is not growth -- the export inside it
@@ -620,6 +645,16 @@ public final class SlotTable {
                                     + "recording lost: " + occurrence.regionId()
                                     + " is a role, not a region of the static "
                                     + "graph, so nothing can retain it"));
+                    continue;
+                }
+                if (woven.contains(occurrence.regionId())) {
+                    gaps.add(GapRow.of(session.sessionId(),
+                            GapKind.TOPOLOGY_DIVERGENCE, GapClass.DIAGNOSTIC,
+                            occurrence.render(),
+                            "an occurrence no task planned, of a region the "
+                                    + "plan retains: " + occurrence.regionId()
+                                    + " ran instrumented elsewhere in the "
+                                    + "corpus, so the retained set has it"));
                     continue;
                 }
                 if (recorded.contains(occurrence.regionId())) {

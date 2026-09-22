@@ -3648,12 +3648,39 @@ campaign_divergence_rows() {
 # INSTRUMENT it before it replays or it will diverge identically.  Every other
 # divergence is a pairing or a context the catalog did not carry: a new epoch
 # over the same retained set.
+#
+# Read off the sessions AND off the explorer's own reconciliation: SlotTable
+# states the growth on the wave it was planning (obligations-NNNN/gaps.jsonl),
+# not on any session.  hdfs-17899 bug1-3 are why: every focused replay ran on
+# past its prefix, a daemon heartbeat reached the NameNode's command
+# conversion (the region KeyUpdateCommands leave through), and the growth row
+# the explorer published there was read by nothing -- the campaign stopped on
+# it as a BLOCKING gap instead of instrumenting the region.
 campaign_retained_growth() {
-  campaign_divergence_rows "$1" \
+  { campaign_divergence_rows "$1"; campaign_explorer_divergence_rows "$1"; } \
     | jq -r 'select((.detail // "")
                | test("retained set must grow: "))
              | (.detail | sub(".*retained set must grow: *"; "")
                         | split(" ") | .[0])' 2>/dev/null \
+    | LC_ALL=C sort -u | paste -sd, - 2>/dev/null || true
+}
+
+# The TOPOLOGY_DIVERGENCE rows the explorer published for this iteration's
+# waves.  Only an admitted replay states a topology (SlotTable: a replay that
+# was not admitted is DIAGNOSTIC), so only those rows are read.
+campaign_explorer_divergence_rows() {
+  local iteration_dir=$1
+  [[ -d "${iteration_dir}" ]] || return 0
+  find "${iteration_dir}" -mindepth 2 -maxdepth 2 -type f \
+      -path '*/obligations-*/gaps.jsonl' -print0 2>/dev/null \
+    | LC_ALL=C sort -z | xargs -0 -r cat \
+    | jq -c 'select(.kind == "TOPOLOGY_DIVERGENCE"
+                    and (.cls // "") != "DIAGNOSTIC")' 2>/dev/null || true
+}
+
+# Two comma-separated region lists as one, each region once.
+campaign_union_regions() {
+  printf '%s\n%s\n' "$1" "$2" | tr ',' '\n' | sed '/^$/d' \
     | LC_ALL=C sort -u | paste -sd, - 2>/dev/null || true
 }
 
@@ -3777,6 +3804,7 @@ campaign_max_epochs=3
 
 do_campaign() {
   local iteration=0 iteration_id="" parent="" retain="" previous_retain=""
+  local grown=""
   local iteration_dir
   local divergences=0 seeding_replay="" seeding_results=""
   campaign_root="${schedule_output_dir}"
@@ -3861,13 +3889,15 @@ campaign_stop_after=IMPORT"
     # the next epoch replays, or the next epoch diverges identically; every
     # other divergence is a pairing or a context the catalog did not carry,
     # and the next epoch plans the same retained set again.
-    retain=$(campaign_retained_growth "${iteration_dir}")
+    # The retained set only ever grows: epoch e+1 instruments what every
+    # earlier epoch's admitted replays reached, not only this one's.
+    grown=$(campaign_retained_growth "${iteration_dir}")
+    retain=$(campaign_union_regions "${previous_retain}" "${grown}")
+    if [[ -n "${grown}" ]]; then
+      campaign_log "the retained set must grow by ${grown}, so epoch \
+$((iteration + 1)) instruments them before it replays"
+    fi
     if [[ "${divergences}" -gt 0 ]]; then
-      if [[ -n "${retain}" ]]; then
-        campaign_log "topology divergences: ${divergences}; the retained set \
-must grow by ${retain}, so epoch $((iteration + 1)) instruments them before \
-it replays"
-      fi
       campaign_log "topology divergences: ${divergences}; epoch \
 ${iteration_id} composes its own paths and the refinement is pending"
       campaign_publish_pending_refinement "${iteration_dir}" \
@@ -3889,7 +3919,14 @@ ${iteration_id} composes its own paths and the refinement is pending"
     # this input wrong would re-plan the old topology and loop; the seeding
     # replay is named on the row by the one stage that saw both.
     seeding_replay=$(campaign_seeding_replay "${iteration_dir}")
-    if [[ -z "${seeding_replay}" ]]; then
+    # Two causes open epoch e+1 (INTERACTION-ID section 8): a replay that
+    # names itself the seed of the next epoch, or a retained set that must
+    # grow.  The second needs no new seed -- the next epoch re-plans THE SAME
+    # recording with the reached regions instrumented -- so it no longer
+    # waits for the first, which nothing has named since the IMPORT stack
+    # that wrote seedsNextEpoch was deleted.
+    if [[ -z "${seeding_replay}" && "${retain}" == "${previous_retain}" ]]
+    then
       campaign_log "topology closed at ${iteration_id}"
       return 0
     fi
@@ -3907,8 +3944,8 @@ ${iteration_id} composes its own paths and the refinement is pending"
 epoch: the campaign's bound of ${campaign_max_epochs} epoch(s) is reached"
       return 0
     fi
-    campaign_log "topology divergence: epoch $((iteration + 1)) is seeded \
-from replay ${seeding_replay}, retaining ${retain}"
+    campaign_log "topology divergence: epoch $((iteration + 1)) re-plans \
+${seeding_replay:+from replay ${seeding_replay} }retaining ${retain}"
     previous_retain="${retain}"
     parent="${iteration_id}"
     iteration=$((iteration + 1))

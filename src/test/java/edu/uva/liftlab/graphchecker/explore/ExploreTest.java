@@ -1977,6 +1977,45 @@ public class ExploreTest {
         }
         assertTrue("and it names the region INSTRUMENT must retain", asked);
 
+        // An occurrence no task planned, of a region the plan DOES retain,
+        // is new work and not a retained set to grow.  hdfs-17899: a daemon
+        // heartbeat's response left the NameNode through its command
+        // conversion, whose seed occurrences (the workload's own refresh)
+        // ran instrumented; the daemon's occurrence was published AMBIENT --
+        // instrumented false -- and PLAN then refused to "grow" to a region
+        // it already had.
+        OccurrenceAddress refreshConversion = occurrence("hdfs-case/nn0",
+                "REGION.conversion",
+                CausalContext.of("a1b2c3d4e5f60718", "HADOOP_IPC/heartbeat"),
+                "o.a.h.h.p.PBHelper#convert#7");
+        OccurrenceAddress daemonConversion = occurrence("hdfs-case/nn0",
+                "REGION.conversion",
+                CausalContext.of("0f1e2d3c4b5a6978",
+                        "HADOOP_IPC/BP_SERVICE_ACTOR"),
+                "o.a.h.h.p.PBHelper#convert#7");
+        Path retainedDir = tree.newFolder("closure-retained-new-occurrence")
+                .toPath();
+        Session conversionSeed = new Session(retainedDir, "s-seed");
+        conversionSeed.activation(target, false);
+        conversionSeed.activation(refreshConversion, false);
+        conversionSeed.flush();
+        Session daemonRun = new Session(retainedDir, "s-flip");
+        daemonRun.activation(target, true);
+        daemonRun.activation(refreshConversion, false);
+        daemonRun.lightweight(daemonConversion);
+        daemonRun.answered(ObligationResult.of("OBL.s-flip", Verdict.ADMITTED,
+                "s-flip", "the focused prefix reproduced"));
+        daemonRun.flush();
+        SlotTable.Reconciliation newOccurrence = new SlotTable().reconcile(
+                Corpus.read(retainedDir, null),
+                Collections.singleton(target.id()), 3);
+        assertFalse("an unplanned occurrence of a retained region forks "
+                + "nothing", newOccurrence.replaced);
+        for (GapRow gap : newOccurrence.gaps) {
+            assertFalse("and asks no growth: " + gap.detail(),
+                    gap.detail().startsWith("retained set must grow"));
+        }
+
         // A DEGRADED occurrence's region slot is ROLE.<ROLE>: the scope was
         // lost, so there is no region of the static graph to retain and no
         // epoch to cut.  What it states is the lineage.
