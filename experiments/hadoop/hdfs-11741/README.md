@@ -32,10 +32,10 @@ Hadoop checkout `/u/vnr3ne/hadoop-hdfs-11741`, branch `gc/hdfs-11741-current`. F
 directory:
 
 ```bash
-./run.sh build        # installs the current GraphChecker API, builds the tree,
+../lib/run.sh . "" build        # installs the current GraphChecker API, builds the tree,
                       # runs the concrete workload test, refuses unless it alone passes
-./run.sh validate
-./run.sh campaign
+../lib/run.sh . "" validate
+../lib/run.sh . "" campaign
 ```
 
 Use a fresh `CAUSYNTH_OUTPUT_DIR` per campaign. The recording opens only after the workload

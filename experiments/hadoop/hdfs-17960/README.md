@@ -32,15 +32,14 @@ flipped decision, which is what makes this case the worked example for the whole
 Hadoop checkout `/u/vnr3ne/hadoop-hdfs-17960`, a worktree of `~/hadoop` on branch
 `gc/hdfs-17960-current`, itself branched from `origin/gc/hdfs-17960-snapshot-replay-jdk8`,
 compiled with Java 8. (It was `/u/vnr3ne/hadoop-hdfs-17960` on the host this case was first
-prepared on; that host is gone. `workflow.properties`, `build.sh`, `classpath.sh` and
-`prepare-analysis.sh` all name the checkout, and `artifacts/` still records the old path
+prepared on; that host is gone. `case.sh` names the checkout, and `artifacts/` still records the old path
 because those are a frozen run's own provenance and are not rewritten.) From this directory:
 
 ```bash
-./run.sh build        # installs the current GraphChecker API, builds the tree,
+../lib/run.sh . "" build        # installs the current GraphChecker API, builds the tree,
                       # runs the concrete workload test, refuses unless it alone passes
-./run.sh validate     # required workflow fields
-./run.sh campaign     # the whole campaign
+../lib/run.sh . "" validate     # required workflow fields
+../lib/run.sh . "" campaign     # the whole campaign
 ```
 
 Use a fresh `CAUSYNTH_OUTPUT_DIR` per campaign; the epoch's answer lands under

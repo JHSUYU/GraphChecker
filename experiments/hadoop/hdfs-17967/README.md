@@ -57,7 +57,7 @@ apart by `declared_target_occurrence`, exactly as HDFS-17899's three bugs are.
 
 `workflow.properties`, `target.yaml`, `symbolic-inputs.jsonl`, `root-domains.jsonl`,
 `communication-mappings.jsonl` and `loop-bounds.jsonl` are shared by all three; `case.sh`
-carries what is per case and `prepare-analysis.sh` carries the per-case analysis scope.
+carries what is per case, including the per-case analysis scope.
 
 | Declaration | Where | What it says |
 | --- | --- | --- |
@@ -65,7 +65,7 @@ carries what is per case and `prepare-analysis.sh` carries the per-case analysis
 | the occurrence | `target_occurrence` in `case.sh` | `pathA` `hdfs-17967/mirror-dn#epoch0/region/REGION.7c569c3f…#1`; `pathB` `…/proxy-dn#…`; `pathC` `…/target-dn#…`. `REGION.7c569c3f` is the per-connection `SaslDataTransferServer` callback handler, the region every passing case in this family anchors on |
 | clock roots | `symbolic-inputs.jsonl` | three callee rows (`Timer.now`, `Time.now`, `Time.monotonicNow`) plus per-method clock cells on `BlockTokenSecretManager.updateKeys()` and `.addKeys(ExportedBlockKeys,boolean)`. Without them `CLOCK_SKEW` is unreachable by construction and key EXPIRY cannot be expressed at all |
 | root domains | `root-domains.jsonl`, one row | `HDFS.BLOCK_KEY.SERIAL_NO`, `+0` to `+3`: the recorded value and up to three rotations past it |
-| analysis scope | `prepare-analysis.sh` | a shared narrow set (the SASL client/server, the key managers, `PBHelper`, `ipc/Client`), plus `DFSClient` for A and the erasure-coding reconstruction families for C |
+| analysis scope | `case.sh` (`scope`) | a shared narrow set (the SASL client/server, the key managers, `PBHelper`, `ipc/Client`), plus `DFSClient` for A and the erasure-coding reconstruction families for C |
 
 **No fault marker.** HDFS-17899's `hadoopIpcRequestFails` marker in `org.apache.hadoop.ipc.Client`
 is deliberately removed from all three worktrees. It is that case's mechanism, not this one's,
@@ -115,13 +115,13 @@ campaign refusal three stages later.
 From this directory, replacing `pathA` as needed:
 
 ```bash
-./run.sh pathA build      # installs the current GraphChecker API, builds that worktree,
+../lib/run.sh . pathA build      # installs the current GraphChecker API, builds that worktree,
                           # runs the concrete workload test, refuses unless it alone passes
-./run.sh pathA validate
-./run.sh pathA campaign
+../lib/run.sh . pathA validate
+../lib/run.sh . pathA campaign
 ```
 
-`run.sh` sets a per-case `CAUSYNTH_OUTPUT_DIR` and `CAUSYNTH_CACHE_DIR`; override
+`lib/run.sh` sets a per-case `CAUSYNTH_OUTPUT_DIR` and `CAUSYNTH_CACHE_DIR`; override
 `CAUSYNTH_OUTPUT_DIR` with a fresh directory per campaign. Or run the acceptance harness
 (`experiments/hadoop/accept/README.md`), which does campaign, z3 probe and report together:
 

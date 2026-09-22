@@ -69,13 +69,13 @@ independent, and each replay loads that checkout's common, client and HDFS class
 this directory, replacing `bug1` as needed:
 
 ```bash
-./run.sh bug1 build      # installs the current GraphChecker API, builds that checkout,
+../lib/run.sh . bug1 build      # installs the current GraphChecker API, builds that checkout,
                          # runs the concrete workload test, refuses unless it alone passes
-./run.sh bug1 validate
-./run.sh bug1 campaign
+../lib/run.sh . bug1 validate
+../lib/run.sh . bug1 campaign
 ```
 
-`run.sh` sets a per-case `CAUSYNTH_OUTPUT_DIR` and `CAUSYNTH_CACHE_DIR`; override
+`lib/run.sh` sets a per-case `CAUSYNTH_OUTPUT_DIR` and `CAUSYNTH_CACHE_DIR`; override
 `CAUSYNTH_OUTPUT_DIR` with a fresh directory per campaign. Each workload opens its recording
 boundary only after its stable node and application sources and aliases are registered. The
 in-tree acceptance harness (`experiments/hadoop/accept/README.md`) runs campaign, z3 probe

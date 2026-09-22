@@ -25,6 +25,10 @@ javac=${declared_javac:-${CAUSYNTH_HADOOP_JAVAC:-${here}/javac8-filter-crc32c.sh
 common=(-q -Djavac.version=8 -DskipShade -Dskip.npm -Dskip.yarn
   -Dmaven.compiler.fork=true
   "-Dmaven.compiler.executable=${javac}")
+# MAVEN_REPO_LOCAL: a local repository of this build's own, so several trees
+# can build at once without two installs racing on one repository's metadata.
+[[ -z "${MAVEN_REPO_LOCAL:-}" ]] \
+  || common+=("-Dmaven.repo.local=${MAVEN_REPO_LOCAL}")
 "${maven[@]}" "${common[@]}" -pl hadoop-hdfs-project/hadoop-hdfs \
   -am -DskipTests clean install
 "${maven[@]}" "${common[@]}" -pl hadoop-hdfs-project/hadoop-hdfs \

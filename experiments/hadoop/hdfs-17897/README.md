@@ -41,10 +41,10 @@ concurrency is fixed at `concolic_worker_count=8` in `workflow.properties`. From
 directory:
 
 ```bash
-./run.sh build        # installs the current GraphChecker API, builds the tree,
+../lib/run.sh . "" build        # installs the current GraphChecker API, builds the tree,
                       # runs the concrete workload test, refuses unless it alone passes
-./run.sh validate
-./run.sh campaign
+../lib/run.sh . "" validate
+../lib/run.sh . "" campaign
 ```
 
 Use a fresh `CAUSYNTH_OUTPUT_DIR` per campaign. The in-tree acceptance harness

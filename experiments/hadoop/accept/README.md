@@ -14,8 +14,9 @@ CASES=hdfs-17960 bash experiments/hadoop/accept/accept.sh
 ```
 
 `accept.sh` builds the jar in the repo it is committed in, then per case runs
-that case's own `run.sh validate` and `run.sh campaign` (which set the case's
-`execute.sh` as workload and replay command and exec `run_engine.sh`), with a
+`lib/run.sh <case dir> <case id> validate` and `... campaign` (which read the
+case's declarations, set `lib/execute.sh` as workload and replay command and
+exec `run_engine.sh`), with a
 fresh `CAUSYNTH_OUTPUT_DIR` and `CAUSYNTH_CACHE_DIR`. Cases run one at a time.
 
 Defaults, all overridable by environment: `JAR` = `<repo>/target/GraphChecker-
@@ -32,8 +33,12 @@ the preflight refuses it by name rather than guessing a VM image.
 `report.py` reads `<case>/schedule/final/result.json` and passes the case only
 when all of these hold:
 
-* `claim` is `SAT_CANDIDATE`, `finalStatus` is `FINAL_READY`, `blockers` is
-  empty and no BLOCKING gap is open;
+* `claim` is `SAT_CANDIDATE` and `finalStatus` is `FINAL_READY`;
+* THE single criterion on gaps: `gaps.json` names no gap of class BLOCKING, at
+  any stage (PLAN, IMPORT, EXPLORE, REPLAY, COMPOSE -- each row states the
+  stage that raised it), and the campaign did not withhold the candidate
+  (`result.json` `accepted` is true).  `result.json`'s `blockers` are the
+  composer's alone and missed PLAN and REPLAY blockers;
 * `findingKind` is the mechanism this case is known to fail by —
   `EXPECTED_MECHANISM` at the top of `report.py`: 17960 `MARKER_FLIPPED`
   moving `HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED` to `false`; 11741, the three
