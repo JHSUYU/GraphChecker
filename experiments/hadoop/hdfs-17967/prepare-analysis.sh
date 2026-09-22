@@ -45,19 +45,20 @@ copy_family "${hdfs}" org/apache/hadoop/hdfs/security/token/block/ExportedBlockK
 
 case "${case_id}" in
   pathA)
-    # The write pipeline: the head DataNode's DataXceiver opens the mirror
-    # connection whose SASL handshake carries the stale key.
-    copy_family "${hdfs}" org/apache/hadoop/hdfs/server/datanode/DataXceiver
-    copy_family "${hdfs}" org/apache/hadoop/hdfs/server/datanode/DataNode
-    copy_family "${hdfs}" org/apache/hadoop/hdfs/server/datanode/BPOfferService
-    # A region root must be a THREAD/TASK entry, main, an explicit fault or
-    # the failure target (RuntimeRegionPlanner#validRootAuthority).  Without
-    # these two, nothing in the slice that is such an entry reaches
-    # BlockTokenSecretManager.updateKeys, so the rotation becomes a root of
-    # its own and the trace refuses it: "region skeleton has no authoritative
-    # execution context root".  HeartbeatManager$Monitor is the Runnable that
-    # reaches it, through BlockManager.
-    copy_family "${hdfs}" org/apache/hadoop/hdfs/server/blockmanagement/HeartbeatManager
-    copy_family "${hdfs}" org/apache/hadoop/hdfs/server/blockmanagement/BlockManager
+    # DELIBERATELY NARROW, and modelled on hdfs-17897's scope, which passes.
+    #
+    # Adding DataXceiver/DataNode here made the target's enclosing region the
+    # DataXceiverServer connection-accept loop, whose thread starts with the
+    # cluster -- before the workload registers any source -- so both
+    # DataNodes' target occurrences came back on workload/unregistered with a
+    # lost context.  Two nodes with no node then share ONE address
+    # (OCCURRENCE_ADDRESS_SHARED) and the closure cannot tell the mirror from
+    # the head.  Left out, the target is enclosed by the per-connection SASL
+    # callback handler instead, which is entered after registration and is
+    # what every passing case in this family anchors on.
+    #
+    # The client family is needed because this case's client is in the
+    # recorded window, unlike hdfs-17899's.
+    copy_family "${client}" org/apache/hadoop/hdfs/DFSClient
     ;;
 esac

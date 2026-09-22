@@ -18,6 +18,13 @@ case "${case_id}" in
     repo=/u/vnr3ne/hadoop-hdfs-17967
     test_class=org.apache.hadoop.hdfs.server.datanode.TestCausynthWriteBlockMirrorStaleKey
     test_method=testWritePipelineAfterKeyRotations
+    # The mirror DataNode's SASL callback handler, the region every passing
+    # case in this family anchors on, under the client's write-block request.
+    # The node form carries no @anchor part on purpose: it matches on node and
+    # region, and #1 takes the first the recording published.  Both DataNodes
+    # serve a handshake here -- the head for the client, the mirror for the
+    # head -- and they are identical in shape, so the first is taken.
+    target_occurrence="hdfs-17967/dn1#epoch0/region/REGION.7c569c3f-b4d3-305a-bd9c-bebff1048122#1"
     ;;
   *)
     echo "unknown HDFS-17967 case: ${case_id}" >&2
