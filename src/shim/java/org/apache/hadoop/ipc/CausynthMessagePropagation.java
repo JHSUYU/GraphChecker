@@ -42,6 +42,11 @@ public final class CausynthMessagePropagation {
 
   private static final ThreadLocal<Inbound> CURRENT = new ThreadLocal<>();
   private static final ThreadLocal<String> PENDING_SASL = new ThreadLocal<>();
+  /**
+   * The exchange this thread was SERVING when it opened a SASL exchange of
+   * its own as a client, set aside unended until that exchange closes.
+   */
+  private static final ThreadLocal<Inbound> SERVING = new ThreadLocal<>();
 
   private CausynthMessagePropagation() {
   }
@@ -153,12 +158,24 @@ public final class CausynthMessagePropagation {
    * the same handshake reached through a second entry point, {@code
    * newSocketSend} into {@code send} -- is that same exchange, and only the
    * outermost end closes it.</p>
+   *
+   * <p>The thread may be SERVING an exchange while it opens this one: a
+   * DataNode that received a write, a replace or a checksum request opens
+   * its own handshake with the next node while it still serves the one it
+   * received.  That served exchange is set aside, unended, for as long as
+   * this one runs ({@link #outboundSasl} says why) and is the thread's again
+   * when this one closes.</p>
    */
   public static void beginSasl() {
     int depth = SASL_DEPTH.get();
     SASL_DEPTH.set(depth + 1);
     if (depth == 0) {
       PENDING_SASL.set("hdfs-sasl-" + UUID.randomUUID());
+      Inbound serving = CURRENT.get();
+      if (serving != null) {
+        SERVING.set(serving);
+        CURRENT.remove();
+      }
     }
   }
 
@@ -171,24 +188,47 @@ public final class CausynthMessagePropagation {
     SASL_DEPTH.remove();
     PENDING_SASL.remove();
     endInbound();
+    Inbound serving = SERVING.get();
+    if (serving != null) {
+      SERVING.remove();
+      CURRENT.set(serving);
+    }
   }
 
   private static final ThreadLocal<Integer> SASL_DEPTH =
       ThreadLocal.withInitial(() -> 0);
 
-  /** Emits the next message of the current SASL exchange. */
+  /**
+   * Emits the next message of the current SASL exchange.
+   *
+   * <p>A message's half is the sender's ROLE in its exchange: the client of
+   * an exchange this thread opened ({@link #beginSasl}) sends requests of
+   * that exchange, whatever else the thread is serving, and only a thread
+   * serving someone else's exchange answers it.  Asking "is this thread
+   * serving a request?" first labelled a forwarding DataNode's own
+   * handshake with the next node as the RESPONSE to the request it was
+   * serving: hdfs-17967's head opened the mirror connection inside the
+   * source's transfer, its key id went out under the source's correlation,
+   * the recording stated no export of it on the head, and the plan never
+   * instrumented the occurrence that sent it -- the key id every replay
+   * delivered was then a free value.  The per-hop request scopes the trees
+   * used to open around such connections hid exactly this.</p>
+   */
   public static Outbound outboundSasl() {
+    String correlationId = PENDING_SASL.get();
+    if (correlationId != null) {
+      // The previous message of THIS exchange -- the server's answer -- is
+      // over; a served exchange was set aside by beginSasl.
+      endInbound();
+      return outbound(SASL, correlationId, "1", "REQUEST", null);
+    }
     Inbound current = CURRENT.get();
     if (current != null && "REQUEST".equals(current.half)) {
       return outbound(SASL, current.correlationId, current.attemptId,
           "RESPONSE", null);
     }
     endInbound();
-    String correlationId = PENDING_SASL.get();
-    if (correlationId == null) {
-      return Outbound.EMPTY;
-    }
-    return outbound(SASL, correlationId, "1", "REQUEST", null);
+    return Outbound.EMPTY;
   }
 
   /** Installs one message without discarding values carried earlier in the
