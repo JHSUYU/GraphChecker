@@ -89,6 +89,9 @@ public final class ScheduleLog {
     private static boolean prefixLoaded;
     private static List<String> prefix = Collections.emptyList();
     private static List<ScheduleEvent> prefixEvents = Collections.emptyList();
+    /** The prefix's events of each key, in the prefix's order. */
+    private static Map<String, List<ScheduleEvent>> prefixByKey =
+            Collections.emptyMap();
     private static int cursor;
     private static boolean freeRun = true;
     private static int waiting;
@@ -110,10 +113,16 @@ public final class ScheduleLog {
      * the rows already make for it (a LINEAGE_LOST at the site).</p>
      */
     public static void observe(ScheduleEvent.Kind kind, String site) {
+        observe(kind, site, false);
+    }
+
+    /** The same, for a WAKE whose wait ended by a signal. */
+    static void observe(ScheduleEvent.Kind kind, String site,
+                        boolean signalled) {
         if (kind == null || !recording()) return;
         mute();
         try {
-            Pending event = pending(kind, site);
+            Pending event = pending(kind, site, signalled);
             if (event == null) return;
             synchronized (LOCK) {
                 loadPrefixLocked();
@@ -166,17 +175,144 @@ public final class ScheduleLog {
         if (kind == null || !recording()) return true;
         mute();
         try {
-            Pending event = pending(kind, site);
+            Pending event = pending(kind, site, false);
             if (event == null) return true;
+            return tryAdmit(event);
+        } finally {
+            unmute();
+        }
+    }
+
+    /** Admits {@code event} if it is next NOW; see {@link #tryObserve}. */
+    private static boolean tryAdmit(Pending event) {
+        synchronized (LOCK) {
+            loadPrefixLocked();
+            if (!freeRun && !prefix.get(cursor).equals(event.key)) {
+                long idle = System.currentTimeMillis() - lastAdmit;
+                if (idle < timeoutMillis()) return false;
+                divergeLocked(event.key);
+            }
+            if (!freeRun) advanceLocked();
+            appendLocked(event);
+            return true;
+        }
+    }
+
+    // ---- one timed wait's WAKE -------------------------------------------
+
+    /**
+     * The WAKE one timed wait will make, computed once: nothing the thread
+     * does while it waits changes its context, and a held wait asks about
+     * its turn every quantum.
+     */
+    static final class Wake {
+        private final Pending unsignalled;
+        private final Pending signalled;
+
+        private Wake(Pending unsignalled, Pending signalled) {
+            this.unsignalled = unsignalled;
+            this.signalled = signalled;
+        }
+
+        private Pending as(boolean bySignal) {
+            return bySignal ? signalled : unsignalled;
+        }
+    }
+
+    /**
+     * This thread's WAKE at {@code site}, or null when there is none to make:
+     * the window is not open, or the event cannot be named.
+     */
+    static Wake wake(String site) {
+        if (!recording()) return null;
+        mute();
+        try {
+            Pending unsignalled =
+                    pending(ScheduleEvent.Kind.WAKE, site, false);
+            if (unsignalled == null) return null;
+            return new Wake(unsignalled, new Pending(unsignalled.kind,
+                    unsignalled.context, unsignalled.site,
+                    unsignalled.occurrence, true));
+        } finally {
+            unmute();
+        }
+    }
+
+    /**
+     * How the prefix says this wait ends: {@code TRUE} woken by a signal,
+     * {@code FALSE} by its timeout, null when the run is free or the prefix
+     * holds no such WAKE any more (the discovering session's wait had not
+     * ended where its prefix was cut).
+     *
+     * <p>Which WAKE of the prefix is this thread's is the one its key has
+     * next: the replay admits the events of a key in the prefix's order, so
+     * the k-th of them is the one the k-th wait of that key is held to.</p>
+     */
+    static Boolean expected(Wake wake) {
+        if (wake == null) return null;
+        synchronized (LOCK) {
+            loadPrefixLocked();
+            if (freeRun) return null;
+            List<ScheduleEvent> ofKey = prefixByKey.get(wake.unsignalled.key);
+            Integer made = COUNTS.get(wake.unsignalled.key);
+            int k = made == null ? 0 : made;
+            if (ofKey == null || k >= ofKey.size()) return null;
+            return ofKey.get(k).signalled();
+        }
+    }
+
+    /** Admits the wait's WAKE if it is next NOW, stating how it ended. */
+    static boolean tryAdmit(Wake wake, boolean bySignal) {
+        if (wake == null) return true;
+        mute();
+        try {
+            return tryAdmit(wake.as(bySignal));
+        } finally {
+            unmute();
+        }
+    }
+
+    /**
+     * The wait's WAKE, written now whether it is next or not: an interrupted
+     * park ends at once, as the real one does, and the prefix stands for
+     * everyone else -- the rule an interrupted admission already follows.
+     */
+    static void admitNow(Wake wake, boolean bySignal) {
+        if (wake == null) return;
+        mute();
+        try {
             synchronized (LOCK) {
                 loadPrefixLocked();
-                if (!freeRun && !prefix.get(cursor).equals(event.key)) {
-                    long idle = System.currentTimeMillis() - lastAdmit;
-                    if (idle < timeoutMillis()) return false;
-                    divergeLocked(event.key);
+                Pending event = wake.as(bySignal);
+                if (!freeRun && prefix.get(cursor).equals(event.key)) {
+                    advanceLocked();
                 }
-                if (!freeRun) advanceLocked();
                 appendLocked(event);
+            }
+        } finally {
+            unmute();
+        }
+    }
+
+    /**
+     * The watchdog, asked by a wait held for its signal.
+     *
+     * <p>Such a wait does not ask for its turn, so no other ask may be made
+     * while it waits -- every other thread may be idle in a wait the prefix
+     * does not hold.  Nothing admitted for the timeout is the same divergence
+     * wherever it is seen: stated, every waiter released, and the replay
+     * runs free.  True when this call released the prefix.</p>
+     */
+    static boolean stalled(Wake wake) {
+        if (wake == null) return false;
+        mute();
+        try {
+            synchronized (LOCK) {
+                loadPrefixLocked();
+                if (freeRun) return false;
+                long idle = System.currentTimeMillis() - lastAdmit;
+                if (idle < timeoutMillis()) return false;
+                divergeLocked(wake.unsignalled.key);
                 return true;
             }
         } finally {
@@ -190,24 +326,27 @@ public final class ScheduleLog {
         private final String context;
         private final String site;
         private final String occurrence;
+        private final boolean signalled;
         private final String key;
 
         private Pending(ScheduleEvent.Kind kind, String context, String site,
-                        String occurrence) {
+                        String occurrence, boolean signalled) {
             this.kind = kind;
             this.context = context;
             this.site = site;
             this.occurrence = occurrence;
+            this.signalled = signalled && kind == ScheduleEvent.Kind.WAKE;
             this.key = ScheduleEvent.key(kind, context, site);
         }
     }
 
-    private static Pending pending(ScheduleEvent.Kind kind, String site) {
+    private static Pending pending(ScheduleEvent.Kind kind, String site,
+                                   boolean signalled) {
         String stable = JvmNames.stable(Text.safe(site));
         if (stable.isEmpty()) return null;
         try {
             return new Pending(kind, contextHere(), stable,
-                    Identity.innermostRegionId());
+                    Identity.innermostRegionId(), signalled);
         } catch (Throwable unnamed) {
             return null;
         }
@@ -218,7 +357,8 @@ public final class ScheduleLog {
         int k = made == null ? 0 : made;
         COUNTS.put(pending.key, k + 1);
         ScheduleEvent event = ScheduleEvent.of(seq++, pending.kind,
-                pending.context, pending.site, k, pending.occurrence);
+                pending.context, pending.site, k, pending.occurrence,
+                pending.signalled);
         JsonObject row = RowCodec.writeScheduleEvent(event);
         if (sink != null) {
             sink.write(row);
@@ -397,9 +537,13 @@ public final class ScheduleLog {
         String expected = cursor < prefixEvents.size()
                 ? prefixEvents.get(cursor).render() : "(end of prefix)";
         divergedAt = cursor;
+        boolean unwoken = cursor < prefix.size()
+                && prefix.get(cursor).equals(actual);
         divergence = "at prefix position " + cursor + " of "
                 + prefix.size() + " the run's next event was "
                 + render(actual) + " and the prefix's was " + expected
+                + (unwoken ? " -- the thread waited for the signal that "
+                        + "woke it in the prefix, and none came" : "")
                 + "; nothing was admitted for " + timeoutMillis()
                 + " ms, so every waiter is released and the replay runs free";
         freeRun = true;
@@ -462,6 +606,7 @@ public final class ScheduleLog {
                 keys.add(event.key());
             }
             prefixEvents = events;
+            prefixByKey = byKey(events);
             prefix = keys;
             cursor = 0;
             freeRun = false;
@@ -470,6 +615,21 @@ public final class ScheduleLog {
             System.err.println("Causynth could not read the schedule prefix "
                     + file + ": " + unreadable + "; the replay runs free");
         }
+    }
+
+    private static Map<String, List<ScheduleEvent>> byKey(
+            List<ScheduleEvent> events) {
+        Map<String, List<ScheduleEvent>> byKey =
+                new HashMap<String, List<ScheduleEvent>>();
+        for (ScheduleEvent event : events) {
+            List<ScheduleEvent> ofKey = byKey.get(event.key());
+            if (ofKey == null) {
+                ofKey = new ArrayList<ScheduleEvent>();
+                byKey.put(event.key(), ofKey);
+            }
+            ofKey.add(event);
+        }
+        return byKey;
     }
 
     private static Path prefixFile() {
@@ -499,6 +659,7 @@ public final class ScheduleLog {
         synchronized (LOCK) {
             prefixLoaded = true;
             prefixEvents = new ArrayList<ScheduleEvent>(events);
+            prefixByKey = byKey(prefixEvents);
             List<String> keys = new ArrayList<String>(events.size());
             for (ScheduleEvent event : events) keys.add(event.key());
             prefix = keys;
@@ -518,6 +679,7 @@ public final class ScheduleLog {
             prefixLoaded = false;
             prefix = Collections.emptyList();
             prefixEvents = Collections.emptyList();
+            prefixByKey = Collections.emptyMap();
             cursor = 0;
             freeRun = true;
             waiting = 0;
