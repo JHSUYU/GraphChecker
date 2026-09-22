@@ -245,6 +245,11 @@ public final class WorkStartSites {
      * because under a schedule prefix the wait must not read the wall clock
      * at all, and a hook placed around the call could not stop it doing
      * so.</p>
+     *
+     * <p>The same list names the notifiers of those primitives and their
+     * untimed waits, replaced the same way: a held wait leaves the wait set
+     * between two asks for its turn, so a signal must be state the wait can
+     * read afterwards, which only a replaced notifier can write.</p>
      */
     public static final class TimedWait {
         /** The type the callee is declared on, or that the receiver is. */
@@ -281,6 +286,9 @@ public final class WorkStartSites {
         }
     }
 
+    private static final String CONDITION_TYPE =
+            "java.util.concurrent.locks.Condition";
+
     /** The owner of every replacement. */
     public static final String TIMED_WAITS_CLASS =
             "edu.uva.liftlab.graphchecker.runtime.TimedWaits";
@@ -301,13 +309,28 @@ public final class WorkStartSites {
             new TimedWait("java.util.concurrent.locks.LockSupport",
                     "parkNanos", true, "void", "parkNanos",
                     "java.lang.Object", "long"),
-            new TimedWait("java.util.concurrent.locks.Condition",
-                    "awaitNanos", false, "long", "awaitNanos", "long"),
-            new TimedWait("java.util.concurrent.locks.Condition", "await",
-                    false, "boolean", "await", "long",
-                    "java.util.concurrent.TimeUnit"),
+            new TimedWait(CONDITION_TYPE, "awaitNanos", false, "long",
+                    "awaitNanos", "long"),
+            new TimedWait(CONDITION_TYPE, "await", false, "boolean", "await",
+                    "long", "java.util.concurrent.TimeUnit"),
             new TimedWait(QUEUE_TYPE, "poll", false, "java.lang.Object",
-                    "poll", "long", "java.util.concurrent.TimeUnit"));
+                    "poll", "long", "java.util.concurrent.TimeUnit"),
+            // A signal is state (TimedWaits): the notifiers of the same
+            // primitives, and their untimed waits, so a held wait -- out of
+            // the wait set between two asks for its turn -- still reads a
+            // signal sent in that gap.  None of these is an event.
+            new TimedWait("java.lang.Object", "wait", false, "void",
+                    "waitOn"),
+            new TimedWait("java.lang.Object", "notify", false, "void",
+                    "notifyOn"),
+            new TimedWait("java.lang.Object", "notifyAll", false, "void",
+                    "notifyAllOn"),
+            new TimedWait(CONDITION_TYPE, "await", false, "void", "await"),
+            new TimedWait(CONDITION_TYPE, "awaitUninterruptibly", false,
+                    "void", "awaitUninterruptibly"),
+            new TimedWait(CONDITION_TYPE, "signal", false, "void", "signal"),
+            new TimedWait(CONDITION_TYPE, "signalAll", false, "void",
+                    "signalAll"));
 
     /**
      * The timed-wait shape this call is, or null.

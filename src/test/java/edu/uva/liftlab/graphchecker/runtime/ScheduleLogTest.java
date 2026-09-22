@@ -329,6 +329,152 @@ public class ScheduleLogTest {
             public void run() {
                 synchronized (monitor) {
                     try {
+                        TimedWaits.waitOn(monitor, 1500L, site);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+            }
+        });
+        long before = System.nanoTime();
+        idle.start();
+        Thread.sleep(800L);
+        assertTrue("its own asks ran the watchdog",
+                ScheduleLog.divergence().contains("prefix position 0"));
+        assertFalse(ScheduleLog.enforcing());
+        assertTrue("let go, the wait runs on to its own deadline",
+                idle.isAlive());
+        idle.join(5000L);
+        assertFalse("never blocked for good", idle.isAlive());
+        assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
+                >= 1400L);
+        assertEquals("the deadline ended it, a WAKE of the free run",
+                Collections.singletonList(site), sites());
+    }
+
+    @Test
+    public void aHeldWaitOutlivesThePrefixOnTheWallClock() throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        final String site = "<C: boolean waitForWork()>#u21";
+        ScheduleLog.enforceForTests(prefix("x"));
+        final Object monitor = new Object();
+        final boolean[] ended = new boolean[1];
+        final CountDownLatch waiting = new CountDownLatch(1);
+        Thread idle = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                synchronized (monitor) {
+                    waiting.countDown();
+                    try {
+                        TimedWaits.waitOn(monitor, 60000L, site);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                    ended[0] = true;
+                }
+            }
+        });
+        idle.start();
+        waiting.await();
+        synchronized (monitor) {
+            // The wait has entered it, held: the prefix still stands.
+        }
+        // The prefix's last event: the run is free from here.
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+        assertFalse(ScheduleLog.enforcing());
+        Thread.sleep(500L);
+        assertTrue("the prefix's end is no timeout of this wait",
+                idle.isAlive());
+        synchronized (monitor) {
+            assertFalse(ended[0]);
+            TimedWaits.notifyOn(monitor, "<C: boolean addCall(Call)>#u3");
+        }
+        idle.join(5000L);
+        assertFalse(idle.isAlive());
+        assertEquals("a signal ended it: only the prefix's event is written",
+                Collections.singletonList("x"), sites());
+    }
+
+    @Test
+    public void aHeldSleepOutlivesThePrefixToItsOwnDeadline()
+            throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        final String site = "<L: void loop()>#u9";
+        ScheduleLog.enforceForTests(prefix("x"));
+        final CountDownLatch started = new CountDownLatch(1);
+        Thread sleeper = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                started.countDown();
+                try {
+                    TimedWaits.sleep(1500L, site);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        });
+        long before = System.nanoTime();
+        sleeper.start();
+        started.await();
+        Thread.sleep(200L);
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+        Thread.sleep(300L);
+        assertTrue("free now, it sleeps to its own deadline",
+                sleeper.isAlive());
+        sleeper.join(5000L);
+        assertFalse(sleeper.isAlive());
+        assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
+                >= 1400L);
+        assertEquals(Arrays.asList("x", site), sites());
+    }
+
+    @Test
+    public void aHeldPollOutlivesThePrefixAndTakesWhatArrives()
+            throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        final String site = "<S: void run()>#u12";
+        ScheduleLog.enforceForTests(prefix("x"));
+        final java.util.concurrent.BlockingQueue<Object> queue =
+                new java.util.concurrent.LinkedBlockingQueue<Object>();
+        final Object[] taken = new Object[1];
+        Thread sender = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    taken[0] = TimedWaits.poll(queue, 60L, TimeUnit.SECONDS,
+                            site);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        });
+        sender.start();
+        Thread.sleep(200L);
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+        Thread.sleep(300L);
+        assertTrue("the prefix's end is no timeout of this poll",
+                sender.isAlive());
+        queue.put("call");
+        sender.join(5000L);
+        assertFalse(sender.isAlive());
+        assertEquals("call", taken[0]);
+        assertEquals(Collections.singletonList("x"), sites());
+    }
+
+    @Test
+    public void aNotifySentWhileAHeldWaitIsOutOfTheWaitSetIsNotLost()
+            throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        final String site = "<C: boolean waitForWork()>#u21";
+        ScheduleLog.enforceForTests(prefix("x"));
+        final Object monitor = new Object();
+        final CountDownLatch waiting = new CountDownLatch(1);
+        Thread idle = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                synchronized (monitor) {
+                    waiting.countDown();
+                    try {
                         TimedWaits.waitOn(monitor, 60000L, site);
                     } catch (InterruptedException interrupted) {
                         Thread.currentThread().interrupt();
@@ -337,11 +483,210 @@ public class ScheduleLogTest {
             }
         });
         idle.start();
+        waiting.await();
+        synchronized (monitor) {
+            // Held longer than a quantum: the wait's quantum ends and it
+            // stands outside the wait set, blocked on the monitor this
+            // thread holds, when the notify is sent.
+            Thread.sleep(200L);
+            TimedWaits.notifyOn(monitor, "<C: boolean addCall(Call)>#u3");
+        }
         idle.join(5000L);
-        assertFalse("never blocked for good: its own asks run the watchdog",
-                idle.isAlive());
-        assertTrue(ScheduleLog.divergence().contains("prefix position 0"));
-        assertFalse(ScheduleLog.enforcing());
+        assertFalse("the notify was state the wait read", idle.isAlive());
+        assertTrue("and it is no event", written.isEmpty());
+        assertEquals("", ScheduleLog.divergence());
+    }
+
+    @Test
+    public void theWindowsOpeningDoesNotSwallowASignalSentBeforeTheWaitSeesIt()
+            throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        CausynthTraceRecorder.setRecordingStartedForTests(false);
+        final String site = "<C: boolean waitForWork()>#u21";
+        ScheduleLog.enforceForTests(prefix("x"));
+        final Object monitor = new Object();
+        final CountDownLatch waiting = new CountDownLatch(1);
+        Thread idle = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                synchronized (monitor) {
+                    waiting.countDown();
+                    try {
+                        TimedWaits.waitOn(monitor, 60000L, site);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+            }
+        });
+        idle.start();
+        waiting.await();
+        synchronized (monitor) {
+            // The wait is free, on the wall clock, in the wait set.
+        }
+        Thread.sleep(100L);
+        synchronized (monitor) {
+            CausynthTraceRecorder.setRecordingStartedForTests(true);
+            // The opening takes the wait out of the wait set; the notify
+            // that follows, before it can re-enter, reaches only its mark.
+            TimedWaits.windowOpened();
+            TimedWaits.notifyOn(monitor, "<C: boolean addCall(Call)>#u3");
+        }
+        idle.join(5000L);
+        assertFalse("the call's notify ended the wait", idle.isAlive());
+        assertTrue("a signal is no event", written.isEmpty());
+        assertEquals("", ScheduleLog.divergence());
+    }
+
+    @Test
+    public void aNotifyEndsOneWaitAndANotifyAllEndsEvery() throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        ScheduleLog.enforceForTests(prefix("x"));
+        final Object monitor = new Object();
+        List<Thread> first = heldWaits(monitor, 2);
+        synchronized (monitor) {
+            TimedWaits.notifyOn(monitor, "<C: void n()>#u1");
+        }
+        Thread.sleep(300L);
+        assertEquals("one notify, one wait ended", 1, alive(first));
+        synchronized (monitor) {
+            TimedWaits.notifyOn(monitor, "<C: void n()>#u1");
+        }
+        join(first);
+        assertEquals(0, alive(first));
+        List<Thread> second = heldWaits(monitor, 2);
+        synchronized (monitor) {
+            TimedWaits.notifyAllOn(monitor, "<C: void n()>#u2");
+        }
+        join(second);
+        assertEquals(0, alive(second));
+        assertTrue(written.isEmpty());
+        assertEquals("", ScheduleLog.divergence());
+    }
+
+    @Test
+    public void aSignalSentWhileAHeldAwaitReacquiresTheLockIsNotLost()
+            throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        final String site = "<Q: java.lang.Object take()>#u8";
+        ScheduleLog.enforceForTests(prefix("x"));
+        final java.util.concurrent.locks.ReentrantLock lock =
+                new java.util.concurrent.locks.ReentrantLock();
+        final java.util.concurrent.locks.Condition ready = lock.newCondition();
+        final boolean[] signalled = new boolean[1];
+        final CountDownLatch waiting = new CountDownLatch(1);
+        Thread taker = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                lock.lock();
+                try {
+                    waiting.countDown();
+                    signalled[0] = TimedWaits.await(ready, 60L,
+                            TimeUnit.SECONDS, site);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                } finally {
+                    lock.unlock();
+                }
+            }
+        });
+        taker.start();
+        waiting.await();
+        lock.lock();
+        try {
+            Thread.sleep(200L);
+            TimedWaits.signal(ready, "<Q: void put(java.lang.Object)>#u2");
+        } finally {
+            lock.unlock();
+        }
+        taker.join(5000L);
+        assertFalse("the signal was state the await read", taker.isAlive());
+        assertTrue(signalled[0]);
+        assertTrue(written.isEmpty());
+    }
+
+    @Test
+    public void anUntimedWaitEndsByItsOwnNotifyAndNotByAnother()
+            throws Exception {
+        final Object monitor = new Object();
+        final int[] ended = new int[1];
+        List<Thread> waits = new ArrayList<Thread>();
+        final CountDownLatch waiting = new CountDownLatch(2);
+        for (int index = 0; index < 2; index++) {
+            Thread thread = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    synchronized (monitor) {
+                        waiting.countDown();
+                        try {
+                            TimedWaits.waitOn(monitor, "<C: void w()>#u5");
+                        } catch (InterruptedException interrupted) {
+                            return;
+                        }
+                        ended[0]++;
+                    }
+                }
+            });
+            waits.add(thread);
+            thread.start();
+        }
+        waiting.await();
+        synchronized (monitor) {
+            TimedWaits.notifyOn(monitor, "<C: void n()>#u1");
+        }
+        Thread.sleep(300L);
+        synchronized (monitor) {
+            assertEquals("the notifyAll that carried it woke both; one left",
+                    1, ended[0]);
+            TimedWaits.notifyOn(monitor, "<C: void n()>#u1");
+        }
+        join(waits);
+        assertEquals(2, ended[0]);
+    }
+
+    /** {@code count} held waits on {@code monitor}, each standing. */
+    private static List<Thread> heldWaits(final Object monitor, int count)
+            throws InterruptedException {
+        final CountDownLatch waiting = new CountDownLatch(count);
+        List<Thread> threads = new ArrayList<Thread>();
+        for (int index = 0; index < count; index++) {
+            Thread thread = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    synchronized (monitor) {
+                        waiting.countDown();
+                        try {
+                            TimedWaits.waitOn(monitor, 60000L,
+                                    "<C: void loop()>#u7");
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                        }
+                    }
+                }
+            });
+            threads.add(thread);
+            thread.start();
+        }
+        waiting.await();
+        synchronized (monitor) {
+            // Every wait has entered it.
+        }
+        return threads;
+    }
+
+    private static int alive(List<Thread> threads) {
+        int alive = 0;
+        for (Thread thread : threads) {
+            if (thread.isAlive()) alive++;
+        }
+        return alive;
+    }
+
+    private static void join(List<Thread> threads)
+            throws InterruptedException {
+        for (Thread thread : threads) {
+            thread.join(5000L);
+        }
     }
 
     /** A prefix of SEND events at these sites, on this thread's context. */

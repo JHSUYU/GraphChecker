@@ -219,12 +219,75 @@ public final class ScheduleLog {
         }
     }
 
-    /** Admits the wait's timeout WAKE if it is next NOW ({@link #tryObserve}). */
-    static boolean tryAdmit(Wake wake) {
-        if (wake == null) return true;
+    /** What a held wait's ask for its turn found. */
+    enum Turn {
+        /** Its WAKE was the prefix's next event: admitted and written. */
+        ADMITTED,
+        /** Another event is next: the wait asks again after a quantum. */
+        NOT_YET,
+        /**
+         * The run holds no prefix any more -- used up, or given up by the
+         * watchdog -- and nothing was written: the rest of the wait is on
+         * the wall clock, as it is in a replay with no prefix.
+         */
+        FREE
+    }
+
+    /**
+     * Admits the wait's timeout WAKE if it is the prefix's next event NOW.
+     *
+     * <p>A run that goes free does not end the waits it held.  Its prefix
+     * stood for their timeouts only while it lasted; past it the replay runs
+     * as one with no prefix does, where a wait ends at its own deadline or
+     * by a signal.  Ending every held wait the moment the prefix ran out made
+     * each of them time out at once -- an idle IPC connection closed itself,
+     * a request sender gave up its turn -- at the very point a focused
+     * replay's flip is, and the session's schedule then carried those WAKEs
+     * into every prefix taken from it (hdfs-17967 path A: a three-event
+     * prefix of which two were such WAKEs, and the replay it held never
+     * reached the occurrence it was for).</p>
+     */
+    static Turn turn(Wake wake) {
+        if (wake == null) return Turn.FREE;
         mute();
         try {
-            return tryAdmit(wake.event);
+            synchronized (LOCK) {
+                loadPrefixLocked();
+                if (freeRun) return Turn.FREE;
+                if (!prefix.get(cursor).equals(wake.event.key)) {
+                    long idle = System.currentTimeMillis() - lastAdmit;
+                    if (idle < timeoutMillis()) return Turn.NOT_YET;
+                    divergeLocked(wake.event.key);
+                    return Turn.FREE;
+                }
+                advanceLocked();
+                appendLocked(wake.event);
+                return Turn.ADMITTED;
+            }
+        } finally {
+            unmute();
+        }
+    }
+
+    /**
+     * A held sleep's WAKE: blocks until it is the prefix's next event, and
+     * admits and writes it -- true.  False, with nothing written, when the
+     * run goes free first: the sleep then goes on on the wall clock
+     * ({@link #turn}).  An interrupt while it waits ends the wait where it
+     * is, and the event is written, as {@link #observe} writes it.
+     */
+    static boolean awaitTurn(ScheduleEvent.Kind kind, String site) {
+        if (kind == null || !recording()) return false;
+        mute();
+        try {
+            Pending event = pending(kind, site);
+            if (event == null) return false;
+            synchronized (LOCK) {
+                loadPrefixLocked();
+                if (admitLocked(event.key) == Admission.FREED) return false;
+                appendLocked(event);
+                return true;
+            }
         } finally {
             unmute();
         }
@@ -397,8 +460,8 @@ public final class ScheduleLog {
      * prefix cannot be held is that nothing at all was admitted for the whole
      * timeout while someone waited.</p>
      */
-    private static void admitLocked(String key) {
-        if (freeRun) return;
+    private static Admission admitLocked(String key) {
+        if (freeRun) return Admission.FREED;
         long timeout = timeoutMillis();
         waiting++;
         try {
@@ -418,14 +481,25 @@ public final class ScheduleLog {
                     // for everyone else.  The event is still written, where
                     // it happened, because it did.
                     Thread.currentThread().interrupt();
-                    return;
+                    return Admission.INTERRUPTED;
                 }
             }
         } finally {
             waiting--;
         }
-        if (freeRun) return;
+        if (freeRun) return Admission.FREED;
         advanceLocked();
+        return Admission.NEXT;
+    }
+
+    /** How one blocking admission ended. */
+    private enum Admission {
+        /** The event was the prefix's next one, and the cursor moved. */
+        NEXT,
+        /** The run is free: no prefix holds the event any more. */
+        FREED,
+        /** The workload interrupted the thread while it waited. */
+        INTERRUPTED
     }
 
     /** One admission: the cursor moves, and every waiter looks again. */
