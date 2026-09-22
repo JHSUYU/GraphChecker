@@ -528,14 +528,41 @@ final class RuntimeTraceContext {
             state.requestApi = api;
         }
         // A tick is a WAKE: the turn a daemon's loop hands its thread.
+        String site = "tick." + MapFields.safe(roleName);
         ScheduleLog.observe(
                 edu.uva.liftlab.graphchecker.contract.ScheduleEvent.Kind.WAKE,
-                "tick." + MapFields.safe(roleName));
+                site);
+        // Only a turn the window saw begin states its end: one begun before
+        // it is the set-up's, whichever side of the opening its work fell.
+        if (CausynthTraceRecorder.recordingStarted()) scope.tickSite = site;
         return token;
     }
 
-    /** Closes the tick {@link #beginTick} opened. */
+    /**
+     * Closes the tick {@link #beginTick} opened, and states its END: the
+     * turn's writes are in the world from here, which is what orders them
+     * before the events that read them ({@code ScheduleEvent.Kind.END}).
+     */
     static void endTick(long token) {
+        State state = CURRENT.get();
+        ScopeFrame tick = null;
+        for (ScopeFrame open : state.scopes) {
+            if (open.token == token) {
+                tick = open;
+                break;
+            }
+        }
+        if (tick != null && tick.tickSite != null) {
+            // What was opened inside the turn closes first, so the END
+            // stands in the turn's own context.
+            while (state.scopes.peek() != null
+                    && state.scopes.peek() != tick) {
+                restoreOne(state, state.scopes.peek());
+            }
+            ScheduleLog.observe(
+                    edu.uva.liftlab.graphchecker.contract.ScheduleEvent.Kind
+                            .END, tick.tickSite);
+        }
         restoreScope(token);
     }
 
@@ -1411,6 +1438,11 @@ final class RuntimeTraceContext {
         private SourceRef opened;
         /** Whether this scope is a service-loop turn ({@link #beginWake}). */
         private boolean turn;
+        /**
+         * The site of the daemon tick this scope is, when the window saw it
+         * begin; null otherwise.  Its END is stated under it.
+         */
+        private String tickSite;
         private final SourceRef source;
         private final Frame activeFrame;
         private final SourceRef frameSource;

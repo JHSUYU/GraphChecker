@@ -644,6 +644,87 @@ public class ScheduleLogTest {
         assertEquals(2, ended[0]);
     }
 
+    @Test
+    public void aTurnTheWindowSawBeginStatesItsEnd() {
+        Object daemon = new Object();
+        long tick = RuntimeTraceContext.beginTick(daemon, "HEARTBEAT_TICK");
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "HADOOP_IPC#REQUEST");
+        RuntimeTraceContext.endTick(tick);
+        List<ScheduleEvent> events = events();
+        assertEquals(Arrays.asList(ScheduleEvent.Kind.WAKE,
+                ScheduleEvent.Kind.SEND, ScheduleEvent.Kind.END),
+                Arrays.asList(events.get(0).kind(), events.get(1).kind(),
+                        events.get(2).kind()));
+        assertEquals("the END stands in the turn's own context",
+                events.get(0).context(), events.get(2).context());
+        assertEquals("tick.HEARTBEAT_TICK", events.get(2).site());
+    }
+
+    @Test
+    public void aTurnBegunBeforeTheWindowStatesNoEnd() {
+        CausynthTraceRecorder.setRecordingStartedForTests(false);
+        long tick = RuntimeTraceContext.beginTick(new Object(),
+                "BP_SERVICE_ACTOR");
+        CausynthTraceRecorder.setRecordingStartedForTests(true);
+        RuntimeTraceContext.endTick(tick);
+        assertTrue("the set-up's turn is not the window's", written.isEmpty());
+    }
+
+    @Test
+    public void aTurnsEndIsHeldToItsPlaceInThePrefix() throws Exception {
+        // One free turn: its WAKE and END as this JVM computes them.  The
+        // prefix below is a discovering run whose turn ended AFTER a send.
+        final Object monitor = new Object();
+        Thread turn = daemonTurn(monitor, null);
+        turn.start();
+        turn.join(5000L);
+        List<ScheduleEvent> free = events();
+        ScheduleEvent wake = free.get(0);
+        ScheduleEvent end = free.get(1);
+        assertEquals(ScheduleEvent.Kind.END, end.kind());
+
+        written.clear();
+        RuntimeTraceContext.resetForTests();
+        Identity.resetForTests();
+        ScheduleLog.resetForTests();
+        ScheduleLog.install(new ScheduleLog.Sink() {
+            @Override
+            public void write(JsonObject row) {
+                written.add(row);
+            }
+        });
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        ScheduleLog.enforceForTests(Arrays.asList(wake,
+                event(ScheduleEvent.Kind.SEND, "y"), end));
+        final CountDownLatch ending = new CountDownLatch(1);
+        Thread held = daemonTurn(monitor, ending);
+        held.start();
+        assertTrue(ending.await(5L, TimeUnit.SECONDS));
+        Thread.sleep(200L);
+        assertTrue("the turn's END waits for the send before it",
+                held.isAlive());
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "y");
+        held.join(5000L);
+        assertFalse(held.isAlive());
+        assertEquals(Arrays.asList("tick.HEARTBEAT_TICK", "y",
+                "tick.HEARTBEAT_TICK"), sites());
+        assertEquals("", ScheduleLog.divergence());
+    }
+
+    /** One daemon turn on a thread of its own; counts down before its end. */
+    private static Thread daemonTurn(final Object owner,
+                                     final CountDownLatch ending) {
+        return new Thread(new Runnable() {
+            @Override
+            public void run() {
+                long tick = RuntimeTraceContext.beginTick(owner,
+                        "HEARTBEAT_TICK");
+                if (ending != null) ending.countDown();
+                RuntimeTraceContext.endTick(tick);
+            }
+        });
+    }
+
     /** {@code count} held waits on {@code monitor}, each standing. */
     private static List<Thread> heldWaits(final Object monitor, int count)
             throws InterruptedException {

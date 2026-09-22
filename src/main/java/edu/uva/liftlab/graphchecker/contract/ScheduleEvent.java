@@ -39,7 +39,17 @@ public final class ScheduleEvent {
          * begins.  A wait a signal ended is no event -- the notifier's own
          * events order it.
          */
-        WAKE
+        WAKE,
+        /**
+         * A daemon turn (a tick) the window saw begin has ended: what it
+         * wrote is in the world from here on.  A turn's writes are no
+         * message, so its WAKE alone ordered where it started and nothing
+         * of what it did -- hdfs-17899-bug2's NameNode monitor rotated the
+         * keys and marked every DataNode for a key update inside one tick,
+         * and a replay's heartbeat reached the NameNode before the marking
+         * that the recording's heartbeat had found done.
+         */
+        END
     }
 
     private final long seq;
