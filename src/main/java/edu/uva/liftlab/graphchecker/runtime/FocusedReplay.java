@@ -833,7 +833,25 @@ public final class FocusedReplay {
     }
 
     /**
-     * Every root the obligation assigns that no mint of this replay planted.
+     * Notes that a mint site of this root RAN in this replay, whether or not
+     * it then planted the wave's value -- the fact that tells an unplanted
+     * assignment from one whose mint never came.
+     */
+    static void mintReached(String rootId) {
+        String id = Text.safe(rootId);
+        if (id.isEmpty()) return;
+        load();
+        synchronized (LOCK) {
+            REACHED.add(id);
+        }
+    }
+
+    /** The roots a mint site of this replay ran for. */
+    private static final Set<String> REACHED = new LinkedHashSet<String>();
+
+    /**
+     * Every root the obligation assigns whose mint RAN in this replay and did
+     * not plant the wave's value.
      *
      * <p>BLOCKING for this session, and stated by the REPLAY: a replay that
      * ran the recording's value under an obligation that asked for another
@@ -842,6 +860,15 @@ public final class FocusedReplay {
      * it, not the first.  11741 session 869a1f0e285913ad-6f59cb84 is the
      * case: SERIAL_NO was minted through the field path, which never asked
      * for the wave's value at all.</p>
+     *
+     * <p>A root whose mint never ran is not one: nothing read the
+     * recording's value in its place, because nothing read it at all.  The
+     * occurrence the obligation was for did not happen in this run, and the
+     * obligation's own verdict states that -- NOT_ADMITTED, naming the
+     * occurrence never reached or the mint row the session lacks
+     * ({@link #results}).  hdfs-17967 path B reported five such "unplanted"
+     * assignments as blockers, each the input of an addKeys occurrence its
+     * replay never ran.</p>
      *
      * <p>ONE RULE OVER BOTH SPELLINGS of what a wave asks of a root: an
      * absolute {@code rootAssignment} and a {@code clockDelta}.  It covered
@@ -864,12 +891,14 @@ public final class FocusedReplay {
                         : obligation.rootAssignments().entrySet()) {
                     String id = Text.safe(assigned.getKey());
                     if (id.isEmpty() || PLANTED.contains(id)) continue;
+                    if (!reachedLocked(id)) continue;
                     unplanted.put(id, assigned.getValue());
                 }
             }
             for (Map.Entry<String, String> skew : CLOCK_DELTAS.entrySet()) {
                 String id = Text.safe(skew.getKey());
                 if (id.isEmpty() || PLANTED.contains(id)) continue;
+                if (!reachedLocked(id)) continue;
                 unplanted.put(id, skew.getValue());
             }
         }
@@ -878,6 +907,11 @@ public final class FocusedReplay {
 
     /** The roots a mint of this replay wrote the wave's value into. */
     private static final Set<String> PLANTED = new LinkedHashSet<String>();
+
+    /** Whether a mint of this root ran: it asked, or published its row. */
+    private static boolean reachedLocked(String id) {
+        return REACHED.contains(id) || MINTED.contains(id);
+    }
 
     /** Where the focus row is, or null when this replay was handed none. */
     private static Path focusRow() {
@@ -950,6 +984,7 @@ public final class FocusedReplay {
             focusedTask = null;
             PLANTED.clear();
             MINTED.clear();
+            REACHED.clear();
             unmatchedPrefix = "";
             ROOT_MINTS.clear();
             task = null;

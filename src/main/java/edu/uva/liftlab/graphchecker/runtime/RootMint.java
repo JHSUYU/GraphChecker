@@ -602,6 +602,8 @@ final class RootMint {
      */
     static String focusedRootValue(ActiveRegion active,
                                            String rootId, Object observed) {
+        edu.uva.liftlab.graphchecker.runtime.FocusedReplay.mintReached(
+                rootId);
         if (active == null) return "";
         // AT THE REGION THAT OWNS THE MINT, not at whichever activation was
         // innermost when the site ran: the focus row addresses each mint by
@@ -865,6 +867,9 @@ final class RootMint {
     private static Object materializePrimitiveValue(
             ActiveRegion active, SymbolizeAction action, Object concrete,
             List<String> path) {
+        // The mint RAN, whatever it goes on to do with the wave's value.
+        edu.uva.liftlab.graphchecker.runtime.FocusedReplay.mintReached(
+                action.symbol);
         ConcolicVmBroker api = engine();
         List<String> exactPath = path == null
                 ? Collections.<String>emptyList() : path;

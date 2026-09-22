@@ -130,7 +130,10 @@ public enum GapKind {
      */
     SESSION_INCOMPLETE,
     /**
-     * A root the obligation assigns that no mint of the replay planted.
+     * A root the obligation assigns whose mint RAN in the replay and did not
+     * plant the wave's value.  A root whose mint never ran is not one -- the
+     * occurrence the obligation was for did not happen, which its
+     * NOT_ADMITTED verdict states.
      *
      * <p>BLOCKING for the session that met it, and stated by the REPLAY: the
      * run read the recording's value where the wave asked for another one,

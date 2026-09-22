@@ -506,6 +506,48 @@ public class ManualMintStatesItsValueTest {
     private static final String ALONGSIDE_ADDRESS =
             "hdfs/dn0#epoch0/region/REGION.094a8e3d/ctx:Root:CLIENT#1/idx:";
 
+    /**
+     * An assignment is UNPLANTED only where its mint ran: a root whose mint
+     * never came was read by nothing, and the obligation's verdict already
+     * says the occurrence it was for did not happen.
+     *
+     * <p>hdfs-17967 path B reported five blockers, each the input of an
+     * addKeys occurrence its replay never ran, under obligations that were
+     * NOT_ADMITTED for exactly that reason.</p>
+     */
+    @Test
+    public void anAssignmentWhoseMintNeverRanIsNotUnplanted()
+            throws Exception {
+        focusRow("{\"taskId\":\"TASK.3\",\"obligationId\":\"OBL.3\","
+                + "\"pathId\":\"PATH.3\",\"seedSessionId\":\"s-seed\","
+                + "\"focused\":\"" + PLANNED_ADDRESS + "\","
+                + "\"focusedOccurrenceId\":\"" + address(PLANNED_ADDRESS)
+                .id() + "\","
+                + "\"flip\":{\"siteId\":\"Arrival#u8\",\"ordinal\":1,"
+                + "\"outcome\":true},"
+                + "\"rootAssignments\":{\"CASE.SERIAL\":\"12\"},"
+                + "\"clockDeltas\":{\"CASE.NOW\":\"-4200\"},"
+                + "\"rootMints\":{\"CASE.SERIAL\":\"" + MINT_ADDRESS
+                + "\"},"
+                + "\"answers\":{},\"unproducible\":[]}");
+        assertEquals("no mint of either root ran: nothing is owed",
+                Collections.emptyMap(),
+                FocusedReplay.unplantedAssignments());
+        assertEquals("the obligation says what did not happen",
+                edu.uva.liftlab.graphchecker.contract.Verdict.NOT_ADMITTED,
+                FocusedReplay.results("s-unreached").get(0).verdict());
+
+        // The mint RUNS where the row does not name it, so it cannot plant:
+        // that is the recording's value read under an obligation that asked
+        // for another one, and it is owed.
+        ActiveRegion alongside = manualRegion();
+        alongside.d3Address = address(ALONGSIDE_ADDRESS);
+        assertEquals("", focusedRootValue(alongside, "CASE.SERIAL",
+                Long.valueOf(7L)));
+        assertEquals(Collections.singletonMap("CASE.SERIAL", "12"),
+                FocusedReplay.unplantedAssignments());
+    }
+
     /** The session states one root mint row, as RowRuntime publishes one. */
     private static void publishedMint(String rootId) {
         FocusedReplay.mintPublished(rootId);
