@@ -187,6 +187,46 @@ public class RowRuntimeTest {
     }
 
     /**
+     * Counts start at the window.  hdfs-11741's balancer opens its request
+     * before the window and sends a varying number of set-up RPCs under it;
+     * the first send inside the window must be the same endpoint whatever
+     * the set-up sent, or its anchor -- and every context downstream of it
+     * -- differs between the recording and the replay.
+     */
+    @Test
+    public void aCountTakenBeforeTheWindowDoesNotReachIntoIt() {
+        OccurrenceAddress at = address("hdfs-11741/balancer#epoch0",
+                "ROLE.CLIENT", CausalContext.of(Role.CLIENT, "", 1),
+                ExecutionIndex.empty());
+        List<Endpoint> firstInWindow = new ArrayList<>();
+        for (int setUpSends : new int[] {1, 3}) {
+            RuntimeTraceContext.resetForTests();
+            Identity.resetForTests();
+            Lineage.resetForTests();
+            Object anchor = new Object();
+            RuntimeTraceContext.registerSource(anchor, NN);
+            long request = RuntimeTraceContext.beginRequest(anchor,
+                    "balance-block");
+            for (int send = 0; send < setUpSends; send++) {
+                Identity.endpointAt(at, "HADOOP_IPC#REQUEST", 0);
+            }
+            Identity.openWindow();
+            firstInWindow.add(Identity.endpointAt(at, "HADOOP_IPC#REQUEST",
+                    0));
+            Endpoint second = Identity.endpointAt(at, "HADOOP_IPC#REQUEST",
+                    0);
+            assertFalse("inside the window the count goes on",
+                    second.id().equals(firstInWindow.get(
+                            firstInWindow.size() - 1).id()));
+            RuntimeTraceContext.endRequest(request);
+        }
+        assertEquals(firstInWindow.get(0).id(), firstInWindow.get(1).id());
+        assertTrue(firstInWindow.get(0).siteIndex().render(),
+                firstInWindow.get(0).siteIndex().render()
+                        .endsWith("HADOOP_IPC#REQUEST@0"));
+    }
+
+    /**
      * The entry rule: a delivery with no selected region still mints, and
      * the row pairs it to the producer the run staged the value from.
      */

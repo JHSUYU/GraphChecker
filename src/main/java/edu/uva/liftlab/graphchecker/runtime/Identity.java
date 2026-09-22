@@ -57,6 +57,30 @@ public final class Identity {
     }
 
     /**
+     * The recording window this JVM's counts are taken in: 0 until the
+     * workload opens its window, then 1.
+     *
+     * <p>THE window rule for counts, as {@link Lineage#openWindow} is for
+     * root k: the recording states only what happened inside the window, and
+     * a replay is held to the window's schedule only, so a count carried in
+     * from before it is the one part of an address neither run controls.
+     * hdfs-11741 is why: the balancer's {@code balance-block} request opens
+     * before the window, its {@code main} sends a varying number of set-up
+     * RPCs under it -- a block write that retries until the DataNodes have
+     * reported, and they now report on their own clock -- and the first send
+     * inside the window was {@code @12} in the recording and something else
+     * in the replay, so its anchor, and every context downstream of it,
+     * differed.  A count filed before the window opened is dropped the first
+     * time its level counts inside it, on whichever thread that is.</p>
+     */
+    private static volatile int window;
+
+    /** The workload opened its recording window: counts start again here. */
+    public static void openWindow() {
+        window++;
+    }
+
+    /**
      * One thread's index levels: the thread root and one level per frame.
      *
      * <p>A LEVEL is one entered frame and the events minted while it was the
@@ -369,6 +393,13 @@ public final class Identity {
                     while (counters.size() > index + 1) {
                         counters.remove(counters.size() - 1);
                     }
+                    // Counted before the recording window opened: what the
+                    // hop made there is nothing either run states
+                    // (Identity#window), so it counts again from here.
+                    if (filed.window != window) {
+                        filed = new Counters(rootToken);
+                        counters.set(index, filed);
+                    }
                     return filed.events;
                 }
                 // A hop still open is an ENCLOSING one, and its counts stand:
@@ -386,6 +417,8 @@ public final class Identity {
     /** One level's site counts under one root hop. */
     private static final class Counters {
         private final long rootToken;
+        /** The window these counts were taken in ({@link Identity#window}). */
+        private final int window = Identity.window;
         private final Map<String, Integer> events =
                 new HashMap<String, Integer>();
 
@@ -871,6 +904,13 @@ public final class Identity {
         Region running = state.activeRegion();
         if (running == null) return 0;
         String key = Text.safe(site);
+        // The same window rule as every other count (Identity#window): an
+        // activation that straddles the window's opening numbers its
+        // decisions from there.
+        if (running.window != window) {
+            running.branchOrdinals.clear();
+            running.window = window;
+        }
         Integer previous = running.branchOrdinals.get(key);
         int ordinal = previous == null ? 1 : previous + 1;
         running.branchOrdinals.put(key, ordinal);
@@ -1284,6 +1324,8 @@ public final class Identity {
          */
         private final Map<String, Integer> branchOrdinals =
                 new HashMap<String, Integer>();
+        /** The window {@link #branchOrdinals} were counted in. */
+        private int window = Identity.window;
 
         private Region(int base) {
             this.base = base;
@@ -1293,6 +1335,7 @@ public final class Identity {
     public static void resetForTests() {
         CURRENT.remove();
         STARTS.clear();
+        window = 0;
         CLOCK = UNAVAILABLE;
         FrameJournal.resetForTests();
     }
