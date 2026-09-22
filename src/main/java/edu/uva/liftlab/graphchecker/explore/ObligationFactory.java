@@ -46,6 +46,20 @@ public final class ObligationFactory {
     public static final int DEFAULT_MAX_PATHS_PER_TASK = 32;
     /** How many flips one path may offer in one wave. */
     public static final int DEFAULT_MAX_FLIPS_PER_PATH = 32;
+    /**
+     * How many flips the world of a path a wave cuts from may already hold.
+     *
+     * <p>THE NESTING BOUND, the net the search's own accounting allows: the
+     * regions, their identities, the loop ordinals and the symbolized roots
+     * are finite by construction, but a world is a set of flips and each
+     * wave nests one more -- hdfs-11741 asked 30, 260 and 337 obligations in
+     * its first three waves over 44 distinct arms, one arm up to 55 times
+     * over the worlds that reach it.  Its witness chain is two flips deep (a
+     * dn1 drop cut from a world holding nn0's rotation drop), and every
+     * other case's exploration closes by itself before a fourth flip: their
+     * waves cut from worlds of at most three.  So three.</p>
+     */
+    public static final int DEFAULT_MAX_WORLD_DEPTH = 3;
 
     private ObligationFactory() {
     }
@@ -54,17 +68,30 @@ public final class ObligationFactory {
     public static final class Bounds {
         public final int maxPathsPerTask;
         public final int maxFlipsPerPath;
+        /**
+         * The most flips a cut path's world may hold; 0 cuts from the seed
+         * alone ({@link #DEFAULT_MAX_WORLD_DEPTH}).
+         */
+        public final int maxWorldDepth;
 
         public Bounds(int maxPathsPerTask, int maxFlipsPerPath) {
+            this(maxPathsPerTask, maxFlipsPerPath, -1);
+        }
+
+        /** A negative {@code maxWorldDepth} is the default. */
+        public Bounds(int maxPathsPerTask, int maxFlipsPerPath,
+                      int maxWorldDepth) {
             this.maxPathsPerTask = maxPathsPerTask <= 0
                     ? DEFAULT_MAX_PATHS_PER_TASK : maxPathsPerTask;
             this.maxFlipsPerPath = maxFlipsPerPath <= 0
                     ? DEFAULT_MAX_FLIPS_PER_PATH : maxFlipsPerPath;
+            this.maxWorldDepth = maxWorldDepth < 0
+                    ? DEFAULT_MAX_WORLD_DEPTH : maxWorldDepth;
         }
 
         public static Bounds defaults() {
             return new Bounds(DEFAULT_MAX_PATHS_PER_TASK,
-                    DEFAULT_MAX_FLIPS_PER_PATH);
+                    DEFAULT_MAX_FLIPS_PER_PATH, DEFAULT_MAX_WORLD_DEPTH);
         }
     }
 
@@ -426,9 +453,18 @@ public final class ObligationFactory {
         int paths = 0;
         int unread = 0;
         int cappedPaths = 0;
+        int tooDeep = 0;
         for (Corpus.RecordedPath path : smallestWorldFirst(corpus,
                 corpus.pathsOf(task.focused()))) {
             if (!cuttable(corpus, path.sessionId)) continue;
+            // THE NESTING BOUND ({@link #DEFAULT_MAX_WORLD_DEPTH}): a world
+            // already this deep is not cut from, and the gap below says how
+            // many paths that left unread.
+            if (corpus.world(path.sessionId).flips.size()
+                    > bounds.maxWorldDepth) {
+                tooDeep++;
+                continue;
+            }
             // A BOUND THAT DROPS WORK SAYS SO.  This used to be a bare
             // `break`: of hdfs-11741 campaign #6's 137 cuttable paths at one
             // task, 32 were planned and 105 were discarded in silence -- no
@@ -494,6 +530,16 @@ public final class ObligationFactory {
                                 + bounds.maxFlipsPerPath
                                 + " this wave cut, left unasked"));
             }
+        }
+        if (tooDeep > 0) {
+            gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                    GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+                    task.taskId() + " max-world-depth="
+                            + bounds.maxWorldDepth,
+                    tooDeep + " cuttable path(s) of this task stand in a "
+                            + "world of more than " + bounds.maxWorldDepth
+                            + " flip(s), and no wave nests deeper: none of "
+                            + "them was cut from"));
         }
         if (unread > 0) {
             gaps.add(GapRow.of(ExploreCodec.EXPLORATION,

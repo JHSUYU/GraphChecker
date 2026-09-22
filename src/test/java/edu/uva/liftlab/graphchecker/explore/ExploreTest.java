@@ -716,6 +716,31 @@ public class ExploreTest {
                 + asked.keySet(), asked.containsKey("s-other-prefix"));
         assertTrue(asked.keySet().containsAll(Arrays.asList(
                 "s-world-z", "s-world-y", "s-world-w")));
+
+        // THE NESTING BOUND.  s-world-y stands in a world of one flip, so
+        // a wave that nests no deeper than the seed cuts nothing from it --
+        // and says how many paths that left unread.
+        Path shallow = out.resolve("obligations-0005");
+        ExploreMain.plan(iteration, TARGET_SELECTOR, null, results,
+                iteration.resolve(StaticScopeMap.FILE), shallow, 5, "epoch0",
+                ClosurePlanner.DEFAULT_MAX_TASKS,
+                new ObligationFactory.Bounds(
+                        ObligationFactory.DEFAULT_MAX_PATHS_PER_TASK,
+                        ObligationFactory.DEFAULT_MAX_FLIPS_PER_PATH, 0));
+        for (Obligation obligation : obligations(shallow)) {
+            assertFalse("no obligation is cut from a world deeper than the "
+                            + "bound: " + obligation,
+                    Corpus.pathId("s-world-y", target)
+                            .equals(obligation.pathId()));
+        }
+        boolean stated = false;
+        for (GapRow gap : RowCodec.readAll(shallow.resolve("gaps.jsonl"),
+                RowCodec::readGap)) {
+            stated |= gap.kind() == GapKind.ADMISSION_GAP
+                    && gap.cls() == GapClass.DIAGNOSTIC
+                    && gap.subject().endsWith("max-world-depth=0");
+        }
+        assertTrue("and the bound states what it left unread", stated);
     }
 
     /**

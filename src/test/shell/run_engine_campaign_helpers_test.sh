@@ -701,7 +701,10 @@ done
 # wave of 108 costing fourteen slowest-of-eight replays and costing three --
 # and empty is the honest spelling of "this one", which is what every run
 # before the key did.
-[[ "$(print_normalized_config | wc -l)" -eq 46 ]] \
+# 47: `region_path_max_world_depth` joined it with the nesting bound: how deep
+# a world a wave cuts from is a rule the exploration ran under, and two runs
+# that nested to different depths did not explore the same space.
+[[ "$(print_normalized_config | wc -l)" -eq 47 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 # CONFIG-3: the region skeletons are ONE path, and every weave takes them

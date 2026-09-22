@@ -48,7 +48,8 @@ import java.util.Set;
  *   --topology-epoch &lt;id&gt;      the epoch these sessions belong to
  *   --output-dir &lt;dir&gt;         obligations.jsonl, tasks.jsonl, gaps.jsonl,
  *                              explore_manifest.json
- *   --max-tasks / --max-paths-per-region / --max-flips-per-path
+ *   --max-tasks / --max-paths-per-region / --max-flips-per-path /
+ *   --max-world-depth
  * </pre>
  *
  * <p>ONE invocation is ONE wave: the campaign owns the loop, because it also
@@ -110,7 +111,9 @@ public final class ExploreMain {
                         (int) number(options, "max-paths-per-region",
                                 ObligationFactory.DEFAULT_MAX_PATHS_PER_TASK),
                         (int) number(options, "max-flips-per-path",
-                                ObligationFactory.DEFAULT_MAX_FLIPS_PER_PATH)));
+                                ObligationFactory.DEFAULT_MAX_FLIPS_PER_PATH),
+                        (int) number(options, "max-world-depth",
+                                ObligationFactory.DEFAULT_MAX_WORLD_DEPTH)));
         System.out.println(pretty(manifest));
     }
 

@@ -88,6 +88,7 @@ workflow_config_keys=(
   "region_path_max_paths_per_region CAUSYNTH_REGION_PATH_MAX_PATHS_PER_REGION krp -"
   "region_path_max_flips_per_path CAUSYNTH_REGION_PATH_MAX_FLIPS_PER_PATH krp -"
   "region_path_max_tasks CAUSYNTH_REGION_PATH_MAX_TASKS krp -"
+  "region_path_max_world_depth CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH krp -"
   "region_path_max_waves CAUSYNTH_REGION_PATH_MAX_WAVES krp 12"
   "config_file - p -"
   "workflow_path_base GRAPH_CHECKER_PATH_BASE krp -"
@@ -539,6 +540,12 @@ names: '${worker_host}'" ;;
       *[!0-9]*|0) die "region path bounds must be positive integers: ${bound}" ;;
     esac
   done
+  # A world depth of 0 is a bound too: the seed alone is cut from.
+  case "${region_path_max_world_depth}" in
+    ''|[0-9]|[0-9][0-9]) ;;
+    *) die "region_path_max_world_depth must be a small non-negative \
+integer: ${region_path_max_world_depth}" ;;
+  esac
   echo "Workflow configuration is valid."
 }
 
@@ -2891,6 +2898,8 @@ campaign_explore() {
     || bound_args+=(--max-flips-per-path "${region_path_max_flips_per_path}")
   [[ -z "${region_path_max_tasks}" ]] \
     || bound_args+=(--max-tasks "${region_path_max_tasks}")
+  [[ -z "${region_path_max_world_depth}" ]] \
+    || bound_args+=(--max-world-depth "${region_path_max_world_depth}")
   # The same declaration COMPOSE reads.  An obligation's handoff answers are
   # constrained by their interaction's family, and a family arm is only as
   # constraining as the roots inside it: without the case's declared domain
