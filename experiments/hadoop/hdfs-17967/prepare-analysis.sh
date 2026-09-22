@@ -30,6 +30,10 @@ hdfs=${module}/target/classes
 
 copy_family "${common}" org/apache/hadoop/ipc/CausynthMessagePropagation
 copy_family "${common}" org/apache/hadoop/ipc/CausynthSymbolicSource
+# ipc/Client stays in scope even though this case removed the fault marker
+# from it: the class carries the IPC message-propagation calls the causal
+# context travels on, and without it the replay stops reaching the target
+# at all.  Dropping it was tried and reverted.
 copy_family "${common}" org/apache/hadoop/ipc/Client
 copy_family "${common}" org/apache/hadoop/security/token/delegation/DelegationKey
 copy_family "${client}" org/apache/hadoop/hdfs/protocol/datatransfer/sasl/DataTransferSaslUtil
