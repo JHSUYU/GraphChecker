@@ -63,7 +63,12 @@ public final class ScheduleLog {
     /** The prefix beside a focused replay's focus row. */
     public static final String PREFIX_FILE = "schedule_prefix.jsonl";
 
-    static final long DEFAULT_TIMEOUT_MS = 60000L;
+    /**
+     * Shorter than the waits a workload makes for its own results (20 s is
+     * the common bound): a prefix that cannot be held must be let go before
+     * the workload gives up on what the held threads would have done.
+     */
+    static final long DEFAULT_TIMEOUT_MS = 15000L;
 
     private static final Object LOCK = new Object();
 

@@ -1,7 +1,9 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
+import java.util.Map;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.LockSupport;
@@ -18,8 +20,9 @@ import java.util.concurrent.locks.LockSupport;
  *
  * <ul>
  *   <li>FREE (the recording, a replay with no prefix, a replay past its
- *       prefix): the original wait, unchanged, and a WAKE event when it
- *       returns -- normally or not.</li>
+ *       prefix, anything before the recording window opens): the original
+ *       wait's semantics, on the wall clock, and a WAKE event when it
+ *       returns.</li>
  *   <li>HELD to a prefix: VIRTUAL TIME.  The wait does not read the wall
  *       clock; it returns when its WAKE is the prefix's next event, which is
  *       the turn the discovering session's thread woke at.  A wait that holds
@@ -28,70 +31,140 @@ import java.util.concurrent.locks.LockSupport;
  *       the thread whose event IS next can run.</li>
  * </ul>
  *
+ * <p>A wait already in progress when the window opens -- an idle IPC
+ * connection, a daemon's first sleep -- converts: the window's opening wakes
+ * it ({@link #windowOpened}) and from there it is held like any other.  The
+ * discovering session's schedule states when that thread woke inside the
+ * window, and a replay that left it on the wall clock would hold everything
+ * behind it for as long as its real timeout ran.</p>
+ *
  * <p>An element a timed poll returns is not a WAKE: it is the CLAIM of the
  * work a producer handed over ({@code Identity.claimStart}), and it is
  * returned the moment it arrives.</p>
  */
 public final class TimedWaits {
-    /** How long a monitor-holding wait releases its monitor between asks. */
+    /** How long a wait polls between asks, in ms. */
     private static final long QUANTUM_MS = 10L;
 
+    /** A wait that can be woken early: what the window's opening wakes. */
+    private static final Map<Thread, Object> WAITING =
+            new ConcurrentHashMap<Thread, Object>();
+    /** Stands for a parked thread, which is woken by unpark. */
+    private static final Object PARKED = new Object();
+
     private TimedWaits() {
+    }
+
+    /**
+     * The recording window opened under a prefix: every free wait in
+     * progress is woken, and converts to virtual time where it stands.
+     *
+     * <p>A monitor wait is woken by a notify on its monitor, which every
+     * waiter must already treat as possibly spurious; a sleep waits on a
+     * lock of its own for exactly this; a park is unparked.  Called with no
+     * lock of this runtime held.</p>
+     */
+    static void windowOpened() {
+        for (Map.Entry<Thread, Object> waiting : WAITING.entrySet()) {
+            Object on = waiting.getValue();
+            if (on == PARKED) {
+                LockSupport.unpark(waiting.getKey());
+                continue;
+            }
+            synchronized (on) {
+                on.notifyAll();
+            }
+        }
     }
 
     // ---- Thread.sleep / TimeUnit.sleep / LockSupport.parkNanos -----------
 
     public static void sleep(long millis, String site)
             throws InterruptedException {
-        WakeScopes.waiting(site);
-        if (heldWake(site)) return;
-        try {
-            Thread.sleep(millis);
-        } finally {
-            wake(site);
-        }
+        sleepFor(millis, 0, site);
     }
 
     public static void sleep(long millis, int nanos, String site)
             throws InterruptedException {
-        WakeScopes.waiting(site);
-        if (heldWake(site)) return;
-        try {
-            Thread.sleep(millis, nanos);
-        } finally {
-            wake(site);
-        }
+        sleepFor(millis, nanos, site);
     }
 
     public static void sleep(TimeUnit unit, long timeout, String site)
             throws InterruptedException {
+        if (timeout <= 0L) {
+            WakeScopes.waiting(site);
+            wake(site);
+            return;
+        }
+        long millis = unit.toMillis(timeout);
+        long nanos = unit.toNanos(timeout)
+                - TimeUnit.MILLISECONDS.toNanos(millis);
+        sleepFor(millis, (int) Math.max(0L, Math.min(999999L, nanos)), site);
+    }
+
+    /**
+     * A sleep: on the wall clock while free, on a lock of its own so the
+     * window's opening can wake it; held to its turn once enforced.
+     */
+    private static void sleepFor(long millis, int nanos, String site)
+            throws InterruptedException {
+        if (millis < 0L || nanos < 0 || nanos > 999999) {
+            // The JDK's own refusal, unchanged.
+            Thread.sleep(millis, nanos);
+        }
         WakeScopes.waiting(site);
         if (heldWake(site)) return;
+        Object lock = new Object();
+        long deadline = System.nanoTime()
+                + TimeUnit.MILLISECONDS.toNanos(millis) + nanos;
+        Thread self = Thread.currentThread();
+        WAITING.put(self, lock);
         try {
-            unit.sleep(timeout);
+            synchronized (lock) {
+                while (!ScheduleLog.enforcing()) {
+                    long left = deadline - System.nanoTime();
+                    if (left <= 0L) break;
+                    lock.wait(Math.max(1L,
+                            TimeUnit.NANOSECONDS.toMillis(left)));
+                }
+            }
+        } catch (InterruptedException interrupted) {
+            WAITING.remove(self);
+            ScheduleLog.tryObserve(ScheduleEvent.Kind.WAKE, site);
+            throw interrupted;
         } finally {
-            wake(site);
+            WAITING.remove(self);
         }
+        if (heldWake(site)) return;
+        wake(site);
     }
 
     public static void parkNanos(long nanos, String site) {
         WakeScopes.waiting(site);
         if (heldWakeUninterruptibly(site)) return;
+        Thread self = Thread.currentThread();
+        WAITING.put(self, PARKED);
         try {
             LockSupport.parkNanos(nanos);
         } finally {
-            wake(site);
+            WAITING.remove(self);
         }
+        if (heldWakeUninterruptibly(site)) return;
+        wake(site);
     }
 
     public static void parkNanos(Object blocker, long nanos, String site) {
         WakeScopes.waiting(site);
         if (heldWakeUninterruptibly(site)) return;
+        Thread self = Thread.currentThread();
+        WAITING.put(self, PARKED);
         try {
             LockSupport.parkNanos(blocker, nanos);
         } finally {
-            wake(site);
+            WAITING.remove(self);
         }
+        if (heldWakeUninterruptibly(site)) return;
+        wake(site);
     }
 
     // ---- Object.wait(long) ------------------------------------------------
@@ -100,14 +173,7 @@ public final class TimedWaits {
             throws InterruptedException {
         WakeScopes.waiting(site);
         if (!ScheduleLog.enforcing()) {
-            try {
-                monitor.wait(millis);
-            } catch (InterruptedException interrupted) {
-                ScheduleLog.tryObserve(ScheduleEvent.Kind.WAKE, site);
-                throw interrupted;
-            }
-            // The window may have opened while it waited: its WAKE is then
-            // held like any other, still releasing the monitor between asks.
+            freeMonitorWait(monitor, millis, 0, site);
         }
         admitHolding(monitor, site);
     }
@@ -116,14 +182,26 @@ public final class TimedWaits {
                               String site) throws InterruptedException {
         WakeScopes.waiting(site);
         if (!ScheduleLog.enforcing()) {
-            try {
-                monitor.wait(millis, nanos);
-            } catch (InterruptedException interrupted) {
-                ScheduleLog.tryObserve(ScheduleEvent.Kind.WAKE, site);
-                throw interrupted;
-            }
+            freeMonitorWait(monitor, millis, nanos, site);
         }
         admitHolding(monitor, site);
+    }
+
+    /** One free monitor wait, woken early by the window's opening. */
+    private static void freeMonitorWait(Object monitor, long millis,
+                                        int nanos, String site)
+            throws InterruptedException {
+        Thread self = Thread.currentThread();
+        WAITING.put(self, monitor);
+        try {
+            monitor.wait(millis, nanos);
+        } catch (InterruptedException interrupted) {
+            WAITING.remove(self);
+            ScheduleLog.tryObserve(ScheduleEvent.Kind.WAKE, site);
+            throw interrupted;
+        } finally {
+            WAITING.remove(self);
+        }
     }
 
     /**
@@ -144,21 +222,34 @@ public final class TimedWaits {
     public static long awaitNanos(Condition condition, long nanos,
                                   String site) throws InterruptedException {
         WakeScopes.waiting(site);
-        long remaining = 0L;
+        long deadline = System.nanoTime() + nanos;
         boolean signalled = false;
-        if (!ScheduleLog.enforcing()) {
+        // Free: in quanta, so the window's opening is seen within one; a
+        // quantum that returns early is the signal the caller waits for.
+        while (!ScheduleLog.enforcing()) {
+            long left = deadline - System.nanoTime();
+            if (left <= 0L) {
+                ScheduleLog.tryObserve(ScheduleEvent.Kind.WAKE, site);
+                WakeScopes.woke(site);
+                return 0L;
+            }
+            long quantum = Math.min(left,
+                    TimeUnit.MILLISECONDS.toNanos(QUANTUM_MS));
+            long rest;
             try {
-                remaining = condition.awaitNanos(nanos);
+                rest = condition.awaitNanos(quantum);
             } catch (InterruptedException interrupted) {
                 ScheduleLog.tryObserve(ScheduleEvent.Kind.WAKE, site);
                 throw interrupted;
             }
-            if (!ScheduleLog.enforcing()) {
-                ScheduleLog.tryObserve(ScheduleEvent.Kind.WAKE, site);
-                WakeScopes.woke(site);
-                return remaining;
+            if (rest > 0L) {
+                if (!ScheduleLog.enforcing()) {
+                    ScheduleLog.tryObserve(ScheduleEvent.Kind.WAKE, site);
+                    WakeScopes.woke(site);
+                    return Math.max(1L, deadline - System.nanoTime());
+                }
+                signalled = true;
             }
-            signalled = remaining > 0L;
         }
         while (!ScheduleLog.tryObserve(ScheduleEvent.Kind.WAKE, site)) {
             if (condition.awaitNanos(
@@ -170,25 +261,38 @@ public final class TimedWaits {
         // Virtual time: the turn came.  Whether it came by a signal is what
         // the quanta saw; a caller that re-checks its condition -- every
         // loop that waits this way does -- reads the rest.
-        return signalled ? Math.max(1L, remaining) : 0L;
+        return signalled ? Math.max(1L, deadline - System.nanoTime()) : 0L;
     }
 
     public static boolean await(Condition condition, long time,
                                 TimeUnit unit, String site)
             throws InterruptedException {
         WakeScopes.waiting(site);
+        long deadline = System.nanoTime() + unit.toNanos(time);
         boolean signalled = false;
-        if (!ScheduleLog.enforcing()) {
+        while (!ScheduleLog.enforcing()) {
+            long left = deadline - System.nanoTime();
+            if (left <= 0L) {
+                ScheduleLog.tryObserve(ScheduleEvent.Kind.WAKE, site);
+                WakeScopes.woke(site);
+                return false;
+            }
+            boolean early;
             try {
-                signalled = condition.await(time, unit);
+                early = condition.await(Math.min(left,
+                        TimeUnit.MILLISECONDS.toNanos(QUANTUM_MS)),
+                        TimeUnit.NANOSECONDS);
             } catch (InterruptedException interrupted) {
                 ScheduleLog.tryObserve(ScheduleEvent.Kind.WAKE, site);
                 throw interrupted;
             }
-            if (!ScheduleLog.enforcing()) {
-                ScheduleLog.tryObserve(ScheduleEvent.Kind.WAKE, site);
-                WakeScopes.woke(site);
-                return signalled;
+            if (early) {
+                if (!ScheduleLog.enforcing()) {
+                    ScheduleLog.tryObserve(ScheduleEvent.Kind.WAKE, site);
+                    WakeScopes.woke(site);
+                    return true;
+                }
+                signalled = true;
             }
         }
         while (!ScheduleLog.tryObserve(ScheduleEvent.Kind.WAKE, site)) {
@@ -206,26 +310,28 @@ public final class TimedWaits {
                               TimeUnit unit, String site)
             throws InterruptedException {
         WakeScopes.waiting(site);
-        if (ScheduleLog.enforcing()) {
-            while (true) {
-                Object element = queue.poll(QUANTUM_MS,
-                        TimeUnit.MILLISECONDS);
-                if (element != null) return element;
-                if (ScheduleLog.tryObserve(ScheduleEvent.Kind.WAKE, site)) {
-                    WakeScopes.woke(site);
-                    return null;
-                }
+        long deadline = System.nanoTime() + unit.toNanos(timeout);
+        // Free: in quanta, so the window's opening is seen within one.  An
+        // element is returned the moment it arrives -- the consumer's CLAIM
+        // of it, which the weave states after the call returns.
+        while (!ScheduleLog.enforcing()) {
+            long left = deadline - System.nanoTime();
+            if (left <= 0L) {
+                wake(site);
+                return null;
             }
+            Object element = queue.poll(Math.min(left,
+                    TimeUnit.MILLISECONDS.toNanos(QUANTUM_MS)),
+                    TimeUnit.NANOSECONDS);
+            if (element != null) return element;
         }
-        Object element = null;
-        try {
-            element = queue.poll(timeout, unit);
-            return element;
-        } finally {
-            // A poll that timed out is a WAKE; one that returned an element
-            // is the consumer's CLAIM of it, which the weave states after
-            // the call returns (Identity.claimStart), not here.
-            if (element == null) wake(site);
+        while (true) {
+            Object element = queue.poll(QUANTUM_MS, TimeUnit.MILLISECONDS);
+            if (element != null) return element;
+            if (ScheduleLog.tryObserve(ScheduleEvent.Kind.WAKE, site)) {
+                WakeScopes.woke(site);
+                return null;
+            }
         }
     }
 

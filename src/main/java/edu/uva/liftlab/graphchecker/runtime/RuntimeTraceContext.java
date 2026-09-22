@@ -498,6 +498,25 @@ final class RuntimeTraceContext {
         scope.lineageToken = Lineage.pushRoot(
                 source == null ? "" : source.key(), Role.of(roleName), "");
         state.scopes.push(scope);
+        // A tick is the special case of a service-loop turn (WakeScopes):
+        // what it sends is a request of its node's, so it carries a request
+        // flow the way a turn does, and a heartbeat sent inside it reaches
+        // its server anchored rather than Lost.  Put back when it closes.
+        if (source != null
+                && !UNREGISTERED_SOURCE.key().equals(source.key())) {
+            String api = MapFields.safe(roleName).trim();
+            if (api.isEmpty()) api = "tick";
+            long turn;
+            synchronized (LOCK) {
+                String family = source.key() + "\ntick\n" + api;
+                Long prior = REQUEST_OCCURRENCES.get(family);
+                turn = prior == null ? 1L : prior + 1L;
+                REQUEST_OCCURRENCES.put(family, turn);
+            }
+            state.source = source;
+            state.requestKey = source.key() + "/tick/" + api + "#" + turn;
+            state.requestApi = api;
+        }
         // A tick is a WAKE: the turn a daemon's loop hands its thread.
         ScheduleLog.observe(
                 edu.uva.liftlab.graphchecker.contract.ScheduleEvent.Kind.WAKE,

@@ -84,6 +84,9 @@ public final class CausynthTraceRecorder {
         // moment the workload opens its window and so does every replay of
         // it, so a hop's k names the same activation in both.
         edu.uva.liftlab.graphchecker.runtime.Lineage.openWindow();
+        // A replay held to a prefix: every timed wait already running
+        // converts to the prefix's virtual time where it stands.
+        if (ScheduleLog.enforcing()) TimedWaits.windowOpened();
     }
 
     /**

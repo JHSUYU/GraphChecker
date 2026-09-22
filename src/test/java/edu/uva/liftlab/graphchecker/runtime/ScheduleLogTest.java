@@ -204,6 +204,39 @@ public class ScheduleLogTest {
                 sites());
     }
 
+    @Test
+    public void aWaitBegunBeforeTheWindowConvertsWhenItOpens()
+            throws Exception {
+        CausynthTraceRecorder.setRecordingStartedForTests(false);
+        final String site = "<L: void idle()>#u3";
+        ScheduleLog.enforceForTests(Collections.singletonList(
+                event(ScheduleEvent.Kind.WAKE, site)));
+        final long[] took = new long[1];
+        Thread idle = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                long before = System.nanoTime();
+                try {
+                    TimedWaits.sleep(60000L, site);
+                } catch (InterruptedException interrupted) {
+                    return;
+                }
+                took[0] = TimeUnit.NANOSECONDS.toMillis(
+                        System.nanoTime() - before);
+            }
+        });
+        idle.start();
+        Thread.sleep(200L);
+        assertTrue("before the window it waits on the wall clock",
+                idle.isAlive());
+        CausynthTraceRecorder.setRecordingStartedForTests(true);
+        TimedWaits.windowOpened();
+        idle.join(5000L);
+        assertFalse("the window's opening converts it", idle.isAlive());
+        assertTrue(took[0] < 5000L);
+        assertEquals(Collections.singletonList(site), sites());
+    }
+
     /** A prefix of SEND events at these sites, on this thread's context. */
     private static List<ScheduleEvent> prefix(String... sites) {
         List<ScheduleEvent> events = new ArrayList<ScheduleEvent>();
