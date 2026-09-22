@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo=/opt/hadoop-hdfs-17897
+repo=/u/vnr3ne/hadoop-hdfs-17897
 analysis=/tmp/graphchecker-hdfs-17897-classes
 common=${repo}/hadoop-common-project/hadoop-common/target/classes
 client=${repo}/hadoop-hdfs-project/hadoop-hdfs-client/target/classes

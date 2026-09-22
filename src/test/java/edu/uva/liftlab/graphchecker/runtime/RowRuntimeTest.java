@@ -817,7 +817,15 @@ public class RowRuntimeTest {
         placeholder(occurrence, row, symbol, installed, false);
     }
 
-    /** The same mint, as one that also publishes a RootMintRow. */
+    /**
+     * The same mint, as one that also publishes a RootMintRow.
+     *
+     * <p>{@code placeholder} is of ONE mint store, not of a symbol's whole
+     * table: a symbol minted twice has two stores and owes a row for each,
+     * so the caller picks which one this row is of.  These helpers keep
+     * taking the table and hand over the symbol's first store, which is what
+     * a single-mint session has.</p>
+     */
     private static void placeholder(OccurrenceAddress occurrence,
                                     JsonObject row, String symbol,
                                     java.util.Map<String, String[]> installed,
@@ -825,10 +833,11 @@ public class RowRuntimeTest {
             throws Exception {
         java.lang.reflect.Method publish = RowPlaceholderMint.class
                 .getDeclaredMethod("placeholder", OccurrenceAddress.class,
-                        JsonObject.class, String.class, java.util.Map.class,
+                        JsonObject.class, String.class, String[].class,
                         boolean.class);
         publish.setAccessible(true);
-        publish.invoke(null, occurrence, row, symbol, installed,
+        publish.invoke(null, occurrence, row, symbol,
+                installed == null ? null : installed.get(symbol),
                 Boolean.valueOf(declaredRoot));
     }
 

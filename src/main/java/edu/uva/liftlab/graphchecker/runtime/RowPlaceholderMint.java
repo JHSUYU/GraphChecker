@@ -115,9 +115,23 @@ final class RowPlaceholderMint {
 
     private static void roots(ActiveRegion active,
                               OccurrenceAddress occurrence, boolean whole) {
-        Map<String, String[]> installed = whole
+        Map<String, java.util.List<String[]>> installed = whole
                 ? mintedLocations(active)
-                : java.util.Collections.<String, String[]>emptyMap();
+                : java.util.Collections
+                        .<String, java.util.List<String[]>>emptyMap();
+        // ONE PLACEHOLDER PER MINT STORE, IN ORDER.  A symbol minted twice
+        // in one activation -- the second block-key rotation is the case --
+        // has two stores, and #mintStores suppresses the write of BOTH.  The
+        // table used to keep only the first store per symbol, so the second
+        // mint row was built with the FIRST mint's (location, version); the
+        // duplicate guard in #placeholder then refused it by name and that
+        // store ended as neither a write nor a placeholder.  Every read of
+        // it lowered to `unstated Read:...`, the arm carrying it could not
+        // be attested, and the composition refused its only path with a
+        // BLOCKING ADMISSION_GAP -- hdfs-17899 bug2 and bug3 both, on the
+        // heartbeat response's block-key-expiry-date.
+        Map<String, Integer> consumed =
+                new java.util.LinkedHashMap<String, Integer>();
         Set<String> stated = new LinkedHashSet<String>();
         for (JsonObject row : active.symbolizedRows) {
             String symbol = vmSymbol(row);
@@ -169,7 +183,8 @@ final class RowPlaceholderMint {
             boolean unattributed = sourceId.isEmpty()
                     && kind == RootKind.INTEGRAL;
             if (whole) {
-                placeholder(occurrence, row, symbol, installed,
+                placeholder(occurrence, row, symbol,
+                        nextStore(installed, consumed, symbol),
                         !unattributed);
             }
             if (unattributed) continue;
@@ -267,9 +282,30 @@ final class RowPlaceholderMint {
      * earlier writer, because either of those would PIN a root the case
      * declared movable.</p>
      */
+    /**
+     * The store the NEXT mint row of {@code symbol} is of.
+     *
+     * <p>Mint rows and mint stores are two views of one sequence of
+     * symbolize calls, so the k-th row is of the k-th store.  A row past the
+     * last store answers to the last one rather than to nothing: it names
+     * the same symbol at the same location, and {@link #placeholder}'s
+     * duplicate guard states it if it really is a second row for one
+     * store.</p>
+     */
+    private static String[] nextStore(
+            Map<String, java.util.List<String[]>> installed,
+            Map<String, Integer> consumed, String symbol) {
+        java.util.List<String[]> stores = installed.get(symbol);
+        if (stores == null || stores.isEmpty()) return null;
+        Integer seen = consumed.get(symbol);
+        int index = seen == null ? 0 : seen.intValue();
+        consumed.put(symbol, Integer.valueOf(index + 1));
+        return stores.get(Math.min(index, stores.size() - 1));
+    }
+
     private static void placeholder(OccurrenceAddress occurrence,
                                     JsonObject row, String symbol,
-                                    Map<String, String[]> installed,
+                                    String[] installedAt,
                                     boolean declaredRoot) {
         // A declared mint, session-wide, so no activation's write log offers
         // the mint's own version as a write of that location.  The register
@@ -289,7 +325,6 @@ final class RowPlaceholderMint {
         // second mint of a port whose request string is a suffix of another
         // answered for it.  A mint the VM's own symbol does not find is
         // refused below.
-        String[] installedAt = installed.get(symbol);
         String locationKey = installedAt == null ? "" : installedAt[0];
         LocationId location = locationId(locationKey);
         // The version this read OBSERVED.  The mint's own version is not a
@@ -599,9 +634,11 @@ final class RowPlaceholderMint {
      * later version computed FROM it is a different value), and the first
      * such version wins.</p>
      */
-    private static Map<String, String[]> mintedLocations(ActiveRegion active) {
-        Map<String, String[]> bySymbol =
-                new java.util.LinkedHashMap<String, String[]>();
+    private static Map<String, java.util.List<String[]>> mintedLocations(
+            ActiveRegion active) {
+        Map<String, java.util.List<String[]>> bySymbol =
+                new java.util.LinkedHashMap<String,
+                        java.util.List<String[]>>();
         for (JsonObject record : active.sharedStateRecords.values()) {
             String locationKey = optionalString(record, "locationKey");
             if (locationId(locationKey) == null) continue;
@@ -641,11 +678,38 @@ final class RowPlaceholderMint {
                         observed = otherId;
                     }
                 }
-                if (!bySymbol.containsKey(symbol)) {
-                    bySymbol.put(symbol, new String[]{locationKey,
-                            Long.toString(id), Long.toString(observed)});
+                java.util.List<String[]> stores = bySymbol.get(symbol);
+                if (stores == null) {
+                    stores = new java.util.ArrayList<String[]>();
+                    bySymbol.put(symbol, stores);
+                }
+                String versionId = Long.toString(id);
+                boolean known = false;
+                for (String[] held : stores) {
+                    if (held[0].equals(locationKey)
+                            && held[1].equals(versionId)) {
+                        known = true;
+                        break;
+                    }
+                }
+                if (!known) {
+                    stores.add(new String[]{locationKey, versionId,
+                            Long.toString(observed)});
                 }
             }
+        }
+        // The mint rows are walked in the order the activation symbolized
+        // them, so the stores they are paired with are ordered the same way:
+        // by the session counter that hands out version ids.
+        for (java.util.List<String[]> stores : bySymbol.values()) {
+            java.util.Collections.sort(stores,
+                    new java.util.Comparator<String[]>() {
+                        @Override
+                        public int compare(String[] left, String[] right) {
+                            return Long.compare(Long.parseLong(left[1]),
+                                    Long.parseLong(right[1]));
+                        }
+                    });
         }
         return bySymbol;
     }
