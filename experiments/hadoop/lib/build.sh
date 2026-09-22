@@ -13,7 +13,11 @@ export PATH=${JAVA_HOME}/bin:${PATH}
 
 # Hadoop's bridge compiles against this main checkout, not an older installed
 # GraphChecker API. The experiment launcher also loads its frozen jar first.
-mvn -q -f "${graphchecker}/pom.xml" -DskipTests install
+# SKIP_GRAPHCHECKER_INSTALL=1 when the jar is already in this host's local
+# repository: several hosts building trees at once must not all rebuild the
+# one shared checkout's target/.
+[[ "${SKIP_GRAPHCHECKER_INSTALL:-0}" == 1 ]] \
+  || mvn -q -f "${graphchecker}/pom.xml" -DskipTests install
 cd "${repo}"
 maven=(mvn)
 [[ ! -x ./mvnw ]] || maven=(./mvnw)
