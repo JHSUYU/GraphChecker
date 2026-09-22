@@ -114,6 +114,33 @@ public final class Endpoint {
         return digested;
     }
 
+    // TRIED AND REVERTED 2026-09-22.  This digest is RECURSIVE -- an
+    // occurrence's id digests its causal context, an ANCHOR context is a
+    // producer endpoint id, and that endpoint digests its own occurrence --
+    // so an address is a digest over a whole chain (17 links on hdfs-17899
+    // bug1).  A replay that reproduces every component but one link's still
+    // computes a different id, the plan then addresses an occurrence the
+    // replay cannot answer, and the run refuses its own target.
+    //
+    // The obvious repair is to stop the recursion: name the producer by the
+    // parts a second run reproduces -- node, region, execution index -- plus
+    // a STABLE projection of its context (a ROOT context in full, an ANCHOR
+    // context by its transport site alone).  It does not work.  Dropping the
+    // nested producer id makes two producers that differed ONLY in their
+    // chain collide, and the corpus then reports one consumer paired with two
+    // producers everywhere: hdfs-17897 and hdfs-17899-bug2 both went from
+    // PASS to seven-plus BLOCKING TOPOLOGY_DIVERGENCE rows, while
+    // hdfs-17899-bug1 composed but with the same divergences.  The producer's
+    // full context is load-bearing for telling two endpoints apart.
+    //
+    // So neither loosening the comparison (three arms, see
+    // ConcolicTaskPlan#acceptsRootInvocation) nor truncating this digest is
+    // the answer.  What is left is to make the chain itself reproducible --
+    // e.g. assign each message a deterministic per-request ordinal at mint
+    // time that both passes compute identically, and digest THAT instead of
+    // the producer's address -- which keeps endpoints distinct while removing
+    // the dependence on a chain the replay may not rebuild.
+
     /** The canonical spelling, for reports and refusals. */
     public String render() {
         return occurrence.render() + "/site:" + site + "/sidx:"
