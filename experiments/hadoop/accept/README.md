@@ -21,7 +21,7 @@ fresh `CAUSYNTH_OUTPUT_DIR` and `CAUSYNTH_CACHE_DIR`. Cases run one at a time.
 Defaults, all overridable by environment: `JAR` = `<repo>/target/GraphChecker-
 1.0-SNAPSHOT-jar-with-dependencies.jar` (setting it moves the run to that
 jar's own repo, because `run_engine.sh` resolves the jar relative to its own
-tree), `OUT` = `<repo>/target/accept`, `CASES` = the six cases,
+tree), `OUT` = `<repo>/target/accept`, `CASES` = the nine cases in `ACCEPT_ALL_CASES`,
 `CASE_TIMEOUT_SECONDS` = 21600, `Z3_BIN` = `z3`, `Z3_TIMEOUT_SECONDS` = 600,
 `MIN_FREE_GB` = 6, `PRUNE` = 0. `CAUSYNTH_CUSTOM_JDK_HOME` has no default: unset,
 the preflight refuses it by name rather than guessing a VM image.
@@ -36,8 +36,9 @@ when all of these hold:
   empty and no BLOCKING gap is open;
 * `findingKind` is the mechanism this case is known to fail by —
   `EXPECTED_MECHANISM` at the top of `report.py`: 17960 `MARKER_FLIPPED`
-  moving `HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED` to `false`; 11741 and the
-  three 17899 cases `CLOCK_SKEW` or `MARKER_FLIPPED`; 17897 `CLOCK_SKEW`;
+  moving `HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED` to `false`; 11741, the three
+  17899 cases and the three 17967 paths `CLOCK_SKEW` or `MARKER_FLIPPED`;
+  17897 `CLOCK_SKEW`;
 * `polarityDecides` is true — the formula is unsatisfiable at the recorded
   valuation, so the mechanism explains the difference between the run that
   failed and the run that did not (only `RECORDED_FAILURE_EXPLAINED` is

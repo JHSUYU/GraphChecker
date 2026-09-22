@@ -2,8 +2,14 @@
 
 case_id=${1:?usage: case.sh pathA|pathB|pathC}
 loop_bounds=${here}/loop-bounds.jsonl
-# Paths A and B share one annotated site and so one target id; path C has its
-# own (StripedWriter's "All targets are failed."), so it needs its own spec.
+# All three paths share ONE annotated site, the allKeys miss in
+# BlockTokenSecretManager.retrieveDataEncryptionKey, and are told apart by
+# their target occurrence.  Path C's own throw -- StripedWriter's
+# "All targets are failed." -- looks like the better site because it is where
+# the failure surfaces, but its only operand is a String, so nothing then
+# classifies the key-management methods as writers of tracked state and the
+# recording is refused outright ("region skeleton has no authoritative
+# execution context root").  Measured 2026-09-22.
 target_spec=${here}/target.yaml
 # Which occurrence of the annotated site this case is about.  HDFS-17967's
 # three paths share one annotatable site -- the client-side reconstruction of
@@ -45,7 +51,6 @@ case "${case_id}" in
     repo=/u/vnr3ne/hadoop-hdfs-17967-c
     test_class=org.apache.hadoop.hdfs.server.datanode.TestCausynthStripedReconstructTargetStaleKey
     test_method=testReconstructionAfterKeyRotations
-    target_spec=${here}/target-c.yaml
     # The reconstruction TARGET's SASL callback handler: the reconstructing
     # node opens the connection as a client and the target is the party that
     # has to resolve its rolled-back key.  The node that still holds the lost

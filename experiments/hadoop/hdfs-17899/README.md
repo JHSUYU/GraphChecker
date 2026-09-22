@@ -11,11 +11,40 @@ workloads model the refresh RPC failure with a `Debug.makeSymbolicBoolean` marke
 `org.apache.hadoop.ipc.Client`, so a witness here can be the marker moving, the clocks
 disagreeing, or both.
 
-| Case | Request flow | Hadoop checkout | Branch |
+| Case | Request flow | Hadoop worktree | Branch |
 | --- | --- | --- | --- |
-| `bug1` | NameNode -> Balancer -> DataNode | `/opt/hadoop-hdfs-17899-bug1` | `gc/hdfs-17899-bug1` |
-| `bug2` | NameNode -> SPS -> DataNode | `/opt/hadoop-hdfs-17899-bug2` | `gc/hdfs-17899-bug2` |
-| `bug3` | NameNode -> source DataNode -> target DataNode | `/opt/hadoop-hdfs-17899-bug3` | `gc/hdfs-17899-bug3` |
+| `bug1` | NameNode -> Balancer -> DataNode | `/u/vnr3ne/hadoop-hdfs-17899-bug1` | `gc/hdfs-17899-bug1` |
+| `bug2` | NameNode -> SPS -> DataNode | `/u/vnr3ne/hadoop-hdfs-17899-bug2` | `gc/hdfs-17899-bug2` |
+| `bug3` | NameNode -> source DataNode -> target DataNode | `/u/vnr3ne/hadoop-hdfs-17899-bug3` | `gc/hdfs-17899-bug3` |
+
+## The workloads
+
+All three are bespoke tests, and each drives the mechanism **two links from the root**. An
+occurrence IS its causal address and an `ANCHOR` context digests the producer endpoint, which
+digests an occurrence, so a long chain has to reproduce byte for byte between the planning
+pass and the replay.
+
+| Case | Test | Shape |
+| --- | --- | --- |
+| `bug1` | `TestCausynthBalancerCachedKey` (`…server.balancer`) | three DataNodes; the mover is the test, holding a real `KeyManager`. It takes the NameNode's keys over the recorded RPC, caches its one `DataEncryptionKey` while the master's current key is still the pinned one, and then sends one REPLACE_BLOCK the way `Dispatcher.PendingMove.dispatch` does |
+| `bug2` | `TestExternalStoragePolicySatisfier#testCausynthSpsKeyRefreshRpcFailure` | the SPS asks one DataNode once |
+| `bug3` | `TestCausynthDataTransferRpcFailure` | one replication, one target DataNode read |
+
+`bug1` used to be driven by `TestBalancerWithEncryptedTransfer#testEncryptedBalancer1`. That
+chain is seventeen links deep and only its root survived into a replay, so the plan and the
+replay minted different anchors for the same exchange and every path was refused on identity
+(`OCCURRENCE_ANCHOR_UNMATCHED`) — never on the mechanism. Nothing about the defect is given
+up by the rewrite: the cached `DataEncryptionKey` in `KeyManager` IS the defect, and the
+balancer's block-selection machinery, which no part of the mechanism touches, is what is left
+out. `Balancer` and `Dispatcher` are correspondingly out of the analysis scope.
+
+Every workload has to leave a **rotation gap running the right way**: the key the failing
+party puts on the wire is serials BEHIND the master's current one, while the consumer still
+RETAINS it, so the recording stays healthy and a witness has to buy the expiry with a clock
+move or with the marker. With a zero gap every composed path is either self-contradictory
+(bug3 measured 63 paths, all unsat with every root free) or satisfied at the recorded
+valuation (bug2, `FORMULA_SAT_AT_RECORDED_VALUATION`). Each workload asserts the gap
+itself.
 
 ## What these cases declare
 
@@ -25,9 +54,9 @@ disagreeing, or both.
 | Declaration | Where | What it says |
 | --- | --- | --- |
 | the failure | `@CausynthExceptionTarget` in each Hadoop checkout; `target.yaml` | `exception_target_id: hdfs-17899` |
-| the occurrence | `target_occurrence` in `case.sh`, exported as `CAUSYNTH_TARGET_OCCURRENCE` | `bug1` `hdfs-17899/dn1#epoch0/…@hdfs-17899/balancer#epoch0/balance-block#1`; `bug2` `…/target-dn#epoch0/…@hdfs-17899/sps#epoch0/satisfy-storage-policy#1`; `bug3` `…/target-dn#epoch0/…@hdfs-17899/source-dn#epoch0/replicate-block#1`. Left empty, the run keeps every observed occurrence |
+| the occurrence | `target_occurrence` in `case.sh`, exported as `CAUSYNTH_TARGET_OCCURRENCE` | `bug1` `hdfs-17899/target-dn#epoch0/…@hdfs-17899/balancer#epoch0/balance-block#1`; `bug2` `…/target-dn#epoch0/…@hdfs-17899/sps#epoch0/satisfy-storage-policy#1`; `bug3` `…/target-dn#epoch0/…@hdfs-17899/source-dn#epoch0/replicate-block#1`. Left empty, the run keeps every observed occurrence |
 | clock roots | `symbolic-inputs.jsonl`, two rows | per-method clock cells, not callee-level ones: `BlockTokenSecretManager.updateKeys()` and `.addKeys(ExportedBlockKeys,boolean)`, each declaring the cell `<org.apache.hadoop.util.Timer: long now()>.return` with `"clock": true`. Those two methods are therefore also region roots by declaration |
-| marker root | the Hadoop checkouts, not this directory | `Debug.makeSymbolicBoolean` in `org.apache.hadoop.ipc.Client` models the key-refresh RPC failure. `bug1` plants two of them on the Balancer side, and they are not both the bug |
+| marker root | the Hadoop worktrees, not this directory | `Debug.makeSymbolicBoolean("hadoopIpcRequestFails")` in `org.apache.hadoop.ipc.Client` models the key-refresh RPC failure. It is minted on every path through the send, not only when the outbound context happens to be active: Java's `&&` short-circuits, so a replay reaching the send with no active context materialized no marker at all and the `MARKER_FLIPPED` witness could never be asked for. Only the mint is unconditional; the throw still needs an active context |
 | hook-minted roots | the Hadoop checkouts | `CausynthSymbolicSource.symbolize("HDFS.BLOCK_KEY.SERIAL_NO", …)` roots the counter each new `BlockKey` takes its id from; `…("HDFS.BLOCK_KEY.EXPIRY_DATE", …)` roots the inherited `DelegationKey#expiryDate`. A hook site owns its field (`CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED`), so neither is listed in `symbolic-inputs.jsonl` |
 | root domains | `root-domains.jsonl`, one row | `HDFS.BLOCK_KEY.SERIAL_NO`, `declaredDomainMin "+0"`, `declaredDomainMax "+3"`: the recorded value and up to three rotations past it, relative because the serial starts at a `SecureRandom` int and increments once per roll. A root with no row is pinned to its recording; a clock has a floor of zero and no window |
 | wire mappings | `communication-mappings.jsonl`, four `WIRE_FLOW` rows | `block-key-id`, `block-key-expiry-date`, `data-encryption-key-id` and `namenode-data-encryption-key-id`, each with an exact producer and consumer capture (`CALL_ARGUMENT`, `CALL_RETURN`, `METHOD_PARAMETER`). Declared ports are tracked and mint nothing: the attach installs the producer's own propagated expression at the consumer |
@@ -35,7 +64,7 @@ disagreeing, or both.
 
 ## Build and run
 
-Each case has its own Hadoop checkout, so its source changes and compiled classes stay
+Each case has its own Hadoop worktree, so its source changes and compiled classes stay
 independent, and each replay loads that checkout's common, client and HDFS classes. From
 this directory, replacing `bug1` as needed:
 
@@ -66,5 +95,8 @@ CASES="hdfs-17899-bug1 hdfs-17899-bug2 hdfs-17899-bug3" bash experiments/hadoop/
 
 ## Status
 
-All three are prepared and none has been run under the current design. No claims, and no
-artifacts are committed for them.
+`bug2` and `bug3` pass: `CLOCK_SKEW`, `polarityDecides` true, `FINAL_READY`, no blocking gap,
+`.smt` at 838 KB and 773 KB respectively. Two root causes had to be fixed first and they
+explain both earlier failures: the cases declared **no clocks**, which made `CLOCK_SKEW`
+unreachable by construction and key expiry inexpressible at all; and both recordings had a
+**zero rotation gap**. `bug1` is the rewritten workload above.
