@@ -72,6 +72,10 @@ public final class CausynthTraceRecorder {
     /** Guarded by {@link #LOCK}; a reset must not install duplicate hooks. */
     private static boolean shutdownHookRegistered;
 
+    /** {@code -Dcausynth.debug.producers=true}: print every send's producer. */
+    private static final boolean DEBUG_PRODUCERS =
+            Boolean.getBoolean("causynth.debug.producers");
+
     private CausynthTraceRecorder() {
     }
 
@@ -736,6 +740,14 @@ public final class CausynthTraceRecorder {
         Endpoint producer = Identity.messageSent(
                 RuntimeTraceContext.ownedSource(localOwner).key(),
                 transport, correlationId, half);
+        // Off unless asked: the one place a replay states a message's
+        // producer endpoint in full, which is what telling two passes' anchor
+        // digests apart needs (the recording states it on its trace row).
+        if (DEBUG_PRODUCERS && producer != null) {
+            System.err.println("CAUSYNTH-PRODUCER " + transport + "#" + half
+                    + " " + correlationId + " " + producer.id() + " "
+                    + producer.render());
+        }
         // The row states that endpoint's components and not only the digest
         // the anchor travels as, because they are what a planned-vs-ran
         // anchor has to be compared on.  Stated by the mint above: the

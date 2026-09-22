@@ -61,11 +61,17 @@ if [[ -n ${CAUSYNTH_LOCAL_SCRATCH:-} ]]; then
 fi
 mkdir -p "${tmpdir}" "${datadir}"
 
+# Extra JVM options for every workload JVM of a run, recording and replays
+# alike -- a debugging switch, empty by default.
+extra=()
+[[ -z ${CAUSYNTH_WORKLOAD_JAVA_OPTS:-} ]] \
+  || read -r -a extra <<<"${CAUSYNTH_WORKLOAD_JAVA_OPTS}"
+
 set +e
 "${jdk}/bin/java" -ea -Xmx2g -Djava.awt.headless=true \
   -Dorg.slf4j.simpleLogger.defaultLogLevel=warn \
   -Djava.io.tmpdir="${tmpdir}" -Dtest.build.data="${datadir}" \
-  "${properties[@]}" -cp "${classes}:${jar}:${cp}" \
+  "${properties[@]}" "${extra[@]+"${extra[@]}"}" -cp "${classes}:${jar}:${cp}" \
   edu.uva.liftlab.graphchecker.runtime.JUnitMethodRunner \
   "${test_class}" "${test_method}"
 status=$?
