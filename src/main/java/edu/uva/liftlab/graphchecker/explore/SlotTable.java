@@ -578,6 +578,25 @@ public final class SlotTable {
     private static boolean unretained(Corpus corpus, List<GapRow> gaps) {
         Set<String> named = new LinkedHashSet<String>();
         boolean divergence = false;
+        // The regions the RECORDING reached: a seed session replays it, so
+        // an unretained region it ran is one the plan saw and chose not to
+        // retain.  Reaching it again is not growth -- the export inside it
+        // simply names the occurrence it ran in (Identity.currentOccurrence,
+        // the one producer door) -- and only a region no seed reached is the
+        // SS8 case 2 an epoch has to be re-cut for.
+        Set<String> recorded = new LinkedHashSet<String>();
+        for (SessionReader session : corpus.sessions()) {
+            if (session.manifest() == null || session.manifest().role()
+                    != edu.uva.liftlab.graphchecker.contract.SessionManifest
+                            .Role.SEED) {
+                continue;
+            }
+            for (ActivationRow activation : session.activations()) {
+                if (!activation.instrumented()) {
+                    recorded.add(activation.occurrence().regionId());
+                }
+            }
+        }
         for (SessionReader session : authoritiesFirst(corpus)) {
             // The same rule: a replay that was not admitted states no
             // topology, so the region it reached is reported and the
@@ -601,6 +620,16 @@ public final class SlotTable {
                                     + "recording lost: " + occurrence.regionId()
                                     + " is a role, not a region of the static "
                                     + "graph, so nothing can retain it"));
+                    continue;
+                }
+                if (recorded.contains(occurrence.regionId())) {
+                    gaps.add(GapRow.of(session.sessionId(),
+                            GapKind.TOPOLOGY_DIVERGENCE, GapClass.DIAGNOSTIC,
+                            occurrence.render(),
+                            "reached and not retained, as in the recording: "
+                                    + occurrence.regionId() + " ran in the "
+                                    + "seed too, and the plan did not retain "
+                                    + "it"));
                     continue;
                 }
                 gaps.add(GapRow.of(session.sessionId(),

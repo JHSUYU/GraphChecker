@@ -26,6 +26,11 @@ for entry in value.split(os.pathsep):
     # The launcher supplies the current frozen GraphChecker jar explicitly.
     if "/org/example/GraphChecker/" in entry:
         continue
+    # The report was written on the host that built the tree, and each host
+    # keeps its own local Maven repository: an entry this host does not have
+    # contributes nothing here, and handed on it is a path Soot refuses.
+    if entry and not os.path.exists(entry):
+        continue
     if entry and entry not in entries:
         entries.append(entry)
 print(os.pathsep.join(entries))
