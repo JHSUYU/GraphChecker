@@ -63,6 +63,14 @@ case "${case_id}" in
     ;;
 esac
 
+# A discovery hook: set CAUSYNTH_TARGET_OCCURRENCE_OVERRIDE to the empty
+# string and PLAN refuses by name with DECLARED_TARGET_OCCURRENCE_MISSING,
+# listing every observed target occurrence.  That is how the addresses below
+# are read off after anything that can change them -- a scope change moves
+# them, because an occurrence IS its address.  No colon in the expansion, so
+# an empty-but-set value wins.
+target_occurrence=${CAUSYNTH_TARGET_OCCURRENCE_OVERRIDE-${target_occurrence}}
+
 module=${repo}/hadoop-hdfs-project/hadoop-hdfs
 report=${module}/target/surefire-reports/TEST-${test_class}.xml
 analysis=/tmp/graphchecker-hdfs-17967-${case_id}-classes

@@ -24,6 +24,32 @@ copy_family() {
   }
 }
 
+# Copies ONE class and its own nested classes, and nothing else.  copy_family
+# globs on a prefix, so "DataXceiver" also matches DataXceiverServer -- and
+# with the accept loop in scope the target occurrence became
+#   workload/unregistered#epoch0/region/REGION.61e62f41/ctx:Lost:UNKNOWN
+#   /idx:<DataXceiverServer: void run()>@0/...#u32@0/<DataXceiver: void run()>@0
+# because that loop's thread starts with the cluster, long before the workload
+# registers anything.  Measured 2026-09-22 on both path A and path B.
+copy_class() {
+  local root=$1 name=$2 file found=false
+  [[ -d "${root}" ]] || {
+    echo "missing compiled class root: ${root}" >&2
+    return 2
+  }
+  while IFS= read -r file; do
+    found=true
+    mkdir -p "${analysis}/$(dirname "${file}")"
+    cp "${root}/${file}" "${analysis}/${file}"
+  done < <(cd "${root}" && find "$(dirname "${name}")" -maxdepth 1 -type f \
+    \( -name "$(basename "${name}").class" \
+       -o -name "$(basename "${name}")\$*.class" \) | sort)
+  [[ "${found}" == true ]] || {
+    echo "missing compiled class: ${name}" >&2
+    return 2
+  }
+}
+
 common=${repo}/hadoop-common-project/hadoop-common/target/classes
 client=${repo}/hadoop-hdfs-project/hadoop-hdfs-client/target/classes
 hdfs=${module}/target/classes
@@ -51,58 +77,30 @@ case "${case_id}" in
   pathA)
     # DELIBERATELY NARROW, and modelled on hdfs-17897's scope, which passes.
     #
-    # Adding DataXceiver/DataNode here made the target's enclosing region the
-    # DataXceiverServer connection-accept loop, whose thread starts with the
-    # cluster -- before the workload registers any source -- so both
-    # DataNodes' target occurrences came back on workload/unregistered with a
-    # lost context.  Two nodes with no node then share ONE address
-    # (OCCURRENCE_ADDRESS_SHARED) and the closure cannot tell the mirror from
-    # the head.  Left out, the target is enclosed by the per-connection SASL
-    # callback handler instead, which is entered after registration and is
-    # what every passing case in this family anchors on.
+    # DataXceiver is deliberately NOT woven, here or in path B, and the
+    # reason is measured (2026-09-22, with DataXceiverServer excluded, so it
+    # is DataXceiver itself).  With it in scope DataXceiver.run() becomes the
+    # region root and swallows the anchored REGION.7c569c3f entirely; PLAN
+    # then refuses by name and the only observed target occurrence is
+    #   workload/unregistered#epoch0/region/REGION.61e62f41/ctx:Lost:UNKNOWN
+    #   /idx:<DataXceiver: void run()>@0
+    # because that thread starts before any inbound context and before its
+    # local owner is stamped.  Left out, the target is enclosed by the
+    # per-connection SASL callback handler, which every passing case in this
+    # family anchors on.
+    #
+    # The producer occurrence of the relay hop -- what UNATTESTED_ARM was
+    # about -- is stated a different way: DataXceiver opens its own request
+    # scope around the mirror/proxy socketSend.  Those are plain static
+    # propagation calls and run whether or not the class is woven.
     #
     # The client family is left over from the client-driven workload this
     # case used to have; the DataNode-driven one enters none of it.
     copy_family "${client}" org/apache/hadoop/hdfs/DFSClient
-    # DataXceiver IS the case's second hop.  The key the mirror has to
-    # resolve is PRODUCED by the head's DataXceiver.writeBlock, and the
-    # recorded attach names its producer occurrence as
-    #   hdfs-17967/head-dn ROLE.DATA_XCEIVER {form: ROOT, role: DATA_XCEIVER}
-    # -- a synthetic role root, because the class owning that thread was not
-    # in the scope.  No session states its rows, so the delivery came back
-    # UNATTESTED_ARM ("what was delivered is stated and why is not"), the
-    # read could not be pinned, the clocks were not NECESSARY, and
-    # ClaimPolicy fell past CLOCK_SKEW to NO_SUPPORTED_WITNESS.
-    #
-    # The FIRST hop in the same recording is already stated -- its producer
-    # is hdfs-17967/source-dn REGION.d930c3a2 with api transfer-block --
-    # because DataNode.DataTransfer now carries its scope into the Daemon.
-    # That fix was necessary and not sufficient.
-    #
-    # The old warning here, that adding DataXceiver made the target's
-    # enclosing region the DataXceiverServer accept loop, belonged to the
-    # era when the workload registered its sources after the first traffic.
-    # It registers them first now, and DataXceiver.run() stamps the thread
-    # with its DataNode for the whole connection.
-    copy_family "${hdfs}" org/apache/hadoop/hdfs/server/datanode/DataXceiver
     ;;
   pathB)
-    # The mover is the test, so no client family is needed.  DataXceiver IS,
-    # and that is the whole of this case's second hop: the key the proxy has
-    # to resolve is PRODUCED by the target's DataXceiver.replaceBlock, whose
-    # occurrence is a ROLE.DATA_XCEIVER root.  Left out of the scope, no
-    # session states that occurrence's rows and every path through the target
-    # occurrence is an UNATTESTED_ARM on a HandoffLeafCarrier -- 40 of them,
-    # measured 2026-09-22 -- "what was delivered is stated and why is not".
-    # With the read unpinned the clocks are not NECESSARY and ClaimPolicy
-    # falls past CLOCK_SKEW to NO_SUPPORTED_WITNESS.
-    #
-    # The three cases that pass with no such gap each state their producer a
-    # different way: hdfs-17899 bug1's is the mover itself (a registered
-    # EXTERNAL_APP), bug3's is DataNode.DataTransfer with DataNode in scope,
-    # and path C's is the erasure-coding pool thread with
-    # StripedBlockReconstructor in scope.
-    copy_family "${hdfs}" org/apache/hadoop/hdfs/server/datanode/DataXceiver
+    # Nothing beyond the shared families.  The mover is the test, so no
+    # client family is needed, and the two DataNode roles are covered.
     ;;
   pathC)
     # The annotated site is StripedWriter's "All targets are failed.", so the
