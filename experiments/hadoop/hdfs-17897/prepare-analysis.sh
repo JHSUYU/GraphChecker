@@ -25,6 +25,10 @@ copy_family() {
 
 copy_family "${common}" org/apache/hadoop/ipc/CausynthMessagePropagation
 copy_family "${common}" org/apache/hadoop/ipc/CausynthSymbolicSource
+# ipc/Client carries the symbolized RPC failure -- a key-refresh RPC that
+# fails is the trigger this family of bugs is about -- and the IPC
+# message-propagation calls the causal context travels on.
+copy_family "${common}" org/apache/hadoop/ipc/Client
 copy_family "${common}" org/apache/hadoop/security/token/delegation/DelegationKey
 copy_family "${client}" org/apache/hadoop/hdfs/DFSClient
 copy_family "${client}" org/apache/hadoop/hdfs/FileChecksumHelper

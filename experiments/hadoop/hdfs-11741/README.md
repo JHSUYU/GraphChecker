@@ -28,7 +28,7 @@ workload, so nothing but the declared clock and the block-key serial can open th
 
 ## Build and run
 
-Hadoop checkout `/opt/hadoop-hdfs-11741`, branch `gc/hdfs-11741-current`. From this
+Hadoop checkout `/u/vnr3ne/hadoop-hdfs-11741`, branch `gc/hdfs-11741-current`. From this
 directory:
 
 ```bash

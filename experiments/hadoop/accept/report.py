@@ -89,7 +89,9 @@ EXPECTED_MECHANISM = {
     "hdfs-17899-bug1": {"kinds": ("MARKER_FLIPPED", "CLOCK_SKEW")},
     "hdfs-17899-bug2": {"kinds": ("MARKER_FLIPPED", "CLOCK_SKEW")},
     "hdfs-17899-bug3": {"kinds": ("MARKER_FLIPPED", "CLOCK_SKEW")},
-    "hdfs-17897":      {"kinds": ("CLOCK_SKEW",)},
+    # The tree now carries the symbolized RPC failure, as the rest of the
+    # family does, so a witness may be the marker OR the clock.
+    "hdfs-17897":      {"kinds": ("MARKER_FLIPPED", "CLOCK_SKEW")},
     # HDFS-17967's three paths share one annotated site and are told apart by
     # their target occurrence, so they share this row.  CLOCK_SKEW is the
     # mechanism the workloads are written for: the key the failing party puts
