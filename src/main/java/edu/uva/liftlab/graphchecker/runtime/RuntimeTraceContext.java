@@ -280,6 +280,16 @@ final class RuntimeTraceContext {
     }
 
     /**
+     * The attribution before {@link Attribution}: the receiver's own
+     * registration, else the thread's ambient source.  Only for the A/B
+     * switch ({@code causynth.attribution=ambient}).
+     */
+    static SourceRef ambientSource(Object receiver) {
+        SourceRef registered = sourceFor(receiver);
+        return registered != null ? registered : CURRENT.get().source;
+    }
+
+    /**
      * The explicit scope this thread's CREATOR stood in when it constructed
      * it, or null ({@link Attribution}, rule 3).
      */

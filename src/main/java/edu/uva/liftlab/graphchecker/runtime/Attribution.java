@@ -35,6 +35,26 @@ import java.util.List;
  * (LINEAGE_LOST), never a node guessed for it.</p>
  */
 final class Attribution {
+    /**
+     * The A/B switch of the migration: {@code ambient} attributes as the
+     * engine did before this rule -- the receiver's own registration, else
+     * the thread's ambient source -- so a campaign can be compared against
+     * the old behaviour.  Anything else, or nothing, is this rule.
+     */
+    static final String PROPERTY = "causynth.attribution";
+
+    private static volatile Boolean legacy;
+
+    private static boolean legacy() {
+        Boolean known = legacy;
+        if (known == null) {
+            known = "ambient".equalsIgnoreCase(
+                    Text.safe(System.getProperty(PROPERTY)));
+            legacy = known;
+        }
+        return known;
+    }
+
     /** How far a chain of starters is followed before it is given up. */
     private static final int MAX_CHAIN = 32;
 
@@ -108,6 +128,7 @@ final class Attribution {
      *                 yet; null when the asker is not an activation
      */
     static SourceRef resolve(Object receiver) {
+        if (legacy()) return RuntimeTraceContext.ambientSource(receiver);
         SourceRef explicit = RuntimeTraceContext.explicitSource();
         if (explicit != null) return explicit;
         List<Object> frames = Identity.receivers();
