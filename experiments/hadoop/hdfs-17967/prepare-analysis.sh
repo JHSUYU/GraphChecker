@@ -61,9 +61,30 @@ case "${case_id}" in
     # callback handler instead, which is entered after registration and is
     # what every passing case in this family anchors on.
     #
-    # The client family is needed because this case's client is in the
-    # recorded window, unlike hdfs-17899's.
+    # The client family is left over from the client-driven workload this
+    # case used to have; the DataNode-driven one enters none of it.
     copy_family "${client}" org/apache/hadoop/hdfs/DFSClient
+    # DataXceiver IS the case's second hop.  The key the mirror has to
+    # resolve is PRODUCED by the head's DataXceiver.writeBlock, and the
+    # recorded attach names its producer occurrence as
+    #   hdfs-17967/head-dn ROLE.DATA_XCEIVER {form: ROOT, role: DATA_XCEIVER}
+    # -- a synthetic role root, because the class owning that thread was not
+    # in the scope.  No session states its rows, so the delivery came back
+    # UNATTESTED_ARM ("what was delivered is stated and why is not"), the
+    # read could not be pinned, the clocks were not NECESSARY, and
+    # ClaimPolicy fell past CLOCK_SKEW to NO_SUPPORTED_WITNESS.
+    #
+    # The FIRST hop in the same recording is already stated -- its producer
+    # is hdfs-17967/source-dn REGION.d930c3a2 with api transfer-block --
+    # because DataNode.DataTransfer now carries its scope into the Daemon.
+    # That fix was necessary and not sufficient.
+    #
+    # The old warning here, that adding DataXceiver made the target's
+    # enclosing region the DataXceiverServer accept loop, belonged to the
+    # era when the workload registered its sources after the first traffic.
+    # It registers them first now, and DataXceiver.run() stamps the thread
+    # with its DataNode for the whole connection.
+    copy_family "${hdfs}" org/apache/hadoop/hdfs/server/datanode/DataXceiver
     ;;
   pathB)
     # The mover is the test, so no client family is needed.  DataXceiver IS,
