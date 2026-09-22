@@ -1596,6 +1596,33 @@ final class ConcolicTaskPlan {
                     && address.id().equals(observed.id());
         }
 
+        // TRIED AND REVERTED 2026-09-22, a THIRD arm here, recorded so it is
+        // not attempted a fourth time.  When the planned anchor's producer is
+        // UNRESOLVABLE in this run -- the id belongs to the recording's
+        // ledger and this run minted no such message, which is an absence and
+        // not a difference -- fall back to comparing node, epoch, region,
+        // execution index and the anchor's transport site, every one of them
+        // reproducible, and set only the unresolvable digest aside.  The
+        // exact comparison above stays first, so the passing cases, which
+        // reproduce their digests exactly, never reach it.
+        //
+        // It works, and it is still wrong.  hdfs-17899-bug1 went from "the
+        // concolic replay reached no TARGET_REACH occurrence" to composing a
+        // claim with one blocker -- so the anchor comparison IS what blocks
+        // that case, which this experiment establishes.  But hdfs-17897
+        // regressed from PASS to seven-plus BLOCKING TOPOLOGY_DIVERGENCE
+        // rows: with several DataNodes of one block group agreeing on node,
+        // region, index and transport site, the fallback admits an
+        // activation that is not the addressed one, and the wire pairing
+        // moves under it.  The shared-address rule does not catch that,
+        // contrary to what the arm assumed.
+        //
+        // So a correct fix may not loosen this comparison at all.  It has to
+        // make the anchor REPRODUCIBLE -- derived from something stable such
+        // as the request key plus a per-request ordinal rather than a
+        // recursive digest over the producer chain -- which is a change to
+        // the identity model, not to this predicate.
+
         /**
          * Why {@code observed} is not this task's occurrence.
          *
