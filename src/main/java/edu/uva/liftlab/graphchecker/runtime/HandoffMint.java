@@ -432,9 +432,9 @@ final class HandoffMint {
         String portId = safe(site.portId());
         if (!RowRuntime.open()) return;
         RuntimeTraceContext.View view = RuntimeTraceContext.current();
-        String nodeKey = view.source == null ? "" : view.source.key();
         edu.uva.liftlab.graphchecker.contract.OccurrenceAddress consumer =
-                RowRuntime.degraded(nodeKey, portId);
+                RowRuntime.occurrenceHere(view.source == null ? ""
+                        : view.source.key(), portId);
         if (consumer == null) {
             RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
                             .LINEAGE_LOST,

@@ -302,6 +302,10 @@ public class OccurrenceAddressIsNotARequestTest {
                 "the call carried no scope at all",
                 "the thread it is sent on carries no", "requestKey",
                 "!" + Thread.currentThread().getName());
+        // The root activation's own frame carries its receiver, as the weave
+        // stands it up at every application method: that is what attributes
+        // it (Attribution, rule 2).
+        Identity.enterFrame("<a.Nnc: void run()>", nnc);
         RuntimeTraceContext.enterRoot(nnc);
         final Object partial = RuntimeTraceContext.captureScope();
         refuses("a node is not a request",

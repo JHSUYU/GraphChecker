@@ -368,8 +368,18 @@ public final class ScheduleLog {
         LOCK.notifyAll();
     }
 
-    /** Whether this replay is still held to its prefix. */
+    /**
+     * Whether this replay is held to its prefix right now.
+     *
+     * <p>Only inside the recording window: the prefix is the window's order,
+     * and a wait begun before the workload opened it -- an idle IPC
+     * connection, a daemon's first sleep -- is the set-up's, which runs on
+     * the wall clock exactly as it did when the prefix was recorded.  Taking
+     * it over would return it at once, over and over, and time out whatever
+     * it was idling for.</p>
+     */
     public static boolean enforcing() {
+        if (!CausynthTraceRecorder.recordingStarted()) return false;
         synchronized (LOCK) {
             loadPrefixLocked();
             return !freeRun;

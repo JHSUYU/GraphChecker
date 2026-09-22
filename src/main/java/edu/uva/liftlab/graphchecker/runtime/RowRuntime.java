@@ -374,17 +374,29 @@ public final class RowRuntime {
 
 
     /**
-     * The address of an activation that ran under no live occurrence: its
-     * role, on its node, at a window-local k.
+     * The occurrence an event on this thread belongs to, by the one door
+     * both passes mint producer and consumer addresses through
+     * ({@link Identity#currentOccurrence}): the region occurrence running
+     * here, else the ambient one of the thread's role on its node.
      *
-     * <p>REPORT-ENTRY: the OUT side already exported unconditionally and
-     * said {@code UNPLANNED} of itself.  It now says which role, on which
-     * node, at which k -- a degraded endpoint, which is still an endpoint an
-     * arm can be keyed by (INTERACTION-ID R-I1).</p>
+     * <p>{@code nodeKey} is THE attribution rule's answer; when that rule
+     * names no node the address is the unregistered one, and saying so is a
+     * LINEAGE_LOST diagnostic at the site -- never a node guessed for it.</p>
      */
-    public static OccurrenceAddress degraded(String nodeKey, String site) {
-        Role role = Lineage.named() ? Lineage.role() : Role.UNKNOWN;
-        return Identity.roleOccurrence(nodeKey, role);
+    public static OccurrenceAddress occurrenceHere(String nodeKey,
+                                                   String site) {
+        String node = Text.safe(nodeKey);
+        if (node.isEmpty() || OccurrenceBinding.UNREGISTERED_SOURCE_KEY
+                .equals(node)) {
+            gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC, Text.safe(site),
+                    "an event at this site ran on a thread the attribution"
+                            + " rule names no node for -- no explicit scope,"
+                            + " no registered receiver on its frames, no"
+                            + " registered starter -- so its address is the"
+                            + " unregistered one");
+            node = OccurrenceBinding.UNREGISTERED_SOURCE_KEY;
+        }
+        return Identity.currentOccurrence(node);
     }
 
     /**
@@ -623,8 +635,8 @@ public final class RowRuntime {
      *
      * @return the token that closes exactly this level
      */
-    public static long enterFrame(String callSiteId) {
-        return Identity.enterFrame(callSiteId);
+    public static long enterFrame(String callSiteId, Object receiver) {
+        return Identity.enterFrame(callSiteId, receiver);
     }
 
     /** Leaves the level {@code token} opened. */
@@ -653,11 +665,7 @@ public final class RowRuntime {
      * indexed from (IDENTITY-V3 SS1, scope transfer).</p>
      */
     public static void startWork(String startSiteId, Object carrier) {
-        // The starter's node travels with the start frame: work whose own
-        // frames name no component belongs to the component that started
-        // it (IDENTITY-V3 §1, LogicalComponent).
-        Identity.startWork(startSiteId, carrier,
-                RuntimeTraceContext.activationSource(null).key());
+        Identity.startWork(startSiteId, carrier);
     }
 
     /** Takes the start frame filed for the work this object carries. */

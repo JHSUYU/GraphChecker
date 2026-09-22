@@ -287,12 +287,15 @@ final class WireExport {
         try {
             if (!RowRuntime.open()) return;
             RuntimeTraceContext.View view = RuntimeTraceContext.current();
-            String nodeKey = view.source == null ? "" : view.source.key();
             ActiveRegion active = ConcolicRegionRuntime.activeRegion();
+            // One door for a producer address: the admitted activation's own
+            // (which Identity.currentOccurrence minted it as), else the
+            // occurrence running here by the same door.
             edu.uva.liftlab.graphchecker.contract.OccurrenceAddress
-                    producer = active == null || active.d3Address == null
-                    ? RowRuntime.degraded(nodeKey, site.portId())
-                    : active.d3Address;
+                    producer = active != null && active.d3Address != null
+                    ? active.d3Address
+                    : RowRuntime.occurrenceHere(view.source == null ? ""
+                            : view.source.key(), site.portId());
             if (active == null || active.d3Address == null) {
                 RowRuntime.ambientActivation(producer);
             }

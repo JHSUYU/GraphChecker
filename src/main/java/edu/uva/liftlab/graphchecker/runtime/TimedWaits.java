@@ -99,38 +99,44 @@ public final class TimedWaits {
     public static void waitOn(Object monitor, long millis, String site)
             throws InterruptedException {
         WakeScopes.waiting(site);
-        if (ScheduleLog.enforcing()) {
-            // The caller holds the monitor.  It is released for a quantum
-            // at a time, so a notifier -- or the thread whose turn it is --
-            // can take it; the wait returns when its WAKE is admitted.
-            while (!ScheduleLog.tryObserve(ScheduleEvent.Kind.WAKE, site)) {
-                monitor.wait(QUANTUM_MS);
+        if (!ScheduleLog.enforcing()) {
+            try {
+                monitor.wait(millis);
+            } catch (InterruptedException interrupted) {
+                ScheduleLog.tryObserve(ScheduleEvent.Kind.WAKE, site);
+                throw interrupted;
             }
-            WakeScopes.woke(site);
-            return;
+            // The window may have opened while it waited: its WAKE is then
+            // held like any other, still releasing the monitor between asks.
         }
-        try {
-            monitor.wait(millis);
-        } finally {
-            wake(site);
-        }
+        admitHolding(monitor, site);
     }
 
     public static void waitOn(Object monitor, long millis, int nanos,
                               String site) throws InterruptedException {
         WakeScopes.waiting(site);
-        if (ScheduleLog.enforcing()) {
-            while (!ScheduleLog.tryObserve(ScheduleEvent.Kind.WAKE, site)) {
-                monitor.wait(QUANTUM_MS);
+        if (!ScheduleLog.enforcing()) {
+            try {
+                monitor.wait(millis, nanos);
+            } catch (InterruptedException interrupted) {
+                ScheduleLog.tryObserve(ScheduleEvent.Kind.WAKE, site);
+                throw interrupted;
             }
-            WakeScopes.woke(site);
-            return;
         }
-        try {
-            monitor.wait(millis, nanos);
-        } finally {
-            wake(site);
+        admitHolding(monitor, site);
+    }
+
+    /**
+     * Admits a WAKE whose thread holds {@code monitor}: asks without
+     * blocking, and between asks releases the monitor for a quantum, so
+     * whoever's event IS next can take it.  Free, the first ask admits.
+     */
+    private static void admitHolding(Object monitor, String site)
+            throws InterruptedException {
+        while (!ScheduleLog.tryObserve(ScheduleEvent.Kind.WAKE, site)) {
+            monitor.wait(QUANTUM_MS);
         }
+        WakeScopes.woke(site);
     }
 
     // ---- Condition.awaitNanos / await(long, TimeUnit) ---------------------
@@ -138,46 +144,60 @@ public final class TimedWaits {
     public static long awaitNanos(Condition condition, long nanos,
                                   String site) throws InterruptedException {
         WakeScopes.waiting(site);
-        if (ScheduleLog.enforcing()) {
-            boolean signalled = false;
-            while (!ScheduleLog.tryObserve(ScheduleEvent.Kind.WAKE, site)) {
-                if (condition.awaitNanos(
-                        TimeUnit.MILLISECONDS.toNanos(QUANTUM_MS)) > 0L) {
-                    signalled = true;
-                }
+        long remaining = 0L;
+        boolean signalled = false;
+        if (!ScheduleLog.enforcing()) {
+            try {
+                remaining = condition.awaitNanos(nanos);
+            } catch (InterruptedException interrupted) {
+                ScheduleLog.tryObserve(ScheduleEvent.Kind.WAKE, site);
+                throw interrupted;
             }
-            WakeScopes.woke(site);
-            // Virtual time: the turn came.  Whether it came by a signal is
-            // what the quanta saw; a caller that re-checks its condition --
-            // every loop that waits this way does -- reads the rest.
-            return signalled ? Math.max(1L, nanos) : 0L;
+            if (!ScheduleLog.enforcing()) {
+                ScheduleLog.tryObserve(ScheduleEvent.Kind.WAKE, site);
+                WakeScopes.woke(site);
+                return remaining;
+            }
+            signalled = remaining > 0L;
         }
-        try {
-            return condition.awaitNanos(nanos);
-        } finally {
-            wake(site);
+        while (!ScheduleLog.tryObserve(ScheduleEvent.Kind.WAKE, site)) {
+            if (condition.awaitNanos(
+                    TimeUnit.MILLISECONDS.toNanos(QUANTUM_MS)) > 0L) {
+                signalled = true;
+            }
         }
+        WakeScopes.woke(site);
+        // Virtual time: the turn came.  Whether it came by a signal is what
+        // the quanta saw; a caller that re-checks its condition -- every
+        // loop that waits this way does -- reads the rest.
+        return signalled ? Math.max(1L, remaining) : 0L;
     }
 
     public static boolean await(Condition condition, long time,
                                 TimeUnit unit, String site)
             throws InterruptedException {
         WakeScopes.waiting(site);
-        if (ScheduleLog.enforcing()) {
-            boolean signalled = false;
-            while (!ScheduleLog.tryObserve(ScheduleEvent.Kind.WAKE, site)) {
-                if (condition.await(QUANTUM_MS, TimeUnit.MILLISECONDS)) {
-                    signalled = true;
-                }
+        boolean signalled = false;
+        if (!ScheduleLog.enforcing()) {
+            try {
+                signalled = condition.await(time, unit);
+            } catch (InterruptedException interrupted) {
+                ScheduleLog.tryObserve(ScheduleEvent.Kind.WAKE, site);
+                throw interrupted;
             }
-            WakeScopes.woke(site);
-            return signalled;
+            if (!ScheduleLog.enforcing()) {
+                ScheduleLog.tryObserve(ScheduleEvent.Kind.WAKE, site);
+                WakeScopes.woke(site);
+                return signalled;
+            }
         }
-        try {
-            return condition.await(time, unit);
-        } finally {
-            wake(site);
+        while (!ScheduleLog.tryObserve(ScheduleEvent.Kind.WAKE, site)) {
+            if (condition.await(QUANTUM_MS, TimeUnit.MILLISECONDS)) {
+                signalled = true;
+            }
         }
+        WakeScopes.woke(site);
+        return signalled;
     }
 
     // ---- BlockingQueue.poll(long, TimeUnit) -------------------------------

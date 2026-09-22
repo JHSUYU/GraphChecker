@@ -137,6 +137,7 @@ final class RuntimeTraceContext {
         edu.uva.liftlab.graphchecker.runtime.Identity.scopeStart(
                 edu.uva.liftlab.graphchecker.runtime.Identity.Hop
                         .SCOPE_ROOT);
+        scope.opened = source;
         state.scopes.push(scope);
         state.source = source;
         state.requestKey = requestKey;
@@ -198,14 +199,105 @@ final class RuntimeTraceContext {
         // The lineage travels with the work, exactly as the request scope
         // does: a pool thread created before the scope existed inherits
         // neither, and both are facts about the work rather than the thread.
+        // The node it carries EXPLICITLY is the starter's explicit scope and
+        // nothing weaker: a node the starter only resolved by its frames or
+        // its own starter is what the work's reference already states
+        // (Attribution, rule 3), and made explicit here it would outrank the
+        // work's own frames.
         String nodeKey = view.source == null ? "" : view.source.key();
         Object lineage = Lineage.capture(nodeKey);
         synchronized (LOCK) {
             ASYNC_SEEDS.put(carrier, new Seed(
-                    view.source, view.requestKey, view.requestApi,
+                    explicitSource(), view.requestKey, view.requestApi,
                     view.exchangeTransport, view.exchangeCorrelationId,
                     view.exchangeAttemptId, view.exchangeHalf, lineage));
         }
+    }
+
+    /**
+     * Enters, on the claiming thread, the scope a start carried.
+     *
+     * <p>The CLAIM half of every handoff ({@code Identity}'s claim of a
+     * start), in both passes: the scope the starter stood in -- its explicit
+     * node, its request flow, its lineage -- comes with the work to whatever
+     * pool thread takes it, and is left when the work's start level goes
+     * ({@link #releaseCarried}).  This is what replaced the carried scopes
+     * hand-woven into each Hadoop tree's pool tasks.</p>
+     *
+     * <p>No scope START here: the index of the work begins at its start
+     * frame, which is what tells two siblings started from one site apart.
+     * </p>
+     */
+    static void claimCarried(Object carrier) {
+        Seed seed = takeSeed(carrier);
+        if (seed == null) return;
+        boolean flow = !seed.requestKey.isEmpty() && !seed.requestApi.isEmpty();
+        boolean lineage = seed.lineage instanceof Lineage.Carried
+                && ((Lineage.Carried) seed.lineage).names();
+        if (seed.source == null && !flow && !lineage) return;
+        releaseCarried();
+        State state = CURRENT.get();
+        Frame activeFrame = state.frames.peek();
+        long token = nextId();
+        ScopeFrame scope = new ScopeFrame(token, state, activeFrame);
+        scope.opened = seed.source;
+        scope.lineageToken = Lineage.restore(seed.lineage,
+                seed.source == null ? "" : seed.source.key(),
+                Role.EXECUTOR_TASK, "");
+        state.scopes.push(scope);
+        if (seed.source != null) state.source = seed.source;
+        state.requestKey = seed.requestKey;
+        state.requestApi = seed.requestApi;
+        state.exchangeTransport = seed.exchangeTransport;
+        state.exchangeCorrelationId = seed.exchangeCorrelationId;
+        state.exchangeAttemptId = seed.exchangeAttemptId;
+        state.exchangeHalf = seed.exchangeHalf;
+        CARRIED.set(token);
+        publishCausalSource(state);
+    }
+
+    /** Leaves the scope the last claim on this thread entered, if any. */
+    static void releaseCarried() {
+        Long token = CARRIED.get();
+        if (token == null) return;
+        CARRIED.remove();
+        restoreScope(token);
+    }
+
+    /** The token of the carried scope this thread's claimed work runs in. */
+    private static final ThreadLocal<Long> CARRIED = new ThreadLocal<Long>();
+
+    /**
+     * Rule 1 of the attribution rule: the innermost explicit scope's node,
+     * or null.
+     */
+    static SourceRef explicitSource() {
+        State state = CURRENT.get();
+        for (ScopeFrame scope : state.scopes) {
+            if (scope.opened != null) return scope.opened;
+        }
+        return null;
+    }
+
+    /**
+     * The explicit scope this thread's CREATOR stood in when it constructed
+     * it, or null ({@link Attribution}, rule 3).
+     */
+    static SourceRef inheritedSource() {
+        return CURRENT.get().inheritedSource;
+    }
+
+    /** The first of these objects that is registered, by identity. */
+    static SourceRef firstRegistered(java.util.List<Object> objects) {
+        if (objects == null || objects.isEmpty()) return null;
+        synchronized (LOCK) {
+            for (Object object : objects) {
+                if (object == null) continue;
+                SourceRef source = SOURCE_ALIASES.get(object);
+                if (source != null) return source;
+            }
+        }
+        return null;
     }
 
     /**
@@ -226,17 +318,19 @@ final class RuntimeTraceContext {
      */
     static View enterRoot(Object receiver) {
         State state = CURRENT.get();
-        Seed seed = takeSeed(Thread.currentThread());
-        if (seed == null) seed = takeSeed(receiver);
-        // The receiver's own registration first, and only then anything
-        // ambient.
+        // No seed here: a start's scope is taken back where the work CLAIMS
+        // it (#claimCarried), in both passes, and this hook is the
+        // recording's alone.
+        Seed seed = null;
         SourceRef registered = sourceFor(receiver);
         // Which authority answered: the receiver's own registration, or the
         // context this thread inherited.  Replay can reproduce the first by
         // object identity and the second only by thread context, so the
         // activation has to say which one named it.
         boolean receiverAttributed = registered != null;
-        SourceRef source = attributedSource(registered, seed, state.source);
+        // THE attribution rule, the one the replay evaluates at the same
+        // entry (Attribution).
+        SourceRef source = Attribution.resolve(receiver);
         // A receiver that named no source of its own keeps the ambient stamp,
         // which is the only answer available while the trace is being written.
         String requestKey = seed == null ? state.requestKey : seed.requestKey;
@@ -344,6 +438,7 @@ final class RuntimeTraceContext {
         Frame activeFrame = state.frames.peek();
         long token = nextId();
         ScopeFrame frame = new ScopeFrame(token, state, activeFrame);
+        frame.opened = scope.source;
         state.scopes.push(frame);
         state.source = scope.source;
         state.requestKey = scope.requestKey;
@@ -382,21 +477,27 @@ final class RuntimeTraceContext {
      */
     static long beginTick(Object owner, String roleName) {
         State state = CURRENT.get();
-        SourceRef source = sourceFor(owner);
-        if (source == null) source = state.view().source;
+        // The tick's OWNER is an explicit scope when it is registered
+        // (Attribution, rule 1); otherwise the tick is the thread's.
+        SourceRef owned = sourceFor(owner);
+        SourceRef source = owned != null ? owned : Attribution.resolve(null);
         // A root that IS the started work, so its index begins at the start
         // frame the work claimed: the tick's own beginning
         // (Identity.Hop.STARTED_ROOT).
         edu.uva.liftlab.graphchecker.runtime.Identity.scopeStart(
                 edu.uva.liftlab.graphchecker.runtime.Identity.Hop
                         .STARTED_ROOT);
+        long token = nextId();
+        ScopeFrame scope = new ScopeFrame(token, state, state.frames.peek());
+        scope.opened = owned;
         // A ROOT hop, whatever this thread already stands in: a tick is
         // started by no message and serves none, so it descends from
         // nothing (Lineage#pushRoot).  A nested hop made
         // KeyManager$BlockKeyUpdater's tick render the balance-block
         // request's own Root:CLIENT#1.
-        long token = Lineage.pushRoot(source == null ? "" : source.key(),
-                Role.of(roleName), "");
+        scope.lineageToken = Lineage.pushRoot(
+                source == null ? "" : source.key(), Role.of(roleName), "");
+        state.scopes.push(scope);
         // A tick is a WAKE: the turn a daemon's loop hands its thread.
         ScheduleLog.observe(
                 edu.uva.liftlab.graphchecker.contract.ScheduleEvent.Kind.WAKE,
@@ -406,7 +507,7 @@ final class RuntimeTraceContext {
 
     /** Closes the tick {@link #beginTick} opened. */
     static void endTick(long token) {
-        Lineage.pop(token);
+        restoreScope(token);
     }
 
     /**
@@ -424,6 +525,14 @@ final class RuntimeTraceContext {
      *         no node the run can name and nothing was opened
      */
     static long beginWake(String api) {
+        // A timed wait inside a request, a carried scope or a served message
+        // is a pause WITHIN that work -- a workload polling for its own
+        // result, a handler backing off -- and not the next turn of a
+        // daemon: the work it pauses stays the work that runs after it.
+        State current = CURRENT.get();
+        for (ScopeFrame standing : current.scopes) {
+            if (!standing.turn) return 0L;
+        }
         SourceRef source = activationSource(null);
         if (source == null
                 || UNREGISTERED_SOURCE.key().equals(source.key())) {
@@ -442,6 +551,8 @@ final class RuntimeTraceContext {
         }
         Frame activeFrame = state.frames.peek();
         ScopeFrame scope = new ScopeFrame(token, state, activeFrame);
+        scope.opened = source;
+        scope.turn = true;
         scope.lineageToken = Lineage.pushRoot(source.key(), Role.of("WAKE"),
                 normalizedApi);
         edu.uva.liftlab.graphchecker.runtime.Identity.scopeStart(
@@ -466,6 +577,15 @@ final class RuntimeTraceContext {
      */
     static boolean endWakeIfInnermost(long token) {
         State state = CURRENT.get();
+        boolean standing = false;
+        for (ScopeFrame open : state.scopes) {
+            if (open.token == token) {
+                standing = true;
+                break;
+            }
+        }
+        // Closed already, by an outer scope's close: nothing left to do.
+        if (!standing) return true;
         ScopeFrame innermost = state.scopes.peek();
         if (innermost == null || innermost.token != token) return false;
         restoreScope(token);
@@ -510,8 +630,7 @@ final class RuntimeTraceContext {
      */
     static String outboundHeader(Object localOwner, Object carriedScope) {
         State state = CURRENT.get();
-        bindLocalOwner(state, localOwner);
-        View view = scoped(state.view(), carriedScope);
+        View view = scoped(owned(state.view(), localOwner), carriedScope);
         if (view.source == null || view.requestKey.isEmpty()
                 || view.requestApi.isEmpty()) {
             // Named, because the refusal decides whether the workload's own
@@ -535,7 +654,7 @@ final class RuntimeTraceContext {
                     "outbound message requires source and request flow;"
                             + " the call carried " + describe(carriedScope)
                             + " and the thread it is sent on carries no"
-                            + missing(state.view()));
+                            + missing(owned(state.view(), localOwner)));
         }
         return header(view.source, view.requestKey, view.requestApi,
                 view.spanId);
@@ -578,6 +697,9 @@ final class RuntimeTraceContext {
         // whose value it received rather than the node it ran on.  Same
         // function on both sides, over inputs only the replay mutated.
         SourceRef localSource = sourceFor(localOwner);
+        // A registered local owner is this scope's EXPLICIT node
+        // (Attribution, rule 1), for exactly as long as the scope stands.
+        scope.opened = localSource;
         if (localSource != null) {
             state.source = localSource;
         }
@@ -664,8 +786,7 @@ final class RuntimeTraceContext {
      */
     static View exchange(Object localOwner, Object carriedScope) {
         State state = CURRENT.get();
-        bindLocalOwner(state, localOwner);
-        View view = scoped(state.view(), carriedScope);
+        View view = scoped(owned(state.view(), localOwner), carriedScope);
         publishCausalSource(view);
         return view;
     }
@@ -710,21 +831,53 @@ final class RuntimeTraceContext {
                 scope.requestApi);
     }
 
-    private static void bindLocalOwner(State state, Object localOwner) {
+    /**
+     * The view of one exchange leg made on behalf of a registered local
+     * owner: that owner's node, for this leg only.
+     *
+     * <p>A local owner used to be BOUND -- written into the thread's ambient
+     * source, where it stayed after the leg and named every later event of
+     * the thread.  It is a frame now: the leg speaks for the owner, and
+     * nothing it names outlives the leg.</p>
+     */
+    static View owned(View view, Object localOwner) {
         SourceRef source = sourceFor(localOwner);
-        if (source == null) return;
-        state.source = source;
-        Frame frame = state.frames.peek();
-        if (frame != null) frame.source = source;
+        if (source == null) return view;
+        return view.withScope(source, view.requestKey, view.requestApi);
+    }
+
+    /** The node a leg made on behalf of {@code localOwner} belongs to. */
+    static SourceRef ownedSource(Object localOwner) {
+        SourceRef owned = sourceFor(localOwner);
+        if (owned != null) return owned;
+        return activationSource(null);
     }
 
     private static void restoreScope(long token) {
         State state = CURRENT.get();
-        ScopeFrame scope = state.scopes.peek();
-        if (scope == null || scope.token != token) {
-            throw new IllegalStateException(
-                    "context scopes must end in LIFO order");
+        boolean standing = false;
+        for (ScopeFrame open : state.scopes) {
+            if (open.token == token) {
+                standing = true;
+                break;
+            }
         }
+        // A scope that is not standing was already closed -- by an outer
+        // scope's close, which takes every scope opened inside it along --
+        // and closing it again is nothing.  A hook never throws into the
+        // workload for it.
+        if (!standing) return;
+        while (state.scopes.peek() != null
+                && state.scopes.peek().token != token) {
+            ScopeFrame inner = state.scopes.peek();
+            restoreOne(state, inner);
+        }
+        restoreOne(state, state.scopes.peek());
+        publishCausalSource(state);
+    }
+
+    /** Closes the innermost scope and puts back what it replaced. */
+    private static void restoreOne(State state, ScopeFrame scope) {
         state.scopes.pop();
         if (scope.lineageToken > 0L) Lineage.release(scope.lineageToken);
         state.source = scope.source;
@@ -740,7 +893,9 @@ final class RuntimeTraceContext {
             scope.activeFrame.source = scope.frameSource;
             scope.activeFrame.remoteParentSpanId = scope.frameRemoteParentSpanId;
         }
-        publishCausalSource(state);
+        if (CARRIED.get() != null && CARRIED.get() == scope.token) {
+            CARRIED.remove();
+        }
     }
 
     /**
@@ -841,12 +996,8 @@ final class RuntimeTraceContext {
      */
     static SourceRef activationSource(Object receiver,
                                       Collection<SourceRef> frameStamps) {
-        SourceRef registered = sourceFor(receiver);
-        Seed seed = peekSeed(Thread.currentThread());
-        if (seed == null) seed = peekSeed(receiver);
-        SourceRef stamp = attributedSource(registered, seed,
-                CURRENT.get().source);
-        return attributedActivationSource(stamp, frameStamps);
+        return attributedActivationSource(Attribution.resolve(receiver),
+                frameStamps);
     }
 
     /**
@@ -896,6 +1047,11 @@ final class RuntimeTraceContext {
     static String nodeHere() {
         SourceRef source = activationSource(null);
         return source == null ? "" : source.key();
+    }
+
+    /** The node the running thread resolves to, or null when none. */
+    static SourceRef resolvedHere() {
+        return Attribution.resolve(null);
     }
 
     /** The source an activation nothing attributed belongs to: the
@@ -1027,7 +1183,18 @@ final class RuntimeTraceContext {
     private static State inheritedState(State parent) {
         State child = initialState();
         if (parent == null) return child;
-        View inherited = parent.view();
+        // The explicit scope the creator stood in, read off its state (no
+        // thread-local may be touched while a thread is being constructed).
+        SourceRef creatorExplicit = null;
+        for (ScopeFrame scope : parent.scopes) {
+            if (scope.opened != null) {
+                creatorExplicit = scope.opened;
+                break;
+            }
+        }
+        child.inheritedSource = creatorExplicit != null ? creatorExplicit
+                : parent.inheritedSource;
+        View inherited = parent.rawView();
         child.source = inherited.source;
         child.requestKey = inherited.requestKey;
         child.requestApi = inherited.requestApi;
@@ -1099,12 +1266,31 @@ final class RuntimeTraceContext {
         private String exchangeHalf = "";
         private final Deque<Frame> frames = new ArrayDeque<>();
         private final Deque<ScopeFrame> scopes = new ArrayDeque<>();
+        /** The explicit node this thread's creator stood in, or null. */
+        private SourceRef inheritedSource;
 
         private State(long laneId) {
             this.laneId = laneId;
         }
 
+        /**
+         * The thread's view, its source by THE attribution rule, resolved
+         * now ({@link Attribution}).
+         */
         private View view() {
+            Frame frame = frames.peek();
+            return new View(
+                    laneId, frame == null ? 0L : frame.spanId,
+                    frame == null ? pendingRemoteParentSpanId
+                            : frame.remoteParentSpanId,
+                    Attribution.resolve(null),
+                    frame != null && frame.receiverAttributed,
+                    requestKey, requestApi, exchangeTransport,
+                    exchangeCorrelationId, exchangeAttemptId, exchangeHalf);
+        }
+
+        /** The same view with no resolution: for a thread's construction. */
+        private View rawView() {
             Frame frame = frames.peek();
             return new View(
                     laneId, frame == null ? 0L : frame.spanId,
@@ -1188,6 +1374,14 @@ final class RuntimeTraceContext {
         private final long token;
         /** The lineage hop this scope opened, or 0 when it opened none. */
         private long lineageToken;
+        /**
+         * The node this scope names EXPLICITLY, or null: a request's source,
+         * a carried scope's, a registered local owner's, a tick owner's, a
+         * service-loop turn's ({@link Attribution}, rule 1).
+         */
+        private SourceRef opened;
+        /** Whether this scope is a service-loop turn ({@link #beginWake}). */
+        private boolean turn;
         private final SourceRef source;
         private final Frame activeFrame;
         private final SourceRef frameSource;

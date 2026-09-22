@@ -95,14 +95,17 @@ public final class Identity {
         /** The region activations open on this thread, innermost last. */
         private final List<Region> regions = new ArrayList<Region>();
         /**
-         * The node of the frame that started the work this thread runs, or
-         * {@code ""}: the component an occurrence belongs to when its own
-         * frames name none.
+         * Where the work this thread runs was started, as a reference the
+         * attribution rule resolves when it is asked ({@link Attribution},
+         * rule 3): the claimed start's, else the thread's creator's.
          */
-        private String startNode = "";
+        private Attribution.Reference starter;
+        /** Whether {@link #starter} is a claimed start rather than the
+         *  creator the thread inherited at construction. */
+        private boolean adopted;
 
         private State() {
-            levels.add(new Level(null, 0L));
+            levels.add(new Level(null, 0L, null));
         }
 
         /** How many frames are standing. */
@@ -127,7 +130,8 @@ public final class Identity {
             // an event the frame the parent took its own counts in made.
             for (int index = 1; index < levels.size(); index++) {
                 child.levels.add(new Level(levels.get(index).frame,
-                        levels.get(index).token));
+                        levels.get(index).token,
+                        levels.get(index).receiver));
             }
             child.scopeBase = scopeBase;
             // The start frame of the work THIS thread runs is not the start
@@ -135,7 +139,13 @@ public final class Identity {
             // own, at the site that started it.
             child.claimed = false;
             child.startDepth = -1;
-            child.startNode = "";
+            // The thread was created HERE, by this thread's work: until it
+            // claims a start of its own, that is what started it.  Read off
+            // this state directly -- this runs inside the child's
+            // construction, where no thread-local may be touched.
+            child.starter = Attribution.Reference.of(receiversOf(this),
+                    starter);
+            child.adopted = false;
             for (Region region : regions) {
                 // The depth carries over -- a child thread's frames continue
                 // its parent's -- but not the journal: a journal is one
@@ -166,9 +176,11 @@ public final class Identity {
             // task started from inside another one nests instead.
             if (startDepth >= 0 && startDepth == depth() - 1) {
                 levels.remove(startDepth + 1);
+                // ...and the scope that task carried goes with its frame.
+                RuntimeTraceContext.releaseCarried();
             }
             startDepth = depth();
-            levels.add(new Level(frame, 0L));
+            levels.add(new Level(frame, 0L, null));
         }
 
         /** The frame depth an endpoint inside the innermost region is from. */
@@ -299,6 +311,11 @@ public final class Identity {
         /** The token the frame exit closes this level by, or 0. */
         private final long token;
         /**
+         * The receiver of the activation this level is, or null: what the
+         * attribution rule asks is registered ({@link Attribution}, rule 2).
+         */
+        private final Object receiver;
+        /**
          * This level's site counts, one map per root hop it has been the
          * innermost level under, outermost hop first.
          *
@@ -326,9 +343,10 @@ public final class Identity {
          */
         private final List<Counters> counters = new ArrayList<Counters>();
 
-        private Level(Frame frame, long token) {
+        private Level(Frame frame, long token, Object receiver) {
             this.frame = frame;
             this.token = token;
+            this.receiver = receiver;
         }
 
         /**
@@ -401,11 +419,11 @@ public final class Identity {
      */
     private static final class Start {
         private final Frame frame;
-        private final String nodeKey;
+        private final Attribution.Reference starter;
 
-        private Start(Frame frame, String nodeKey) {
+        private Start(Frame frame, Attribution.Reference starter) {
             this.frame = frame;
-            this.nodeKey = nodeKey;
+            this.starter = starter;
         }
     }
 
@@ -482,7 +500,12 @@ public final class Identity {
         Start start = STARTS.remove(new Carrier(carrier, null));
         if (start == null) return;
         state.openStart(start.frame);
-        if (!start.nodeKey.isEmpty()) state.startNode = start.nodeKey;
+        state.starter = start.starter;
+        state.adopted = true;
+        // The scope the starter was in comes with the work, whatever thread
+        // the pool hands it to: installed here, closed when the work's start
+        // level goes (#exitFrame, State#openStart).
+        RuntimeTraceContext.claimCarried(carrier);
         // The CLAIM half of the handoff, at the site the START named: the
         // work begins to run here.
         ScheduleLog.observe(
@@ -510,40 +533,50 @@ public final class Identity {
      * -- and two the index cannot separate at all are a shared endpoint id
      * and a named refusal at the mint, never a renumbering here.</p>
      */
-    public static void startWork(String startSiteId, Object carrier,
-                                 String starterNodeKey) {
+    public static void startWork(String startSiteId, Object carrier) {
         String site = JvmNames.stable(Text.safe(startSiteId));
         if (site.isEmpty() || carrier == null) return;
         State state = state();
         int iteration = state.nextSiteEvent(site);
         sweep();
+        // The scope this start was made in travels with the work
+        // (RuntimeTraceContext#claimCarried takes it back at the claim).
+        RuntimeTraceContext.captureAsync(carrier);
         STARTS.put(new Carrier(carrier, COLLECTED),
-                new Start(Frame.of(site, iteration),
-                        attributable(starterNodeKey)
-                                ? Text.safe(starterNodeKey)
-                                : node()));
+                new Start(Frame.of(site, iteration), Attribution.capture()));
         ScheduleLog.observe(
                 edu.uva.liftlab.graphchecker.contract.ScheduleEvent.Kind.START,
                 site);
     }
 
-    /** Whether a node key names a component rather than the degraded one. */
-    private static boolean attributable(String nodeKey) {
-        String key = Text.safe(nodeKey);
-        return !key.isEmpty()
-                && !OccurrenceBinding.UNREGISTERED_SOURCE_KEY.equals(key);
+    /**
+     * Where the work this thread runs was started ({@link Attribution},
+     * rule 3), or null on a thread nothing started.
+     */
+    static Attribution.Reference starter() {
+        return state().starter;
+    }
+
+    /** Whether that reference is a claimed start, not the thread's creator. */
+    static boolean adoptedStarter() {
+        return state().adopted;
     }
 
     /**
-     * The node this thread belongs to when nothing else names one: the node
-     * of the start that created the work it is running.
-     *
-     * <p>Transitive by construction -- a thread that inherited a node hands
-     * it to what it starts -- so a component's own worker tree stays its
-     * own however deep it goes.</p>
+     * The receivers of this thread's standing frames, innermost first
+     * ({@link Attribution}, rule 2).
      */
-    public static String node() {
-        return state().startNode;
+    static List<Object> receivers() {
+        return receiversOf(state());
+    }
+
+    private static List<Object> receiversOf(State state) {
+        List<Object> receivers = new ArrayList<Object>();
+        for (int index = state.levels.size() - 1; index >= 1; index--) {
+            Object receiver = state.levels.get(index).receiver;
+            if (receiver != null) receivers.add(receiver);
+        }
+        return receivers;
     }
 
     /**
@@ -611,12 +644,13 @@ public final class Identity {
      *
      * @return the token that closes exactly the level this opened
      */
-    public static long enterFrame(String callSiteId) {
+    public static long enterFrame(String callSiteId, Object receiver) {
         State state = state();
         String site = JvmNames.stable(Text.safe(callSiteId));
         int iteration = state.nextSiteEvent(site);
         long token = TOKENS.getAndIncrement();
-        state.levels.add(new Level(Frame.of(site, iteration), token));
+        state.levels.add(new Level(Frame.of(site, iteration), token,
+                receiver));
         state.journal();
         return token;
     }
@@ -641,8 +675,10 @@ public final class Identity {
             }
             if (state.startDepth >= state.depth()) {
                 // The start frame was inside the level that just closed, so
-                // the work it named is over with it.
+                // the work it named is over with it -- and so is the scope it
+                // carried.
                 state.startDepth = -1;
+                RuntimeTraceContext.releaseCarried();
             }
             // The scope root is the deepest level the scope start and this
             // point still SHARE.  A scope is opened inside a call that
@@ -934,12 +970,10 @@ public final class Identity {
      */
     public static OccurrenceAddress occurrence(String nodeKey, String regionId,
                                                boolean open) {
-        String node = attributable(nodeKey) || !attributable(node())
-                ? Text.safe(nodeKey) : node();
+        String node = Text.safe(nodeKey);
         if (node.isEmpty() || Text.safe(regionId).isEmpty()) {
             return null;
         }
-        nodeKey = node;
         if (open) {
             OccurrenceAddress enclosing = fold();
             if (enclosing != null) return enclosing;

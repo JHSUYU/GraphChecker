@@ -314,8 +314,7 @@ public final class CausynthTraceRecorder {
     public static void startWork(String startSiteId, Object carrier) {
         String site = MapFields.safe(startSiteId);
         try {
-            Identity.startWork(site, carrier,
-                    RuntimeTraceContext.activationSource(null).key());
+            Identity.startWork(site, carrier);
         } catch (Throwable unnamed) {
             RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
                             .LINEAGE_LOST,
@@ -456,12 +455,10 @@ public final class CausynthTraceRecorder {
         event.objectId = identity(receiver);
         event.invocationId = event.id;
         emitExecutionEvent(event);
-        if (WorkStartSites.startsReceiver(
-                WorkStartSites.calleeName(declaredCallee),
-                WorkStartSites.argumentCount(declaredCallee),
-                WorkStartSites.typesOf(receiver))) {
-            RuntimeTraceContext.captureAsync(receiver);
-        }
+        // No scope capture here: a start's scope is captured by the START
+        // hook itself (Identity.startWork), which both passes weave, and
+        // taken back at the claim.  Capturing it in this trace-only hook as
+        // well was a second carry the replay never had.
         if (event.id > 0L) {
             ACTIVE_CALL_SITES.get().push(new ActiveCallSite(event.id, ownerCallId,
                     event.siteId, event.method, event.declaredCallee));
@@ -484,14 +481,6 @@ public final class CausynthTraceRecorder {
         // submission whose endpoint the task it started runs under.  The
         // shapes are WorkStartSites' -- the same list the weave files the
         // start-site frames from.
-        String submission = site == null ? "" : site.declaredCallee;
-        if (WorkStartSites.submitsArguments(
-                WorkStartSites.calleeName(submission),
-                WorkStartSites.argumentCount(submission))
-                && WorkStartSites.carriesWork(
-                        WorkStartSites.typesOf(value))) {
-            RuntimeTraceContext.captureAsync(value);
-        }
         emitExecutionEvent(event);
     }
 
@@ -513,9 +502,9 @@ public final class CausynthTraceRecorder {
      *
      * @return the token that closes exactly the level this opened
      */
-    public static long enterMethodFrame(String callSiteId) {
+    public static long enterMethodFrame(String callSiteId, Object receiver) {
         return edu.uva.liftlab.graphchecker.runtime.Identity.enterFrame(
-                MapFields.safe(callSiteId));
+                MapFields.safe(callSiteId), receiver);
     }
 
     /** Leaves the level {@link #enterMethodFrame} opened. */
@@ -740,7 +729,7 @@ public final class CausynthTraceRecorder {
         // One computation, called from the one place both passes reach it:
         // the recording files the same producer endpoint a replay does.
         Endpoint producer = Identity.messageSent(
-                RuntimeTraceContext.activationSource(localOwner).key(),
+                RuntimeTraceContext.ownedSource(localOwner).key(),
                 transport, correlationId, half);
         // The row states that endpoint's components and not only the digest
         // the anchor travels as, because they are what a planned-vs-ran
@@ -1373,7 +1362,10 @@ public final class CausynthTraceRecorder {
             TraceData trace = loadExistingTrace(new File(directory,
                     "runtime_trace.jsonl"), test, false);
             trace.sort();
-            reattributeFramesToRegisteredOwners(trace);
+            // No offline reattribution: every METHOD_ENTER was stamped by
+            // THE attribution rule live (runtime.Attribution), in this pass
+            // and in the replay alike, so a second rule applied here would
+            // give the planner an answer the replay cannot compute.
             nameObservedObjectsFromContent(trace);
             Set<String> observedMethods = new LinkedHashSet<>();
             for (RuntimeRegionPlanner.MethodEvent event : trace.methods) {
@@ -1502,7 +1494,10 @@ public final class CausynthTraceRecorder {
             TraceData trace = loadExistingTrace(new File(directory,
                     "runtime_trace.jsonl"), test, true);
             trace.sort();
-            reattributeFramesToRegisteredOwners(trace);
+            // No offline reattribution: every METHOD_ENTER was stamped by
+            // THE attribution rule live (runtime.Attribution), in this pass
+            // and in the replay alike, so a second rule applied here would
+            // give the planner an answer the replay cannot compute.
             nameObservedObjectsFromContent(trace);
             File skeletons = new File(outputDirectory,
                     "region_skeletons.jsonl");
@@ -1736,7 +1731,7 @@ public final class CausynthTraceRecorder {
      * and "different object" within the recording while spelling the name
      * from the site that introduced the object.</p>
      *
-     * <p>It runs after {@link #reattributeFramesToRegisteredOwners} so that
+     * <p>It runs over the live attribution stamps so that
      * the source key in an address is the one the frame finally belongs to,
      * and before any planner or refiner reads the events, so no published
      * artifact can carry a recorded id.</p>
@@ -1881,68 +1876,6 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    private static void reattributeFramesToRegisteredOwners(TraceData trace) {
-        Map<Integer, SourceRef> owners = new LinkedHashMap<>();
-        Set<Integer> disputed = new LinkedHashSet<>();
-        Map<Long, SourceRef> recordedSources = new LinkedHashMap<>();
-        Map<Long, SourceRef> registeredContexts = new LinkedHashMap<>();
-        int sourceIndex = 0;
-        for (RuntimeRegionPlanner.MethodEvent event : trace.methods) {
-            while (sourceIndex < trace.sources.size()
-                    && trace.sources.get(sourceIndex).seq < event.seq) {
-                applySourceLifecycle(trace.sources.get(sourceIndex++),
-                        owners, disputed);
-            }
-            SourceRef recorded = event.source;
-            SourceRef owner = owners.get(event.objectId);
-            // The receiver's own registration, and not the calling frame's.
-            boolean receiverOwned = owner != null;
-            if (owner == null) {
-                SourceRef parentContext = registeredContexts.get(
-                        event.parentCallId);
-                SourceRef parentRecorded = recordedSources.get(
-                        event.parentCallId);
-                boolean sameRecordedContext = recorded == null
-                        ? parentRecorded == null
-                        : recorded.equals(parentRecorded);
-                if (parentContext != null && sameRecordedContext) {
-                    owner = parentContext;
-                }
-            }
-            if (owner != null) {
-                event.reattribute(owner, receiverOwned);
-                registeredContexts.put(event.callId, owner);
-            }
-            recordedSources.put(event.callId, recorded);
-        }
-    }
-
-    /** Advances one object's source binding at its recorded lifecycle point. */
-    private static void applySourceLifecycle(
-            SourceTraceEvent event, Map<Integer, SourceRef> owners,
-            Set<Integer> disputed) {
-        if (event.objectId <= 0) return;
-        boolean restart = "SOURCE_RESTART".equals(event.kind);
-        if (!restart && !"SOURCE_REGISTER".equals(event.kind)
-                && !"SOURCE_ALIAS".equals(event.kind)) {
-            return;
-        }
-        SourceRef owner = restart ? event.relatedSource : event.source;
-        if (owner == null) return;
-        if (restart) {
-            owners.put(event.objectId, owner);
-            disputed.remove(event.objectId);
-            return;
-        }
-        if (disputed.contains(event.objectId)) return;
-        SourceRef previous = owners.get(event.objectId);
-        if (previous == null || previous.equals(owner)) {
-            owners.put(event.objectId, owner);
-        } else {
-            owners.remove(event.objectId);
-            disputed.add(event.objectId);
-        }
-    }
 
     private static void clearInMemoryTrace() {
         INITIALIZED.set(false);

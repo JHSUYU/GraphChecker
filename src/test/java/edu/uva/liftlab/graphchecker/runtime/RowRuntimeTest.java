@@ -112,18 +112,17 @@ public class RowRuntimeTest {
         assertEquals("Root:CLIENT/balance-block#1/IPC_HANDLER",
                 onHandler.get());
 
-        // An executor submission: the same carry, through the seed the
-        // recorder captures at Thread.start and at submit(task).
+        // An executor submission: the same carry, captured by the START hook
+        // (both passes weave it) and taken back where the work CLAIMS it.
         final Object task = new Object();
-        RuntimeTraceContext.captureAsync(task);
+        Identity.startWork("<a.Pool: void submit()>#u1", task);
         final AtomicReference<String> onWorker = new AtomicReference<>("");
         Thread worker = poolThreadCreatedOutsideAnyScope(new Runnable() {
             @Override
             public void run() {
-                RuntimeTraceContext.View entered =
-                        RuntimeTraceContext.enterRoot(task);
+                Identity.claimStart(task);
                 onWorker.set(rootContext() + "/" + Lineage.role());
-                RuntimeTraceContext.exitRoot(entered.spanId);
+                RuntimeTraceContext.releaseCarried();
             }
         });
         worker.start();
@@ -204,7 +203,7 @@ public class RowRuntimeTest {
                 "119981");
         assertNotNull(exported);
 
-        OccurrenceAddress consumer = RowRuntime.degraded(
+        OccurrenceAddress consumer = RowRuntime.occurrenceHere(
                 "hdfs-17899/target-dn#epoch0", "XCH.resp.block-key-id");
         assertTrue(consumer.lineageLost());
         Endpoint attached = RowRuntime.attachedAt(
@@ -406,7 +405,7 @@ public class RowRuntimeTest {
         // depth, which such a pop does not move.
         Identity.resetForTests();
         Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
-        Identity.enterFrame("Loader.loadEditRecords()#u4");
+        Identity.enterFrame("Loader.loadEditRecords()#u4", null);
         Identity.occurrence(NN.key(), "REGION.loader", true);
         long nested = ConcolicRegionRuntime.enterRegionEntry("REGION.apply",
                 "<a.Loader: long applyEditLogOp()>", null);
@@ -1010,7 +1009,7 @@ public class RowRuntimeTest {
         RuntimeTraceContext.registerSource(keyManager, NN);
         Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
 
-        Identity.enterFrame("<a.BlockTokenSecretManager: void addKeys()>#u1");
+        Identity.enterFrame("<a.BlockTokenSecretManager: void addKeys()>#u1", null);
         OccurrenceAddress addKeys = Identity.occurrence(NN.key(),
                 "REGION.ba3902cd", true);
         assertNotNull(addKeys);
@@ -1019,7 +1018,7 @@ public class RowRuntimeTest {
         // The synchronous call into the nested declared region, through the
         // woven entry hook itself.
         long nestedFrame = Identity.enterFrame(
-                "<a.BlockTokenSecretManager: void removeExpiredKeys()>#u7");
+                "<a.BlockTokenSecretManager: void removeExpiredKeys()>#u7", null);
         long entry = ConcolicRegionRuntime.enterRegionEntry(
                 "REGION.094a8e3d",
                 "<a.BlockTokenSecretManager: void removeExpiredKeys()>",
@@ -1036,7 +1035,7 @@ public class RowRuntimeTest {
         // A site below the fold is indexed from the entry that OPENED the
         // occurrence, so its idx: frames carry the folded region's own
         // method -- the call path is what the index is for.
-        long deeper = Identity.enterFrame("<a.Key: long getExpiryDate()>#u2");
+        long deeper = Identity.enterFrame("<a.Key: long getExpiryDate()>#u2", null);
         assertEquals("<a.BlockTokenSecretManager: void"
                         + " removeExpiredKeys()>#u7@0"
                         + "/<a.Key: long getExpiryDate()>#u2@0",
@@ -1059,14 +1058,14 @@ public class RowRuntimeTest {
         Identity.resetForTests();
         Lineage.resetForTests();
         Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
-        Identity.enterFrame("<a.BlockTokenSecretManager: void addKeys()>#u1");
+        Identity.enterFrame("<a.BlockTokenSecretManager: void addKeys()>#u1", null);
         assertFalse("nothing is running here, so this entry opens an"
                         + " occurrence and the recording states its address",
                 recordedAddress("REGION.ba3902cd").isEmpty());
         assertFalse("it is no fold", Identity.foldedEntry());
 
         Identity.enterFrame(
-                "<a.BlockTokenSecretManager: void removeExpiredKeys()>#u7");
+                "<a.BlockTokenSecretManager: void removeExpiredKeys()>#u7", null);
         assertEquals("the nested entry folds, so the recording states no"
                         + " address for it and PLAN records no activation",
                 "", recordedAddress("REGION.094a8e3d"));
@@ -1081,7 +1080,7 @@ public class RowRuntimeTest {
         Identity.resetForTests();
         Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
         Identity.enterFrame(
-                "<a.BlockTokenSecretManager: void removeExpiredKeys()>#u7");
+                "<a.BlockTokenSecretManager: void removeExpiredKeys()>#u7", null);
         OccurrenceAddress alone = Identity.occurrence(NN.key(),
                 "REGION.094a8e3d", true);
         assertNotNull("no occurrence was running, so this entry opens one",
@@ -1108,14 +1107,14 @@ public class RowRuntimeTest {
         // PBHelper.convert activations of one refresh then answered one
         // address (G11).
         Identity.resetForTests();
-        Identity.enterFrame("Server.processRpcRequest()#u3");
-        long inbound = Identity.enterFrame("Propagation.inbound()#u7");
+        Identity.enterFrame("Server.processRpcRequest()#u3", null);
+        long inbound = Identity.enterFrame("Propagation.inbound()#u7", null);
         Identity.scopeStart(Identity.Hop.ANCHOR);
         Identity.exitFrame(inbound);
-        long converting = Identity.enterFrame("PBHelper.convert()#u9");
+        long converting = Identity.enterFrame("PBHelper.convert()#u9", null);
         assertEquals("PBHelper.convert()#u9@0", Identity.atScope().render());
         Identity.exitFrame(converting);
-        Identity.enterFrame("PBHelper.convert()#u9");
+        Identity.enterFrame("PBHelper.convert()#u9", null);
         assertEquals("the k-th call at one site under one occurrence",
                 "PBHelper.convert()#u9@1", Identity.atScope().render());
 
@@ -1166,12 +1165,12 @@ public class RowRuntimeTest {
         Object ticking = new Object();
         RuntimeTraceContext.registerSource(ticking, NN);
         long request = RuntimeTraceContext.beginRequest(NN, "balance-block");
-        Identity.exitFrame(Identity.enterFrame("Balancer.runOneIteration()#u1"));
+        Identity.exitFrame(Identity.enterFrame("Balancer.runOneIteration()#u1", null));
         long tick = CausynthTraceRecorder.beginDaemonTick(ticking,
                 "KEY_MANAGER_TICK");
-        Identity.exitFrame(Identity.enterFrame("KeyManager.updateBlockKeys()#u2"));
+        Identity.exitFrame(Identity.enterFrame("KeyManager.updateBlockKeys()#u2", null));
         CausynthTraceRecorder.endDaemonTick(tick);
-        Identity.enterFrame("Balancer.runOneIteration()#u1");
+        Identity.enterFrame("Balancer.runOneIteration()#u1", null);
         assertEquals("Balancer.runOneIteration()#u1@1",
                 Identity.atScope().render());
         RuntimeTraceContext.endRequest(request);
@@ -1212,20 +1211,20 @@ public class RowRuntimeTest {
         Identity.resetForTests();
         Lineage.resetForTests();
         Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
-        Identity.enterFrame("Caller.run()#u3");
-        Identity.enterFrame("Caller.step()#u7");
+        Identity.enterFrame("Caller.run()#u3", null);
+        Identity.enterFrame("Caller.step()#u7", null);
         ExecutionIndex inner = Identity.atScope();
         assertEquals("Caller.run()#u3@0/Caller.step()#u7@0", inner.render());
 
         // An unrelated call, entered and left, moves nothing.
-        Identity.exitFrame(Identity.enterFrame("Other.helper()#u1"));
+        Identity.exitFrame(Identity.enterFrame("Other.helper()#u1", null));
         assertEquals(inner, Identity.atScope());
 
         // Re-entering one site under one frame IS the next iteration --
         // the rule that makes a loop body's turns distinct, computed the
         // same way in the recording and in the replay.
-        Identity.exitFrame(Identity.enterFrame("Caller.body()#u9"));
-        Identity.enterFrame("Caller.body()#u9");
+        Identity.exitFrame(Identity.enterFrame("Caller.body()#u9", null));
+        Identity.enterFrame("Caller.body()#u9", null);
         assertEquals("Caller.run()#u3@0/Caller.step()#u7@0"
                 + "/Caller.body()#u9@1", Identity.atScope().render());
 
@@ -1234,7 +1233,7 @@ public class RowRuntimeTest {
         ExecutionIndex atEntry = Identity.regionEnter();
         assertEquals(3, atEntry.frames().size());
         assertTrue(Identity.siteIndex().isEmpty());
-        Identity.enterFrame("Region.port()#u2");
+        Identity.enterFrame("Region.port()#u2", null);
         assertEquals("Region.port()#u2@0", Identity.siteIndex().render());
 
         // The frame journal: a VM-logged event takes the frames the thread
@@ -1254,9 +1253,9 @@ public class RowRuntimeTest {
         Identity.regionKey(41L);
         // No event between the region entry and this call, so the entry the
         // clock stood at is replaced rather than duplicated.
-        Identity.enterFrame("Saver.save()#u1");
+        Identity.enterFrame("Saver.save()#u1", null);
         clock[0] = 44L;
-        long counting = Identity.enterFrame("Manager.count()#u2");
+        long counting = Identity.enterFrame("Manager.count()#u2", null);
         clock[0] = 48L;
         // Event 45..48 happened inside count(): the last entry below it is
         // the one the clock read when count() was entered.
@@ -1271,7 +1270,7 @@ public class RowRuntimeTest {
         // Entered and left with no event in between: the interval holds
         // nothing, so the collapsed entry is the one that stood at 48.
         Identity.exitFrame(counting);
-        Identity.enterFrame("Manager.count()#u2");
+        Identity.enterFrame("Manager.count()#u2", null);
         assertEquals("Saver.save()#u1@0/Manager.count()#u2@1",
                 FrameJournal.framesAt(41L, 49L).render());
         // Not this activation's journal, and below the region entry: unplaced
@@ -1292,9 +1291,9 @@ public class RowRuntimeTest {
                 RowRuntime.occurrenceAt(99L));
         Identity.resetForTests();
         Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
-        Identity.enterFrame("Caller.run()#u3");
-        Identity.enterFrame("Caller.step()#u7");
-        Identity.enterFrame("Caller.body()#u9");
+        Identity.enterFrame("Caller.run()#u3", null);
+        Identity.enterFrame("Caller.step()#u7", null);
+        Identity.enterFrame("Caller.body()#u9", null);
 
         // The thread-start handover (P2h): the child's inherited stack
         // GAINS the frame of the start that created it, and two siblings
@@ -1303,7 +1302,7 @@ public class RowRuntimeTest {
         // nothing else.  No thread id, no address, no session counter.
         Identity.resetForTests();
         Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
-        long saving = Identity.enterFrame("FSImage.saveFSImageInAllDirs()#u12");
+        long saving = Identity.enterFrame("FSImage.saveFSImageInAllDirs()#u12", null);
         String first = startedWorkIndex("FSImage.saveFSImageInAllDirs()#u40");
         String second = startedWorkIndex("FSImage.saveFSImageInAllDirs()#u40");
         assertEquals("FSImage.saveFSImageInAllDirs()#u12@0"
@@ -1318,7 +1317,7 @@ public class RowRuntimeTest {
         // stands on a different path, so it is a different occurrence and its
         // starts begin at 0 again -- exactly as a loop iteration count does.
         Identity.exitFrame(saving);
-        Identity.enterFrame("FSImage.saveFSImageInAllDirs()#u12");
+        Identity.enterFrame("FSImage.saveFSImageInAllDirs()#u12", null);
         assertEquals("FSImage.saveFSImageInAllDirs()#u12@1"
                 + "/FSImage.saveFSImageInAllDirs()#u40@0"
                 + "/FSImageSaver.run()#u1@0",
@@ -1337,12 +1336,12 @@ public class RowRuntimeTest {
         // depth is balance-checked exactly as the frames are.
         Identity.resetForTests();
         Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
-        Identity.enterFrame("Loader.loadEditRecords()#u4");
+        Identity.enterFrame("Loader.loadEditRecords()#u4", null);
         Identity.occurrence(NN.key(), "REGION.loader", true);
         assertEquals("one region open, pushed by the entry", 1,
                 Identity.regionDepth());
         for (int record = 0; record < 3; record++) {
-            long applying = Identity.enterFrame("Loader.applyEditLogOp()#u115");
+            long applying = Identity.enterFrame("Loader.applyEditLogOp()#u115", null);
             // One nested activation, opened and closed as the entry hook
             // pairs them.
             Identity.occurrence(NN.key(), "REGION.apply", true);
@@ -1351,7 +1350,7 @@ public class RowRuntimeTest {
         }
         assertEquals("the pair left the enclosing region standing", 1,
                 Identity.regionDepth());
-        long applied = Identity.enterFrame("Loader.applyEditLogOp()#u115");
+        long applied = Identity.enterFrame("Loader.applyEditLogOp()#u115", null);
         assertEquals("the k-th entry of one site inside one occurrence",
                 "Loader.loadEditRecords()#u4@0/Loader.applyEditLogOp()#u115@3",
                 Identity.atScope().render());
@@ -1369,7 +1368,7 @@ public class RowRuntimeTest {
                 Identity.depth());
         assertEquals("but no region is open any more", 0,
                 Identity.regionDepth());
-        Identity.enterFrame("Loader.applyEditLogOp()#u115");
+        Identity.enterFrame("Loader.applyEditLogOp()#u115", null);
         assertEquals("the fifth entry is still the fifth",
                 "Loader.loadEditRecords()#u4@0/Loader.applyEditLogOp()#u115@4",
                 Identity.atScope().render());
@@ -1387,16 +1386,16 @@ public class RowRuntimeTest {
             public void run() {
                 for (Object task : tasks) {
                     Identity.claimStart(task);
-                    long running = Identity.enterFrame("Task.run()#u1");
+                    long running = Identity.enterFrame("Task.run()#u1", null);
                     ran.add(Identity.atScope().render());
                     Identity.exitFrame(running);
                 }
             }
         });
         Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
-        Identity.enterFrame("Pool.submitAll()#u5");
-        Identity.startWork("Pool.submitAll()#u9", tasks[0], NN.key());
-        Identity.startWork("Pool.submitAll()#u9", tasks[1], NN.key());
+        Identity.enterFrame("Pool.submitAll()#u5", null);
+        Identity.startWork("Pool.submitAll()#u9", tasks[0]);
+        Identity.startWork("Pool.submitAll()#u9", tasks[1]);
         worker.start();
         try {
             worker.join();
@@ -1412,8 +1411,8 @@ public class RowRuntimeTest {
         // entry of one method has its own depth, and an unbalanced one is
         // visible as a depth that did not come back.
         int depthAtOpen = Identity.depth();
-        long outer = Identity.enterFrame("Recursive.m()#u1");
-        long innerRecursion = Identity.enterFrame("Recursive.m()#u1");
+        long outer = Identity.enterFrame("Recursive.m()#u1", null);
+        long innerRecursion = Identity.enterFrame("Recursive.m()#u1", null);
         assertEquals(depthAtOpen + 2, Identity.depth());
         assertEquals("Recursive.m()#u1", Identity.innermostFrame());
         // Each entry closes the level ITS OWN token owns, so an exit of the
@@ -1429,7 +1428,7 @@ public class RowRuntimeTest {
 
         Identity.resetForTests();
         Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
-        Identity.enterFrame("Caller.run()#u3");
+        Identity.enterFrame("Caller.run()#u3", null);
 
         // The three causal contexts, and the one that is not an ordinal.
         // A ROOT names the api its k was counted under, because that is
@@ -1464,13 +1463,13 @@ public class RowRuntimeTest {
         Runnable handling = new Runnable() {
             @Override
             public void run() {
-                Identity.enterFrame("Server$Handler.run()#u32");
-                Identity.enterFrame("Server$RpcCall.run()#u33");
-                long propagating = Identity.enterFrame("Propagation.inbound()#u7");
+                Identity.enterFrame("Server$Handler.run()#u32", null);
+                Identity.enterFrame("Server$RpcCall.run()#u33", null);
+                long propagating = Identity.enterFrame("Propagation.inbound()#u7", null);
                 long inbound = RuntimeTraceContext.enterInbound(header,
                         "HADOOP_IPC", "corr-1", "attempt-0", "REQUEST", null);
                 Identity.exitFrame(propagating);
-                Identity.enterFrame("NameNodeRpcServer.saveNamespace()#u40");
+                Identity.enterFrame("NameNodeRpcServer.saveNamespace()#u40", null);
                 onHandler.set(Identity.atScope().render());
                 RuntimeTraceContext.exitInbound(inbound);
             }
@@ -1483,7 +1482,7 @@ public class RowRuntimeTest {
                         public void run() {
                         }
                     });
-            Identity.startWork("Server.start()#u31", pool[handler], NN.key());
+            Identity.startWork("Server.start()#u31", pool[handler]);
         }
         pool[scheduled].start();
         try {
@@ -1518,12 +1517,12 @@ public class RowRuntimeTest {
         String header = RuntimeTraceContext.outboundHeader(client);
         long response = 0L;
         for (int rpc = 0; rpc < 6; rpc++) {
-            long call = Identity.enterFrame("Client.call()#u12");
-            long retrying = Identity.enterFrame("Client.call()#u13");
+            long call = Identity.enterFrame("Client.call()#u12", null);
+            long retrying = Identity.enterFrame("Client.call()#u13", null);
             long sending = Identity.enterFrame(
-                    "Connection.sendRpcRequest()#u9");
+                    "Connection.sendRpcRequest()#u9", null);
             if (response > 0L) RuntimeTraceContext.exitInbound(response);
-            long outbound = Identity.enterFrame("Propagation.outbound()#u4");
+            long outbound = Identity.enterFrame("Propagation.outbound()#u4", null);
             sent.add(Identity.messageSent(NN.key(), "HADOOP_IPC",
                     "corr-" + rpc, "REQUEST"));
             Identity.exitFrame(outbound);
@@ -1546,16 +1545,15 @@ public class RowRuntimeTest {
         Thread updater = new Thread(new Runnable() {
             @Override
             public void run() {
-                Identity.enterFrame("BlockKeyUpdater.run()#u6");
+                Identity.enterFrame("BlockKeyUpdater.run()#u6", null);
                 long tick = CausynthTraceRecorder.beginDaemonTick(owner,
                         "KEY_MANAGER_TICK");
-                Identity.enterFrame("KeyManager.updateBlockKeys()#u2");
+                Identity.enterFrame("KeyManager.updateBlockKeys()#u2", null);
                 onUpdater.set(Identity.atScope().render());
                 CausynthTraceRecorder.endDaemonTick(tick);
             }
         });
-        Identity.startWork("KeyManager.startBlockKeyUpdater()#u5", updater,
-                NN.key());
+        Identity.startWork("KeyManager.startBlockKeyUpdater()#u5", updater);
         updater.start();
         try {
             updater.join();
@@ -1577,11 +1575,11 @@ public class RowRuntimeTest {
         Thread child = new Thread(new Runnable() {
             @Override
             public void run() {
-                Identity.enterFrame("FSImageSaver.run()#u1");
+                Identity.enterFrame("FSImageSaver.run()#u1", null);
                 onChild.set(Identity.atScope().render());
             }
         });
-        Identity.startWork(startSite, child, NN.key());
+        Identity.startWork(startSite, child);
         child.start();
         try {
             child.join();

@@ -715,8 +715,8 @@ public final class ConcolicRegionRuntime {
      *
      * @return the token that closes exactly the level this opened
      */
-    public static long enterMethodFrame(String callSiteId) {
-        return RowRuntime.enterFrame(safe(callSiteId));
+    public static long enterMethodFrame(String callSiteId, Object receiver) {
+        return RowRuntime.enterFrame(safe(callSiteId), receiver);
     }
 
     /** Leaves the level {@link #enterMethodFrame} opened. */

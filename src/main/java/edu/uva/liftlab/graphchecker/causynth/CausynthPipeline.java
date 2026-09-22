@@ -2093,8 +2093,14 @@ public final class CausynthPipeline {
         // so there is nothing for a `= 0L` ahead of it to make safe: it was
         // the false comfort that let the trap open at it
         // (#instrumentRegionEntry, the woven-trap rule).
+        // The receiver rides on the level: the attribution rule asks whether
+        // the innermost frame's receiver is registered (runtime.Attribution,
+        // rule 2).  None for a constructor -- an object being built is
+        // nobody's registration yet.
         refs.bracket(opening, token, Hook.ENTER_METHOD_FRAME,
-                StringConstant.v(method.getSignature()));
+                StringConstant.v(method.getSignature()),
+                method.isConstructor() ? NullConstant.v()
+                        : receiverOrNull(body, method));
         insertBeforeOrAppendNoRedirect(body, entry, opening);
         for (int index = instrumentableFrom(originalUnits, null);
                 index >= 0 && index < originalUnits.size(); index++) {
@@ -4012,7 +4018,7 @@ public final class CausynthPipeline {
                     // The one calling-context frame hook, woven by both
                     // passes over the whole application scope.
                     .add(Hook.ENTER_METHOD_FRAME, recorder,
-                            "enterMethodFrame", LongType.v(), string)
+                            "enterMethodFrame", LongType.v(), string, object)
                     .add(Hook.EXIT_METHOD_FRAME, recorder, "exitMethodFrame",
                             VoidType.v(), LongType.v())
                     .add(Hook.THROW_METHOD_FRAME, recorder,
@@ -4077,7 +4083,7 @@ public final class CausynthPipeline {
                     .add(Hook.CLAIM_START, runtime, "claimStart",
                             VoidType.v(), object)
                     .add(Hook.ENTER_METHOD_FRAME, runtime,
-                            "enterMethodFrame", LongType.v(), string)
+                            "enterMethodFrame", LongType.v(), string, object)
                     .add(Hook.EXIT_METHOD_FRAME, runtime, "exitMethodFrame",
                             VoidType.v(), LongType.v())
                     .add(Hook.THROW_METHOD_FRAME, runtime,

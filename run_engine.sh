@@ -2036,6 +2036,21 @@ campaign_plan() {
   require_nonempty "runtime region plan" "${runtime_region_plan}"
   require_nonempty "runtime-refined data-flow graph" "${refined_graph}"
   cp -f "${runtime_region_plan}" "${frozen}"
+  # The recording's schedule is frozen with the plan it was recorded beside:
+  # the seed replay of this iteration is held to it (campaign_session_replay).
+  local discovered_schedule candidate
+  discovered_schedule=""
+  for candidate in "$(dirname "${runtime_region_plan}")/schedule.jsonl" \
+      "$(dirname "${runtime_region_plan}")/recorded_schedule.jsonl"; do
+    if [[ -s "${candidate}" ]]; then
+      discovered_schedule="${candidate}"
+      break
+    fi
+  done
+  if [[ -n "${discovered_schedule}" && "${discovered_schedule}" \
+      != "${iteration_dir}/recorded_schedule.jsonl" ]]; then
+    cp -f "${discovered_schedule}" "${iteration_dir}/recorded_schedule.jsonl"
+  fi
   schedule_output_dir="${iteration_dir}"
   schedule_retain_regions="${retain}"
   do_schedule
@@ -2308,8 +2323,7 @@ campaign_session_replay() {
   # was built from that execution, so its occurrences are the recording's
   # in the recording's order.  A focused replay's prefix is its own task's,
   # beside its focus row (runtime.ScheduleLog#PREFIX_FILE).
-  local recorded_schedule
-  recorded_schedule="$(dirname "${runtime_region_plan}")/schedule.jsonl"
+  local recorded_schedule="${iteration_dir}/recorded_schedule.jsonl"
   [[ -s "${recorded_schedule}" ]] || recorded_schedule=""
   campaign_schedule_prefix="${recorded_schedule}" \
     campaign_replay worker "${plan}" "${ids}" \

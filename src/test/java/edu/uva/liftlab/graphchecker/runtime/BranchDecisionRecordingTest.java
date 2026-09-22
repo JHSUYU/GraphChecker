@@ -170,7 +170,7 @@ public class BranchDecisionRecordingTest {
         Identity.resetForTests();
         Lineage.resetForTests();
         Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
-        Identity.enterFrame("<a.B: void addKeys()>#u1");
+        Identity.enterFrame("<a.B: void addKeys()>#u1", null);
         OccurrenceAddress enclosing = Identity.occurrence(NODE,
                 "REGION.ba3902cd", true);
 
@@ -180,7 +180,7 @@ public class BranchDecisionRecordingTest {
 
         // The synchronous call into the nested declared region: its entry
         // folds, so this activation IS an activation of `enclosing`.
-        Identity.enterFrame("<a.B: void removeExpiredKeys()>#u7");
+        Identity.enterFrame("<a.B: void removeExpiredKeys()>#u7", null);
         assertEquals(enclosing,
                 Identity.occurrence(NODE, "REGION.094a8e3d", true));
         ActiveRegion folded = region(Identity.currentOccurrence(NODE));
@@ -256,12 +256,12 @@ public class BranchDecisionRecordingTest {
         broker().set(null, null);
         try {
             Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
-            Identity.enterFrame("<a.B: void outer()>#u1");
+            Identity.enterFrame("<a.B: void outer()>#u1", null);
             assertEquals("the enclosing entry opens the occurrence",
                     "REGION.1", Identity.occurrence(NODE, "REGION.1", true)
                             .regionId());
 
-            Identity.enterFrame(METHOD + "#u0");
+            Identity.enterFrame(METHOD + "#u0", null);
             Identity.occurrence(NODE, "REGION.2", true);
             assertTrue(Identity.foldedEntry());
             int live = ConcolicRegionRuntime.ACTIVE.size();
@@ -280,7 +280,7 @@ public class BranchDecisionRecordingTest {
             // The control: no fold, so the same call does reach admission.
             Identity.resetForTests();
             Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
-            Identity.enterFrame(METHOD + "#u0");
+            Identity.enterFrame(METHOD + "#u0", null);
             Identity.occurrence(NODE, "REGION.2", true);
             assertFalse(Identity.foldedEntry());
             try {
