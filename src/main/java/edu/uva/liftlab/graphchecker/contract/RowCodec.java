@@ -422,26 +422,18 @@ public final class RowCodec {
         if (!event.occurrence().isEmpty()) {
             json.addProperty(OCCURRENCE, event.occurrence());
         }
-        // Stated only when true: a timeout is what a WAKE is by default.
-        if (event.signalled()) json.addProperty(SIGNALLED, true);
         return json;
     }
 
     public static ScheduleEvent readScheduleEvent(JsonObject json) {
         JsonElement occurrence = json.get(OCCURRENCE);
-        JsonElement signalled = json.get(SIGNALLED);
         return ScheduleEvent.of(json.get(SEQ).getAsLong(),
                 ScheduleEvent.Kind.valueOf(string(json, "kind")),
                 json.has(CONTEXT) ? json.get(CONTEXT).getAsString() : "",
                 string(json, "site"), json.get("k").getAsInt(),
                 occurrence == null || occurrence.isJsonNull() ? ""
-                        : occurrence.getAsString(),
-                signalled != null && !signalled.isJsonNull()
-                        && signalled.getAsBoolean());
+                        : occurrence.getAsString());
     }
-
-    /** A WAKE row's flag: its wait ended by a signal, not its timeout. */
-    private static final String SIGNALLED = "signalled";
 
     // ---- files ---------------------------------------------------------
 

@@ -22,21 +22,20 @@ import java.util.concurrent.locks.LockSupport;
  * <ul>
  *   <li>FREE (the recording, a replay with no prefix, a replay past its
  *       prefix, anything before the recording window opens): the original
- *       wait's semantics, on the wall clock, and a WAKE event when it
- *       returns -- stating whether a signal ended it (a notify, a signal, an
- *       unpark) or its timeout did.</li>
+ *       wait's semantics, on the wall clock, and a WAKE event when its
+ *       TIMEOUT ends it.  A wait a signal ends (a notify, a condition
+ *       signal, an unpark) is no event: another thread ended it, and that
+ *       thread's own events are the schedule's ({@link #takeTurn}).</li>
  *   <li>HELD to a prefix: VIRTUAL TIME, which stands in for the CLOCK and
- *       never for the NOTIFIER.  The wait does not read the wall clock: a
- *       WAKE the prefix says timed out returns when it is the prefix's next
- *       event, signal or no signal; a WAKE the prefix says was signalled
- *       returns at its turn only once a real signal has come -- the notifier
- *       is another thread, whose own events the prefix orders.  hdfs-17967
- *       is why: an idle IPC connection the recording saw woken by the call
- *       it then served returned at its turn before the call was added, found
- *       nothing to read, and every replay diverged at its first heartbeat.
- *       A wait that holds a monitor or a lock waits on its own primitive
- *       between asks, so whatever it holds is released while it waits and
- *       the thread whose event IS next can run.</li>
+ *       never for the NOTIFIER.  The wait does not read the wall clock: it
+ *       ends when a real signal comes, or when its timeout WAKE is the
+ *       prefix's next event.  hdfs-17967 is why the notifier is never
+ *       stood in for: an idle IPC connection the recording saw woken by the
+ *       call it then served returned at a turn before the call was added,
+ *       found nothing to read, and closed itself.  A wait that holds a
+ *       monitor or a lock waits on its own primitive between asks, so
+ *       whatever it holds is released while it waits and the thread whose
+ *       event IS next can run.</li>
  * </ul>
  *
  * <p>A wait already in progress when the window opens -- an idle IPC
@@ -54,13 +53,12 @@ public final class TimedWaits {
     /** How long a wait polls between asks for its turn, in ms. */
     private static final long QUANTUM_MS = 10L;
     /**
-     * How long a wait held for its signal waits between two looks at the
-     * watchdog, in ms.  Long, because what tells a signal from the end of a
-     * quantum is that the quantum ended early.
+     * A quantum that ends at least this much before its time was ended by a
+     * signal.  Small, because a notify can only land while the waiter is in
+     * its quantum -- between two quanta the waiter holds the monitor -- and
+     * one that lands in this last sliver is taken for the quantum's end.
      */
-    private static final long SIGNAL_QUANTUM_MS = 1000L;
-    /** A quantum that ends this much before its time was ended by a signal. */
-    private static final long EARLY_NANOS = TimeUnit.MILLISECONDS.toNanos(1L);
+    private static final long EARLY_NANOS = TimeUnit.MICROSECONDS.toNanos(50L);
 
     /** A wait that can be woken early: what the window's opening wakes. */
     private static final Map<Thread, Object> WAITING =
@@ -175,8 +173,7 @@ public final class TimedWaits {
 
     /**
      * A park: free, on the wall clock, and signalled when it returned before
-     * its time (an unpark); held, to its turn -- and to an unpark first when
-     * the prefix's wake was one.
+     * its time (an unpark); held, until an unpark or its timeout turn.
      */
     private static void park(Object blocker, long nanos, String site) {
         WakeScopes.waiting(site);
@@ -194,31 +191,13 @@ public final class TimedWaits {
             boolean byWindow = WINDOW_WOKEN.remove(self);
             signalled = !byWindow && System.nanoTime() - before < nanos;
         }
-        unparkedWhileHeld.remove();
-        boolean outcome;
         try {
-            outcome = takeTurn(site, signalled, parkQuantum(blocker));
+            takeTurn(site, signalled, parkQuantum(blocker));
         } catch (InterruptedException impossible) {
             // A park is never interrupted by throwing; its quantum is not.
             Thread.currentThread().interrupt();
-            return;
         }
-        // An unpark this wait took while the prefix said it timed out is
-        // the permit the NEXT park would have found: put it back.
-        if (!outcome && (signalled || unparkedWhileHeld.get())) {
-            LockSupport.unpark(Thread.currentThread());
-        }
-        unparkedWhileHeld.remove();
     }
-
-    /** Whether a held park's quanta consumed an unpark. */
-    private static final ThreadLocal<Boolean> unparkedWhileHeld =
-            new ThreadLocal<Boolean>() {
-                @Override
-                protected Boolean initialValue() {
-                    return Boolean.FALSE;
-                }
-            };
 
     private static Quantum parkQuantum(final Object blocker) {
         return new Quantum() {
@@ -234,9 +213,7 @@ public final class TimedWaits {
                 long nanos = TimeUnit.MILLISECONDS.toNanos(millis);
                 long before = System.nanoTime();
                 LockSupport.parkNanos(blocker, nanos);
-                boolean early = System.nanoTime() - before < nanos - EARLY_NANOS;
-                if (early) unparkedWhileHeld.set(Boolean.TRUE);
-                return early;
+                return System.nanoTime() - before < nanos - EARLY_NANOS;
             }
         };
     }
@@ -410,16 +387,24 @@ public final class TimedWaits {
     }
 
     /**
-     * Ends one wait at its turn, and says how it ended: true by a signal.
+     * Ends one wait, and says how it ended: true by a signal.
      *
-     * <p>Free, the first ask admits, and the WAKE states {@code signalled} as
-     * the wait saw it.  Held to a prefix, the wait asks for its turn every
-     * quantum, and ends as the prefix says its wake ended -- except that a
-     * wake the prefix says was SIGNALLED is not asked for until a signal has
-     * come, and until then the watchdog is this thread's to run: it may be
-     * the only one waiting.  A wait whose wake the prefix does not hold (the
-     * discovering session's had not ended where the prefix was cut) waits
-     * for the prefix to end.</p>
+     * <p>A WAKE is the turn TIME hands a thread, so only a wait its timeout
+     * ended is an event.  A wait a signal ended -- a notify, a condition
+     * signal, an unpark -- was ended by another thread, whose own events the
+     * schedule already orders; it is no turn of its own, and it is neither
+     * recorded nor held.  hdfs-17899-bug3 is why: an idle IPC connection the
+     * recording saw notified at one point was, in every replay, notified
+     * somewhere else or not at all -- what notifies it is the state the
+     * connection was left in before the window -- and a replay held to that
+     * wake waited for a signal that never came.</p>
+     *
+     * <p>Free, the wait already ended: a timeout is recorded, a signal is
+     * not.  Held to a prefix, the wait waits in quanta on its own primitive
+     * for a signal -- which ends it at once, no event -- or for its timeout
+     * WAKE to be the prefix's next event, which ends it at that turn without
+     * reading the clock (virtual time).  Asking for the turn every quantum
+     * is also what keeps the watchdog looking.</p>
      */
     private static boolean takeTurn(String site, boolean signalled,
                                     Quantum quantum)
@@ -432,29 +417,22 @@ public final class TimedWaits {
             return signalled;
         }
         while (true) {
-            if (quantum.endsNow()) {
-                // The same rule an interrupted admission follows: the event
-                // is written where it happened, the prefix stands for the
-                // rest.
-                ScheduleLog.admitNow(wake, true);
+            if (signalled) {
                 WakeScopes.woke(site);
                 return true;
             }
-            Boolean expected = ScheduleLog.expected(wake);
-            boolean held = Boolean.TRUE.equals(expected) && !signalled;
-            if (!held) {
-                boolean outcome = expected != null
-                        ? expected.booleanValue() : signalled;
-                if (ScheduleLog.tryAdmit(wake, outcome)) {
-                    WakeScopes.woke(site);
-                    return outcome;
-                }
-            } else if (ScheduleLog.stalled(wake)) {
-                continue;
+            if (quantum.endsNow()) {
+                // The same rule an interrupted admission follows: the wait
+                // ends where it is, and the prefix stands for the rest.
+                ScheduleLog.admitNow(wake);
+                WakeScopes.woke(site);
+                return true;
             }
-            if (quantum.await(held ? SIGNAL_QUANTUM_MS : QUANTUM_MS)) {
-                signalled = true;
+            if (ScheduleLog.tryAdmit(wake)) {
+                WakeScopes.woke(site);
+                return false;
             }
+            if (quantum.await(QUANTUM_MS)) signalled = true;
         }
     }
 

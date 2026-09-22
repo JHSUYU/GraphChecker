@@ -64,19 +64,6 @@ public class ScheduleLogTest {
                 "", "tick.KEY_MANAGER_TICK", 0, "");
         assertEquals(bare, RowCodec.readScheduleEvent(RowCodec.fromLine(
                 RowCodec.toLine(RowCodec.writeScheduleEvent(bare)))));
-        ScheduleEvent woken = ScheduleEvent.of(3L, ScheduleEvent.Kind.WAKE,
-                "workload/unregistered#epoch0|Lost:UNKNOWN",
-                "<C: boolean waitForWork()>#u21", 0, "", true);
-        ScheduleEvent wokenBack = RowCodec.readScheduleEvent(
-                RowCodec.fromLine(RowCodec.toLine(
-                        RowCodec.writeScheduleEvent(woken))));
-        assertEquals(woken, wokenBack);
-        assertTrue(wokenBack.signalled());
-        assertEquals("how a wait ended is not what the event is",
-                ScheduleEvent.of(0L, ScheduleEvent.Kind.WAKE, "c", "s", 0,
-                        "", true).key(),
-                ScheduleEvent.of(0L, ScheduleEvent.Kind.WAKE, "c", "s", 0,
-                        "").key());
     }
 
     @Test
@@ -251,7 +238,7 @@ public class ScheduleLogTest {
     }
 
     @Test
-    public void aRecordedWakeStatesWhetherASignalEndedIt() throws Exception {
+    public void aSignalledWaitIsNoEventAndATimedOutOneIs() throws Exception {
         final Object monitor = new Object();
         final CountDownLatch waiting = new CountDownLatch(1);
         Thread woken = new Thread(new Runnable() {
@@ -274,22 +261,19 @@ public class ScheduleLogTest {
         }
         woken.join(5000L);
         assertFalse(woken.isAlive());
+        assertTrue("a notify ended it: another thread's doing, no turn",
+                written.isEmpty());
         synchronized (monitor) {
             TimedWaits.waitOn(monitor, 50L, "<C: void t()>#u2");
         }
-        List<ScheduleEvent> events = events();
-        assertEquals(2, events.size());
-        assertTrue("a notify ended the first", events.get(0).signalled());
-        assertFalse("its timeout ended the second",
-                events.get(1).signalled());
+        assertEquals("its timeout ended this one: a turn",
+                Collections.singletonList("<C: void t()>#u2"), sites());
     }
 
     @Test
-    public void aWakeThePrefixSaysWasSignalledWaitsForItsSignal()
-            throws Exception {
+    public void underAPrefixASignalEndsAWaitWithoutATurn() throws Exception {
         final String site = "<C: boolean waitForWork()>#u21";
-        ScheduleLog.enforceForTests(Collections.singletonList(
-                event(ScheduleEvent.Kind.WAKE, site, true)));
+        ScheduleLog.enforceForTests(prefix("x"));
         final Object monitor = new Object();
         Thread idle = new Thread(new Runnable() {
             @Override
@@ -304,17 +288,16 @@ public class ScheduleLogTest {
             }
         });
         idle.start();
-        Thread.sleep(400L);
-        assertTrue("its turn is next, and nothing woke it yet",
+        Thread.sleep(200L);
+        assertTrue("virtual time: the minute does not run out",
                 idle.isAlive());
-        assertTrue(written.isEmpty());
         synchronized (monitor) {
             monitor.notifyAll();
         }
         idle.join(5000L);
-        assertFalse("the signal came, and so did the turn", idle.isAlive());
-        assertEquals(Collections.singletonList(site), sites());
-        assertTrue(events().get(0).signalled());
+        assertFalse("the signal ends it at once", idle.isAlive());
+        assertTrue("and it is no event", written.isEmpty());
+        assertTrue("the prefix still stands", ScheduleLog.enforcing());
         assertEquals("", ScheduleLog.divergence());
     }
 
@@ -322,7 +305,7 @@ public class ScheduleLogTest {
     public void aWakeThePrefixSaysTimedOutNeedsNoSignal() throws Exception {
         final String site = "<L: void loop()>#u4";
         ScheduleLog.enforceForTests(Collections.singletonList(
-                event(ScheduleEvent.Kind.WAKE, site, false)));
+                event(ScheduleEvent.Kind.WAKE, site)));
         final Object monitor = new Object();
         long before = System.nanoTime();
         synchronized (monitor) {
@@ -331,16 +314,15 @@ public class ScheduleLogTest {
         assertTrue("virtual time: the turn came, the minute did not",
                 TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
                         < 5000L);
-        assertFalse(events().get(0).signalled());
+        assertEquals(Collections.singletonList(site), sites());
     }
 
     @Test
-    public void aSignalThatNeverComesIsLetGoByTheWatchdog()
+    public void aWaitWithNoSignalAndNoTurnIsLetGoByTheWatchdog()
             throws Exception {
         System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "300");
         final String site = "<C: boolean waitForWork()>#u21";
-        ScheduleLog.enforceForTests(Collections.singletonList(
-                event(ScheduleEvent.Kind.WAKE, site, true)));
+        ScheduleLog.enforceForTests(prefix("x"));
         final Object monitor = new Object();
         Thread idle = new Thread(new Runnable() {
             @Override
@@ -356,9 +338,9 @@ public class ScheduleLogTest {
         });
         idle.start();
         idle.join(5000L);
-        assertFalse("never blocked for good: it is the only waiter, and "
-                + "the watchdog is its own", idle.isAlive());
-        assertTrue(ScheduleLog.divergence().contains("none came"));
+        assertFalse("never blocked for good: its own asks run the watchdog",
+                idle.isAlive());
+        assertTrue(ScheduleLog.divergence().contains("prefix position 0"));
         assertFalse(ScheduleLog.enforcing());
     }
 
@@ -376,13 +358,8 @@ public class ScheduleLogTest {
      * to a node, so every one of them states the same context.
      */
     private static ScheduleEvent event(ScheduleEvent.Kind kind, String site) {
-        return event(kind, site, false);
-    }
-
-    private static ScheduleEvent event(ScheduleEvent.Kind kind, String site,
-                                       boolean signalled) {
         return ScheduleEvent.of(0L, kind, ScheduleLog.contextHere(), site, 0,
-                "", signalled);
+                "");
     }
 
     private List<ScheduleEvent> events() {

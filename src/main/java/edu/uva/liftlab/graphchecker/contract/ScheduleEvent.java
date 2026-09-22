@@ -22,13 +22,6 @@ import java.util.Objects;
  * occurrence open on the thread (or {@code ""} outside every region).  It is
  * not part of the event's key: it is what a task's prefix is cut at -- the
  * first event of the occurrence the task focuses.</p>
- *
- * <p>{@code signalled} says how a WAKE's wait ended: by a notify, a signal or
- * an unpark ({@code true}), or by its timeout.  Not part of the key either --
- * it is the same turn of the same loop either way -- but what a replay held
- * to the prefix must reproduce: virtual time stands in for the CLOCK, never
- * for the notifier, so a turn the recording was woken into is not taken
- * before something wakes it.</p>
  */
 public final class ScheduleEvent {
     /** What kind of handoff the event is. */
@@ -41,7 +34,11 @@ public final class ScheduleEvent {
         SEND,
         /** A message is installed on the thread that serves it. */
         RECV,
-        /** A timed wait returns: the next turn of a service loop begins. */
+        /**
+         * A timed wait's TIMEOUT ended it: the next turn of a service loop
+         * begins.  A wait a signal ended is no event -- the notifier's own
+         * events order it.
+         */
         WAKE
     }
 
@@ -51,35 +48,19 @@ public final class ScheduleEvent {
     private final String site;
     private final int k;
     private final String occurrence;
-    private final boolean signalled;
 
     private ScheduleEvent(long seq, Kind kind, String context, String site,
-                          int k, String occurrence, boolean signalled) {
+                          int k, String occurrence) {
         this.seq = seq;
         this.kind = kind;
         this.context = context;
         this.site = site;
         this.k = k;
         this.occurrence = occurrence;
-        this.signalled = signalled;
     }
 
     public static ScheduleEvent of(long seq, Kind kind, String context,
                                    String site, int k, String occurrence) {
-        return of(seq, kind, context, site, k, occurrence, false);
-    }
-
-    /**
-     * An event whose wait ended by a signal: only a WAKE is ever signalled,
-     * and a {@code true} on any other kind is a caller's error.
-     */
-    public static ScheduleEvent of(long seq, Kind kind, String context,
-                                   String site, int k, String occurrence,
-                                   boolean signalled) {
-        if (signalled && kind != Kind.WAKE) {
-            throw new IllegalArgumentException(
-                    "only a WAKE is signalled: " + kind);
-        }
         if (seq < 0L) {
             throw new IllegalArgumentException("seq must be >= 0: " + seq);
         }
@@ -89,7 +70,7 @@ public final class ScheduleEvent {
         return new ScheduleEvent(seq, Fields.required(kind, "kind"),
                 context == null ? "" : context,
                 Fields.text(site, "site"), k,
-                occurrence == null ? "" : occurrence, signalled);
+                occurrence == null ? "" : occurrence);
     }
 
     /**
@@ -132,15 +113,9 @@ public final class ScheduleEvent {
         return occurrence;
     }
 
-    /** Whether this WAKE's wait ended by a signal rather than its timeout. */
-    public boolean signalled() {
-        return signalled;
-    }
-
     /** One line a report can print: {@code KIND site#k @ c}. */
     public String render() {
-        return kind.name() + " " + site + "#" + k
-                + (signalled ? " (signalled)" : "") + " @ " + context;
+        return kind.name() + " " + site + "#" + k + " @ " + context;
     }
 
     @Override
@@ -150,14 +125,12 @@ public final class ScheduleEvent {
         ScheduleEvent other = (ScheduleEvent) value;
         return seq == other.seq && k == other.k && kind == other.kind
                 && context.equals(other.context) && site.equals(other.site)
-                && occurrence.equals(other.occurrence)
-                && signalled == other.signalled;
+                && occurrence.equals(other.occurrence);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(seq, kind, context, site, k, occurrence,
-                signalled);
+        return Objects.hash(seq, kind, context, site, k, occurrence);
     }
 
     @Override
