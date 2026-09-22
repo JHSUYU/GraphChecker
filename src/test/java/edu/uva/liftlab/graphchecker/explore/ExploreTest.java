@@ -1932,17 +1932,36 @@ public class ExploreTest {
 
         // A region the workload never RETAINED: its activation is all there
         // is of it, no endpoint of it exists, so no slot can ever name it.
-        // The epoch has to be re-cut with it instrumented (SS8 case 2).
-        Path unseen = tree.newFolder("closure-unretained").toPath();
         OccurrenceAddress lightweight = occurrence("hdfs-case/dn0",
                 "REGION.notretained", CausalContext.of(Role.of("DATA_XCEIVER"), "", 2),
                 "o.a.h.h.s.d.DataXceiver#run#44");
-        Session partial = new Session(unseen, "s-seed");
-        partial.activation(target, false);
+        // Reached by the SEED, it is a region the recording ran and the plan
+        // chose not to retain -- an export inside it names the occurrence it
+        // ran in, through the one producer door -- and that is no growth.
+        Path recorded = tree.newFolder("closure-unretained-seed").toPath();
+        Session seedOnly = new Session(recorded, "s-seed");
+        seedOnly.activation(target, false);
+        seedOnly.lightweight(lightweight);
+        seedOnly.flush();
+        SlotTable.Reconciliation planned = new SlotTable().reconcile(
+                Corpus.read(recorded, null),
+                Collections.singleton(target.id()), 3);
+        assertFalse("a region the seed reached is the plan's decision",
+                planned.replaced);
+        // Reached by a FLIPPED replay and never by the seed, the epoch has to
+        // be re-cut with it instrumented (SS8 case 2).
+        Path unseen = tree.newFolder("closure-unretained").toPath();
+        Session unseenSeed = new Session(unseen, "s-seed");
+        unseenSeed.activation(target, false);
+        unseenSeed.flush();
+        Session partial = new Session(unseen, "s-flip");
+        partial.activation(target, true);
         partial.lightweight(lightweight);
         partial.read(at(target, Endpoint.stateSite("BlockTokenSecretManager",
                         "get", 3, false), "BlockTokenSecretManager#get#3"),
                 allKeys, 5L, "M_READ_KEY", "119992");
+        partial.answered(ObligationResult.of("OBL.s-flip", Verdict.ADMITTED,
+                "s-flip", "the focused prefix reproduced"));
         partial.flush();
         SlotTable.Reconciliation grown = new SlotTable().reconcile(
                 Corpus.read(unseen, null),

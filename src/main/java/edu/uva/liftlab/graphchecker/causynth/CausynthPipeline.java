@@ -3967,6 +3967,31 @@ public final class CausynthPipeline {
         }
 
         /**
+         * THE hooks both passes weave, declared once: the work start and its
+         * claim, and the calling-context frame (which carries its receiver
+         * for the attribution rule).  Each pass binds them to its own runtime
+         * class; the shapes, and so the index and the schedule both passes
+         * compute from them, are one declaration.  Scope capture rides on the
+         * start hook itself -- it used to ride on the recording's BEGIN_CALL
+         * alone, which the replay never weaves.
+         */
+        private HookCatalog shared(SootClass owner) {
+            Type string = RefType.v("java.lang.String");
+            Type object = RefType.v("java.lang.Object");
+            return add(Hook.START_WORK, owner, "startWork", VoidType.v(),
+                    string, object)
+                    .add(Hook.CLAIM_START, owner, "claimStart", VoidType.v(),
+                            object)
+                    .add(Hook.ENTER_METHOD_FRAME, owner, "enterMethodFrame",
+                            LongType.v(), string, object)
+                    .add(Hook.EXIT_METHOD_FRAME, owner, "exitMethodFrame",
+                            VoidType.v(), LongType.v())
+                    .add(Hook.THROW_METHOD_FRAME, owner, "throwMethodFrame",
+                            VoidType.v(), LongType.v(),
+                            RefType.v("java.lang.Throwable"));
+        }
+
+        /**
          * Appends {@code hook(args)} with observation paused across it.
          *
          * <p>Paused where there is symbolic observation to pause: the
@@ -4008,22 +4033,7 @@ public final class CausynthPipeline {
                             RefType.v("java.lang.Throwable"))
                     .add(Hook.ENTER_METHOD, recorder, "enterMethod",
                             LongType.v(), string, object, string)
-                    // The one work-start hook, woven by both passes, and
-                    // the one claim: the start is filed at the site that
-                    // made it and taken by the work at its own entry.
-                    .add(Hook.START_WORK, recorder, "startWork",
-                            VoidType.v(), string, object)
-                    .add(Hook.CLAIM_START, recorder, "claimStart",
-                            VoidType.v(), object)
-                    // The one calling-context frame hook, woven by both
-                    // passes over the whole application scope.
-                    .add(Hook.ENTER_METHOD_FRAME, recorder,
-                            "enterMethodFrame", LongType.v(), string, object)
-                    .add(Hook.EXIT_METHOD_FRAME, recorder, "exitMethodFrame",
-                            VoidType.v(), LongType.v())
-                    .add(Hook.THROW_METHOD_FRAME, recorder,
-                            "throwMethodFrame", VoidType.v(), LongType.v(),
-                            RefType.v("java.lang.Throwable"))
+                    .shared(recorder)
                     .add(Hook.RECORD_METHOD_ARGUMENT, recorder,
                             "recordMethodArgument", VoidType.v(), LongType.v(),
                             IntType.v(), string, object, string)
@@ -4078,17 +4088,7 @@ public final class CausynthPipeline {
                     .add(Hook.THROW_REGION_ENTRY, runtime,
                             "throwRegionEntry", VoidType.v(), LongType.v(),
                             RefType.v("java.lang.Throwable"))
-                    .add(Hook.START_WORK, runtime, "startWork",
-                            VoidType.v(), string, object)
-                    .add(Hook.CLAIM_START, runtime, "claimStart",
-                            VoidType.v(), object)
-                    .add(Hook.ENTER_METHOD_FRAME, runtime,
-                            "enterMethodFrame", LongType.v(), string, object)
-                    .add(Hook.EXIT_METHOD_FRAME, runtime, "exitMethodFrame",
-                            VoidType.v(), LongType.v())
-                    .add(Hook.THROW_METHOD_FRAME, runtime,
-                            "throwMethodFrame", VoidType.v(), LongType.v(),
-                            RefType.v("java.lang.Throwable"))
+                    .shared(runtime)
                     .add(Hook.ENTER_CONFIGURED_SOURCE_PHASE_SITE, runtime,
                             "enterConfiguredSourcePhaseCallSite",
                             LongType.v(), string, IntType.v(), string)
