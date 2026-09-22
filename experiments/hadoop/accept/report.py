@@ -96,6 +96,8 @@ EXPECTED_MECHANISM = {
     # on the wire is serials behind the master's, and a witness has to move
     # the clock past its expiry.
     "hdfs-17967-pathA": {"kinds": ("CLOCK_SKEW", "MARKER_FLIPPED")},
+    "hdfs-17967-pathB": {"kinds": ("CLOCK_SKEW", "MARKER_FLIPPED")},
+    "hdfs-17967-pathC": {"kinds": ("CLOCK_SKEW", "MARKER_FLIPPED")},
 }
 
 

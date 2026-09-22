@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 
-case_id=${1:?usage: case.sh pathA}
+case_id=${1:?usage: case.sh pathA|pathB|pathC}
 loop_bounds=${here}/loop-bounds.jsonl
+# Paths A and B share one annotated site and so one target id; path C has its
+# own (StripedWriter's "All targets are failed."), so it needs its own spec.
+target_spec=${here}/target.yaml
 # Which occurrence of the annotated site this case is about.  HDFS-17967's
 # three paths share one annotatable site -- the client-side reconstruction of
 # the peer's ERROR_UNKNOWN_KEY frame in DataTransferSaslUtil, because the two
@@ -19,12 +22,35 @@ case "${case_id}" in
     test_class=org.apache.hadoop.hdfs.server.datanode.TestCausynthWriteBlockMirrorStaleKey
     test_method=testWritePipelineAfterKeyRotations
     # The mirror DataNode's SASL callback handler, the region every passing
-    # case in this family anchors on, under the client's write-block request.
+    # case in this family anchors on.  The workload drives the pipeline from a
+    # third DataNode (source -> head -> mirror) with NO client in the recorded
+    # window, so exactly ONE handshake is served here: the head's, by the
+    # mirror, and the mirror is the party that cannot resolve the head's key.
     # The node form carries no @anchor part on purpose: it matches on node and
-    # region, and #1 takes the first the recording published.  Both DataNodes
-    # serve a handshake here -- the head for the client, the mirror for the
-    # head -- and they are identical in shape, so the first is taken.
-    target_occurrence="hdfs-17967/dn1#epoch0/region/REGION.7c569c3f-b4d3-305a-bd9c-bebff1048122#1"
+    # region, and #1 takes the first the recording published.
+    target_occurrence="hdfs-17967/mirror-dn#epoch0/region/REGION.7c569c3f-b4d3-305a-bd9c-bebff1048122#1"
+    ;;
+  pathB)
+    repo=/u/vnr3ne/hadoop-hdfs-17967-b
+    test_class=org.apache.hadoop.hdfs.server.datanode.TestCausynthReplaceBlockProxyStaleKey
+    test_method=testBlockMoveAfterKeyRotations
+    # The PROXY DataNode's SASL callback handler.  A REPLACE_BLOCK move is two
+    # handshakes -- mover to target, then target to proxy -- and only the
+    # second is this case: the mover holds the master's current key, so its
+    # own hop cannot fail, and the proxy is the party that has to resolve the
+    # target's rolled-back key.
+    target_occurrence="hdfs-17967/proxy-dn#epoch0/region/REGION.7c569c3f-b4d3-305a-bd9c-bebff1048122#1"
+    ;;
+  pathC)
+    repo=/u/vnr3ne/hadoop-hdfs-17967-c
+    test_class=org.apache.hadoop.hdfs.server.datanode.TestCausynthStripedReconstructTargetStaleKey
+    test_method=testReconstructionAfterKeyRotations
+    target_spec=${here}/target-c.yaml
+    # The reconstruction TARGET's SASL callback handler: the reconstructing
+    # node opens the connection as a client and the target is the party that
+    # has to resolve its rolled-back key.  The node that still holds the lost
+    # index takes no part, and the helper only serves a source read.
+    target_occurrence="hdfs-17967/target-dn#epoch0/region/REGION.7c569c3f-b4d3-305a-bd9c-bebff1048122#1"
     ;;
   *)
     echo "unknown HDFS-17967 case: ${case_id}" >&2

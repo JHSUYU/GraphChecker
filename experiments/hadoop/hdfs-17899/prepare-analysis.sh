@@ -45,8 +45,10 @@ copy_family "${hdfs}" org/apache/hadoop/hdfs/security/token/block/ExportedBlockK
 
 case "${case_id}" in
   bug1)
-    copy_family "${hdfs}" org/apache/hadoop/hdfs/server/balancer/Balancer
-    copy_family "${hdfs}" org/apache/hadoop/hdfs/server/balancer/Dispatcher
+    # KeyManager is the case: its one cached DataEncryptionKey is what goes
+    # stale.  Balancer and Dispatcher used to be here for
+    # TestBalancerWithEncryptedTransfer; the bespoke workload drives the
+    # KeyManager and the move directly, so neither class is entered.
     copy_family "${hdfs}" org/apache/hadoop/hdfs/server/balancer/KeyManager
     ;;
   bug2)

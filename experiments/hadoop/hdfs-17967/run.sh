@@ -2,7 +2,7 @@
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
-case_id=${1:?usage: run.sh bug1|bug2|bug3 build|config|validate|campaign}
+case_id=${1:?usage: run.sh pathA|pathB|pathC build|config|validate|campaign}
 command=${2:?missing command}
 shift 2
 source "${here}/case.sh" "${case_id}"
@@ -24,6 +24,8 @@ export CAUSYNTH_WORKLOAD_WORK_DIR=${repo}
 export CAUSYNTH_WORKLOAD_COMMAND="${here}/execute.sh ${case_id}"
 export CAUSYNTH_TRACE_TEST=${test_name}
 export CAUSYNTH_TARGET_OCCURRENCE=${target_occurrence}
+# Path C is a different annotated site, so a different target id.
+export CAUSYNTH_TARGET_SPEC=${target_spec}
 export CAUSYNTH_CAMPAIGN_SETUP_COMMAND="${here}/prepare-analysis.sh ${case_id}"
 export CAUSYNTH_CONCOLIC_REPLAY_COMMAND="${here}/execute.sh ${case_id}"
 exec "${here}/../../../run_engine.sh" --config "${here}/workflow.properties" \

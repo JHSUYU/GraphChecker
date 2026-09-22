@@ -48,7 +48,7 @@ set -uo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 
 ACCEPT_ALL_CASES=(hdfs-17899-bug3 hdfs-17899-bug2 hdfs-17899-bug1 \
-                  hdfs-17967-pathA \
+                  hdfs-17967-pathA hdfs-17967-pathB hdfs-17967-pathC \
                   hdfs-17960 hdfs-17897 hdfs-11741)
 ACCEPT_JAR_NAME=GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar
 ACCEPT_Z3=${Z3_BIN:-z3}

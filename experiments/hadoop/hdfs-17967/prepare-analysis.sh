@@ -65,4 +65,27 @@ case "${case_id}" in
     # recorded window, unlike hdfs-17899's.
     copy_family "${client}" org/apache/hadoop/hdfs/DFSClient
     ;;
+  pathB)
+    # Same narrow scope as path A, and for the same reason.  This case has no
+    # client at all: the mover is the test, which does its own SASL send, and
+    # the two DataNode roles are already covered by the shared families.
+    ;;
+  pathC)
+    # The annotated site is StripedWriter's "All targets are failed.", so the
+    # erasure-coding reconstruction families are the case, not the shared
+    # SASL ones alone.  StripedBlockReconstructor carries the request scope
+    # into the pool thread, so it has to be woven too.
+    copy_family "${hdfs}" \
+      org/apache/hadoop/hdfs/server/datanode/erasurecode/StripedWriter
+    copy_family "${hdfs}" \
+      org/apache/hadoop/hdfs/server/datanode/erasurecode/StripedBlockWriter
+    copy_family "${hdfs}" \
+      org/apache/hadoop/hdfs/server/datanode/erasurecode/StripedBlockReconstructor
+    copy_family "${hdfs}" \
+      org/apache/hadoop/hdfs/server/datanode/erasurecode/StripedReconstructor
+    copy_family "${hdfs}" \
+      org/apache/hadoop/hdfs/server/datanode/erasurecode/StripedReconstructionInfo
+    copy_family "${hdfs}" \
+      org/apache/hadoop/hdfs/server/datanode/erasurecode/ErasureCodingWorker
+    ;;
 esac

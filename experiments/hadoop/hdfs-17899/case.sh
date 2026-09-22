@@ -13,11 +13,17 @@ target_occurrence=
 case "${case_id}" in
   bug1)
     repo=/u/vnr3ne/hadoop-hdfs-17899-bug1
-    test_class=org.apache.hadoop.hdfs.server.balancer.TestBalancerWithEncryptedTransfer
-    test_method=testEncryptedBalancer1
-    # laneB1c observed four occurrences; the case names the first one
-    # (rule: first observed, full address).
-    target_occurrence="hdfs-17899/dn1#epoch0/region/REGION.7c569c3f-b4d3-305a-bd9c-bebff1048122@hdfs-17899/balancer#epoch0/balance-block#1"
+    test_class=org.apache.hadoop.hdfs.server.balancer.TestCausynthBalancerCachedKey
+    test_method=testBlockMoveWithCachedKeyAfterRotations
+    # The destination DataNode's SASL callback handler, under the balancer's
+    # one block move.  TestBalancerWithEncryptedTransfer drove this before:
+    # its causal chain is seventeen links deep and only the root survived a
+    # replay, so the plan and the replay minted different anchors for the
+    # same exchange and every path was refused on identity
+    # (OCCURRENCE_ANCHOR_UNMATCHED), never on the mechanism.  The bespoke
+    # workload drives the same KeyManager cache two links from the root, the
+    # way bug3 -- which passes -- was written from the start.
+    target_occurrence="hdfs-17899/target-dn#epoch0/region/REGION.7c569c3f-b4d3-305a-bd9c-bebff1048122@hdfs-17899/balancer#epoch0/balance-block#1"
     ;;
   bug2)
     repo=/u/vnr3ne/hadoop-hdfs-17899-bug2
