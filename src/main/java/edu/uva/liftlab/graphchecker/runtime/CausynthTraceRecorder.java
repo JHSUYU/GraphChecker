@@ -728,6 +728,11 @@ public final class CausynthTraceRecorder {
                     + MapFields.safe(half), noFlow.getMessage());
             return "";
         }
+        // The SEND of the schedule, before the producer is minted: a replay
+        // held to a prefix lets this message leave when it is its turn.
+        ScheduleLog.observe(
+                edu.uva.liftlab.graphchecker.contract.ScheduleEvent.Kind.SEND,
+                MapFields.safe(transport) + "#" + MapFields.safe(half));
         // IDENTITY-V3 §C: the message carries its producer's endpoint, so
         // the receiver can state the anchor it ran under.  Filed by
         // correlation because the endpoint is bigger than the header slot
@@ -806,6 +811,11 @@ public final class CausynthTraceRecorder {
                     + MapFields.safe(half), refused.getMessage());
             return 0L;
         }
+        // The RECV of the schedule, under the scope the message opened: its
+        // context names the producer endpoint, which is WHICH message.
+        ScheduleLog.observe(
+                edu.uva.liftlab.graphchecker.contract.ScheduleEvent.Kind.RECV,
+                MapFields.safe(transport) + "#" + MapFields.safe(half));
         // recordExchange's own refusal is not this rule: it names the
         // engine's argument contract, which every caller satisfies with
         // constants, so it stays an exception rather than a row.
@@ -1280,6 +1290,9 @@ public final class CausynthTraceRecorder {
                 outputDir = configuredOutputDir;
                 traceWriter = configuredWriter;
                 contextOnlyConcolicReplay = false;
+                // The recording's schedule stands beside its trace, in the
+                // same shape a replay session publishes it.
+                ScheduleLog.installFile(configuredOutputDir);
                 INITIALIZED.set(true);
             } catch (IOException | RuntimeException failure) {
                 closeQuietly(configuredWriter);

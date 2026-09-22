@@ -143,6 +143,70 @@ public final class SessionReader {
         }
     }
 
+    /**
+     * The session's schedule, in the order its run made the events.
+     *
+     * <p>Read on demand and never into the session's rows: no row invariant
+     * is stated over it and a corpus that holds every session must not hold
+     * every schedule too.  A line the codec refuses ends the read there --
+     * a schedule is an ORDER, and the events after a hole are not a prefix
+     * of anything -- and a session that published no file has none.</p>
+     */
+    public static List<ScheduleEvent> readSchedule(SessionDir dir)
+            throws IOException {
+        return readSchedule(dir.schedule());
+    }
+
+    /** The same read, of a schedule file wherever it stands. */
+    public static List<ScheduleEvent> readSchedule(Path file)
+            throws IOException {
+        List<ScheduleEvent> events = new ArrayList<ScheduleEvent>();
+        if (file == null || !java.nio.file.Files.isRegularFile(file)) {
+            return events;
+        }
+        for (String line : java.nio.file.Files.readAllLines(file,
+                java.nio.charset.StandardCharsets.UTF_8)) {
+            if (line.trim().isEmpty()) continue;
+            try {
+                JsonObject row = RowCodec.fromLine(line);
+                if (row.has("mark")) continue;
+                events.add(RowCodec.readScheduleEvent(row));
+            } catch (RuntimeException unreadable) {
+                break;
+            }
+        }
+        return events;
+    }
+
+    /**
+     * Where each occurrence of a schedule opened: occurrence id to the
+     * position of the first event after it, the cut a prefix that focuses
+     * it is taken at.  Read with the same tolerance as the events.
+     */
+    public static java.util.Map<String, Long> readScheduleMarks(Path file)
+            throws IOException {
+        java.util.Map<String, Long> marks =
+                new java.util.LinkedHashMap<String, Long>();
+        if (file == null || !java.nio.file.Files.isRegularFile(file)) {
+            return marks;
+        }
+        for (String line : java.nio.file.Files.readAllLines(file,
+                java.nio.charset.StandardCharsets.UTF_8)) {
+            if (line.trim().isEmpty()) continue;
+            try {
+                JsonObject row = RowCodec.fromLine(line);
+                if (!row.has("mark")) continue;
+                String id = row.get("mark").getAsString();
+                if (!marks.containsKey(id)) {
+                    marks.put(id, row.get("at").getAsLong());
+                }
+            } catch (RuntimeException unreadable) {
+                break;
+            }
+        }
+        return marks;
+    }
+
     /** Every session of one iteration, in the layout's own order. */
     public static List<SessionReader> readAll(Path iteration)
             throws IOException {

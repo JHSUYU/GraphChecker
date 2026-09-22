@@ -92,6 +92,7 @@ public final class WorkStartSites {
         types.put("java.lang.Runnable", Runnable.class);
         types.put("java.util.concurrent.Callable", Callable.class);
         types.put("java.util.Collection", Collection.class);
+        types.put(QUEUE_TYPE, java.util.concurrent.BlockingQueue.class);
         return types;
     }
 
@@ -191,6 +192,151 @@ public final class WorkStartSites {
             }
         }
         return false;
+    }
+
+    // ---- queue handoffs --------------------------------------------------
+
+    /** The queue a handoff goes through: a producer puts, a consumer takes. */
+    private static final String QUEUE_TYPE =
+            "java.util.concurrent.BlockingQueue";
+
+    /**
+     * The submissions of a queue handoff: the ELEMENT is the work.
+     *
+     * <p>Any element, not only a {@code Runnable}: what a producer puts on a
+     * queue -- an IPC {@code Call}, a command array, a lambda -- is the work
+     * the consumer that takes it runs, and the consumer never sees the
+     * producer through a hook of its own.  The receiver's type is checked,
+     * because {@code put} and {@code add} are the names of a map's and a
+     * list's writes too.</p>
+     */
+    private static final Set<String> QUEUE_SUBMISSIONS =
+            names("put", "offer", "add");
+
+    /** The claims of a queue handoff: what the call RETURNS is the work. */
+    private static final Set<String> QUEUE_CLAIMS = names("take", "poll");
+
+    /** Whether this call hands its first argument to a queue's consumer. */
+    public static boolean submitsToQueue(String calleeName, int argumentCount,
+                                         Types receiverType) {
+        return argumentCount >= 1 && calleeName != null
+                && receiverType != null
+                && QUEUE_SUBMISSIONS.contains(calleeName)
+                && receiverType.is(QUEUE_TYPE);
+    }
+
+    /** Whether the value this call returns is work a producer handed over. */
+    public static boolean claimsFromQueue(String calleeName,
+                                          Types receiverType) {
+        return calleeName != null && receiverType != null
+                && QUEUE_CLAIMS.contains(calleeName)
+                && receiverType.is(QUEUE_TYPE);
+    }
+
+    // ---- timed waits -----------------------------------------------------
+
+    /**
+     * One timed-wait shape: the call a service loop waits with, and the
+     * method of {@code runtime.TimedWaits} that stands in for it.
+     *
+     * <p>The WAKE of the schedule: a timed wait that returns hands its thread
+     * the loop's next turn.  The weave replaces the call -- the receiver, when
+     * there is one, becomes the first argument and the call site the last --
+     * because under a schedule prefix the wait must not read the wall clock
+     * at all, and a hook placed around the call could not stop it doing
+     * so.</p>
+     */
+    public static final class TimedWait {
+        /** The type the callee is declared on, or that the receiver is. */
+        public final String owner;
+        public final String name;
+        public final List<String> parameters;
+        public final boolean isStatic;
+        /** The {@code TimedWaits} method, and what it returns. */
+        public final String replacement;
+        public final String returns;
+
+        private TimedWait(String owner, String name, boolean isStatic,
+                          String returns, String replacement,
+                          String... parameters) {
+            this.owner = owner;
+            this.name = name;
+            this.isStatic = isStatic;
+            this.returns = returns;
+            this.replacement = replacement;
+            this.parameters = java.util.Collections.unmodifiableList(
+                    Arrays.asList(parameters));
+        }
+
+        /**
+         * The replacement's parameters: the receiver's declared shape type
+         * first when the call has one, then the call's own, then the site.
+         */
+        public List<String> replacementParameters() {
+            List<String> all = new java.util.ArrayList<>();
+            if (!isStatic) all.add(owner);
+            all.addAll(parameters);
+            all.add("java.lang.String");
+            return all;
+        }
+    }
+
+    /** The owner of every replacement. */
+    public static final String TIMED_WAITS_CLASS =
+            "edu.uva.liftlab.graphchecker.runtime.TimedWaits";
+
+    private static final List<TimedWait> TIMED_WAITS = Arrays.asList(
+            new TimedWait("java.lang.Thread", "sleep", true, "void",
+                    "sleep", "long"),
+            new TimedWait("java.lang.Thread", "sleep", true, "void",
+                    "sleep", "long", "int"),
+            new TimedWait("java.util.concurrent.TimeUnit", "sleep", false,
+                    "void", "sleep", "long"),
+            new TimedWait("java.lang.Object", "wait", false, "void",
+                    "waitOn", "long"),
+            new TimedWait("java.lang.Object", "wait", false, "void",
+                    "waitOn", "long", "int"),
+            new TimedWait("java.util.concurrent.locks.LockSupport",
+                    "parkNanos", true, "void", "parkNanos", "long"),
+            new TimedWait("java.util.concurrent.locks.LockSupport",
+                    "parkNanos", true, "void", "parkNanos",
+                    "java.lang.Object", "long"),
+            new TimedWait("java.util.concurrent.locks.Condition",
+                    "awaitNanos", false, "long", "awaitNanos", "long"),
+            new TimedWait("java.util.concurrent.locks.Condition", "await",
+                    false, "boolean", "await", "long",
+                    "java.util.concurrent.TimeUnit"),
+            new TimedWait(QUEUE_TYPE, "poll", false, "java.lang.Object",
+                    "poll", "long", "java.util.concurrent.TimeUnit"));
+
+    /**
+     * The timed-wait shape this call is, or null.
+     *
+     * @param calleeName     the callee's own name
+     * @param parameterTypes the callee's declared parameter types, by name
+     * @param isStatic       whether the call is a static invocation
+     * @param declaringType  the type the call's reference is declared on
+     */
+    public static TimedWait timedWait(String calleeName,
+                                      List<String> parameterTypes,
+                                      boolean isStatic, Types declaringType) {
+        if (calleeName == null || parameterTypes == null
+                || declaringType == null) {
+            return null;
+        }
+        for (TimedWait shape : TIMED_WAITS) {
+            if (shape.isStatic == isStatic && shape.name.equals(calleeName)
+                    && shape.parameters.equals(parameterTypes)
+                    && declaringType.is(shape.owner)) {
+                return shape;
+            }
+        }
+        return null;
+    }
+
+    /** Every timed-wait shape, for the runtime ABI check. */
+    public static List<TimedWait> timedWaits() {
+        return TIMED_WAITS;
     }
 
     /** The runtime projection of {@link Types}: the value's own class. */

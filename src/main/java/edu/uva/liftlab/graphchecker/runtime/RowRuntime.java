@@ -101,6 +101,15 @@ public final class RowRuntime {
                             == null ? sessions : sessions.getParent(),
                             sessionId));
         }
+        // The session's schedule goes where its rows go: the events this
+        // run made before the session opened are kept and written first.
+        final SessionPublisher opened = publisher;
+        ScheduleLog.install(new ScheduleLog.Sink() {
+            @Override
+            public void write(com.google.gson.JsonObject row) {
+                opened.schedule(row);
+            }
+        });
     }
 
     /** Whether a session is open to publish into. */

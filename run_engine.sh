@@ -2210,6 +2210,7 @@ campaign_replay() {
     "CAUSYNTH_CONCOLIC_MAX_TASKS=${schedule_max_jobs}" \
     "CAUSYNTH_TRACE_TEST=${trace_test}" \
     "CAUSYNTH_TRACE_MODE=replay-context" \
+    "CAUSYNTH_SCHEDULE_PREFIX=${campaign_schedule_prefix:-}" \
     "CAUSYNTH_STATIC_SCOPE_MAP=${causynth_static_scope_map}" \
     "CAUSYNTH_LOCAL_SCRATCH=${campaign_local_scratch_root:+\
 ${campaign_local_scratch_root}/$(basename "${worker}")}" \
@@ -2303,7 +2304,15 @@ campaign_session_replay() {
   # own session directory (CONTRACT-SPEC SS2), which is what IMPORT reads.
   campaign_sessions_dir="${iteration_dir}/sessions"
   mkdir -p "${campaign_sessions_dir}"
-  campaign_replay worker "${plan}" "${ids}" \
+  # The seed replay is held to the RECORDING's schedule: the plan it runs
+  # was built from that execution, so its occurrences are the recording's
+  # in the recording's order.  A focused replay's prefix is its own task's,
+  # beside its focus row (runtime.ScheduleLog#PREFIX_FILE).
+  local recorded_schedule
+  recorded_schedule="$(dirname "${runtime_region_plan}")/schedule.jsonl"
+  [[ -s "${recorded_schedule}" ]] || recorded_schedule=""
+  campaign_schedule_prefix="${recorded_schedule}" \
+    campaign_replay worker "${plan}" "${ids}" \
     "${iteration_dir}/instrumented-classes" "${results}" "${seed}/focused"
 }
 
@@ -2328,8 +2337,10 @@ campaign_import_session() {
     [[ -d "${session}" ]] || continue
     name=$(basename "${session}")
     count=$((count + 1))
+    # schedule is censused with the rows and read by IMPORT, but no row
+    # invariant is stated over it (contract.SessionDir#SCHEDULE).
     for kind in activations decisions exports attaches writes reads roots \
-        targets gaps; do
+        targets gaps schedule; do
       path="${session}${kind}.jsonl"
       if [[ ! -e "${path}" ]]; then
         missing="${missing} ${name}/${kind}.jsonl"

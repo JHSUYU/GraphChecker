@@ -483,6 +483,11 @@ public final class Identity {
         if (start == null) return;
         state.openStart(start.frame);
         if (!start.nodeKey.isEmpty()) state.startNode = start.nodeKey;
+        // The CLAIM half of the handoff, at the site the START named: the
+        // work begins to run here.
+        ScheduleLog.observe(
+                edu.uva.liftlab.graphchecker.contract.ScheduleEvent.Kind.CLAIM,
+                start.frame.callSite());
     }
 
     /**
@@ -517,6 +522,9 @@ public final class Identity {
                         attributable(starterNodeKey)
                                 ? Text.safe(starterNodeKey)
                                 : node()));
+        ScheduleLog.observe(
+                edu.uva.liftlab.graphchecker.contract.ScheduleEvent.Kind.START,
+                site);
     }
 
     /** Whether a node key names a component rather than the degraded one. */
@@ -866,6 +874,26 @@ public final class Identity {
         return state().regions.size();
     }
 
+    /**
+     * The causal context the running thread is in right now, by the one
+     * rule ({@link #here(Role)}): what a schedule event states as its
+     * {@code c}.
+     */
+    public static CausalContext contextHere() {
+        return here(Lineage.named() ? Lineage.role() : Role.UNKNOWN);
+    }
+
+    /**
+     * The id of the occurrence running on this thread, or {@code ""}: where a
+     * schedule event happened, which is what a task's prefix is cut at.
+     */
+    public static String innermostRegionId() {
+        State state = state();
+        Region running = state.activeRegion();
+        return running == null || running.occurrence == null ? ""
+                : running.occurrence.id();
+    }
+
     /** The innermost open region's occurrence, for a report, or {@code ""}. */
     public static String innermostRegion() {
         State state = state();
@@ -924,6 +952,9 @@ public final class Identity {
             State state = state();
             Region region = state.region();
             if (region != null) region.occurrence = address;
+            // Where this occurrence began in the run's schedule: what a
+            // prefix that focuses it is cut at.
+            ScheduleLog.mark(address.id());
         }
         return address;
     }

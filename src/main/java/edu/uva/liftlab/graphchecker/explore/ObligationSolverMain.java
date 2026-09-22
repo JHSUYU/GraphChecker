@@ -106,14 +106,42 @@ public final class ObligationSolverMain {
                     Collections.singletonList(GapRow.of(ExploreCodec.EXPLORATION,
                             GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                             obligationId, "the obligation names a path the "
-                                    + "corpus does not hold")));
+                                    + "corpus does not hold")), null);
         }
         ObligationFactory.Outcome outcome = ObligationFactory.solve(corpus,
                 candidate, z3, timeoutMillis);
+        // The schedule half of the world: the discovering session's order,
+        // cut where this obligation changes the run.
+        SchedulePrefix.Cut cut = null;
+        if (outcome.result.verdict() == Verdict.SAT_MODEL_READY) {
+            cut = SchedulePrefix.write(iteration, candidate.path.sessionId,
+                    changedOccurrences(candidate, outcome.rootMints), out);
+        }
         return publish(out, candidate.task,
                 outcome.issued() ? outcome.obligation : proposal,
                 outcome.result, outcome.smt2, outcome.clockDeltas,
-                outcome.rootMints, outcome.inheritedFlips, outcome.gaps);
+                outcome.rootMints, outcome.inheritedFlips, outcome.gaps, cut);
+    }
+
+    /**
+     * The occurrences this obligation's replay runs differently from the
+     * session it was cut from: where the flip is -- the path's occurrence,
+     * the task's focus and its factor -- and where a value is planted.
+     */
+    private static List<String> changedOccurrences(
+            ObligationFactory.Candidate candidate,
+            Map<String, String> rootMints) {
+        List<String> ids = new ArrayList<String>();
+        ids.add(candidate.path.occurrence.id());
+        ids.add(candidate.task.focused().id());
+        for (OccurrenceAddress member : candidate.task.factor()) {
+            ids.add(member.id());
+        }
+        for (String mint : rootMints.values()) {
+            OccurrenceAddress at = OccurrenceAddress.parse(mint);
+            if (at != null) ids.add(at.id());
+        }
+        return ids;
     }
 
     /**
@@ -135,7 +163,9 @@ public final class ObligationSolverMain {
                                       Map<String, String> clockDeltas,
                                       Map<String, String> rootMints,
                                       List<Corpus.Flip> inheritedFlips,
-                                      List<GapRow> gaps) throws IOException {
+                                      List<GapRow> gaps,
+                                      SchedulePrefix.Cut cut)
+            throws IOException {
         JsonObject row = RowCodec.writeObligationResult(result);
         row.addProperty("schemaVersion", 1);
         row.addProperty("kind", "OBLIGATION_RESULT");
@@ -158,8 +188,12 @@ public final class ObligationSolverMain {
                         : smt2).getBytes(StandardCharsets.UTF_8));
         List<JsonObject> focus = new ArrayList<JsonObject>();
         if (result.verdict() == Verdict.SAT_MODEL_READY) {
-            focus.add(replayTask(task, obligation, clockDeltas,
-                    rootMints, inheritedFlips));
+            JsonObject replay = replayTask(task, obligation, clockDeltas,
+                    rootMints, inheritedFlips);
+            // Which session's order the replay is held to, and how much of
+            // it: the prefix itself stands beside this row.
+            if (cut != null) replay.add("schedulePrefix", cut.toJson());
+            focus.add(replay);
         }
         RowCodec.writeJsonl(out.resolve(ObligationDir.FOCUSED_TASK), focus);
         return row;

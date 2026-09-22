@@ -15,6 +15,16 @@ public enum GapKind {
     TOPOLOGY_DIVERGENCE,
     /** An arm from a run whose producer never stated a path condition. */
     UNATTESTED_ARM,
+    /**
+     * A focused replay left the schedule prefix it was held to.
+     *
+     * <p>Stated by the replay's turnstile at the position where the run's
+     * next event was not the prefix's, with both events spelled out.  From
+     * there the replay runs free, exactly as a replay with no prefix did:
+     * DIAGNOSTIC, because what the prefix could not hold is an ordering fact,
+     * and every row the replay publishes after it still states what ran.</p>
+     */
+    SCHEDULE_DIVERGED,
     /** A projection joined to no write version and pinned to no value. */
     UNSTATED_VALUE,
     /** An attach answered with a value no producer arm can produce. */

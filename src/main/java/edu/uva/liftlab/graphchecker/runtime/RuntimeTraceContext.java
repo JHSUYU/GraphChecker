@@ -395,13 +395,81 @@ final class RuntimeTraceContext {
         // nothing (Lineage#pushRoot).  A nested hop made
         // KeyManager$BlockKeyUpdater's tick render the balance-block
         // request's own Root:CLIENT#1.
-        return Lineage.pushRoot(source == null ? "" : source.key(),
+        long token = Lineage.pushRoot(source == null ? "" : source.key(),
                 Role.of(roleName), "");
+        // A tick is a WAKE: the turn a daemon's loop hands its thread.
+        ScheduleLog.observe(
+                edu.uva.liftlab.graphchecker.contract.ScheduleEvent.Kind.WAKE,
+                "tick." + MapFields.safe(roleName));
+        return token;
     }
 
     /** Closes the tick {@link #beginTick} opened. */
     static void endTick(long token) {
         Lineage.pop(token);
+    }
+
+    /**
+     * Opens one turn of a service loop as a root scope ({@code WakeScopes}).
+     *
+     * <p>A root, like a tick: started by no message, descending from nothing
+     * ({@link Lineage#pushRoot}), its k the k-th turn of this loop on this node
+     * in the window.  Unlike a tick it carries a request flow -- source, key,
+     * api -- because what a turn sends is a request of that node's, and a
+     * message without one reaches its server as a {@code Lost} context.  The
+     * index of what runs inside begins here ({@code Identity.Hop.SCOPE_ROOT}).
+     * </p>
+     *
+     * @return the token that closes the turn, or 0 when the thread belongs to
+     *         no node the run can name and nothing was opened
+     */
+    static long beginWake(String api) {
+        SourceRef source = activationSource(null);
+        if (source == null
+                || UNREGISTERED_SOURCE.key().equals(source.key())) {
+            return 0L;
+        }
+        String normalizedApi = MapFields.safe(api).trim();
+        if (normalizedApi.isEmpty()) normalizedApi = "wake";
+        State state = CURRENT.get();
+        long token = nextId();
+        long turn;
+        synchronized (LOCK) {
+            String family = source.key() + "\nwake\n" + normalizedApi;
+            Long prior = REQUEST_OCCURRENCES.get(family);
+            turn = prior == null ? 1L : prior + 1L;
+            REQUEST_OCCURRENCES.put(family, turn);
+        }
+        Frame activeFrame = state.frames.peek();
+        ScopeFrame scope = new ScopeFrame(token, state, activeFrame);
+        scope.lineageToken = Lineage.pushRoot(source.key(), Role.of("WAKE"),
+                normalizedApi);
+        edu.uva.liftlab.graphchecker.runtime.Identity.scopeStart(
+                edu.uva.liftlab.graphchecker.runtime.Identity.Hop.SCOPE_ROOT);
+        state.scopes.push(scope);
+        state.source = source;
+        state.requestKey = source.key() + "/wake/" + normalizedApi + "#"
+                + turn;
+        state.requestApi = normalizedApi;
+        if (activeFrame != null) activeFrame.source = source;
+        publishCausalSource(state);
+        return token;
+    }
+
+    /**
+     * Closes the turn {@code token} opened when it is the innermost scope, and
+     * says whether it did.
+     *
+     * <p>Only then: a scope opened inside the turn and still standing belongs
+     * to whoever opened it, and closing the turn under it would break the LIFO
+     * order every scope's own close relies on.</p>
+     */
+    static boolean endWakeIfInnermost(long token) {
+        State state = CURRENT.get();
+        ScopeFrame innermost = state.scopes.peek();
+        if (innermost == null || innermost.token != token) return false;
+        restoreScope(token);
+        return true;
     }
 
     /** One captured request scope; opaque to its carrier. */
@@ -819,6 +887,15 @@ final class RuntimeTraceContext {
             }
         }
         return unique == null ? UNREGISTERED_SOURCE : unique;
+    }
+
+    /**
+     * The node the running thread belongs to right now, by the attribution
+     * rule every activation is stamped with ({@link #activationSource}).
+     */
+    static String nodeHere() {
+        SourceRef source = activationSource(null);
+        return source == null ? "" : source.key();
     }
 
     /** The source an activation nothing attributed belongs to: the

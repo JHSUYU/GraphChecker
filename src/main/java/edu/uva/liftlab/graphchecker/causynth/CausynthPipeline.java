@@ -1895,6 +1895,7 @@ public final class CausynthPipeline {
         int claimed = 0;
         int framed = 0;
         int walked = 0;
+        int waited = 0;
         for (SootClass type : new ArrayList<>(
                 Scene.v().getApplicationClasses())) {
             for (SootMethod method : new ArrayList<>(type.getMethods())) {
@@ -1918,20 +1919,39 @@ public final class CausynthPipeline {
                     if (unitIndex < from || !(unit instanceof Stmt)) continue;
                     Stmt stmt = (Stmt) unit;
                     if (!stmt.containsInvokeExpr()) continue;
+                    String site = SiteId.of(method.getSignature(), unitIndex);
                     List<Unit> before = new ArrayList<>();
                     int started = 0;
                     for (Value carried : startedWork(stmt.getInvokeExpr())) {
                         Value carrier = objectArg(body, carried, before);
                         if (carrier instanceof NullConstant) continue;
                         refs.bracket(before, Hook.START_WORK,
-                                StringConstant.v(SiteId.of(
-                                        method.getSignature(), unitIndex)),
-                                carrier);
+                                StringConstant.v(site), carrier);
                         started++;
                     }
-                    if (started == 0) continue;
-                    insertBeforeSequence(body, stmt, before);
-                    filed += started;
+                    if (started > 0) {
+                        insertBeforeSequence(body, stmt, before);
+                        filed += started;
+                    }
+                    // The consumer half of a queue handoff: what the call
+                    // returns is the work a producer put, and the consumer
+                    // claims it where it takes it -- the element may be a
+                    // lambda no weave reaches, so its own entry cannot.
+                    boolean claims = claimsFromQueue(stmt.getInvokeExpr());
+                    Unit last = replaceTimedWait(body, stmt, site);
+                    if (last != null) waited++;
+                    else last = stmt;
+                    if (claims && last instanceof AssignStmt
+                            && ((AssignStmt) last).getLeftOp()
+                                    instanceof Local
+                            && ((AssignStmt) last).getLeftOp().getType()
+                                    instanceof RefType) {
+                        List<Unit> claim = new ArrayList<>();
+                        refs.bracket(claim, Hook.CLAIM_START,
+                                ((AssignStmt) last).getLeftOp());
+                        insertAfterSequence(body, last, claim);
+                        claimed++;
+                    }
                 }
                 // The claim first and the level second, at one entry, in this
                 // order: the claim inserts the start frame at the boundary
@@ -1946,10 +1966,85 @@ public final class CausynthPipeline {
                 }
             }
         }
-        LOG.info("Instrumented {} calling-context frame(s), {} work start(s) "
-                + "and {} work entry claim(s) across {} method(s) of the "
-                + "application scope for the execution index", framed, filed,
-                claimed, walked);
+        LOG.info("Instrumented {} calling-context frame(s), {} work start(s),"
+                + " {} work claim(s) and {} timed wait(s) across {} method(s)"
+                + " of the application scope for the execution index", framed,
+                filed, claimed, waited, walked);
+    }
+
+    /**
+     * Replaces one timed wait with its {@code TimedWaits} stand-in, in place.
+     *
+     * <p>The WAKE of the schedule ({@link WorkStartSites.TimedWait}).  The
+     * statement keeps its identity -- the invoke expression is swapped inside
+     * it -- so every branch and trap that names it still does.  The receiver,
+     * when there is one, becomes the first argument and the call site the
+     * last.  A stand-in that returns {@code Object} where the call returned a
+     * narrower type is followed by the cast the call's own bridge made.</p>
+     *
+     * @return the unit the call's result is final after -- the statement, or
+     *         the cast that follows it -- or null when this is no timed wait
+     */
+    private static Unit replaceTimedWait(Body body, Stmt stmt, String site) {
+        InvokeExpr invoke = stmt.getInvokeExpr();
+        if (invoke instanceof SpecialInvokeExpr) return null;
+        SootMethodRef callee = invoke.getMethodRef();
+        List<String> parameters = new ArrayList<>();
+        for (Type type : callee.getParameterTypes()) {
+            parameters.add(type.toString());
+        }
+        boolean isStatic = !(invoke instanceof InstanceInvokeExpr);
+        WorkStartSites.TimedWait shape = WorkStartSites.timedWait(
+                callee.name(), parameters, isStatic,
+                hierarchyOf(callee.declaringClass()));
+        if (shape == null) return null;
+        List<Type> replacementTypes = new ArrayList<>();
+        for (String name : shape.replacementParameters()) {
+            replacementTypes.add(sootType(name));
+        }
+        SootMethodRef replacement = Scene.v().makeMethodRef(
+                phantomClass(WorkStartSites.TIMED_WAITS_CLASS),
+                shape.replacement, replacementTypes, sootType(shape.returns),
+                true);
+        List<Value> arguments = new ArrayList<>();
+        if (!isStatic) arguments.add(((InstanceInvokeExpr) invoke).getBase());
+        arguments.addAll(invoke.getArgs());
+        arguments.add(StringConstant.v(site));
+        stmt.getInvokeExprBox().setValue(
+                Jimple.v().newStaticInvokeExpr(replacement, arguments));
+        if (!(stmt instanceof AssignStmt)) return stmt;
+        AssignStmt assign = (AssignStmt) stmt;
+        Type wanted = assign.getLeftOp().getType();
+        Type given = sootType(shape.returns);
+        if (!(wanted instanceof RefType) || wanted.equals(given)) {
+            return stmt;
+        }
+        Local returned = newTraceLocal(body, given, "$causynthWaited");
+        Value target = assign.getLeftOp();
+        assign.setLeftOp(returned);
+        AssignStmt cast = Jimple.v().newAssignStmt(target,
+                Jimple.v().newCastExpr(returned, wanted));
+        body.getUnits().insertAfter(cast, stmt);
+        return cast;
+    }
+
+    /** The Soot type a {@link WorkStartSites.TimedWait} names. */
+    private static Type sootType(String name) {
+        switch (name) {
+            case "void": return VoidType.v();
+            case "long": return LongType.v();
+            case "int": return IntType.v();
+            case "boolean": return BooleanType.v();
+            default: return RefType.v(name);
+        }
+    }
+
+    /** Whether this invocation takes work a producer put on a queue. */
+    private static boolean claimsFromQueue(InvokeExpr invoke) {
+        return invoke instanceof InstanceInvokeExpr
+                && WorkStartSites.claimsFromQueue(
+                        invoke.getMethodRef().name(),
+                        hierarchyOf(invoke.getMethodRef().declaringClass()));
     }
 
     /**
@@ -2067,6 +2162,16 @@ public final class CausynthPipeline {
                 invoke.getArgCount(),
                 hierarchyOf(callee.declaringClass()))) {
             carried.add(receiver);
+            return carried;
+        }
+        // A queue handoff: the element is the work, whatever its type.
+        if (receiver != null && WorkStartSites.submitsToQueue(name,
+                invoke.getArgCount(), hierarchyOf(callee.declaringClass()))) {
+            Value element = invoke.getArg(0);
+            if (element.getType() instanceof RefType
+                    || element.getType() instanceof ArrayType) {
+                carried.add(element);
+            }
             return carried;
         }
         if (!WorkStartSites.submitsArguments(name, invoke.getArgCount())) {

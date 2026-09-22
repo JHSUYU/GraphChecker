@@ -96,7 +96,8 @@ public final class SessionPublisher {
                 for (Path file : new Path[] {layout.activations(),
                         layout.decisions(), layout.exports(),
                         layout.attaches(), layout.writes(), layout.reads(),
-                        layout.roots(), layout.targets(), layout.gaps()}) {
+                        layout.roots(), layout.targets(), layout.gaps(),
+                        layout.schedule()}) {
                     if (!Files.exists(file)) Files.createFile(file);
                 }
                 RowCodec.writeManifest(layout.manifest(),
@@ -157,6 +158,11 @@ public final class SessionPublisher {
 
     public void gap(GapRow row) {
         if (row != null) append(layout.gaps(), RowCodec.writeGap(row));
+    }
+
+    /** One scheduling event, in the order the run made it. */
+    public void schedule(JsonObject event) {
+        if (event != null) append(layout.schedule(), event);
     }
 
     /** What one obligation's focused replay settled. */

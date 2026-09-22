@@ -407,6 +407,34 @@ public final class RowCodec {
                 string(json, SESSION_ID), string(json, "detail"));
     }
 
+    /**
+     * One scheduling event.  No session id: a schedule is one run's order and
+     * travels between sessions -- a task carries the prefix of the session it
+     * was cut from -- so a row names what the event is and nothing else.
+     */
+    public static JsonObject writeScheduleEvent(ScheduleEvent event) {
+        JsonObject json = new JsonObject();
+        json.addProperty(SEQ, event.seq());
+        json.addProperty("kind", event.kind().name());
+        json.addProperty(CONTEXT, event.context());
+        json.addProperty("site", event.site());
+        json.addProperty("k", event.k());
+        if (!event.occurrence().isEmpty()) {
+            json.addProperty(OCCURRENCE, event.occurrence());
+        }
+        return json;
+    }
+
+    public static ScheduleEvent readScheduleEvent(JsonObject json) {
+        JsonElement occurrence = json.get(OCCURRENCE);
+        return ScheduleEvent.of(json.get(SEQ).getAsLong(),
+                ScheduleEvent.Kind.valueOf(string(json, "kind")),
+                json.has(CONTEXT) ? json.get(CONTEXT).getAsString() : "",
+                string(json, "site"), json.get("k").getAsInt(),
+                occurrence == null || occurrence.isJsonNull() ? ""
+                        : occurrence.getAsString());
+    }
+
     // ---- files ---------------------------------------------------------
 
     /** Writes one kind's file: one object per line, nothing else in it. */

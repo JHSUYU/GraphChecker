@@ -41,6 +41,16 @@ public final class SessionDir {
      * A SEED session states none, and none is not a verdict.</p>
      */
     public static final String OBLIGATIONS = "obligations.jsonl";
+    /**
+     * The run's schedule: its START/CLAIM/SEND/RECV/WAKE events in the order
+     * they happened ({@link ScheduleEvent}).
+     *
+     * <p>Beside the rows, and not one of them: IMPORT reads it for the census
+     * and a task inherits its prefix, but no row invariant is stated over it
+     * -- an event is an ordering fact about a run, not a statement of what a
+     * site computed.</p>
+     */
+    public static final String SCHEDULE = "schedule.jsonl";
     public static final String EXPRESSIONS = "expressions.json";
     /** The role this session STATES it ran as ({@link SessionManifest}). */
     public static final String MANIFEST = "manifest.json";
@@ -134,6 +144,10 @@ public final class SessionDir {
 
     public Path obligations() {
         return dir.resolve(OBLIGATIONS);
+    }
+
+    public Path schedule() {
+        return dir.resolve(SCHEDULE);
     }
 
     public Path expressions() {
