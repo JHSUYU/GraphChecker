@@ -50,6 +50,11 @@ case "${case_id}" in
     # TestBalancerWithEncryptedTransfer; the bespoke workload drives the
     # KeyManager and the move directly, so neither class is entered.
     copy_family "${hdfs}" org/apache/hadoop/hdfs/server/balancer/KeyManager
+    # The same two bug3 has, and for the same reason: the DataNode side of a
+    # KeyUpdateCommand runs through them, and that is the only writer in the
+    # corpus that can take a key OUT of the destination's allKeys.
+    copy_family "${hdfs}" org/apache/hadoop/hdfs/server/datanode/BPOfferService
+    copy_family "${hdfs}" org/apache/hadoop/hdfs/server/datanode/DataNode
     ;;
   bug2)
     copy_family "${hdfs}" org/apache/hadoop/hdfs/server/balancer/KeyManager
