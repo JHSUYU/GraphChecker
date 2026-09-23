@@ -31,6 +31,8 @@ public final class Lineage {
     /** k for the root hops of one (node, role, api) in this window. */
     private static final Map<String, AtomicInteger> COUNTERS =
             new ConcurrentHashMap<String, AtomicInteger>();
+    /** Which recording window this JVM is in: 0 until the workload opens one. */
+    private static volatile int window;
     private static final AtomicLong TOKENS = new AtomicLong(1L);
     private static final InheritableThreadLocal<List<Frame>> STACK =
             new InheritableThreadLocal<List<Frame>>() {
@@ -69,18 +71,24 @@ public final class Lineage {
         private final int k;
         /** Whether this hop is a root: nothing opened it but the node. */
         private final boolean root;
+        /** Whether this root is a TURN of a loop ({@link #pushRoot}). */
+        private final boolean turn;
+        /** The window this hop was entered in ({@link #window}). */
+        private final int window;
         /** The producer endpoint whose message opened this scope, or "". */
         private String anchor = "";
         /** The transport site that message crossed, or "". */
         private String rpcSite = "";
 
         private Frame(long token, Role role, String api, int k,
-                      boolean root) {
+                      boolean root, boolean turn, int window) {
             this.token = token;
             this.role = role;
             this.api = api;
             this.k = k;
             this.root = root;
+            this.turn = turn;
+            this.window = window;
         }
     }
 
@@ -118,7 +126,7 @@ public final class Lineage {
      * chain.</p>
      */
     public static long push(String nodeKey, Role role, String api) {
-        return push(nodeKey, role, api, STACK.get().isEmpty());
+        return push(nodeKey, role, api, STACK.get().isEmpty(), false);
     }
 
     /**
@@ -134,11 +142,11 @@ public final class Lineage {
      * request started.</p>
      */
     public static long pushRoot(String nodeKey, Role role, String api) {
-        return push(nodeKey, role, api, true);
+        return push(nodeKey, role, api, true, true);
     }
 
     private static long push(String nodeKey, Role role, String api,
-                             boolean root) {
+                             boolean root, boolean turn) {
         List<Frame> stack = STACK.get();
         String node = Text.safe(nodeKey);
         Role kind = role == null ? Role.UNKNOWN : role;
@@ -148,7 +156,7 @@ public final class Lineage {
                         + family).incrementAndGet()
                 : 0;
         long token = TOKENS.getAndIncrement();
-        stack.add(new Frame(token, kind, family, k, root));
+        stack.add(new Frame(token, kind, family, k, root, turn, window));
         return token;
     }
 
@@ -312,10 +320,28 @@ public final class Lineage {
         return root == null ? Role.UNKNOWN : root.role;
     }
 
-    /** The window index of that root, or 0. */
+    /**
+     * The window index of that root, or 0.
+     *
+     * <p>A TURN begun before the window is the set-up's: it stands at 0 in
+     * any in-window address, as a frame entered before the window stands at
+     * iteration 0 ({@code Identity}).  Its k counted the turns a daemon loop
+     * took before the window -- as many as the wall clock allowed -- so it
+     * is no window index, and it collides with the window's own turns.
+     * hdfs-11741's dn0 had ticked once before the window and its first tick
+     * inside it was {@code #1} as well.  A replay, slower than the
+     * recording, finished that pre-window turn only after the window opened,
+     * and its heartbeat reached the NameNode under the very anchor the
+     * recorded {@code #1}'s heartbeat had.  It carried the key list from
+     * before the window's two rotations, and that TOPOLOGY_DIVERGENCE
+     * (a replacement, BLOCKING) withheld the claim.  A request the workload
+     * opens before its window keeps its k: the workload decides how many it
+     * opens, and a declared target may name it.</p>
+     */
     public static int rootWindowIndex() {
         Frame root = root();
-        return root == null ? 0 : root.k;
+        if (root == null) return 0;
+        return root.turn && root.window != window ? 0 : root.k;
     }
 
     /**
@@ -373,6 +399,7 @@ public final class Lineage {
 
     /** Opens the recording window: k counts from here, in every replay. */
     public static void openWindow() {
+        window++;
         COUNTERS.clear();
     }
 
@@ -386,6 +413,7 @@ public final class Lineage {
 
     /** Test hook: one window, one thread, nothing carried over. */
     public static void resetForTests() {
+        window = 0;
         COUNTERS.clear();
         STACK.remove();
         RESTORED.remove();
