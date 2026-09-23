@@ -241,6 +241,18 @@ Prefix up to the flipped send (the cut is at the target as today); the recovery
 path's events are unnamed and run free; the rest holds the timeouts (D3 rule 26).
 Nothing new is needed.
 
+## 3.8 CONFIRM: the program agrees with the model
+
+SAT says the model satisfies the formula; the formula is a model of the
+program and may lack a constraint. CONFIRM plants the model's root values,
+holds the selected path's session schedule exactly as an obligation replay
+does (strict to the anchor, timeouts after), forces no flip, runs once, and
+requires: no SCHEDULE_DIVERGED before the anchor, every edge the model chose
+(the arm of each message family, the writer of each state join, each marker's
+polarity) is the edge the run took — checked at the existing hooks, not
+enforced — and the fatal observed at the anchor. Otherwise the claim is
+SAT_UNCONFIRMED with the first mismatch named. One replay per claim.
+
 ## 4. Validation
 
 - V1 PLAN: bug1/bug2/17897 plans carry one `EXPLICIT_SYMBOLIC_FAULT` action per
