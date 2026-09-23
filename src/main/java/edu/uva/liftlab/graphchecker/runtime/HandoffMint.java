@@ -16,7 +16,9 @@ import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -462,8 +464,8 @@ final class HandoffMint {
                 ConcolicVmBroker api = engine();
                 Field field = leaf.field;
                 String recordedValue = ConcolicRegionRuntime.recordedScalar(field.get(leaf.owner));
-                String mintKey = handoffMintKey(portId, consumer.render(),
-                        1, leaf.path);
+                String mintKey = ambientMintKey(portId, consumer.render(),
+                        leaf.path);
                 api.symbolizeExactField(leaf.owner, leaf.signature(),
                         mintLabel(mintKey, portId));
                 JsonObject minted = exactSymbolOf(ConcolicRegionRuntime.engineExpression(
@@ -486,6 +488,48 @@ final class HandoffMint {
                         "the entry-rule mint failed at " + portId + ": "
                                 + ConcolicRegionRuntime.rootCause(failure));
             }
+        }
+    }
+
+    /**
+     * The k-th ambient attach of one element at one consumer occurrence, as
+     * an activation counts its own ({@link ActiveRegion#nextHandoffAttach}).
+     * Guarded by itself.
+     */
+    private static final Map<String, Integer> AMBIENT_ATTACHES =
+            new HashMap<String, Integer>();
+
+    /**
+     * The identity an ambient attach mints v_H under: THE SAME
+     * {@code (port, consumer occurrence, k-th attach of this element,
+     * element path)} a selected attach is keyed by, k counted here.
+     *
+     * <p>k was the constant 1, so every element one occurrence received on
+     * one port was ONE variable.  hdfs-17899 bug1: target-dn's heartbeat
+     * delivered four block keys, 119979, 119978, 119981 and 119980, one
+     * {@code convert(BlockKeyProto)} each, each paired to its own producer
+     * on the NameNode -- and all four arrived on one symbol, so the formula
+     * put every key under one key id and never put back the key the clock
+     * move had just expired.  The witness that followed moved a DataNode
+     * clock the real program would have survived: the review of the v9
+     * passes rejected bug1 and 17967 A, B and C on it.</p>
+     */
+    static String ambientMintKey(String portId, String consumer,
+                                 String elementPath) {
+        String element = safe(consumer) + "\n" + safe(portId) + "\n"
+                + safe(elementPath);
+        int ordinal;
+        synchronized (AMBIENT_ATTACHES) {
+            Integer previous = AMBIENT_ATTACHES.get(element);
+            ordinal = previous == null ? 1 : previous + 1;
+            AMBIENT_ATTACHES.put(element, ordinal);
+        }
+        return handoffMintKey(portId, consumer, ordinal, elementPath);
+    }
+
+    static void resetForTests() {
+        synchronized (AMBIENT_ATTACHES) {
+            AMBIENT_ATTACHES.clear();
         }
     }
 

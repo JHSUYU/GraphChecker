@@ -1128,6 +1128,7 @@ public final class RowRuntime {
             Lineage.resetForTests();
             FocusedReplay.resetForTests();
             SessionPublisher.resetForTests();
+            HandoffMint.resetForTests();
         }
     }
 }
