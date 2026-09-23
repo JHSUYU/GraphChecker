@@ -351,6 +351,7 @@ public final class CausynthTraceRecorder {
             edu.uva.liftlab.graphchecker.contract.GapKind kind,
             edu.uva.liftlab.graphchecker.contract.GapClass cls,
             String subject, String detail) {
+        if (!RecordingWindow.opened()) return;
         synchronized (LOCK) {
             writeTraceRow(
                     "schemaVersion", 3,
@@ -2100,6 +2101,8 @@ public final class CausynthTraceRecorder {
     }
 
     private static void writeTraceLine(RuntimeRegionPlanner.MethodEvent event) {
+        // The trace states the window only: nothing before it opens.
+        if (!RecordingWindow.opened()) return;
         writeTraceRow(
                 "schemaVersion", 3,
                 "event", "METHOD_ENTER",
@@ -2141,6 +2144,8 @@ public final class CausynthTraceRecorder {
 
     private static void writeFieldTraceLine(
             RuntimeRegionPlanner.FieldAccessEvent event) {
+        // The trace states the window only: nothing before it opens.
+        if (!RecordingWindow.opened()) return;
         writeTraceRow(
                 "schemaVersion", 3,
                 "event", event.kind,
@@ -2171,6 +2176,8 @@ public final class CausynthTraceRecorder {
 
     private static void writeProtocolTraceLine(
             RuntimeRegionPlanner.ProtocolEvent event) {
+        // The trace states the window only: nothing before it opens.
+        if (!RecordingWindow.opened()) return;
         String kind = protocolEventKind(event.direction);
         writeTraceRow(
                 "schemaVersion", 3,
@@ -2242,6 +2249,8 @@ public final class CausynthTraceRecorder {
     }
 
     private static void writeExecutionTraceLine(ExecutionEvent event) {
+        // The trace states the window only: nothing before it opens.
+        if (!RecordingWindow.opened()) return;
         if (event == null) return;
         writeTraceRow(
                 "schemaVersion", 3,

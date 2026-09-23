@@ -198,7 +198,12 @@ public final class ConfirmMain {
             if ("CLOCK".equals(kind)) continue;
             String value = model.containsKey(rootId) ? model.get(rootId)
                     : text(root, "recordedValue");
-            if (value.isEmpty()) continue;
+            // Only a MOVED root is planted: one at its recorded value needs
+            // no plant, and a mint the confirmation's own world never
+            // reaches (a door that does not fire there) must not be owed.
+            if (value.isEmpty() || value.equals(text(root, "recordedValue"))) {
+                continue;
+            }
             assignments.put(rootId, value);
             if ("MARKER".equals(kind)) {
                 JsonObject marker = new JsonObject();
@@ -280,13 +285,21 @@ public final class ConfirmMain {
         planted.addAll(clockDeltas.keySet());
         for (String rootId : planted) {
             RootMintRow mint = null;
-            for (RootMintRow row : seed.roots()) {
+            // The selected session's mint first: a root minted only in the
+            // witness's world (a door the recording never fired) is planted
+            // where that world minted it.
+            for (RootMintRow row : session.roots()) {
+                if (row.rootId().equals(rootId)) mint = row;
+            }
+            for (RootMintRow row : mint == null ? seed.roots()
+                    : Collections.<RootMintRow>emptyList()) {
                 if (row.rootId().equals(rootId)) mint = row;
             }
             if (mint == null) {
                 throw new Refused("the model assigns root " + rootId
-                        + ", which the recording " + seedSessionId
-                        + " mints nowhere, so no occurrence can plant it");
+                        + ", which neither the selected session nor the"
+                        + " recording " + seedSessionId
+                        + " mints, so no occurrence can plant it");
             }
             mints.put(rootId, mint.occurrence().render());
         }

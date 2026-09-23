@@ -219,15 +219,16 @@ public class ConfirmMainTest {
                 roots.get("HDFS.SERIAL").getAsString());
         assertEquals("the valuation's moved marker", "true",
                 roots.get("FAULT:IPC").getAsString());
-        assertEquals("a root the valuation left unvaried is pinned to its"
-                + " recorded value", "7", roots.get("OTHER").getAsString());
+        assertTrue("a root the valuation left unvaried is not planted: it"
+                + " needs no plant, and its mint may not recur",
+                !roots.has("OTHER"));
         assertTrue("a clock is a skew, never a value",
                 !roots.has("CLOCK.a"));
         assertEquals("model instant minus the selected session's reading",
                 "43000", row.getAsJsonObject("clockDeltas").get("CLOCK.a")
                         .getAsString());
         JsonObject mints = row.getAsJsonObject("rootMints");
-        assertEquals(4, mints.size());
+        assertEquals(3, mints.size());
         assertEquals("where the RECORDING mints it", MINT,
                 mints.get("CLOCK.a").getAsString());
         assertEquals("cut at the anchor's first event", 2,
