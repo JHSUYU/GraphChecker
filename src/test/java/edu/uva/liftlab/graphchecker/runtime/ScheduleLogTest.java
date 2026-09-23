@@ -711,6 +711,137 @@ public class ScheduleLogTest {
         assertEquals("", ScheduleLog.divergence());
     }
 
+    @Test
+    public void aWaitAWovenNotifyMarkedKeepsItThroughAnInterrupt()
+            throws Exception {
+        final Object monitor = new Object();
+        final String[] outcome = new String[2];
+        final CountDownLatch waiting = new CountDownLatch(2);
+        Thread first = untimedWaiter(monitor, outcome, 0, waiting);
+        first.start();
+        waitUntilWaiting(first);
+        Thread second = untimedWaiter(monitor, outcome, 1, waiting);
+        second.start();
+        waiting.await();
+        waitUntilWaiting(second);
+        synchronized (monitor) {
+            // The first wait leaves the wait set on its interrupt, and
+            // stands on the monitor this thread holds when the notify comes.
+            first.interrupt();
+            Thread.sleep(200L);
+            TimedWaits.notifyOn(monitor, "<C: void n()>#u1");
+        }
+        first.join(5000L);
+        second.join(300L);
+        // JLS 17.2.4: a notify is never lost to an interrupt.  Either the
+        // interrupted wait returns NORMALLY with its interrupt pending, or
+        // it throws and the other wait is woken.
+        boolean kept = "normal+interrupted".equals(outcome[0])
+                || ("threw".equals(outcome[0]) && "normal".equals(outcome[1]));
+        assertTrue("the notify was lost: " + Arrays.toString(outcome), kept);
+        synchronized (monitor) {
+            TimedWaits.notifyAllOn(monitor, "<C: void n()>#u1");
+        }
+        second.join(5000L);
+        assertFalse(second.isAlive());
+    }
+
+    @Test
+    public void aWaitTheWallClockEndedTakesNoNotify() throws Exception {
+        final Object monitor = new Object();
+        final String[] outcome = new String[2];
+        final CountDownLatch waiting = new CountDownLatch(1);
+        Thread timed = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                synchronized (monitor) {
+                    try {
+                        TimedWaits.waitOn(monitor, 100L, "<C: void t()>#u2");
+                        outcome[0] = "returned";
+                    } catch (InterruptedException interrupted) {
+                        outcome[0] = "threw";
+                    }
+                }
+            }
+        });
+        timed.start();
+        waitUntilWaiting(timed);
+        Thread untimed = untimedWaiter(monitor, outcome, 1, waiting);
+        untimed.start();
+        waiting.await();
+        waitUntilWaiting(untimed);
+        synchronized (monitor) {
+            // The timed wait's 100 ms run out while this thread holds the
+            // monitor: the JDK has taken it out of the wait set already.
+            Thread.sleep(300L);
+            TimedWaits.notifyOn(monitor, "<C: void n()>#u1");
+        }
+        untimed.join(5000L);
+        timed.join(5000L);
+        assertEquals("the notify goes to the wait still in the wait set",
+                "normal", outcome[1]);
+        assertEquals("and the one the clock ended is a timeout, a WAKE",
+                Collections.singletonList("<C: void t()>#u2"), sites());
+    }
+
+    @Test(timeout = 20000L)
+    public void aSleepWithNoEventToMakeRunsOnTheWallClock() throws Exception {
+        System.setProperty(ScheduleLog.RECORD_PROPERTY, "false");
+        try {
+            ScheduleLog.enforceForTests(prefix("x"));
+            assertTrue(ScheduleLog.enforcing());
+            long before = System.nanoTime();
+            TimedWaits.sleep(300L, "<L: void loop()>#u9");
+            long took = TimeUnit.NANOSECONDS.toMillis(
+                    System.nanoTime() - before);
+            assertTrue("neither skipped nor spun forever: " + took,
+                    took >= 250L && took < 5000L);
+        } finally {
+            System.clearProperty(ScheduleLog.RECORD_PROPERTY);
+        }
+    }
+
+    @Test
+    public void observeSaysWhetherItWrote() {
+        assertTrue(ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x"));
+        CausynthTraceRecorder.setRecordingStartedForTests(false);
+        assertFalse(ScheduleLog.observe(ScheduleEvent.Kind.SEND, "y"));
+    }
+
+    /** An untimed woven wait that writes how it ended into outcome[at]. */
+    private static Thread untimedWaiter(final Object monitor,
+                                        final String[] outcome, final int at,
+                                        final CountDownLatch waiting) {
+        return new Thread(new Runnable() {
+            @Override
+            public void run() {
+                synchronized (monitor) {
+                    waiting.countDown();
+                    try {
+                        TimedWaits.waitOn(monitor, "<C: void w()>#u5");
+                        outcome[at] = Thread.currentThread().isInterrupted()
+                                ? "normal+interrupted" : "normal";
+                    } catch (InterruptedException interrupted) {
+                        outcome[at] = "threw";
+                    }
+                }
+            }
+        });
+    }
+
+    /** Until the thread stands in a wait, the monitor it holds released. */
+    private static void waitUntilWaiting(Thread thread)
+            throws InterruptedException {
+        for (int tries = 0; tries < 500; tries++) {
+            Thread.State state = thread.getState();
+            if (state == Thread.State.WAITING
+                    || state == Thread.State.TIMED_WAITING) {
+                return;
+            }
+            Thread.sleep(2L);
+        }
+    }
+
     /** One daemon turn on a thread of its own; counts down before its end. */
     private static Thread daemonTurn(final Object owner,
                                      final CountDownLatch ending) {

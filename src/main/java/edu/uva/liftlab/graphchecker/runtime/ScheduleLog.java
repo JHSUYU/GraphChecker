@@ -108,18 +108,21 @@ public final class ScheduleLog {
      * <p>Never throws into the workload.  An event whose context the
      * identity cannot compute is not recorded, which is the same statement
      * the rows already make for it (a LINEAGE_LOST at the site).</p>
+     *
+     * @return whether the event was written
      */
-    public static void observe(ScheduleEvent.Kind kind, String site) {
-        if (kind == null || !recording()) return;
+    public static boolean observe(ScheduleEvent.Kind kind, String site) {
+        if (kind == null || !recording()) return false;
         mute();
         try {
             Pending event = pending(kind, site);
-            if (event == null) return;
+            if (event == null) return false;
             synchronized (LOCK) {
                 loadPrefixLocked();
                 admitLocked(event.key);
                 appendLocked(event);
             }
+            return true;
         } finally {
             unmute();
         }
@@ -230,7 +233,13 @@ public final class ScheduleLog {
          * watchdog -- and nothing was written: the rest of the wait is on
          * the wall clock, as it is in a replay with no prefix.
          */
-        FREE
+        FREE,
+        /**
+         * The wait has no event to make -- recording is off, or its event
+         * cannot be named -- so no prefix can hold it: it runs on the wall
+         * clock, and nothing is written.
+         */
+        NO_EVENT
     }
 
     /**
@@ -248,7 +257,7 @@ public final class ScheduleLog {
      * reached the occurrence it was for).</p>
      */
     static Turn turn(Wake wake) {
-        if (wake == null) return Turn.FREE;
+        if (wake == null) return Turn.NO_EVENT;
         mute();
         try {
             synchronized (LOCK) {
@@ -271,22 +280,25 @@ public final class ScheduleLog {
 
     /**
      * A held sleep's WAKE: blocks until it is the prefix's next event, and
-     * admits and writes it -- true.  False, with nothing written, when the
-     * run goes free first: the sleep then goes on on the wall clock
-     * ({@link #turn}).  An interrupt while it waits ends the wait where it
-     * is, and the event is written, as {@link #observe} writes it.
+     * admits and writes it -- ADMITTED.  FREE, with nothing written, when
+     * the run goes free first, and NO_EVENT when there is no event to make:
+     * either way the sleep goes on on the wall clock ({@link #turn}).  An
+     * interrupt while it waits ends the wait where it is, and the event is
+     * written, as {@link #observe} writes it.
      */
-    static boolean awaitTurn(ScheduleEvent.Kind kind, String site) {
-        if (kind == null || !recording()) return false;
+    static Turn awaitTurn(ScheduleEvent.Kind kind, String site) {
+        if (kind == null || !recording()) return Turn.NO_EVENT;
         mute();
         try {
             Pending event = pending(kind, site);
-            if (event == null) return false;
+            if (event == null) return Turn.NO_EVENT;
             synchronized (LOCK) {
                 loadPrefixLocked();
-                if (admitLocked(event.key) == Admission.FREED) return false;
+                if (admitLocked(event.key) == Admission.FREED) {
+                    return Turn.FREE;
+                }
                 appendLocked(event);
-                return true;
+                return Turn.ADMITTED;
             }
         } finally {
             unmute();

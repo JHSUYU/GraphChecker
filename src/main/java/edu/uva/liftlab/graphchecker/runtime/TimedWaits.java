@@ -105,6 +105,17 @@ public final class TimedWaits {
     private static final class Waiter {
         /** Set by the woven signal that chose this wait. */
         volatile boolean signalled;
+        /** Whether the wait stands on the wall clock, to {@link #deadline}. */
+        volatile boolean onTheClock;
+        volatile long deadline;
+
+        /**
+         * Whether the wall clock has already ended this wait: the JDK took
+         * it out of the wait set at its timeout, so no signal is its.
+         */
+        boolean expired() {
+            return onTheClock && System.nanoTime() - deadline >= 0L;
+        }
     }
 
     /** The waits registered on one monitor or condition. */
@@ -186,10 +197,29 @@ public final class TimedWaits {
         long deadline = System.nanoTime()
                 + TimeUnit.MILLISECONDS.toNanos(millis) + nanos;
         while (true) {
-            if (ScheduleLog.enforcing() && heldWake(site)) return;
+            if (ScheduleLog.enforcing()) {
+                ScheduleLog.Turn turn = heldWake(site);
+                if (turn == ScheduleLog.Turn.ADMITTED) return;
+                if (turn == ScheduleLog.Turn.NO_EVENT) {
+                    // No event to hold it to: the sleep is the wall clock's.
+                    wallSleep(deadline);
+                    break;
+                }
+            }
             if (!freeSleep(deadline, site)) break;
         }
         wake(site);
+    }
+
+    /** Sleeps on the wall clock to {@code deadline}, the window aside. */
+    private static void wallSleep(long deadline) throws InterruptedException {
+        while (true) {
+            long left = deadline - System.nanoTime();
+            if (left <= 0L) return;
+            long millis = TimeUnit.NANOSECONDS.toMillis(left);
+            Thread.sleep(millis, (int) (left - TimeUnit.MILLISECONDS
+                    .toNanos(millis)));
+        }
     }
 
     /**
@@ -368,7 +398,7 @@ public final class TimedWaits {
         try {
             while (!self.signalled) {
                 long seen = sent(monitor);
-                monitor.wait();
+                waitMarked(monitor, 0L, self);
                 if (!self.signalled && sent(monitor) == seen) {
                     // A notifier outside the weave, or a spurious wakeup:
                     // the caller checks its condition, as it must anyway.
@@ -391,6 +421,8 @@ public final class TimedWaits {
         Thread thread = Thread.currentThread();
         WINDOW_WOKEN.remove(thread);
         WAITING.put(thread, monitor);
+        self.deadline = deadline;
+        self.onTheClock = true;
         try {
             while (true) {
                 if (self.signalled) return true;
@@ -404,7 +436,7 @@ public final class TimedWaits {
                 long asked = Math.max(1L, (left + 999999L) / 1000000L);
                 long seen = sent(monitor);
                 long before = System.nanoTime();
-                monitor.wait(asked);
+                waitMarked(monitor, asked, self);
                 if (self.signalled) return true;
                 if (sent(monitor) == seen && System.nanoTime() - before
                         < TimeUnit.MILLISECONDS.toNanos(asked)
@@ -420,8 +452,54 @@ public final class TimedWaits {
             ScheduleLog.tryObserve(ScheduleEvent.Kind.WAKE, site);
             throw interrupted;
         } finally {
+            self.onTheClock = false;
             WAITING.remove(thread);
             WINDOW_WOKEN.remove(thread);
+        }
+    }
+
+    /**
+     * One physical wait of a registered monitor wait ({@code millis} 0 is
+     * untimed).  An interrupt that finds the wait already MARKED by a woven
+     * notify does not throw: the notify chose this wait, and a wait that
+     * threw would take the notify with it, which JLS 17.2.4 forbids -- the
+     * thread returns normally with its interrupt still pending, one of the
+     * two outcomes the JLS allows a thread both notified and interrupted.
+     */
+    private static void waitMarked(Object monitor, long millis, Waiter self)
+            throws InterruptedException {
+        try {
+            monitor.wait(millis);
+        } catch (InterruptedException interrupted) {
+            if (!self.signalled) throw interrupted;
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /** {@link #waitMarked}'s rule for a condition's untimed await. */
+    private static void awaitMarked(Condition condition, Waiter self)
+            throws InterruptedException {
+        try {
+            condition.await();
+        } catch (InterruptedException interrupted) {
+            if (!self.signalled) throw interrupted;
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * {@link #waitMarked}'s rule for a condition's timed await; a marked
+     * wait that was interrupted states time left, as a signalled one does.
+     */
+    private static long awaitNanosMarked(Condition condition, long nanos,
+                                         Waiter self)
+            throws InterruptedException {
+        try {
+            return condition.awaitNanos(nanos);
+        } catch (InterruptedException interrupted) {
+            if (!self.signalled) throw interrupted;
+            Thread.currentThread().interrupt();
+            return 1L;
         }
     }
 
@@ -434,10 +512,16 @@ public final class TimedWaits {
             }
 
             @Override
+            void onTheClock(long deadline) {
+                self.deadline = deadline;
+                self.onTheClock = true;
+            }
+
+            @Override
             boolean await(long millis) throws InterruptedException {
                 long seen = sent(monitor);
                 long before = System.nanoTime();
-                monitor.wait(millis);
+                waitMarked(monitor, millis, self);
                 if (self.signalled) return true;
                 return sent(monitor) == seen && System.nanoTime() - before
                         < TimeUnit.MILLISECONDS.toNanos(millis) - EARLY_NANOS;
@@ -489,7 +573,7 @@ public final class TimedWaits {
         try {
             while (!self.signalled) {
                 long seen = sent(condition);
-                condition.await();
+                awaitMarked(condition, self);
                 if (!self.signalled && sent(condition) == seen) return;
             }
         } finally {
@@ -542,23 +626,29 @@ public final class TimedWaits {
                                              Waiter self, long deadline,
                                              String site)
             throws InterruptedException {
-        while (!ScheduleLog.enforcing()) {
-            if (self.signalled) return true;
-            long left = deadline - System.nanoTime();
-            if (left <= 0L) return false;
-            long seen = sent(condition);
-            long rest;
-            try {
-                rest = condition.awaitNanos(Math.min(left,
-                        TimeUnit.MILLISECONDS.toNanos(QUANTUM_MS)));
-            } catch (InterruptedException interrupted) {
-                ScheduleLog.tryObserve(ScheduleEvent.Kind.WAKE, site);
-                throw interrupted;
+        self.deadline = deadline;
+        self.onTheClock = true;
+        try {
+            while (!ScheduleLog.enforcing()) {
+                if (self.signalled) return true;
+                long left = deadline - System.nanoTime();
+                if (left <= 0L) return false;
+                long seen = sent(condition);
+                long rest;
+                try {
+                    rest = awaitNanosMarked(condition, Math.min(left,
+                            TimeUnit.MILLISECONDS.toNanos(QUANTUM_MS)), self);
+                } catch (InterruptedException interrupted) {
+                    ScheduleLog.tryObserve(ScheduleEvent.Kind.WAKE, site);
+                    throw interrupted;
+                }
+                if (self.signalled) return true;
+                if (rest > 0L && sent(condition) == seen) return true;
             }
-            if (self.signalled) return true;
-            if (rest > 0L && sent(condition) == seen) return true;
+            return self.signalled;
+        } finally {
+            self.onTheClock = false;
         }
-        return self.signalled;
     }
 
     private static Quantum conditionQuantum(final Condition condition,
@@ -570,10 +660,16 @@ public final class TimedWaits {
             }
 
             @Override
+            void onTheClock(long deadline) {
+                self.deadline = deadline;
+                self.onTheClock = true;
+            }
+
+            @Override
             boolean await(long millis) throws InterruptedException {
                 long seen = sent(condition);
-                long rest = condition.awaitNanos(
-                        TimeUnit.MILLISECONDS.toNanos(millis));
+                long rest = awaitNanosMarked(condition,
+                        TimeUnit.MILLISECONDS.toNanos(millis), self);
                 if (self.signalled) return true;
                 return rest > 0L && sent(condition) == seen;
             }
@@ -628,7 +724,9 @@ public final class TimedWaits {
             if (waits == null) return false;
             waits.sent++;
             for (Waiter waiter : waits.waiters) {
-                if (waiter.signalled) continue;
+                // A wait the wall clock already ended is out of the JDK's
+                // wait set: the signal goes to one still in it.
+                if (waiter.signalled || waiter.expired()) continue;
                 waiter.signalled = true;
                 if (!all) break;
             }
@@ -676,7 +774,8 @@ public final class TimedWaits {
                 return null;
             }
             wait = TimeUnit.MILLISECONDS.toNanos(QUANTUM_MS);
-            if (turn == ScheduleLog.Turn.FREE) {
+            if (turn == ScheduleLog.Turn.FREE
+                    || turn == ScheduleLog.Turn.NO_EVENT) {
                 // The run went free: the rest on the wall clock.
                 wait = deadline - System.nanoTime();
                 if (wait <= 0L) {
@@ -698,6 +797,13 @@ public final class TimedWaits {
         /** Whether a woven signal marked the wait: read before every ask. */
         boolean signalled() {
             return false;
+        }
+
+        /**
+         * The wait now stands on the wall clock to {@code deadline}: no
+         * prefix holds it any more ({@link Waiter#expired}).
+         */
+        void onTheClock(long deadline) {
         }
 
         /**
@@ -760,8 +866,10 @@ public final class TimedWaits {
                 return false;
             }
             long wait = QUANTUM_MS;
-            if (turn == ScheduleLog.Turn.FREE) {
+            if (turn == ScheduleLog.Turn.FREE
+                    || turn == ScheduleLog.Turn.NO_EVENT) {
                 // No prefix holds it: its own deadline, on the wall clock.
+                quantum.onTheClock(deadline);
                 long left = deadline - System.nanoTime();
                 if (left <= 0L) {
                     ScheduleLog.admitNow(wake);
@@ -782,13 +890,14 @@ public final class TimedWaits {
      * <p>An interrupt that arrives while it waits for its turn ends the wait
      * the way the real one would have ended: by throwing.</p>
      */
-    private static boolean heldWake(String site) throws InterruptedException {
-        if (!ScheduleLog.awaitTurn(ScheduleEvent.Kind.WAKE, site)) {
-            return false;
-        }
+    private static ScheduleLog.Turn heldWake(String site)
+            throws InterruptedException {
+        ScheduleLog.Turn turn =
+                ScheduleLog.awaitTurn(ScheduleEvent.Kind.WAKE, site);
+        if (turn != ScheduleLog.Turn.ADMITTED) return turn;
         WakeScopes.woke(site);
         if (Thread.interrupted()) throw new InterruptedException();
-        return true;
+        return turn;
     }
 
     private static void wake(String site) {

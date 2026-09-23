@@ -529,12 +529,15 @@ final class RuntimeTraceContext {
         }
         // A tick is a WAKE: the turn a daemon's loop hands its thread.
         String site = "tick." + MapFields.safe(roleName);
-        ScheduleLog.observe(
+        // Only a turn whose WAKE was written states its END: one begun before
+        // the window is the set-up's, whichever side of the opening its work
+        // fell -- decided by the one write, so a window opening between two
+        // reads cannot leave an END with no WAKE.
+        if (ScheduleLog.observe(
                 edu.uva.liftlab.graphchecker.contract.ScheduleEvent.Kind.WAKE,
-                site);
-        // Only a turn the window saw begin states its end: one begun before
-        // it is the set-up's, whichever side of the opening its work fell.
-        if (CausynthTraceRecorder.recordingStarted()) scope.tickSite = site;
+                site)) {
+            scope.tickSite = site;
+        }
         return token;
     }
 
