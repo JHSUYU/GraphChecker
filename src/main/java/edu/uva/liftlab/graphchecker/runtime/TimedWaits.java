@@ -22,24 +22,22 @@ import java.util.concurrent.locks.LockSupport;
  * argument and the call site the last.  What each does:</p>
  *
  * <ul>
- *   <li>FREE (the recording, a replay with no prefix, a replay whose
- *       order no longer names the wait's timeout -- free, or past its
- *       prefix where the rest does not name it -- anything before the
- *       recording window opens): the original wait's semantics, on the
- *       wall clock, and a WAKE event when its TIMEOUT ends it.  A wait a signal ends (a notify, a condition
- *       signal, an unpark) is no event: another thread ended it, and that
- *       thread's own events are the schedule's ({@link #takeTurn}).</li>
- *   <li>HELD to a prefix: VIRTUAL TIME, which stands in for the CLOCK and
- *       never for the NOTIFIER.  The wait does not read the wall clock: it
- *       ends when a real signal comes, or when its timeout WAKE is the
- *       prefix's next event -- or, past the prefix, when the rest of the
- *       order names it and it is due ({@code ScheduleLog.turn}).
- *       hdfs-17967 is why the notifier is never stood in for: an idle IPC connection the recording saw woken by the
- *       call it then served returned at a turn before the call was added,
- *       found nothing to read, and closed itself.  A wait that holds a
- *       monitor or a lock waits on its own primitive between asks, so
- *       whatever it holds is released while it waits and the thread whose
- *       event IS next can run.</li>
+ *   <li>FREE (the recording, a replay with no order, a wait whose WAKE no
+ *       slot of the order holds, anything before the recording window
+ *       opens): the original wait's semantics, on the wall clock, and a
+ *       WAKE event when its TIMEOUT ends it.  A wait a signal ends (a
+ *       notify, a condition signal, an unpark) is no event: another thread
+ *       ended it, and that thread's own events are the schedule's
+ *       ({@link #takeTurn}).</li>
+ *   <li>HELD, when a WAKE slot of the order holds its timeout: VIRTUAL
+ *       TIME, which stands in for the CLOCK and never for the NOTIFIER.
+ *       The wait ends when a real signal comes, or when its WAKE slot is
+ *       due ({@code ScheduleLog.turn}).  An idle IPC connection the
+ *       recording saw woken by the call it then served, woken by time
+ *       instead, finds nothing to read and closes itself -- so a signal is
+ *       never stood in for.  A wait that holds a monitor or a lock waits on
+ *       its own primitive between asks, so whatever it holds is released
+ *       and the thread whose event is due can run.</li>
  * </ul>
  *
  * <p>A wait already in progress when the window opens -- an idle IPC
@@ -59,11 +57,7 @@ import java.util.concurrent.locks.LockSupport;
  * to ask for its turn, and the window's opening takes a free one out too.  A
  * notify that lands in such a gap finds nobody, and the waiter, which never
  * returns to its caller's own condition check, waits for a signal already
- * sent.  hdfs-17967 path C: the window's opening woke helper-dn's idle IPC
- * connection, the heartbeat's {@code addCall} took the monitor before the
- * connection re-entered its wait, its notify found an empty wait set, and the
- * response the connection should have read sat unread until the watchdog
- * gave the prefix up.  So the weave replaces the notifiers as well --
+ * sent.  So the weave replaces the notifiers as well --
  * {@code notify}, {@code notifyAll}, {@code Condition.signal} and
  * {@code signalAll} -- and every wait on a monitor or a condition, timed or
  * not, registers for the whole of its length: a woven signal marks the wait
@@ -75,13 +69,11 @@ import java.util.concurrent.locks.LockSupport;
  * no window's wake behind it was ended by a notifier outside the weave, and
  * ends as it did before.</p>
  *
- * <p>AN INTERRUPT IS THE WORKLOAD'S: a wait it ends writes its WAKE where
- * it stands, free or held -- held whether or not it is the prefix's next
- * event, the rule an interrupted admission of any event already follows
- * ({@code ScheduleLog.admitNow}) -- and throws as the JDK's wait would (a
- * park returns).  Written early, such a WAKE leaves its later slot in the
- * prefix to the watchdog: the prefix stands for everyone else, and a thread
- * the workload interrupted is not held to it.  A park entered with its
+ * <p>AN INTERRUPT IS THE WORKLOAD'S: a wait it ends writes an INTERRUPT
+ * event where it stands, free or held, never held itself, and throws as the
+ * JDK's wait would (a park returns).  A held wait is ended by virtual time
+ * only at a WAKE slot, so a daemon the recording's workload stopped by an
+ * interrupt is not handed a timeout it never had.  A park entered with its
  * interrupt pending writes nothing, since the JDK's park returns at once and
  * a loop around it spins.</p>
  *
@@ -147,7 +139,7 @@ public final class TimedWaits {
     }
 
     /**
-     * The recording window opened under a prefix: every free wait in
+     * The recording window opened under an order: every free wait in
      * progress is woken, and converts to virtual time where it stands.
      *
      * <p>A monitor wait is woken by a notify on its monitor, which every
@@ -216,41 +208,31 @@ public final class TimedWaits {
         interruptedAtEntry(site);
         long deadline = System.nanoTime()
                 + TimeUnit.MILLISECONDS.toNanos(millis) + nanos;
-        while (true) {
-            if (ScheduleLog.enforcing()) {
-                ScheduleLog.Turn turn = heldWake(site);
-                if (turn == ScheduleLog.Turn.ADMITTED) return;
-                // No event to hold it to, or no order holds it any more --
-                // free, or past the prefix with a WAKE the rest does not
-                // name: the sleep is the wall clock's, to its own deadline.
-                try {
-                    wallSleep(deadline);
-                } catch (InterruptedException interrupted) {
-                    interruptedWake(site);
-                    throw interrupted;
-                }
-                break;
-            }
-            if (!freeSleep(deadline, site)) break;
+        if (ScheduleLog.enforcing() || freeSleep(deadline, site)) {
+            // Held: its turn, or the wall clock once no slot holds it.
+            takeTurn(site, false, sleepQuantum(), deadline);
+            return;
         }
         wake(site);
     }
 
-    /** Sleeps on the wall clock to {@code deadline}, the window aside. */
-    private static void wallSleep(long deadline) throws InterruptedException {
-        if (Thread.interrupted()) throw new InterruptedException();
-        while (true) {
-            long left = deadline - System.nanoTime();
-            if (left <= 0L) return;
-            long millis = TimeUnit.NANOSECONDS.toMillis(left);
-            Thread.sleep(millis, (int) (left - TimeUnit.MILLISECONDS
-                    .toNanos(millis)));
-        }
+    /** A sleep's quantum: nothing signals a sleep, only time or an interrupt. */
+    private static Quantum sleepQuantum() {
+        final Object lock = new Object();
+        return new Quantum() {
+            @Override
+            boolean await(long millis) throws InterruptedException {
+                synchronized (lock) {
+                    lock.wait(Math.max(1L, millis));
+                }
+                return false;
+            }
+        };
     }
 
     /**
      * Sleeps on the wall clock to {@code deadline}.  True when the window
-     * opened under a prefix first, and the sleep is to take its turn.
+     * opened under an order first, and the sleep is to take its turn.
      */
     private static boolean freeSleep(long deadline, String site)
             throws InterruptedException {
@@ -536,20 +518,12 @@ public final class TimedWaits {
     }
 
     /**
-     * THE WAKE OF A WAIT AN INTERRUPT ENDED, one rule for free and held:
-     * the interrupt is the workload's, the wait ends where it stands, and
-     * its WAKE is written there -- free, as any free event is; held, whether
-     * or not it is the prefix's next event, the rule an interrupted
-     * admission follows.  The recording wrote one for every such wait, so a
-     * replay that wrote none asked the prefix for an event nobody would
-     * make, and every thread behind it waited out the watchdog.
+     * THE INTERRUPT OF A WAIT, one rule for free and held: the interrupt is
+     * the workload's, the wait ends where it stands, and its INTERRUPT is
+     * written there and never held -- the interrupter's own events order it.
      */
     private static void interruptedWake(String site) {
-        if (ScheduleLog.enforcing()) {
-            ScheduleLog.admitNow(ScheduleLog.wake(site));
-        } else {
-            ScheduleLog.tryObserve(ScheduleEvent.Kind.WAKE, site);
-        }
+        ScheduleLog.observe(ScheduleEvent.Kind.INTERRUPT, site);
     }
 
     /** {@link #waitMarked}'s rule for a condition's untimed await. */
@@ -618,7 +592,7 @@ public final class TimedWaits {
                     freeConditionWait(condition, self, deadline, site);
             boolean outcome = takeTurn(site, signalled,
                     conditionQuantum(condition, self), deadline);
-            // Virtual time: the turn came, by a signal or not as the prefix
+            // Virtual time: the turn came, by a signal or not as the order
             // said; a caller that re-checks its condition -- every loop that
             // waits this way does -- reads the rest.
             return outcome ? Math.max(1L, deadline - System.nanoTime()) : 0L;
@@ -838,9 +812,15 @@ public final class TimedWaits {
                 wake(site);
                 return null;
             }
-            Object element = queue.poll(Math.min(left,
-                    TimeUnit.MILLISECONDS.toNanos(QUANTUM_MS)),
-                    TimeUnit.NANOSECONDS);
+            Object element;
+            try {
+                element = queue.poll(Math.min(left,
+                        TimeUnit.MILLISECONDS.toNanos(QUANTUM_MS)),
+                        TimeUnit.NANOSECONDS);
+            } catch (InterruptedException interrupted) {
+                interruptedWake(site);
+                throw interrupted;
+            }
             if (element != null) return element;
         }
         ScheduleLog.Wake wake = ScheduleLog.wake(site);
@@ -857,7 +837,13 @@ public final class TimedWaits {
                                    String site) throws InterruptedException {
         long wait = TimeUnit.MILLISECONDS.toNanos(QUANTUM_MS);
         while (true) {
-            Object element = queue.poll(wait, TimeUnit.NANOSECONDS);
+            Object element;
+            try {
+                element = queue.poll(wait, TimeUnit.NANOSECONDS);
+            } catch (InterruptedException interrupted) {
+                interruptedWake(site);
+                throw interrupted;
+            }
             if (element != null) return element;
             ScheduleLog.Turn turn = ScheduleLog.turn(wake);
             if (turn == ScheduleLog.Turn.ADMITTED) {
@@ -870,7 +856,7 @@ public final class TimedWaits {
                 // The run went free: the rest on the wall clock.
                 wait = deadline - System.nanoTime();
                 if (wait <= 0L) {
-                    ScheduleLog.admitNow(wake);
+                    ScheduleLog.timedOut(wake);
                     WakeScopes.woke(site);
                     return null;
                 }
@@ -892,13 +878,13 @@ public final class TimedWaits {
 
         /**
          * The wait now stands on the wall clock to {@code deadline}: no
-         * prefix holds it any more ({@link Waiter#expired}).
+         * slot holds it any more ({@link Waiter#expired}).
          */
         void onTheClock(long deadline) {
         }
 
         /**
-         * Whether the wait must end now, whatever the prefix says: only an
+         * Whether the wait must end now, whatever the order says: only an
          * interrupted park, which cannot throw.  An interrupted monitor or
          * condition wait ends by its quantum throwing, as the real one does.
          */
@@ -921,18 +907,13 @@ public final class TimedWaits {
      * wake waited for a signal that never came.</p>
      *
      * <p>Free, the wait already ended: a timeout is recorded, a signal is
-     * not.  Held to a prefix, the wait waits in quanta on its own primitive
-     * for a signal -- which ends it at once, no event -- or for its timeout
-     * WAKE to be the prefix's next event, which ends it at that turn without
-     * reading the clock (virtual time).  Asking for the turn every quantum
-     * is also what keeps the watchdog looking.</p>
-     *
-     * <p>When no order holds its timeout any more -- the run is free, or
-     * past its prefix with a WAKE the rest does not name -- a held wait is
-     * not ended: it waits on for a signal or to its own deadline, on the
-     * wall clock, as the same wait does in a replay with no prefix, and its
-     * WAKE is written only if that deadline ends it
-     * ({@code ScheduleLog.turn}).</p>
+     * not.  Held, the wait waits in quanta on its own primitive for a
+     * signal -- which ends it at once, no event -- or for its WAKE slot to
+     * be due, which ends it at that turn without reading the clock (virtual
+     * time).  Asking every quantum is also what keeps the watchdog looking.
+     * When no slot holds its timeout, it waits on for a signal or to its own
+     * deadline on the wall clock, and its WAKE is written only if that
+     * deadline ends it ({@code ScheduleLog.turn}, {@code timedOut}).</p>
      */
     private static boolean takeTurn(String site, boolean signalled,
                                     Quantum quantum, long deadline)
@@ -955,11 +936,10 @@ public final class TimedWaits {
             throws InterruptedException {
         while (true) {
             if (quantum.endsNow()) {
-                // The same rule an interrupted admission follows: the wait
-                // ends where it is, and the prefix stands for the rest.
-                // Asked first, as the free park asks: an interrupt beats an
-                // unpark.
-                ScheduleLog.admitNow(wake);
+                // An interrupt ended it: the INTERRUPT is written where it
+                // stands, and the order stands for the rest.  Asked first,
+                // as the free park asks: an interrupt beats an unpark.
+                interruptedWake(site);
                 WakeScopes.woke(site);
                 return true;
             }
@@ -975,11 +955,11 @@ public final class TimedWaits {
             long wait = QUANTUM_MS;
             if (turn == ScheduleLog.Turn.FREE
                     || turn == ScheduleLog.Turn.NO_EVENT) {
-                // No prefix holds it: its own deadline, on the wall clock.
+                // No slot holds it: its own deadline, on the wall clock.
                 quantum.onTheClock(deadline);
                 long left = deadline - System.nanoTime();
                 if (left <= 0L) {
-                    ScheduleLog.admitNow(wake);
+                    ScheduleLog.timedOut(wake);
                     WakeScopes.woke(site);
                     return false;
                 }
@@ -988,31 +968,12 @@ public final class TimedWaits {
             try {
                 if (quantum.await(wait)) signalled = true;
             } catch (InterruptedException interrupted) {
-                // The wait ends where it is, held or free, and its WAKE is
-                // written there, as the free wait's is: a prefix that holds a
-                // wait an interrupt ended asks for that WAKE.
-                ScheduleLog.admitNow(wake);
+                // The wait ends where it is, held or free, and its
+                // INTERRUPT is written there.
+                interruptedWake(site);
                 throw interrupted;
             }
         }
-    }
-
-    /**
-     * Under a prefix, blocks until this sleep's WAKE is admitted: the sleep
-     * is then taken over and the caller skips the real one.  False when the
-     * run went free before the turn came; the caller sleeps on.
-     *
-     * <p>An interrupt that arrives while it waits for its turn ends the wait
-     * the way the real one would have ended: by throwing.</p>
-     */
-    private static ScheduleLog.Turn heldWake(String site)
-            throws InterruptedException {
-        ScheduleLog.Turn turn =
-                ScheduleLog.awaitTurn(ScheduleEvent.Kind.WAKE, site);
-        if (turn != ScheduleLog.Turn.ADMITTED) return turn;
-        WakeScopes.woke(site);
-        if (Thread.interrupted()) throw new InterruptedException();
-        return turn;
     }
 
     private static void wake(String site) {

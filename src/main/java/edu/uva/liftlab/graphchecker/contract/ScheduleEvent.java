@@ -49,7 +49,15 @@ public final class ScheduleEvent {
          * and a replay's heartbeat reached the NameNode before the marking
          * that the recording's heartbeat had found done.
          */
-        END
+        END,
+        /**
+         * A timed wait the workload's INTERRUPT ended.  Not a turn time
+         * handed the thread: the interrupter's own events order it, so it is
+         * written where it happens and never held, and a held wait is ended
+         * by virtual time only at a WAKE -- a recording whose daemon was
+         * stopped by an interrupt does not hand its replay a timeout.
+         */
+        INTERRUPT
     }
 
     private final long seq;

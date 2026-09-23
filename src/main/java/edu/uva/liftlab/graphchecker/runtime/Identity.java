@@ -901,7 +901,12 @@ public final class Identity {
     public static void regionExit() {
         State state = state();
         if (state.regions.isEmpty()) return;
-        state.regions.remove(state.regions.size() - 1);
+        Region closed = state.regions.remove(state.regions.size() - 1);
+        // An occurrence that closes makes no further event: whatever the
+        // order held for it and it did not make is settled (ScheduleLog).
+        if (closed.occurrence != null) {
+            ScheduleLog.closed(closed.occurrence.id());
+        }
     }
 
     /**
