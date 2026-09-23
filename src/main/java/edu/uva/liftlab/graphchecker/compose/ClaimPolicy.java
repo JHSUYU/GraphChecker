@@ -33,12 +33,14 @@ import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.integra
  *       finding: ordinal 0, the run as it happened, must be unsat.</li>
  *   <li><b>CLOCK_SKEW</b> -- the fatal arm is reached with no DECLARED root
  *       moved, and only because a clock cell may sit elsewhere: pinning
- *       every cell to what its session read makes it unsat.  A clock that
- *       is not necessary is a decoration, never the mechanism.  The cells
- *       the model put elsewhere are the witness's moved roots ({@link
- *       Claim#movedRoots}, read in {@link #movedRoots}): a clock has a
- *       floor and no window, so no valuation pins one and the model is the
- *       only thing that can say where it had to sit.  A MARKER moved is
+ *       every cell to what the recording read makes it unsat.  WHICH cells
+ *       is answered by pinning them back one at a time
+ *       ({@link #clocksNeeded}), and the witness published is the query
+ *       under every pin that could be kept, so its moved roots ({@link
+ *       Claim#movedRoots}, read in {@link #movedRoots}) are the cells the
+ *       witness needs and not the ones z3 moved for free.  A clock is not
+ *       a root a valuation pins, so the model is the only statement of
+ *       where it sat.  A MARKER moved is
  *       MARKER_FLIPPED and is asked first -- {@link #mechanism} names the
  *       narrowest mechanism the evidence supports, and a clock beside a
  *       moved marker is not what made the difference.  A recorded
@@ -72,17 +74,29 @@ public final class ClaimPolicy {
     /** One valuation, and what the solver answered about it. */
     public static final class Outcome {
         private final Composer.Valuation valuation;
+        private final List<String> pinned;
         private final Z3.Answer answer;
         private final Composer.Disjunct selected;
         private final Map<String, ComposedFamilies.ArmChoice> arms;
 
-        Outcome(Composer.Valuation valuation, Z3.Answer answer,
-                Composer.Disjunct selected,
+        Outcome(Composer.Valuation valuation, List<String> pinned,
+                Z3.Answer answer, Composer.Disjunct selected,
                 Map<String, ComposedFamilies.ArmChoice> arms) {
             this.valuation = valuation;
+            this.pinned = Collections.unmodifiableList(pinned);
             this.answer = answer;
             this.selected = selected;
             this.arms = Collections.unmodifiableMap(arms);
+        }
+
+        /**
+         * The clock cells this model was asked with pinned at the
+         * recording, beside the valuation: the ones the witness does not
+         * need ({@link #clocksNeeded}).  Part of the question the
+         * published model answers, so the artifact states them.
+         */
+        public List<String> pinned() {
+            return pinned;
         }
 
         /**
@@ -178,31 +192,10 @@ public final class ClaimPolicy {
                     Collections.<String, String>emptyMap(), false, gaps),
                     outcomes);
         }
-        // WHAT A SAT MODEL MUST CARRY BACK: the selectors, so the claim
-        // can say which disjunct it is about, and every CLOCK CELL, so it
-        // can say where the clocks had to sit.  A clock has a floor and no
-        // window, so no valuation pins one and no valuation can report one
-        // either: the only statement of where a witness put a clock is the
-        // model.  Legal spelling here and not at the query boundary --
-        // Z3.modelQuery appends the names raw, and a cell is spelled
-        // CLOCK/... .
-        List<String> selectors = composition.selectors();
-        List<String> asked = new ArrayList<String>(selectors);
-        // AND EVERY FAMILY ARM SELECTOR.  A witness over a slot has to say
-        // which delivery it rested on; the manifest publishes it per
-        // family, and a claim that cannot name the arm names a mechanism
-        // whose evidence is an anonymous disjunct.
-        asked.addAll(composition.armSelectors());
-        for (String cell : composition.clockCells()) {
-            asked.add(SmtLowering.legalSymbols(cell));
-        }
         for (Composer.Valuation valuation : composition.valuations()) {
-            Z3.Answer answer = solver.ask(
-                    composition.query(valuation.assertions()),
-                    asked, valuation.ordinal() == 0);
-            outcomes.add(new Outcome(valuation, answer,
-                    selectedOf(composition, answer),
-                    armsOf(composition, answer)));
+            outcomes.add(outcome(composition, solver, valuation,
+                    Collections.<String>emptyList(),
+                    valuation.ordinal() == 0));
         }
         Outcome recorded = outcomes.isEmpty() ? null : outcomes.get(0);
 
@@ -243,21 +236,27 @@ public final class ClaimPolicy {
         // whose own recording took the healthy one.
         //
         // Unless the CLOCKS are what reach it.  The alarm asks "what does
-        // this witness add?", and a valuation cannot pin a clock -- a clock
-        // has a floor and no window, so it is free in every valuation
-        // including ordinal 0 -- which makes the alarm's premise true of
-        // every clock witness there could be.  What answers the question
-        // for a clock is the clock pin, asked once, in #clockNecessary; on
-        // a corpus with no clock cell it is false without a solver run, so
-        // nothing else changes.
+        // this witness add?", and no valuation pins a clock -- it is free
+        // in every valuation including ordinal 0 -- which makes the
+        // alarm's premise true of every clock witness there could be.
+        // What answers the question for a clock is the clock pin, asked
+        // once, in #clocksNeeded; on a corpus with no clock cell it is
+        // null without a solver run, so nothing else changes.
         //
         // THE SAME ANSWER IS WHAT SAYS THE WITNESS IS CLOCK-DRIVEN, so it
-        // is asked ONCE, here, and read twice: by the alarm below and by
-        // loop 1, which steps aside for a clock-driven recorded valuation
-        // (see there).  Two asks would be two solver runs on one question.
-        boolean clockDriven = recorded != null && recorded.answer().sat()
+        // is asked ONCE, here, and read three times: by the alarm below,
+        // by loop 1, which steps aside for a clock-driven recorded
+        // valuation (see there), and by #mechanism.  The recorded outcome
+        // it hands back moves only the cells the witness needs, and that
+        // is the one published.
+        Outcome clocked = recorded != null && recorded.answer().sat()
                 && recorded.selected() != null
-                && clockNecessary(composition, solver, recorded);
+                ? clocksNeeded(composition, solver, recorded) : null;
+        boolean clockDriven = clocked != null;
+        if (clockDriven) {
+            recorded = clocked;
+            outcomes.set(0, clocked);
+        }
         if (recorded != null && recorded.answer().sat()
                 && recorded.selected() != null
                 && !recorded.selected().fatalObserved()
@@ -326,7 +325,7 @@ public final class ClaimPolicy {
                 // that or with the narrower slot it also replaced -- never
                 // with NO_SUPPORTED_WITNESS.
                 ClaimKind moved = mechanism(composition, solver, outcome,
-                        outcomes);
+                        outcomes, clockDriven);
                 if (!polarityDecides) {
                     undecidedPolarity(gaps, recorded, moved);
                     break;
@@ -350,7 +349,7 @@ public final class ClaimPolicy {
             // is not this branch's -- the recording's own failure is asked
             // below, with the polarity of the flips.
             ClaimKind still = mechanism(composition, solver, outcome,
-                    outcomes);
+                    outcomes, clockDriven);
             if (still != ClaimKind.CLOCK_SKEW
                     && still != ClaimKind.STATE_PAIRING_FLIPPED
                     && still != ClaimKind.MESSAGE_PAIRING_FLIPPED) {
@@ -383,7 +382,7 @@ public final class ClaimPolicy {
             boolean seed = session.equals(composition.seedSessionId());
             if (seed && flipsRefuted(outcomes)) {
                 ClaimKind kind = mechanism(composition, solver, recorded,
-                        outcomes);
+                        outcomes, clockDriven);
                 return new Decision(Claim.of(kind, 0,
                         movedRoots(composition, recorded),
                         kind != ClaimKind.RECORDED_FAILURE_EXPLAINED
@@ -400,7 +399,7 @@ public final class ClaimPolicy {
                 // this branch used to publish named a wire pairing over a
                 // composition with no wire family at all.
                 ClaimKind kind = mechanism(composition, solver, recorded,
-                        outcomes);
+                        outcomes, clockDriven);
                 if (kind != ClaimKind.NO_SUPPORTED_WITNESS) {
                     return new Decision(Claim.of(kind, 0,
                             movedRoots(composition, recorded), true,
@@ -450,26 +449,11 @@ public final class ClaimPolicy {
      * same way and states nothing: the claim it publishes is about the
      * formula it built.</p>
      */
-    /** The budget one self-refutation run gets, in milliseconds. */
-    static long selfContradictoryBudgetMillis() {
-        String stated = System.getProperty(SELF_CHECK_BUDGET_PROPERTY);
-        if (stated == null || stated.trim().isEmpty()) {
-            return DEFAULT_SELF_CHECK_BUDGET_MS;
-        }
-        try {
-            long value = Long.parseLong(stated.trim());
-            return value <= 0L ? DEFAULT_SELF_CHECK_BUDGET_MS : value;
-        } catch (NumberFormatException notABudget) {
-            return DEFAULT_SELF_CHECK_BUDGET_MS;
-        }
-    }
-
-    /** One minute: long enough to decide a path, short enough to scan. */
-    static final long DEFAULT_SELF_CHECK_BUDGET_MS = 60000L;
-
-    /** The property that states a budget other than the default. */
-    static final String SELF_CHECK_BUDGET_PROPERTY =
-            "causynth.compose.self.check.budget.ms";
+    /**
+     * The budget one self-refutation run gets: one minute, long enough to
+     * decide a path and short enough to scan every one.
+     */
+    static final long SELF_CHECK_BUDGET_MS = 60000L;
 
     private static void selfContradictory(Composer.Composition composition,
                                           Z3 solver, List<GapRow> gaps) {
@@ -491,7 +475,7 @@ public final class ClaimPolicy {
                     + ArtifactIO.digest(disjunct.path().pathId, 10) + "))");
             Z3.Answer answer = solver.ask(composition.query(forced),
                     Collections.<String>emptyList(), false,
-                    selfContradictoryBudgetMillis());
+                    SELF_CHECK_BUDGET_MS);
             if (!answer.decided()) undecided++;
             if (!answer.unsat()) continue;
             inert++;
@@ -520,8 +504,7 @@ public final class ClaimPolicy {
             // must be able to see that this one asked less.
             gaps.add(GapRow.of(Composer.COMPOSITION,
                     GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
-                    "self-check budget " + selfContradictoryBudgetMillis()
-                            + "ms",
+                    "self-check budget " + SELF_CHECK_BUDGET_MS + "ms",
                     undecided + " of " + composition.disjuncts().size()
                             + " path(s) were not decided within the "
                             + "self-refutation budget and stay in the "
@@ -591,8 +574,8 @@ public final class ClaimPolicy {
      *   <li>MARKER_FLIPPED -- the valuation MOVED a declared root inside
      *       the domain the case declared.</li>
      *   <li>CLOCK_SKEW -- nothing moved and the clocks are NECESSARY:
-     *       pinning every clock cell to the instant its session read makes
-     *       the query unsat.</li>
+     *       pinning every clock cell to the instant the recording read
+     *       makes the query unsat ({@link #clocksNeeded}).</li>
      *   <li>RECORDED_FAILURE_EXPLAINED -- the SEED path reached the fatal
      *       arm at the recorded valuation and every valuation that moved a
      *       root is decided and unsat.  Not a mechanism the checker found:
@@ -606,7 +589,8 @@ public final class ClaimPolicy {
      */
     private static ClaimKind mechanism(Composer.Composition composition,
                                        Z3 solver, Outcome outcome,
-                                       List<Outcome> outcomes) {
+                                       List<Outcome> outcomes,
+                                       boolean clockDriven) {
         if (outcome == null || outcome.selected() == null) {
             return ClaimKind.NO_SUPPORTED_WITNESS;
         }
@@ -622,9 +606,9 @@ public final class ClaimPolicy {
         if (!outcome.valuation().moved().isEmpty()) {
             return ClaimKind.MARKER_FLIPPED;
         }
-        if (clockNecessary(composition, solver, outcome)) {
-            return ClaimKind.CLOCK_SKEW;
-        }
+        // Only the recorded valuation reaches here with nothing moved,
+        // and whether its clocks are necessary was asked once, in #read.
+        if (clockDriven) return ClaimKind.CLOCK_SKEW;
         if (outcome.valuation().ordinal() == 0
                 && outcome.selected().fatalObserved()
                 && outcome.selected().path().sessionId.equals(
@@ -645,18 +629,17 @@ public final class ClaimPolicy {
      *   <li>the roots the VALUATION moved, which the enumeration asked for
      *       and pinned;</li>
      *   <li>the CLOCK CELLS the model put somewhere other than the instant
-     *       its session read.  A clock has a floor and no window, so it is
-     *       free in every valuation including ordinal 0 and no valuation
-     *       can pin one; where it had to sit is stated by the model and by
-     *       nothing else.  CLOCK_SKEW was published with {@code
-     *       movedRoots {}} -- 11741 campaign #3's own claim -- which reads
-     *       as "nothing had to move" about the one finding whose whole
-     *       content is that something did.</li>
+     *       the recording read.  No valuation pins a clock, so it is free
+     *       in every valuation including ordinal 0; where it had to sit is
+     *       stated by the model and by nothing else.  CLOCK_SKEW was
+     *       published with {@code movedRoots {}} -- 11741 campaign #3's
+     *       own claim -- which reads as "nothing had to move" about the
+     *       one finding whose whole content is that something did.</li>
      * </ul>
      *
      * <p>A cell the model did not answer for, or answered at the recorded
      * instant, is not stated: it is a clock the witness did not need, and
-     * {@link #clockNecessary} is what says whether any of them were.  A
+     * {@link #clocksNeeded} is what pinned it there.  A
      * claim that names no witness states no moved roots at all, which is
      * why the three NO_SUPPORTED_WITNESS returns hand an empty map rather
      * than asking this.</p>
@@ -743,29 +726,87 @@ public final class ClaimPolicy {
     }
 
     /**
-     * Whether this witness needs its clocks.
+     * One valuation asked, with everything a claim reads off a model.
      *
-     * <p>Asked the one way it can be answered: pin every clock cell to the
-     * instant its session read and ask again.  Still satisfiable means the
-     * clock is a decoration the model happened to move, and a claim that
-     * names it would name a mechanism the formula does not need.</p>
+     * <p>A sat model must carry back the path selectors, so the claim can
+     * say which disjunct it is about; every family ARM selector, so it can
+     * say which delivery the witness rested on; and every clock cell, so
+     * it can say where the clocks had to sit -- no valuation pins a clock,
+     * so the model is the only statement of it.  A cell is spelled
+     * {@code CLOCK/...#...} and is asked for legally, since
+     * {@code Z3.modelQuery} appends the names raw.</p>
      */
-    private static boolean clockNecessary(Composer.Composition composition,
-                                          Z3 solver, Outcome outcome) {
-        if (composition.clockCells().isEmpty()) return false;
-        List<String> pinned =
-                new ArrayList<String>(outcome.valuation().assertions());
+    private static Outcome outcome(Composer.Composition composition,
+                                   Z3 solver, Composer.Valuation valuation,
+                                   List<String> pinned, boolean wantCore) {
+        List<String> asked = new ArrayList<String>(composition.selectors());
+        asked.addAll(composition.armSelectors());
         for (String cell : composition.clockCells()) {
-            Long reading = composition.clockReadings().get(cell);
-            if (reading == null) continue;
-            pinned.add("(assert (! (= " + cell + " "
-                    + integralLiteral(Long.toString(reading))
-                    + ") :named clock_pinned__"
-                    + ArtifactIO.digest(cell, 10) + "))");
+            asked.add(SmtNames.legalSymbols(cell));
         }
-        Z3.Answer answer = solver.ask(composition.query(pinned),
-                Collections.<String>emptyList(), false);
-        return answer.unsat();
+        List<String> assertions =
+                new ArrayList<String>(valuation.assertions());
+        assertions.addAll(pinned);
+        Z3.Answer answer = solver.ask(composition.query(assertions), asked,
+                wantCore);
+        return new Outcome(valuation, pinned, answer,
+                selectedOf(composition, answer), armsOf(composition, answer));
+    }
+
+    /**
+     * The clocks this witness needs, or null when it needs none.
+     *
+     * <p>Pin every cell to the instant the recording read and ask again:
+     * still satisfiable means the clocks are a decoration the model
+     * happened to move, and a claim that names them would name a
+     * mechanism the formula does not need.  Otherwise the cells are
+     * pinned back one at a time, in the recording's order, each kept at
+     * its reading while the query stays satisfiable and left free when
+     * it does not: what is left free is a minimal set of cells without
+     * which the fatal arm is not reached, and the outcome handed back is
+     * the query under exactly those pins, so its model moves only what
+     * the witness needs -- and forward, since a cell's domain floors at
+     * its reading.  z3's unsat core does not answer this question: on
+     * bug1 it named all nine pins, and minimising it is a check-sat per
+     * named assertion of a query that names hundreds.</p>
+     */
+    private static Outcome clocksNeeded(Composer.Composition composition,
+                                        Z3 solver, Outcome outcome) {
+        List<String> cells = new ArrayList<String>();
+        for (String cell : composition.clockCells()) {
+            if (composition.clockReadings().get(cell) != null) cells.add(cell);
+        }
+        if (cells.isEmpty()) return null;
+        if (!outcome(composition, solver, outcome.valuation(),
+                pins(composition, cells), false).answer().unsat()) {
+            return null;
+        }
+        List<String> kept = new ArrayList<String>();
+        Outcome witness = outcome;
+        for (String cell : cells) {
+            kept.add(cell);
+            Outcome asked = outcome(composition, solver, outcome.valuation(),
+                    pins(composition, kept), false);
+            if (asked.answer().sat()) {
+                witness = asked;
+            } else {
+                kept.remove(kept.size() - 1);
+            }
+        }
+        return witness;
+    }
+
+    /** These cells at the instants the recording read, as named pins. */
+    private static List<String> pins(Composer.Composition composition,
+                                     List<String> cells) {
+        List<String> pinned = new ArrayList<String>();
+        for (String cell : cells) {
+            pinned.add("(assert (! (= " + cell + " " + integralLiteral(
+                    Long.toString(composition.clockReadings().get(cell)))
+                    + ") :named clock_pinned__" + ArtifactIO.digest(cell, 10)
+                    + "))");
+        }
+        return pinned;
     }
 
     /** Whether every valuation that moved a root is decided and unsat. */

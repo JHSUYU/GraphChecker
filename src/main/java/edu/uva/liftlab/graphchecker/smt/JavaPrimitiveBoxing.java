@@ -24,23 +24,6 @@ public final class JavaPrimitiveBoxing {
     private JavaPrimitiveBoxing() {
     }
 
-    /**
-     * A wrapper {@code valueOf(primitive)} result is computed by the call and
-     * is not an independent region live-in.  Reference identity stays
-     * concrete, so wrapper {@code ==} is not reinterpreted as value equality.
-     */
-    public static boolean deterministicValueOfReturn(String cell) {
-        String signature = returnMethod(cell);
-        for (Primitive primitive : BY_WRAPPER.values()) {
-            if (signature.equals("<" + primitive.wrapper + ": "
-                    + primitive.wrapper + " valueOf("
-                    + primitive.javaType + ")>")) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     public static boolean unboxReturn(String cell) {
         String signature = returnMethod(cell);
         for (Primitive primitive : BY_WRAPPER.values()) {

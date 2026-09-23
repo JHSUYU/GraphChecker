@@ -19,6 +19,7 @@ import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
+import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.PathEntry;
@@ -234,7 +235,7 @@ public final class Composer {
                     text.append(assertion).append('\n');
                 }
             }
-            return SmtLowering.legalSymbols(text.toString());
+            return SmtNames.legalSymbols(text.toString());
         }
 
         public List<Disjunct> disjuncts() {
@@ -1133,7 +1134,7 @@ public final class Composer {
             if (text == null || text.isEmpty()) continue;
             lowering.reachedSymbols(text, named,
                     new LinkedHashSet<String>());
-            named.addAll(SmtLowering.names(text));
+            named.addAll(SmtNames.names(text));
         }
         for (Map.Entry<String, Set<String>> root : unminted.entrySet()) {
             for (String symbol : root.getValue()) {
@@ -1833,10 +1834,9 @@ public final class Composer {
                 // DELIBERATELY no value, because a value on that row is a
                 // pin, and a composition that pins a clock to the instant
                 // the run read can never answer "this needed a skew"
-                // ({@code ClaimPolicy#clockNecessary} re-asks with exactly
+                // ({@code ClaimPolicy#clocksNeeded} re-asks with exactly
                 // that pin and never reaches unsat).  Its freedom is stated
-                // once, as a domain, by {@link #clocks} and {@link
-                // #domains}.
+                // once, as a domain, by {@link #clocks}.
                 //
                 // hdfs-11741 campaign #6: every one of the 116 paths that
                 // reached the anchor was refused here, on the DataNode
@@ -1911,10 +1911,11 @@ public final class Composer {
         for (Map.Entry<String, List<RootMintRow>> entry
                 : corpus.roots().entrySet()) {
             RootMintRow row = seedRow(entry.getValue());
+            // A CLOCK's domain is {@link #clocks}'s to state.
+            if (row.kind() == RootKind.CLOCK) continue;
             RootDomain domain = domainOf(row);
             roots.put(row.rootId(), domain);
             if (!lowering.declared(row.symbol())) continue;
-            if (row.kind() == RootKind.CLOCK) continue;
             if (row.kind() == RootKind.MARKER) {
                 // A declared marker is free in {recorded, flipped}, which
                 // for a Boolean is every value it has: nothing to assert.
@@ -1991,110 +1992,98 @@ public final class Composer {
     }
 
     /**
-     * A clock has no domain, only a floor.
+     * Every declared CLOCK cell the formula names: its domain, its
+     * recorded reading, and its place in its node's order.
      *
-     * <p>A millisecond count since the epoch is not negative; that is the
-     * one thing that makes a value a time at all, and without it a free
-     * cell comes back at the 64-bit floor and every witness resting on one
-     * is refused as an absurd clock.  It is not a window: two cells may sit
-     * any distance apart and in any order.  What the execution fixes is
-     * stated by its own decisions, which carry their readings.</p>
+     * <p>A CELL is the symbol the mint published -- one per (root,
+     * occurrence), the same in every session that read it -- and the
+     * reading a claim about the recording rests on is the SEED's: every
+     * execution reads a clock fresh, so there is no corpus-wide "the
+     * reading".  The domain is stated against that reading, once per cell
+     * ({@link JavaPrimitiveSmtSemantics#clockDomain}): the floor is the
+     * reading itself, since a clock turned back is no run of anything,
+     * and the ceiling is the reading plus the window -- unless the case
+     * declares the clock root's bounds in {@code root-domains.jsonl},
+     * which is the one way to ask for a backward move.  A cell the seed
+     * did not read gets the domain of the mint that read it and no
+     * reading, so no claim is made about where it sat.</p>
      *
-     * <p>A CELL is the name the FORMULA names, and that is the clock root's
-     * symbol as the session that read it published it -- one cell per
-     * (root, session), because every execution reads a clock fresh.  A
-     * decision row keys its readings by the clock's ROOT ID, which is a
-     * name of the case and not of any query: asked whether the lowering
-     * declared that, the answer was no for all 13 cells of hdfs-11741, so
-     * {@code clockCells()} came back empty, {@code clockNecessary} answered
-     * "no clocks" without a solver run, and CLOCK_SKEW was unreachable in
-     * every one of the 52+ manifests published so far.  A reading whose
-     * root no mint row of that session states is named, not skipped.</p>
+     * <p>THE NODE'S CLOCK IS ONE CLOCK.  The seed's mints on one node,
+     * in event order, are readings of the same counter, so each is at or
+     * after the one before it: {@code c_i <= c_{i+1}}, asserted per
+     * consecutive declared pair.  Without it a model skewed nn0's second
+     * rotation and left its first at the recording, which is not a node
+     * whose clock is ahead but two clocks on one node.  Every cell is
+     * domained: a declared cell that entered the query through a family
+     * arm or a state join and no decision read was left free, and
+     * re-solving bug1's query put three of them at {@code -9.22e18}.</p>
      */
     private void clocks(List<String> cells, Map<String, Long> readings) {
         String seed = seed();
-        Set<String> stated = new LinkedHashSet<String>();
-        for (Map.Entry<String, Map<String, Long>> cell
-                : corpus.clockCells().entrySet()) {
-            int unminted = 0;
-            int unnamed = 0;
-            // ONE STATEMENT PER CELL, not one per (root, session).  The
-            // mint's symbol is a name of the (root, occurrence) and is the
-            // SAME in every session that read that root -- 11741's 13
-            // roots are 13 symbols read by 7 to 13 sessions each -- so a
-            // floor per session states one :named assertion eleven times,
-            // which z3 answers with `named expression already defined`, an
-            // (error ...) and no verdict at all for the whole query.
-            String symbol = "";
-            for (Map.Entry<String, Long> reading
-                    : cell.getValue().entrySet()) {
-                RootMintRow row = corpus.rootOf(reading.getKey(),
-                        cell.getKey());
-                if (row == null) {
-                    unminted++;
-                    continue;
-                }
-                if (!lowering.declared(row.symbol())) {
-                    unnamed++;
-                    continue;
-                }
-                symbol = row.symbol();
+        Map<NodeId, List<RootMintRow>> byNode =
+                new LinkedHashMap<NodeId, List<RootMintRow>>();
+        for (Map.Entry<String, List<RootMintRow>> entry
+                : corpus.roots().entrySet()) {
+            RootMintRow row = seedRow(entry.getValue());
+            if (row.kind() != RootKind.CLOCK
+                    || !lowering.declared(row.symbol())) {
+                continue;
             }
-            if (!symbol.isEmpty() && stated.add(symbol)) {
-                cells.add(symbol);
-                // THE RECORDING'S reading, by the same rule {@link #seedRow}
-                // resolves a root several sessions minted: every session
-                // read this cell at its own instant and they are all
-                // different, so there is no corpus-wide "the reading", and
-                // the one a claim about the recording rests on is the
-                // seed's.  A cell the recording itself did not read is
-                // named and left with no reading, so `clockNecessary` pins
-                // nothing for it rather than pinning some other execution's
-                // instant.
-                Long recorded = seed == null ? null
-                        : cell.getValue().get(seed);
-                if (recorded == null) {
-                    gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
-                            cell.getKey(), "this cell reaches the "
-                                    + "composition and the recording states "
-                                    + "no reading of it, so no claim can say "
-                                    + "whether a witness moved it away from "
-                                    + "what the run read");
-                } else {
-                    readings.put(symbol, recorded);
-                }
-                // A CLOCK CELL IS A MILLISECOND COUNT IN A JAVA long:
-                // floor AND ceiling, spelled in the one place the rule
-                // lives ({@link JavaPrimitiveSmtSemantics#clockDomain}).
-                // Renamed with the fact it states -- no reader outside
-                // this line named clock_floor__.
-                lowering.assertNamed("clock_domain__"
-                                + ArtifactIO.digest(symbol, 10),
-                        JavaPrimitiveSmtSemantics.clockDomain(symbol, "0",
-                                JavaPrimitiveSmtSemantics.clockSkewCeiling(
-                                        recorded == null ? ""
-                                                : recorded.toString())));
+            long reading;
+            try {
+                reading = Long.parseLong(row.recordedValue().trim());
+            } catch (NumberFormatException notAnInstant) {
+                gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                        row.rootId(), "the mint of this clock cell states "
+                                + "no instant (" + row.recordedValue()
+                                + "), so it has no domain and no reading");
+                continue;
             }
-            if (unminted == 0 && unnamed == 0) continue;
-            // The same fact #valuations names for a declared root no
-            // formula mentions, and for the same reason: which questions
-            // were ASKED is what a claim's polarity is about, and a clock
-            // nothing names is a clock no claim can be made about.  One
-            // row per CELL, with the counts: on hdfs-11741 it is all 13
-            // cells, and the reason is pi_p and not attestation -- the
-            // occurrences that read a clock are the WRITERS the anchor's
-            // state joins reach (dn1 REGION.ba3902cd, 10 to 13 decisions
-            // in every session), and pi_p carried the anchor occurrence's
-            // own decisions alone, so no clock-bearing conjunct was ever
-            // in any path.
-            gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
-                    cell.getKey(), cell.getValue().size()
-                            + " sessions' decisions read this clock and no "
-                            + "cell of it reaches the composition: "
-                            + unminted + " state no mint row for it and "
-                            + unnamed + " state a symbol no admitted "
-                            + "path's formula names, so no clock claim can "
-                            + "be asked about it");
+            String instant = Long.toString(reading);
+            cells.add(row.symbol());
+            RootDomain domain = domainOf(row);
+            String floor = domain.min() == null ? instant
+                    : integralLiteral(domain.min());
+            String ceiling = domain.max() == null
+                    ? JavaPrimitiveSmtSemantics.clockSkewCeiling(instant)
+                    : integralLiteral(domain.max());
+            roots.put(row.rootId(), RootDomain.of(row.rootId(),
+                    RootKind.CLOCK, row.recordedValue(), floor, ceiling));
+            lowering.assertNamed("clock_domain__"
+                            + ArtifactIO.digest(row.symbol(), 10),
+                    JavaPrimitiveSmtSemantics.clockDomain(row.symbol(),
+                            floor, ceiling));
+            if (!row.sessionId().equals(seed)) {
+                gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                        row.rootId(), "this cell reaches the composition "
+                                + "and the recording states no reading of "
+                                + "it, so no claim can say whether a "
+                                + "witness moved it away from what the run "
+                                + "read");
+                continue;
+            }
+            readings.put(row.symbol(), reading);
+            List<RootMintRow> mints = byNode.get(row.occurrence().node());
+            if (mints == null) {
+                mints = new ArrayList<RootMintRow>();
+                byNode.put(row.occurrence().node(), mints);
+            }
+            mints.add(row);
+        }
+        for (List<RootMintRow> mints : byNode.values()) {
+            Collections.sort(mints, new Comparator<RootMintRow>() {
+                @Override
+                public int compare(RootMintRow left, RootMintRow right) {
+                    return Long.compare(left.seq(), right.seq());
+                }
+            });
+            for (int index = 1; index < mints.size(); index++) {
+                String earlier = mints.get(index - 1).symbol();
+                String later = mints.get(index).symbol();
+                lowering.assertNamed("clock_order__"
+                                + ArtifactIO.digest(earlier + "|" + later, 10),
+                        "(<= " + earlier + " " + later + ")");
+            }
         }
     }
 
@@ -2345,9 +2334,9 @@ public final class Composer {
         // writes `(let ((previous_size ...)) ...)`, and reading its body
         // without its binder refused every path of hdfs-11741 campaign #6
         // that reached the anchor.
-        Set<String> bound = SmtLowering.letBound(term);
-        for (String token : SmtLowering.names(term)) {
-            if (SmtLowering.BUILTIN.contains(token)) continue;
+        Set<String> bound = SmtNames.letBound(term);
+        for (String token : SmtNames.names(term)) {
+            if (SmtNames.BUILTIN.contains(token)) continue;
             if (bound.contains(token)) continue;
             if (lowering.defined(token)) continue;
             // The one registry says whether the recording states it, and

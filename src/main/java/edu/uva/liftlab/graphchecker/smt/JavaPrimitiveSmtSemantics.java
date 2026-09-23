@@ -50,75 +50,38 @@ public final class JavaPrimitiveSmtSemantics {
     public static final String JAVA_LONG_MAX = "9223372036854775807";
 
     /**
-     * A CLOCK cell's domain: a millisecond count in a Java {@code long}.
+     * A CLOCK cell's domain: {@code [floor, ceiling]}, a millisecond count
+     * in a Java {@code long}.
      *
-     * <p>ONE RULE, ONE SPELLING.  A clock is read by {@code
-     * System.currentTimeMillis()} and carried in a {@code long}, so the
-     * instants it can hold are {@code [0, Long.MAX_VALUE]} -- and a query
-     * that states only the floor lets the solver answer with an instant no
-     * execution could read.  hdfs-11741 campaign #2 obligation {@code
-     * 1d7997f38133b961} is what that costs: z3 put nn0's second rotation
-     * clock past {@code 2^63}, {@code model - recorded} came back negative,
-     * the focus row carried it as the unsigned {@code
-     * 18446742283726387588}, {@code FocusedReplay.clockSkew} could not
-     * parse it, the mint planted nothing and the session was NOT_ADMITTED
-     * for a world the wave never really asked for.</p>
-     *
-     * <p>Both places a clock variable is declared say it with this: the
-     * flip query's root facts ({@code explore.FlipQuery}) and the
-     * composition's clock cells ({@code compose.Composer}).</p>
+     * <p>ONE RULE, ONE SPELLING, in both places a clock variable is
+     * declared: the flip query's root facts ({@code explore.FlipQuery}) and
+     * the composition's clock cells ({@code compose.Composer}).  The floor
+     * is what the cell's own execution read -- a clock turned back is no
+     * run of anything, and a replay plants {@code reading + (model -
+     * reading)} at the mint -- and the ceiling is {@link #clockSkewCeiling}.
+     * A floor alone let z3 put nn0's second rotation past {@code 2^63}
+     * (hdfs-11741 campaign #2); a floor of 0 parked 36 models near 1970
+     * (campaign #4).</p>
      */
-    public static String clockDomain(String variable) {
-        return clockDomain(variable, "0");
+    public static String clockDomain(String variable, String floor,
+                                     String ceiling) {
+        return "(and (>= " + variable + " " + floor + ") (<= " + variable
+                + " " + ceiling + "))";
     }
 
     /**
-     * The same domain over a floor of its own: {@code [floor, Long.MAX]}.
-     *
-     * <p>A FLIP QUERY FLOORS A CLOCK AT WHAT ITS OWN EXECUTION READ.
-     * Exploration asks for a run that lasted longer, or for a node whose
-     * clock is ahead; a clock turned BACK is no run of anything, and the
-     * model that turns one back is not even a counterfactual the replay can
-     * apply -- it plants {@code reading + (model - reading)} at the mint,
-     * so a model below the reading is a negative skew on an instant the
-     * execution already passed.  hdfs-11741 campaign #4 has 36 such models:
-     * an expiry modelled over a second clock variable constrains only the
-     * DIFFERENCE of the two, so z3 parked both near 1970 (about
-     * {@code -1.79e12}) and {@code FocusedReplay} refused the replay for an
-     * assignment nothing planted.</p>
-     *
-     * <p>The composition keeps the floor of 0: it states what a clock CAN
-     * hold, over a recording it does not re-run.</p>
+     * The forward window a clock may move in where the case declares
+     * none: 30 days, the hdfs-11741 owner's ruling ("clocks are flipped
+     * by brute force; no physical meaning is attached to the skew").  A
+     * case that wants another window, or a backward one, declares the
+     * clock root's bounds in its {@code root-domains.jsonl}.
      */
-    public static String clockDomain(String variable, String floor) {
-        return clockDomain(variable, floor, JAVA_LONG_MAX);
-    }
-
-    /** The forward window a query may move a clock in: 30 days. */
-    public static final long CLOCK_SKEW_WINDOW_MS_DEFAULT = 2592000000L;
-
-    /** The property that states a window other than the default. */
-    public static final String CLOCK_SKEW_WINDOW_PROPERTY =
-            "causynth.clock.skew.window.ms";
-
-    /** The window this JVM states, in milliseconds. */
-    public static long clockSkewWindowMs() {
-        String stated = System.getProperty(CLOCK_SKEW_WINDOW_PROPERTY);
-        if (stated == null || stated.trim().isEmpty()) {
-            return CLOCK_SKEW_WINDOW_MS_DEFAULT;
-        }
-        try {
-            long value = Long.parseLong(stated.trim());
-            return value <= 0 ? CLOCK_SKEW_WINDOW_MS_DEFAULT : value;
-        } catch (NumberFormatException notAWindow) {
-            return CLOCK_SKEW_WINDOW_MS_DEFAULT;
-        }
-    }
+    public static final long CLOCK_SKEW_WINDOW_MS = 2592000000L;
 
     /**
      * The highest instant a query may answer for a cell read at {@code
-     * reading}: {@code reading + } {@link #clockSkewWindowMs()}, clamped to
-     * {@code Long.MAX_VALUE}.
+     * reading}: {@code reading + } {@link #CLOCK_SKEW_WINDOW_MS}, clamped
+     * to {@code Long.MAX_VALUE}.
      *
      * <p>A CEILING OF {@code Long.MAX_VALUE} IS NOT A CEILING.  An expiry
      * in this codebase is {@code clock + k * interval + lifetime} computed
@@ -134,14 +97,11 @@ public final class JavaPrimitiveSmtSemantics {
      * below {@code Long.MAX_VALUE}, under an expiry of {@code 2 *
      * keyUpdateInterval + tokenLifetime} = 72,600,000 ms.
      *
-     * <p>A window of 30 days is the case owner's own ruling for hdfs-11741
-     * ("clocks are flipped by brute force; no physical meaning is attached
-     * to the skew, so the window is 30 days"), and no wall-clock instant
-     * moved forward by a month can overflow a {@code long}.  A reading no
-     * row states, or one no {@code long} can hold, leaves the ceiling at
-     * {@code Long.MAX_VALUE}: a window around an instant nothing states is
-     * not a window, and inventing one would forbid the instant the run
-     * actually read.</p>
+     * <p>No wall-clock instant moved forward by a month can overflow a
+     * {@code long}.  A reading no row states, or one no {@code long} can
+     * hold, leaves the ceiling at {@code Long.MAX_VALUE}: a window around
+     * an instant nothing states is not a window, and inventing one would
+     * forbid the instant the run actually read.</p>
      */
     public static String clockSkewCeiling(String reading) {
         if (reading == null || reading.trim().isEmpty()) {
@@ -153,28 +113,12 @@ public final class JavaPrimitiveSmtSemantics {
                 return JAVA_LONG_MAX;
             }
             BigInteger ceiling =
-                    instant.add(BigInteger.valueOf(clockSkewWindowMs()));
+                    instant.add(BigInteger.valueOf(CLOCK_SKEW_WINDOW_MS));
             return fitsJavaLong(ceiling) ? ceiling.toString()
                     : JAVA_LONG_MAX;
         } catch (NumberFormatException notAnInstant) {
             return JAVA_LONG_MAX;
         }
-    }
-
-    /**
-     * The same domain over a floor and a ceiling of its own.
-     *
-     * <p>The ceiling is what keeps a model inside the arithmetic the
-     * workload runs: see {@link #clockSkewCeiling}.</p>
-     */
-    public static String clockDomain(String variable, String floor,
-                                     String ceiling) {
-        String lower = floor == null || floor.trim().isEmpty() ? "0"
-                : floor.trim();
-        String upper = ceiling == null || ceiling.trim().isEmpty()
-                ? JAVA_LONG_MAX : ceiling.trim();
-        return "(and (>= " + variable + " " + lower + ") (<= " + variable
-                + " " + upper + "))";
     }
 
     /** Whether this decimal is a value a Java {@code long} can hold. */

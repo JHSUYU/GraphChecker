@@ -166,6 +166,14 @@ public final class ComposeMain {
                 query.append(assertion).append('\n');
             }
         }
+        if (!decision.outcomes().isEmpty()
+                && !decision.outcomes().get(0).pinned().isEmpty()) {
+            query.append("; the clocks the witness does not need, at the "
+                    + "recording\n");
+            for (String pin : decision.outcomes().get(0).pinned()) {
+                query.append(pin).append('\n');
+            }
+        }
         String blocker = blocker(composition, decision);
         if (!blocker.isEmpty()) {
             query.append("(assert false) ; fail closed: ")
@@ -424,6 +432,9 @@ public final class ComposeMain {
                 for (String port : arm.attachEndpointIds()) ports.add(port);
                 row.add("attachEndpointIds", ports);
                 row.addProperty("sessionId", arm.sessionId());
+                JsonArray sessions = new JsonArray();
+                for (String session : arm.sessionIds()) sessions.add(session);
+                row.add("sessionIds", sessions);
                 row.addProperty("producerPathId", arm.producerPathId());
                 JsonArray slots = new JsonArray();
                 for (String slot : arm.interactionIds()) slots.add(slot);

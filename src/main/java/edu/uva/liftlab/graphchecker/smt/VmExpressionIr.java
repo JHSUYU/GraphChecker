@@ -156,20 +156,6 @@ public final class VmExpressionIr {
                 expression.getAsJsonObject(), "_type"));
     }
 
-    /**
-     * Exact serialization of {@code PlaceHolderSymbolExp} for a reference:
-     * an oop the VM observed as an operand without a shadow to name it, so
-     * it carries the class and no identity.  It names no root and no object.
-     */
-    private static final Pattern UNTRACKED_REFERENCE_PLACEHOLDER =
-            Pattern.compile("^P_L'[^']+'_$");
-
-    /** Whether the VM left this reference operand unnamed (no shadow). */
-    public static boolean isUntrackedReferencePlaceholder(String raw) {
-        return raw != null
-                && UNTRACKED_REFERENCE_PLACEHOLDER.matcher(raw).matches();
-    }
-
     /** Whether runtime carrier evidence gave this state a replay-stable id. */
     public static boolean isCanonicalMapStateReference(String raw) {
         return raw != null

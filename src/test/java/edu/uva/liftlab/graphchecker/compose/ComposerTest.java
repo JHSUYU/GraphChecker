@@ -388,9 +388,9 @@ public class ComposerTest {
         assertTrue("and each port's ReadFrom resolves to ITS OWN mint, so "
                         + "one cell declared twice states two reads and "
                         + "not a contradiction: " + fatalArm(all),
-                all.body().contains(SmtLowering.legalSymbols(
+                all.body().contains(SmtNames.legalSymbols(
                         "(not (= 2 " + PLACEHOLDER + "))"))
-                        && all.body().contains(SmtLowering.legalSymbols(
+                        && all.body().contains(SmtNames.legalSymbols(
                         "(not (= 2 " + PLACEHOLDER_TWO + "))")));
         assertFalse("nothing is refused for two rows of one location",
                 says(all.gaps(), GapKind.UNSTATED_VALUE,
@@ -482,13 +482,10 @@ public class ComposerTest {
         }
         Composer.Composition armed = compose(guarded, 8);
         assertEquals(1, armed.families().size());
-        // ONE arm, because a family binds the SENDER OF THE PATH'S OWN
-        // MESSAGE (R3d): each of these two paths reads what its own run
-        // sent, and the family the manifest keeps for this slot is the one
-        // the last path built.  What the guard has to carry is unchanged,
-        // and both replays' valuations are in the query below -- one under
-        // each path's own selector.
-        assertEquals(1, armed.families().get(0).arms().size());
+        // TWO arms: neither run was held to a flip, so each is a
+        // delivery the other's path could have received (DESIGN4 3.4),
+        // and each arm carries its own replay's valuation.
+        assertEquals(2, armed.families().get(0).arms().size());
         for (Arm arm : armed.families().get(0).arms()) {
             assertTrue("an arm carries the delivering replay's valuation "
                             + "of the varied root its expression never "
@@ -616,6 +613,15 @@ public class ComposerTest {
     private static void obligation(Path iteration, String sessionId,
                                    Map<String, String> roots)
             throws IOException {
+        obligation(iteration, sessionId, roots, "nn#u1",
+                Collections.<String>emptyList());
+    }
+
+    /** The same, held to {@code site} and to the inherited flips. */
+    private static void obligation(Path iteration, String sessionId,
+                                   Map<String, String> roots, String site,
+                                   List<String> inherited)
+            throws IOException {
         Path worker = iteration.resolve("obligations-0000")
                 .resolve("ob-" + sessionId);
         Files.createDirectories(worker);
@@ -632,10 +638,19 @@ public class ComposerTest {
         focus.addProperty("taskId", "task-flip");
         focus.addProperty("pathId", "path-flip");
         com.google.gson.JsonObject flip = new com.google.gson.JsonObject();
-        flip.addProperty("siteId", "nn#u1");
+        flip.addProperty("siteId", site);
         flip.addProperty("ordinal", 1);
         flip.addProperty("outcome", true);
         focus.add("flip", flip);
+        com.google.gson.JsonArray held = new com.google.gson.JsonArray();
+        for (String each : inherited) {
+            com.google.gson.JsonObject earlier =
+                    new com.google.gson.JsonObject();
+            earlier.addProperty("siteId", each);
+            earlier.addProperty("ordinal", 1);
+            earlier.addProperty("outcome", true);
+            held.add(earlier);
+        }
         com.google.gson.JsonObject assigned =
                 new com.google.gson.JsonObject();
         for (Map.Entry<String, String> root : roots.entrySet()) {
@@ -645,7 +660,7 @@ public class ComposerTest {
         focus.add("clockDeltas", new com.google.gson.JsonObject());
         focus.add("answers", new com.google.gson.JsonObject());
         focus.add("rootMints", new com.google.gson.JsonObject());
-        focus.add("inheritedFlips", new com.google.gson.JsonArray());
+        focus.add("inheritedFlips", held);
         focus.add("unproducible", new com.google.gson.JsonArray());
         RowCodec.writeJsonl(worker.resolve(ObligationDir.FOCUSED_TASK),
                 Collections.singletonList(focus));
@@ -977,13 +992,12 @@ public class ComposerTest {
         Composer.Composition mixed = compose(positions, 4);
         assertEquals("both runs are paths", 2, mixed.disjuncts().size());
         // The two leaves of one MESSAGE share ONE selector, so the eight
-        // a per-leaf split declared are two: one per path, each binding
-        // the run whose own send that path received (R3d).  What this case
-        // is about survives either count -- a model may not answer the two
-        // leaves out of two different runs -- and with one arm per message
-        // it cannot even be stated.
-        assertEquals("one selector per path, binding its own run's send: "
-                        + mixed.armSelectors(), 2,
+        // a per-leaf split declared are four: one per (path, run whose
+        // world is compatible), each binding both leaves out of that one
+        // run -- so a model may not answer the two leaves out of two
+        // different runs.
+        assertEquals("one selector per (path, compatible run): "
+                        + mixed.armSelectors(), 4,
                 mixed.armSelectors().size());
         assertEquals("and no witness reads an export no run made",
                 "unsat", solver().ask(mixed.query(
@@ -1340,9 +1354,9 @@ public class ComposerTest {
         // clock sits past an instant this run did not read, and pinning the
         // cell to what it DID read refutes it -- so the clock is necessary,
         // the mechanism is CLOCK_SKEW, and the claim has to say WHERE the
-        // cell had to sit.  A clock has a floor and no window, so no
-        // valuation pins one and no valuation can report one: the model is
-        // the only statement of it, and CLOCK_SKEW was published with
+        // cell had to sit.  No valuation pins a clock and none can report
+        // one: the model is the only statement of it, and CLOCK_SKEW was
+        // published with
         // movedRoots {} -- 11741 campaign #3's own claim -- about the one
         // finding whose whole content is that something moved.
         Path skew = folder.newFolder("clock-skew").toPath();
@@ -2208,31 +2222,32 @@ public class ComposerTest {
                         + "enumerated",
                 composition.valuations().get(1).moved()
                         .containsKey(SERIAL_ROOT));
-        assertFalse("and a CLOCK is not a root a valuation moves at all: it "
-                        + "has a floor and no window",
+        assertFalse("and a CLOCK is not a root a valuation moves at all: "
+                        + "its domain is the composer's",
                 composition.valuations().get(1).moved()
                         .containsKey(CLOCK_ROOT));
         // The CELL of a clock is the name the FORMULA names -- the symbol
         // the session minted -- and not the root id the decision keyed its
         // reading by.  Keyed by the root id, no cell was ever declared, so
-        // #clockNecessary answered "no clocks" without a solver run and
+        // #clocksNeeded answered "no clocks" without a solver run and
         // CLOCK_SKEW was unreachable.
         assertEquals("one clock cell, named as the formula names it",
                 Collections.singletonList(CLOCK), composition.clockCells());
         assertEquals("at the instant this session read", Long.valueOf(700L),
                 composition.clockReadings().get(CLOCK));
-        assertTrue("with the floor that makes a value a time at all",
-                composition.body().contains("(>= " + CLOCK + " 0)"));
+        assertTrue("floored at the instant the recording read: a clock "
+                        + "turned back is no run of anything",
+                composition.body().contains("(>= " + CLOCK + " 700)"));
         assertTrue("it is pinned to what the recording read, by a named "
                         + "conjunct an unsat core can read",
                 composition.body().contains("(= " + SERIAL + " 41)")
                         && composition.body().contains("root_domain__"));
         assertTrue("a read whose value the ROW states is pinned to it: "
                         + fatalArm(composition),
-                fatalArm(composition).contains(SmtLowering.legalSymbols(
+                fatalArm(composition).contains(SmtNames.legalSymbols(
                         "(= " + PLACEHOLDER + " 2)")));
         assertTrue("phi's own leaf of that symbol IS that symbol",
-                fatalArm(composition).contains(SmtLowering.legalSymbols(
+                fatalArm(composition).contains(SmtNames.legalSymbols(
                         "(not (= " + PLACEHOLDER + " 3))")));
         assertTrue("a reference read the VM valued is the identity of the "
                         + "object it names, under the SAME name an ordinary "
@@ -2253,28 +2268,28 @@ public class ComposerTest {
         // entry covers.
         assertTrue("the row that states the minted version is pinned to "
                         + "the value it returned: " + fatalArm(composition),
-                fatalArm(composition).contains(SmtLowering.legalSymbols(
+                fatalArm(composition).contains(SmtNames.legalSymbols(
                         "(= " + MINTED + " 2)")));
         assertTrue("and phi's ReadFrom over that version IS that row's "
                         + "symbol: " + fatalArm(composition),
-                fatalArm(composition).contains(SmtLowering.legalSymbols(
+                fatalArm(composition).contains(SmtNames.legalSymbols(
                         "(not (= " + MINTED + " 5))")));
         // The mint laid over a real write: matched by occurrence and
         // location, and valued by the JOIN to the version its row states.
         assertTrue("a placeholder row whose version the write log DOES "
                         + "cover takes the writer's expression, not the "
                         + "value it read: " + fatalArm(composition),
-                fatalArm(composition).contains(SmtLowering.legalSymbols(
+                fatalArm(composition).contains(SmtNames.legalSymbols(
                         "(= " + MINTED_JOINED + " (java_int_wrap (+ "
                                 + SERIAL + " 1)))")));
         assertFalse("so it is not pinned to that value",
-                fatalArm(composition).contains(SmtLowering.legalSymbols(
+                fatalArm(composition).contains(SmtNames.legalSymbols(
                         "(= " + MINTED_JOINED + " 2)")));
         assertTrue("and the term's ReadFrom over the version the MINT "
                         + "carried is that row's symbol, which no row and "
                         + "no write states by version: "
                         + fatalArm(composition),
-                fatalArm(composition).contains(SmtLowering.legalSymbols(
+                fatalArm(composition).contains(SmtNames.legalSymbols(
                         "(not (= " + MINTED_JOINED + " 9))")));
         // A ROW'S OWN SYMBOL IS STATED WHERE THE QUESTION ASKS ABOUT IT,
         // and the five above are the rows it does not.  A read symbol is
@@ -2308,7 +2323,7 @@ public class ComposerTest {
             assertFalse("a row symbol no term of this path names is not "
                             + "written into the query: " + unasked,
                     composition.body().contains(
-                            SmtLowering.legalSymbols(unasked)));
+                            SmtNames.legalSymbols(unasked)));
         }
         // What it does NOT drop: the rows the question DOES reach keep
         // every binding asserted above -- the placeholder's pin, the mint
@@ -2318,12 +2333,12 @@ public class ComposerTest {
         // reach).
         assertTrue("the rows the conjunction asks about are all stated: "
                         + fatalArm(composition),
-                fatalArm(composition).contains(SmtLowering.legalSymbols(
+                fatalArm(composition).contains(SmtNames.legalSymbols(
                         "(= " + PLACEHOLDER + " 2)"))
                         && fatalArm(composition).contains(
-                        SmtLowering.legalSymbols("(= " + MINTED + " 2)"))
+                        SmtNames.legalSymbols("(= " + MINTED + " 2)"))
                         && fatalArm(composition).contains(
-                        SmtLowering.legalSymbols("(= " + MINTED_JOINED
+                        SmtNames.legalSymbols("(= " + MINTED_JOINED
                                 + " (java_int_wrap (+ " + SERIAL + " 1)))")));
 
         // And the one routine says the same of either row.
@@ -2348,7 +2363,7 @@ public class ComposerTest {
                         + guard,
                 guard.contains("container_dag__"));
         assertFalse("which is not a symbol of the recording",
-                SmtLowering.symbols(guard, new LinkedHashSet<String>())
+                SmtNames.symbols(guard, new LinkedHashSet<String>())
                         .contains(SERIAL));
         Set<String> reached = lowering.reachedSymbols(guard,
                 new LinkedHashSet<String>(), new LinkedHashSet<String>());
@@ -2419,7 +2434,7 @@ public class ComposerTest {
 
     /** What z3 answers this lowering's facts asked with one more question. */
     private String viewAnswer(SmtLowering lowering, String question) {
-        String asked = SmtLowering.legalSymbols(question);
+        String asked = SmtNames.legalSymbols(question);
         return solver().ask(lowering.body(Collections.singletonList(asked))
                 + "(assert " + asked + ")\n", null, false).status();
     }
@@ -2519,7 +2534,7 @@ public class ComposerTest {
         assertTrue("and its decision is a conjunct of the path, before the "
                         + "write the sweep reached it at: "
                         + fatalArm(chained),
-                fatalArm(chained).contains(SmtLowering.legalSymbols(
+                fatalArm(chained).contains(SmtNames.legalSymbols(
                         "(> " + CLOCK + " 300)")));
 
         // The same corpus with that earlier write on ANOTHER location: the
@@ -2535,7 +2550,7 @@ public class ComposerTest {
                 alone.clockCells().isEmpty());
         assertFalse("and no decision of that occurrence is in the path: "
                         + fatalArm(alone),
-                fatalArm(alone).contains(SmtLowering.legalSymbols(
+                fatalArm(alone).contains(SmtNames.legalSymbols(
                         "(> " + CLOCK + " 300)")));
 
         // R3b: AN ARM IS CLOSED LIKE A PATH.  The same corpus once more,
@@ -2585,7 +2600,7 @@ public class ComposerTest {
         String clocked = "";
         for (String line : armed.body().split("\n")) {
             if (line.contains("message_arm__")
-                    && line.contains(SmtLowering.legalSymbols(
+                    && line.contains(SmtNames.legalSymbols(
                             "(> " + CLOCK + " 300)"))) {
                 clocked = line;
             }
@@ -2660,7 +2675,7 @@ public class ComposerTest {
      * version 1125, javaType {@code J}, and a reader of that very version
      * on the next seq.  The placeholder row states the SYMBOL and no
      * {@code concreteValue} at all -- deliberately, because a value there
-     * is a pin and {@code ClaimPolicy#clockNecessary} re-asks under that
+     * is a pin and {@code ClaimPolicy#clocksNeeded} re-asks under that
      * same pin, so CLOCK_SKEW could never reach unsat.</p>
      */
     private static final LocationId CLOCK_CELL =
@@ -2694,25 +2709,26 @@ public class ComposerTest {
         // compares.
         assertTrue("the read of the minted version is joined to the root's "
                         + "own symbol: " + bound.body(),
-                bound.body().contains(SmtLowering.legalSymbols(
+                bound.body().contains(SmtNames.legalSymbols(
                         "(= " + CLOCK_READ + " " + CLOCK + ")")));
         assertTrue("which the query declares: " + bound.body(),
-                bound.body().contains(SmtLowering.legalSymbols(
+                bound.body().contains(SmtNames.legalSymbols(
                         "(declare-const " + CLOCK + " Int)")));
 
-        // And its FREEDOM is stated once, as a domain: floor at 0,
-        // ceiling a window above the instant the run read.  Never as a
+        // And its FREEDOM is stated once, as a domain: floor at the
+        // instant the run read, ceiling a window above it.  Never as a
         // pin to that instant -- a query that pins it cannot conclude a
         // skew was needed.
         assertEquals("the cell reaches the composition",
                 Collections.singletonList(CLOCK), bound.clockCells());
         assertTrue("the clock is bounded by its domain: " + bound.body(),
-                bound.body().contains(SmtLowering.legalSymbols(
-                        JavaPrimitiveSmtSemantics.clockDomain(CLOCK, "0",
+                bound.body().contains(SmtNames.legalSymbols(
+                        JavaPrimitiveSmtSemantics.clockDomain(CLOCK,
+                                Long.toString(INSTANT),
                                 JavaPrimitiveSmtSemantics.clockSkewCeiling(
                                         Long.toString(INSTANT))))));
         assertFalse("and NOT pinned to the instant it read: " + bound.body(),
-                bound.body().contains(SmtLowering.legalSymbols(
+                bound.body().contains(SmtNames.legalSymbols(
                         "(= " + CLOCK + " " + INSTANT + ")")));
 
         // THE NEGATIVE, and it is the whole rule: what binds the read is
@@ -2814,7 +2830,7 @@ public class ComposerTest {
                 Collections.singletonList("previous_size"),
                 new ArrayList<String>(SmtNames.letBound(model)));
         assertEquals("and the delegator says the same",
-                SmtNames.letBound(model), SmtLowering.letBound(model));
+                SmtNames.letBound(model), SmtNames.letBound(model));
         // Nesting, in the order the binders appear.
         assertEquals("a nested let binds both, outermost first",
                 Arrays.asList("outer", "inner"),
@@ -2869,24 +2885,24 @@ public class ComposerTest {
     }
 
     // ------------------------------------------------------------------
-    // 16. A disjunct is one session's path, and its message is that
-    //     session's own send (R3d).
+    // 16. A message's arms are the runs whose world is compatible with
+    //     the path's (DESIGN4 3.4).
     // ------------------------------------------------------------------
 
     @Test
-    public void aMessageBindsToThePathsOwnSend() throws Exception {
-        Path iteration = folder.newFolder("own-send").toPath();
+    public void aMessageBindsToEveryCompatibleWorld() throws Exception {
+        Path iteration = folder.newFolder("worlds").toPath();
         Endpoint producer = Endpoint.of(PRODUCER, "PORT.id",
                 at("export#1", 0), 0);
         Endpoint consumer = Endpoint.of(ANCHOR, "PORT.id",
                 at("attach#1", 0), 0);
-        // Two runs, both of which attest what their own producer
-        // delivered: each path's message came in on its own session's
-        // send, and the causal graph already states that edge.
-        for (String[] each : new String[][]{{"s0", "10", "false"},
-                {"s1", "20", "true"}}) {
+        // Four runs, all attesting their own delivery: the seed (no
+        // flip), one held to flip A, one to flip B, and one to B that
+        // inherited A.
+        for (String[] each : new String[][]{{"s0", "10"}, {"s1", "20"},
+                {"s2", "30"}, {"s3", "40"}}) {
             Session session = new Session(iteration, each[0],
-                    "true".equals(each[2]));
+                    !"s0".equals(each[0]));
             session.activation(PRODUCER);
             session.marker("false");
             session.expression("EXPR.v1.id", integer("I",
@@ -2898,43 +2914,54 @@ public class ComposerTest {
             session.target("true", false, true);
             session.write();
         }
+        Map<String, String> none = Collections.emptyMap();
+        obligation(iteration, "s1", none, "a#u1",
+                Collections.<String>emptyList());
+        obligation(iteration, "s2", none, "b#u1",
+                Collections.<String>emptyList());
+        obligation(iteration, "s3", none, "b#u1",
+                Collections.singletonList("a#u1"));
 
         Composer.Composition composition = compose(iteration, 4);
-        assertEquals(2, composition.disjuncts().size());
-        // ONE ARM PER PATH, not one per session of the corpus: the other
-        // run's delivery of the same message is redundancy, and it is
-        // where a witness gets invented.
-        assertEquals("one arm per path and no disjunction: "
-                        + composition.armSelectors(),
-                2, composition.armSelectors().size());
+        assertEquals(4, composition.disjuncts().size());
         Map<String, String> ofPath = new LinkedHashMap<String, String>();
         for (Composer.Disjunct disjunct : composition.disjuncts()) {
             ofPath.put(ordinal(disjunct.selector()),
                     disjunct.path().sessionId);
         }
+        Map<String, Set<String>> armsOf =
+                new LinkedHashMap<String, Set<String>>();
         for (String selector : composition.armSelectors()) {
-            ComposedFamilies.ArmChoice choice = composition.arm(selector);
-            assertEquals("the arm this path binds is its own session's "
-                            + "send: " + selector,
-                    ofPath.get(ordinal(selector)), choice.sessionId());
+            String path = ofPath.get(ordinal(selector));
+            if (!armsOf.containsKey(path)) {
+                armsOf.put(path, new LinkedHashSet<String>());
+            }
+            armsOf.get(path).add(composition.arm(selector).sessionId());
         }
+        // One flip set contains the other: the seed's empty world is
+        // compatible with every run and every run with it; A and B are
+        // incomparable; {A, B} contains both.
+        assertEquals("the seed's path takes any run's delivery",
+                new LinkedHashSet<String>(Arrays.asList("s0", "s1", "s2",
+                        "s3")), armsOf.get("s0"));
+        assertEquals("a path under A never takes a delivery made under B "
+                        + "alone", new LinkedHashSet<String>(
+                        Arrays.asList("s0", "s1", "s3")), armsOf.get("s1"));
+        assertEquals(new LinkedHashSet<String>(
+                Arrays.asList("s0", "s2", "s3")), armsOf.get("s2"));
+        assertEquals("and the path under both takes every delivery",
+                new LinkedHashSet<String>(Arrays.asList("s0", "s1", "s2",
+                        "s3")), armsOf.get("s3"));
         for (Family family : composition.families()) {
-            assertEquals("and the family states that one delivery: "
-                    + family, 1, family.arms().size());
+            assertEquals("the manifest states the arms the last path "
+                    + "built: " + family, 4, family.arms().size());
         }
-        assertFalse("a family that did not widen says nothing: "
-                        + composition.gaps(),
-                says(composition.gaps(), GapKind.UNATTESTED_ARM,
-                        "is not eligible to have sent the message it bound")
-                        || says(composition.gaps(), GapKind.UNSTATED_VALUE,
-                        "is not eligible to have sent the message it "
-                                + "bound"));
     }
 
     @Test
-    public void aFamilyThatWidensSaysWhichLeafRuledThePathOut()
+    public void aRunThatRanALeafConcretelyIsNoOptionForTheMessage()
             throws Exception {
-        Path iteration = folder.newFolder("widened").toPath();
+        Path iteration = folder.newFolder("concrete-leaf").toPath();
         // ONE MESSAGE, TWO LEAVES, under one correlation id -- the shape
         // an array payload has: every position is its own handoff leaf.
         Endpoint head = Endpoint.of(PRODUCER, "PORT.keys",
@@ -2948,7 +2975,7 @@ public class ComposerTest {
         // s0 attests both leaves; s1 instrumented the head's occurrence
         // and ran the TAIL's concretely, so its arm there states what was
         // delivered and not why -- R3c' does not admit it, and the path it
-        // owns has to be answered by a run that says why.
+        // owns is answered by the run that says why.
         for (String[] each : new String[][]{{"s0", "10", "false"},
                 {"s1", "20", "true"}}) {
             boolean flip = "true".equals(each[1 + 1]);
@@ -2974,21 +3001,8 @@ public class ComposerTest {
         }
 
         Composer.Composition composition = compose(iteration, 4);
-        String leaf = Interaction.of(InteractionKind.WIRE, tail, second)
-                .id();
-        assertTrue("the widening is filed, naming the message, the path's "
-                        + "own session and the leaf that ruled it out: "
-                        + composition.gaps(),
-                widened(composition.gaps(), "s1", "corr-m",
-                        "its producer occurrence ran concretely at leaf "
-                                + leaf));
-        assertTrue("and how many arms it fell back to: "
-                        + composition.gaps(),
-                widened(composition.gaps(), "s1", "corr-m",
-                        "widens to the 1 eligible session(s)"));
-        assertFalse("the path whose own run is eligible widens in "
-                        + "nothing: " + composition.gaps(),
-                widened(composition.gaps(), "s0", "corr-m", ""));
+        assertEquals("both paths are in the disjunction", 2,
+                composition.disjuncts().size());
         for (String selector : composition.armSelectors()) {
             assertEquals("every arm of this corpus is s0's, because s0 is "
                             + "the only run attested at every leaf",
@@ -3009,11 +3023,11 @@ public class ComposerTest {
         Endpoint second = Endpoint.of(ANCHOR, "PORT.keys",
                 at("attach#2", 0), 0);
         // s0 attests both leaves.  s2 ran the tail's occurrence
-        // concretely, so its own two-leaf message widens.  s1 exported a
-        // SHORTER response -- one leaf, attested -- and R3c' is unchanged
-        // by this ruling: a run that never sent the second leaf is no
-        // option for a message that has one, so the widening reaches s0
-        // and s0 alone.
+        // concretely, so it is no option for its own two-leaf message.
+        // s1 exported a SHORTER response -- one leaf, attested -- and
+        // R3c' is unchanged by this ruling: a run that never sent the
+        // second leaf is no option for a message that has one, so the
+        // two-leaf message binds to s0 and s0 alone.
         Session seed = new Session(iteration, "s0", false);
         seed.activation(PRODUCER);
         seed.activation(UPSTREAM);
@@ -3057,9 +3071,6 @@ public class ComposerTest {
         concrete.write();
 
         Composer.Composition composition = compose(iteration, 4);
-        assertTrue("s2's family widens: " + composition.gaps(),
-                widened(composition.gaps(), "s2", "corr-m",
-                        "widens to the 1 eligible session(s)"));
         for (String selector : composition.armSelectors()) {
             ComposedFamilies.ArmChoice choice = composition.arm(selector);
             // The two-leaf message alone: s1's own one-leaf arrival is a
@@ -3069,21 +3080,6 @@ public class ComposerTest {
                             + "response: " + selector,
                     "s1".equals(choice.sessionId()));
         }
-    }
-
-    /** Whether the widening of one (session, message) was filed. */
-    private static boolean widened(List<GapRow> gaps, String session,
-                                   String message, String fragment) {
-        for (GapRow gap : gaps) {
-            if (!gap.sessionId().equals(session)) continue;
-            if (!gap.subject().equals(message)) continue;
-            if (!gap.detail().contains("is not eligible to have sent the "
-                    + "message it bound")) {
-                continue;
-            }
-            if (gap.detail().contains(fragment)) return true;
-        }
-        return false;
     }
 
     /** The ordinal one selector was made under. */
@@ -3374,12 +3370,12 @@ public class ComposerTest {
         }
 
         /**
-         * A declared CLOCK: no window, only the instant it read.
+         * A declared CLOCK: the instant it read; the domain is the
+         * composer's ({@code Composer.clocks}).
          *
-         * <p>A clock cell is not a root a valuation moves -- it has a floor
-         * and no domain -- and what names it in a composed query is the
-         * SYMBOL the session minted, which is what a decision's reading has
-         * to be joined to ({@code Composer.clocks}).</p>
+         * <p>A clock cell is not a root a valuation moves, and what names
+         * it in a composed query is the SYMBOL the session minted, which
+         * is what a decision's reading has to be joined to.</p>
          */
         void clock(String recorded) {
             roots.add(RootMintRow.of(id, ++seq, ANCHOR, CLOCK_ROOT, CLOCK,

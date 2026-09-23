@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.explore;
 
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
+import edu.uva.liftlab.graphchecker.compose.SmtNames;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.Task;
 
@@ -65,7 +66,7 @@ final class FlipQueryText {
                         ? declaration.render()
                         : "(define-fun " + declaration.name + " () "
                         + declaration.sort + " "
-                        + SmtLowering.rename(declaration.body, rename,
+                        + SmtNames.rename(declaration.body, rename,
                         name -> scope.stated(name, sessionId),
                         new LinkedHashSet<String>()) + ")");
             }
@@ -109,7 +110,7 @@ final class FlipQueryText {
         for (String sessionId : lowered) {
             SmtLowering lowering = corpus.lowering(sessionId);
             if (lowering == null) continue;
-            opening.addAll(SmtLowering.reachedPreamble(
+            opening.addAll(SmtNames.reachedPreamble(
                     lowering.preambleLines(), reaching));
         }
         if (opening.isEmpty()) opening.add("(set-logic ALL)");
@@ -135,6 +136,6 @@ final class FlipQueryText {
         // question that was actually solved and not a second one.
         // A name SMT-LIB cannot spell bare is quoted, once, on the way
         // out -- the same routine the composed query is rendered by.
-        return SmtLowering.legalSymbols(text.toString());
+        return SmtNames.legalSymbols(text.toString());
     }
 }
