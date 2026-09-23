@@ -175,7 +175,7 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
     public void aConfiguredSourceMintStatesItsRootAndItsVersion()
             throws Exception {
         RowRuntime.configure(sessionFile());
-        CausynthTraceRecorder.setRecordingStartedForTests(true);
+        RecordingWindow.open();
         long invocation = CausynthTraceRecorder.beginCall(0L, SOURCE_METHOD,
                 UNIT, SOURCE_METHOD, new Object());
         try {

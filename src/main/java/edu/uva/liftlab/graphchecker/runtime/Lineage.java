@@ -28,11 +28,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * an {@code InheritableThreadLocal} reaches.</p>
  */
 public final class Lineage {
-    /** k for the root hops of one (node, role, api) in this window. */
+    /** k for the root hops of one (window, node, role, api). */
     private static final Map<String, AtomicInteger> COUNTERS =
             new ConcurrentHashMap<String, AtomicInteger>();
-    /** Which recording window this JVM is in: 0 until the workload opens one. */
-    private static volatile int window;
     private static final AtomicLong TOKENS = new AtomicLong(1L);
     private static final InheritableThreadLocal<List<Frame>> STACK =
             new InheritableThreadLocal<List<Frame>>() {
@@ -73,7 +71,7 @@ public final class Lineage {
         private final boolean root;
         /** Whether this root is a TURN of a loop ({@link #pushRoot}). */
         private final boolean turn;
-        /** The window this hop was entered in ({@link #window}). */
+        /** The window this hop was entered in ({@link RecordingWindow}). */
         private final int window;
         /** The producer endpoint whose message opened this scope, or "". */
         private String anchor = "";
@@ -151,8 +149,10 @@ public final class Lineage {
         String node = Text.safe(nodeKey);
         Role kind = role == null ? Role.UNKNOWN : role;
         String family = Text.safe(api);
+        // k counts within the window: the counter is the window's.
+        int window = RecordingWindow.index();
         int k = root
-                ? counter(node + "\n" + kind.name() + "\n"
+                ? counter(window + "\n" + node + "\n" + kind.name() + "\n"
                         + family).incrementAndGet()
                 : 0;
         long token = TOKENS.getAndIncrement();
@@ -341,7 +341,8 @@ public final class Lineage {
     public static int rootWindowIndex() {
         Frame root = root();
         if (root == null) return 0;
-        return root.turn && root.window != window ? 0 : root.k;
+        return root.turn && root.window != RecordingWindow.index()
+                ? 0 : root.k;
     }
 
     /**
@@ -397,12 +398,6 @@ public final class Lineage {
     }
 
 
-    /** Opens the recording window: k counts from here, in every replay. */
-    public static void openWindow() {
-        window++;
-        COUNTERS.clear();
-    }
-
     private static AtomicInteger counter(String scope) {
         AtomicInteger counter = COUNTERS.get(scope);
         if (counter != null) return counter;
@@ -413,7 +408,6 @@ public final class Lineage {
 
     /** Test hook: one window, one thread, nothing carried over. */
     public static void resetForTests() {
-        window = 0;
         COUNTERS.clear();
         STACK.remove();
         RESTORED.remove();

@@ -483,7 +483,7 @@ final class BranchObservation {
         } catch (Throwable throwable) {
             RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.UNATTESTED_ARM,
                     edu.uva.liftlab.graphchecker.contract.GapClass.BLOCKING,
-                    firstNonBlank(active.occurrenceId(),
+                    firstNonBlank(active.address(),
                             Long.toString(active.token)),
                     "the path condition this branch observation paused was"
                             + " not resumed, so every decision this"

@@ -199,7 +199,7 @@ final class LoopAccounting {
                         .BOUND_INSUFFICIENT,
                 edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
                 edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank(
-                        active.occurrenceId(), Long.toString(active.token)),
+                        active.address(), Long.toString(active.token)),
                 "this activation's local path was cut: " + cut.getMessage());
         ConcolicRegionRuntime.finish(active.token, "CUT", "", null);
     }

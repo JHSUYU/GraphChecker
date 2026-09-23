@@ -26,7 +26,7 @@ public class SaslExchangeHalfTest {
     public void reset() {
         RuntimeTraceContext.resetForTests();
         RowRuntime.resetForTests();
-        CausynthTraceRecorder.setRecordingStartedForTests(true);
+        RecordingWindow.open();
     }
 
     @After
@@ -34,7 +34,7 @@ public class SaslExchangeHalfTest {
         CausynthMessagePropagation.endInbound();
         RuntimeTraceContext.resetForTests();
         RowRuntime.resetForTests();
-        CausynthTraceRecorder.setRecordingStartedForTests(false);
+        RecordingWindow.reset();
     }
 
     @Test

@@ -791,7 +791,7 @@ public class ManualMintStatesItsValueTest {
     public void aHookMintsOnlyWhereItsOccurrenceRunsSymbolic()
             throws Exception {
         openSession();
-        CausynthTraceRecorder.setRecordingStartedForTests(true);
+        RecordingWindow.open();
         ActiveRegion concrete = addressed(open(taskAt(CONCRETE_TASK,
                 CONCRETE_ADDRESS)), CONCRETE_ADDRESS);
         ActiveRegion focused = addressed(open(taskAt(FOCUSED_TASK,

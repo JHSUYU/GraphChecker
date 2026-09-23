@@ -24,9 +24,6 @@ import java.util.Deque;
  * it is innermost.</p>
  */
 final class WakeScopes {
-    /** On or off (A/B switch); on unless a run says otherwise. */
-    static final String PROPERTY = "causynth.wake.scope";
-
     private static final ThreadLocal<Deque<Long>> OPEN =
             new ThreadLocal<Deque<Long>>() {
                 @Override
@@ -38,14 +35,8 @@ final class WakeScopes {
     private WakeScopes() {
     }
 
-    private static boolean enabled() {
-        return !"false".equalsIgnoreCase(
-                Text.safe(System.getProperty(PROPERTY)));
-    }
-
     /** The loop waits: the turn it was running is over. */
     static void waiting(String site) {
-        if (!enabled()) return;
         ScheduleLog.mute();
         try {
             Deque<Long> open = OPEN.get();
@@ -62,8 +53,7 @@ final class WakeScopes {
 
     /** The wait returned: the loop's next turn begins. */
     static void woke(String site) {
-        if (!enabled()) return;
-        if (!CausynthTraceRecorder.recordingStarted()) return;
+        if (!RecordingWindow.opened()) return;
         ScheduleLog.mute();
         try {
             long token = RuntimeTraceContext.beginWake(api(site));
@@ -93,9 +83,5 @@ final class WakeScopes {
         int space = head.lastIndexOf(' ');
         String method = space < 0 ? head : head.substring(space + 1);
         return simple + "." + method;
-    }
-
-    static void resetForTests() {
-        OPEN.remove();
     }
 }

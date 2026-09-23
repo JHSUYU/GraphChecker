@@ -29,7 +29,7 @@ public class LineageWindowTest {
         long before = Lineage.pushRoot("hdfs/dn0", actor, "");
         assertEquals("before the window it is the loop's first turn", 1,
                 Lineage.rootWindowIndex());
-        Lineage.openWindow();
+        RecordingWindow.open();
         assertEquals("inside the window it is the set-up's turn", 0,
                 Lineage.rootWindowIndex());
         Lineage.pop(before);
@@ -43,7 +43,7 @@ public class LineageWindowTest {
     public void aRequestOpenedBeforeTheWindowKeepsItsK() {
         long request = Lineage.push("hdfs/balancer", Role.CLIENT,
                 "balance-block");
-        Lineage.openWindow();
+        RecordingWindow.open();
         assertEquals("the workload decides how many requests it opens", 1,
                 Lineage.rootWindowIndex());
         Lineage.pop(request);

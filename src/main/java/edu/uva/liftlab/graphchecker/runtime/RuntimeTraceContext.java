@@ -30,8 +30,6 @@ final class RuntimeTraceContext {
             new LinkedHashMap<>();
     private static final IdentityHashMap<Object, Seed> ASYNC_SEEDS =
             new IdentityHashMap<>();
-    private static final Map<String, Long> REQUEST_OCCURRENCES =
-            new LinkedHashMap<>();
     private static final InheritableThreadLocal<State> CURRENT =
             new InheritableThreadLocal<State>() {
                 @Override
@@ -114,15 +112,6 @@ final class RuntimeTraceContext {
         long requestId = nextId();
         String normalizedApi = MapFields.safe(apiName).trim();
         if (normalizedApi.isEmpty()) normalizedApi = "request";
-        long requestOccurrence;
-        synchronized (LOCK) {
-            String requestFamily = source.key() + "\n" + normalizedApi;
-            Long prior = REQUEST_OCCURRENCES.get(requestFamily);
-            requestOccurrence = prior == null ? 1L : prior + 1L;
-            REQUEST_OCCURRENCES.put(requestFamily, requestOccurrence);
-        }
-        String requestKey = source.key() + "/request/" + normalizedApi
-                + "#" + requestOccurrence;
         Frame activeFrame = state.frames.peek();
         ScopeFrame scope = new ScopeFrame(requestId, state, activeFrame);
         // The workload's own action is the root of this lineage: every
@@ -130,6 +119,10 @@ final class RuntimeTraceContext {
         // which k-th one, instead of only which request key was in force.
         scope.lineageToken = Lineage.push(source.key(), Role.CLIENT,
                 normalizedApi);
+        // The key's ordinal is that lineage's k -- one counter -- and it
+        // addresses nothing: the trace and the wire header carry it as text.
+        String requestKey = source.key() + "/request/" + normalizedApi
+                + "#" + Lineage.rootWindowIndex();
         // A root the thread opens for itself: the index of what runs inside
         // begins at the request, and a start frame standing above it is the
         // frame of the ROOT that carried this thread here, not of the
@@ -277,16 +270,6 @@ final class RuntimeTraceContext {
             if (scope.opened != null) return scope.opened;
         }
         return null;
-    }
-
-    /**
-     * The attribution before {@link Attribution}: the receiver's own
-     * registration, else the thread's ambient source.  Only for the A/B
-     * switch ({@code causynth.attribution=ambient}).
-     */
-    static SourceRef ambientSource(Object receiver) {
-        SourceRef registered = sourceFor(receiver);
-        return registered != null ? registered : CURRENT.get().source;
     }
 
     /**
@@ -516,15 +499,9 @@ final class RuntimeTraceContext {
                 && !UNREGISTERED_SOURCE.key().equals(source.key())) {
             String api = MapFields.safe(roleName).trim();
             if (api.isEmpty()) api = "tick";
-            long turn;
-            synchronized (LOCK) {
-                String family = source.key() + "\ntick\n" + api;
-                Long prior = REQUEST_OCCURRENCES.get(family);
-                turn = prior == null ? 1L : prior + 1L;
-                REQUEST_OCCURRENCES.put(family, turn);
-            }
             state.source = source;
-            state.requestKey = source.key() + "/tick/" + api + "#" + turn;
+            state.requestKey = source.key() + "/tick/" + api + "#"
+                    + Lineage.rootWindowIndex();
             state.requestApi = api;
         }
         // A tick is a WAKE: the turn a daemon's loop hands its thread.
@@ -601,13 +578,6 @@ final class RuntimeTraceContext {
         if (normalizedApi.isEmpty()) normalizedApi = "wake";
         State state = CURRENT.get();
         long token = nextId();
-        long turn;
-        synchronized (LOCK) {
-            String family = source.key() + "\nwake\n" + normalizedApi;
-            Long prior = REQUEST_OCCURRENCES.get(family);
-            turn = prior == null ? 1L : prior + 1L;
-            REQUEST_OCCURRENCES.put(family, turn);
-        }
         Frame activeFrame = state.frames.peek();
         ScopeFrame scope = new ScopeFrame(token, state, activeFrame);
         scope.opened = source;
@@ -619,7 +589,7 @@ final class RuntimeTraceContext {
         state.scopes.push(scope);
         state.source = source;
         state.requestKey = source.key() + "/wake/" + normalizedApi + "#"
-                + turn;
+                + Lineage.rootWindowIndex();
         state.requestApi = normalizedApi;
         if (activeFrame != null) activeFrame.source = source;
         publishCausalSource(state);
@@ -976,27 +946,20 @@ final class RuntimeTraceContext {
             SOURCE_ALIASES.clear();
             SOURCES_BY_KEY.clear();
             ASYNC_SEEDS.clear();
-            REQUEST_OCCURRENCES.clear();
         }
         CURRENT.remove();
         IDS.set(1L);
         // A fixture models a run that is recording: the workload under test
         // has opened its window.  A test about the window itself says
         // otherwise for itself.
-        CausynthTraceRecorder.setRecordingStartedForTests(true);
+        RecordingWindow.reset();
+        RecordingWindow.open();
     }
 
     private static Seed takeSeed(Object carrier) {
         if (carrier == null) return null;
         synchronized (LOCK) {
             return ASYNC_SEEDS.remove(carrier);
-        }
-    }
-
-    private static Seed peekSeed(Object carrier) {
-        if (carrier == null) return null;
-        synchronized (LOCK) {
-            return ASYNC_SEEDS.get(carrier);
         }
     }
 
@@ -1108,22 +1071,10 @@ final class RuntimeTraceContext {
         return source == null ? "" : source.key();
     }
 
-    /** The node the running thread resolves to, or null when none. */
-    static SourceRef resolvedHere() {
-        return Attribution.resolve(null);
-    }
-
     /** The source an activation nothing attributed belongs to: the
      *  planner's own constant, so the two ends name one population. */
     static final SourceRef UNREGISTERED_SOURCE =
             RuntimeRegionPlanner.UNREGISTERED_SOURCE;
-
-    private static SourceRef attributedSource(SourceRef registered, Seed seed,
-                                              SourceRef ambient) {
-        if (registered != null) return registered;
-        if (seed != null && seed.source != null) return seed.source;
-        return ambient;
-    }
 
     private static SourceRef canonicalSourceLocked(SourceRef source) {
         SourceRef existing = SOURCES_BY_KEY.get(source.key());
@@ -1186,7 +1137,7 @@ final class RuntimeTraceContext {
      * Registration before the window is state, not the window.</p>
      */
     static boolean recordingWindowOpen() {
-        return CausynthTraceRecorder.recordingStarted();
+        return RecordingWindow.opened();
     }
 
     /** Whether {@code sourceKey} names an epoch of its node at all. */

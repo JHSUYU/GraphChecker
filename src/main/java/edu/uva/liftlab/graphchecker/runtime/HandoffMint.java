@@ -61,9 +61,7 @@ final class HandoffMint {
                                              Object owner,
                                              String declaringClass,
                                              String fieldName,
-                                             String descriptor,
-                                             String producerTaskId,
-                                             String producerOccurrenceId) {
+                                             String descriptor) {
         if (site == null) return;
         ActiveRegion active = attachConsumerRegion(site);
         if (active == null) {
@@ -75,10 +73,6 @@ final class HandoffMint {
             } finally {
                 ConcolicRegionRuntime.endBookkeeping();
             }
-            return;
-        }
-        if (safe(producerTaskId).isEmpty()
-                || safe(producerOccurrenceId).isEmpty()) {
             return;
         }
         long exportEvent = result.ok()
@@ -113,8 +107,8 @@ final class HandoffMint {
         }
         Interactions.deliveringAt(attachEvent);
         mintHandoffVariable(active, site, exportEvent, attachEvent,
-                expression, producerTaskId, producerOccurrenceId, owner,
-                declaringClass, fieldName, descriptor, false);
+                expression, owner, declaringClass, fieldName, descriptor,
+                false);
     }
 
     /**
@@ -140,7 +134,7 @@ final class HandoffMint {
                         descriptor);
                 return;
             }
-                mintHandoffVariable(active, site, 0L, 0L, null, "", "", carrier,
+                mintHandoffVariable(active, site, 0L, 0L, null, carrier,
                     ConcolicRegionRuntime.CARRIER_CLASS, field, descriptor, true);
         } finally {
             ConcolicRegionRuntime.endBookkeeping();
@@ -192,7 +186,6 @@ final class HandoffMint {
     private static void mintHandoffVariable(
             ActiveRegion active, CommunicationHandoffSpec site,
             long exportEvent, long attachEvent, JsonElement producerExpression,
-            String producerTaskId, String producerOccurrenceId,
             Object owner, String declaringClass, String fieldName,
             String descriptor, boolean elementAbsent) {
         String portId = safe(site.portId());
@@ -213,8 +206,7 @@ final class HandoffMint {
         }
         for (HandoffLeaf leaf : leaves) {
             mintHandoffLeaf(active, portId, exportEvent, attachEvent,
-                    producerExpression, producerTaskId, producerOccurrenceId,
-                    leaf, elementAbsent);
+                    producerExpression, leaf, elementAbsent);
         }
     }
 
@@ -231,7 +223,6 @@ final class HandoffMint {
     private static void mintHandoffLeaf(
             ActiveRegion active, String portId, long exportEvent,
             long attachEvent, JsonElement producerExpression,
-            String producerTaskId, String producerOccurrenceId,
             HandoffLeaf leaf, boolean elementAbsent) {
         String elementPath = leaf.path;
         // H belongs to the occurrence the plan declares this IN site on,

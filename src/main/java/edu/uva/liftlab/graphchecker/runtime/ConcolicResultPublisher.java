@@ -16,7 +16,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ACTIVE;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.HALT_AFTER_SELECTED_RESULT_PROPERTY;
 import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.assembleRecordedSharedState;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.rootCause;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.configuration;
@@ -283,7 +282,6 @@ final class ConcolicResultPublisher {
             taskUnanswered(active.activation, "RESULT_PUBLICATION_REJECTED: "
                     + "the row publication of a completed VM occurrence could"
                     + " not be enqueued: " + rootCause(rejected));
-            haltWhenCampaignSettled(active.activation.taskId, 2);
             return false;
         }
     }
@@ -299,10 +297,6 @@ final class ConcolicResultPublisher {
             RowPublication.publish(active);
             if (resultAnswersSelectedGoal(active)) {
                 configuration().markOccurrenceClaimed(active.activation);
-                // A compatible root is only a candidate for an occurrence
-                // address.  Keep admitting candidates until the selected
-                // target is reached.
-                haltWhenCampaignSettled(active.activation.taskId, 0);
             }
         } catch (Throwable failure) {
             // Admission was already reopened after the VM raw read-out.  A
@@ -322,26 +316,9 @@ final class ConcolicResultPublisher {
                         + " TASK_UNANSWERED for "
                         + active.activation.taskId + ": "
                         + rootCause(reportingFailure));
-            } finally {
-                haltWhenCampaignSettled(active.activation.taskId, 2);
             }
         } finally {
             endSelectedResultPublication();
-        }
-    }
-
-    /**
-     * Ends the workload once every campaign task has reached a terminal
-     * outcome, when the caller asked for that.
-     */
-    static void haltWhenCampaignSettled(String taskId, int status) {
-        int campaignStatus = configuration().settle(taskId, status);
-        if (campaignStatus >= 0 && Boolean.getBoolean(
-                HALT_AFTER_SELECTED_RESULT_PROPERTY)) {
-            // A halt runs no shutdown hook, so the run's totals are
-            // published here or never.
-            publishRunTotals();
-            Runtime.getRuntime().halt(campaignStatus);
         }
     }
 

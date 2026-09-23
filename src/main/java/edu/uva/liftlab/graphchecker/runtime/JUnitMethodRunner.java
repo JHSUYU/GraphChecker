@@ -45,16 +45,14 @@ public final class JUnitMethodRunner {
                 // under it would be refused anyway.
                 ConcolicResultPublisher.awaitSelectedResultPublications();
                 // And then what only the end of a run can state, on the one
-                // exit path every replay takes.  The seed replay also
-                // reaches this through the halt after its selected result
-                // settled; a focused replay does not halt, and the shutdown
-                // hook that would have done it is registered only when some
-                // candidate went unaddressed -- so a focused session whose
-                // every candidate was addressed closed with no expression
-                // table at all (2 bytes, the "{}" written when the session
-                // dir was created) while its rows cited 28 refs.  One
-                // publication path for both kinds of session;
-                // publishRunTotals is once per JVM.
+                // exit path every replay takes.  The shutdown hook that
+                // would have done it is registered only when some candidate
+                // went unaddressed -- so a focused session whose every
+                // candidate was addressed closed with no expression table
+                // at all (2 bytes, the "{}" written when the session dir
+                // was created) while its rows cited 28 refs.  One
+                // publication path for every session; publishRunTotals is
+                // once per JVM.
                 ConcolicResultPublisher.publishRunTotals();
                 reportWorkloadSessionClose();
             }
@@ -71,8 +69,7 @@ public final class JUnitMethodRunner {
         // campaign would wait on it instead of reading its outcome.  The
         // status is the outcome the uncaught throwable used to carry: 0 when
         // the workload method returned, 1 when it, a publication or the
-        // session close did not.  A concolic worker still reaches its own
-        // halt after the selected result settles and never gets here.
+        // session close did not.
         System.exit(status);
     }
 

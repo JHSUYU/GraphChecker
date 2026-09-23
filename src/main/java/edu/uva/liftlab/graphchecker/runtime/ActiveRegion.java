@@ -51,14 +51,9 @@ final class ActiveRegion {
     /** The one task whose region-local path this activation records. */
     final RuntimeTask activation;
     /**
-     * This activation's identity v2 address, or null when this run can
-     * name no node to put it on.
-     *
-     * <p>{@code node#epoch / lineage hops / region#k} (IDENTITY-V2): the
-     * address every contract row of this activation is keyed by.  The v1
-     * {@link #occurrenceId()} is unchanged beside it -- the two are
-     * minted from the same activation and nothing reads one for the
-     * other.</p>
+     * This activation's address, or null when this run can name no node to
+     * put it on: the address every contract row of this activation is
+     * keyed by (IDENTITY-V3).
      */
     edu.uva.liftlab.graphchecker.contract.OccurrenceAddress d3Address;
     /** Whether this activation counts against its address's set. */
@@ -130,8 +125,6 @@ final class ActiveRegion {
             new LinkedHashMap<>();
     /** Read-out batch every record of this activation is stamped with. */
     final Set<String> materialized = new LinkedHashSet<>();
-    private final Map<String, Integer> branchOccurrences =
-            new LinkedHashMap<>();
     final ConcolicRegionRuntime.OccurrenceCounter
             materializationOccurrences =
             new ConcolicRegionRuntime.OccurrenceCounter();
@@ -193,18 +186,9 @@ final class ActiveRegion {
         activation.releaseActivation();
     }
 
-    /**
-     * This activation's own occurrence identity.
-     *
-     * <p>The address, and nothing appended to it. Identity v1 numbered
-     * the activations of one planned address and wrote {@code #a<n>}
-     * beside it, because two runs of one address were two occurrences it
-     * could not otherwise tell apart. Identity v3 distinguishes them by
-     * the execution index they entered under, so an address IS the
-     * occurrence and a suffix would be a second identity beside it.</p>
-     */
-    String occurrenceId() {
-        return safe(activation.occurrenceId);
+    /** This activation's address as a row names it, or "" when unnamed. */
+    String address() {
+        return d3Address == null ? "" : d3Address.render();
     }
 
     /**
@@ -276,33 +260,6 @@ final class ActiveRegion {
     }
 
     /**
-     * The ordinal of the next decision this activation takes at one site.
-     *
-     * <p>I3 -- ROWS AND ORDINALS BELONG TO THE PERFORMER: the performer is
-     * the occurrence running on this thread, and the count is kept there
-     * ({@code Identity#nextBranchOrdinal}), beside the address the row
-     * carries.  Counted per ACTIVATION, two activations that fold into one
-     * occurrence (I1) each start at 1 and two of their rows collide at
-     * (occurrence, site, ordinal) -- which is the pair an obligation's flip
-     * is addressed by, and the pair {@code RowPublication#decisions} claims
-     * each decision event under.</p>
-     *
-     * <p>The activation-local count remains for an activation running
-     * outside every open region: a test that drives this class directly,
-     * and any entry whose occurrence this run could name no node for.  It is
-     * a count of this activation's own decisions, which is what it always
-     * was.</p>
-     */
-    private int nextBranchOccurrence(String siteId) {
-        int onPerformer = RowRuntime.nextBranchOrdinal(siteId);
-        if (onPerformer > 0) return onPerformer;
-        Integer previous = branchOccurrences.get(siteId);
-        int occurrence = previous == null ? 1 : previous + 1;
-        branchOccurrences.put(siteId, occurrence);
-        return occurrence;
-    }
-
-    /**
      * Records a decision while the symbolic gate is closed, and answers
      * with the occurrence of the site it charged, or {@code 0} where
      * nothing was recorded.
@@ -314,7 +271,7 @@ final class ActiveRegion {
             // returned for every undeclared site, so the site here is
             // always one the plan named.
             String site = SiteId.render(method, unitIndex);
-            int occurrence = nextBranchOccurrence(site);
+            int occurrence = RowRuntime.nextBranchOrdinal(site);
             recordDecisionRow(method, unitIndex, occurrence,
                     decision.outcome());
             if (activation.targetBranchSite.equals(site)
@@ -379,7 +336,7 @@ final class ActiveRegion {
             String method, int unitIndex, String expression)
             throws Exception {
         String site = SiteId.render(method, unitIndex);
-        int occurrence = nextBranchOccurrence(site);
+        int occurrence = RowRuntime.nextBranchOrdinal(site);
         long sequence = ++preparedBranchSequence;
         if (sequence > Integer.MAX_VALUE) {
             return null;
@@ -532,7 +489,7 @@ final class ActiveRegion {
     /** This activation, as a row about its mint names it. */
     private String mintAddress() {
         return edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank(
-                d3Address == null ? "" : d3Address.render(), occurrenceId(),
+                address(),
                 Long.toString(token)) + " of region "
                 + safe(activation.regionId);
     }
@@ -621,7 +578,6 @@ final class ActiveRegion {
         }
         row.addProperty("sourceId", safe(sourceId));
         row.addProperty("sourcePhaseId", entry.phaseId());
-        row.addProperty("occurrenceId", occurrenceId());
         row.addProperty("siteId", entry.siteId);
         row.addProperty("fieldSignature", safe(fieldSignature));
         row.addProperty("symbol", safe(symbol));
@@ -660,8 +616,7 @@ final class ActiveRegion {
         ActiveRegion owner = ConcolicRegionRuntime.declaringRegion(
                 new ConcolicRegionRuntime.Declares.Root(rootId));
         if (owner == null) owner = this;
-        return owner.d3Address == null ? ""
-                : owner.d3Address.render();
+        return owner.address();
     }
 
     /**
@@ -719,7 +674,6 @@ final class ActiveRegion {
         row.addProperty("actionDigest", action.actionDigest);
         row.addProperty("plannedOccurrenceId",
                 activation.occurrenceId);
-        row.addProperty("occurrenceId", occurrenceId());
         // WHERE in the region this read stood, captured here because
         // here is where it runs: the row is published at the end of the
         // activation, and the frames are gone by then.  Two reads of one
@@ -823,14 +777,15 @@ final class ActiveRegion {
             String detail) {
         RowRuntime.gap(kind, edu.uva.liftlab.graphchecker.contract
                         .GapClass.BLOCKING,
-                // The declared phase, else this occurrence, else the
-                // activation's own token: phaseId and occurrenceId are both
-                // read out of the plan with optionalString, so either can
-                // be blank, and a blank subject refuses inside Fields.text
-                // -- out of the mint hook, into the workload.
+                // The declared phase, else this occurrence's address, else
+                // the activation's own token: a phaseId is read out of the
+                // plan with optionalString and an address may be unnamed,
+                // so either can be blank, and a blank subject refuses
+                // inside Fields.text -- out of the mint hook, into the
+                // workload.
                 edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank(
                         phase == null ? "" : phase.phaseId(),
-                        occurrenceId(), Long.toString(token)),
+                        address(), Long.toString(token)),
                 safe(detail));
     }
 

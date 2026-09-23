@@ -142,10 +142,9 @@ public class OccurrenceAddressIsNotARequestTest {
                 + ", which no message of this run minted; ran " + resent.id()
                 + ", which no message of this run minted); planned "));
 
-        // An envelope naming another producer changes nothing either way: it
-        // decides which v_H the attach mints, never which activation this is.
-        assertTrue(SymbolicMessageEnvelope.stage(PORT, 41L, "task-x",
-                "some-other-producer#9"));
+        // An envelope changes nothing either way: it decides which v_H the
+        // attach mints, never which activation this is.
+        assertTrue(SymbolicMessageEnvelope.stage(PORT, 41L));
         SymbolicMessageEnvelope.installInbound(
                 SymbolicMessageEnvelope.takeOutbound());
 
@@ -192,7 +191,7 @@ public class OccurrenceAddressIsNotARequestTest {
         ConcolicTaskPlan plan = new ConcolicTaskPlan(null,
                 Arrays.asList(deferred, loopBodyTask(2)));
         RuntimeTraceContext.resetForTests();
-        CausynthTraceRecorder.setRecordingStartedForTests(true);
+        RecordingWindow.open();
         Object caller = new Object();
         RuntimeTraceContext.registerSource(caller,
                 new SourceRef("DATANODE", "dn", TARGET, 0L));

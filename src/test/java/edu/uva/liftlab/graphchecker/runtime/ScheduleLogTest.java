@@ -35,7 +35,7 @@ public class ScheduleLogTest {
         RuntimeTraceContext.resetForTests();
         Identity.resetForTests();
         ScheduleLog.resetForTests();
-        CausynthTraceRecorder.setRecordingStartedForTests(true);
+        RecordingWindow.open();
         System.clearProperty(ScheduleLog.TIMEOUT_PROPERTY);
         ScheduleLog.install(new ScheduleLog.Sink() {
             @Override
@@ -103,7 +103,7 @@ public class ScheduleLogTest {
 
     @Test
     public void nothingIsRecordedBeforeTheWindowOpens() {
-        CausynthTraceRecorder.setRecordingStartedForTests(false);
+        RecordingWindow.reset();
         ScheduleLog.observe(ScheduleEvent.Kind.SEND, "HADOOP_IPC#REQUEST");
         assertTrue(written.isEmpty());
     }
@@ -207,7 +207,7 @@ public class ScheduleLogTest {
     @Test
     public void aWaitBegunBeforeTheWindowConvertsWhenItOpens()
             throws Exception {
-        CausynthTraceRecorder.setRecordingStartedForTests(false);
+        RecordingWindow.reset();
         final String site = "<L: void idle()>#u3";
         ScheduleLog.enforceForTests(Collections.singletonList(
                 event(ScheduleEvent.Kind.WAKE, site)));
@@ -229,7 +229,7 @@ public class ScheduleLogTest {
         Thread.sleep(200L);
         assertTrue("before the window it waits on the wall clock",
                 idle.isAlive());
-        CausynthTraceRecorder.setRecordingStartedForTests(true);
+        RecordingWindow.open();
         TimedWaits.windowOpened();
         idle.join(5000L);
         assertFalse("the window's opening converts it", idle.isAlive());
@@ -501,7 +501,7 @@ public class ScheduleLogTest {
     public void theWindowsOpeningDoesNotSwallowASignalSentBeforeTheWaitSeesIt()
             throws Exception {
         System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
-        CausynthTraceRecorder.setRecordingStartedForTests(false);
+        RecordingWindow.reset();
         final String site = "<C: boolean waitForWork()>#u21";
         ScheduleLog.enforceForTests(prefix("x"));
         final Object monitor = new Object();
@@ -526,7 +526,7 @@ public class ScheduleLogTest {
         }
         Thread.sleep(100L);
         synchronized (monitor) {
-            CausynthTraceRecorder.setRecordingStartedForTests(true);
+            RecordingWindow.open();
             // The opening takes the wait out of the wait set; the notify
             // that follows, before it can re-enter, reaches only its mark.
             TimedWaits.windowOpened();
@@ -662,10 +662,10 @@ public class ScheduleLogTest {
 
     @Test
     public void aTurnBegunBeforeTheWindowStatesNoEnd() {
-        CausynthTraceRecorder.setRecordingStartedForTests(false);
+        RecordingWindow.reset();
         long tick = RuntimeTraceContext.beginTick(new Object(),
                 "BP_SERVICE_ACTOR");
-        CausynthTraceRecorder.setRecordingStartedForTests(true);
+        RecordingWindow.open();
         RuntimeTraceContext.endTick(tick);
         assertTrue("the set-up's turn is not the window's", written.isEmpty());
     }
@@ -786,25 +786,22 @@ public class ScheduleLogTest {
 
     @Test(timeout = 20000L)
     public void aSleepWithNoEventToMakeRunsOnTheWallClock() throws Exception {
-        System.setProperty(ScheduleLog.RECORD_PROPERTY, "false");
-        try {
-            ScheduleLog.enforceForTests(prefix("x"));
-            assertTrue(ScheduleLog.enforcing());
-            long before = System.nanoTime();
-            TimedWaits.sleep(300L, "<L: void loop()>#u9");
-            long took = TimeUnit.NANOSECONDS.toMillis(
-                    System.nanoTime() - before);
-            assertTrue("neither skipped nor spun forever: " + took,
-                    took >= 250L && took < 5000L);
-        } finally {
-            System.clearProperty(ScheduleLog.RECORD_PROPERTY);
-        }
+        // A wait at a site the identity cannot name makes no event
+        // (ScheduleLog.pending), so no order holds it.
+        ScheduleLog.enforceForTests(prefix("x"));
+        assertTrue(ScheduleLog.enforcing());
+        long before = System.nanoTime();
+        TimedWaits.sleep(300L, "");
+        long took = TimeUnit.NANOSECONDS.toMillis(
+                System.nanoTime() - before);
+        assertTrue("neither skipped nor spun forever: " + took,
+                took >= 250L && took < 5000L);
     }
 
     @Test
     public void observeSaysWhetherItWrote() {
         assertTrue(ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x"));
-        CausynthTraceRecorder.setRecordingStartedForTests(false);
+        RecordingWindow.reset();
         assertFalse(ScheduleLog.observe(ScheduleEvent.Kind.SEND, "y"));
     }
 
