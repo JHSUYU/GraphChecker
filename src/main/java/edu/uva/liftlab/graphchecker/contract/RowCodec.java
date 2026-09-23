@@ -422,17 +422,23 @@ public final class RowCodec {
         if (!event.occurrence().isEmpty()) {
             json.addProperty(OCCURRENCE, event.occurrence());
         }
+        if (!event.endpoint().isEmpty()) {
+            json.addProperty("endpoint", event.endpoint());
+        }
         return json;
     }
 
     public static ScheduleEvent readScheduleEvent(JsonObject json) {
         JsonElement occurrence = json.get(OCCURRENCE);
+        JsonElement endpoint = json.get("endpoint");
         return ScheduleEvent.of(json.get(SEQ).getAsLong(),
                 ScheduleEvent.Kind.valueOf(string(json, "kind")),
                 json.has(CONTEXT) ? json.get(CONTEXT).getAsString() : "",
                 string(json, "site"), json.get("k").getAsInt(),
                 occurrence == null || occurrence.isJsonNull() ? ""
-                        : occurrence.getAsString());
+                        : occurrence.getAsString(),
+                endpoint == null || endpoint.isJsonNull() ? ""
+                        : endpoint.getAsString());
     }
 
     // ---- files ---------------------------------------------------------

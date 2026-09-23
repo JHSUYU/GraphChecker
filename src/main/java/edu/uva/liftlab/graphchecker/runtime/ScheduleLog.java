@@ -187,10 +187,20 @@ public final class ScheduleLog {
      * @return whether the event was written
      */
     public static boolean observe(ScheduleEvent.Kind kind, String site) {
+        return observe(kind, site, "");
+    }
+
+    /**
+     * The same, for a SEND: {@code endpoint} is the producer endpoint the
+     * message carries, stated on the event so the receiver's anchor names
+     * the sender in the rows.
+     */
+    public static boolean observe(ScheduleEvent.Kind kind, String site,
+                                  String endpoint) {
         if (kind == null || !RecordingWindow.opened()) return false;
         mute();
         try {
-            Pending event = pending(kind, site);
+            Pending event = pending(kind, site, endpoint);
             if (event == null) return false;
             synchronized (LOCK) {
                 loadPrefixLocked();
@@ -447,24 +457,31 @@ public final class ScheduleLog {
         private final String context;
         private final String site;
         private final String occurrence;
+        private final String endpoint;
         private final String key;
 
         private Pending(ScheduleEvent.Kind kind, String context, String site,
-                        String occurrence) {
+                        String occurrence, String endpoint) {
             this.kind = kind;
             this.context = context;
             this.site = site;
             this.occurrence = occurrence;
+            this.endpoint = endpoint;
             this.key = ScheduleEvent.key(kind, context, site);
         }
     }
 
     private static Pending pending(ScheduleEvent.Kind kind, String site) {
+        return pending(kind, site, "");
+    }
+
+    private static Pending pending(ScheduleEvent.Kind kind, String site,
+                                   String endpoint) {
         String stable = JvmNames.stable(Text.safe(site));
         if (stable.isEmpty()) return null;
         try {
             return new Pending(kind, contextHere(), stable,
-                    Identity.innermostRegionId());
+                    Identity.innermostRegionId(), Text.safe(endpoint));
         } catch (Throwable unnamed) {
             return null;
         }
@@ -475,7 +492,8 @@ public final class ScheduleLog {
         int k = made == null ? 0 : made;
         COUNTS.put(pending.key, k + 1);
         ScheduleEvent event = ScheduleEvent.of(seq++, pending.kind,
-                pending.context, pending.site, k, pending.occurrence);
+                pending.context, pending.site, k, pending.occurrence,
+                pending.endpoint);
         JsonObject row = RowCodec.writeScheduleEvent(event);
         if (sink != null) {
             sink.write(row);

@@ -89,6 +89,8 @@ public final class ClosurePlanner {
 
     /** In the closure because the rows put it there. */
     public static final String CLOSURE_MEMBER = "CLOSURE_MEMBER";
+    /** In the closure because it sent a message a member served. */
+    public static final String CONTROL_PRODUCER = "CONTROL_PRODUCER";
     /** In the closure because it holds a static write site of a location. */
     public static final String STATIC_CANDIDATE_WRITER =
             "STATIC_CANDIDATE_WRITER";
@@ -314,7 +316,28 @@ public final class ClosurePlanner {
             }
         }
         statedReads(corpus, map, demand, next, gaps);
+        controlProducer(corpus, demand, next);
         return next;
+    }
+
+    /**
+     * The occurrence that SENT the message a demanded occurrence served is
+     * in the closure as its control producer: it contributes no value, but
+     * its fault point decides whether the message -- and everything the
+     * served occurrence produced -- exists at all (DESIGN4 SS1.4).  The
+     * pairing is the served occurrence's ANCHOR, which is the sender's
+     * producer endpoint, and the schedule's SEND event states which
+     * occurrence minted it.
+     */
+    private static void controlProducer(Corpus corpus, Demand demand,
+                                        List<Demand> next) {
+        if (!(demand.occurrence.context() instanceof CausalContext.Anchor)) {
+            return;
+        }
+        OccurrenceAddress sender = corpus.senderOf(
+                ((CausalContext.Anchor) demand.occurrence.context())
+                        .producerEndpointId());
+        if (sender != null) next.add(new Demand(sender, CONTROL_PRODUCER, false));
     }
 
     /**

@@ -157,6 +157,11 @@ public final class SessionReader {
         return readSchedule(dir.schedule());
     }
 
+    /** This session's schedule, read on demand. */
+    public List<ScheduleEvent> schedule() throws IOException {
+        return readSchedule(directory);
+    }
+
     /** The same read, of a schedule file wherever it stands. */
     public static List<ScheduleEvent> readSchedule(Path file)
             throws IOException {

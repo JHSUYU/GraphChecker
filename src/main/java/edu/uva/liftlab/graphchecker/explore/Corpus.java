@@ -25,6 +25,7 @@ import edu.uva.liftlab.graphchecker.compose.JavaSmtSorts;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Sort;
 import edu.uva.liftlab.graphchecker.smt.Arms;
+import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
@@ -473,7 +474,39 @@ public final class Corpus implements Arms.Rows {
         return iteration;
     }
 
+    /** Producer endpoint id of a SEND -> the occurrence that sent it. */
+    private final Map<String, String> senderByEndpoint =
+            new LinkedHashMap<String, String>();
+
+    /**
+     * The occurrence that sent the message a consumer served under
+     * {@code producerEndpointId} (its ANCHOR), or null: the schedule's SEND
+     * events state the producer endpoint the message carried.
+     */
+    public OccurrenceAddress senderOf(String producerEndpointId) {
+        String sender = senderByEndpoint.get(producerEndpointId);
+        return sender == null ? null : occurrenceById.get(sender);
+    }
+
+    private void indexSchedule(SessionReader session) {
+        List<ScheduleEvent> events;
+        try {
+            events = session.schedule();
+        } catch (java.io.IOException unreadable) {
+            throw new java.io.UncheckedIOException(unreadable);
+        }
+        for (ScheduleEvent event : events) {
+            if (event.kind() != ScheduleEvent.Kind.SEND
+                    || event.endpoint().isEmpty()
+                    || event.occurrence().isEmpty()) {
+                continue;
+            }
+            senderByEndpoint.put(event.endpoint(), event.occurrence());
+        }
+    }
+
     private void index(SessionReader session) {
+        indexSchedule(session);
         sessionById.put(session.sessionId(), session);
         loweringById.put(session.sessionId(), SmtLowering.forSession(session));
         for (ActivationRow row : session.activations()) {

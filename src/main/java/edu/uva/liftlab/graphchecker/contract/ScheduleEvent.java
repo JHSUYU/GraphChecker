@@ -58,19 +58,32 @@ public final class ScheduleEvent {
     private final String site;
     private final int k;
     private final String occurrence;
+    /**
+     * The producer endpoint a SEND minted for its message ({@code ""} for
+     * every other event): what the message's receiver runs under as its
+     * ANCHOR, so the sender of a served message is a fact the rows state.
+     */
+    private final String endpoint;
 
     private ScheduleEvent(long seq, Kind kind, String context, String site,
-                          int k, String occurrence) {
+                          int k, String occurrence, String endpoint) {
         this.seq = seq;
         this.kind = kind;
         this.context = context;
         this.site = site;
         this.k = k;
         this.occurrence = occurrence;
+        this.endpoint = endpoint;
     }
 
     public static ScheduleEvent of(long seq, Kind kind, String context,
                                    String site, int k, String occurrence) {
+        return of(seq, kind, context, site, k, occurrence, "");
+    }
+
+    public static ScheduleEvent of(long seq, Kind kind, String context,
+                                   String site, int k, String occurrence,
+                                   String endpoint) {
         if (seq < 0L) {
             throw new IllegalArgumentException("seq must be >= 0: " + seq);
         }
@@ -80,7 +93,8 @@ public final class ScheduleEvent {
         return new ScheduleEvent(seq, Fields.required(kind, "kind"),
                 context == null ? "" : context,
                 Fields.text(site, "site"), k,
-                occurrence == null ? "" : occurrence);
+                occurrence == null ? "" : occurrence,
+                endpoint == null ? "" : endpoint);
     }
 
     /**
@@ -123,6 +137,10 @@ public final class ScheduleEvent {
         return occurrence;
     }
 
+    public String endpoint() {
+        return endpoint;
+    }
+
     /** One line a report can print: {@code KIND site#k @ c}. */
     public String render() {
         return kind.name() + " " + site + "#" + k + " @ " + context;
@@ -135,12 +153,14 @@ public final class ScheduleEvent {
         ScheduleEvent other = (ScheduleEvent) value;
         return seq == other.seq && k == other.k && kind == other.kind
                 && context.equals(other.context) && site.equals(other.site)
-                && occurrence.equals(other.occurrence);
+                && occurrence.equals(other.occurrence)
+                && endpoint.equals(other.endpoint);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(seq, kind, context, site, k, occurrence);
+        return Objects.hash(seq, kind, context, site, k, occurrence,
+                endpoint);
     }
 
     @Override

@@ -686,11 +686,6 @@ public final class CausynthTraceRecorder {
                     + MapFields.safe(half), noFlow.getMessage());
             return "";
         }
-        // The SEND of the schedule, before the producer is minted: a replay
-        // held to a prefix lets this message leave when it is its turn.
-        ScheduleLog.observe(
-                edu.uva.liftlab.graphchecker.contract.ScheduleEvent.Kind.SEND,
-                MapFields.safe(transport) + "#" + MapFields.safe(half));
         // IDENTITY-V3 §C: the message carries its producer's endpoint, so
         // the receiver can state the anchor it ran under.  Filed by
         // correlation because the endpoint is bigger than the header slot
@@ -700,6 +695,13 @@ public final class CausynthTraceRecorder {
         Endpoint producer = Identity.messageSent(
                 RuntimeTraceContext.ownedSource(localOwner).key(),
                 transport, correlationId, half);
+        // The SEND of the schedule, stating the producer it minted: a replay
+        // held to a prefix lets this message leave when it is its turn, and
+        // the rows then pair the receiver's anchor with this sender.
+        ScheduleLog.observe(
+                edu.uva.liftlab.graphchecker.contract.ScheduleEvent.Kind.SEND,
+                MapFields.safe(transport) + "#" + MapFields.safe(half),
+                producer == null ? "" : producer.id());
         // Off unless asked: the one place a replay states a message's
         // producer endpoint in full, which is what telling two passes' anchor
         // digests apart needs (the recording states it on its trace row).
