@@ -61,3 +61,11 @@ the window itself:
   bounded by `CausynthCluster.WINDOW_WAIT_MS` (60 s): a replay that cannot
   hold its prefix stalls every thread for the watchdog's 15 s before it runs
   free, and a workload that gives up first fails for the engine's reason.
+- a check inside the window of what a witness exists to change -- a key a
+  node must still retain, the rotation gap, a cached key id -- is
+  `CausynthCluster.recordingPrecondition(() -> ..., message)`: asserted in
+  the recording and a native run, never evaluated in a replay, whose world
+  the engine chose and where the check would end the witness before the
+  anchor (hdfs-17967 path B lost all 22 of its admitted replays so).  Only
+  reads go in the supplier: a call that acts, or that is itself a recorded
+  occurrence, stays in every run and only its result is checked.
