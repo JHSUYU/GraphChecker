@@ -735,7 +735,7 @@ src/main/java/edu/uva/liftlab/graphchecker/   the engine (§3's package table)
 src/shim/                                     the hadoop-shim jar the trees call
 src/test/                                     143 @Test + src/test/shell/run_engine_campaign_helpers_test.sh
 run_engine.sh                                 the campaign driver
-experiments/hadoop/<case>/                    declarations + README + tree-edits/ per case
+experiments/hadoop/<case>/                    declarations + README per case (a tree's edits are its own gc/<case>-v2 branch)
 experiments/hadoop/lib/                       the one harness every case runs through (README: workload rules)
 experiments/hadoop/accept/                    accept.sh, probe.sh, report.py (README: what PASS means)
 tools/rounds/                                 launch-round.sh, launch-run.sh, round-monitor.sh (§8)

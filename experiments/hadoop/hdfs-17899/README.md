@@ -16,9 +16,9 @@ the application.
 
 | Case | Request flow | Hadoop worktree | Branch |
 | --- | --- | --- | --- |
-| `bug1` | NameNode -> Balancer -> DataNode | `/u/vnr3ne/hadoop-hdfs-17899-bug1` | `gc/hdfs-17899-bug1` |
-| `bug2` | NameNode -> SPS -> DataNode | `/u/vnr3ne/hadoop-hdfs-17899-bug2` | `gc/hdfs-17899-bug2` |
-| `bug3` | NameNode -> source DataNode -> target DataNode | `/u/vnr3ne/hadoop-hdfs-17899-bug3` | `gc/hdfs-17899-bug3` |
+| `bug1` | NameNode -> Balancer -> DataNode | `/u/vnr3ne/hadoop-hdfs-17899-bug1` | `gc/hdfs-17899-bug1-v2` |
+| `bug2` | NameNode -> SPS -> DataNode | `/u/vnr3ne/hadoop-hdfs-17899-bug2` | `gc/hdfs-17899-bug2-v2` |
+| `bug3` | NameNode -> source DataNode -> target DataNode | `/u/vnr3ne/hadoop-hdfs-17899-bug3` | `gc/hdfs-17899-bug3-v2` |
 
 ## The workloads
 
