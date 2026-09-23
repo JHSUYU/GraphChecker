@@ -1,8 +1,0 @@
-# REPORT-VM19 — an attach publishes a WRITE version on its destination (2026-09-15 02:10)
-
-Tip 33cf6d81f on fix/vm-live-read-version (parent c1c52829a), merged → staging. 4 files +83/−59.
-- expressionBroker.cpp:398 `ConcolicMngr::attachExpression` scalar/reference branch: after `set_sym_exp`, `SharedFieldVersions::publish_value(Location(rid, offset, LOC_INSTANCE_FIELD), attached /*the RPC_ATTACH ConsumerBoundaryExpression*/, path_guard, true, VERSION_WRITE)`. Uniform rule: every attach publishes (a symbolic store starts the log if first). Shadow kept for exportExpression (:223). CONTAINER_STATE branch untouched. No new JSON key (version kinds are a closed allowlist in SharedStateEvidence.java:147-150); the attach is named by the version's value.
-- sharedFieldVersions.hpp: four orphaned carrier-selection comment blocks deleted; "what is versioned" section rewritten (tracking by value; is_tracked/publish_value/publish_initial).
-- Smoke assertions: RegionFieldExpressionApiSmoke:62/:90 assert the versioned shape (WRITE version, Y_I_42, minted symbol gone); RegionExpressionHandoffApiSmoke:109/123 count RPC_ATTACH boundaries == 2 and the FIELD_READ wrapper == 1.
-- Build 31 s (hotspot-only). Image `$SPO/images/j2sdk-image-build18` (build16/17 kept). Smoke: build17 37/38 (handoff case fails), build18 38/38. Evidence: `downstream.keyId` = FIELD_READ → ReadFrom(version 12 WRITE) → RPC_ATTACH(event 11) → RPC_ATTACH(event 6) → `M_I_field_RPC.keyId_…Sender`.
-- Queue: `getSymbolicFieldExpression` describes the boxed argument (VM_EXACT_BOXED_PRIMITIVE_SHADOW_V1) rather than the location when the location has a log — separate VM item if that API must answer about the location.

@@ -1,166 +1,131 @@
 # GraphChecker
 
+This file is the design, the status and the handover in one place. Read it top to bottom
+before changing anything; section 10 is the ordered to-do, section 11 is how to run and
+debug a round. The reference designs it derives from are listed in section 13; everything
+else that used to live under `docs/` was historical and has been deleted.
+
 ## 1. What GraphChecker answers
 
-You have a distributed Java system, a failure that some configuration, clock or message
-ordering can cause, and one recorded run of a workload that does **not** fail. You annotate
-the exception construction that is the failure, name the occurrence of it the case is about,
-and declare a handful of inputs: which cells are roots (fault markers, configured sources,
-clock reads), which message fields cross which boundary, and a bound for each retained loop.
-GraphChecker then explores single counterfactual decisions around that run and publishes two
-artifacts: `candidate.smt2`, a quantifier-free SMT query whose satisfying valuation *is* the
-condition under which the annotated site fails, and `claim.json`, stating the finding kind,
-which declared roots the witness had to move, and whether the polarity decides — whether the
-same formula refutes the run as it happened. There is no confirmation replay: the composed
-query and z3's verdicts on it are the deliverable, and anything the recording does not state
-is refused by name rather than defaulted.
+You have a distributed Java system, a failure that some configuration, clock, message loss
+or message ordering can cause, and one recorded run of a workload that does **not** fail.
+You annotate the exception construction that is the failure, name the occurrence of it the
+case is about, and declare a handful of inputs: which cells are roots (configured sources,
+clock reads), which message fields cross which boundary (and therefore which transports may
+fail), and a bound for each retained loop. GraphChecker then explores single counterfactual
+decisions around that run — a root moved, a clock skewed, a message that fails to leave —
+and publishes: `candidate.smt2`, a quantifier-free SMT query whose satisfying valuation *is*
+the condition under which the annotated site fails; `claim.json`, stating the finding kind,
+which declared roots the witness had to move, and whether the polarity decides (the same
+formula refutes the run as it happened); and `confirm.json`, one replay of the witness's
+world with no decision forced, which must reach the anchor and observe the fatal. Anything
+the recording does not state is refused by name rather than defaulted.
 
 ## 2. The core idea
 
-Six commitments; the rest of the system is derivable from them.
+Seven commitments; the rest of the system is derivable from them.
 
 **Roots are declared, not discovered.** A symbol enters at exactly three kinds of place, all
-named by the case: a *root* mint (a fault marker, a configured source, a clock read), a
-*declared region input* (a read of a cell the case names, minting a placeholder for the value
-read), and a *wire attach* (an inbound leaf, minting a handoff `v_H` paired with the producer's
-export). Everything else stays concrete until a symbolic value is *written* into it.
+named by the case: a *root* mint (a fault marker at a transport door, a configured source, a
+clock read), a *declared region input* (a read of a cell the case names, minting a placeholder
+for the value read), and a *wire attach* (an inbound leaf, minting a handoff `v_H` paired with
+the producer's export). Everything else stays concrete until a symbolic value is *written*
+into it.
 
-**Values propagate inside the JVM; the static graph only scopes.** Replays run on a
-customized OpenJDK 8 Zero interpreter that keeps a shadow expression under each value — by
-value, under the real object identity, not by a declared location — so a read returns the
-expression written there, through fields, containers, threads and across the wire. The fatal
-read's value in every replay is therefore already an expression over the declared roots. The
-static slice has one job: which regions are instrumented, and which write and export sites of
-a demanded location are observed. It never finds a writer, reconstructs a value's provenance,
-or stitches an input to an output. The Java-side view of that VM — the broker ABI, what each
-capability buys, and what it refuses — is [docs/CONCOLIC_INTEGRATION.md](docs/CONCOLIC_INTEGRATION.md).
+**Values propagate inside the JVM; the static graph only scopes.** Replays run on a customized
+OpenJDK 8 Zero interpreter that keeps a shadow expression under each value — by value, under
+the real object identity — so a read returns the expression written there, through fields,
+containers, threads and across the wire. The static slice decides only which regions are
+instrumented and which write and export sites of a demanded location are observed. It never
+finds a writer, reconstructs provenance, or stitches an input to an output. The Java-side view
+of that VM is [docs/CONCOLIC_INTEGRATION.md](docs/CONCOLIC_INTEGRATION.md).
 
 **One structural identity, computed the same way in both passes.** An occurrence is addressed
-by where it is in the program and why it ran, never by a thread id, address or per-run counter,
-and both passes feed that function the same inputs (§4), so sameness is decided by equality.
+by where it is in the program and why it ran — never by a thread id, an address or a per-run
+counter — and both passes feed that function the same inputs (§4), so sameness is equality.
 
-**The replay unit is one decision flip on one occurrence.** A focused replay makes exactly one
-occurrence symbolic (or one state-connected factor: the writers and readers of one location on
-one node) and asks it to take the other arm of one decision at one site and ordinal; all else
-runs concretely, exports recorded and attaches minting handoffs. Such a replay *collects an arm
-the recording lacks*; it confirms nothing.
+**The replay unit is one decision flip on one occurrence, in one world.** A focused replay
+makes one occurrence symbolic (or one state-connected factor), plants the world it is asked
+about (root values, clock skews, answered handoffs, inherited flips) and holds the schedule
+prefix of the session it was cut from (§6), then asks that occurrence to take the other arm of
+one decision at one site and ordinal. Such a replay *collects an arm the recording lacks*; it
+confirms nothing by itself.
 
 **Edges are joined in the SMT, not by execution.** No replay realizes a cross-node chain end
 to end. Each publishes its own path condition and expressions; the composer merges them into
-one disjunction, and a message or shared-state edge becomes a *family* of arms over the handoff
-variable the consumer minted. Two flips on two nodes are recorded separately and joined, never
-scheduled together.
+one disjunction, and a message or shared-state edge becomes a *family* of arms over the
+handoff variable the consumer minted, each arm keyed by the world it was collected in.
+
+**A witness is the world nearest the recording.** Every flip query bounds each root and clock
+by its declared window and asks z3 for the model minimizing Σ|x − recorded(x)| (§5); the
+published witness is the smallest move that still takes the other arm, and CONFIRM re-runs
+exactly the world a replay already ran.
 
 **Fail closed, by name.** Every refusal is a gap row of a closed kind (`contract/GapKind.java`
-is the whole registry), classed `BLOCKING` (the stage fails, naming the row, field and owner)
-or `DIAGNOSTIC` (recorded, the campaign goes on). No cap, default, heuristic match or
-synthesized value anywhere.
+is the registry), classed `BLOCKING` (the stage fails, naming the row, field and owner) or
+`DIAGNOSTIC` (recorded, the campaign goes on). No cap, default, heuristic match or synthesized
+value anywhere.
 
 ### Why not the simpler designs
 
-*Symbolic propagation alone.* The recording is, by nature, the healthy run. When a root
-reaches the target only through **control dependence** — a store the healthy arm skips — the
-fatal predicate on the recorded path is a literal, and no formula over the recording alone is
-satisfiable at a flipped root; HDFS-17960 is exactly this shape. Conversely, exploring *without*
-in-JVM propagation means rebuilding provenance offline from the graph: the stitching to avoid.
+*Symbolic propagation alone.* The recording is the healthy run. When a root reaches the target
+only through **control dependence** — a store the healthy arm skips — the fatal predicate on the
+recorded path is a literal, and no formula over the recording alone is satisfiable at a flipped
+root; HDFS-17960 is exactly this shape.
 
-*Linked replay.* An earlier design made a primary occurrence and its companions symbolic in
-one run. Two costs follow: admission couples unrelated regions (a loop-prefix mismatch on the
-NameNode side rejected an otherwise good DataNode primary), and replays grow as the *product*
-of the regions' local path counts. Focused replays cost the *sum*, admission is decided from
-the focused region's own rows, and the edge is joined afterwards by the family instead.
+*Linked replay.* Making a primary occurrence and its companions symbolic in one run couples
+admission of unrelated regions and grows replays as the *product* of local path counts. Focused
+replays cost the *sum*, and the edge is joined afterwards by the family.
 
-*Exhaustive flipping.* HDFS-17960's seed session publishes 1,113 decision rows; flipping them
-is not a search strategy. Demand starts at the annotated site — the operands of the fatal
-predicate and the branch sites the target is control-dependent on — and the closure grows only
-along boundary inputs of demanded values. Wave 0 proposes **4** obligations, wave 1 is a fixed
-point. HDFS-11741, two nodes and 86 planned tasks, proposes **36** in wave 0 and reaches a
-fixed point in the next wave. An obligation's identity is `(task, site, ordinal, flipped
-outcome)` and it is owed **once across the corpus** (`explore/Frontier`); before that rule the
-same handful of flips was re-proposed hundreds of times in one wave.
+*Exhaustive flipping.* HDFS-17960's seed session publishes 1,113 decision rows. Demand starts
+at the annotated site and the closure grows only along boundary inputs of demanded values and
+the senders of the messages a task served; an obligation is owed once across the corpus
+(`explore/Frontier`).
 
 ## 3. The pipeline
 
-One campaign per case, driven by `run_engine.sh`. Inputs are frozen before any work, and each
-iteration (topology **epoch**) writes its own immutable directory and composes its own answer.
+One campaign per case, driven by `run_engine.sh` (3.8k lines of bash; every stage is a
+`campaign_<stage>` function). Inputs are frozen before any work and the iteration writes one
+immutable directory, `<out>/schedule/iteration-0000/`, with `final/` beside it.
 
 | Stage | Consumes | Produces | Gate |
 | --- | --- | --- | --- |
-| `PREFLIGHT`, `FREEZE_TOOL`, `SETUP`, `FREEZE` | workflow config, jar, workload tree | frozen inputs, reserved campaign root | an unknown workflow config key, or a campaign root already holding a published run, is refused by name |
-| `SEED` | workload command, stock JDK 8 | the static slice (`static_scope_map.jsonl`, the candidate graph and candidate region skeletons) and **two recording passes** (below) | recording opens only after the workload registers its stable node sources; each pass must publish its own artifacts or the campaign refuses by name |
-| `PLAN` | both passes' artifacts, the static scope map, the declarations | `execution_task_plan.jsonl`, the declared target resolved to a full address | a declared input whose method no planned region covers is refused; one plan row per planned occurrence |
-| `INSTRUMENT` | selected skeletons, static scope map | instrumented classes | every woven body is validated, then JVM-verified fail-closed |
-| `REPLAY` (seed) | instrumented classes, custom VM | the seed **session**: one file per row kind plus its expression table | frame pushes and pops pair one-for-one (`FRAME_UNBALANCED`) |
-| `IMPORT` | the epoch's sessions, and again every wave's new ones | gap rows | the row contract, checked here and nowhere else (§5); `BLOCKING` fails the campaign at that wave |
-| `EXPLORE` | every session so far, static scope map, root domains | per wave: `obligations.jsonl`, one focused session per obligation, `obligation_results.jsonl` | an unbound symbol in a flip model is `UNPRODUCIBLE_ANSWER`, never sat; a solver error is `NOT_ADMITTED`, never unsat; an arm a session already recorded is not re-flipped |
-| `COMPOSE` | the corpus, families, root domains | `candidate.smt2`, `candidate_composition_manifest.json` | a read that joins no version and pins no value is `UNSTATED_VALUE` and refuses |
-| `SOLVE`, `DECIDE` | the composed query | a z3 answer per valuation, `claim.json` | satisfiable at the recorded valuation on a healthy recording is a blocking alarm; a witness moving a root inside an unattested arm is refused |
-| `EMIT` | all of the above | `result.json`, `gaps.json`, `run-manifest.json` | the final set must hold `candidate.smt2`, `candidate_composition_manifest.json`, `gaps.json` and `result.json`, with `claim.json` beside them; acceptance is the claim **and** the named gaps together |
+| `PREFLIGHT`, `FREEZE_TOOL`, `SETUP`, `FREEZE` | workflow config, jar, workload tree | frozen inputs (`frozen-inputs/`, digested) | an unknown config key, or a frozen input changed after freezing, is refused by name |
+| `SEED` | workload command, stock JDK 8 | the static slice (`static_scope_map.jsonl`, candidate graph, region skeletons) and **two recording passes**: lite (activation envelopes over every candidate region → `skeleton-pass/region_skeletons.jsonl`) then rich (`concolic_region_plan.jsonl`, `runtime_trace.jsonl`, `recorded_schedule.jsonl`) | recording opens only after the workload registers its node sources; the trace states the window only |
+| `PLAN` | both passes, the scope map, the declarations | `execution_task_plan.jsonl`: one row per planned occurrence, the declared target resolved to a full address, the symbolize actions (declared inputs, clocks, `EXPLICIT_SYMBOLIC_FAULT` markers) | two activations sharing one address inside the closure is `OCCURRENCE_ADDRESS_SHARED` BLOCKING; a loop without a declared bound is refused |
+| `INSTRUMENT` | selected skeletons, scope map | woven classes (`instrumented-classes/`) | every woven body validated, then JVM-verified fail-closed |
+| `REPLAY` (seed) | woven classes, the custom VM | the seed **session**: one file per row kind, `schedule.jsonl`, its expression table | the seed must publish a target row that reached the anchor |
+| `IMPORT` | the seed, then every wave's sessions | gap rows | the row contract (§5), checked here and nowhere else |
+| `EXPLORE` | every session so far, scope map, root domains | per wave `obligations-NNNN/`: `obligations.jsonl`, one worker dir per obligation (`obligation.jsonl`, `focused_task.jsonl`, `obligation_query.smt2`, `obligation_result.jsonl`), the session it ran, `graph.jsonl`/`growth.jsonl` (§7), and `GROW` when a world exposed a region | a solver error is `NOT_ADMITTED`, never unsat; a flip a session already recorded is not re-asked; nesting is bounded by `region_path_max_world_depth` (3) |
+| `COMPOSE` | the corpus, families, root domains | `candidate.smt2`, `candidate_composition_manifest.json` | a read that joins no version and pins no value is `UNSTATED_VALUE`; a replay whose mint and obligation state a root twice and differently is refused |
+| `SOLVE`, `DECIDE` | the composed query | a z3 answer per valuation, `claim.json` | satisfiable at the recorded valuation on a healthy recording is a blocking alarm |
+| `CONFIRM` | the claim, the manifest, the selected session's obligation | `confirm/` (a focused replay with no flip forced), `final/confirm.json` | anchor reached, fatal observed, no `CONFIRM_MISMATCH` on an expected edge, no `SCHEDULE_DIVERGED` before the cut; otherwise the claim is `SAT_UNCONFIRMED` |
+| `EMIT` | all of the above | `result.json`, `gaps.json`, `run-manifest.json` | acceptance is the claim **and** the named gaps **and** the confirmation together |
 
-**`SEED` records twice, and the second pass is scoped by the first.** Pass 1 weaves *lite*
-hooks — method activation envelopes only — over every **candidate** region, runs the workload,
-and aggregates its trace (`runtime/CausynthTraceRecorder --region-skeleton-only`) into the
-regions that actually ran: `skeleton-pass/region_skeletons.jsonl`, the runtime-selected set,
-beside `skeleton-pass/recording_gaps.jsonl`, the gaps that pass stated. Pass 2 re-weaves *rich*
-hooks over only those regions (`CAUSYNTH_TRACE_MODE=region-state`), re-runs the same workload,
-and records identity frames, decisions, call-site and argument captures and the exchanges; its
-aggregation publishes `concolic_region_plan.jsonl` and files pass 1's gaps with its own, since
-the recording has no session to hold a gap row. `PLAN` reads both. Folding the two into one is
-what the split buys: one pass weaves 486 and 58 methods where two weave 198 and 43.
-The refined-graph builder (`runtime/RuntimeRefinedGraphBuilder`) and the field-trace hook
-still exist at this commit; their deletion is the PC4 to-do below.
-
-`EXPLORE` runs in waves: one JVM plans the wave — reading every session the epoch has produced
-and writing the obligations the frontier is owed — and one worker per obligation runs a focused
-replay. `IMPORT` runs again on each wave's own new sessions (`campaign_import_wave_gate`), not
-just on the seed: a wave is where a focused session is made, so it is where the row contract is
-checked, and a `BLOCKING` violation fails the campaign at that wave by name. Two refusals keep
-the solver and the replays for questions the corpus lacks an answer to, both `ADMISSION_GAP`
-rows of the **wave** and `DIAGNOSTIC`, because they state a fact about the question this wave
-asked and about no execution. A flip query that declares no variable of its own — no root, no
-clock, no handoff control, no movable read reaches the flipped predicate — is refused in
-`explore/FlipQuery` before z3 sees it: whichever arm it takes, the answer is the recording's own
-facts. A model that hands every root back the value the recording minted and answers no handoff
-is refused in `explore/ObligationFactory` before a replay is spent: that world is the seed
-replay under another name.
-
-The closure it walks is `explore/ClosurePlanner`, recomputed from scratch each wave: demand
-starts at the annotated target — the operands of the fatal predicate as the VM states them, and
-the guard set of the target site — and each boundary variable of a demanded value grows it both
-by the **rows** (the producer that paired with an attach, the writers whose versions a read
-could have observed) and by the **static map** (every occurrence of a region holding a write
-site of that location, or an export site of that port), because on 17960 no row of any session
-puts the deletion region in the anchor's closure and a closure that waits for one waits for the
-replay it is supposed to ask for. Both stops are coverage telemetry, never a failure: a wave
-proposing the same obligations with the same verdicts has learned nothing
-(`REGION_PATH_CLOSURE_NO_PROGRESS`), and an unexplored sibling blocks a closed `UNSAT` while
-saying nothing about a satisfiable witness. A replay pairing an endpoint this epoch's catalog
-lacks is a `TOPOLOGY_DIVERGENCE`: the *next* epoch is planned from that replay's own trace.
-
-That closure is not the static graph's region selection, which is `PLAN`'s own and runs first.
-`causynth/RuntimeSelectedRegionFinalizer` prunes the recorded regions failure-directed, back
-from the target through the retained flows (104 → 28 regions on 17960, 26 → 15 on 11741), and
-publishes on each surviving plan row the `admissionBasis` saying why it is there at all:
-`SHARED_LOCATION_DEMAND_V1` for a demanded state writer (with its `demandDepth`),
-`DECLARED_SYMBOLIC_INPUT_V1` for a region whose root method the case declared symbolic, and
-`DECLARED_COMMUNICATION_CAPTURE_V1` for one that performed a declared capture — admission *by
-declaration*, because nothing on this node demands an export's outputs and an export outside
-every instrumented activation has no decision prefix, which is how HDFS-11741 published all 13
-arms of its key-id family unattested.
+`EXPLORE` runs in waves: one JVM plans the wave (`explore/ExploreMain`) — reading every session
+so far and writing the obligations the frontier is owed — and one worker per obligation runs a
+focused replay (`runtime/FocusedReplay`), locally or on a remote host (`campaign_dispatch_wave`,
+`schedule_worker_hosts`). The closure it walks (`explore/ClosurePlanner`) starts at the
+annotated target — the operands of the fatal predicate and the guard set of the target site —
+and grows along the rows (the producer that paired with an attach, the writers whose versions a
+read could have observed), the static map (occurrences of regions holding a write or export
+site of a demanded location), and **control producers**: the occurrence that sent the message a
+task served, whose fault decisions are flip sites. Fault flips are proposed first in the first
+wave that reaches an occurrence.
 
 The Java side is organized by those notions:
 
 | Package | Holds |
 | --- | --- |
-| `contract` | the row kinds, the identity types (`OccurrenceAddress`, `CausalContext`, `ExecutionIndex`, `LocationId`), `GapKind`/`GapClass`, and the `IMPORT` gate |
-| `causynth` | the Soot pass: static slice, weaving and its verification, failure-directed region scoping, and the aggregation of both recording passes |
-| `plan` | what the scoped program is planned as: `StaticScopeMap`, `ExecutionTask`, the scheduler, declared inputs, loop-bound policy |
-| `runtime` | the recording and replay hooks, the frame journal, row publication, focused replay, the VM broker |
-| `explore` | the closure, the frontier of owed arms, flip queries, obligations and waves |
-| `compose` | the disjuncts, the SMT lowering, the container model and the claim policy |
-| `smt` | the expression IR, arms and families, canonical JSON, and the z3 driver |
-| `annotation` | the target marker `@CausynthExceptionTarget`, and `Debug` for a workload-planted one |
-| `option`, `transformer` | the Soot pass's command line, and the one `SceneTransformer` that registers it |
+| `contract` | the row kinds, the identity types (`OccurrenceAddress`, `CausalContext`, `ExecutionIndex`, `LocationId`, `Endpoint`), `ScheduleEvent`, `GapKind`/`GapClass`, `ObligationDir`, `SessionReader`, and the `IMPORT` gate (`RowInvariants`) |
+| `causynth` | the Soot pass: static slice, weaving and its verification, failure-directed region scoping (`RuntimeSelectedRegionFinalizer`), the wire-flow catalog, the aggregation of both recording passes |
+| `plan` | `StaticScopeMap`, `ExecutionTask`, `ConcolicScheduler`, declared inputs (`DeclaredSiteCapture`, `SymbolicInputSelection`), loop-bound policy, `ExposedRegionPlanMain` |
+| `runtime` | the recording and replay hooks (`CausynthTraceRecorder`, `ConcolicRegionRuntime`, `RowRuntime`), identity (`Identity`, `Lineage`, `Attribution`, `RecordingWindow`), the schedule (`ScheduleLog`, `TimedWaits`, `WakeScopes`), mints (`RootMint`, `RowPlaceholderMint`, `HandoffMint`), `FocusedReplay`, `Confirmation`, the VM broker |
+| `explore` | `Corpus`, `ClosurePlanner`, `Frontier`, `FlipQuery`/`FlipQueryText`, `ObligationFactory`, `SchedulePrefix`, `SlotTable`, `WaveGraph`, `ExploreMain`, `ConfirmMain` |
+| `compose` | `Composer`, `ComposedFamilies`, `SmtLowering`/`VmLoweringCore`, the container model (`ContainerSmtCodec`), `ClaimPolicy`, `ComposeMain` |
+| `smt` | the expression IR, `Arms` (path conditions, arms, families), canonical JSON, the z3 driver (`Z3`) |
+| `annotation` | `@CausynthExceptionTarget`, and `Debug.makeSymbolicBoolean` for a fault marker |
+| `src/shim` | `org.apache.hadoop.ipc.CausynthMessagePropagation`, the small jar the Hadoop trees call (message doors, SASL halves, `replaying()`) |
 
 ## 4. Identity
 
@@ -168,77 +133,85 @@ An occurrence's address is structural, and it is the same function of the same i
 recording pass and in every replay:
 
 ```
-OccurrenceAddress = node#epochN            logical component and topology epoch
+OccurrenceAddress = node#epochN            logical component (epoch 1 after a restart)
                   / region/REGION.<id>     static region (code)
                   / ctx:<CausalContext>    why this occurrence ran
                   / idx:<frame>/<frame>/…  where in the component's control structure
 ```
 
-`CausalContext` has three forms and no others. `Anchor(producerEndpointId, rpcSite)` — a
-message started it, and the anchor is the producer's endpoint id, recursively carrying the
-producer's own context. `Root(role/api, k)` — a workload action or daemon tick with no incoming
-message, the k-th such root of that role and api in the recording window. `Lost(role)` — the
-scope was unattributable: degraded, and still an identity, not a guess.
+`CausalContext` has three forms. `Anchor(producerEndpointId, rpcSite)` — a message started it,
+and the anchor is the producer's endpoint id, recursively carrying the producer's own context.
+`Root(role/api, k)` — a workload action or daemon turn with no incoming message, the k-th such
+root of that role and api **in the recording window**. `Lost(role)` — the scope was
+unattributable: degraded, and still an identity.
 
-The execution index is PEPID-shaped (Execution Indexing, PLDI 2008; Precise Execution Point
-IDs, ASE 2013): the frames from the scope root to the region entry, each a static call site
-with the iteration count of its innermost enclosing loop, so an unrelated extra call elsewhere
-does not move it. An **endpoint** — what a message pairing, a read or a write is addressed by —
-is `(occurrence, site, site-local execution index, attempt)`, that index being the same frame
-form from the region entry to the site.
+The execution index is PEPID-shaped: the frames from the **scope root** to the region entry,
+each a static call site with the iteration count of its innermost enclosing loop. **The one
+scope-base rule** (`Identity.scopeStart`): an occurrence's index is relative to its causal
+context's own origin — for an `ANCHOR` hop the inbound scope itself, for a `SCOPE_ROOT` the
+scope's start, for a `STARTED_ROOT` (a daemon tick) the start frame its work claimed. The
+frames above that point belong to the thread that carried the work there and never enter an
+address: which pooled IPC handler serves a request is scheduling, not identity. A degraded
+(`ROLE.*`) occurrence obeys the same rule; measuring it from the thread's first frame put the
+handler's start iteration into every response endpoint and broke 17960 as soon as one heartbeat
+shifted the handler rotation.
 
-**A state location's owner is the VM's own object identity, not an allocation site.** The
-runtime spells one location one way on both sides of a join — `RowPublication`'s
-`KIND/<ownerSymRid>#<slot>`: `INSTANCE_FIELD/1#24`, `STATIC_FIELD/…`, `ARRAY_ELEMENT/…`,
-`MAP_STATE/<rid>#-3` for a whole container — where the owner is the symbolic rid the VM gave
-that object and the slot is the field offset, the index, or the reserved whole-state slot.
-`contract/LocationId` carries it as `(kind, owner, slot)`, and `smt/Arms.namedOwner` is the one
-place that asks whether an owner names its storage well enough to offer a read *alternative*
-writers: a numeric rid does, and so does `STATIC`, because a class owns exactly one cell.
-A rid is a **per-run counter**, so a state join is per **session** — the write log and the read
-rows of one run, spelled the same way on both sides — and inside that run it names exactly one
-object; `Arms.stateArms` takes its writers from that session and no other. The
-allocation-endpoint owner this used to mint (Memory Indexing, FSE 2010) is deleted: no main
-code produced it, and the gate that admitted only it refused every row of both corpora.
-Cross-replay object identity comes back when a producer needs it.
+An **endpoint** — what a message pairing, a read or a write is addressed by — is `(occurrence,
+site, site-local execution index, attempt)`; `Endpoint.id()` digests it, and the receiver's
+anchor *is* the producer's endpoint id. Site counts (`State.nextSiteEvent`) are keyed by
+(level, root hop, site) and start at zero in that calling context.
+
+**Window rules.** Every identity count starts at the window (`Identity.window`,
+`Lineage.openWindow`): a frame entered before the window stands at iteration 0 in any in-window
+address; a tick or wake turn begun before the window renders k = 0; a request root keeps its k
+(the workload may open it pre-window and name it in the declared target). The trace states the
+window only — nothing before it opens is written — so pre-window activations never reach PLAN.
+
+**A state location's owner is the VM's own object identity, not an allocation site.**
+`KIND/<ownerSymRid>#<slot>` — `INSTANCE_FIELD/1#24`, `STATIC_FIELD/…`, `ARRAY_ELEMENT/…`,
+`MAP_STATE/<rid>#-3` for a whole container. A rid is a per-run counter, so a state join is per
+session.
 
 **The pass-equality rule.** The identity is one function *and one input set* in both passes:
-node attribution, the region frame set (every skeleton root opens a frame in both passes; rich
-and lite hooks never both on one method), thread-start frames claimed at the work's first
-identity event, an index frame at every application-scope method, loop frames and any
-loop-iteration charge, the producer endpoint and read/write site indexes. Any new hook that
-pushes a frame or counts an event is woven in both passes or in neither, every push paired with
-its pop, because the address *is* the join key — which plan row a replay answered, which arm a
-family owes, which version a read observed are all equality on these ids.
-
-What the identity deliberately does **not** tolerate: a different *number* of iterations of a
-loop on the index path (iteration k aligns with iteration k, so one extra iteration shifts every
-later address, and the campaign refuses the affected tasks by name rather than matching
-heuristically), and work started inside unwoven JDK internals, which degrades to `Lost`.
+node attribution (`Attribution`'s three rules — explicit scope, innermost frame whose receiver
+is a registered component, else the starter's node held by reference), the region frame set,
+thread-start frames claimed at the work's first identity event, an index frame at every
+application-scope method, loop frames, the producer endpoint and read/write site indexes. Any
+new hook that pushes a frame or counts an event is woven in both passes or in neither. What the
+identity deliberately does **not** tolerate: a different *number* of iterations of a loop on
+the index path, and work started inside unwoven JDK internals (`Lost`).
 
 ## 5. Rows, and the composition
 
-A replay publishes one row per event, one file per kind, into its own session directory, with a
-manifest stating its role (`SEED` or `FOCUSED`); every reference resolves in its own table.
+A replay publishes one row per event, one file per kind, into its own session directory, with
+a manifest stating its role (`SEED` or `FOCUSED`) and, for a focused one, the obligation it
+ran; every reference resolves in its own table.
 
 | Row | States |
 | --- | --- |
-| `ActivationRow` | an occurrence ran: address, whether focused, whether instrumented |
-| `DecisionRow` | a branch: site, ordinal, the jump's predicate as written at the site (polarity-free), and `outcome` — whether it held |
-| `RootMintRow` | a declared root minted here: kind (`MARKER`, `INTEGRAL`, `CLOCK`), recorded value, resolved domain |
-| `ReadRow` | a read: location, the version it observed, or the placeholder it minted, or its concrete value |
-| `WriteRow` | a write: location, version, the expression written, the writing occurrence |
-| `ExportRow` / `AttachRow` | a message leaf left / arrived: endpoint, expression or minted `v_H`, the paired producer |
-| `TargetRow` | the annotated site: the fatal predicate in the **fatal** polarity, whether that arm was observed, whether the anchor was reached |
+| `ActivationRow` | an occurrence ran: address, whether focused, whether instrumented (an ambient activation of an unwoven region has `instrumented=false`) |
+| `DecisionRow` | a branch: site, ordinal, the jump's predicate as written at the site (polarity-free), `outcome`, and the clock readings its term rests on |
+| `RootMintRow` | a declared root minted here: kind (`MARKER`, `INTEGRAL`, `CLOCK`), **the value this replay ran it at** (the plant where one followed), whether declared |
+| `ReadRow` / `WriteRow` | a read joined to the version it observed or the placeholder it minted; a write with its version and expression |
+| `ExportRow` / `AttachRow` | a message leaf left / arrived: endpoint, expression or minted `v_H`, the paired producer, the correlation id |
+| `TargetRow` | the annotated site: the fatal predicate in the fatal polarity, whether that arm was observed, whether the anchor was reached |
+| `ScheduleEvent` (`schedule.jsonl`) | the run's event order (§6); read by IMPORT as a session file, not a row |
 | `GapRow` | a refusal or a diagnostic: kind, class, subject, detail |
 
-`IMPORT` checks ten invariants over the sessions handed to it and nowhere else, because a bad
-row is not one stage's problem: a session states its role; one activation row per activation and
-one row per event; a read has an observed version or a concrete value, never neither, and joins
-the expression of that version or of the placeholder it minted, while no write fabricates a
-value; one symbol spelling and one sort per name, every reference resolving in its own session;
-`outcome` says whether the published term held; a root mint exists only for a declared root; the
-target's term is in the fatal polarity; a flip is admitted only if it took the other arm.
+`IMPORT` checks the invariants over the sessions handed to it and nowhere else: a session
+states its role; one activation row per activation; a read has an observed version or a
+concrete value, never neither; one symbol spelling and one sort per name; a root mint exists
+only for a declared root; the target's term is in the fatal polarity; a flip is admitted only
+if it took the other arm; a mint that RAN publishes its value, and an obligation whose mint
+never ran is `NOT_ADMITTED`, not a blocker.
+
+**A mint states what the region ran the root at.** A field mint reads its plant back from the
+cell it stands on; a fresh-box mint (`RootMint.materializePrimitiveValue`: markers,
+`LOCAL_DEFINITION`) states the box it handed the region. The composer holds one replay to one
+value per root (`Composer`, "stated twice and differently"). A CLOCK is the exception by
+design: every execution reads a clock fresh, so the focus row states a **skew** (`clockDeltas`)
+and the replay adds it to its own instant — see to-do item 1, which is exactly the place this
+rule and the previous sentence collided.
 
 The composer aligns, merges, lowers and gates. For anchor `A` over admitted paths `p`:
 
@@ -247,495 +220,444 @@ exactly-one(selector_p)                                   ; target_path_partitio
 or(selector_p)                                            ; fatal_target
 selector_p => pi_p /\ phi_p /\ reads_p /\ joins_p /\ valuation_p
 selector_p => family(I)    for every interaction I that p's chain reaches
-root domains, clock floors, opaque-identity axioms
+root domains, clock domains (one per declared symbol, floor = the reading), per-node monotone
+clock chains, opaque-identity axioms
 ```
 
-`pi_p` is the path's decision prefix **strictly before the target observation** — each conjunct
-`outcome ? term : not term`, taken with `seq` below the target row's own. That bound is what
-makes the conjunction a question rather than a contradiction: the anchor's decision and the
-target row share a seq, so a prefix over *all* of the occurrence's decisions carries the
-anchor's recorded polarity while `phi_p`, the fatal predicate as published, asserts its
-complement, and every path whose session did not observe the fatal arm is unsat before any root
-is considered. `pi_p` is then closed over the **writer and producer occurrences this path's
-joins reach** (`Composer.closure`, a row-level fixed point), each one's prefix taken strictly
-before the write that reached it: a read bound to the expression of a write version is bound to
-a value that occurrence *produced*, under the decisions it had taken by then. Those prefixes are
-per session, already under this path's valuation, and they are where every clock conjunct lives
-— without them 11741 declared no clock symbol and `CLOCK_SKEW` was unreachable.
+`pi_p` is the path's decision prefix strictly before the target observation, closed over the
+writer and producer occurrences the path's joins reach (`Composer.closure`), each prefix cut at
+the write or delivery that reached it. `reads_p` joins each read to the version it observed or
+the placeholder it minted, else pins it to the recorded value, refusing if it can do none.
+`joins_p` carries the boundary variables. `valuation_p` is what *this* path's replay ran each
+varied root at.
 
-`reads_p` joins each read to the expression of the version it observed, or to the placeholder it
-minted, or pins it to the recorded value — refusing if it can do none of the three. `joins_p`
-carries the boundary variables: minted root symbols, container states `v_C` (a container
-crossing occurrences becomes a state variable at its first symbolic write, every later operation
-a version), wire handoffs `v_H`, per-session clock readings. `valuation_p` is what *this* path's
-replay ran each varied root at: never a global fact, because one session's value asserted for
-all paths closes every other. Clocks are stated **one floor per cell**, never per (cell,
-session): a mint's symbol names the (root, occurrence) and is the same in every session that
-read it, so a floor per session states one `:named` assertion many times and z3 answers the
-whole query with an error. The reading that floor is relative to is the **seed's** — there is no
-corpus-wide "the reading", and a claim about the recording rests on the recording's.
+**Families and world-compatible arms (DESIGN4 §3.4).** A family arm is `(producer path
+condition, delivered expression)` guarded by the delivering replay's valuation of the roots that
+expression depends on, and keyed by the **world** (the flips) it was collected in; a path may
+only select arms whose worlds are compatible with its own. A wire arrival is bound by the
+message it came in: one selector per (message, session), binding every leaf of the message at
+once, with exactly one eligible session holding. An arm no session attests is
+`UNATTESTED_ARM`. State families keep the writer occurrence as their unit.
 
-A family arm is `(producer path condition, delivered expression)`, guarded by the delivering
-replay's valuation of only the roots that expression depends on. **An arm is attested when the
-producer occurrence's rows are stated** — an activation row for it, instrumented, so its
-decisions are recorded — in whichever session states them, because attestation is a property of
-the producer's run and not of the consumer's. An arm no session attests is `UNATTESTED_ARM`: it
-says what was delivered and not why, and a witness moving a root inside one is refused. `v_H` is
-bound to what an obligation answered it, else to the delivery an attested arm states, else to
-nothing: the third rule, which pinned the arrival to the literal this session happened to
-receive, is deleted, because an arrival is not a statement about why the delivery was that value
-— so a read no attested arm delivers is refused by name and its path leaves the disjunction.
-A wire arrival is bound by **the message it came in**: one selector per (message, session), and
-not one per arm (rule 3 of §9). A message is the attaches that share a `correlationId` in the
-path's own session — both ports of one RPC response, all five leaves a `convert` loop made of one
-response body — and its selector binds every leaf of it at once:
-`sel_{M,S} ⇒ guard_S ∧ closure_{M,S} ∧ ⋀_k v_H_k = e_{k,S}`, with exactly one of the ELIGIBLE
-sessions of M holding. S is eligible only where it has an attested delivery at *every* leaf of M,
-so a run that exported four entries is no option for a path that attached five, and a message no
-session is eligible for refuses the path by name (`UNPRODUCIBLE_ANSWER`). Grouping by producer
-*occurrence* is not enough: a loop body's iteration is part of its occurrence's execution index,
-so one response's leaves are several occurrences and a witness could take half of one run's
-response and half of another's. An arm is then closed like a path: for every occurrence the
-message came out of, that occurrence's prefix taken to its own delivery, the same row-level
-closure the anchor gets started there, the container versions the delivered expressions read, the
-prefixes and state joins of everything those closures reached, and the producer's own attaches as
-nested messages under this family's guard — never the anchor's. A refusal inside one refuses that
-(M, S) and not the path. The manifest names the message's attach endpoints and the run each
-witness valuation selected (`selectedArms`); a path states only the joins its conjunction
-reaches. State families keep the WRITER OCCURRENCE as their unit: one selector per writer, and
-one exactly-one per location over its writers, because a writer's writes move as a block and half
-a block cannot move.
-
-Root domains are exactly what the case declares: a marker free in {recorded, flipped}, an
-integral root in its declared relative window, a clock with a floor of zero and no window, any
-other root pinned to its recording.
+**Flip queries and the nearest world (DESIGN4 §3.7).** `explore/FlipQuery` builds one query
+per (path, decision): the path's prefix as it ran with the flipped decision negated (with a
+60 s margin where it rests on a clock, `ClockMargin`), the arms of the handoffs it reaches, the
+root domains and clock windows, and `(minimize Σ|x − recorded(x)|)` over the Int roots and
+clocks it bounds. A term the lowering cannot state is refused by name — a prefix conjunct is
+dropped with a gap, an arm is dropped with a gap, the flipped predicate itself refuses the
+query — never wrapped into `(not )`. The model becomes the obligation's world
+(`ObligationFactory`: `rootAssignments`, `clockDeltas` = model − the reading, `answers`,
+`inheritedFlips`, `schedulePrefix`); a model that hands every root back its recorded value and
+answers nothing is refused before a replay is spent.
 
 `DECIDE` asks each composed path, alone and with every root free, whether it is satisfiable at
-all. One that is not is inert and is named `PATH_SELF_CONTRADICTORY`, `DIAGNOSTIC` per path,
-because that may be a fact about the corpus rather than a defect. When **every** path is inert
-the same kind is raised `BLOCKING`: the disjunction is false in every world of the corpus, so
-its verdicts are about the formula it built and not about the recording. `polarityDecides` is a
-condition on the claim, not a field beside it: the recorded valuation's disjunct must be unsat
-**and** its unsat core must name a valuation pin, because "the run as it happened does not reach
-the fatal arm" is a statement about the recorded roots, and a core naming none refuted the
-path's own conjunction under every valuation there is.
-
-The claim policy names the *narrowest* mechanism the evidence supports, and publishes it only
-if the polarity decides — the disjunct for the run as it happened must be unsat, or the formula
-was satisfiable all along and explains nothing:
+all (`PATH_SELF_CONTRADICTORY`, `DIAGNOSTIC` per path, `BLOCKING` when every path is inert).
+`polarityDecides` requires the recorded valuation's disjunct to be unsat with a core naming a
+valuation pin. The claim policy names the narrowest mechanism the evidence supports:
 
 | Claim | What it means |
 | --- | --- |
-| `MARKER_FLIPPED` | a declared root moved inside its declared domain reaches the fatal arm |
-| `CLOCK_SKEW` | nothing declared moved; the fatal arm is reached only because clock cells may sit elsewhere, and pinning every cell to what its session read is unsat. The cells the model placed are the witness's moved roots |
-| `MESSAGE_PAIRING_FLIPPED` / `STATE_PAIRING_FLIPPED` | every root stays at its recorded value; a different eligible, attested producer or writer delivers the read |
-| `RECORDED_FAILURE_EXPLAINED` | the recording itself observed the fatal arm, reproduced with nothing moved |
+| `MARKER_FLIPPED` | a declared root moved inside its declared domain reaches the fatal arm (a configured source, or a transport fault marker) |
+| `CLOCK_SKEW` | nothing declared moved; the fatal arm is reached only because clock cells sit elsewhere. The cells the model placed are the witness's moved roots |
+| `MESSAGE_PAIRING_FLIPPED` / `STATE_PAIRING_FLIPPED` | every root stays; a different eligible, attested producer or writer delivers the read |
+| `RECORDED_FAILURE_EXPLAINED` | the recording itself observed the fatal arm |
 | `NO_SUPPORTED_WITNESS` | nothing in the corpus supports a witness. An answer, not an error |
 
-## 6. Preparing and running a case
+**CONFIRM (DESIGN4 §5).** SAT says the model satisfies our formula; CONFIRM says the program
+agrees. `explore/ConfirmMain` writes one focus row with `flip: null`: the world of the
+obligation whose replay is the selected session (its `focused_task.jsonl` — root values, clock
+skews, answers, mints — a world proven in an execution; the recording's own session planted
+nothing and gets nothing), that session's schedule cut at the anchor, and `expected_edges.jsonl`
+(the WIRE arm per selected message, the STATE join per read, the MARKER polarity per planted
+marker, the ANCHOR). The replay's hooks compare and file `CONFIRM_MISMATCH`; `runtime/Confirmation`
+decides; `accept/report.py` passes a case only with `confirmation.confirmed`. The model's own
+re-solved instants are the published witness, not what the run is held to: a solver sits on the
+boundary of its constraints and a run's timeline moves by more than that.
 
-You need stock JDK 8 and Maven for GraphChecker and the recording passes, the customized
-OpenJDK 8 Zero VM for concolic replay (build and smoke-test details in
-[third_party/OpenJDK-Concolic-Execution-Engine/README.md](third_party/OpenJDK-Concolic-Execution-Engine/README.md)),
-z3, `jq`, `python3`, and the workload's compiled classes and complete classpath. Each Hadoop
-workload has its own checkout so its source changes and compiled classes stay independent, and
-`experiments/hadoop/<case>/run.sh build` installs the current GraphChecker API, compiles that
-tree with Java 8 and runs its concrete workload test, refusing unless that one test passes
-alone.
+## 6. The schedule: a deterministic prefix, then the rest
+
+The owner's design (2026-09-22): a focused replay's prefix must agree with the execution that
+produced its task, so that `(r, c, i)` is stable, and attribution must not depend on hand-placed
+probes in the workload. Non-goals: modelling shared-memory interleavings; changing the symbolic
+semantics of compose; executing a witness to confirm it (CONFIRM was added later, in §5, and
+re-runs a world a replay already ran).
+
+**One new abstraction: `Event = (kind, c, site, k)`**, kind ∈ {START, CLAIM, SEND, RECV, WAKE,
+END}: a task started / began running / a message left / arrived / a timed wait returned /
+a daemon turn ended; `c` the causal context, `site` the static site, `k` the count of that
+(c, site). No thread ids, no time. A run's schedule is the total order of its events,
+`schedule.jsonl` per session (`recorded_schedule.jsonl` for the recording). SEND events also
+state the producer endpoint the message carried, which is how `Corpus.senderOf` pairs a served
+message with the occurrence that sent it (the control producer of §3).
+
+**Recorder** (`runtime/ScheduleLog`, both passes): fed by the existing hooks — `Identity.startWork`
+→ START, claims → CLAIM, the message doors → SEND/RECV, `beginTick`/`endTick` → WAKE/END — and by
+the woven timed-wait stand-ins (`runtime/TimedWaits`: sleep, wait(long), parkNanos, await/poll
+with timeout, plus notify/signal so that a signal is *state*: a woven signal marks the
+longest-standing wait, an unmarked wait waits on).
+
+**Enforcer** (replay only): the same class holds the task's `schedule_prefix.jsonl` and a cursor.
+An event equal to the expected next one is admitted; otherwise the thread blocks until its turn;
+nothing admitted for 15 s (`SCHEDULE_DIVERGED`) gives up the event that was waited for and
+releases the waiters. Under a prefix, a timed wait uses virtual time (it returns at its turn), a
+signalled return is the notifier's doing, an interrupt writes its WAKE where it stands. The
+prefix is cut at the **target** of the task (path occurrence, focus, factor) — `explore/SchedulePrefix`.
+
+**Past the prefix, the clock still holds** (rule 26): the concolic VM is many times slower than
+the recording, so on the wall clock every daemon timer has expired at the cut and each tick fires
+at once. `SchedulePrefix` therefore also writes `schedule_suffix.jsonl` (the rest of the order);
+past the prefix `ScheduleLog` holds only the timeout WAKEs the rest names until every rest event
+before them has happened or been given up; everything else runs free; a watchdog gives up the
+open events before the earliest waiting WAKE; a turn's END settles its span; after two give-ups
+(`REST_STALLS`) the rest is released. A run gone free leaves its waits to their own clocks.
+
+**World inheritance**: an obligation's task carries the schedule of the session it was cut from
+plus that session's planted values and inherited flips; a child of a NOT_ADMITTED session is
+never cut (its path is a prefix nothing ran).
+
+**Attribution** (`runtime/Attribution`, one lazy resolver, three rules in order): an explicit
+scope (request / carried / inbound owner / tick owner); else the innermost application frame
+whose receiver is a registered component (`CausynthCluster` registers every node's RPC servers,
+namesystem, block manager, key managers, DataNode, SASL client/server, actors); else the
+starter's node, held by reference. `ROLE.*` occurrences appear only when all three fail and are
+reported as `LINEAGE_LOST`.
+
+**Case-preparation rules the design needed on contact** (all general, all in
+`experiments/hadoop/lib/README.md`): registration precedes any traffic; one request, one
+scope; in-window per-node loops walk `CausynthCluster.dataNodes()` (sorted by registered name);
+the block a case reads its roles off is pinned to a named node; each DataNode gets its own IPC
+connections; nothing set up before the window may expire on the wall clock (idle-connection and
+socket-cache timeouts set to 6 h); workload waits inside the window outlast the watchdog
+(`WINDOW_WAIT_MS` = 60 s); scenario assertions before the anchor are `recordingPrecondition`s
+(asserted only when not replaying); key rotations that must not close by daemon are explicit.
+Known residue (a design non-goal): a daemon turn's *content* is clock/shared-state driven (a
+held tick can carry heartbeat + IBR where the recording had one RPC).
+
+## 7. Fault points, symbolic inputs, iteration (DESIGN 4)
+
+[docs/design/DESIGN4-FAULTS-INPUTS-ITERATION.md](docs/design/DESIGN4-FAULTS-INPUTS-ITERATION.md)
+is the current design; this is its summary.
+
+- **Fault points (§1).** A fault is a decision at a transport door: every tree's
+  `Client$Connection.sendRpcRequest` (IPC) and `SaslDataTransferClient.doSaslHandshake`
+  (SASL) call `Debug.makeSymbolicBoolean("FAULT:<TRANSPORT>:<DIRECTION>")` unconditionally and
+  throw on true. The marker is declared iff the case's `communication-mappings.jsonl` maps that
+  transport (`WireFlowCatalog.declaredTransports`, `StaticScopeMap.declaredFault`). PLAN admits
+  the firing occurrence as a declared site (`EXPLICIT_SYMBOLIC_FAULT` action, `LOCAL_DEFINITION`
+  mint), the seed mints a MARKER root (recorded `false`), the branch on it is a symbolic decision,
+  and `ClosurePlanner` makes every marker decision of a task — and of the control producer of the
+  message it served — a flip site, proposed first. At the door `if (fault) throw`, the throw
+  branch is the decision's `false` outcome and the solver assigns the marker `true` for it.
+- **Symbolic inputs (§2).** The inputs of an occurrence are its declared roots, its declared
+  region inputs, its wire attaches, and the reads of locations another occurrence wrote; each is
+  a placeholder in the focused replay and is bound at compose to the arm that delivered it.
+- **Iteration (§3).** Each wave writes `graph.jsonl` (nodes with their world, wire/state/thread
+  edges) and `growth.jsonl` (`EXPOSED_REGION` rows: an occurrence reached by an admitted world
+  inside a region that is in scope but not woven). The driver's `GROW` step
+  (`campaign_grow`) runs `plan/ExposedRegionPlanMain` for the exposed regions, re-weaves, and
+  re-runs the exposing obligation under the same world; the re-run session replaces the exposing
+  one. Compose keys arms by world (§5). Epochs, the seed cache and every compat toggle are
+  deleted. **Not yet exercised**: no run so far has exposed a region (to-do item 6).
+- **CONFIRM (§5)** — see §5 above.
+
+## 8. Preparing and running a case
+
+### The host (as of 2026-09-23)
+
+| what | where |
+| --- | --- |
+| this repository | `~/GraphChecker`, branch `refactor/deterministic-prefix`; `main` is the last accepted state |
+| stock JDK 8 | `/usr/lib/jvm/java-8-openjdk-amd64` — `export JAVA_HOME=… PATH=$JAVA_HOME/bin:$PATH` before Maven (the environment's default is JDK 11 and the build refuses) |
+| the concolic VM image | `third_party/OpenJDK-Concolic-Execution-Engine/build/linux-x86_64-normal-zero-release/images/j2sdk-image` (built; rebuild: `FULL_JDK=true JOBS=8 bash scripts/causynth_build_in_docker.sh` in that directory) |
+| z3 4.14.1 | `~/.local/bin/z3` |
+| Hadoop workload trees | `~/hadoop-hdfs-11741`, `-17897`, `-17899-bug1/2/3`, `-17960`, `-17967`, `-17967-b`, `-17967-c`; each on its `gc/<case>-v2` branch of `git@github.com:JHSUYU/hadoop.git` (committed, **not pushed**); `experiments/hadoop/<case>/tree-edits/` mirrors the edits |
+| campaign hosts | `lift11`…`lift15` (ssh, BatchMode); at most two campaigns per host, the obligation workers of one campaign already fan out over the hosts named in the case's `workflow.properties` |
+| snapshots | `~/gc-run/pNN` — a `git worktree` of one commit with its own built jar; a campaign runs from a snapshot so the working tree can move |
+| outputs | `~/gc-out/accept-<round>-<case>/` (`summary.tsv`, `logs/`, `out/<case>/schedule/…`, `report/<case>/report.md`), `~/gc-out/launch-<round>-<case>.log` |
+| scratch | `/localtmp/vnr3ne/graphchecker/` on each host (replay working directories) |
+
+### Build and test
 
 ```bash
-export JAVA_HOME=/absolute/path/to/jdk8 && export PATH="$JAVA_HOME/bin:$PATH"
-mvn -q -DskipTests package
-JOBS=4 third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_build_in_docker.sh
+export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64 PATH=/usr/lib/jvm/java-8-openjdk-amd64/bin:$PATH
+mvn -q -o package -DskipTests           # the jar: target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar
+mvn -q -o test                          # 143 @Test (keep it under 150; fold new behaviour into existing tests)
+bash src/test/shell/run_engine_campaign_helpers_test.sh
 ```
 
-| Declaration | Where | What it says |
+`-o` (offline) is deliberate: `~/.m2` is NFS-shared and a Hadoop build in parallel with a Maven
+resolve corrupted `maven-metadata-local.xml` once. Hadoop trees are built by
+`experiments/hadoop/lib/run.sh <case dir> <case id> build` (installs the GraphChecker API and
+shim into the local repository, compiles the tree with JDK 8, runs the workload test once
+natively); build chains for several trees use `MAVEN_REPO_LOCAL` copies (`~/.m2b-repository`,
+`~/.m2c-repository`) and `SKIP_GRAPHCHECKER_INSTALL=1`. **Never rebuild a tree while a campaign
+runs on it, and never edit a running campaign's frozen inputs** (EMIT refuses "frozen input
+changed").
+
+### What a case declares
+
+A case directory under `experiments/hadoop/` holds declarations only (`case.sh`,
+`workflow.properties`, `target.yaml`, `symbolic-inputs.jsonl`, `root-domains.jsonl`,
+`communication-mappings.jsonl`, `loop-bounds*.jsonl`); everything executable is
+`experiments/hadoop/lib/` (its README lists the scripts and the workload rules). The loop-bounds
+files key loops by Jimple unit id (`<method>#uNN`); **any edit to an instrumented method shifts
+the ids after it** — re-read them from `region_skeletons.jsonl.gz` (`loopControlSiteIds`) after
+a tree edit. Per-case notes: `experiments/hadoop/<case>/README.md`.
+
+### A round
+
+```bash
+# 1. snapshot the commit you want to run (from ~/GraphChecker, tree clean and committed)
+git worktree add ~/gc-run/p24 HEAD && (cd ~/gc-run/p24 && mvn -q -o package -DskipTests)
+# 2. launch: two cases per host, the rest queued behind them
+tools/rounds/queue-launch.sh /u/vnr3ne/gc-run/p24 v21 \
+    lift12:hdfs-17899-bug3,hdfs-17967-pathA lift13:hdfs-17899-bug1,hdfs-17967-pathB:hdfs-17967-pathC \
+    lift15:hdfs-17899-bug2 lift11:hdfs-11741,hdfs-17897:hdfs-17960
+# 3. watch: one DONE line per finished campaign (exit, seconds, claim, blockers, verdict, moved roots)
+tools/rounds/round-monitor.sh 'v21-*' | grep --line-buffered "DONE "
+# 4. stop one run: the launcher log names its process group
+ssh lift12 "kill -TERM -$(grep -o 'process group [0-9]*' ~/gc-out/launch-v21-17899-bug3.log | awk '{print $3}')"
+ssh lift12 "pkill -TERM -f 'gc-run/p2[4]'"    # the driver keeps spawning obligation JVMs; kill those too
+```
+
+`tools/rounds/launch-run.sh` is what each host runs (it sets `JAR`, `CASES`, `OUT`, `Z3_BIN`,
+`CAUSYNTH_CUSTOM_JDK_HOME`, `SKIP_BUILD=1` and execs `experiments/hadoop/accept/accept.sh`).
+Campaign durations at two per host: 17960 ≈ 5 min, the block-key cases 12–25 min, 11741 up to
+an hour. The acceptance rule is in `experiments/hadoop/accept/README.md`: `SAT_CANDIDATE`,
+`FINAL_READY`, no BLOCKING gap at any stage, the case's expected mechanism (`EXPECTED_MECHANISM`
+in `report.py`: 17960 `MARKER_FLIPPED` on `SNAPSHOT_DELETION_ORDERED=false`, the others
+`CLOCK_SKEW` or `MARKER_FLIPPED`), `polarityDecides`, non-empty `movedRoots`, and
+`confirmation.confirmed`. A PASS line is not acceptance on its own: check that the witness
+*needs* the roots it moves, that handoff leaves do not collapse distinct arrivals
+(`attaches.jsonl`: same symbol, different arrival), that the fatal was observed in a replay, and
+that clock values are plausible under a monotone floor. The last accepted round was judged by an
+assessor plus two skeptics per case on exactly those four checks.
+
+## 9. Status (2026-09-23, evening)
+
+**Accepted: 9/9 on `main` = `497dc8beb` (round v15, 2026-09-23 02:00).** 17960
+`MARKER_FLIPPED` (`ordered=false`); 11741, 17897, 17899 bug1/2/3, 17967 A/B/C `CLOCK_SKEW` with
+`polarityDecides`, each witness needing the NameNode rotation clock plus the stale node's
+refresh clock. That commit has the deterministic prefix, the rest clock, attribution, the
+window rules and no fault markers; `main` is **not pushed**. Its outputs are
+`~/gc-out/accept-v15-*` (keep them: they are the reference corpora).
+
+**Design 4 is implemented and merged on `refactor/deterministic-prefix`** (HEAD `e23a548cc`
+plus this documentation commit): fault markers end to end, control producers, `graph.jsonl`/
+`growth.jsonl` and `GROW`, world-compatible arms, clock domains per symbol and per-node
+monotone chains, CONFIRM, the nearest-world objective; epochs, the seed cache, `FaultMarker`,
+`ScheduleReportMain`, the scalar-projection codec and every compat toggle deleted. 143 unit
+tests and the shell test are green at every commit. **It is not accepted yet**: the debug rounds
+v16–v20 found and fixed nine general defects (below), and at the time of writing the round v20 on
+snapshot `~/gc-run/p23` (`e23a548cc`) stands at: **17960 PASS on p22** (`77240f66e`, v19,
+confirmed) but **`SAT_UNCONFIRMED` on p23** (to-do item 3); bug3 / 17897 / pathA / pathB /
+pathC / bug1 **FAIL** with the open defects of to-do items 1–2 (no session observed the fatal, or
+the fatal was observed with nothing planted); 11741 and bug2 were still running — read
+`~/gc-out/accept-v20-*/summary.tsv` for their final state. Snapshots `p17`–`p23` are worktrees
+of the commits named below; `p17`–`p20` can be removed.
+
+Fixed during the D4 debug (each general, each a commit on the branch):
+
+| round | defect | fix |
 | --- | --- | --- |
-| the failure | `@CausynthExceptionTarget` on the constructed exception type, plus `target.yaml` | which exception construction is the failure |
-| the occurrence | `declared_target_occurrence` | which occurrence of that site this case is about, as a full address — a campaign is target-directed, and the case knows which instance can fail |
-| roots and region inputs | `symbolic-inputs.jsonl` | a cell whose read mints a placeholder, or a callee-level clock declaration (`<org.apache.hadoop.util.Timer: long now()>` with `"kind": "CLOCK"`) making *every* call site of that clock a `ROOT_SITE` of the scope map, and so a root |
-| root domains | `root-domains.jsonl` | per root, an absolute or relative window (`+0`/`+3`) and why. A root with no row stays pinned to its recording, which is what a case that claims nothing about it says |
-| message boundaries | `communication-mappings.jsonl` | one `WIRE_FLOW` per typed producer/consumer pair, each side with a capture kind (`METHOD_PARAMETER`, `METHOD_RETURN`, `CALL_ARGUMENT`, `CALL_RETURN`) |
-| loop bounds | `loop-bounds.jsonl` and `causynth_loop_default_bound` | the exact bound of each retained condition-controlled loop, with a reason. A campaign stating no default is refused; every inherited bound is published as a diagnostic gap |
+| v16 | the door hunk shifted Jimple unit ids; loop-bounds rows named stale `#uNN` | ids re-read from the skeletons (`a8bce012c`) |
+| v16 | a door fault was admitted for a case that maps no transport (17960 planned its unregistered client) | declared iff the transport is mapped (`c1cb49cb9`) |
+| v16 | fault flips were never proposed: the sender of a served message is reached by no data edge | control producers in the closure (`a40e1e3b9`) |
+| v16 | pre-window activations reached the trace (the start-paused guard had been deleted as a "toggle"): `OCCURRENCE_ADDRESS_SHARED` everywhere, 17960's config hook "fired under none" | the trace states the window only (`34ddf099c`) |
+| v17 | CONFIRM planted the model's re-solved values and clock instants: anchor reached, fatal not observed | CONFIRM re-runs the selected session's own obligation world (`cbf54ca7d`) |
+| v18 | a fresh-box mint stated the live read under a plant: every fault-flip session refused by the composer | the mint states what it ran the root at (`cbf54ca7d`) — see to-do 1 for its clock side |
+| v18 | a `ROLE.*` endpoint carried the pooled handler's start iteration: 17960's seed reached no target after one heartbeat shifted the rotation | role occurrences indexed from the scope root (`77240f66e`) |
+| v18 | z3 answered boundary points (+30 days): nested obligations' inherited flips failed, no fatal path | the nearest-world objective (`e23a548cc`) |
+| v18 | an arm conjunct lowering to `(not )` made z3 reject whole queries | the arm is dropped by name (`e23a548cc`) — see to-do 2 |
 
-The workload also carries a small tracing ABI — **24** entry points across
-`runtime.CausynthTraceRecorder` (16), `runtime.ConcolicRegionRuntime` (4),
-`runtime.SymbolicMessageEnvelope` (3) and `annotation.Debug` (1): register a node source and its
-aliases, open and close a request or daemon tick, carry a scope across a thread hand-off, take
-and install a message envelope, symbolize a configured source, plant a marker. Called by name
-from the workload trees against an installed jar, they are woven nowhere and a `git grep` of
-`src/` finds none of them, so they are pinned as a checked test resource,
-`src/test/resources/external-callers.txt` (`ConcolicHookAbiTest`).
+## 10. The to-do, in order
 
-**Pinning nondeterminism is part of case preparation.** Before recording, disable or pin the
-daemons and timers that write state inside the instrumented window (edit-log autoroll, lease
-and resource monitors, heartbeat and key-update periods), make restarts and checkpoints
-explicit and awaited, and remove RPC retries across restarts; a replay running a different
-*number* of iterations is refused by design (§4).
+Work from the top; each item states its evidence and where the fix goes. Items 1–4 are what
+stands between the branch and a 9/9 accepted round; after that `main` moves and the
+housekeeping in item 7 is due.
 
-```bash
-./run_engine.sh --config /absolute/path/workflow.properties config    # normalized config
-./run_engine.sh --config /absolute/path/workflow.properties validate  # required fields
-experiments/hadoop/hdfs-17960/run.sh campaign                         # the whole campaign
-CAUSYNTH_CAMPAIGN_STOP_AFTER=IMPORT experiments/hadoop/hdfs-17960/run.sh campaign
+1. **A nested obligation's clock skew is stated against the wrong reading.** Evidence
+   (`~/gc-out/accept-v20-17899-bug3/…/iteration-0000/obligations-0001/07caf1adc2a95d5b`): the
+   child of `b1bae40310844c33` (parent skew of clock `…in.2bbb1677…326b891febda` = 7 319 785 ms)
+   solved the same clock to floor + 3 600 072 and wrote `clockDeltas = 3 600 072`; the replay
+   added that to its *fresh* wall reading, so the inherited flip `removeExpiredKeys#u15#1 →
+   false` (which needs ≥ 2 h + margin) was not taken — 39 NOT_ADMITTED "wrong decision" rows in
+   wave 1, no path observed the fatal. In v15 the same obligation wrote 10 919 859 = 7 319 784 +
+   3 600 075, because focused clock mints then stated the **wall** reading (`recordedValue`
+   before the plant) and `ObligationFactory` computed `delta = model − corpus.rootValue(session,
+   root)` against it. Commit `cbf54ca7d` made every fresh-box mint state its planted value —
+   right for markers, wrong for clocks, whose value is by design a skew on a fresh read (§5).
+   Fix (principled, one of two): in `RootMint.materializePrimitiveValue` state the live read for
+   `RootKind.CLOCK` (the skew is the focus row's statement) and keep the planted value for the
+   others; or compute the child's delta as `model − reading + inheritedDelta` in
+   `ObligationFactory` (line ≈ 760, `overlay(inherited.clockDeltas, clockDeltas)`). The first
+   keeps one meaning per row kind and matches `Corpus.rootReading`'s doc. Then re-run bug3 and
+   pathA (the same shape: 29 NOT_ADMITTED in v18/v20). Expect the v15 result: bug3 ≈ 61 ADMITTED,
+   22 fatal paths, `CLOCK_SKEW`.
+2. **A fatal reachable at the recorded valuation, through an arm the lowering could not
+   state.** Evidence (same run, `obligations-0000/de821262b1c957b6`, flip
+   `retrieveDataEncryptionKey#u8#1`): in v15 this query was well-formed and UNSAT ("no world
+   takes the other arm" — the key map's version arm states the key is present); in v18 the arm's
+   two prefix conjuncts lowered to empty and the query was `(and (not ) (not ) (= vH_XCH_…req_
+   119980))`; `e23a548cc` drops such an arm by name, so the query became SAT with **nothing
+   planted**, the replay reproduced the flip (the key was absent under the cut schedule) and
+   observed the fatal, and the composition refused with `FORMULA_SAT_AT_RECORDED_VALUATION`.
+   Two things to settle: (a) *why* the conjunct lowers to nothing now — diff the v15 and v18/v20
+   `obligation_query.smt2` of `de821262b1c957b6` (the v15 corpus is under
+   `~/gc-out/accept-v15-17899-bug3`); the v15 text names `container_dag__…` size terms the new
+   `assoc_put` lowering (compose D4 / E2) replaced, so start at `compose/ContainerSmtCodec` and
+   `SmtLowering.lower` for a `MAP_STATE` read whose expression reference resolves to nothing;
+   (b) whether a fatal reached by *ordering alone* at the recorded valuation (the DataNode's key
+   store read before the delivery) is a witness this case should publish
+   (`MESSAGE_PAIRING_FLIPPED`/`STATE_PAIRING_FLIPPED`) or the recording precondition the case
+   must assert (the block-key recipe says the rotation gap must run the right way). Until (a) is
+   answered, the safe reading is that dropping the arm hides a lowering regression.
+3. **17960 confirmed on p22, `SAT_UNCONFIRMED` on p23.** `~/gc-out/accept-v20-17960/…/final/
+   confirm.json`: "the run took an edge the model did not choose: STATE 1f7ec9ce6e8a0a64: the
+   model joined this read to writer f5b837608e62728b (version 91), the run never read here" —
+   the claim itself is the right one (`MARKER_FLIPPED`, `ordered=false`, `polarityDecides`).
+   The only engine change between the two snapshots is `e23a548cc` (nearest-world objective +
+   arm drop), which changes obligation worlds and therefore which session the composition
+   selects. Check, in that order: which `selectedSessionId` the valuation names and whether that
+   session's own `reads.jsonl` has endpoint `1f7ec9ce…` (if not, `ConfirmMain` is expecting a
+   join that belongs to another path's session — the expected STATE edges must be the selected
+   session's own joins, and a `writer_arm__` the model selected only where that session read);
+   then whether the confirmation replay's schedule reached that read at all (`confirm/…/gaps.jsonl`,
+   `SCHEDULE_DIVERGED` before the cut is a refusal of its own). The confirmation is a check on the
+   run, so a mismatch is either a wrong expectation (fix `ConfirmMain.write`'s edge list) or a
+   real non-reproduction (then the claim is rightly withheld).
+4. **17897, 17967 pathA/B/C and 17899 bug1 in v20**: `PATH_SELF_CONTRADICTORY` on every
+   composed path or `NO_SUPPORTED_WITNESS`, i.e. no session observed the fatal. Not diagnosed;
+   the clock-skew composition (item 1) is the first suspect because all of them are nested-clock
+   witnesses in v15. pathB also raised one `ADMISSION_GAP` ("no session activated this
+   occurrence"). Re-run after item 1 before digging.
+5. **Finish the round**: all nine cases on one snapshot, then the acceptance checks of §8 (an
+   assessor and two skeptics per case is what was used; the four checks are the bar). Then
+   fast-forward `main` to that commit.
+6. **Exercise GROW end to end.** `growth.jsonl` has had 0 rows in every run so far. Either no
+   admitted world reaches an unwoven region in these nine cases, or `WaveGraph.writeGrowth` never
+   sees one: it requires an activation row (`instrumented=false`) inside `corpus.upstreamOf(
+   focused, factor, session)`, and the per-session closure only reaches occurrences that publish
+   rows. Write an `ExploreTest` whose target is reached only through a replay-exposed region, and
+   check that the lightweight entry hook (`RowRuntime`, activation with `instrumented=false`)
+   fires for an unwoven region a fault world reaches (bug1's catch path is the intended case).
+7. **Housekeeping the owner asked for and then parked (2026-09-23 morning)** — do it only when
+   asked again: delete old outputs (`~/gc-out/accept-v16..v20-*` once superseded) and snapshots
+   (`git worktree remove ~/gc-run/pNN`); rename the Hadoop branches `gc/<case>-v2` → `gc/<case>`
+   ("there is no v1/v2, the current code is the code"), delete the stale remote branches, push
+   both repositories; the GraphChecker code lives on `main` only.
+8. **Owner follow-ups noted at v14/v15, not blocking**: the composer's `clock_domain` is asserted
+   per cell for only the last session's symbol (bug1 had three rotation-2 expiry roots with no
+   domain, wrapped by z3 to ±9.2e18; they do not decide the fatal); the published valuation could
+   prefer the forward-only witness (a backward clock value is a solver's choice, never a
+   mechanism); a message-driven DataXceiver turn is held like a timer tick past the prefix
+   (documented in `ScheduleLog`).
+9. **The rest of the D4 review plan** (from the deleted REFACTOR-D4-PLAN, phases 4–7; none of
+   it changes behaviour, all of it reduces the 82k lines): split `ConcolicRegionRuntime` and move
+   the offline aggregator (`RuntimeRegionPlanner`, `RuntimeRefinedGraphBuilder`,
+   `OccurrenceBinding`) out of the workload-JVM surface; delete `RuntimeRefinedGraphBuilder`,
+   `instrumentFieldTrace` and `refined_dataflow_edges.jsonl.gz` (the seed's field trace is not
+   read by anything that matters); one `Declarations` authority in PLAN and one loop-bound
+   decoder; delete recording pass 1 after diffing the occurrence-address sets of the nine
+   recordings; one `World` value type and one admission rule in EXPLORE, `Corpus` split into
+   corpus view / world index / lowering cache; one declarative case manifest and `run_engine.sh`
+   split by stage. Deferred identity items: `Lost` should address to an empty index; carry lineage
+   explicitly instead of `InheritableThreadLocal`; loop bodies get their own iteration frames.
+10. **The offline gate** `tools/gate3/` has not been maintained since the D4 refactor (its
+   corpora and commands predate `schedule.jsonl` and the obligation directories). Either re-point
+   it at the v15 corpora and make it pass, or delete it; today the acceptance round is the gate.
+
+## 11. Debugging a round
+
+Where to look, in order, for a FAIL line:
+
+1. `summary.tsv` — `claim`, `finalStatus`, `blockers`, `reason`. `MISSING` means the campaign
+   died before EMIT: `logs/<case>.log` has the stage (`[campaign:error] stage=… reason=…`); a
+   `REPLAY` death points at `iteration-0000/seed-result/focused/replay.log` and the seed
+   session's `gaps.jsonl` (`SCHEDULE_DIVERGED` with the prefix position, `TASK_UNANSWERED` with
+   why the planned occurrence was not matched).
+2. `out/<case>/schedule/final/gaps.json` — `byStage`/`byCode`, then the BLOCKING rows' `detail`.
+   `PLAN OCCURRENCE_ADDRESS_SHARED` = two activations, one address: the identity or the window;
+   `COMPOSE PATH_SELF_CONTRADICTORY` (all paths) = no session observed the fatal: go to the
+   obligations; `UNSTATED_VALUE "stated twice and differently"` = a mint and its obligation
+   disagree; `FORMULA_SAT_AT_RECORDED_VALUATION` = a path reaches the fatal with nothing moved.
+3. `iteration-0000/obligation_results.jsonl` and the per-wave `obligations-NNNN/*/` — count
+   verdicts per wave (`ADMITTED` / `UNSAT` / `NOT_ADMITTED`) and read the `NOT_ADMITTED` details:
+   "wrong decision at … took X, the flip this replay INHERITED …" is a world that does not
+   reproduce (compare the child's and parent's `focused_task.jsonl` and the two sessions'
+   `decisions.jsonl` clock readings at that site); "the solver did not decide" with a z3 error is
+   a malformed query (`obligation_query.smt2`, `stdout.log`/`stderr.log`); "the focused prefix
+   reproduced and …" is an admitted flip. The same obligation id is stable across runs of the
+   same recording, so a v15 directory is a direct baseline.
+4. `sessions/<id>/` — `targets.jsonl` (`observedFatal`, `reachedAnchor`), `decisions.jsonl`,
+   `roots.jsonl` (what each mint ran at), `schedule.jsonl` vs `recorded_schedule.jsonl` (print
+   both around a divergence position: kind, site, context, k, endpoint).
+5. `final/claim.json` (`valuations[]` with status, unsat core, selected path/session,
+   `fatalObserved`), `candidate_composition_manifest.json` (paths and which observed the fatal),
+   `compose.log`, `confirm.json`.
+
+Recipes that have paid off: a query can be re-solved by hand (`~/.local/bin/z3 -smt2 -T:120
+file.smt2`) after editing — that is how the nearest-world objective was validated in one minute;
+`-Dcausynth.debug.producers=true` via `CAUSYNTH_WORKLOAD_JAVA_OPTS` prints every send's full
+producer endpoint in a replay, and the recording's is on its `EXCHANGE_SEND` row in
+`runtime/runtime_trace.jsonl` — diff the two when anchors drift; `UNATTESTED_ARM` → the attach's
+producer → `tasks.jsonl` → the plan → the trace's `METHOD_ENTER` for the missing occurrence →
+the finalizer's admission; a schedule with `WAKE …waitForWork` or `RpcRequestSender.run` right
+after a divergence or a short prefix means released waits, not real timeouts.
+
+Traps: zsh is the login shell here — `echo ====` fails (`=` is path expansion), unmatched globs
+abort the whole command, `set -- $spec` does not split, `PIPESTATUS` is `pipestatus`; write
+monitor and launcher scripts in bash. A `pkill -f` pattern that appears in your own ssh command
+line kills the ssh session (`gc-run/p2[3]` style patterns). A heredoc piped to a loop of `ssh`
+needs `ssh -n`. Killing a campaign's process group does not stop the obligation JVMs the driver
+keeps spawning — kill by the snapshot path too.
+
+## 12. Working rules
+
+The owner's standing rules; every one of them has been paid for.
+
+- **General fixes, never per-case.** Hadoop edits are allowed, but as one canonical
+  instrumentation set for every tree and one workload rule set; a fix is stated for its whole
+  class and traced rows → explore → compose → claim.
+- **Delete, don't adapt.** No compat layers, fallbacks, toggles or second spellings; a superseded
+  mechanism is removed outright (list its readers with `git grep` first).
+- **One implementation per notion.** Two places answering one question is the defect.
+- **The rows are the authority; refuse by name.** A question the corpus cannot answer is a
+  registered gap, never a default, cap, heuristic or synthesized value.
+- **Big strides, then debug.** Write the whole main body of a design first (compile only), run
+  the unit suite at merge time, then debug with campaigns as one phase — a round costs 15–60 min
+  per case and the design spans five packages.
+- **A fresh recording is required** to judge a runtime fix; re-composing an old corpus reads
+  rows made before the change.
+- **Never**: `git add -A` (`experiments/hbase` is unrelated and untracked); edit a running
+  campaign's inputs or scripts; rebuild a tree under a running campaign; push without the owner's
+  approval; claim a PASS from the claim kind alone (§8).
+- Keep the unit suite small (143 `@Test`); unit-test assertions that stand in the way of a
+  correct change may be removed.
+- Reply to the owner in Chinese, briefly, with progress and evidence.
+
+## 13. Repository map and documents
+
+```
+src/main/java/edu/uva/liftlab/graphchecker/   the engine (§3's package table)
+src/shim/                                     the hadoop-shim jar the trees call
+src/test/                                     143 @Test + src/test/shell/run_engine_campaign_helpers_test.sh
+run_engine.sh                                 the campaign driver
+experiments/hadoop/<case>/                    declarations + README + tree-edits/ per case
+experiments/hadoop/lib/                       the one harness every case runs through (README: workload rules)
+experiments/hadoop/accept/                    accept.sh, probe.sh, report.py (README: what PASS means)
+tools/rounds/                                 queue-launch.sh, round-monitor.sh, launch-run.sh (§8)
+tools/gate3/                                  the offline gate, unmaintained (to-do 10)
+third_party/OpenJDK-Concolic-Execution-Engine/ the concolic VM (in tree)
+docs/CONCOLIC_INTEGRATION.md                  the VM boundary: broker ABI, capabilities, refusals
+docs/design/DESIGN4-FAULTS-INPUTS-ITERATION.md the current design (fault points, inputs, iteration, CONFIRM, nearest world)
+docs/design/LEAN-DESIGN.md                    the fixed one-page design frame the README restates
+docs/design/IDENTITY-V3.md, IDENTITY-IMPL.md, IDENTITY-V2.md, INTERACTION-ID.md  the identity designs the code cites (§4)
+docs/design/CLOSURE-V2.md                     the scoping walk the code cites
+docs/design/CONTRACT-SPEC.md                  the row/gap contract the code cites (its package names predate the current tree)
 ```
 
-Use a fresh `CAUSYNTH_OUTPUT_DIR` per campaign and leave its inputs alone until it finishes.
-`campaign_stop_after=IMPORT` returns right after the gate with the seed session and its row
-census — what a change to the recording or replay path is gated on — in a fraction of the time.
-
-The epoch's answer is under `schedule/final`: `candidate.smt2`, its composition manifest,
-`claim.json`, `result.json`, `gaps.json`, the frozen provenance. Read them together — a
-`claim.json` naming a mechanism is not acceptance on its own; acceptance is the claim **plus**
-`polarityDecides`, no blocking gaps and fresh provenance — and read the gap rows with their
-`cls`: `DIAGNOSTIC` describes coverage the run lacked, `BLOCKING` is why it refused.
-
-The in-tree acceptance harness is `experiments/hadoop/accept/` — `accept.sh`, `probe.sh`,
-`report.py`, and its own [README](experiments/hadoop/accept/README.md). `accept.sh` builds the
-jar, then per case runs that case's `run.sh validate` and `run.sh campaign` into a fresh output
-directory, one case at a time; `CAUSYNTH_CUSTOM_JDK_HOME` has no default and an unset one is
-refused by name. `report.py` passes a case only when `claim` is `SAT_CANDIDATE`, `finalStatus`
-is `FINAL_READY`, `blockers` is empty with no open `BLOCKING` gap, `polarityDecides` is true,
-`valuationOrdinal` is at least 1 with a non-empty `movedRoots`, and `findingKind` is the
-mechanism that case is known to fail by — the `EXPECTED_MECHANISM` table at the top of
-`report.py`, which is also why a case the table does not name cannot pass. `probe.sh` is
-reported and never gated on: it asks the published `candidate.smt2` plain, then at the accepted
-assignment and at the other polarity, **unpinned**. That last word is the point, because a plain
-`z3 candidate.smt2` answers `unsat` on a passing case and that is no verdict about it: the
-composer writes its own recorded valuation into the file it publishes,
-`(assert (! (= <root> …) :named valuation__…))` under `; valuation 0: the run as it happened`,
-so a plain run answers about that one valuation. A zero exit code proves nothing.
-
-## 7. Worked example: HDFS-17960
-
-[Hadoop PR #8672](https://github.com/apache/hadoop/pull/8672). The NameNode decrements
-`numSnapshots` when replaying a snapshot-deletion edit even if the snapshot was already gone,
-so the counter and the list disagree and the next checkpoint throws from the snapshot-count
-check in `FSImageFormatPBSnapshot.Saver.serializeSnapshotSection`.
-
-The case declares one root — the `dfs.namenode.snapshot.deletion.ordered` value the restarted
-NameNode caches, published by the workload's symbolic-source hook — and one region input, the
-return of `SnapshotManager.getNumSnapshots()` inside the serializer. No communication mapping:
-the divergence is local to one node, so the seed session has no exports and no attaches. The
-workload records deletion edits with ordered deletion enabled, restarts the NameNode, then
-checkpoints, so the recording takes the **healthy** arm and its fatal predicate is concrete.
-The seed publishes 90 activations, 1,113 decisions, 66 writes, 38 reads, one root and two
-target rows. Wave 0 proposes **four** obligations — the serializer's own guard and the
-ordered-deletion guards of the deletion region, including two distinct occurrences of one site
-— and wave 1 is a fixed point. Three paths reach composition: two focused sessions that
-observed the fatal arm, and the seed, which did not. The chain, as `candidate.smt2` states it
-(the integer wrappers elided):
-
-```
-ordered = false                        (= M_Z_field_SRC…SnapshotManager false)
- -> the unordered deleteSnapshot arm runs twice
- -> the snapshot list keeps 1 element  (= (and (<= 0 1) (< 1 (indexed_size container_dag…))) false)
- -> numSnapshots = 0+1+1-1-1 = 0       (= M_I_field_…AtomicInteger (- (- (+ (+ 0 1) 1) 1) 1))
- -> the serializer wrote 1, reads 0    (not (= 1 M_I_field_…AtomicInteger))
-```
-
-The counter is a container-crossing state variable whose versions carry the two
-`getAndDecrement`s, the list is a lowered container expression, and the fatal predicate is
-their disagreement. Thirteen state families stand behind those joins, every arm attested. The
-third path is the seed's own, at `ordered = true`, and composing it is honest about what it is:
-asked alone with every root free it is unsatisfiable, so it is published as one `DIAGNOSTIC`
-`PATH_SELF_CONTRADICTORY` row — its container joins refute the fatal read whatever the marker
-is, so it contributes nothing, and the claim is found on the other two.
-
-```
-valuation 0  SNAPSHOT_DELETION_ORDERED = true   unsat   (the run as it happened)
-valuation 1  SNAPSHOT_DELETION_ORDERED = false  sat     selected path 352bc6c4…
-claim: MARKER_FLIPPED at valuation 1, movedRoots {SNAPSHOT_DELETION_ORDERED: false},
-       polarityDecides true, FINAL_READY, 0 blocking gaps (247 diagnostic rows)
-```
-
-The unsat core of valuation 0 names the three path disjuncts, the target disjunction and the
-valuation assertion: the recording's own polarity is what closes it, which is exactly what
-`polarityDecides` requires. The committed artifacts of that campaign are under
-`experiments/hadoop/hdfs-17960/artifacts/` — the census and the claim block above are read off
-them, the family and diagnostic counts off a fresh composition over the same corpus — and
-`experiments/hadoop/hdfs-17960/README.md` reads them row by row.
-
-## 8. Status and limits
-
-Six cases are prepared, in four case directories (HDFS-17899 carries three, one per request
-flow). **HDFS-17960 passes as of 2026-09-21**: one campaign of 190 seconds over four hosts,
-the claim above, no blocking gaps, and the unpinned probe answering sat at the buggy polarity
-and unsat at the other. Its witness is the one the Hadoop source says it must be: with ordered
-snapshot deletion off, a duplicate deletion record replayed at startup finds no such snapshot,
-`removeSnapshot` returns without removing anything, and the counter is decremented all the
-same, so the next checkpoint's snapshot-count check disagrees. The replay that carries the
-claim printed exactly that state. Four engine defects stood in the way, each general rather
-than particular to the case, and `experiments/hadoop/hdfs-17960/README.md` names them: a loop
-body refused by the rule for region entries, three selection filters that dropped candidates in
-silence, every loop body asked whether its occurrence had taken the flip yet, and a mint that
-planted a root stating what it observed rather than what it ran at.
-
-**HDFS-11741 passes as of 2026-09-21** (campaign at `main@77ded9625`): `CLOCK_SKEW` at
-valuation 0, `polarityDecides` true, `finalStatus FINAL_READY`, 0 blocking gaps, 135 solver
-runs, and seven moved roots carrying **both** nodes' clocks — the NameNode's second rotation
-(`REGION.08ab84c9`, +40 h and +20 h) and the DataNode's `addKeys` refresh
-(`REGION.ba3902cd`). That two-node join is the point of the case, so a claim naming one node's
-clock would not have been a proof of it; the acceptance bar is the pair. Exploration converged
-in three waves over 605 obligations with ten sessions observing the real fatal and no
-wrong-decision refusal, in 22 minutes across four hosts.
-
-Eleven defects stood between the previous paragraph and that result, and each is worth knowing
-because most were invisible rather than wrong-looking: a clock domain ceilinged at `Long.MAX`,
-which let a model satisfy "this key expired" by overflowing the JVM's own `clock + interval`
-instead of by any skew; refusal constants minted per refusal REASON, so three guards refused
-alike collapsed onto one variable and a path asserting two polarities of it was unsatisfiable
-for nothing the recording stated; a CLOCK mint publishing no placeholder read, so no read of a
-clock could bind; `Composer.unknown` reading a `let` body without its binder; `FREEZE` hashing
-the whole repository whenever the tree was clean; an arm's world keyed by every flip rather
-than the flips that reach it (774 obligations for 13 distinct questions); a lock-order
-deadlock between the two wire stores; no wall clock on a focused replay; waves confined to one
-host; a `(not )` emitted for a blank conjunct, which z3 rejects whole; and — the one that
-actually blocked the witness — a region rooted at a loop **inside** its port's frame, so the
-leaf converted before that loop carried no expression and two poisoned leaves dropped all six
-of a message's arms.
-
-The other four cases are prepared and not yet run. HDFS-17897 and HDFS-17899 declare the same
-block-key ports with the same `producerFrameMethod` as 11741, so the port-frame rooting rule
-re-roots their OUT regions too; they need their own campaigns before anyone relies on them.
-
-Known limits, stated plainly:
-
-- **Structural identity is exact about iteration counts.** A replay running one more or fewer
-  iteration of a loop on the index path re-addresses everything after it, and the campaign
-  refuses the affected tasks rather than matching approximately. Aligning such a loop by a
-  declared monotone per-iteration value is a designed extension, deliberately unused: every
-  candidate so far turned out to be an engine defect, not real nondeterminism.
-- **Work started inside unwoven JDK internals degrades.** Activations whose scope cannot be
-  attributed are addressed `Lost` — an identity, but a weaker one. They are counted and
-  reported (`LINEAGE_LOST`); closing them to zero is an open goal.
-- **The static graph names its cells after Soot locals.** Soot's `LocalSplitter` walks an
-  identity-ordered worklist, so two analyses of the same bytecode can name one cell `$z12` and
-  the next `$z13` and the candidate graph's digest moves although nothing in the program or in
-  this engine did. It changes no claim — every collection of ours is insertion-ordered — but it
-  makes the static artifact unusable as a regression digest on its own.
-  Local cells are still named by Soot-generated local names, which the `LocalSplitter` assigns
-  in identity-hash order, so `candidate_dataflow_edges.jsonl.gz` is not yet a pure function of
-  the workload — the PC4 to-do.
-- **Declarations are per case and manual, and fail-closed means a new case's first campaigns
-  get refused.** Roots, ports, loop bounds and the target occurrence are the case's assumptions
-  and are what the result is *about*; nothing infers them. Until they are complete and the
-  nondeterminism is pinned, the case is refused by name — a declared input whose method no
-  region covers, a loop with no bound, a root the recording mints nowhere, an assignment no
-  replay planted. The refusals are the checklist.
-- **The result is about the bounded model the case declared.** An incomplete search is not a
-  whole-program proof; a closed `UNSAT` additionally requires complete propagation,
-  container-state, path and topology coverage, and a satisfiable witness is a statement about
-  the paths the corpus contains.
-
-## 9. Where this stands, and what to do next (2026-09-16)
-
-This section is the handover. `docs/HANDOVER.md` is the operational companion —
-repo layout, how to build, how to run a case — and should be read first if you
-are about to run something rather than change something.
-
-**The machine this was developed on has been decommissioned.** Nothing outside
-this repository survived. The two corpora the offline gate ran against, the
-built VM image and the Hadoop workload trees are all gone and must be
-regenerated; `docs/HANDOVER.md` says how, and what it costs.
-
-### What round 3 merged
-
-Round 3 was a cleanup pass: one implementation per notion, every refusal named,
-every deleted member's readers checked first. In merge order:
-
-- **R2** — the runtime's dead members and its unnamed refusals: members nothing
-  read deleted, every remaining refusal filed by name.
-- **PC** — `edgeBindings` became `exportConsumers`; the target cutoff is gone.
-- **R1** — `ConcolicRegionRuntime` split into 11 classes along what each one
-  owns, no behaviour change.
-- **C** — the composer's fail-opens closed, plus items P1 and P4.
-- **PC2** — finalizer cluster D deleted; admission is by *declared capture*;
-  `IMPORT` now runs per wave as well as on the seed.
-- **R3** — a focused mint states its `recordedValue`; the `seq` rule.
-- **DOC1** — the acceptance harness (`experiments/hadoop/accept`).
-- **C2** — attestation reduced to one rule; the P3 closure; `EXPLORE`'s
-  refusals named.
-- **DOC2** — the docs made to describe only mechanisms that exist.
-- **PC3** — a declared port is the scope map's `DECLARED_SITE` joined with the
-  recording's own return/argument captures, minted by `SymbolicInputSelection`.
-- **C3** — family-only binding of wire arrivals (section 5); 11741's
-  composition went from timing out to decided in about 7 seconds.
-
-### What landed unvalidated, and what is still a patch
-
-Three round-3 branches were unfinished when work stopped. Their **committed**
-work is merged into this history so it is not lost; their **uncommitted,
-mid-edit** work is preserved as patches under `docs/wip/<name>/`, unapplied.
-Each directory has a `NOTES.md` with the mandate, what landed, what did not,
-and the definition of done.
-
-| branch | merged | still a patch |
-|---|---|---|
-| `FIX1` | 3 commits: the wave `IMPORT` gate reads the whole epoch roster; a term is judged at the valuation its session RAN under; a verdict is fail-closed on the rows its session carries | item 4 — *why* session `793875fb482a10a4-4b39d011`'s flip prefix stopped matching. The patch's answer (ask the flip's question only of the occurrence the obligation addresses it at) is written and tested but never measured against the refused corpus |
-| `PC4` | 2 commits: PLAN's region-scoping walk is fed by declared ports and the scope map's stored cells; finalizer clusters B/C/E, `CONCRETE_STRUCTURE_CARRIER` and the CONCRETE rows deleted (`RuntimeSelectedRegionFinalizer` 3702 → 1634 lines) | items 3 and 4 — deleting `RuntimeRefinedGraphBuilder`, `RECORD_FIELD`/`instrumentFieldTrace`, `trace.fields` and `refined_dataflow_edges.jsonl.gz`; and naming local cells by the program variable |
-| `R4` | 1 commit, a measurement that changes no code: a root symbol with no `RootMintRow` comes from an *abandoned activation*, and nothing refuses it anywhere | all four repairs — the runtime's `MINT_UNATTRIBUTED`, the `IMPORT` invariant, `UNATTESTED_ARM` in `Arms.arm`/`ComposedFamilies`, and the `CLOCK_SKEW` PASS rule in the harness |
-
-**These three merges have NOT been validated by a live acceptance campaign.**
-They were judged offline — the gate below, the suite, and `ImportGateMain` over
-the two kept corpora — and nothing more. Treat their correctness as a claim
-about artifacts, not about a run.
-
-One deliberate deviation to know about: the retention ruling asked for 11741's
-`region_path_max_tasks` to be raised to 256. PC4 raised `schedule_max_jobs` to
-256 instead and left `region_path_max_tasks` at 128, on the argument that
-`schedule_max_jobs` is the cap the scheduler actually refused on ("exceeds max
-jobs") while `region_path_max_tasks` bounds `EXPLORE`'s wave closure. Both
-wave-0 artifacts are byte-identical across the change, which is the evidence
-offered for it. If a later wave refuses on the closure bound, this is the first
-thing to revisit.
-
-### Acceptance state
-
-- **HDFS-17960 passes offline on the kept corpus** — the claim in section 7,
-  `blockers=0`, `FINAL_READY`. Every `wave0` and `compose` gate row is
-  byte-identical across the three merges above, so those merges do not disturb
-  this claim.
-- **The last LIVE 17960 run was refused** — by the new per-wave `IMPORT` gate,
-  which is what `FIX1` is about. Items 1–3 of `FIX1` are merged; item 4 is not,
-  so a live run may still be refused. This is step 1 of the minimal delta below.
-- **HDFS-11741** composes in seconds and is satisfiable at *every* valuation
-  including the recorded one, so it yields no witness. The cause is measured and
-  is step 2 of the minimal delta below. **The existing 11741 corpus cannot be
-  repaired offline** — the rows the fix publishes were never written — so a
-  fresh recording is required.
-- **HDFS-17897 and the three HDFS-17899 flows are prepared and have not been
-  run.**
-
-### The minimal delta (2026-09-17)
-
-**The principle**, in three rules the architecture already assumes and the code must now apply
-everywhere. (1) **External ins are decided by tracing**: an occurrence's external ins are its reads
-of a location another occurrence wrote or that a static write site in another region can write, plus
-its wire attaches and declared roots — never whichever reads happened to find a symbolic value. (2)
-**Every external in is a placeholder symbol** in that occurrence's focused replay, including where
-the recording wrote a constant. (3) **A producer occurrence's arm binds ALL its outs on ONE
-selector** — one arm per session path of that occurrence, carrying every export and every write with
-its π and its valuation, so selecting an arm pulls in that occurrence's own external ins
-recursively. A family is, for one external in, the arms of the occurrences that write it, exactly
-one selected; ordering constraints — the selected writer before the reader, no other selected write
-in between — only where a location has several writer occurrences.
-
-So linked replay, chain templates and reorder bounds are not needed; a loop is many occurrences, one
-root context (`Root:<role>/<api>#k`) per tick; the "tree" is only a view that defines the
-external-in set and the causal context. The false positive rule 3 prevents: A writes constant
-`mode=FAST` under `x>0` and exports `n=y`; C reads `mode` and `count`. If `mode` stays concrete, z3
-picks A's `x<=0` arm for the export while C still sees `FAST` — a witness `{x:-1}` no execution has.
-
-**Where the code deviates today.** Admission is by declaration only (`plan/ConcolicScheduler.java`,
-`SymbolicInputSelection.decide` marks an undeclared read `CONCRETE`/`UNDECLARED`) — rule 1
-unimplemented. A declared container cell cannot mint (`runtime/RootMint.java`,
-`declaredContainerCell`), blocking rule 2 for `allKeys[keyId]`-shaped reads. State arms are
-same-session only while wire arms are cross-session (`smt/Arms.java`, `stateArms` vs `wireArms`),
-and `stateArms` keeps only an occurrence's last write. A state read is joined to the observed
-version as an unconditional conjunct and single-writer locations get no family
-(`compose/Composer.java`, `compose/ComposedFamilies.java`). And a location written before the
-recording window has no writer occurrence in the corpus — 11741's `SERIAL_NO` and pinned keys — and
-is today silently a literal.
-
-**The delta, in order.** (1) Apply `docs/wip/FIX1`: the per-wave `IMPORT` gate over the whole
-roster, `RowInvariants.decisions` judged at the valuation the session ran under, a focused session
-whose prefix did not match or whose root never minted `NOT_ADMITTED` — target, 17960 live PASS. (2)
-Apply `docs/wip/R4` plus the pre-window rule: a root symbol without its `RootMintRow` is refused —
-the runtime keeps the value concrete and publishes `MINT_UNATTRIBUTED` when no admitted activation
-owns the mint, a new `IMPORT` invariant requires a mint row for every referenced root symbol, the
-composer refuses such an arm (`UNATTESTED_ARM`); and a location written before the window is an
-external in with an empty family, so a declared root or a named refusal. (3) Compose only,
-offline-verifiable: one selector per (message received, session), shared across its leaves
-— **done** (the unit is the message and not the producer occurrence: see §5); still open in this step: a family at every closure-reached external read,
-single-writer locations included; no pin to the observed version; all of an occurrence's writes
-kept. (4) Φ by tracing: PLAN publishes a new
-`PLACEHOLDER_SITE` row in `static_scope_map.jsonl` — the same family and readers as today's
-`DECLARED_SITE` — and the runtime mints there through the existing declared-site path
-(`plan/DeclaredSiteCapture`, `runtime/SymbolizeAction`); container cells may mint, bound to the
-container-state symbol. (5) Cross-session state arms — `Arms.stateArms` over the writer occurrences
-of every session — needs producer-side object identity, the one substantial engineering item. (6) A
-materialization gate in `DECIDE`: a satisfiable witness is run once with its global root assignments
-and no branch override, and must reach the target.
-
-Steps 1–3 should suffice for HDFS-11741's witness: its only multi-writer location has one in-window
-writer per node, and the witness is two arms — dn1's refresh removing the expired key, nn0's second
-rotation no longer exporting it — joined at the `block-key-id` handoff. Steps 4–6 make the method
-general. Two facts from that case's workload tree: the two NameNode rotations are forced by the
-workload under a `KEY_MANAGER_TICK` root — two `master.updateKeys(Long.MAX_VALUE)` calls inside
-`TestCausynthExpiredBalancerKey`'s recorded window — not by the heartbeat monitor, whose
-`keyUpdateInterval` never elapses there; and the Balancer mints its data-encryption key locally from
-its own `BlockTokenSecretManager` (`KeyManager.newDataEncryptionKey`), receiving the NameNode's key
-only over the declared `block-key-id` port.
-
-### The to-do, in order
-
-1. ~~**Steps 1–3 of the minimal delta above.**~~ **Done, 2026-09-21.** 11741 now
-   passes on a fresh recording (§8). The R4 symptom this item was written for —
-   every valuation satisfiable including the recorded one, because a root's
-   symbol reached a path without its mint row — was not one defect but the tail
-   of several; the ones that mattered are listed in §8. The instruction that
-   held up exactly as written is **a fresh recording is required**: a runtime
-   fix cannot be judged by re-composing an old corpus, and three times today a
-   re-composition agreed with the old behaviour because the rows it read were
-   made before the change.
-2. **Apply `docs/wip/PC4`** and finish items 3 and 4, honouring the retention
-   ruling: retention is a scope fact; keep all 15 activations of
-   `REGION.16ba41cf` and all 63 of `REGION.1f6914ec`; accept a task-count drop
-   only after a writer-coverage check — no dropped occurrence may hold a
-   `WRITE_SITE` of a cell a retained occurrence reads.
-3. **Then 17897, and 17899 bug1–3.**
-4. **Steps 4–6 of the minimal delta** — Φ by tracing, cross-session state arms
-   and the `DECIDE` materialization gate. These are what make the method general
-   rather than sufficient for the cases above.
-5. **Deferred identity items**: `Lost` context should address to an empty index
-   rather than a weaker identity; carry lineage explicitly instead of through
-   `InheritableThreadLocal`; give loop bodies their own iteration frames. Plus
-   the bounded leaks — `FrameJournal` eviction.
-
-### How to verify a change
-
-**Offline, and this is the normal loop.** `ExploreMain` wave 0 plus
-`ComposeMain` over a kept corpus must reproduce that corpus byte for byte. The
-gate that does this is `tools/gate3/` — it runs the offline owners of the engine
-over frozen corpora and writes one digest line per artifact, so a change is
-judged by which digests moved and whether each one is explained. A moved row is
-not a failure; an *unexplained* moved row is. `tools/gate3/GATE3-LOG.md` is the
-row-by-row history of round 3 and is the model for how to account for one.
-
-The corpora themselves are **not in this repository** and the host that held
-them is gone. Regenerate one with `experiments/hadoop/accept` and point the gate
-at it (`GATE3_CORPORA`); `tools/gate3/README.md` gives the command and the
-two-pass invocation.
-
-**Live:** `experiments/hadoop/accept`. `report.py` decides PASS from the claim
-the engine published — `SAT_CANDIDATE`, `FINAL_READY`, no blocking gap, the
-mechanism the case is known to fail by, `polarityDecides`, and a finding that
-moves at least one root away from the recording.
-
-### Working rules a continuing agent must keep
-
-These are the owner's standing rules. The full set is in
-`docs/planner-memory/` (`MEMORY.md` is the index); these are the ones that bite
-daily.
-
-- **The rows are the authority.** What a read observed, which write it saw,
-  what a session ran under — all of it is answered by the published rows, never
-  by an offline join over the static graph and never by a recorded receiver.
-- **Fail closed, by name.** A question the corpus cannot answer is a named
-  refusal with a registered gap code, not a default, a cap, a heuristic or a
-  synthesized value. Register new codes in `GapLedger`.
-- **No compat layers. Delete first.** A superseded mechanism is deleted
-  outright — no adapters, no stubs, no second spelling kept alive. Before
-  deleting a published member, list its readers with `git grep`.
-- **One implementation per notion.** If two places answer the same question,
-  that is the defect; consolidate before fixing either.
-- **Every fix is stated for its whole class.** Trace it through rows → explore →
-  compose → claim, say what the class is, and add the invariant to the `IMPORT`
-  gate. Stopping at the second symptom is how the duplicates got here.
-- **Keep the suite small** — at most 100 `@Test` methods; there are **46** now.
-  New behaviour folds into an existing test rather than adding one.
-- **Never edit a kept corpus in place.** `ExploreMain` writes `slots.jsonl`
-  beside `--sessions`; copy the corpus before experimenting on it.
-- **Never rebuild a Hadoop tree while a campaign is running on it.**
-- **Verify a branch tip with `rev-parse`** before claiming anything about it.
+The design documents are kept verbatim because the code cites them by section; where this
+README and one of them disagree, the rows decide. The owner's schedule/attribution design of §6
+and the case-preparation rules are not in `docs/`; §6 and `experiments/hadoop/lib/README.md`
+are their record.

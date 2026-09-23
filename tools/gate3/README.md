@@ -76,9 +76,9 @@ GATE3_CORPORA="17960|/path/to/out/hdfs-17960|$PWD/experiments/hadoop/hdfs-17960"
   tools/gate3/gate3.sh target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar /tmp/g
 ```
 
-This requires the custom VM image and a Hadoop workload tree — see
-`docs/HANDOVER.md`, which says what has to be rebuilt first. Approximate
-campaign times on the old host: 17960 about 1 hour, 11741 about 30 minutes.
+This requires the custom VM image and a Hadoop workload tree — see the
+top-level README §8. This gate has not been maintained since the Design 4
+refactor (README to-do item 10); the acceptance round is the gate today.
 
 ## The two-pass (campaign-way) invocation
 

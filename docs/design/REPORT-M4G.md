@@ -1,7 +1,0 @@
-# REPORT-M4G — valuation enumeration by root kind (2026-09-15 02:40)
-
-Tip 22cc11e8d on refactor/d3-compose2 (parent 08dafb95f), merged → staging. 2 files +67/−5; 52 @Test → 52.
-- Rule already by kind: Composer.alternativesOf:1549 flips a MARKER before any domain test; domains():1266-1273 never pins a declared MARKER; INTEGRAL without a window pinned at :1310 (`root_domain__<n>`); CLOCK floor only (:1264/:1428). FlipQuery.java:365 frees a declared MARKER before domainOf. No root-domains row is needed for a marker (the M4f claim note is retracted).
-- Why valuations=1 on the seed-only 17960 corpus: gate :1432 `!lowering.declared(symbol)` — the marker symbol occurs 0 times in the anchor paths' formula (its expressions are named only by REGION.9492ec77 decisions at `<…INode$ReclaimContext,long)>#u7`, seq 84/122). Enumerating an undeclared root would append a `valuation__` assert z3 rejects.
-- Change: the silent skip is named — Composer:1432-1444 DECLARATION_MISSING "the case declares this root and no admitted path's formula names it"; :1447-1457 UNSTATED_VALUE for a MARKER whose mint states neither polarity. Tests folded (D3ComposerTest:806-828, :483). Validation m4e corpus: `paths=2 … valuations=1 … gaps=21`, unsat at ordinal 0, FINAL_READY.
-- Planner follow-up (M4h): per the 2026-09-14 01:40 ruling, π_p must carry its own replay's valuation of every VARIED root (the flip session's RootMintRow value), which is how the marker enters the 17960 formula when no anchor decision names it.
