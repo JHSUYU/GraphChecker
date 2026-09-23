@@ -47,6 +47,7 @@ import java.util.Set;
  *   --wave &lt;n&gt;                 which wave this is
  *   --topology-epoch &lt;id&gt;      the epoch these sessions belong to
  *   --output-dir &lt;dir&gt;         obligations.jsonl, tasks.jsonl, gaps.jsonl,
+ *                              graph.jsonl, growth.jsonl,
  *                              explore_manifest.json
  *   --max-tasks / --max-paths-per-region / --max-flips-per-path /
  *   --max-world-depth
@@ -156,11 +157,10 @@ public final class ExploreMain {
             }
         }
         Set<String> closure = closureOf(tasks);
-        // The epoch's skeleton, reconciled against everything the replays
-        // have said so far.  It is taken AFTER the closure is planned,
-        // because a slot is opened only for an interaction whose consumer is
-        // a closure member, and before the obligations, because a
-        // replacement contradicts the skeleton the wave would be cut from.
+        // The skeleton, reconciled against everything the replays have said
+        // so far: a slot is opened only for an interaction whose consumer
+        // is a closure member.  A same-world replacement is a BLOCKING row
+        // and never empties the wave (DESIGN4 SS3.3c).
         SlotTable slots = SlotTable.read(iteration);
         SlotTable.Reconciliation skeleton = slots.reconcile(corpus, closure,
                 wave);
@@ -179,12 +179,15 @@ public final class ExploreMain {
             candidates.addAll(ObligationFactory.candidates(corpus, task,
                     flipSites.get(task.taskId()), bounds, frontier, gaps));
         }
-        Frontier.Wave open = skeleton.replaced
-                ? frontier.open(wave,
-                        new ArrayList<ObligationFactory.Candidate>())
-                : frontier.open(wave, candidates);
+        Frontier.Wave open = frontier.open(wave, candidates);
 
         Files.createDirectories(out);
+        // G_k and the growth the wave's worlds exposed (DESIGN4 SS3): the
+        // driver decides the fixed point from an empty growth.jsonl and an
+        // empty obligations.jsonl.
+        WaveGraph.of(corpus).write(out, wave);
+        int exposed = WaveGraph.writeGrowth(corpus, anchorTask(roots, tasks),
+                out, gaps);
         RowCodec.writeAll(out.resolve("tasks.jsonl"), tasks,
                 ExploreCodec::writeTask);
         // An empty file IS the frontier closing: the stage breaks its loop
@@ -195,7 +198,7 @@ public final class ExploreMain {
         RowCodec.writeAll(out.resolve("gaps.jsonl"), distinct(gaps),
                 RowCodec::writeGap);
         JsonObject manifest = manifest(roots, tasks, why, frontier, open,
-                topologyEpoch, gaps, slots, skeleton);
+                topologyEpoch, gaps, slots, skeleton, exposed);
         Files.write(out.resolve("explore_manifest.json"),
                 (pretty(manifest) + System.lineSeparator())
                         .getBytes(StandardCharsets.UTF_8));
@@ -391,6 +394,15 @@ public final class ExploreMain {
                 : String.join(", ", named);
     }
 
+    /** The anchor's own task, or null when the anchor opened none. */
+    private static Task anchorTask(List<OccurrenceAddress> roots,
+                                   List<Task> tasks) {
+        for (Task task : tasks) {
+            if (roots.contains(task.focused())) return task;
+        }
+        return null;
+    }
+
     /** Every occurrence this wave's tasks hold: focused, and their factors. */
     private static Set<String> closureOf(List<Task> tasks) {
         Set<String> closure = new LinkedHashSet<String>();
@@ -410,16 +422,17 @@ public final class ExploreMain {
                                        Frontier.Wave open,
                                        String topologyEpoch,
                                        List<GapRow> gaps, SlotTable slots,
-                                       SlotTable.Reconciliation skeleton) {
+                                       SlotTable.Reconciliation skeleton,
+                                       int exposed) {
         JsonObject manifest = new JsonObject();
         JsonArray anchors = new JsonArray();
         for (OccurrenceAddress root : roots) anchors.add(root.render());
         manifest.add("anchors", anchors);
         manifest.addProperty("topologyEpoch", topologyEpoch);
         manifest.addProperty("wave", open.index);
-        manifest.addProperty("state", skeleton.replaced
-                ? "TOPOLOGY_DIVERGENCE"
-                : open.empty() ? "FIXED_POINT" : "OBLIGATIONS_PROPOSED");
+        manifest.addProperty("state",
+                open.empty() ? "FIXED_POINT" : "OBLIGATIONS_PROPOSED");
+        manifest.addProperty("exposedRegions", exposed);
         JsonObject skeletonRow = new JsonObject();
         skeletonRow.addProperty("slots", slots.size());
         skeletonRow.addProperty("opened", skeleton.opened.size());

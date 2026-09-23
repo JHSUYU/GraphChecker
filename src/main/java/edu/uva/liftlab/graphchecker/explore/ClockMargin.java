@@ -28,9 +28,8 @@ import java.util.Set;
  * {@code a >= b + eps}, {@code a < b} becomes {@code a + eps < b}, and a
  * demanded FALSE is the same rule on the proposition the query actually
  * asserts -- {@code (not (>= a b))} becomes {@code (not (>= (+ a eps) b))},
- * which is {@code a + eps < b}.  {@code eps} is {@value #DEFAULT_MARGIN_MS}
- * milliseconds unless the system property {@value #MARGIN_PROPERTY} states
- * another (0 turns the strengthening off).</p>
+ * which is {@code a + eps < b}.  {@code eps} is {@value #MARGIN_MS}
+ * milliseconds.</p>
  *
  * <p>WHAT AN ATOM IS.  The JVM does not compare two longs with a relational
  * operator: it runs {@code lcmp} and branches on the result, which lowers to
@@ -53,9 +52,7 @@ import java.util.Set;
  */
 final class ClockMargin {
     /** How many milliseconds of room a demanded clock comparison is given. */
-    static final long DEFAULT_MARGIN_MS = 60_000L;
-    /** The one property that overrides it. */
-    static final String MARGIN_PROPERTY = "causynth.clock.flip.margin.ms";
+    static final long MARGIN_MS = 60_000L;
 
     /** The comparison atoms this rule is about. */
     private static final Set<String> COMPARISONS =
@@ -72,20 +69,6 @@ final class ClockMargin {
                     "<", "<=", ">", ">=", "let", "forall", "exists"));
 
     private ClockMargin() {
-    }
-
-    /** The margin this JVM states, in milliseconds. */
-    static long margin() {
-        String stated = System.getProperty(MARGIN_PROPERTY);
-        if (stated == null || stated.trim().isEmpty()) {
-            return DEFAULT_MARGIN_MS;
-        }
-        try {
-            long value = Long.parseLong(stated.trim());
-            return value < 0 ? DEFAULT_MARGIN_MS : value;
-        } catch (NumberFormatException notAMargin) {
-            return DEFAULT_MARGIN_MS;
-        }
     }
 
     /** One demanded term, strengthened, and the atoms it could not reach. */

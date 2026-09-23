@@ -807,69 +807,38 @@ public final class Corpus implements Arms.Rows {
             new LinkedHashMap<String, Set<String>>();
 
     /**
-     * EVERY OCCURRENCE THAT REACHES ONE, ITSELF INCLUDED.
+     * EVERY OCCURRENCE THAT REACHES ONE, ITSELF INCLUDED, over the UNION of
+     * the sessions' edges.
      *
-     * <p>The in-edges are the paper's own (SS3.1, causal graph
-     * extraction), and this stage already walks both of them forward from
-     * the anchor ({@link ClosurePlanner#successors}): a MATCHED
-     * COMMUNICATION TRANSFER -- an attach and the producer occurrence its
-     * own pairing names ({@link ClosurePlanner#producers}) -- and a
-     * CANDIDATE SHARED-STATE DEPENDENCY -- a read of a concrete location
-     * and the occurrences that wrote the versions it could have observed,
-     * on the reader's own node ({@link #eligibleWrites},
-     * {@link #observed}, {@link ClosurePlanner#writers}).  A read
-     * the runtime published only INSIDE the expression of a value this
-     * occurrence contributed is one of those reads and not another kind
-     * (E2, {@link #expressionStateReads}, {@code
-     * ClosurePlanner.statedReads}); it is walked here for the same reason
-     * it is walked there -- the NameNode's export of its key set states no
-     * {@link ReadRow} for the map it rests on, and without that edge the
-     * tick that removed the key reaches nothing.</p>
+     * <p>The in-edges are the paper's (SS3.1): a MATCHED COMMUNICATION
+     * TRANSFER -- an attach and the producer occurrence its own pairing
+     * names -- and a CANDIDATE SHARED-STATE DEPENDENCY -- a read of a
+     * concrete location and the occurrences that wrote the versions it
+     * could have observed, on the reader's own node ({@link #eligibleWrites},
+     * {@link #observed}); a read stated only inside a published expression
+     * (E2, {@link #expressionStateReads}) is one of those reads.</p>
      *
-     * <p><b>Over the CORPUS's edges, never one session's.</b>  Every index
-     * this walks -- {@link #attachesOn(OccurrenceAddress)},
-     * {@link #readsOn(OccurrenceAddress)}, {@link #writesOn},
-     * {@link #exportsOn} -- holds the rows of every session, and each row
-     * is joined to writes inside its OWN session ({@link #eligibleWrites}
-     * is per session, because a location key names one object of one run).
-     * The union is a fact about the occurrence: a flip that only some
-     * session's rows connect would otherwise change an arm's identity
-     * depending on which session was asked, and the same arm would be owed
-     * twice.</p>
-     *
-     * <p>Memoized per occurrence, because a wave asks this once per
-     * candidate.</p>
+     * <p>The union is what an ARM's key is about ({@link
+     * ObligationFactory#worldKey}): a flip that only some session's rows
+     * connect must not change an arm's identity depending on which session
+     * is asked.  Per-world truth -- what one session's own rows reach -- is
+     * {@link #upstreamOf(OccurrenceAddress, List, String)}.  Memoized per
+     * occurrence.</p>
      */
     public Set<String> upstreamOf(OccurrenceAddress occurrence) {
         if (occurrence == null) return Collections.<String>emptySet();
         Set<String> held = upstream.get(occurrence.id());
         if (held != null) return held;
-        Set<String> reached = new LinkedHashSet<String>();
-        Deque<OccurrenceAddress> pending = new ArrayDeque<OccurrenceAddress>();
-        reached.add(occurrence.id());
-        pending.add(occurrence);
-        while (!pending.isEmpty()) {
-            OccurrenceAddress at = pending.remove();
-            for (String next : reaches(at)) {
-                if (!reached.add(next)) continue;
-                OccurrenceAddress address = occurrenceById.get(next);
-                if (address != null) pending.add(address);
-            }
-        }
-        Set<String> answer = Collections.unmodifiableSet(reached);
+        Set<String> answer = Collections.unmodifiableSet(
+                closure(occurrence, null));
         upstream.put(occurrence.id(), answer);
         return answer;
     }
 
     /**
-     * The same, for a task: its focused occurrence AND its factor.
-     *
-     * <p>A factor member and the occurrence run as ONE symbolic unit
-     * ({@code ClosurePlanner.stateConnected}, {@link #affected}), so what
-     * reaches the member reaches the task: on hdfs-11741 dn1's expiry scan
-     * is reached by nn0's tick only through the {@code addKeys} occurrence
-     * beside it, which is the occurrence the NameNode's delivery arrives
-     * at.</p>
+     * The same, for a task: its focused occurrence AND its factor, which
+     * run as ONE symbolic unit ({@code ClosurePlanner.stateConnected},
+     * {@link #affected}).
      */
     public Set<String> upstreamOf(OccurrenceAddress occurrence,
                                   List<OccurrenceAddress> factor) {
@@ -883,21 +852,67 @@ public final class Corpus implements Arms.Rows {
         return Collections.unmodifiableSet(reached);
     }
 
-    /** occurrence id -> its in-edges, which several walks ask for. */
+    /**
+     * The backward closure of one occurrence and its factor INSIDE ONE
+     * SESSION's rows (DESIGN4 SS3.2): the per-world graph, from which the
+     * regions a world exposed are read.  Not memoized: asked once per
+     * admitted session per wave.
+     */
+    public Set<String> upstreamOf(OccurrenceAddress occurrence,
+                                  List<OccurrenceAddress> factor,
+                                  String sessionId) {
+        Set<String> reached = closure(occurrence, sessionId);
+        if (factor != null) {
+            for (OccurrenceAddress member : factor) {
+                reached.addAll(closure(member, sessionId));
+            }
+        }
+        return reached;
+    }
+
+    /** The walk behind both: over every session's edges, or over one's. */
+    private Set<String> closure(OccurrenceAddress occurrence,
+                                String sessionId) {
+        Set<String> reached = new LinkedHashSet<String>();
+        Deque<OccurrenceAddress> pending = new ArrayDeque<OccurrenceAddress>();
+        reached.add(occurrence.id());
+        pending.add(occurrence);
+        while (!pending.isEmpty()) {
+            OccurrenceAddress at = pending.remove();
+            for (String next : reaches(at, sessionId)) {
+                if (!reached.add(next)) continue;
+                OccurrenceAddress address = occurrenceById.get(next);
+                if (address != null) pending.add(address);
+            }
+        }
+        return reached;
+    }
+
+    /** occurrence id -> its union in-edges, which several walks ask for. */
     private final Map<String, Set<String>> inEdges =
             new LinkedHashMap<String, Set<String>>();
 
-    /** One occurrence's in-edges: who delivered to it, who wrote for it. */
-    private Set<String> reaches(OccurrenceAddress occurrence) {
-        Set<String> held = inEdges.get(occurrence.id());
+    /**
+     * One occurrence's in-edges: who delivered to it, who wrote for it.
+     *
+     * @param sessionId the one session whose rows are asked, or null for
+     *                  every session's (memoized)
+     */
+    private Set<String> reaches(OccurrenceAddress occurrence,
+                                String sessionId) {
+        Set<String> held = sessionId == null ? inEdges.get(occurrence.id())
+                : null;
         if (held != null) return held;
         Set<String> in = new LinkedHashSet<String>();
         for (AttachRow attach : attachesOn(occurrence)) {
-            if (attach.producer() == null) continue;
+            if (attach.producer() == null || !own(sessionId, attach.sessionId())) {
+                continue;
+            }
             OccurrenceAddress producer = attach.producer().occurrence();
             if (producer != null) in.add(producer.id());
         }
         for (ReadRow read : readsOn(occurrence)) {
+            if (!own(sessionId, read.sessionId())) continue;
             observed(read.sessionId(), SmtLowering.locationKey(read.location()),
                     read.observedVersion(), occurrence, in);
         }
@@ -905,16 +920,24 @@ public final class Corpus implements Arms.Rows {
         // which only its expression states.
         Set<String> walked = new LinkedHashSet<String>();
         for (ExportRow export : exportsOn(occurrence)) {
+            if (!own(sessionId, export.sessionId())) continue;
             stated(export.sessionId(), export.expressionRef(), occurrence,
                     walked, in);
         }
         for (WriteRow write : writesOn(occurrence)) {
+            if (!own(sessionId, write.sessionId())) continue;
             stated(write.sessionId(), write.expressionRef(), occurrence,
                     walked, in);
         }
+        if (sessionId != null) return in;
         Set<String> answer = Collections.unmodifiableSet(in);
         inEdges.put(occurrence.id(), answer);
         return answer;
+    }
+
+    /** Whether a row of {@code rowSession} is asked for: all, or one's own. */
+    private static boolean own(String asked, String rowSession) {
+        return asked == null || asked.equals(rowSession);
     }
 
     /** The reads one published expression states, and who wrote them. */
@@ -931,24 +954,9 @@ public final class Corpus implements Arms.Rows {
 
     /**
      * The occurrences that wrote what one read could have observed, ON THE
-     * READER'S OWN NODE.
-     *
-     * <p><b>N1 -- a concrete location lives in ONE process.</b>  A location
-     * key is {@code kind/owner#slot} and the owner is the VM's own
-     * symbolic reference id ({@code SmtLowering#locationKey}), which is
-     * minted per JVM: two processes of one run both hold an
-     * {@code INSTANCE/36#72}, and they are two objects.  Joining them makes
-     * an edge no execution has -- on the c6 corpus (2026-09-20) dn1's SASL
-     * handler "reads" {@code INSTANCE/36#72} and the only writer of that
-     * key in the session is the BALANCER's {@code updateBlockKeys}, so
-     * every balancer rotation appeared upstream of a DataNode occurrence
-     * that cannot see the Balancer's heap.  Cross-node influence is carried
-     * by the TRANSFER edge and by nothing else.</p>
-     *
-     * <p>{@link #touching} already qualifies a location by node for the
-     * same reason, and so does the closure's static half
-     * ({@code ClosurePlanner.writers}, N1); the ROW half there still joins
-     * by key alone, which is its own question and not this walk's.</p>
+     * READER'S OWN NODE (N1: a location key is minted per JVM, so two
+     * processes both holding {@code INSTANCE/36#72} hold two objects, and
+     * cross-node influence is carried by the transfer edge alone).
      */
     private void observed(String sessionId, String locationKey, long version,
                           OccurrenceAddress reader, Set<String> into) {
@@ -961,6 +969,58 @@ public final class Corpus implements Arms.Rows {
             }
             into.add(writer.id());
         }
+    }
+
+    /**
+     * Whether one decision is a FAULT decision: its term rests on a MARKER
+     * root the same session minted (DESIGN4 SS1.4).  The runtime publishes
+     * a predicate over a propagated value as a reference into the
+     * expression table, so the term is lowered first and the roots it
+     * REACHES are asked, not the tokens it shows.
+     */
+    public boolean fault(String sessionId, DecisionRow decision) {
+        SmtLowering lowering = lowering(sessionId);
+        if (lowering == null || !Arms.predicate(decision.term())) return false;
+        Set<String> reached = new LinkedHashSet<String>();
+        lowering.reachedSymbols(FlipQuery.statedTerm(this, sessionId,
+                decision.term()), reached, reached);
+        for (String symbol : reached) {
+            RootMintRow root = rootBySymbol(sessionId, symbol);
+            if (root != null && root.kind() == RootKind.MARKER) return true;
+        }
+        return false;
+    }
+
+    /** The sites of every fault decision any session took at one occurrence. */
+    public Set<String> faultSites(OccurrenceAddress occurrence) {
+        Set<String> sites = new LinkedHashSet<String>();
+        for (RecordedPath path : pathsOf(occurrence)) {
+            for (DecisionRow decision : path.decisions) {
+                if (fault(path.sessionId, decision)) {
+                    sites.add(decision.siteId());
+                }
+            }
+        }
+        return sites;
+    }
+
+    /**
+     * Whether some session ran one region INSTRUMENTED: the weave has it.
+     * An ambient activation ({@code instrumented=false}) says only that the
+     * region RAN; a region no session ran instrumented is one the weave
+     * does not hold, and an admitted replay reaching it is growth
+     * (DESIGN4 SS3.3b).
+     */
+    public boolean woven(String regionId) {
+        for (List<ActivationRow> rows : activations.values()) {
+            for (ActivationRow row : rows) {
+                if (row.instrumented()
+                        && row.occurrence().regionId().equals(regionId)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     // ---- Arms.Rows: what the shared arm builder asks of a corpus -------

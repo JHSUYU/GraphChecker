@@ -284,6 +284,10 @@ public class ExploreTest {
                 "0", "10", true);
         flipped.decision(target, "Guard#u8", 1, true, "M_MARKER");
         flipped.decision(target, "Guard#u19", 1, false, "(> M_COUNT 5)");
+        // The replay states its own verdict: only an ADMITTED session's
+        // path is cut from.
+        flipped.answered(ObligationResult.of(proposed.get(0).obligationId(),
+                Verdict.ADMITTED, "s-flip", "the flip ran"));
         flipped.flush();
         record(results, ObligationResult.of(proposed.get(0).obligationId(),
                 Verdict.ADMITTED, "s-flip", "the flip ran"));
@@ -1122,6 +1126,8 @@ public class ExploreTest {
         // asserting it would make the arm unsatisfiable.
         Session rotated = new Session(iteration, "s-rot");
         rotated.activation(producer, true);
+        rotated.answered(ObligationResult.of("OBL.s-rot", Verdict.ADMITTED,
+                "s-rot", "the focused prefix reproduced"));
         // The consumer received it in that replay too, running concretely:
         // R-I2 admits an arm only from a run whose OWN pairing named this
         // consumer, which is what makes a family the deliveries of one
@@ -1351,6 +1357,8 @@ public class ExploreTest {
         replayed.root(target, "CASE.SERIAL", "M_SERIAL", RootKind.INTEGRAL,
                 "7", null, null, true);
         replayed.decision(target, "Arrival#u8", 1, false, "(> M_SERIAL 10)");
+        replayed.answered(ObligationResult.of("OBL.s-flip", Verdict.ADMITTED,
+                "s-flip", "the focused prefix reproduced"));
         replayed.flush();
         scopeMap(unminted, targetSite("REGION.target", "Throw#u30",
                 "Arrival#u8"));
@@ -1526,7 +1534,7 @@ public class ExploreTest {
         StaticScopeMap map = StaticScopeMap.read(mapFile);
 
         Corpus corpus = Corpus.read(iteration, null);
-        ClosurePlanner.Plan plan = ClosurePlanner.plan(corpus, target, map);
+        ClosurePlanner.Plan plan = ClosurePlanner.plan(corpus, target, ClosurePlanner.DEFAULT_MAX_TASKS, map);
         List<String> focused = new ArrayList<String>();
         for (Task task : plan.tasks) focused.add(task.focused().render());
         assertTrue("the writer of the version the anchor read is in the "
@@ -1624,7 +1632,7 @@ public class ExploreTest {
                         "PBHelper#convert#9", "PBHelper#convert", "", "",
                         "XCH.resp.block-key-id")));
         ClosurePlanner.Plan scoped = ClosurePlanner.plan(
-                Corpus.read(perNode, null), target, spreadMap);
+                Corpus.read(perNode, null), target, ClosurePlanner.DEFAULT_MAX_TASKS, spreadMap);
         Map<String, String> scopedWhy = new LinkedHashMap<String, String>();
         for (Task task : scoped.tasks) {
             scopedWhy.put(task.focused().render(),
@@ -1734,7 +1742,7 @@ public class ExploreTest {
                         "PBHelper#convert#9", "PBHelper#convert", "", "",
                         "XCH.resp.block-key-id")));
         ClosurePlanner.Plan viaState = ClosurePlanner.plan(
-                Corpus.read(restsOnState, null), target, restsMap);
+                Corpus.read(restsOnState, null), target, ClosurePlanner.DEFAULT_MAX_TASKS, restsMap);
         Map<String, Set<String>> statedFlips =
                 new LinkedHashMap<String, Set<String>>();
         for (Task task : viaState.tasks) {
@@ -1783,7 +1791,7 @@ public class ExploreTest {
                 "(= M_READ_KEY 0)");
         other.flush();
         ClosurePlanner.Plan divergent = ClosurePlanner.plan(
-                Corpus.read(split, null), confused, map);
+                Corpus.read(split, null), confused, ClosurePlanner.DEFAULT_MAX_TASKS, map);
         List<String> divergentFocused = new ArrayList<String>();
         for (Task task : divergent.tasks) {
             divergentFocused.add(task.focused().render());
@@ -1955,26 +1963,30 @@ public class ExploreTest {
                             && gap.cls() == GapClass.BLOCKING);
         }
 
-        // A region the workload never RETAINED: its activation is all there
-        // is of it, no endpoint of it exists, so no slot can ever name it.
+        // A region the weave does not hold, reached by an ADMITTED replay's
+        // own closure from the anchor, is GROWTH (DESIGN4 SS3.3b): an
+        // EXPOSED_REGION row names it, the exposing session and its
+        // obligation, and nothing forks.  Reached by the SEED alone it is
+        // the plan's own admission decision, and nothing is exposed.
         OccurrenceAddress lightweight = occurrence("hdfs-case/dn0",
                 "REGION.notretained", CausalContext.of(Role.of("DATA_XCEIVER"), "", 2),
                 "o.a.h.h.s.d.DataXceiver#run#44");
-        // Reached by the SEED, it is a region the recording ran and the plan
-        // chose not to retain -- an export inside it names the occurrence it
-        // ran in, through the one producer door -- and that is no growth.
+        Endpoint fromLightweight = at(lightweight, "XCH.resp.block-key-id",
+                "PBHelper#convert#9");
+        Endpoint intoTarget = at(target, "XCH.resp.block-key-id",
+                "PBHelper#convert#9");
+        Task anchorTask = Task.of(ClosurePlanner.taskId(target), target,
+                Collections.<OccurrenceAddress>emptyList(), "s-seed");
         Path recorded = tree.newFolder("closure-unretained-seed").toPath();
         Session seedOnly = new Session(recorded, "s-seed");
         seedOnly.activation(target, false);
         seedOnly.lightweight(lightweight);
+        seedOnly.attach(intoTarget, "M_HOFF_KEY", "119992", fromLightweight);
         seedOnly.flush();
-        SlotTable.Reconciliation planned = new SlotTable().reconcile(
-                Corpus.read(recorded, null),
-                Collections.singleton(target.id()), 3);
-        assertFalse("a region the seed reached is the plan's decision",
-                planned.replaced);
-        // Reached by a FLIPPED replay and never by the seed, the epoch has to
-        // be re-cut with it instrumented (SS8 case 2).
+        List<GapRow> growthGaps = new ArrayList<GapRow>();
+        assertEquals("a region the seed reached is the plan's decision", 0,
+                WaveGraph.writeGrowth(Corpus.read(recorded, null), anchorTask,
+                        recorded, growthGaps));
         Path unseen = tree.newFolder("closure-unretained").toPath();
         Session unseenSeed = new Session(unseen, "s-seed");
         unseenSeed.activation(target, false);
@@ -1982,33 +1994,31 @@ public class ExploreTest {
         Session partial = new Session(unseen, "s-flip");
         partial.activation(target, true);
         partial.lightweight(lightweight);
-        partial.read(at(target, Endpoint.stateSite("BlockTokenSecretManager",
-                        "get", 3, false), "BlockTokenSecretManager#get#3"),
-                allKeys, 5L, "M_READ_KEY", "119992");
+        partial.attach(intoTarget, "M_HOFF_KEY", "119992", fromLightweight);
         partial.answered(ObligationResult.of("OBL.s-flip", Verdict.ADMITTED,
                 "s-flip", "the focused prefix reproduced"));
         partial.flush();
-        SlotTable.Reconciliation grown = new SlotTable().reconcile(
-                Corpus.read(unseen, null),
-                Collections.singleton(target.id()), 3);
-        assertTrue("a region with no detailed row forks the epoch",
-                grown.replaced);
-        boolean asked = false;
-        for (GapRow gap : grown.gaps) {
-            asked |= gap.kind() == GapKind.TOPOLOGY_DIVERGENCE
-                    && gap.cls() == GapClass.BLOCKING
-                    && gap.detail().equals(
-                            "retained set must grow: REGION.notretained");
-        }
-        assertTrue("and it names the region INSTRUMENT must retain", asked);
+        assertFalse("and it forks no epoch",
+                new SlotTable().reconcile(Corpus.read(unseen, null),
+                        Collections.singleton(target.id()), 3).replaced);
+        assertEquals("a region with no detailed row is exposed", 1,
+                WaveGraph.writeGrowth(Corpus.read(unseen, null), anchorTask,
+                        unseen, growthGaps));
+        JsonObject exposed = RowCodec.readJsonl(
+                unseen.resolve(WaveGraph.GROWTH)).get(0);
+        assertEquals("EXPOSED_REGION", exposed.get("kind").getAsString());
+        assertEquals("REGION.notretained",
+                exposed.get("regionId").getAsString());
+        assertEquals(lightweight.render(),
+                exposed.get("occurrence").getAsString());
+        assertEquals("s-flip", exposed.get("sessionId").getAsString());
+        assertEquals("OBL.s-flip", exposed.get("obligationId").getAsString());
 
-        // An occurrence no task planned, of a region the plan DOES retain,
-        // is new work and not a retained set to grow.  hdfs-17899: a daemon
-        // heartbeat's response left the NameNode through its command
-        // conversion, whose seed occurrences (the workload's own refresh)
-        // ran instrumented; the daemon's occurrence was published AMBIENT --
-        // instrumented false -- and PLAN then refused to "grow" to a region
-        // it already had.
+        // An occurrence no task planned, of a region the weave DOES hold, is
+        // new work and not growth.  hdfs-17899: a daemon heartbeat's
+        // response left the NameNode through its command conversion, whose
+        // seed occurrences ran instrumented; the daemon's occurrence was
+        // published AMBIENT.
         OccurrenceAddress refreshConversion = occurrence("hdfs-case/nn0",
                 "REGION.conversion",
                 CausalContext.of("a1b2c3d4e5f60718", "HADOOP_IPC/heartbeat"),
@@ -2028,18 +2038,16 @@ public class ExploreTest {
         daemonRun.activation(target, true);
         daemonRun.activation(refreshConversion, false);
         daemonRun.lightweight(daemonConversion);
+        daemonRun.attach(intoTarget, "M_HOFF_KEY", "119992",
+                at(daemonConversion, "XCH.resp.block-key-id",
+                        "PBHelper#convert#9"));
         daemonRun.answered(ObligationResult.of("OBL.s-flip", Verdict.ADMITTED,
                 "s-flip", "the focused prefix reproduced"));
         daemonRun.flush();
-        SlotTable.Reconciliation newOccurrence = new SlotTable().reconcile(
-                Corpus.read(retainedDir, null),
-                Collections.singleton(target.id()), 3);
-        assertFalse("an unplanned occurrence of a retained region forks "
-                + "nothing", newOccurrence.replaced);
-        for (GapRow gap : newOccurrence.gaps) {
-            assertFalse("and asks no growth: " + gap.detail(),
-                    gap.detail().startsWith("retained set must grow"));
-        }
+        assertEquals("an unplanned occurrence of a woven region exposes "
+                        + "nothing", 0,
+                WaveGraph.writeGrowth(Corpus.read(retainedDir, null),
+                        anchorTask, retainedDir, growthGaps));
 
         // A DEGRADED occurrence's region slot is ROLE.<ROLE>: the scope was
         // lost, so there is no region of the static graph to retain and no
@@ -2048,17 +2056,23 @@ public class ExploreTest {
         OccurrenceAddress lost = occurrence("hdfs-case/dn0",
                 "ROLE.IPC_HANDLER", CausalContext.of(Role.of("IPC_HANDLER")),
                 "o.a.h.ipc.Server$Handler#run#1");
-        Session degraded = new Session(roleOnly, "s-seed");
-        degraded.activation(target, false);
+        Session degradedSeed = new Session(roleOnly, "s-seed");
+        degradedSeed.activation(target, false);
+        degradedSeed.flush();
+        Session degraded = new Session(roleOnly, "s-flip");
+        degraded.activation(target, true);
         degraded.lightweight(lost);
+        degraded.attach(intoTarget, "M_HOFF_KEY", "119992",
+                at(lost, "XCH.resp.block-key-id", "PBHelper#convert#9"));
+        degraded.answered(ObligationResult.of("OBL.s-flip", Verdict.ADMITTED,
+                "s-flip", "the focused prefix reproduced"));
         degraded.flush();
-        SlotTable.Reconciliation roleGap = new SlotTable().reconcile(
-                Corpus.read(roleOnly, null),
-                Collections.singleton(target.id()), 4);
-        assertFalse("a role is not a region, so nothing can retain it and "
-                + "no epoch is cut", roleGap.replaced);
+        List<GapRow> roleGaps = new ArrayList<GapRow>();
+        assertEquals("a role is not a region, so nothing can weave it", 0,
+                WaveGraph.writeGrowth(Corpus.read(roleOnly, null), anchorTask,
+                        roleOnly, roleGaps));
         boolean lineage = false;
-        for (GapRow gap : roleGap.gaps) {
+        for (GapRow gap : roleGaps) {
             lineage |= gap.kind() == GapKind.LINEAGE_LOST
                     && gap.cls() == GapClass.DIAGNOSTIC
                     && gap.detail().contains("ROLE.IPC_HANDLER");
@@ -2193,7 +2207,7 @@ public class ExploreTest {
                 "(= M_READ_KEY 0)");
         partialRun.flush();
         ClosurePlanner.Plan withGhost = ClosurePlanner.plan(
-                Corpus.read(unrun, null), target, map);
+                Corpus.read(unrun, null), target, ClosurePlanner.DEFAULT_MAX_TASKS, map);
         for (Task task : withGhost.tasks) {
             assertFalse("an occurrence no session ran is not a task",
                     task.focused().id().equals(ghost.id()));
@@ -2232,7 +2246,7 @@ public class ExploreTest {
                 "(not EXPR.0000000000000002)");
         stated.flush();
         ClosurePlanner.Plan lowered = ClosurePlanner.plan(
-                Corpus.read(viaRef, null), target, map);
+                Corpus.read(viaRef, null), target, ClosurePlanner.DEFAULT_MAX_TASKS, map);
         for (GapRow gap : lowered.gaps) {
             assertFalse("the anchor's own read is what its phi rests on: "
                             + gap.detail(),
@@ -2489,7 +2503,7 @@ public class ExploreTest {
         }
         assertTrue("the identity the guard rests on is stated non-null: "
                 + states, notNull);
-        ClosurePlanner.Plan demanded = ClosurePlanner.plan(vC, target,
+        ClosurePlanner.Plan demanded = ClosurePlanner.plan(vC, target, ClosurePlanner.DEFAULT_MAX_TASKS,
                 ofAllKeys);
         Map<String, String> whyMap = new LinkedHashMap<String, String>();
         Map<String, Set<String>> flipsOf =
@@ -2801,7 +2815,7 @@ public class ExploreTest {
         // Zero turns the rule off, which is what the property is for.
         assertEquals("(< a clk_now)",
                 ClockMargin.strengthen("(< a clk_now)", clocks, 0L).text);
-        assertEquals(60_000L, ClockMargin.DEFAULT_MARGIN_MS);
+        assertEquals(60_000L, ClockMargin.MARGIN_MS);
     }
 
     private static String strengthened(String term, Set<String> clocks) {
@@ -2840,14 +2854,14 @@ public class ExploreTest {
         String query = query(worker);
         assertTrue("the demanded atom carries the margin: " + query,
                 query.contains("(not (>= (+ 1500 "
-                        + ClockMargin.DEFAULT_MARGIN_MS + ") clk_"));
+                        + ClockMargin.MARGIN_MS + ") clk_"));
         JsonObject focus = RowCodec.readJsonl(worker.directory.resolve(
                 ObligationDir.FOCUSED_TASK)).get(0);
         long skew = Long.parseLong(focus.getAsJsonObject("clockDeltas")
                 .get("CASE.NOW").getAsString());
         assertTrue("and the replay is owed a skew that clears the literal by "
                         + "it, not by one millisecond: " + skew,
-                skew >= 1500L + ClockMargin.DEFAULT_MARGIN_MS - 1000L);
+                skew >= 1500L + ClockMargin.MARGIN_MS - 1000L);
 
         // An atom whose polarity no connective of the query resolves is
         // left exactly as it was, and named once.
@@ -2957,7 +2971,7 @@ public class ExploreTest {
         assertTrue("the flip the child inherited is demanded, so it carries "
                         + "the margin: " + query,
                 query.contains("(>= 100000 (+ clk_CASE_NOW_s_inherit "
-                        + ClockMargin.DEFAULT_MARGIN_MS + "))"));
+                        + ClockMargin.MARGIN_MS + "))"));
         assertTrue("while the decision that occurrence took BEFORE it is the "
                         + "recording's own arm, asked for as recorded: "
                         + query,
@@ -2971,7 +2985,7 @@ public class ExploreTest {
                 .get("CASE.NOW").getAsString());
         assertTrue("and the model clears the inherited literal by the margin"
                         + " too: " + skew,
-                skew + 1000L <= 100000L - ClockMargin.DEFAULT_MARGIN_MS);
+                skew + 1000L <= 100000L - ClockMargin.MARGIN_MS);
     }
 
     // ---- (6b) a handoff nobody can answer is pinned -------------------
@@ -3015,6 +3029,8 @@ public class ExploreTest {
         rotated.activation(PRODUCER, true);
         rotated.activation(WRITER, false);
         rotated.activation(TARGET, false);
+        rotated.answered(ObligationResult.of("OBL.s-rot", Verdict.ADMITTED,
+                "s-rot", "the focused prefix reproduced"));
         rotated.root(PRODUCER, "CASE.SERIAL", "M_SERIAL", RootKind.INTEGRAL,
                 "119995", null, null, false);
         rotated.decision(PRODUCER, "Rotate#u3", 1, true, "(> M_SERIAL 0)");
@@ -3167,11 +3183,8 @@ public class ExploreTest {
                 skew >= 0L);
 
         // And a flip that needs the clock EARLIER than its session read it
-        // is refused -- with the margin off, so this is the floor talking
-        // and nothing else.
-        String held = System.getProperty(ClockMargin.MARGIN_PROPERTY);
-        System.setProperty(ClockMargin.MARGIN_PROPERTY, "0");
-        try {
+        // is refused: the floor talking.
+        {
             Path back = tree.newFolder("clock-back").toPath();
             Session only = new Session(back, "s-seed");
             only.activation(TARGET, false);
@@ -3191,12 +3204,6 @@ public class ExploreTest {
             assertEquals("4000 >= now needs a clock this execution had "
                             + "already passed", Verdict.UNSAT,
                     refused.verdict);
-        } finally {
-            if (held == null) {
-                System.clearProperty(ClockMargin.MARGIN_PROPERTY);
-            } else {
-                System.setProperty(ClockMargin.MARGIN_PROPERTY, held);
-            }
         }
     }
 
@@ -3313,7 +3320,7 @@ public class ExploreTest {
         // holding, and the join is the region-id equality it always was:
         // nothing runs REGION.inner, so nothing is a candidate.
         Map<String, String> blind = why(ClosurePlanner.plan(
-                Corpus.read(iteration, null), TARGET,
+                Corpus.read(iteration, null), TARGET, ClosurePlanner.DEFAULT_MAX_TASKS,
                 StaticScopeMap.read(mapFile)));
         assertFalse("with no skeletons, equality finds no occurrence of the"
                         + " region the site is published under: " + blind,
@@ -3328,7 +3335,7 @@ public class ExploreTest {
                 skeleton("REGION.elsewhere", "DataXceiver"),
                 skeleton("REGION.target", "BlockTokenSecretManager"));
         Map<String, String> held = why(ClosurePlanner.plan(
-                Corpus.read(iteration, null), TARGET,
+                Corpus.read(iteration, null), TARGET, ClosurePlanner.DEFAULT_MAX_TASKS,
                 StaticScopeMap.read(mapFile)));
         assertEquals("the occurrence whose region holds the site's method is"
                         + " the static candidate writer: " + held,
