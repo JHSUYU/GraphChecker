@@ -808,6 +808,89 @@ public class ScheduleLogTest {
         assertFalse(ScheduleLog.observe(ScheduleEvent.Kind.SEND, "y"));
     }
 
+    @Test
+    public void aHeldWaitAnInterruptEndsWritesItsWake() throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        final String site = "<C: boolean waitForWork()>#u21";
+        ScheduleLog.enforceForTests(prefix("x"));
+        final Object monitor = new Object();
+        final String[] outcome = new String[1];
+        Thread held = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                synchronized (monitor) {
+                    try {
+                        TimedWaits.waitOn(monitor, 60000L, site);
+                        outcome[0] = "returned";
+                    } catch (InterruptedException interrupted) {
+                        outcome[0] = "threw";
+                    }
+                }
+            }
+        });
+        held.start();
+        waitUntilWaiting(held);
+        held.interrupt();
+        held.join(5000L);
+        assertEquals("the interrupt ends the held wait by throwing", "threw",
+                outcome[0]);
+        assertEquals("and writes its WAKE where it stands, as the free wait "
+                        + "the recording made did",
+                Collections.singletonList(site), sites());
+    }
+
+    @Test
+    public void aTimedWaitEnteredInterruptedThrowsEvenWhenItsTurnIsNext()
+            throws Exception {
+        final String site = "<L: void loop()>#u4";
+        ScheduleLog.enforceForTests(Collections.singletonList(
+                event(ScheduleEvent.Kind.WAKE, site)));
+        final Object monitor = new Object();
+        Thread.currentThread().interrupt();
+        boolean threw = false;
+        synchronized (monitor) {
+            try {
+                TimedWaits.waitOn(monitor, 60000L, site);
+            } catch (InterruptedException interrupted) {
+                threw = true;
+            }
+        }
+        assertTrue("Object.wait entered interrupted throws, turn or no turn",
+                threw);
+        assertFalse("and clears the flag, as the JDK's does",
+                Thread.currentThread().isInterrupted());
+
+        java.util.concurrent.locks.ReentrantLock lock =
+                new java.util.concurrent.locks.ReentrantLock();
+        java.util.concurrent.locks.Condition ready = lock.newCondition();
+        Thread.currentThread().interrupt();
+        threw = false;
+        lock.lock();
+        try {
+            TimedWaits.awaitNanos(ready, 0L, "<Q: void take()>#u8");
+        } catch (InterruptedException interrupted) {
+            threw = true;
+        } finally {
+            lock.unlock();
+        }
+        assertTrue("so does awaitNanos(0), as AQS's does", threw);
+    }
+
+    @Test
+    public void aFreeParkAnInterruptEndsWritesItsWake() {
+        final String site = "<P: void spin()>#u3";
+        Thread.currentThread().interrupt();
+        long before = System.nanoTime();
+        TimedWaits.parkNanos(TimeUnit.SECONDS.toNanos(10L), site);
+        assertTrue("a park returns at once for an interrupted thread",
+                TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
+                        < 5000L);
+        assertTrue("and leaves the flag for its caller",
+                Thread.interrupted());
+        assertEquals("its WAKE is written, as the held park's is",
+                Collections.singletonList(site), sites());
+    }
+
     /** An untimed woven wait that writes how it ended into outcome[at]. */
     private static Thread untimedWaiter(final Object monitor,
                                         final String[] outcome, final int at,

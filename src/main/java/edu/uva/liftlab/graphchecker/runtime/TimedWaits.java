@@ -72,6 +72,12 @@ import java.util.concurrent.locks.LockSupport;
  * not choose never left.  A wait that returns early with no woven signal and
  * no window's wake behind it was ended by a notifier outside the weave, and
  * ends as it did before.</p>
+ *
+ * <p>ONE LIMIT, stated: a notify from outside the weave that wakes a
+ * registered wait is invisible to the registry, so a woven notify that
+ * follows it on the same monitor may mark the wait it already woke.  Inside
+ * the application scope every notifier is woven; it takes a notifier
+ * outside it on an application monitor.</p>
  */
 public final class TimedWaits {
     /** How long a wait polls between asks for its turn, in ms. */
@@ -213,6 +219,7 @@ public final class TimedWaits {
 
     /** Sleeps on the wall clock to {@code deadline}, the window aside. */
     private static void wallSleep(long deadline) throws InterruptedException {
+        if (Thread.interrupted()) throw new InterruptedException();
         while (true) {
             long left = deadline - System.nanoTime();
             if (left <= 0L) return;
@@ -280,6 +287,13 @@ public final class TimedWaits {
                 WAITING.remove(self);
             }
             boolean byWindow = WINDOW_WOKEN.remove(self);
+            if (self.isInterrupted()) {
+                // An interrupt ended it: the held park writes its WAKE where
+                // it stands (Quantum#endsNow), and so does the free one.
+                interruptedWake(site);
+                WakeScopes.woke(site);
+                return;
+            }
             signalled = !byWindow && System.nanoTime() - before < nanos;
         }
         try {
@@ -372,6 +386,7 @@ public final class TimedWaits {
             WakeScopes.woke(site);
             return;
         }
+        interruptedAtEntry(site);
         long deadline = System.nanoTime()
                 + TimeUnit.MILLISECONDS.toNanos(millis) + nanos;
         Waiter self = enter(monitor);
@@ -449,7 +464,7 @@ public final class TimedWaits {
         } catch (InterruptedException interrupted) {
             WAITING.remove(thread);
             WINDOW_WOKEN.remove(thread);
-            ScheduleLog.tryObserve(ScheduleEvent.Kind.WAKE, site);
+            interruptedWake(site);
             throw interrupted;
         } finally {
             self.onTheClock = false;
@@ -473,6 +488,37 @@ public final class TimedWaits {
         } catch (InterruptedException interrupted) {
             if (!self.signalled) throw interrupted;
             Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * A timed wait entered with its interrupt pending throws at once, as the
+     * JDK's does ({@code Object.wait}, AQS {@code await}) -- held or free,
+     * and before any turn is asked for, so a held wait whose WAKE happens to
+     * be next is not taken for a timeout.  Its WAKE is written first, as any
+     * wait an interrupt ends writes it ({@link #interruptedWake}).
+     */
+    private static void interruptedAtEntry(String site)
+            throws InterruptedException {
+        if (!Thread.interrupted()) return;
+        interruptedWake(site);
+        throw new InterruptedException();
+    }
+
+    /**
+     * THE WAKE OF A WAIT AN INTERRUPT ENDED, one rule for free and held:
+     * the interrupt is the workload's, the wait ends where it stands, and
+     * its WAKE is written there -- free, as any free event is; held, whether
+     * or not it is the prefix's next event, the rule an interrupted
+     * admission follows.  The recording wrote one for every such wait, so a
+     * replay that wrote none asked the prefix for an event nobody would
+     * make, and every thread behind it waited out the watchdog.
+     */
+    private static void interruptedWake(String site) {
+        if (ScheduleLog.enforcing()) {
+            ScheduleLog.admitNow(ScheduleLog.wake(site));
+        } else {
+            ScheduleLog.tryObserve(ScheduleEvent.Kind.WAKE, site);
         }
     }
 
@@ -534,6 +580,7 @@ public final class TimedWaits {
     public static long awaitNanos(Condition condition, long nanos,
                                   String site) throws InterruptedException {
         WakeScopes.waiting(site);
+        interruptedAtEntry(site);
         long deadline = System.nanoTime() + nanos;
         Waiter self = enter(condition);
         try {
@@ -554,6 +601,7 @@ public final class TimedWaits {
                                 TimeUnit unit, String site)
             throws InterruptedException {
         WakeScopes.waiting(site);
+        interruptedAtEntry(site);
         long deadline = System.nanoTime() + unit.toNanos(time);
         Waiter self = enter(condition);
         try {
@@ -639,7 +687,7 @@ public final class TimedWaits {
                     rest = awaitNanosMarked(condition, Math.min(left,
                             TimeUnit.MILLISECONDS.toNanos(QUANTUM_MS)), self);
                 } catch (InterruptedException interrupted) {
-                    ScheduleLog.tryObserve(ScheduleEvent.Kind.WAKE, site);
+                    interruptedWake(site);
                     throw interrupted;
                 }
                 if (self.signalled) return true;
@@ -878,7 +926,15 @@ public final class TimedWaits {
                 }
                 wait = Math.max(1L, (left + 999999L) / 1000000L);
             }
-            if (quantum.await(wait)) signalled = true;
+            try {
+                if (quantum.await(wait)) signalled = true;
+            } catch (InterruptedException interrupted) {
+                // The wait ends where it is, held or free, and its WAKE is
+                // written there, as the free wait's is: a prefix that holds a
+                // wait an interrupt ended asks for that WAKE.
+                ScheduleLog.admitNow(wake);
+                throw interrupted;
+            }
         }
     }
 
