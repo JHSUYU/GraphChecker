@@ -6,10 +6,13 @@
 reaches `BlockTokenSecretManager.retrieveDataEncryptionKey` on a DataNode after a key-refresh
 RPC has failed. The consumer of the key — Balancer, SPS or a source DataNode — keeps using
 the key it holds; the DataNode that has to verify it has already rotated. The three cases
-share that one target and differ only in which request flow carries the key to it. The
-refresh RPC failure is the IPC door's fault point (`FAULT:HADOOP_IPC:REQUEST`, minted in
-every tree at `Client$Connection.sendRpcRequest`), so a witness here can be that fault
-point flipping, the clocks disagreeing, or both.
+share that one target and differ only in which request flow carries the key to it. Every
+tree carries 11741's expiry check, so a stale key reaches the check only through a failed
+RPC: the witness is an IPC door fault flipped to true with every clock at the recording —
+the request that never reached the NameNode (`FAULT:HADOOP_IPC:REQUEST`, minted in every
+tree at `Client$Connection.sendRpcRequest`) or the NameNode's answer lost after it applied
+the request (`FAULT:HADOOP_IPC:RESPONSE`, at `Client.getRpcResponse`), to a DataNode or to
+the application.
 
 | Case | Request flow | Hadoop worktree | Branch |
 | --- | --- | --- | --- |
@@ -30,21 +33,15 @@ pass and the replay.
 | `bug2` | `TestExternalStoragePolicySatisfier#testCausynthSpsKeyRefreshRpcFailure` | the SPS asks one DataNode once |
 | `bug3` | `TestCausynthDataTransferRpcFailure` | one replication, one target DataNode read |
 
-`bug1` used to be driven by `TestBalancerWithEncryptedTransfer#testEncryptedBalancer1`. That
-chain is seventeen links deep and only its root survived into a replay, so the plan and the
-replay minted different anchors for the same exchange and every path was refused on identity
-(`OCCURRENCE_ANCHOR_UNMATCHED`) — never on the mechanism. Nothing about the defect is given
-up by the rewrite: the cached `DataEncryptionKey` in `KeyManager` IS the defect, and the
-balancer's block-selection machinery, which no part of the mechanism touches, is what is left
-out. `Balancer` and `Dispatcher` are correspondingly out of the analysis scope.
+The mover of `bug1` is the test itself, holding a real `KeyManager`: its cached
+`DataEncryptionKey` IS the defect, and `Balancer` and `Dispatcher`, which no part of the
+mechanism touches, are out of the analysis scope.
 
 Every workload has to leave a **rotation gap running the right way**: the key the failing
 party puts on the wire is serials BEHIND the master's current one, while the consumer still
-RETAINS it, so the recording stays healthy and a witness has to buy the expiry with a clock
-move or with the door's fault point. With a zero gap every composed path is either self-contradictory
-(bug3 measured 63 paths, all unsat with every root free) or satisfied at the recorded
-valuation (bug2, `FORMULA_SAT_AT_RECORDED_VALUATION`). Each workload asserts the gap
-itself.
+RETAINS it, so the recording stays healthy and a witness has to make one party present a key
+the verifying DataNode does not hold — which in these trees only a failed RPC does. Each
+workload asserts the gap itself.
 
 ## What these cases declare
 
@@ -88,15 +85,7 @@ CASES="hdfs-17899-bug1 hdfs-17899-bug2 hdfs-17899-bug3" bash experiments/hadoop/
 
 ## What the harness expects
 
-`report.py` passes each of the three on `claim` `SAT_CANDIDATE`, `finalStatus`
-`FINAL_READY`, empty `blockers` and no open BLOCKING gap, `polarityDecides` true,
-`valuationOrdinal` >= 1, non-empty `movedRoots`, and a `findingKind` of `MARKER_FLIPPED` or
-`CLOCK_SKEW`.
-
-## Status
-
-`bug2` and `bug3` pass: `CLOCK_SKEW`, `polarityDecides` true, `FINAL_READY`, no blocking gap,
-`.smt` at 838 KB and 773 KB respectively. Two root causes had to be fixed first and they
-explain both earlier failures: the cases declared **no clocks**, which made `CLOCK_SKEW`
-unreachable by construction and key expiry inexpressible at all; and both recordings had a
-**zero rotation gap**. `bug1` is the rewritten workload above.
+`report.py` passes each of the three on `claim` `SAT_CANDIDATE` confirmed, `finalStatus`
+`FINAL_READY`, no BLOCKING gap at any stage, `polarityDecides` true, `valuationOrdinal` >= 1,
+and `findingKind` `MARKER_FLIPPED` whose `movedRoots` hold an IPC door fault flipped to true
+and no clock cell.

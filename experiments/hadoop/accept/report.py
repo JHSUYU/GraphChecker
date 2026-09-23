@@ -6,9 +6,8 @@ Reads one finished case and writes the per-case markdown plus one TSV row.
 The markdown is meant to be read, not scanned: it carries the claim and every
 blocker, the valuation table with the case frontier each row was solved under,
 the mechanism each witness names and how the claim layer read it, which root
-the probe perturbed, and -- where fatalread.py could make its join -- the arms
-of the fatal read with the one the model chose marked, so the causal chain can
-be narrated from the model rather than inferred from a verdict.
+and the probe's reading, so the causal chain can be narrated from the model
+rather than inferred from a verdict.
 
 A case passes when the claim layer accepted it AND the mechanism it concluded
 is the one this case is known to fail by: claim SAT_CANDIDATE, confirmed by
@@ -50,57 +49,47 @@ refute.  NO_SUPPORTED_WITNESS fails, naming the claimReason the policy gave.
 The probe's plain/buggy/other columns are still printed when probe.tsv exists,
 as a reported signal.  Nothing gates on them.
 """
-import json, os, re, sys
+import glob, json, os, re, sys
 
 # ---- the mechanism each case is known to fail by --------------------------
-# DATA, declared once, at the top, for the six cases this harness runs.
-# probe.sh's acc_root_kind_of splits the same six by the kind of root the
-# PROBE has to spell (MARKER / CONFIG / CLOCK); this table names the witness
-# kind the COMPOSER must publish for the case to count as explained, and it
-# is the only place a case id appears in the gate.  A case this table does
-# not name cannot be passed by this harness.
+# DATA, declared once, for the nine cases this harness runs; the only place a
+# case id appears in the gate, and a case it does not name cannot pass.
 #
-# Sources: the verification runbook's polarity row -- "17899x3/11741 marker
-# true/false; 17960 ordered=false buggy vs true; 17897 clocks free vs pinned
-# to recorded" -- and probe.sh's grep-backed note that
-# /opt/hadoop-hdfs-11741 carries no Debug.makeSymbolicBoolean anywhere, so its
-# declared roots are the same clock family 17897 declares and its witness is
-# spelled CLOCK_SKEW.
+#   kinds  -- the witness kinds this case may conclude with.
+#   root   -- a root that must appear in movedRoots with that value, declared
+#             where its spelling is stable (17960's configured Boolean).
+#   fault  -- the moved roots must include a fault marker flipped to true
+#             whose declared site is a door of this transport's client
+#             class (the plan's input action states the site of every
+#             marker root).
+#   clocks -- False: no clock cell may move.  The witness is the fault alone,
+#             with every clock where the recording read it.
 #
-#   kinds -- the witness kinds this case may conclude with.  The expiry family
-#            (11741 and 17899 bug1/2/3) accepts both spellings of ONE
-#            mechanism, because the runbook spells it both ways and the
-#            difference is which root carries it: a stale BlockKey reaches the
-#            consumer either because the refresh RPC's fault marker flipped
-#            (MARKER_FLIPPED -- the FAULT:HADOOP_IPC:REQUEST door fault point exists in the
-#            three 17899 checkouts) or because a clock root moved the key out
-#            of allKeys (CLOCK_SKEW).  Both are the expiry mechanism; neither
-#            is a pairing kind nor RECORDED_FAILURE_EXPLAINED.
-#   root  -- a root that must appear in movedRoots with that value, declared
-#            only where its spelling is stable.  17960's configured Boolean
-#            is; the clock cases' roots are per-node, per-occurrence
-#            Timer.now()/expiryDate terms and the 17899 fault markers are
-#            per-case manual__MANUAL_* ids, so those rows declare the kind and
-#            the "a root moved" requirement only.
+# The owner's ruling (2026-09-23), and DESIGN4 V3/V5 as corrected by it: every
+# tree of the block-key family carries 11741's expiry check, so a key goes
+# stale there ONLY through a failed RPC -- the request that never reached the
+# NameNode, or the NameNode's reply to a DataNode or to an application that
+# was lost after the NameNode applied it.  A clock witness for them moved one
+# node's clock hours past another's inside one JVM, which no run of the
+# cluster does: it is not a pass.  11741 is the bug that check fixes, so a
+# branch flip reaches its fatal with no fault; 17960's mechanism is its
+# configured Boolean.
+RPC_FAILURE = {"kinds": ("MARKER_FLIPPED",),
+               "fault": "org.apache.hadoop.ipc.Client", "clocks": False}
 EXPECTED_MECHANISM = {
     "hdfs-17960":      {"kinds": ("MARKER_FLIPPED",),
                         "root": "HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED",
                         "value": "false"},
+    # 11741 has no expiry check: a flipped branch with no fault already
+    # reaches its fatal, and an RPC fault may too ("也是有解的").
     "hdfs-11741":      {"kinds": ("CLOCK_SKEW", "MARKER_FLIPPED")},
-    "hdfs-17899-bug1": {"kinds": ("MARKER_FLIPPED", "CLOCK_SKEW")},
-    "hdfs-17899-bug2": {"kinds": ("MARKER_FLIPPED", "CLOCK_SKEW")},
-    "hdfs-17899-bug3": {"kinds": ("MARKER_FLIPPED", "CLOCK_SKEW")},
-    # The tree now carries the symbolized RPC failure, as the rest of the
-    # family does, so a witness may be the marker OR the clock.
-    "hdfs-17897":      {"kinds": ("MARKER_FLIPPED", "CLOCK_SKEW")},
-    # HDFS-17967's three paths share one annotated site and are told apart by
-    # their target occurrence, so they share this row.  CLOCK_SKEW is the
-    # mechanism the workloads are written for: the key the failing party puts
-    # on the wire is serials behind the master's, and a witness has to move
-    # the clock past its expiry.
-    "hdfs-17967-pathA": {"kinds": ("CLOCK_SKEW", "MARKER_FLIPPED")},
-    "hdfs-17967-pathB": {"kinds": ("CLOCK_SKEW", "MARKER_FLIPPED")},
-    "hdfs-17967-pathC": {"kinds": ("CLOCK_SKEW", "MARKER_FLIPPED")},
+    "hdfs-17899-bug1": RPC_FAILURE,
+    "hdfs-17899-bug2": RPC_FAILURE,
+    "hdfs-17899-bug3": RPC_FAILURE,
+    "hdfs-17897":      RPC_FAILURE,
+    "hdfs-17967-pathA": RPC_FAILURE,
+    "hdfs-17967-pathB": RPC_FAILURE,
+    "hdfs-17967-pathC": RPC_FAILURE,
 }
 
 
@@ -117,6 +106,46 @@ def load(name):
 
 
 result = load("result.json")
+
+
+def root_kinds():
+    """rootId -> kind, as the composition manifest publishes its roots."""
+    manifest = load("candidate_composition_manifest.json")
+    return {row.get("rootId", ""): row.get("kind", "")
+            for row in (manifest.get("roots") or [])}
+
+
+CELL = re.compile(r"^M_[A-Z]_field_(.+?)\.occ\.")
+
+
+def root_of(moved, kinds):
+    """The rootId a movedRoots key names: itself, or the root of a cell."""
+    if moved in kinds:
+        return moved
+    found = CELL.match(moved)
+    return found.group(1) if found else moved
+
+
+def declared_sites():
+    """rootId -> the declared site of that input, off the iteration's plan."""
+    sites = {}
+    for plan in sorted(glob.glob(os.path.join(
+            case_dir, "schedule", "iteration-*",
+            "execution_task_plan.jsonl"))):
+        with open(plan) as handle:
+            for line in handle:
+                if "EXPLICIT_SYMBOLIC_FAULT" not in line:
+                    continue
+                row = json.loads(line)
+                for action in row.get("inputActions") or []:
+                    if action.get("sourceKind") != "EXPLICIT_SYMBOLIC_FAULT":
+                        continue
+                    port = action.get("portId") or action.get("symbol") or ""
+                    if port:
+                        sites[port] = action.get("siteId", "")
+    return sites
+
+
 
 
 def short(term, keep=26):
@@ -276,6 +305,30 @@ else:
                            % (want, expected["value"],
                               ", ".join("%s=%s" % (r, moved_roots[r])
                                         for r in sorted(moved_roots))))
+        if expected.get("fault") or expected.get("clocks") is False:
+            kinds = root_kinds()
+            sites = declared_sites()
+            moved_kinds = {moved: kinds.get(root_of(moved, kinds), "")
+                           for moved in moved_roots}
+            faults = [moved for moved, kind in moved_kinds.items()
+                      if kind == "MARKER"
+                      and str(moved_roots[moved]).lower() == "true"
+                      and expected.get("fault", "") in sites.get(
+                          root_of(moved, kinds), "")]
+            clocks = [moved for moved, kind in moved_kinds.items()
+                      if kind == "CLOCK"]
+            if expected.get("fault") and not faults:
+                reasons.append("no %s door fault flipped to true in the"
+                               " witness (moved %s)"
+                               % (expected["fault"], ", ".join(
+                                   "%s[%s]=%s" % (r, moved_kinds[r] or "?",
+                                                  moved_roots[r])
+                                   for r in sorted(moved_roots))))
+            if expected.get("clocks") is False and clocks:
+                reasons.append("the witness moves %d clock cell(s); an RPC"
+                               " failure has to reach the fatal with every"
+                               " clock where the recording read it"
+                               % len(clocks))
 
 verdict = "PASS" if not reasons else "FAIL"
 reason = "; ".join(reasons) if reasons else "-"
@@ -480,43 +533,6 @@ if valuations:
                           "`%s` = `%s`" % (k, v) for k, v
                           in sorted((row.get("assignment") or {}).items())))
                       if row.get("assignment") else ""))
-    out.append("")
-
-arms_path = os.path.join(work, "fatal_arms.json")
-if os.path.exists(arms_path):
-    arms = json.load(open(arms_path))
-    out += ["## Fatal read", ""]
-    # A refusal, by name: fatalread.py states which publication the join it
-    # makes is missing rather than reporting zero arms as if the read had none.
-    if arms.get("unresolved"):
-        out += ["> not read: %s" % arms["unresolved"], ""]
-        arms = {"arms": []}
-    else:
-        out += ["`%s`" % arms.get("fatalSite", "-"), "",
-                "carrier `%s`, %d arm(s)"
-                % (arms.get("carrier", "-"), len(arms.get("arms", []))), ""]
-    if arms.get("arms") and not any(
-            arm.get("selected") for arm in arms.get("arms", [])):
-        out.append("_(no arm marked: this report carries no"
-                   " `fatalStateSelection`, so the model's choice is"
-                   " unknown)_")
-        out.append("")
-    for arm in arms.get("arms", []):
-        owner = arm.get("writerCaseOwner", "")
-        # A writer owner names region, instance and case; the region is what a
-        # reader needs to follow the chain, the rest is identity.
-        region = re.sub(r"^region:", "", owner.split("/")[0]) if owner else ""
-        out.append("* %s `%s` %s%s"
-                   % ("**chosen**" if arm.get("selected") else "  \u00b7     ",
-                      short(arm.get("selector", "-"), 30),
-                      "INITIAL state" if arm.get("initialState")
-                      else "writer",
-                      " in `%s`" % short(region, 46) if region else ""))
-    if arms.get("truncatedCarrier"):
-        out.append("")
-        out.append("> carrier `%s` has an INITIAL_CONTAINER_SNAPSHOT_TRUNCATED"
-                   " gap: membership over its initial state is a free choice."
-                   % arms.get("carrier"))
     out.append("")
 
 with open(os.path.join(work, "report.md"), "w") as handle:

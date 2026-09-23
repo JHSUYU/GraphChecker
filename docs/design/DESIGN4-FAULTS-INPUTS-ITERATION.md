@@ -1,59 +1,8 @@
 # DESIGN 4 — fault points, symbolic inputs, and the iteration (2026-09-23)
 
-Status: proposal for the owner. Frame: `LEAN-DESIGN.md` (fixed) and the paper's
-§4.2. Evidence: the nine v15 corpora at main@497dc8beb (`~/gc-out/accept-v15-*`)
-and five read-only code surveys of PLAN, runtime, EXPLORE, COMPOSE and the
-driver (2026-09-23). Line numbers are of main@497dc8beb.
-
-## 0. What the evidence says
-
-1. **Fault markers never reach a formula.** Every block-key workload models
-   "the key-refresh RPC fails" with `Debug.makeSymbolicBoolean("hadoopIpcRequestFails")`
-   in `ipc.Client.sendRpcRequest` (Client.java:1253). It fires in every recording
-   (bug1: 6 firings, bug2: 34, 17897: 5), and yet no session of any case holds a
-   MARKER root: the roots of all seven block-key cases are CLOCK and INTEGRAL
-   only, and every replay files `DECLARATION_MISSING marker=hadoopIpcRequestFails#1
-   … NO_ACTION_ACCEPTS_THIS_OCCURRENCE` (62 rows in bug1's gaps.json). Three
-   cuts, all in the engine:
-   - `f5cd60449` (2026-09-16, "Delete the discovered ports…") removed
-     `RuntimeSelectedRegionFinalizer.explicitFaultPorts`, the only producer of
-     `sourceKind=EXPLICIT_SYMBOLIC_FAULT` actions, as "inert already". Every
-     downstream reader (RuntimeRegionPlanner:1912-1926, ConcolicScheduler:734-760,
-     822-844, 1745-1748, FaultMarker:59-76) is still there, fed by nothing.
-   - `failureDirectedClosure` (Finalizer:956-1170) admits an occurrence only as a
-     fatal target, a holder of a declared input, a cut-port capture, or a writer
-     the write-site walk reaches. The marker's occurrence (REGION.763d087e =
-     `Client$Connection.sendRpcRequest`, which exists in region_skeletons and
-     survives pass 1) is none of these: a fault is a CONTROL effect — the RPC is
-     not sent — not a store into a cell the fatal reads. So `applyClosure` drops
-     the region and the plan has no row for it.
-   - At replay `FaultMarker.materialize` (FaultMarker:106-142) returns the
-     recorded polarity as a plain concrete boolean; `if (causynth.active() && m)`
-     is a concrete branch and never a DecisionRow with a term, so it is never a
-     flip candidate.
-   The CLOCK_SKEW witnesses the acceptance confirmed are real, but they are the
-   only kind the engine could ask for. MARKER_FLIPPED was unreachable by
-   construction for hdfs-17899 bug1/2/3 and hdfs-17897.
-2. **The paper's iteration (§4.2.4) has no counterpart.** The woven class set is
-   frozen at INSTRUMENT[0]; an occurrence first reached in a replay publishes
-   only an `instrumented=false` activation (SlotTable:568-576) and can never
-   hold a decision, export or attach; the epoch loop's producer
-   (`seedsNextEpoch`) no longer exists in `src/main` (run_engine.sh:3956-3958
-   admits it); a new producer paired with a known consumer is a "replacement",
-   BLOCKING, emptying the wave (ExploreMain:182-185) instead of becoming a new
-   arm. ClosurePlanner recomputes tasks per wave over the UNION of every
-   session's rows (Corpus:891-918), so per-world topology is conflated. Opened
-   slots feed nothing: tasks are planned before `SlotTable.reconcile`
-   (ExploreMain:147 vs 164) and `skeleton.opened` reaches only the manifest.
-3. **Alternative RPC outputs exist only across disjuncts.** A message family has
-   ONE arm whenever the consumer path's own session is eligible (rule R3d,
-   ComposedFamilies:521-526): every `message_family` of hdfs-17899 is
-   `(and arm (=> arm (= v 119978)))`. The paper's `x = ite(s, x1, x2)` is
-   realised only as "one disjunct per replay", never inside a path.
-
-Everything below keeps LEAN §1-§4: three mint places, rows as the contract,
-explore collects arms, compose aligns/merges/lowers/gates. No stitching, no
-carrier layer.
+Status: implemented on `refactor/deterministic-prefix`. Frame: `LEAN-DESIGN.md`
+(fixed) and the paper's §4.2. Where the code and this page disagree, the rows decide
+and this page is corrected.
 
 ## 1. Fault injection points (Q1)
 
@@ -79,14 +28,14 @@ any handoff: (occurrence, door site, k-th firing) — `HandoffMint.nextAttach`'s
   when the polarity is true: `if (Debug.makeSymbolicBoolean("FAULT:HADOOP_IPC:REQUEST"))
   throw new IOException(...)` before the request header is built, and the SASL
   client's send likewise. The mint stays in the tree because the static slice
-  reads the caller's region; it is one hunk, byte-identical in every tree
-  (the hand-written `hadoopIpcRequestFails` with its `causynth.active()` guard
-  is replaced by it, and hdfs-11741's tree gets it too).
+  reads the caller's region; it is one hunk, byte-identical in every tree.
 - Both mint **unconditionally** (the recording's rule since `278e80a2dbf`): a
   planted `true` exists only inside a focused world, so the throw needs no
   guard. The recorded polarity is always false.
-- Receive-side faults (a response lost, a timeout) are a second door
-  (`inbound`). Out of scope for this design; the same rule applies when added.
+- Receive-side faults (a response lost, a timeout) are a second door, by the same
+  rule: `FAULT:HADOOP_IPC:RESPONSE` at `Client.getRpcResponse`, where the caller
+  takes the reply; true throws the transport's `IOException` after the server
+  applied the request (§1.5, corrected).
 
 ### 1.3 What makes a marker symbolic at replay
 
@@ -131,9 +80,19 @@ opens is the one that grows the graph, §3).
 ### 1.5 Domain and claim
 
 MARKER free in {recorded, flipped} (LEAN §4). A witness whose valuation flips a
-marker is MARKER_FLIPPED; one that also moves clocks reports both kinds, the
-polarity gate deciding from the unsat core which pins matter. For hdfs-17899 the
-acceptance bar becomes: the refresh RPC's marker in `movedRoots`; clocks optional.
+marker is MARKER_FLIPPED. Where the clocks are what refute the recorded valuation,
+a flipped marker is asked with every clock pinned at the instant its session read:
+the fault is a finding only if it reaches the fatal arm with time as recorded, and
+only when no fault does is the clock the mechanism (CLOCK_SKEW). The witness a
+claim publishes keeps every clock pin it can.
+
+Which mechanism each case must show follows from its tree, not from a preference:
+every tree of the block-key family (hdfs-17899 bug1/2/3, hdfs-17897, hdfs-17967
+A/B/C) carries 11741's expiry check, so a key goes stale there only through a
+failed RPC, and those cases are accepted only with an IPC door fault flipped and
+no clock moved. hdfs-11741 has no expiry check, so a flipped branch with no fault
+already reaches its fatal: CLOCK_SKEW. hdfs-17960's mechanism is its configured
+Boolean.
 
 ## 2. Symbolic variables (Q2)
 
@@ -234,14 +193,7 @@ replays → diff and growth → `G_{k+1}`. Stop when no new relevant node or edg
 no open obligation; bounds = world depth, waves, an obligation budget. A bound hit
 is stated (`BOUND_REACHED`, claim `INCONCLUSIVE_BOUNDED`) — never silent.
 
-### 3.6 Deleted
-
-The epoch loop (`campaign_max_epochs`, `seedsNextEpoch`, `retain/grown/unplannable`,
-`campaign_refinement_*`), `SlotTable.unretained`'s BLOCKING, the "topology closed
-at iteration-0000" manifest. `--retain-regions` stays as the INSTRUMENT input of
-the growth step.
-
-### 3.7 Schedule under a fault world
+### 3.6 Schedule under a fault world
 
 Prefix up to the flipped send (the cut is at the target as today); the recovery
 path's events are unnamed and run free; the rest holds the timeouts (D3 rule 26).
@@ -253,9 +205,7 @@ A root's domain is a window and a flip query is satisfiable at many points of
 it; z3 answers with one of them, usually on a boundary. The formula is
 satisfied there, but the program is not held to the formula: a clock moved by
 the whole window rotates keys the path never read and reorders the loop the
-flipped decision sits in, so the replay takes an inherited flip the other way
-(bug3/pathA v18: 29-41 NOT_ADMITTED, no path observed the fatal; v15 passed
-the same corpus because z3 happened to answer +10.9M ms instead of +30 days).
+flipped decision sits in, so the replay takes an inherited flip the other way.
 Every obligation query therefore asks for the world nearest the recording:
 `(minimize Σ |x − recorded(x)|)` over the Int roots and clocks it bounds
 (`FlipQuery.Builder#nearest`, rendered by `FlipQueryText`). The answer is the
@@ -275,9 +225,10 @@ witness means -- and it is deterministic across encodings of the same corpus.
   it woven and explored in the same campaign (a synthetic ExploreTest plus bug1's
   catch path).
 - V5 all nine cases on one commit through the acceptance workflow, with the
-  expected kinds per case revised: MARKER_FLIPPED for hdfs-17899 bug1/2/3 (and
-  17897 if its marker is the mechanism), CLOCK_SKEW for hdfs-17967 A/B/C and
-  hdfs-11741, MARKER_FLIPPED (config) for hdfs-17960.
+  expected kinds per case revised (as corrected by the owner, §1.5): MARKER_FLIPPED
+  by an IPC door fault with the clocks at the recording for hdfs-17899 bug1/2/3,
+  hdfs-17897 and hdfs-17967 A/B/C; CLOCK_SKEW for hdfs-11741; MARKER_FLIPPED
+  (config) for hdfs-17960.
 
 ## 5. CONFIRM (a SAT claim, checked by one replay)
 

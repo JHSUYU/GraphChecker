@@ -40,19 +40,27 @@ when all of these hold:
   (`result.json` `accepted` is true).  `result.json`'s `blockers` are the
   composer's alone and missed PLAN and REPLAY blockers;
 * `findingKind` is the mechanism this case is known to fail by —
-  `EXPECTED_MECHANISM` at the top of `report.py`: 17960 `MARKER_FLIPPED`
-  moving `HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED` to `false`; 11741, the three
-  17899 cases and the three 17967 paths `CLOCK_SKEW` or `MARKER_FLIPPED`;
-  17897 `CLOCK_SKEW`;
+  `EXPECTED_MECHANISM` at the top of `report.py`. The owner's ruling
+  (2026-09-23): every tree of the block-key family carries 11741's expiry
+  check, so a key goes stale there ONLY through a failed RPC. hdfs-17899
+  bug1/2/3, hdfs-17897 and hdfs-17967 A/B/C therefore pass only with
+  `MARKER_FLIPPED` whose `movedRoots` hold an IPC door fault
+  (`FAULT:HADOOP_IPC:*`, a marker whose declared site is in
+  `org.apache.hadoop.ipc.Client`) flipped to true and **no clock cell** — the
+  fault alone reaches the fatal with every clock where the recording read it.
+  hdfs-11741 is the bug that check fixes: `CLOCK_SKEW` (a flipped branch with no
+  fault), or `MARKER_FLIPPED` should a fault reach its fatal too. hdfs-17960:
+  `MARKER_FLIPPED` moving `HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED` to `false`;
 * `polarityDecides` is true — the formula is unsatisfiable at the recorded
   valuation, so the mechanism explains the difference between the run that
   failed and the run that did not (only `RECORDED_FAILURE_EXPLAINED` is
   exempt, by construction);
 * `valuationOrdinal` >= 1 and `movedRoots` is non-empty — a finding at the
   recorded valuation that moves nothing is the recording restated. A
-  `CLOCK_SKEW` finding is exempt from the ordinal alone: a clock has a floor
-  and no window, so the witness sits at the recorded valuation and the clock
-  cells the model moved are its `movedRoots`, which must still be non-empty.
+  `CLOCK_SKEW` finding (11741) is exempt from the ordinal alone: a clock has a
+  floor and no window, so the witness sits at the recorded valuation and the
+  clock cells the model moved are its `movedRoots`, which must still be
+  non-empty.
 
 A case the table does not name cannot pass. The z3 probe is reported, never
 gated on: it asks the published formula, unpinned, about the accepted
@@ -66,4 +74,4 @@ Under `$OUT`: `summary.tsv` (one row per case, verdict and reason),
 own tree, including `schedule/final/`), and per case under `report/<case>/`:
 `report.md` (the readable narrative), `row.tsv` (its summary row),
 `probe.tsv` + `probe/polarity.json` (what each polarity asserted and what z3
-answered), `fatal_arms.json` and `status`.
+answered) and `status`.

@@ -35,7 +35,7 @@ import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.integra
  *       moved, and only because a clock cell may sit elsewhere: pinning
  *       every cell to what the recording read makes it unsat.  WHICH cells
  *       is answered by pinning them back one at a time
- *       ({@link #clocksNeeded}), and the witness published is the query
+ *       ({@link #leastClocks}), and the witness published is the query
  *       under every pin that could be kept, so its moved roots ({@link
  *       Claim#movedRoots}, read in {@link #movedRoots}) are the cells the
  *       witness needs and not the ones z3 moved for free.  A clock is not
@@ -43,11 +43,11 @@ import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.integra
  *       where it sat.  A MARKER moved is
  *       MARKER_FLIPPED and is asked first -- {@link #mechanism} names the
  *       narrowest mechanism the evidence supports, and a clock beside a
- *       moved marker is not what made the difference.  A recorded
- *       valuation the clock pin refutes is decided by that pin and not by
- *       the moved-root loop, which asks whether ANOTHER declared root
- *       explains the difference and answers "no" about every clock witness
- *       there could be.</li>
+ *       moved marker is not what made the difference.  Where the clock pins
+ *       are what refute the recorded valuation, a moved root is asked under
+ *       those same pins: it is a finding only if it reaches the fatal arm
+ *       with every clock where the recording read it, and only when none
+ *       does is the clock the mechanism.</li>
  *   <li><b>MESSAGE_PAIRING_FLIPPED</b> -- a fatal-observed path of an
  *       EXPLORED session is satisfiable at the recorded roots through
  *       attested arms, while the seed session's own disjunct is not: the
@@ -92,7 +92,7 @@ public final class ClaimPolicy {
         /**
          * The clock cells this model was asked with pinned at the
          * recording, beside the valuation: the ones the witness does not
-         * need ({@link #clocksNeeded}).  Part of the question the
+         * need ({@link #leastClocks}).  Part of the question the
          * published model answers, so the artifact states them.
          */
         public List<String> pinned() {
@@ -240,22 +240,28 @@ public final class ClaimPolicy {
         // in every valuation including ordinal 0 -- which makes the
         // alarm's premise true of every clock witness there could be.
         // What answers the question for a clock is the clock pin, asked
-        // once, in #clocksNeeded; on a corpus with no clock cell it is
-        // null without a solver run, so nothing else changes.
+        // once, here; on a corpus with no clock cell nothing is asked, so
+        // nothing else changes.
         //
         // THE SAME ANSWER IS WHAT SAYS THE WITNESS IS CLOCK-DRIVEN, so it
-        // is asked ONCE, here, and read three times: by the alarm below,
-        // by loop 1, which steps aside for a clock-driven recorded
-        // valuation (see there), and by #mechanism.  The recorded outcome
-        // it hands back moves only the cells the witness needs, and that
-        // is the one published.
-        Outcome clocked = recorded != null && recorded.answer().sat()
-                && recorded.selected() != null
-                ? clocksNeeded(composition, solver, recorded) : null;
-        boolean clockDriven = clocked != null;
+        // is asked ONCE, here, and read three times: by the alarm below, by
+        // loop 1, and by #mechanism.  The recorded valuation with EVERY clock
+        // at the instant its session read is the run as it happened, roots
+        // and time alike; unsat while the free valuation is sat, the clocks
+        // are what reach the fatal arm at the recorded roots, and that pinned
+        // refutation is the polarity every moved root is judged by (loop 1).
+        // The recorded outcome published moves only the cells the clock
+        // witness needs (#leastClocks).
+        List<String> cells = clockCellsRead(composition);
+        Outcome asRecorded = recorded != null && recorded.answer().sat()
+                && recorded.selected() != null && !cells.isEmpty()
+                ? outcome(composition, solver, recorded.valuation(),
+                        pins(composition, cells), false) : null;
+        boolean clockDriven = asRecorded != null
+                && asRecorded.answer().unsat();
         if (clockDriven) {
-            recorded = clocked;
-            outcomes.set(0, clocked);
+            recorded = leastClocks(composition, solver, recorded, cells);
+            outcomes.set(0, recorded);
         }
         if (recorded != null && recorded.answer().sat()
                 && recorded.selected() != null
@@ -291,24 +297,59 @@ public final class ClaimPolicy {
         // satisfiable at the recorded valuation was satisfiable all along,
         // and the rotation explained nothing about the difference.
         //
-        // NOT ASKED AT ALL OF A CLOCK-DRIVEN RECORDED VALUATION.  Where the
-        // clock pin is what refutes the recorded valuation, the polarity
-        // that decides the claim is the clock's own (class doc, CLOCK_SKEW)
-        // and this loop's `!polarityDecides` is a question about the moved
-        // ROOTS -- whose answer is "sat" for any other windowed root the
-        // case happens to declare, since moving one does the clock witness
-        // no harm.  11741 is exactly that corpus: ordinal 0 sat with the
-        // clocks free, ordinals >= 1 sat as well, so this loop filed the
-        // blocking FORMULA_SAT_AT_RECORDED_VALUATION about a witness whose
-        // mechanism it never asked about, and CLOCK_SKEW could not be
-        // published beside a blocking alarm.  Loop 2 asks the clock
-        // question, so a clock-driven composition goes straight there.
-        if (!clockDriven) {
-            for (Outcome outcome : outcomes) {
-                if (outcome.valuation().ordinal() == 0) continue;
-                if (!outcome.answer().sat() || outcome.selected() == null) {
+        //
+        // ASKED AT THE RECORDED INSTANTS WHEN THE CLOCKS DRIVE THE RECORDED
+        // VALUATION.  There the free recorded valuation is sat for any root
+        // at all, so polarity is the pinned refutation above, and a moved
+        // root is a finding only if it reaches the fatal arm with every clock
+        // where the recording read it -- the question asked here, per moved
+        // valuation that is sat at all.  Nothing about time is then part of
+        // the witness.  hdfs-17899's trees carry 11741's expiry check, so a
+        // key goes stale there only through a failed RPC; the clock witness
+        // this loop used to step aside for moved one node's clock hours past
+        // another's inside one JVM, and it shadowed every fault witness.
+        if (clockDriven) {
+            List<String> held = pins(composition, cells);
+            for (int index = 0; index < outcomes.size(); index++) {
+                Outcome free = outcomes.get(index);
+                if (free.valuation().ordinal() == 0) continue;
+                if (!free.answer().sat() || free.selected() == null) continue;
+                Outcome asked = outcome(composition, solver,
+                        free.valuation(), held, false);
+                if (!asked.answer().sat() || asked.selected() == null) {
                     continue;
                 }
+                Set<String> refused = unattested(composition, asked);
+                if (!refused.isEmpty()) {
+                    gaps.add(GapRow.of(asked.selected().path().sessionId,
+                            GapKind.UNATTESTED_ARM, GapClass.BLOCKING,
+                            refused.toString(),
+                            "this witness moves a root that occurs inside an "
+                                    + "arm no producer path condition "
+                                    + "attests, so it is not a supported "
+                                    + "witness"));
+                    continue;
+                }
+                outcomes.set(index, asked);
+                outcomes.set(0, asRecorded);
+                return new Decision(Claim.of(mechanism(composition, solver,
+                        asked, outcomes, clockDriven),
+                        asked.valuation().ordinal(),
+                        movedRoots(composition, asked), true, gaps),
+                        outcomes);
+            }
+        }
+        if (!clockDriven) {
+            for (Outcome found : new ArrayList<Outcome>(outcomes)) {
+                if (found.valuation().ordinal() == 0) continue;
+                if (!found.answer().sat() || found.selected() == null) {
+                    continue;
+                }
+                // The witness under every clock pin it can keep: what it
+                // publishes moved is what it needs, not what z3 moved free.
+                Outcome outcome = leastClocks(composition, solver, found,
+                        cells);
+                outcomes.set(outcomes.indexOf(found), outcome);
                 Set<String> refused = unattested(composition, outcome);
                 if (!refused.isEmpty()) {
                     gaps.add(GapRow.of(outcome.selected().path().sessionId,
@@ -575,7 +616,7 @@ public final class ClaimPolicy {
      *       the domain the case declared.</li>
      *   <li>CLOCK_SKEW -- nothing moved and the clocks are NECESSARY:
      *       pinning every clock cell to the instant the recording read
-     *       makes the query unsat ({@link #clocksNeeded}).</li>
+     *       makes the query unsat (asked once, in {@code read}).</li>
      *   <li>RECORDED_FAILURE_EXPLAINED -- the SEED path reached the fatal
      *       arm at the recorded valuation and every valuation that moved a
      *       root is decided and unsat.  Not a mechanism the checker found:
@@ -639,7 +680,7 @@ public final class ClaimPolicy {
      *
      * <p>A cell the model did not answer for, or answered at the recorded
      * instant, is not stated: it is a clock the witness did not need, and
-     * {@link #clocksNeeded} is what pinned it there.  A
+     * {@link #leastClocks} is what pinned it there.  A
      * claim that names no witness states no moved roots at all, which is
      * why the three NO_SUPPORTED_WITNESS returns hand an empty map rather
      * than asking this.</p>
@@ -668,6 +709,7 @@ public final class ClaimPolicy {
         if (observed.isEmpty()) return false;
         List<String> pinned =
                 new ArrayList<String>(outcome.valuation().assertions());
+        pinned.addAll(outcome.pinned());
         pinned.add("(assert " + outcome.selected().selector() + ")");
         pinned.addAll(observed);
         return solver.ask(composition.query(pinned),
@@ -753,41 +795,43 @@ public final class ClaimPolicy {
                 selectedOf(composition, answer), armsOf(composition, answer));
     }
 
-    /**
-     * The clocks this witness needs, or null when it needs none.
-     *
-     * <p>Pin every cell to the instant the recording read and ask again:
-     * still satisfiable means the clocks are a decoration the model
-     * happened to move, and a claim that names them would name a
-     * mechanism the formula does not need.  Otherwise the cells are
-     * pinned back one at a time, in the recording's order, each kept at
-     * its reading while the query stays satisfiable and left free when
-     * it does not: what is left free is a minimal set of cells without
-     * which the fatal arm is not reached, and the outcome handed back is
-     * the query under exactly those pins, so its model moves only what
-     * the witness needs -- and forward, since a cell's domain floors at
-     * its reading.  z3's unsat core does not answer this question: on
-     * bug1 it named all nine pins, and minimising it is a check-sat per
-     * named assertion of a query that names hundreds.</p>
-     */
-    private static Outcome clocksNeeded(Composer.Composition composition,
-                                        Z3 solver, Outcome outcome) {
+    /** The clock cells whose reading some session states, in order. */
+    private static List<String> clockCellsRead(
+            Composer.Composition composition) {
         List<String> cells = new ArrayList<String>();
         for (String cell : composition.clockCells()) {
             if (composition.clockReadings().get(cell) != null) cells.add(cell);
         }
-        if (cells.isEmpty()) return null;
-        if (!outcome(composition, solver, outcome.valuation(),
-                pins(composition, cells), false).answer().unsat()) {
-            return null;
-        }
+        return cells;
+    }
+
+    /**
+     * The witness under every clock pin it can keep.
+     *
+     * <p>All cells at the instants the recording read, first: still
+     * satisfiable means the witness needs no clock, and that is the outcome
+     * published.  Otherwise the cells are pinned back one at a time, in the
+     * recording's order, each kept at its reading while the query stays
+     * satisfiable and left free when it does not: what is left free is a
+     * minimal set of cells without which the fatal arm is not reached, and
+     * its model moves only those -- forward, since a cell's domain floors at
+     * its reading.  z3's unsat core does not answer this: on bug1 it named
+     * all nine pins.</p>
+     */
+    private static Outcome leastClocks(Composer.Composition composition,
+                                       Z3 solver, Outcome outcome,
+                                       List<String> cells) {
+        if (cells.isEmpty()) return outcome;
+        Outcome all = outcome(composition, solver, outcome.valuation(),
+                pins(composition, cells), false);
+        if (all.answer().sat() && all.selected() != null) return all;
         List<String> kept = new ArrayList<String>();
         Outcome witness = outcome;
         for (String cell : cells) {
             kept.add(cell);
             Outcome asked = outcome(composition, solver, outcome.valuation(),
                     pins(composition, kept), false);
-            if (asked.answer().sat()) {
+            if (asked.answer().sat() && asked.selected() != null) {
                 witness = asked;
             } else {
                 kept.remove(kept.size() - 1);

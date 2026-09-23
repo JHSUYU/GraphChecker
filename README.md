@@ -266,8 +266,8 @@ valuation pin. The claim policy names the narrowest mechanism the evidence suppo
 
 | Claim | What it means |
 | --- | --- |
-| `MARKER_FLIPPED` | a declared root moved inside its declared domain reaches the fatal arm (a configured source, or a transport fault marker) |
-| `CLOCK_SKEW` | nothing declared moved; the fatal arm is reached only because clock cells sit elsewhere. The cells the model placed are the witness's moved roots |
+| `MARKER_FLIPPED` | a declared root moved inside its declared domain reaches the fatal arm (a configured source, or a transport fault marker). Where the clocks are what refute the recorded valuation, the moved root is asked with every clock pinned at the recording's instant, and only a witness that holds there is one |
+| `CLOCK_SKEW` | nothing declared moved and no moved root reaches the fatal arm at the recorded instants; the fatal arm is reached only because clock cells sit elsewhere. The cells the model placed are the witness's moved roots |
 | `MESSAGE_PAIRING_FLIPPED` / `STATE_PAIRING_FLIPPED` | every root stays; a different eligible, attested producer or writer delivers the read |
 | `RECORDED_FAILURE_EXPLAINED` | the recording itself observed the fatal arm |
 | `NO_SUPPORTED_WITNESS` | nothing in the corpus supports a witness. An answer, not an error |
@@ -434,8 +434,10 @@ ssh lift12 "pkill -TERM -f 'gc-run/p2[4]'"    # the driver keeps spawning obliga
 Campaign durations at two per host: 17960 ≈ 5 min, the block-key cases 12–25 min, 11741 up to
 an hour. The acceptance rule is in `experiments/hadoop/accept/README.md`: `SAT_CANDIDATE`,
 `FINAL_READY`, no BLOCKING gap at any stage, the case's expected mechanism (`EXPECTED_MECHANISM`
-in `report.py`: 17960 `MARKER_FLIPPED` on `SNAPSHOT_DELETION_ORDERED=false`, the others
-`CLOCK_SKEW` or `MARKER_FLIPPED`), `polarityDecides`, non-empty `movedRoots`, and
+in `report.py`: 17960 `MARKER_FLIPPED` on `SNAPSHOT_DELETION_ORDERED=false`; 11741 `CLOCK_SKEW`
+(no expiry check: a branch flip alone reaches it) or `MARKER_FLIPPED`;
+hdfs-17899 bug1/2/3, 17897 and 17967 A/B/C `MARKER_FLIPPED` by an IPC door fault flipped to true
+with no clock cell moved — the owner's ruling, §12), `polarityDecides`, non-empty `movedRoots`, and
 `confirmation.confirmed`. A PASS line is not acceptance on its own: check that the witness
 *needs* the roots it moves, that handoff leaves do not collapse distinct arrivals
 (`attaches.jsonl`: same symbol, different arrival), that the fatal was observed in a replay, and
@@ -444,7 +446,9 @@ assessor plus two skeptics per case on exactly those four checks.
 
 ## 9. Status (2026-09-23, evening)
 
-**Accepted: 9/9 on `main` = `497dc8beb` (round v15, 2026-09-23 02:00).** 17960
+**Superseded acceptance: 9/9 on `main` = `497dc8beb` (round v15, 2026-09-23 02:00)** — its
+block-key witnesses are `CLOCK_SKEW`, which the owner ruled is not acceptance for those cases
+(§12: with 11741's expiry check in their trees, only a failed RPC makes a key stale). 17960
 `MARKER_FLIPPED` (`ordered=false`); 11741, 17897, 17899 bug1/2/3, 17967 A/B/C `CLOCK_SKEW` with
 `polarityDecides`, each witness needing the NameNode rotation clock plus the stale node's
 refresh clock. That commit has the deterministic prefix, the rest clock, attribution, the
@@ -482,8 +486,12 @@ Fixed during the D4 debug (each general, each a commit on the branch):
 **2026-09-23 night, round v21 on `~/gc-run/p24` = `a20f56191`** (the three fixes of the
 former to-do items 1–3: a CLOCK mint states its reading, an arm keeps its statable conjuncts and
 a paired-unstatable handoff is refused, CONFIRM's MINT edges and the placeholder join held by
-its writer): **hdfs-17899-bug3 PASS** (`CLOCK_SKEW`, `polarityDecides`, five clock cells moved,
-0 gaps, 1448 s) — the nested-clock defect is fixed. **17960 FAIL at REPLAY** after 203 s: the
+its writer): bug1, bug3, pathB, pathC and 17897 reached `SAT_CANDIDATE` with `CLOCK_SKEW` (the
+nested-clock defect is fixed), which the harness of the time printed as PASS and which the
+owner's ruling makes FAIL: in bug1, 89 obligation worlds replayed a failed IPC request, none
+reached the declared target's fatal (a request the NameNode never received leaves
+`needKeyUpdate` set, so the next heartbeat delivers the key), and the claim policy never asked a
+moved marker once the clocks drove the recorded valuation (§10 item 1). **17960 FAIL at REPLAY** after 203 s: the
 seed replay left its schedule prefix at position 194 of 247, which it has done in *every* round
 v18–v21 (positions 207/207/234/194); v19/v20 reached the target afterwards by luck, v21 did not.
 The cause is three general defects of the enforcer, diagnosed event by event in §14 D3 and fixed
@@ -499,6 +507,22 @@ stands between the branch and a 9/9 accepted round; item 4 is the cleanup the re
 found, in two halves (now, and after 9/9); after that `main` moves and the parked housekeeping
 is due.
 
+0. **The block-key bugs are RPC failures** (owner's ruling 2026-09-23, §12; DESIGN4 V3/V5 as
+   corrected). Three parts, all general:
+   - *The claim* (`compose/ClaimPolicy`, done): once the clock pins refute the recorded
+     valuation, every moved valuation that is sat is asked again with every clock pinned at the
+     recording's instant; sat there is `MARKER_FLIPPED` with that pinned refutation as its
+     polarity. Before, loop 1 was skipped outright for a clock-driven composition, so no fault
+     witness could ever be claimed beside a clock witness. The witness a claim publishes keeps
+     every clock pin it can (`leastClocks`).
+   - *More fault points* (the trees' canonical hunk): the door on the reply,
+     `FAULT:HADOOP_IPC:RESPONSE`, minted unconditionally where the caller takes the NameNode's
+     answer (`Client.getRpcResponse`), true = the reply is lost after the server applied the
+     request (NameNode→DataNode heartbeat commands, NameNode→application answers). One such
+     failure leaves the node stale; a failed request is retried by the next heartbeat, which
+     the waves' nesting (iterative graph construction) answers with a flip of the retry.
+   - *The gate* (`accept/report.py`, done): these seven cases pass only with an IPC door fault
+     flipped to true and no clock cell moved.
 1. **The schedule enforcer: one order, one rule** (§14 D3; blocks 17960 at REPLAY and pathA at
    CONFIRM in v21, and sits under every `SCHEDULE_DIVERGED` of v18–v21). Today `ScheduleLog`
    holds a replay in three regimes — the prefix strictly, event by event; on the first event that
@@ -541,9 +565,10 @@ is due.
    register the mint before the store (keyed by the label the VM spells,
    `M_<sort>_field_<label>`), make `RowPlaceholderMint.declaredMint` one test (the register),
    and key invariant 7 by the placeholder's `(location@mintVersion)` rather than by symbol.
-3. **Read v21 to the end, then finish the round**: v21 on p24 PASSED bug1, bug3, pathB, pathC
-   and 17897; pathA is `SAT_UNCONFIRMED` (CONFIRM left the selected path's schedule — item 1);
-   17960 died at REPLAY (item 1); 11741 and bug2 were still running. Place the next round by
+3. **Read v21 to the end, then finish the round**: v21 on p24 ended `CLOCK_SKEW` for bug1, bug3,
+   pathB, pathC and 17897 (FAIL under the RPC rule, item 0); pathA is `SAT_UNCONFIRMED` (CONFIRM
+   left the selected path's schedule — item 1); 17960 died at REPLAY (item 1); 11741 and bug2
+   were still running. Place the next round by
    memory (§12): each lift has 30 GB; 11741's obligation workers each load the whole corpus
    (1.5–5.5 GB per solver JVM in wave 2, growing per wave), so 11741 runs alone on a host with at
    most 3–4 workers, the light cases at most two per host, the head (lift11) lightest. Any FAIL is diagnosed by §11 before a fix; `PATH_SELF_CONTRADICTORY` on
@@ -590,9 +615,6 @@ is due.
    `run_engine.sh` split by stage. Deferred identity items: `Lost` should address to an empty
    index; carry lineage explicitly instead of `InheritableThreadLocal` (= R18); loop bodies get
    their own iteration frames.
-10. **The offline gate** `tools/gate3/` has not been maintained since the D4 refactor (its
-   corpora and commands predate `schedule.jsonl` and the obligation directories). Either re-point
-   it at the v15 corpora and make it pass, or delete it; today the acceptance round is the gate.
 
 ## 11. Debugging a round
 
@@ -677,6 +699,12 @@ The owner's standing rules; every one of them has been paid for.
   per case and the design spans five packages.
 - **A fresh recording is required** to judge a runtime fix; re-composing an old corpus reads
   rows made before the change.
+- **The block-key bugs are RPC failures** (owner, 2026-09-22/23, said four times): "除了11741以外的
+  好几个bug要是rpc failure导致的", "只要有expiry check(也就是11741的fix)，再要触发只能靠rpc",
+  "NN->Application, NN->DN都可以引入rpc相关fault", "rpc fault你可以多给代码里放几个地方…即使有
+  retry…无非就是我们iterative graph construction". hdfs-17899 bug1/2/3, 17897 and 17967 A/B/C
+  pass only with an IPC door fault flipped and the clocks at the recording; a clock witness for
+  them is not a pass. Fault points are the transport doors (DESIGN4 §1), both directions.
 - **Balance memory across the lifts; never blow one up** (owner, 2026-09-23 15:30). Each lift has
   30 GB RAM and 48 CPUs; check `free -g` everywhere before a launch and place by measured need
   (§10 items 3 and 5). A running campaign that over-commits is capped between obligations —
@@ -700,7 +728,6 @@ experiments/hadoop/<case>/                    declarations + README + tree-edits
 experiments/hadoop/lib/                       the one harness every case runs through (README: workload rules)
 experiments/hadoop/accept/                    accept.sh, probe.sh, report.py (README: what PASS means)
 tools/rounds/                                 queue-launch.sh, round-monitor.sh, launch-run.sh (§8)
-tools/gate3/                                  the offline gate, unmaintained (to-do 10)
 third_party/OpenJDK-Concolic-Execution-Engine/ the concolic VM (in tree)
 docs/CONCOLIC_INTEGRATION.md                  the VM boundary: broker ABI, capabilities, refusals
 docs/design/DESIGN4-FAULTS-INPUTS-ITERATION.md the current design (fault points, inputs, iteration, CONFIRM, nearest world)
@@ -896,14 +923,12 @@ deletes on sight after its readers are listed.
 - R60 `run_engine.sh campaign_plan` copies `schedule.jsonl` *or* `recorded_schedule.jsonl` from
   the trace directory; only the first is ever written. R61 `campaign_static_gaps_json`/
   `campaign_plan_gaps_json` answer `[]` for a missing artifact — require it. R62
-  `campaign_write_gaps` labels any other `gaps.jsonl` path REPLAY (`*) gapstage=REPLAY`). R63
-  `accept/fatalread.py` reads `z3-result.json` and `guardedReadModel`, which no stage writes, so
-  it refuses on every case by construction: delete it and the report's "Fatal read" section, or
-  publish the read's arms. R64 `accept/probe.sh acc_root_kind_of` defaults an unlisted case to
+  `campaign_write_gaps` labels any other `gaps.jsonl` path REPLAY (`*) gapstage=REPLAY`). R63 (done:
+  `accept/fatalread.py`, which read artifacts no stage writes, is deleted, and so is the offline
+  gate `tools/gate3/`). R64 `accept/probe.sh acc_root_kind_of` defaults an unlisted case to
   MARKER; the CLOCK branch pins nothing because no stage publishes `recordedRootValues` — the
-  probe is reported, never gated, but a signal that can never be computed is noise. R65
-  `accept.sh`'s header ("Default: all six"), `report.py` ("the six cases this harness runs") and
-  `probe.sh` ("the same six") still count six cases; there are nine. The campaign orchestration
+  probe is reported, never gated, but a signal that can never be computed is noise. R65 (done:
+  the case count reads nine). The campaign orchestration
   itself (FREEZE, the wave pool, GROW, CONFIRM, EMIT) reads soundly; `lib/*.sh` and
   `tools/rounds` are declarations plus one launcher, as intended.
 

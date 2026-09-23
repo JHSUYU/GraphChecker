@@ -104,7 +104,8 @@ ACCEPT_Z3_TIMEOUT=${Z3_TIMEOUT_SECONDS:-600}
 # allKeys under a symbolic clock while the Balancer's cached
 # DataEncryptionKey keeps naming it.
 #
-# This table says how the PROBE spells a case's two polarities.  What the
+# This table says how the PROBE spells a case's two polarities (the probe is
+# reported, never gated on; report.py's EXPECTED_MECHANISM is the gate).  What the
 # composition must have CONCLUDED for the case to pass is the other per-case
 # table, EXPECTED_MECHANISM at the top of report.py, which is where the PASS
 # criterion is computed.  Keep the two consistent: a case whose root kind

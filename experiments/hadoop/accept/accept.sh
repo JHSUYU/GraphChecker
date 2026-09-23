@@ -23,7 +23,7 @@
 #              chosen separately without the harness lying about what ran.
 #   OUT        output root.  Default: <repo>/target/accept (target/ is
 #              .gitignore'd, so a run leaves the work tree clean).
-#   CASES      space-separated case ids.  Default: all six.
+#   CASES      space-separated case ids.  Default: all nine.
 #   CASE_TIMEOUT_SECONDS  per-case wall budget, default 21600 (6 h).  A
 #              runaway guard, not a schedule: hdfs-17899-bug1 takes ~1.8 h.
 #   SKIP_BUILD=1          use the jar already in <repo>/target, run no mvn
@@ -324,7 +324,6 @@ for c in "${CASE_LIST[@]}"; do
      bash $ACCEPT_LIB/run.sh \$d "$(acc_case_arg_of "$c")" validate && \\
      bash $ACCEPT_LIB/run.sh \$d "$(acc_case_arg_of "$c")" campaign)
   bash $here/probe.sh $c $(acc_case_dir "$OUT" "$c") $OUT/report/$c
-  python3 $here/fatalread.py $(acc_case_dir "$OUT" "$c") $OUT/report/$c
   python3 $here/report.py $c $(acc_case_dir "$OUT" "$c") $OUT/report/$c
 CMD
 done
@@ -370,8 +369,6 @@ for c in "${CASE_LIST[@]}"; do
   Z3_BIN="$ACCEPT_Z3" Z3_TIMEOUT_SECONDS="$ACCEPT_Z3_TIMEOUT" \
     bash "$here/probe.sh" "$c" "$dir" "$work" >"$work/probe.log" 2>&1 \
     || acc_log "WARN $c: probe failed (see $work/probe.log)"
-  python3 "$here/fatalread.py" "$dir" "$work" >>"$work/probe.log" 2>&1 \
-    || acc_log "WARN $c: fatal-read extraction failed"
   python3 "$here/report.py" "$c" "$dir" "$work" \
     || acc_log "WARN $c: report failed"
   [[ -s "$work/row.tsv" ]] && cat "$work/row.tsv" >>"$TSV"
