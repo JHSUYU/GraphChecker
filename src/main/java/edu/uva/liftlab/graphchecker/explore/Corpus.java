@@ -211,9 +211,6 @@ public final class Corpus implements Arms.Rows {
     /** Every symbol the runtime declared, at the sort it minted it at. */
     private final Map<String, Sort> declaredSymbols =
             new LinkedHashMap<String, Sort>();
-    /** Clock cell symbol -> session id -> the instant it read. */
-    private final Map<String, Map<String, Long>> clockCells =
-            new LinkedHashMap<String, Map<String, Long>>();
     /** Root symbol -> every root id declared under it. */
     private final Map<String, Set<String>> rootIdsBySymbol =
             new LinkedHashMap<String, Set<String>>();
@@ -488,18 +485,11 @@ public final class Corpus implements Arms.Rows {
         for (DecisionRow row : session.decisions()) {
             remember(occurrenceById, row.occurrence());
             add(decisions, session.sessionId() + "|" + row.occurrence().id(), row);
-            // A decision carries the clock cells it read: the cell is a
-            // symbol of the corpus, at Int, and what each session read of it
-            // is what a clock claim is about.
-            for (Map.Entry<String, Long> reading
-                    : row.clockReadings().entrySet()) {
-                Map<String, Long> cells = clockCells.get(reading.getKey());
-                if (cells == null) {
-                    cells = new LinkedHashMap<String, Long>();
-                    clockCells.put(reading.getKey(), cells);
-                }
-                cells.put(session.sessionId(), reading.getValue());
-                declaredSymbols.put(reading.getKey(), Sort.INT);
+            // A decision carries the clock cells it read: each is a symbol
+            // of the corpus, at Int.  What a session read of it is the
+            // mint's row; the composer domains clocks from the roots.
+            for (String cell : row.clockReadings().keySet()) {
+                declaredSymbols.put(cell, Sort.INT);
             }
         }
         for (ExportRow row : session.exports()) {
@@ -1162,20 +1152,6 @@ public final class Corpus implements Arms.Rows {
     /** Every symbol the runtime declared, at the sort it minted it at. */
     public Map<String, Sort> declaredSymbols() {
         return Collections.unmodifiableMap(declaredSymbols);
-    }
-
-    /**
-     * Clock ROOT ID -> session id -> the instant that session read.
-     *
-     * <p>The outer key is the root id a {@code DecisionRow} keys its
-     * readings by ({@code REGION.<region>.in.<input>}), not a solver
-     * symbol: the symbol is the MINT's, one per (root, occurrence), and is
-     * the same in every session that read that root, which is why a
-     * consumer turning these rows into assertions states one per CELL and
-     * not one per (root, session) ({@code Composer#clocks}).</p>
-     */
-    public Map<String, Map<String, Long>> clockCells() {
-        return Collections.unmodifiableMap(clockCells);
     }
 
     /**
