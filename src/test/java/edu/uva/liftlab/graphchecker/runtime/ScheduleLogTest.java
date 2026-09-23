@@ -877,7 +877,7 @@ public class ScheduleLogTest {
     }
 
     @Test
-    public void aFreeParkAnInterruptEndsWritesItsWake() {
+    public void aParkEnteredInterruptedReturnsAtOnceAndWritesNothing() {
         final String site = "<P: void spin()>#u3";
         Thread.currentThread().interrupt();
         long before = System.nanoTime();
@@ -887,8 +887,65 @@ public class ScheduleLogTest {
                         < 5000L);
         assertTrue("and leaves the flag for its caller",
                 Thread.interrupted());
-        assertEquals("its WAKE is written, as the held park's is",
-                Collections.singletonList(site), sites());
+        assertTrue("a loop around it would spin: no event per spin",
+                written.isEmpty());
+    }
+
+    @Test
+    public void aParkAnInterruptEndsWritesItsWakeFreeOrHeld()
+            throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        final String site = "<P: void spin()>#u3";
+        for (boolean held : new boolean[] {false, true}) {
+            written.clear();
+            ScheduleLog.resetForTests();
+            ScheduleLog.install(new ScheduleLog.Sink() {
+                @Override
+                public void write(JsonObject row) {
+                    written.add(row);
+                }
+            });
+            if (held) ScheduleLog.enforceForTests(prefix("x"));
+            final boolean[] flagged = new boolean[1];
+            Thread parker = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    TimedWaits.parkNanos(TimeUnit.SECONDS.toNanos(20L), site);
+                    flagged[0] = Thread.currentThread().isInterrupted();
+                }
+            });
+            parker.start();
+            waitUntilWaiting(parker);
+            Thread.sleep(30L);
+            parker.interrupt();
+            parker.join(5000L);
+            assertFalse(parker.isAlive());
+            assertTrue("the park leaves the flag", flagged[0]);
+            assertEquals((held ? "held" : "free") + ": the interrupt that "
+                            + "ended the park writes its WAKE",
+                    Collections.singletonList(site), sites());
+        }
+    }
+
+    @Test
+    public void aSleepOrPollEnteredInterruptedThrows() throws Exception {
+        Thread.currentThread().interrupt();
+        boolean threw = false;
+        try {
+            TimedWaits.sleep(0L, "<L: void loop()>#u9");
+        } catch (InterruptedException interrupted) {
+            threw = true;
+        }
+        assertTrue("Thread.sleep(0) throws on a pending interrupt", threw);
+        Thread.currentThread().interrupt();
+        threw = false;
+        try {
+            TimedWaits.poll(new java.util.concurrent.LinkedBlockingQueue<Object>(),
+                    0L, TimeUnit.MILLISECONDS, "<S: void run()>#u12");
+        } catch (InterruptedException interrupted) {
+            threw = true;
+        }
+        assertTrue("so does a timed poll(0)", threw);
     }
 
     /** An untimed woven wait that writes how it ended into outcome[at]. */

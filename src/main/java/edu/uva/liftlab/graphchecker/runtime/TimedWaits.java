@@ -73,6 +73,16 @@ import java.util.concurrent.locks.LockSupport;
  * no window's wake behind it was ended by a notifier outside the weave, and
  * ends as it did before.</p>
  *
+ * <p>AN INTERRUPT IS THE WORKLOAD'S: a wait it ends writes its WAKE where
+ * it stands, free or held -- held whether or not it is the prefix's next
+ * event, the rule an interrupted admission of any event already follows
+ * ({@code ScheduleLog.admitNow}) -- and throws as the JDK's wait would (a
+ * park returns).  Written early, such a WAKE leaves its later slot in the
+ * prefix to the watchdog: the prefix stands for everyone else, and a thread
+ * the workload interrupted is not held to it.  A park entered with its
+ * interrupt pending writes nothing, since the JDK's park returns at once and
+ * a loop around it spins.</p>
+ *
  * <p>ONE LIMIT, stated: a notify from outside the weave that wakes a
  * registered wait is invisible to the registry, so a woven notify that
  * follows it on the same monitor may mark the wait it already woke.  Inside
@@ -200,6 +210,8 @@ public final class TimedWaits {
             Thread.sleep(millis, nanos);
         }
         WakeScopes.waiting(site);
+        // Thread.sleep throws on a pending interrupt, even sleep(0).
+        interruptedAtEntry(site);
         long deadline = System.nanoTime()
                 + TimeUnit.MILLISECONDS.toNanos(millis) + nanos;
         while (true) {
@@ -250,7 +262,7 @@ public final class TimedWaits {
             }
         } catch (InterruptedException interrupted) {
             WAITING.remove(self);
-            ScheduleLog.tryObserve(ScheduleEvent.Kind.WAKE, site);
+            interruptedWake(site);
             throw interrupted;
         } finally {
             WAITING.remove(self);
@@ -274,6 +286,14 @@ public final class TimedWaits {
      */
     private static void park(Object blocker, long nanos, String site) {
         WakeScopes.waiting(site);
+        if (Thread.currentThread().isInterrupted()) {
+            // The JDK's park returns at once for a thread already
+            // interrupted, and keeps the flag, so a loop that parks again
+            // spins: no event, held or free, or it would write one per spin
+            // and no two runs would write the same number.
+            WakeScopes.woke(site);
+            return;
+        }
         long deadline = System.nanoTime() + nanos;
         boolean signalled = false;
         if (!ScheduleLog.enforcing()) {
@@ -288,8 +308,9 @@ public final class TimedWaits {
             }
             boolean byWindow = WINDOW_WOKEN.remove(self);
             if (self.isInterrupted()) {
-                // An interrupt ended it: the held park writes its WAKE where
-                // it stands (Quantum#endsNow), and so does the free one.
+                // An interrupt ended it while it was parked: the held park
+                // writes its WAKE where it stands (takeTurn asks
+                // Quantum#endsNow before anything), and so does the free one.
                 interruptedWake(site);
                 WakeScopes.woke(site);
                 return;
@@ -318,6 +339,8 @@ public final class TimedWaits {
                 long nanos = TimeUnit.MILLISECONDS.toNanos(millis);
                 long before = System.nanoTime();
                 LockSupport.parkNanos(blocker, nanos);
+                // An interrupt is no unpark: endsNow answers it next.
+                if (Thread.currentThread().isInterrupted()) return false;
                 return System.nanoTime() - before < nanos - EARLY_NANOS;
             }
         };
@@ -796,6 +819,8 @@ public final class TimedWaits {
                               TimeUnit unit, String site)
             throws InterruptedException {
         WakeScopes.waiting(site);
+        // The JDK's timed poll takes its lock interruptibly, even poll(0).
+        interruptedAtEntry(site);
         long deadline = System.nanoTime() + unit.toNanos(timeout);
         // Free: in quanta, so the window's opening is seen within one.  An
         // element is returned the moment it arrives -- the consumer's CLAIM
@@ -897,14 +922,16 @@ public final class TimedWaits {
         // then has no turn to take, and ends as a free one does.
         ScheduleLog.Wake wake = ScheduleLog.wake(site);
         while (true) {
-            if (signalled || quantum.signalled()) {
-                WakeScopes.woke(site);
-                return true;
-            }
             if (quantum.endsNow()) {
                 // The same rule an interrupted admission follows: the wait
                 // ends where it is, and the prefix stands for the rest.
+                // Asked first, as the free park asks: an interrupt beats an
+                // unpark.
                 ScheduleLog.admitNow(wake);
+                WakeScopes.woke(site);
+                return true;
+            }
+            if (signalled || quantum.signalled()) {
                 WakeScopes.woke(site);
                 return true;
             }
