@@ -11,7 +11,8 @@ then presents the stale key, the DataNode rejects the SASL handshake, and the ch
 turns that into the wrong failure. Whether the DataNode rejects the key is again a
 disagreement between two nodes about which key set is current, so the two flows meet at the
 DataNode: the client's cached key on one side, the DataNode's own refreshed `allKeys` on the
-other. There is no Boolean fault marker in this workload.
+other. The fault points are the transport doors' (`FAULT:HADOOP_IPC:REQUEST`,
+`FAULT:HDFS_SASL:REQUEST`), the same in every tree; the workload declares none of its own.
 
 ## What this case declares
 

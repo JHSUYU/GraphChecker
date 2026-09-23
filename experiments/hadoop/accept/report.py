@@ -71,7 +71,7 @@ import json, os, re, sys
 #            mechanism, because the runbook spells it both ways and the
 #            difference is which root carries it: a stale BlockKey reaches the
 #            consumer either because the refresh RPC's fault marker flipped
-#            (MARKER_FLIPPED -- the hadoopIpcRequestFails hook exists in the
+#            (MARKER_FLIPPED -- the FAULT:HADOOP_IPC:REQUEST door fault point exists in the
 #            three 17899 checkouts) or because a clock root moved the key out
 #            of allKeys (CLOCK_SKEW).  Both are the expiry mechanism; neither
 #            is a pairing kind nor RECORDED_FAILURE_EXPLAINED.

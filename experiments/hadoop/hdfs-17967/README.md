@@ -67,12 +67,12 @@ carries what is per case, including the per-case analysis scope.
 | root domains | `root-domains.jsonl`, one row | `HDFS.BLOCK_KEY.SERIAL_NO`, `+0` to `+3`: the recorded value and up to three rotations past it |
 | analysis scope | `case.sh` (`scope`) | a shared narrow set (the SASL client/server, the key managers, `PBHelper`, `ipc/Client`), plus `DFSClient` for A and the erasure-coding reconstruction families for C |
 
-**No fault marker.** HDFS-17899's `hadoopIpcRequestFails` marker in `org.apache.hadoop.ipc.Client`
-is deliberately removed from all three worktrees. It is that case's mechanism, not this one's,
-and left in it gave the composer a `MARKER_FLIPPED` formula satisfiable with every declared
-root at its recorded value — one BLOCKING `FORMULA_SAT_AT_RECORDED_VALUATION` gap and a
-`NO_SUPPORTED_WITNESS` claim. `ipc/Client` stays in the analysis scope: the IPC
-message-propagation calls the causal context travels on live in the same file.
+**Fault points.** Every mapped transport door mints its fault point unconditionally:
+`FAULT:HADOOP_IPC:REQUEST` in `Client$Connection.sendRpcRequest` and
+`FAULT:HDFS_SASL:REQUEST` in `SaslDataTransferClient.doSaslHandshake`, the same code in every
+tree. The recorded polarity is false; true throws the transport's failure before the request
+leaves. `ipc/Client` stays in the analysis scope: the door and the IPC message-propagation
+calls the causal context travels on live in the same file.
 
 ## The workloads
 

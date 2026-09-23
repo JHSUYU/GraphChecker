@@ -7,9 +7,9 @@ reaches `BlockTokenSecretManager.retrieveDataEncryptionKey` on a DataNode after 
 RPC has failed. The consumer of the key — Balancer, SPS or a source DataNode — keeps using
 the key it holds; the DataNode that has to verify it has already rotated. The three cases
 share that one target and differ only in which request flow carries the key to it. The
-workloads model the refresh RPC failure with a `Debug.makeSymbolicBoolean` marker in
-`org.apache.hadoop.ipc.Client`, so a witness here can be the marker moving, the clocks
-disagreeing, or both.
+refresh RPC failure is the IPC door's fault point (`FAULT:HADOOP_IPC:REQUEST`, minted in
+every tree at `Client$Connection.sendRpcRequest`), so a witness here can be that fault
+point flipping, the clocks disagreeing, or both.
 
 | Case | Request flow | Hadoop worktree | Branch |
 | --- | --- | --- | --- |
@@ -41,7 +41,7 @@ out. `Balancer` and `Dispatcher` are correspondingly out of the analysis scope.
 Every workload has to leave a **rotation gap running the right way**: the key the failing
 party puts on the wire is serials BEHIND the master's current one, while the consumer still
 RETAINS it, so the recording stays healthy and a witness has to buy the expiry with a clock
-move or with the marker. With a zero gap every composed path is either self-contradictory
+move or with the door's fault point. With a zero gap every composed path is either self-contradictory
 (bug3 measured 63 paths, all unsat with every root free) or satisfied at the recorded
 valuation (bug2, `FORMULA_SAT_AT_RECORDED_VALUATION`). Each workload asserts the gap
 itself.
@@ -56,7 +56,7 @@ itself.
 | the failure | `@CausynthExceptionTarget` in each Hadoop checkout; `target.yaml` | `exception_target_id: hdfs-17899` |
 | the occurrence | `target_occurrence` in `case.sh`, exported as `CAUSYNTH_TARGET_OCCURRENCE` | `bug1` `hdfs-17899/target-dn#epoch0/…@hdfs-17899/balancer#epoch0/balance-block#1`; `bug2` `…/target-dn#epoch0/…@hdfs-17899/sps#epoch0/satisfy-storage-policy#1`; `bug3` `…/target-dn#epoch0/…@hdfs-17899/source-dn#epoch0/replicate-block#1`. Left empty, the run keeps every observed occurrence |
 | clock roots | `symbolic-inputs.jsonl`, two rows | per-method clock cells, not callee-level ones: `BlockTokenSecretManager.updateKeys()` and `.addKeys(ExportedBlockKeys,boolean)`, each declaring the cell `<org.apache.hadoop.util.Timer: long now()>.return` with `"clock": true`. Those two methods are therefore also region roots by declaration |
-| marker root | the Hadoop worktrees, not this directory | `Debug.makeSymbolicBoolean("hadoopIpcRequestFails")` in `org.apache.hadoop.ipc.Client` models the key-refresh RPC failure. It is minted on every path through the send, not only when the outbound context happens to be active: Java's `&&` short-circuits, so a replay reaching the send with no active context materialized no marker at all and the `MARKER_FLIPPED` witness could never be asked for. Only the mint is unconditional; the throw still needs an active context |
+| fault points | the Hadoop worktrees, not this directory | every mapped transport door mints its Boolean fault point unconditionally: `Debug.makeSymbolicBoolean("FAULT:HADOOP_IPC:REQUEST")` in `Client$Connection.sendRpcRequest` (the key-refresh RPC failure) and `…("FAULT:HDFS_SASL:REQUEST")` in `SaslDataTransferClient.doSaslHandshake`. The recorded polarity is false; true throws the transport's `IOException` before the request leaves, with no `causynth.active()` guard |
 | hook-minted roots | the Hadoop checkouts | `CausynthSymbolicSource.symbolize("HDFS.BLOCK_KEY.SERIAL_NO", …)` roots the counter each new `BlockKey` takes its id from; `…("HDFS.BLOCK_KEY.EXPIRY_DATE", …)` roots the inherited `DelegationKey#expiryDate`. A hook site owns its field (`CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED`), so neither is listed in `symbolic-inputs.jsonl` |
 | root domains | `root-domains.jsonl`, one row | `HDFS.BLOCK_KEY.SERIAL_NO`, `declaredDomainMin "+0"`, `declaredDomainMax "+3"`: the recorded value and up to three rotations past it, relative because the serial starts at a `SecureRandom` int and increments once per roll. A root with no row is pinned to its recording; a clock has a floor of zero and no window |
 | wire mappings | `communication-mappings.jsonl`, four `WIRE_FLOW` rows | `block-key-id`, `block-key-expiry-date`, `data-encryption-key-id` and `namenode-data-encryption-key-id`, each with an exact producer and consumer capture (`CALL_ARGUMENT`, `CALL_RETURN`, `METHOD_PARAMETER`). Declared ports are tracked and mint nothing: the attach installs the producer's own propagated expression at the consumer |
