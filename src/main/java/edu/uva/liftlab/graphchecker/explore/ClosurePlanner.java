@@ -119,13 +119,7 @@ public final class ClosurePlanner {
     }
 
     public static Plan plan(Corpus corpus, OccurrenceAddress anchor,
-                            StaticScopeMap map) {
-        return plan(corpus, anchor, DEFAULT_MAX_TASKS, map);
-    }
-
-    public static Plan plan(Corpus corpus, OccurrenceAddress anchor,
-                            int maxTasks, StaticScopeMap map) {
-        StaticScopeMap scope = map == null ? StaticScopeMap.empty() : map;
+                            int maxTasks, StaticScopeMap scope) {
         List<GapRow> gaps = new ArrayList<GapRow>();
         Map<String, Demand> demands = new LinkedHashMap<String, Demand>();
         Deque<String> pending = new ArrayDeque<String>();
@@ -201,7 +195,12 @@ public final class ClosurePlanner {
             tasks.add(Task.of(taskId, demand.occurrence,
                     stateConnected(corpus, demand.occurrence), seed));
             why.put(taskId, demand.why);
-            flips.put(taskId, new LinkedHashSet<String>(demand.flipSites));
+            // The flip sites of a task: the guards of its demanded sites,
+            // and every FAULT decision of the occurrence (DESIGN4 SS1.4) --
+            // a fault guards everything the send would have produced.
+            Set<String> sites = new LinkedHashSet<String>(demand.flipSites);
+            sites.addAll(corpus.faultSites(demand.occurrence));
+            flips.put(taskId, sites);
         }
         return new Plan(tasks, gaps, why, flips);
     }
@@ -848,16 +847,29 @@ public final class ClosurePlanner {
         return factor;
     }
 
-    /** The session an occurrence was first recorded in. */
+    /**
+     * The session a task is planned from: the SEED when it ran the
+     * occurrence, else the first ADMITTED session that did, else {@code ""}.
+     * A replay that was not admitted did not run the world it was asked
+     * for, so nothing is planned from it.
+     */
     private static String seedSession(Corpus corpus,
                                       OccurrenceAddress occurrence) {
+        String seed = corpus.seedSessionId();
+        if (!seed.isEmpty() && ran(corpus, seed, occurrence)) return seed;
         for (SessionReader session : corpus.sessions()) {
-            if (corpus.activation(session.sessionId(), occurrence) != null
-                    || !corpus.decisionsOf(session.sessionId(), occurrence)
-                    .isEmpty()) {
+            if (session.admitted()
+                    && ran(corpus, session.sessionId(), occurrence)) {
                 return session.sessionId();
             }
         }
         return "";
+    }
+
+    /** Whether one session activated or decided at one occurrence. */
+    private static boolean ran(Corpus corpus, String sessionId,
+                               OccurrenceAddress occurrence) {
+        return corpus.activation(sessionId, occurrence) != null
+                || !corpus.decisionsOf(sessionId, occurrence).isEmpty();
     }
 }

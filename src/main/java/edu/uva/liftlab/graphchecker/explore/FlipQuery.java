@@ -68,10 +68,8 @@ import java.util.Set;
  *
  * <p>A DEMANDED conjunct -- this obligation's own flip and every flip the
  * path it is cut from was run under -- is asked for with a MARGIN on each
- * comparison atom that names a clock cell: {@code causynth.clock.flip
- * .margin.ms} milliseconds, 60000 by default ({@link ClockMargin}).  A
- * prefix decision kept at the arm the recording took is not strengthened.
- * </p>
+ * comparison atom that names a clock cell ({@link ClockMargin}).  A prefix
+ * decision kept at the arm the recording took is not strengthened.</p>
  */
 final class FlipQuery {
     private FlipQuery() {
@@ -625,12 +623,12 @@ final class FlipQuery {
          */
         private String demanded(String held, DecisionRow decision) {
             ClockMargin.Strengthened asked = ClockMargin.strengthen(held,
-                    clockCells, ClockMargin.margin());
+                    clockCells, ClockMargin.MARGIN_MS);
             for (String atom : asked.unstrengthened) {
                 gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
                         GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                         decision.siteId() + "#" + decision.ordinal(),
-                        "the clock margin of " + ClockMargin.margin()
+                        "the clock margin of " + ClockMargin.MARGIN_MS
                                 + "ms was not put on the atom " + atom
                                 + ": its polarity is not resolved by this "
                                 + "query's connectives, or its operands are "
@@ -783,7 +781,7 @@ final class FlipQuery {
                 // JavaPrimitiveSmtSemantics#clockDomain}, which is the one
                 // place that rule is spelled.  And in a FLIP QUERY the
                 // floor is not 0 either: it is what this cell's own
-                // execution read ({@link #clockFloor}).
+                // execution read ({@link #clockReading}).
                 // Floor AND ceiling from the same reading: the floor is
                 // what this cell's execution read, the ceiling is that
                 // reading plus the stated window, so a model cannot flip an
@@ -828,32 +826,6 @@ final class FlipQuery {
             }
             rootFacts.add("(and (>= " + variable + " " + min + ") (<= "
                     + variable + " " + max + "))");
-        }
-
-        /**
-         * CLOCKS MOVE FORWARD ONLY: where one cell's floor stands.
-         *
-         * <p>The instant the execution THIS cell belongs to read, which is
-         * what the obligation's skew is stated against: a clock is one
-         * variable per session ({@link #variable}) and {@link
-         * ObligationFactory#solve} publishes {@code model - rootValue(the
-         * session, the root)}, so a model below that reading is a NEGATIVE
-         * skew -- the replay would be told to read an instant its own
-         * execution had already passed.  Exploration emulates a run that
-         * lasted longer or a node whose clock is ahead; a clock turned back
-         * to 1970 is no run.</p>
-         *
-         * <p>{@link Corpus#rootValue} is the one answer to "what did this
-         * session run this root at", so the world the session ran in is
-         * already in it: a focused replay plants {@code reading + skew} at
-         * the mint and the mint row states the instant the region then read
-         * ({@code RootMint#focusedRootValue}).  A reading no row states, or
-         * one that is not an instant a Java {@code long} can hold, leaves
-         * the floor where it was.</p>
-         */
-        private String clockFloor(RootMintRow minted, String rootId) {
-            String reading = clockReading(minted, rootId);
-            return reading.isEmpty() ? "0" : reading;
         }
 
         /**

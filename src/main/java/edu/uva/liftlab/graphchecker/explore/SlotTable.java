@@ -27,68 +27,53 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * The epoch's skeleton: one slot per interaction, and what may change it.
+ * The skeleton: one slot per (interaction, world), and what contradicts it.
  *
- * <p>A SLOT is an interaction identity — kind, producer endpoint, consumer
- * endpoint — and the skeleton is the set of them (INTERACTION-ID R-I6, R-I7).
- * Rows from any replay, any worker, any wave fall into slots by the two
- * endpoint ids alone, which is what lets parallel workers fill them
- * independently and lets merging be per slot.</p>
+ * <p>A SLOT is an interaction identity -- kind, producer endpoint, consumer
+ * endpoint -- labelled with the WORLD (the flip set,
+ * {@link ObligationFactory#worldDigest}) of the session that opened it.
+ * A pairing no slot holds OPENS one; the same pairing from a later session
+ * FILLS it; a pairing whose consumer is outside the closure is recorded and
+ * no more.</p>
  *
- * <p>Four things can happen, and only one of them is a divergence:</p>
- * <ol>
- *   <li>an interaction whose consumer is a closure member and whose pair is
- *       not in the table OPENS a slot: the skeleton grows, this replay's arm
- *       is the slot's first, and the producer's occurrence is a task of the
- *       next wave — growth is the normal case and forks nothing;</li>
- *   <li>the same pair from any later replay FILLS the slot; arms accumulate;</li>
- *   <li>an interaction outside the closure is RECORDED and no more — it is
- *       not this anchor's business, but a reader should still see it;</li>
- *   <li>a REPLACEMENT contradicts the skeleton rather than growing it: a WIRE
- *       consumer endpoint already in a slot paired with a DIFFERENT producer
- *       by another session, a STATE reader paired with a writer outside the
- *       versions it could have observed, or a closure member whose
- *       {@code CausalContext} changed
- *       — the same code point in the same control context, started for a
- *       different reason. That is {@code TOPOLOGY_DIVERGENCE}, BLOCKING, and
- *       the campaign opens a new epoch from that replay's pairing; the old
- *       table is kept, because it is the evidence of what the epoch was.</li>
- * </ol>
+ * <p>A REPLACEMENT is a WIRE consumer endpoint paired with a different
+ * producer by another session IN THE SAME WORLD (DESIGN4 SS3.3c): two
+ * pairings under the same flips mean the schedule did not hold, and that is
+ * BLOCKING.  The same consumer paired differently in ANOTHER world is
+ * growth -- the new pairing is a new arm keyed by that world -- and opens a
+ * slot of its own.  A STATE reader pairs with whichever writer delivered the
+ * version it read, in any world: never a replacement.</p>
  *
- * <p>ONLY AN ADMITTED REPLAY STATES A TOPOLOGY. All four are statements a
- * SESSION makes about the world this epoch runs, and a session states them
- * only when its own result rows admit every obligation it ran ({@link
- * SessionReader#admitted}; a seed is asked nothing and is always an
- * authority). A replay that did not run the world it was asked for neither
- * opens a slot nor contradicts one: what it paired is reported {@code
- * TOPOLOGY_DIVERGENCE} DIAGNOSTIC, the skeleton is unchanged, and the wave
- * goes on. hdfs-11741 campaign #2 is why: one NOT_ADMITTED replay, whose
- * mint had planted no clock skew, paired eight consumers with producers the
- * skeleton does not carry, and the campaign stopped on a world no replay had
- * run.</p>
+ * <p>ONLY AN ADMITTED REPLAY STATES A TOPOLOGY ({@link
+ * SessionReader#admitted}): a session that did not run the world it was
+ * asked for neither opens a slot nor contradicts one; what it paired is
+ * reported DIAGNOSTIC.</p>
  */
 public final class SlotTable {
     /** The file the table lives in, under the iteration directory. */
     public static final String FILE = "slots.jsonl";
 
-    /** One interaction the epoch's skeleton holds. */
+    /** One interaction the skeleton holds, in one world. */
     public static final class Slot {
         public final InteractionKind kind;
         public final Endpoint producer;
         public final Endpoint consumer;
         public final String openedBySession;
         public final int openedAtWave;
+        /** The world of the opening session; {@code ""} is the seed's. */
+        public final String world;
 
         Slot(InteractionKind kind, Endpoint producer, Endpoint consumer,
-             String openedBySession, int openedAtWave) {
+             String openedBySession, int openedAtWave, String world) {
             this.kind = kind;
             this.producer = producer;
             this.consumer = consumer;
             this.openedBySession = openedBySession;
             this.openedAtWave = openedAtWave;
+            this.world = world == null ? "" : world;
         }
 
-        /** The slot's identity: the interaction's, and nothing else. */
+        /** The interaction's identity, without the world. */
         public String interactionId() {
             return Interaction.of(kind, producer, consumer).id();
         }
@@ -99,6 +84,7 @@ public final class SlotTable {
         public final List<Slot> opened;
         public final int filled;
         public final int outside;
+        /** Whether some admitted session contradicted a slot of its world. */
         public final boolean replaced;
         public final List<GapRow> gaps;
 
@@ -112,65 +98,40 @@ public final class SlotTable {
         }
     }
 
+    /** interaction id | world -> the slot. */
     private final Map<String, Slot> byInteraction =
             new LinkedHashMap<String, Slot>();
-    /**
-     * WIRE consumer endpoint id -> the slot the skeleton pairs it in.
-     *
-     * <p>WIRE only, and that is the whole of R-I6 vs R-I7: a message has ONE
-     * producer, so a consumer endpoint the catalog pairs with another one is
-     * a contradiction -- the routing, the retry or the binding changed.  A
-     * STATE reader has no such thing.  Which writer delivered the version it
-     * read is a fact about that session's path, and across sessions the
-     * writers ARE the family's arms; a flip is expected to change which one
-     * delivers, because that is what the flip is for.  17960's counter read
-     * pairs with createSnapshot in the seed and with deleteSnapshot in every
-     * marker flip, and reading that as a replacement forked an epoch over
-     * the arm the wave had just asked for.  So "opened by another session"
-     * means nothing for a STATE slot: it is never consulted, and a STATE
-     * pairing no slot holds is growth.</p>
-     */
+    /** WIRE consumer endpoint id | world -> the slot pairing it there. */
     private final Map<String, Slot> slotOfConsumer =
             new LinkedHashMap<String, Slot>();
-
-    /**
-     * Whether this epoch published a table at all.
-     *
-     * <p>An epoch that has published none has opened no slots, and every
-     * pairing in the rows is then growth: the rule has nothing to
-     * contradict, so a reader says nothing at all rather than naming every
-     * interaction of the recording as unopened.</p>
-     */
     private boolean stated;
 
-    /** An epoch that has opened no slot yet. */
     SlotTable() {
     }
 
-    /** The epoch's table, or an empty one before its first wave. */
+    /** The iteration's table, or an empty one before its first wave. */
     public static SlotTable read(Path iteration) throws IOException {
         SlotTable table = new SlotTable();
         if (iteration == null) return table;
         Path file = iteration.resolve(FILE);
         table.stated = Files.isRegularFile(file);
-        // The codec refuses a row it cannot read rather than skipping it: a
-        // slot whose kind or whose endpoints do not parse is a skeleton this
-        // stage cannot state, and dropping it in silence would read as
-        // "no slot here", which is the one answer that means growth.
         for (Slot slot : RowCodec.readAll(file, ExploreCodec::readSlot)) {
             table.hold(slot);
         }
         return table;
     }
 
-    /** Whether this epoch published a skeleton at all. */
+    /** Whether this iteration published a skeleton at all. */
     public boolean stated() {
         return stated;
     }
 
-    /** Whether this consumer endpoint has a WIRE slot in the skeleton. */
+    /** Whether this consumer endpoint has a WIRE slot in any world. */
     public boolean opened(String consumerEndpointId) {
-        return slotOfConsumer.containsKey(consumerEndpointId);
+        for (Slot slot : slotOfConsumer.values()) {
+            if (slot.consumer.id().equals(consumerEndpointId)) return true;
+        }
+        return false;
     }
 
     public void write(Path iteration) throws IOException {
@@ -186,13 +147,10 @@ public final class SlotTable {
         return byInteraction.size();
     }
 
-    /** The region slot a degraded occurrence carries: a role, not a region. */
-    static final String ROLE_REGION = "ROLE.";
-
     private void hold(Slot slot) {
-        byInteraction.put(slot.interactionId(), slot);
+        byInteraction.put(slot.interactionId() + "|" + slot.world, slot);
         if (slot.kind == InteractionKind.WIRE) {
-            slotOfConsumer.put(slot.consumer.id(), slot);
+            slotOfConsumer.put(slot.consumer.id() + "|" + slot.world, slot);
         }
     }
 
@@ -201,9 +159,7 @@ public final class SlotTable {
      *
      * @param closure the occurrence ids the anchor's closure holds: a slot is
      *                opened only for an interaction whose CONSUMER is one of
-     *                them, because a slot is a thing this anchor's failure can
-     *                depend on and not every message in the recording
-     * @param wave    which wave is reconciling, for the slot's own record
+     *                them
      */
     public Reconciliation reconcile(Corpus corpus, Set<String> closure,
                                     int wave) {
@@ -212,14 +168,10 @@ public final class SlotTable {
         Set<String> outside = new LinkedHashSet<String>();
         int filled = 0;
         boolean replaced = contextChanged(corpus, closure, gaps);
-        replaced |= unretained(corpus, gaps);
         for (SessionReader session : corpus.sessions()) {
-            // ONLY AN ADMITTED REPLAY STATES A TOPOLOGY ({@link
-            // SessionReader#admitted}).  A session that did not run the
-            // world it was asked for neither grows this skeleton nor
-            // contradicts it: what it paired is REPORTED, DIAGNOSTIC, and
-            // the wave goes on planning from the skeleton it has.
             boolean authority = session.admitted();
+            String world = ObligationFactory.worldDigest(
+                    corpus.world(session.sessionId()));
             for (AttachRow attach : session.attaches()) {
                 if (attach.producer() == null) continue;
                 Endpoint consumer = attach.endpoint();
@@ -234,7 +186,8 @@ public final class SlotTable {
                     continue;
                 }
                 switch (take(InteractionKind.WIRE, attach.producer(), consumer,
-                        session.sessionId(), authority, wave, opened, gaps)) {
+                        session.sessionId(), world, authority, wave, opened,
+                        gaps)) {
                     case FILLED: filled++; break;
                     case REPLACED: replaced = true; break;
                     default: break;
@@ -246,10 +199,6 @@ public final class SlotTable {
                 WriteRow writer = corpus.writeOf(read.sessionId(),
                         read.location(), read.observedVersion());
                 if (writer == null) continue;
-                // Two reads of one location at one endpoint id that observed
-                // DIFFERENT versions: the session states two state edges its
-                // identity cannot separate, so neither takes a slot.  Said
-                // once, above, as a DIAGNOSTIC.
                 if (indistinct.contains(stateKey(read))) continue;
                 if (!closure.contains(consumer.occurrence().id())) {
                     if (outside.add(consumer.id())) {
@@ -261,13 +210,11 @@ public final class SlotTable {
                     }
                     continue;
                 }
-                // R-I7.1: what contradicts is not "a later version by seq"
-                // -- two activations that no order relates interleave, so a
-                // session's event counter alone orders nothing.  A pairing
-                // contradicts the run when the read HAPPENED BEFORE the write
-                // it claims to have observed, which is the one question
-                // Arms.ancestor answers: same thread (one occurrence or two),
-                // the causal-anchor chain, and thread start/join.
+                // R-I7.1: a read that HAPPENED BEFORE the write it claims
+                // to have observed contradicts the run's own order
+                // (Arms.ancestor: same thread, causal anchors, thread
+                // start/join).  A session's event counter alone orders
+                // nothing.
                 if (contradictsOrder(corpus, read, writer)) {
                     gaps.add(GapRow.of(session.sessionId(),
                             GapKind.TOPOLOGY_DIVERGENCE,
@@ -282,10 +229,9 @@ public final class SlotTable {
                     replaced |= authority;
                     continue;
                 }
-                // No REPLACED case: a state pairing cannot contradict the
-                // catalog, so take() never answers one for a STATE slot.
                 switch (take(InteractionKind.STATE, writer.endpoint(), consumer,
-                        session.sessionId(), authority, wave, opened, gaps)) {
+                        session.sessionId(), world, authority, wave, opened,
+                        gaps)) {
                     case FILLED: filled++; break;
                     default: break;
                 }
@@ -296,18 +242,9 @@ public final class SlotTable {
     }
 
     /**
-     * The state edges of one session that its own identities cannot separate.
-     *
-     * <p>A read endpoint is {@code (occurrence, site, siteIndex, attempt)}
-     * and the site index is what distinguishes repeated events of one site
-     * (IDENTITY-IMPL A).  A read the runtime does not stand at carries none,
-     * so two reads of one field in one occurrence share an endpoint id; when
-     * they observed DIFFERENT versions of that location, keying the skeleton
-     * by the consumer read the run's own loop as a contradiction of itself.
-     * It is not one: it is a lineage the rows cannot yet state.  Neither read
-     * opens a slot -- a slot whose consumer stands for two events would offer
-     * the composition an arm under the wrong path condition -- and the loss
-     * is named once per endpoint and location.</p>
+     * The state edges of one session that its own identities cannot separate:
+     * two reads at one endpoint id (no site index) that observed DIFFERENT
+     * versions of one location.  Neither opens a slot; named once.
      */
     private static Set<String> indistinct(Corpus corpus,
                                           SessionReader session,
@@ -347,24 +284,6 @@ public final class SlotTable {
                 + SmtLowering.locationKey(read.location());
     }
 
-    /**
-     * Whether the recorded pairing contradicts the run's own order.
-     *
-     * <p>Not "an earlier version by seq": two activations that no order
-     * relates interleave, so a session's event counter alone orders nothing.
-     * What contradicts is a read that HAPPENED BEFORE the write it claims to
-     * have observed -- because its own thread wrote later, because the
-     * writing activation ran on that same thread afterwards, because the
-     * reader caused the writer through the message it sent, or because the
-     * reader started the thread the writer ran on.  All four are the one
-     * question {@code Arms.ancestor} answers, and this stage asks it rather
-     * than keeping a fifth opinion about happens-before.</p>
-     *
-     * <p>The two EVENTS are these two rows, and each carries the seq it
-     * happened at; the endpoints alone do not, because a site the runtime
-     * does not stand at has no site index and one endpoint id then names
-     * every event of that site in its occurrence.</p>
-     */
     private static boolean contradictsOrder(Corpus corpus, ReadRow read,
                                             WriteRow observed) {
         return corpus.arms().ancestor(read.endpoint(), read.seq(),
@@ -378,15 +297,7 @@ public final class SlotTable {
         public final String skeletonProducerId;
         public final String replayProducerId;
         public final String openedBySession;
-        /**
-         * Whether the replacing session STATES this topology.
-         *
-         * <p>{@link SessionReader#admitted}, read where the session is in
-         * hand.  The arms are held out either way -- the two pairings
-         * cannot both be this epoch's -- and what changes is whether the
-         * row STOPS the composition: a replay that did not run the world
-         * it was asked for contradicts nothing.</p>
-         */
+        /** Whether the replacing session states this topology. */
         public final boolean admitted;
 
         Replacement(String sessionId, String consumerEndpointId,
@@ -405,40 +316,35 @@ public final class SlotTable {
             return admitted ? GapClass.BLOCKING : GapClass.DIAGNOSTIC;
         }
 
-        /** Both pairings, which is what the gap has to name. */
         public String detail() {
             return "the skeleton pairs consumer " + consumerEndpointId
                     + " with producer " + skeletonProducerId + " (slot opened"
                     + " by session " + openedBySession + ") and session "
                     + sessionId + " paired it with producer "
-                    + replayProducerId + ": two pairings of one consumer are"
-                    + " a replacement, not growth, so this epoch's families"
-                    + " take no rows from that session"
+                    + replayProducerId + " in the same world: two pairings"
+                    + " of one consumer under the same flips are a"
+                    + " replacement, not growth, so this iteration's"
+                    + " families take no rows from that session"
                     + (admitted ? "" : UNADMITTED);
         }
     }
 
     /**
-     * Every replacement the corpus states, in session order.
-     *
-     * <p>What the COMPOSITION asks of the skeleton: a replacing session's
-     * rows must not fill this epoch's families, because the two pairings
-     * cannot both be this epoch's.  Asked of the attach rows and nothing
-     * else -- the pairing is a recorded fact of the run that made it, and a
-     * replacement is two runs disagreeing about it -- and answered by
-     * {@link #replaced}, the same predicate {@link #take} decides a wave
-     * with, so the composition cannot hold a second opinion about what
-     * contradicts the epoch.</p>
+     * Every same-world replacement the corpus states: what the composition
+     * asks of the skeleton, answered by the same {@link #replaced} the wave
+     * decides with.
      */
     public List<Replacement> replacements(Corpus corpus) {
         List<Replacement> found = new ArrayList<Replacement>();
         if (!stated) return found;
         Set<String> seen = new LinkedHashSet<String>();
         for (SessionReader session : corpus.sessions()) {
+            String world = ObligationFactory.worldDigest(
+                    corpus.world(session.sessionId()));
             for (AttachRow attach : session.attaches()) {
                 if (attach.producer() == null) continue;
                 Slot held = replaced(InteractionKind.WIRE, attach.producer(),
-                        attach.endpoint(), session.sessionId());
+                        attach.endpoint(), session.sessionId(), world);
                 if (held == null) continue;
                 if (!seen.add(session.sessionId() + "|"
                         + attach.endpoint().id())) {
@@ -454,24 +360,20 @@ public final class SlotTable {
     }
 
     /**
-     * The slot one pairing CONTRADICTS, or null when it contradicts none.
-     *
-     * <p>R-I6, in one place.  A pairing the table already holds FILLS its
-     * slot; a WIRE consumer the table holds against another producer, by
-     * another session, is a REPLACEMENT; a STATE pairing contradicts
-     * nothing (R-I7/R-I7.1: the writers different sessions delivered from
-     * ARE the family's arms); and one run's own second pairing of one
-     * consumer endpoint is not a contradiction either -- a run does not
-     * contradict itself -- but a lineage its endpoint ids cannot state.</p>
+     * The slot one pairing contradicts, or null: a WIRE consumer the table
+     * holds against another producer IN THIS WORLD, opened by another
+     * session.  A STATE pairing, a pairing the table holds, a consumer no
+     * slot of this world pairs, and one session's own second pairing of a
+     * consumer contradict nothing.
      */
     private Slot replaced(InteractionKind kind, Endpoint producer,
-                          Endpoint consumer, String sessionId) {
+                          Endpoint consumer, String sessionId, String world) {
         if (kind != InteractionKind.WIRE) return null;
         if (byInteraction.containsKey(
-                Interaction.of(kind, producer, consumer).id())) {
+                Interaction.of(kind, producer, consumer).id() + "|" + world)) {
             return null;
         }
-        Slot held = slotOfConsumer.get(consumer.id());
+        Slot held = slotOfConsumer.get(consumer.id() + "|" + world);
         if (held == null || held.producer.id().equals(producer.id())) {
             return null;
         }
@@ -480,45 +382,21 @@ public final class SlotTable {
 
     private enum Outcome { OPENED, FILLED, REPLACED, AMBIGUOUS, REPORTED }
 
-    /**
-     * What a topology statement of a replay that was not admitted says.
-     *
-     * <p>Appended to the row's own detail, so a reader sees the pairing AND
-     * why nothing was done about it, in one line.</p>
-     */
+    /** Appended to a row of a replay that states no topology. */
     static final String UNADMITTED =
             " (this replay was not admitted, so it states no topology)";
 
-    /**
-     * One pair against the skeleton: grow it, fill it, or contradict it.
-     *
-     * <p>The decision is per SLOT.  {@code byInteraction} answers it for the
-     * pair itself, and the consumer-keyed map answers the R-I6 question that
-     * a slot id cannot: whether a REPLAY has paired a WIRE consumer endpoint
-     * with a producer other than the one the CATALOG holds it against.  That
-     * is a cross-session statement about a message, and only that is a
-     * replacement (R-I6; R-I7/R-I7.1 make a state pairing a path fact, and
-     * the arms of one family are exactly the writers different sessions
-     * delivered from).</p>
-     *
-     * <p>Two pairings of one consumer endpoint id inside ONE session are not
-     * a contradiction -- a run does not contradict itself.  They are two
-     * events the identity cannot yet tell apart, because an endpoint is
-     * {@code (occurrence, site, siteIndex, attempt)} and a read the runtime
-     * does not stand at carries no site index to separate them.  Neither
-     * takes a slot, and the loss is named where a reader will see it, rather
-     * than forked into an epoch that no retained set could fix.</p>
-     */
+    /** One pair against the skeleton: grow it, fill it, or contradict it. */
     private Outcome take(InteractionKind kind, Endpoint producer,
-                         Endpoint consumer, String sessionId,
+                         Endpoint consumer, String sessionId, String world,
                          boolean authority, int wave,
                          List<Slot> opened, List<GapRow> gaps) {
-        Slot slot = new Slot(kind, producer, consumer, sessionId, wave);
-        String interaction = slot.interactionId();
-        if (byInteraction.containsKey(interaction)) return Outcome.FILLED;
-        // A STATE pairing is never a contradiction: every (writer, reader)
-        // pair any session states is one more arm of that reader's family.
-        Slot contradicted = replaced(kind, producer, consumer, sessionId);
+        Slot slot = new Slot(kind, producer, consumer, sessionId, wave, world);
+        if (byInteraction.containsKey(slot.interactionId() + "|" + world)) {
+            return Outcome.FILLED;
+        }
+        Slot contradicted = replaced(kind, producer, consumer, sessionId,
+                world);
         if (contradicted != null) {
             gaps.add(GapRow.of(sessionId, GapKind.TOPOLOGY_DIVERGENCE,
                     authority ? GapClass.BLOCKING : GapClass.DIAGNOSTIC,
@@ -526,27 +404,23 @@ public final class SlotTable {
                     "the catalog pairs this consumer with producer "
                             + "endpoint " + contradicted.producer.id()
                             + ", opened by " + contradicted.openedBySession
-                            + ", and this replay pairs it with "
-                            + producer.id()
+                            + " in the same world, and this replay pairs it "
+                            + "with " + producer.id()
                             + ": a replacement, not growth"
                             + (authority ? "" : UNADMITTED)));
             return authority ? Outcome.REPLACED : Outcome.REPORTED;
         }
-        // AND IT OPENS NOTHING EITHER.  A pairing the skeleton does not
-        // hold would GROW it, and growth is a statement about the world
-        // this epoch runs; a replay that did not run the world it was asked
-        // for states that no more than it states a contradiction.
         if (!authority) {
             gaps.add(GapRow.of(sessionId, GapKind.TOPOLOGY_DIVERGENCE,
                     GapClass.DIAGNOSTIC, consumer.toString(),
                     "this replay pairs this consumer with producer endpoint "
-                            + producer.id() + ", which this epoch's skeleton "
-                            + "does not hold, and no slot is opened for it"
+                            + producer.id() + ", which the skeleton does not "
+                            + "hold in its world, and no slot is opened for it"
                             + UNADMITTED));
             return Outcome.REPORTED;
         }
         Slot held = kind == InteractionKind.WIRE
-                ? slotOfConsumer.get(consumer.id()) : null;
+                ? slotOfConsumer.get(consumer.id() + "|" + world) : null;
         if (held != null && !held.producer.id().equals(producer.id())) {
             gaps.add(GapRow.of(sessionId, GapKind.LINEAGE_LOST,
                     GapClass.DIAGNOSTIC, consumer.toString(),
@@ -563,153 +437,20 @@ public final class SlotTable {
     }
 
     /**
-     * A region that ran and that this epoch cannot see inside.
-     *
-     * <p>INTERACTION-ID SS8 case 2: a replay reaches a region of the static
-     * candidate graph that the workload never RETAINED -- the lightweight
-     * entry hook publishes its activation, and the row says so
-     * ({@code instrumented == false}).  That is not growth the skeleton can
-     * absorb: no endpoint of that region exists, so no interaction can name
-     * it and no slot can open for it.  The epoch has to be re-cut with the
-     * region retained, which is the campaign's to do; this stage states the
-     * fact under the name run_engine acts on.  Case 3 needs nothing: a region
-     * outside the static candidate graph publishes no activation at all.</p>
-     *
-     * <p>{@code instrumented == false} is not by itself that fact.  An
-     * AMBIENT activation says it too -- an export or a handoff inside an
-     * occurrence no task planned ({@code RowRuntime#ambientActivation}) --
-     * and an occurrence no task planned may well be one of a region the
-     * workload DOES retain.  hdfs-17899 bug1-3 are why: every focused replay
-     * ran on past its prefix, a daemon heartbeat's response left the
-     * NameNode through its command conversion -- a region the plan retains,
-     * whose seed occurrences ran instrumented -- and the new occurrence was
-     * read as a region that must be retained, which PLAN then refused to
-     * grow to (RETAINED_SET_CANNOT_GROW: it already had it).  A region that
-     * ran instrumented anywhere in the corpus is retained; another
-     * occurrence of it is new work the waves plan, not a retained set to
-     * grow.</p>
-     */
-    private static boolean unretained(Corpus corpus, List<GapRow> gaps) {
-        Set<String> named = new LinkedHashSet<String>();
-        boolean divergence = false;
-        // The regions the weave retained, as the corpus shows them: an
-        // instrumented activation is published only by a retained region's
-        // entry hook.
-        Set<String> woven = new LinkedHashSet<String>();
-        for (SessionReader session : corpus.sessions()) {
-            for (ActivationRow activation : session.activations()) {
-                if (activation.instrumented()) {
-                    woven.add(activation.occurrence().regionId());
-                }
-            }
-        }
-        // The regions the RECORDING reached: a seed session replays it, so
-        // an unretained region it ran is one the plan saw and chose not to
-        // retain.  Reaching it again is not growth -- the export inside it
-        // simply names the occurrence it ran in (Identity.currentOccurrence,
-        // the one producer door) -- and only a region no seed reached is the
-        // SS8 case 2 an epoch has to be re-cut for.
-        Set<String> recorded = new LinkedHashSet<String>();
-        for (SessionReader session : corpus.sessions()) {
-            if (session.manifest() == null || session.manifest().role()
-                    != edu.uva.liftlab.graphchecker.contract.SessionManifest
-                            .Role.SEED) {
-                continue;
-            }
-            for (ActivationRow activation : session.activations()) {
-                if (!activation.instrumented()) {
-                    recorded.add(activation.occurrence().regionId());
-                }
-            }
-        }
-        for (SessionReader session : authoritiesFirst(corpus)) {
-            // The same rule: a replay that was not admitted states no
-            // topology, so the region it reached is reported and the
-            // retained set is not held to it.
-            boolean authority = session.admitted();
-            for (ActivationRow activation : session.activations()) {
-                if (activation.instrumented()) continue;
-                OccurrenceAddress occurrence = activation.occurrence();
-                if (!named.add(occurrence.regionId())) continue;
-                // A DEGRADED occurrence's region slot is ROLE.<ROLE>: the
-                // scope was lost, so the row names the role instead of a
-                // region.  No such region exists in the static candidate
-                // graph, so no retained set can ever grow to hold it -- SS8
-                // case 2 is about a region that exists and is not retained.
-                // What it states is the lineage, and that is what it says.
-                if (occurrence.regionId().startsWith(ROLE_REGION)) {
-                    gaps.add(GapRow.of(session.sessionId(),
-                            GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC,
-                            occurrence.render(),
-                            "a flipped path reached a region whose scope the "
-                                    + "recording lost: " + occurrence.regionId()
-                                    + " is a role, not a region of the static "
-                                    + "graph, so nothing can retain it"));
-                    continue;
-                }
-                if (woven.contains(occurrence.regionId())) {
-                    gaps.add(GapRow.of(session.sessionId(),
-                            GapKind.TOPOLOGY_DIVERGENCE, GapClass.DIAGNOSTIC,
-                            occurrence.render(),
-                            "an occurrence no task planned, of a region the "
-                                    + "plan retains: " + occurrence.regionId()
-                                    + " ran instrumented elsewhere in the "
-                                    + "corpus, so the retained set has it"));
-                    continue;
-                }
-                if (recorded.contains(occurrence.regionId())) {
-                    gaps.add(GapRow.of(session.sessionId(),
-                            GapKind.TOPOLOGY_DIVERGENCE, GapClass.DIAGNOSTIC,
-                            occurrence.render(),
-                            "reached and not retained, as in the recording: "
-                                    + occurrence.regionId() + " ran in the "
-                                    + "seed too, and the plan did not retain "
-                                    + "it"));
-                    continue;
-                }
-                gaps.add(GapRow.of(session.sessionId(),
-                        GapKind.TOPOLOGY_DIVERGENCE,
-                        authority ? GapClass.BLOCKING : GapClass.DIAGNOSTIC,
-                        occurrence.render(),
-                        "retained set must grow: " + occurrence.regionId()
-                                + (authority ? "" : UNADMITTED)));
-                divergence |= authority;
-            }
-        }
-        return divergence;
-    }
-
-    /**
      * A closure member started for a different reason than the skeleton's.
      *
-     * <p>The causal context is INSIDE an occurrence id, so a changed context
-     * is a different id and no id-keyed test could ever see it.  What a
-     * REPLACEMENT looks like from the rows is an ABSENCE beside a presence:
-     * one replay did not run the closure's occurrence at all, and it DID run
-     * the same code point -- the same component, region and execution index
-     * -- under another context.  Then the skeleton's member is gone and
-     * something else stands where it stood.</p>
+     * <p>The causal context is inside an occurrence id, so a changed context
+     * is an ABSENCE beside a presence: a replay ran no closure member at a
+     * code point (node, region, execution index) and did run that code point
+     * under another context.  Two occurrences of one code point that a
+     * session ran BOTH are growth (two requests), never replacement.</p>
      *
-     * <p>Two occurrences at one code point that a session ran BOTH are
-     * growth (R-I6), never replacement: the two client checksum requests of
-     * one recording are two occurrences of one code point by construction,
-     * and under IDENTITY-V3 every concurrent request of one entry point is.
-     * Reading that as a contradiction closed the frontier of every wave and
-     * proposed nothing.</p>
-     *
-     * <p>So the rule is per code point: a code point the closure holds is
-     * REPLACED in a replay that ran it only under contexts the closure does
-     * not hold there.  The closure may hold several members at one code
-     * point, and a member that ran is never a replacement of one that did
-     * not.</p>
+     * <p>BLOCKING only in the world where the member ran: a replay in a
+     * world no session ran the member in has grown the graph by a new
+     * occurrence (DESIGN4 SS3.3a), and the row is DIAGNOSTIC.</p>
      */
     private static boolean contextChanged(Corpus corpus, Set<String> closure,
                                           List<GapRow> gaps) {
-        // EVERY member at a code point, not the last one filed: the closure
-        // may hold two occurrences of one code point -- hdfs-17897's dn0
-        // serves the client's handshake and the checksum leader's own at one
-        // SASL callback, both members -- and a map to one member read a
-        // replay that ran the other as a REPLACEMENT of the one it kept.
         Map<String, List<OccurrenceAddress>> byCodePoint =
                 new LinkedHashMap<String, List<OccurrenceAddress>>();
         for (String id : closure) {
@@ -724,10 +465,9 @@ public final class SlotTable {
         }
         boolean replaced = false;
         for (SessionReader session : corpus.sessions()) {
-            // The same rule again: what this replay ran at a code point the
-            // closure holds is a statement about the epoch's topology, and
-            // a replay that was not admitted makes none.
             boolean authority = session.admitted();
+            String world = ObligationFactory.worldDigest(
+                    corpus.world(session.sessionId()));
             Set<String> ran = new LinkedHashSet<String>();
             for (ActivationRow activation : session.activations()) {
                 ran.add(activation.occurrence().id());
@@ -736,54 +476,49 @@ public final class SlotTable {
                 OccurrenceAddress occurrence = activation.occurrence();
                 List<OccurrenceAddress> members =
                         byCodePoint.get(codePoint(occurrence));
-                if (members == null) continue;
-                // A closure member is never the replacement of another: what
-                // stands there is itself held.
-                if (closure.contains(occurrence.id())) continue;
-                // Some member ran here too: two occurrences of one code
-                // point, which is what a second request IS.
-                boolean memberRan = false;
-                for (OccurrenceAddress member : members) {
-                    if (ran.contains(member.id())) memberRan = true;
+                if (members == null || closure.contains(occurrence.id())) {
+                    continue;
                 }
-                if (memberRan) continue;
+                boolean memberRan = false;
+                boolean sameWorld = false;
                 StringBuilder held = new StringBuilder();
                 for (OccurrenceAddress member : members) {
+                    memberRan |= ran.contains(member.id());
+                    sameWorld |= worldsRunning(corpus, member).contains(world);
                     if (held.length() > 0) held.append(", ");
                     held.append(member.context().render());
                 }
+                if (memberRan) continue;
+                boolean blocking = authority && sameWorld;
                 gaps.add(GapRow.of(session.sessionId(),
                         GapKind.TOPOLOGY_DIVERGENCE,
-                        authority ? GapClass.BLOCKING : GapClass.DIAGNOSTIC,
+                        blocking ? GapClass.BLOCKING : GapClass.DIAGNOSTIC,
                         occurrence.render(),
                         "the closure holds " + held
                                 + " at this code point, and this replay ran "
                                 + "it only under "
                                 + occurrence.context().render()
+                                + (sameWorld ? "" : " (in a world no session "
+                                + "ran the member in: a new occurrence, not a "
+                                + "replacement)")
                                 + (authority ? "" : UNADMITTED)));
-                replaced |= authority;
+                replaced |= blocking;
             }
         }
         return replaced;
     }
 
-    /**
-     * The corpus's sessions, the ones that state a topology first.
-     *
-     * <p>{@link #unretained} publishes ONE row per region, so the class of
-     * that row has to be the strongest statement any session makes about
-     * it: an admitted replay that reached an unretained region is a
-     * BLOCKING fact whichever session the iteration met first.</p>
-     */
-    private static List<SessionReader> authoritiesFirst(Corpus corpus) {
-        List<SessionReader> ordered = new ArrayList<SessionReader>();
+    /** The worlds of the sessions that activated one occurrence. */
+    private static Set<String> worldsRunning(Corpus corpus,
+                                             OccurrenceAddress occurrence) {
+        Set<String> worlds = new LinkedHashSet<String>();
         for (SessionReader session : corpus.sessions()) {
-            if (session.admitted()) ordered.add(session);
+            if (corpus.activation(session.sessionId(), occurrence) != null) {
+                worlds.add(ObligationFactory.worldDigest(
+                        corpus.world(session.sessionId())));
+            }
         }
-        for (SessionReader session : corpus.sessions()) {
-            if (!session.admitted()) ordered.add(session);
-        }
-        return ordered;
+        return worlds;
     }
 
     /** The same code point in the same control context. */

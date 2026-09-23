@@ -11,7 +11,6 @@ import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
-import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
 
@@ -73,10 +72,6 @@ public final class ObligationFactory {
          * alone ({@link #DEFAULT_MAX_WORLD_DEPTH}).
          */
         public final int maxWorldDepth;
-
-        public Bounds(int maxPathsPerTask, int maxFlipsPerPath) {
-            this(maxPathsPerTask, maxFlipsPerPath, -1);
-        }
 
         /** A negative {@code maxWorldDepth} is the default. */
         public Bounds(int maxPathsPerTask, int maxFlipsPerPath,
@@ -456,7 +451,11 @@ public final class ObligationFactory {
         int tooDeep = 0;
         for (Corpus.RecordedPath path : smallestWorldFirst(corpus,
                 corpus.pathsOf(task.focused()))) {
-            if (!cuttable(corpus, path.sessionId)) continue;
+            // Only an ADMITTED session's path is cut from: a NOT_ADMITTED
+            // replay's path is a prefix its own run did not reproduce, and
+            // a child of it would extend a world nothing ran.  Its rows
+            // still attest the arms they hold ({@link Frontier}).
+            if (!corpus.session(path.sessionId).admitted()) continue;
             // THE NESTING BOUND ({@link #DEFAULT_MAX_WORLD_DEPTH}): a world
             // already this deep is not cut from, and the gap below says how
             // many paths that left unread.
@@ -484,7 +483,10 @@ public final class ObligationFactory {
             cappedPaths++;
             int flips = 0;
             int unflipped = 0;
-            for (int index = 0; index < path.decisions.size(); index++) {
+            // FAULT FLIPS FIRST (DESIGN4 SS1.4): the query is cheap and the
+            // world a fault opens is the one that grows the graph, so the
+            // budget and the wave's order both take them before the rest.
+            for (int index : faultFirst(corpus, path)) {
                 if (flips >= bounds.maxFlipsPerPath) {
                     unflipped++;
                     continue;
@@ -555,23 +557,17 @@ public final class ObligationFactory {
         return candidates;
     }
 
-    /**
-     * Whether a wave may cut a flip from this session's paths.
-     *
-     * <p>The seed always: it is the recording, and its world is empty.  A
-     * focused session only while its own {@code obligations.jsonl} states
-     * ADMITTED for every result in it -- one verdict per worker, published
-     * by the replay itself ({@code runtime/FocusedReplay#results}), so this
-     * asks the replay and not the wave's copy of its answer.</p>
-     */
-    private static boolean cuttable(Corpus corpus, String sessionId) {
-        if (sessionId.equals(corpus.seedSessionId())) return true;
-        SessionReader session = corpus.session(sessionId);
-        if (session == null) return false;
-        for (ObligationResult result : session.obligations()) {
-            if (result.verdict() != Verdict.ADMITTED) return false;
+    /** The decision indexes of one path, its fault decisions first. */
+    private static List<Integer> faultFirst(Corpus corpus,
+                                            Corpus.RecordedPath path) {
+        List<Integer> faults = new ArrayList<Integer>();
+        List<Integer> others = new ArrayList<Integer>();
+        for (int index = 0; index < path.decisions.size(); index++) {
+            (corpus.fault(path.sessionId, path.decisions.get(index))
+                    ? faults : others).add(index);
         }
-        return true;
+        faults.addAll(others);
+        return faults;
     }
 
     /**
