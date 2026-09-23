@@ -269,3 +269,24 @@ SAT_UNCONFIRMED with the first mismatch named. One replay per claim.
   expected kinds per case revised: MARKER_FLIPPED for hdfs-17899 bug1/2/3 (and
   17897 if its marker is the mechanism), CLOCK_SKEW for hdfs-17967 A/B/C and
   hdfs-11741, MARKER_FLIPPED (config) for hdfs-17960.
+
+## 5. CONFIRM (a SAT claim, checked by one replay)
+
+SAT says the model satisfies our formula; CONFIRM says the program agrees.
+One focused replay after DECIDE, only for a `SAT_CANDIDATE`: plant the
+model's root values (every declared root, MARKERs included; a clock as the
+skew model instant − the minting session's reading), hold the selected
+path's session schedule exactly as an obligation replay does (strict prefix
+to the anchor, timeouts after), force no flip and inherit none -- the values
+drive the decisions -- and run once. The claim is confirmed iff (a) no
+`SCHEDULE_DIVERGED` before the anchor's cut, (b) every edge the model chose
+is the edge the run took -- per message family the selected arm (consumer
+endpoint ← producer endpoint), per state join the writer version the read
+observed, per marker its planted polarity -- and (c) the anchor's target
+row states `observedFatal` and `reachedAnchor`. Checking, never enforcing:
+the existing hooks (the attach, the read and write rows, the target row)
+compare against `expected_edges.jsonl` and file `CONFIRM_MISMATCH`
+(DIAGNOSTIC) gaps; the run is scheduled by the session's schedule as today.
+Failing any of the three downgrades the claim to `SAT_UNCONFIRMED` with the
+first mismatch named (`final/confirm.json`, copied into `result.json`); the
+acceptance harness passes a case only on `confirmed=true`.

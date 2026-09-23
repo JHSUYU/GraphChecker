@@ -11,7 +11,8 @@ of the fatal read with the one the model chose marked, so the causal chain can
 be narrated from the model rather than inferred from a verdict.
 
 A case passes when the claim layer accepted it AND the mechanism it concluded
-is the one this case is known to fail by: claim SAT_CANDIDATE, no BLOCKING gap in gaps.json, not withheld,
+is the one this case is known to fail by: claim SAT_CANDIDATE, confirmed by
+the CONFIRM replay (confirmation.confirmed=true), no BLOCKING gap in gaps.json, not withheld,
 finalStatus FINAL_READY, a findingKind among the five mechanisms a composition
 may conclude, polarityDecides -- the seed disjunct unsat at the recorded
 valuation -- the case's EXPECTED mechanism from the table at the top, and an
@@ -172,6 +173,12 @@ gaps = len(blocking) if gaps_doc else result.get("gapCount", "?")
 # ...and the campaign's own acceptance: a candidate the campaign withheld is
 # not a pass whatever else the result says.
 withheld = result.get("accepted") is not True
+# CONFIRM (DESIGN4 §5): SAT says the model satisfies the formula, the
+# confirmation replay says whether the program agrees.  EMIT copies
+# confirm.json into result.json and downgrades an unconfirmed claim to
+# SAT_UNCONFIRMED; a result with no confirmation at all is not confirmed.
+confirmation = result.get("confirmation") or {}
+confirmed = confirmation.get("confirmed") is True
 # WHICH mechanism the composition concluded, and the condition it rests on.
 # EMIT copies both out of the ClaimPolicy decision; "MISSING" here means the
 # run predates that, and is reported as itself rather than read as a default.
@@ -217,6 +224,9 @@ if blocking:
 if withheld:
     reasons.append("candidate withheld (accepted=%s)"
                    % result.get("accepted", "MISSING"))
+if not confirmed:
+    reasons.append("unconfirmed: %s" % (
+        confirmation.get("reason") or "no confirmation published"))
 if final_status != "FINAL_READY":
     reasons.append("finalStatus=%s" % final_status)
 if finding_kind == "NO_SUPPORTED_WITNESS":

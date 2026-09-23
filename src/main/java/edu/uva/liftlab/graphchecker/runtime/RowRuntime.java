@@ -345,6 +345,13 @@ public final class RowRuntime {
                             + ", so the producer is the message's and not"
                             + " the staged expression's");
         }
+        // CONFIRM (b): is this the producer the model chose for this
+        // consumer?  Compared, never enforced; a difference is a gap.
+        String mismatch = Confirmation.attached(endpoint, producer);
+        if (!mismatch.isEmpty()) {
+            gap(GapKind.CONFIRM_MISMATCH, GapClass.DIAGNOSTIC, endpoint.id(),
+                    mismatch);
+        }
         SessionPublisher session = publisher;
         if (session != null) {
             String type = statedJavaType("attach", endpoint.id(), javaType,
@@ -423,6 +430,7 @@ public final class RowRuntime {
         distinct(at, "write#" + location + "#" + version);
         session.write(WriteRow.of(sessionId(), sequence(seq), at, location,
                 version, expressionRef(expression), type));
+        Confirmation.wrote(location, version, at);
     }
 
     /** One read, at the site index the event itself stood on. */
@@ -459,6 +467,7 @@ public final class RowRuntime {
                 observedVersion, Text.safe(symbol), type,
                 Text.safe(concreteValue).isEmpty() ? null
                         : Text.safe(concreteValue), mintVersion));
+        Confirmation.read(at, location, observedVersion);
     }
 
     /**
@@ -1088,6 +1097,13 @@ public final class RowRuntime {
             gap(GapKind.SESSION_INCOMPLETE, GapClass.BLOCKING,
                     sessionId(), shortfall);
         }
+        // CONFIRM (b), the edges only the whole run can answer for: the
+        // state joins, whose writers are published at their activation's
+        // end, and the consumers the model chose that never attached.
+        for (String mismatch : Confirmation.close()) {
+            gap(GapKind.CONFIRM_MISMATCH, GapClass.DIAGNOSTIC,
+                    mismatch.substring(0, mismatch.indexOf(':')), mismatch);
+        }
         List<ObligationResult> results =
                 FocusedReplay.results(sessionId());
         for (ObligationResult result : results) {
@@ -1133,6 +1149,7 @@ public final class RowRuntime {
             Interactions.resetForTests();
             Lineage.resetForTests();
             FocusedReplay.resetForTests();
+            Confirmation.resetForTests();
             SessionPublisher.resetForTests();
             HandoffMint.resetForTests();
         }
