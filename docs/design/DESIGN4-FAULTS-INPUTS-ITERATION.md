@@ -80,11 +80,16 @@ opens is the one that grows the graph, §3).
 ### 1.5 Domain and claim
 
 MARKER free in {recorded, flipped} (LEAN §4). A witness whose valuation flips a
-marker is MARKER_FLIPPED. Where the clocks are what refute the recorded valuation,
-a flipped marker is asked with every clock pinned at the instant its session read:
-the fault is a finding only if it reaches the fatal arm with time as recorded, and
-only when no fault does is the clock the mechanism (CLOCK_SKEW). The witness a
-claim publishes keeps every clock pin it can.
+marker is MARKER_FLIPPED. The run as it happened is the recorded roots, every
+clock at the instant its session read, and every path on the pairing its own run
+had (the value each attach a family binds received, anchor and upstream alike).
+Where the clocks or the pairings are what refute the recorded valuation, a
+flipped marker is asked with all of them held: the fault is a finding only if it
+reaches the fatal arm with time and pairing as recorded, and only when no fault
+does is the clock (CLOCK_SKEW) or the pairing (STATE/MESSAGE_PAIRING_FLIPPED) the
+mechanism. FORMULA_SAT_AT_RECORDED_VALUATION is raised only when a healthy path
+reaches the fatal arm with all of it held. The witness a claim publishes keeps
+every clock pin it can.
 
 Which mechanism each case must show follows from its tree, not from a preference:
 every tree of the block-key family (hdfs-17899 bug1/2/3, hdfs-17897, hdfs-17967

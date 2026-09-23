@@ -603,7 +603,8 @@ host is the gate doing its job, not a hang):
    `PLAN OCCURRENCE_ADDRESS_SHARED` = two activations, one address: the identity or the window;
    `COMPOSE PATH_SELF_CONTRADICTORY` (all paths) = no session observed the fatal: go to the
    obligations; `UNSTATED_VALUE "stated twice and differently"` = a mint and its obligation
-   disagree; `FORMULA_SAT_AT_RECORDED_VALUATION` = a path reaches the fatal with nothing moved.
+   disagree; `FORMULA_SAT_AT_RECORDED_VALUATION` = a healthy path reaches the fatal with nothing moved,
+   clocks at their readings and every path on its own pairing (DESIGN4 §1.5).
 3. `iteration-0000/obligation_results.jsonl` and the per-wave `obligations-NNNN/*/` — count
    verdicts per wave (`ADMITTED` / `UNSAT` / `NOT_ADMITTED`) and read the `NOT_ADMITTED` details:
    "wrong decision at … took X, the flip this replay INHERITED …" is a world that does not

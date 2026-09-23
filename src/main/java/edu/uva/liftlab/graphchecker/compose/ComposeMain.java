@@ -168,8 +168,9 @@ public final class ComposeMain {
         }
         if (!decision.outcomes().isEmpty()
                 && !decision.outcomes().get(0).pinned().isEmpty()) {
-            query.append("; the clocks the witness does not need, at the "
-                    + "recording\n");
+            query.append("; held at the recording: the clocks the witness "
+                    + "does not need, and each path's own pairing where the "
+                    + "recording decides the arm\n");
             for (String pin : decision.outcomes().get(0).pinned()) {
                 query.append(pin).append('\n');
             }

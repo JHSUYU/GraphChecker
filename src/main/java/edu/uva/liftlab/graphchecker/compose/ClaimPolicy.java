@@ -60,9 +60,11 @@ import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.integra
  *       exception.</li>
  * </ul>
  *
- * <p>Two refusals ride on top.  A formula satisfiable with every declared
- * root at its recorded value, on a session whose recording took the HEALTHY
- * arm, is the blocking alarm FORMULA_SAT_AT_RECORDED_VALUATION -- the
+ * <p>Two refusals ride on top.  A formula satisfiable as the run happened
+ * -- every declared root at its recorded value, every clock at its reading,
+ * every path on the pairing its own run had -- on a session whose recording
+ * took the HEALTHY arm, is the blocking alarm
+ * FORMULA_SAT_AT_RECORDED_VALUATION -- the
  * enumeration continues past it, so a polarity-decided witness is still
  * found and reported beside it.  And a witness that moves a root occurring
  * inside an UNATTESTED arm is refused: that arm has no producer path
@@ -90,10 +92,11 @@ public final class ClaimPolicy {
         }
 
         /**
-         * The clock cells this model was asked with pinned at the
-         * recording, beside the valuation: the ones the witness does not
-         * need ({@link #leastClocks}).  Part of the question the
-         * published model answers, so the artifact states them.
+         * What this model was asked with held at the recording, beside the
+         * valuation: the clock cells the witness does not need ({@link
+         * #leastClocks}), and where the recording decides the arm, every
+         * path's own pairing too.  Part of the question the published
+         * model answers, so the artifact states them.
          */
         public List<String> pinned() {
             return pinned;
@@ -235,30 +238,40 @@ public final class ClaimPolicy {
         // The alarm: the run as it happened reaches the fatal arm on a path
         // whose own recording took the healthy one.
         //
-        // Unless the CLOCKS are what reach it.  The alarm asks "what does
-        // this witness add?", and no valuation pins a clock -- it is free
-        // in every valuation including ordinal 0 -- which makes the
-        // alarm's premise true of every clock witness there could be.
-        // What answers the question for a clock is the clock pin, asked
-        // once, here; on a corpus with no clock cell nothing is asked, so
-        // nothing else changes.
+        // THE RUN AS IT HAPPENED is more than the recorded roots.  No
+        // valuation pins a clock -- it is free in every valuation including
+        // ordinal 0 -- and no valuation pins a pairing: a family offers a
+        // read or an attach every attested delivery of its slot.  Either
+        // makes the alarm's premise true of every witness that moves one.
+        // So the recorded valuation is asked once more with EVERY clock at
+        // the instant its session read and every path held to the pairing
+        // its own run had (Composition#recordedPairings); on a corpus with
+        // neither nothing is asked, so nothing else changes.
         //
-        // THE SAME ANSWER IS WHAT SAYS THE WITNESS IS CLOCK-DRIVEN, so it
-        // is asked ONCE, here, and read three times: by the alarm below, by
-        // loop 1, and by #mechanism.  The recorded valuation with EVERY clock
-        // at the instant its session read is the run as it happened, roots
-        // and time alike; unsat while the free valuation is sat, the clocks
-        // are what reach the fatal arm at the recorded roots, and that pinned
-        // refutation is the polarity every moved root is judged by (loop 1).
-        // The recorded outcome published moves only the cells the clock
-        // witness needs (#leastClocks).
+        // THE SAME ANSWER IS WHAT SAYS THE RECORDING DECIDES THE ARM, so it
+        // is asked ONCE, here, and read by the alarm below, by loop 1, by
+        // branch 2 and by #mechanism.  Unsat while the free valuation is
+        // sat: a clock or a pairing is what reaches the fatal arm at the
+        // recorded roots, and that pinned refutation is the polarity every
+        // moved root is judged by (loop 1) -- hdfs-17967 path B's heartbeat
+        // reply fault is a finding only with the proxy's own pairing held.
+        // Which of the two it is, is asked of the clocks alone: they name
+        // CLOCK_SKEW, and the recorded outcome published moves only the
+        // cells the clock witness needs (#leastClocks).
         List<String> cells = clockCellsRead(composition);
-        Outcome asRecorded = recorded != null && recorded.answer().sat()
-                && recorded.selected() != null && !cells.isEmpty()
+        List<String> asHappened = new ArrayList<String>(pins(composition,
+                cells));
+        asHappened.addAll(composition.recordedPairings());
+        boolean freeSat = recorded != null && recorded.answer().sat()
+                && recorded.selected() != null;
+        Outcome asRecorded = freeSat && !asHappened.isEmpty()
                 ? outcome(composition, solver, recorded.valuation(),
-                        pins(composition, cells), false) : null;
-        boolean clockDriven = asRecorded != null
+                        asHappened, false) : null;
+        boolean recordingDecides = asRecorded != null
                 && asRecorded.answer().unsat();
+        boolean clockDriven = recordingDecides && !cells.isEmpty()
+                && outcome(composition, solver, recorded.valuation(),
+                        pins(composition, cells), false).answer().unsat();
         if (clockDriven) {
             recorded = leastClocks(composition, solver, recorded, cells);
             outcomes.set(0, recorded);
@@ -266,7 +279,7 @@ public final class ClaimPolicy {
         if (recorded != null && recorded.answer().sat()
                 && recorded.selected() != null
                 && !recorded.selected().fatalObserved()
-                && !clockDriven) {
+                && !recordingDecides) {
             gaps.add(GapRow.of(recorded.selected().path().sessionId,
                     GapKind.FORMULA_SAT_AT_RECORDED_VALUATION,
                     GapClass.BLOCKING,
@@ -298,18 +311,19 @@ public final class ClaimPolicy {
         // and the rotation explained nothing about the difference.
         //
         //
-        // ASKED AT THE RECORDED INSTANTS WHEN THE CLOCKS DRIVE THE RECORDED
-        // VALUATION.  There the free recorded valuation is sat for any root
-        // at all, so polarity is the pinned refutation above, and a moved
-        // root is a finding only if it reaches the fatal arm with every clock
-        // where the recording read it -- the question asked here, per moved
-        // valuation that is sat at all.  Nothing about time is then part of
-        // the witness.  hdfs-17899's trees carry 11741's expiry check, so a
-        // key goes stale there only through a failed RPC; the clock witness
-        // this loop used to step aside for moved one node's clock hours past
-        // another's inside one JVM, and it shadowed every fault witness.
-        if (clockDriven) {
-            List<String> held = pins(composition, cells);
+        // ASKED AS THE RUN HAPPENED WHEN THE RECORDING DECIDES THE ARM.
+        // There the free recorded valuation is sat for any root at all, so
+        // polarity is the pinned refutation above, and a moved root is a
+        // finding only if it reaches the fatal arm with every clock where
+        // the recording read it and every path on its own pairing -- the
+        // question asked here, per moved valuation that is sat at all.
+        // Nothing about time or pairing is then part of the witness.
+        // hdfs-17899's trees carry 11741's expiry check, so a key goes stale
+        // there only through a failed RPC; the clock witness this loop used
+        // to step aside for moved one node's clock hours past another's
+        // inside one JVM, and it shadowed every fault witness.
+        if (recordingDecides) {
+            List<String> held = asHappened;
             for (int index = 0; index < outcomes.size(); index++) {
                 Outcome free = outcomes.get(index);
                 if (free.valuation().ordinal() == 0) continue;
@@ -339,7 +353,7 @@ public final class ClaimPolicy {
                         outcomes);
             }
         }
-        if (!clockDriven) {
+        if (!recordingDecides) {
             for (Outcome found : new ArrayList<Outcome>(outcomes)) {
                 if (found.valuation().ordinal() == 0) continue;
                 if (!found.answer().sat() || found.selected() == null) {
@@ -396,15 +410,16 @@ public final class ClaimPolicy {
                     && still != ClaimKind.MESSAGE_PAIRING_FLIPPED) {
                 continue;
             }
-            // CLOCK_SKEW carries its OWN polarity and this is the rule that
-            // says so (class doc: "pinning every cell to what its session
-            // read makes it unsat").  Asking `recorded.answer().unsat()`
-            // of it asks a different question -- whether the fatal arm is
-            // reached at the recorded ROOTS with the clocks already free --
-            // and whenever a clock is what does the work the answer is
-            // "sat", so the claim could never be published: it never has
-            // been, in 52+ manifests.
-            if (still != ClaimKind.CLOCK_SKEW && !polarityDecides) {
+            // A CLOCK or a PAIRING the recording decides carries its OWN
+            // polarity and this is the rule that says so (class doc:
+            // "pinning every cell to what its session read makes it
+            // unsat"; the same for the pairing each run had).  Asking
+            // `recorded.answer().unsat()` of it asks a different question --
+            // whether the fatal arm is reached at the recorded ROOTS with
+            // the clocks and pairings already free -- and whenever one of
+            // them does the work the answer is "sat", so the claim could
+            // never be published: CLOCK_SKEW never was, in 52+ manifests.
+            if (!recordingDecides && !polarityDecides) {
                 undecidedPolarity(gaps, recorded, still);
                 break;
             }

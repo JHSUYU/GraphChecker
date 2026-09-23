@@ -279,16 +279,49 @@ public final class Composer {
 
         /** Path id -> the interleaving that path's reads actually took. */
         public List<String> observedReads(String pathId) {
-            List<String> observed = observedReads.get(pathId);
-            return observed == null ? Collections.<String>emptyList()
-                    : observed;
+            return asserted(observedReads.get(pathId));
         }
 
         /** Path id -> the values that path's attaches actually received. */
         public List<String> observedArrivals(String pathId) {
-            List<String> observed = observedArrivals.get(pathId);
-            return observed == null ? Collections.<String>emptyList()
-                    : observed;
+            return asserted(observedArrivals.get(pathId));
+        }
+
+        /**
+         * Every path held to the pairing its own run had: under its
+         * selector, the versions its reads observed and the values its
+         * attaches received.
+         *
+         * <p>Part of "the run as it happened" beside the recorded roots and
+         * the clocks at their readings: a family offers a read or an attach
+         * every attested delivery of its slot, so without these a healthy
+         * path reaches the fatal arm at the recorded valuation through a
+         * delivery its own run never took -- hdfs-17967 path B's proxy paired
+         * with a heartbeat answer that exported no key the target presented.
+         * Guarded per path, because the symbols are shared and each run
+         * received its own values.</p>
+         */
+        public List<String> recordedPairings() {
+            List<String> held = new ArrayList<String>();
+            for (Disjunct disjunct : disjuncts) {
+                List<String> terms = new ArrayList<String>();
+                List<String> reads = observedReads.get(disjunct.path().pathId);
+                List<String> arrivals =
+                        observedArrivals.get(disjunct.path().pathId);
+                if (reads != null) terms.addAll(reads);
+                if (arrivals != null) terms.addAll(arrivals);
+                if (terms.isEmpty()) continue;
+                held.add("(assert (=> " + disjunct.selector() + " "
+                        + VmTermLowering.and(terms) + "))");
+            }
+            return held;
+        }
+
+        private static List<String> asserted(List<String> terms) {
+            List<String> asserted = new ArrayList<String>();
+            if (terms == null) return asserted;
+            for (String term : terms) asserted.add("(assert " + term + ")");
+            return asserted;
         }
 
         public String seedSessionId() {
@@ -355,7 +388,7 @@ public final class Composer {
      */
     private final Map<String, Set<String>> unattestedRoots =
             new LinkedHashMap<String, Set<String>>();
-    /** Path id -> what its reads observed, as named assertions. */
+    /** Path id -> what its reads observed, one term per symbol. */
     private final Map<String, List<String>> observedReads =
             new LinkedHashMap<String, List<String>>();
     /** Path id -> the arrivals its attaches actually received. */
@@ -912,7 +945,7 @@ public final class Composer {
         lowering.assertNamed("path_fatal__" + ordinal,
                 "(=> " + selector + " " + VmTermLowering.and(terms) + ")");
         observedReads.put(path.pathId, observed);
-        observedArrivals.put(path.pathId, arrivals(session));
+        observedArrivals.put(path.pathId, arrivals(bound));
         return new Disjunct(path, selector, target.observedFatal(),
                 interactionIds);
     }
@@ -1760,20 +1793,15 @@ public final class Composer {
                         // claim policy asks for it when it needs to know
                         // whether a witness rests on another writer.
                         //
-                        // ONE statement per symbol, as the arrivals are:
-                        // the name is the symbol's, and an occurrence
-                        // publishes one row per read of its declared input
-                        // -- two activations of the anchor, two rows, one
-                        // symbol.  Asserted twice the query has two
-                        // assertions of one :named, which z3 answers with
-                        // `named expression already defined` -- an (error
-                        // …), so no verdict at all, and it appeared only in
-                        // the WITNESS query, which runs only once a
-                        // valuation is sat.
+                        // ONE statement per symbol: an occurrence publishes
+                        // one row per read of its declared input -- two
+                        // activations of the anchor, two rows, one symbol --
+                        // and two rows that state different values for it
+                        // are a refusal, not two pins.
                         String name = "observed_read__"
                                 + ArtifactIO.digest(read.symbol(), 10);
-                        String statement = "(assert (! (= " + read.symbol()
-                                + " " + literal + ") :named " + name + "))";
+                        String statement = "(= " + read.symbol() + " "
+                                + literal + ")";
                         String held = statedOnce.put(name, statement);
                         if (held == null) {
                             observed.add(statement);
@@ -1878,25 +1906,28 @@ public final class Composer {
     }
 
     /**
-     * What this session received at each attach, as the pairing it took.
+     * What this session received at each attach a family binds, as the
+     * pairing it took.
      *
      * <p>Kept beside the path rather than inside it: where a read binds to
      * the paired producer's expression (R-READ) the arrival is a
      * CONSEQUENCE of that producer's roots, so pinning it would pin them --
      * but it is still the pairing the run had, and that is the question
-     * MESSAGE_PAIRING_FLIPPED asks.</p>
+     * MESSAGE_PAIRING_FLIPPED asks.  Every such attach of the path, not the
+     * anchor's alone: hdfs-17967 path B's proxy read its key map, whose
+     * entries were put from the ids its heartbeat answer delivered one
+     * occurrence further back, and pinned at the anchor only, the path
+     * still took another answer's ids.</p>
      */
-    private List<String> arrivals(String session) {
+    private List<String> arrivals(List<AttachRow> bound) {
         List<String> stated = new ArrayList<String>();
         Set<String> seen = new LinkedHashSet<String>();
-        for (AttachRow attach : corpus.attachesOn(session, anchor)) {
+        for (AttachRow attach : bound) {
             if (!seen.add(attach.symbol())) continue;
             String literal = smtLiteral(JsonFields.firstNonBlank(
                     attach.answeredValue(), attach.arrival()));
             if (literal.isEmpty()) continue;
-            stated.add("(assert (! (= " + attach.symbol() + " " + literal
-                    + ") :named observed_arrival__"
-                    + ArtifactIO.digest(attach.symbol(), 10) + "))");
+            stated.add("(= " + attach.symbol() + " " + literal + ")");
         }
         return stated;
     }

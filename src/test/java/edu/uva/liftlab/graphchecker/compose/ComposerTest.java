@@ -1039,6 +1039,74 @@ public class ComposerTest {
     }
 
     // ------------------------------------------------------------------
+    // 4b. The run as it happened holds each path to its own pairing.
+    // ------------------------------------------------------------------
+
+    /**
+     * hdfs-17967 path B's shape: a healthy run reaches the fatal arm at the
+     * recorded valuation only on another run's delivery, and the marker is
+     * the witness.
+     *
+     * <p>The anchor fails when the id it was delivered is not the id it
+     * holds.  s0 (the seed) was delivered 10 and holds 10; s2 was delivered
+     * 30 and holds 30; s1 flipped the marker, was delivered 20 and holds 10.
+     * The family offers s0's attach every attested delivery, so s0 on s2's
+     * reaches the fatal arm with the marker as recorded -- a pairing no run
+     * had.  Held to the pairing each run had, the recorded valuation is
+     * refuted, that refutation is the polarity, and the flipped marker is
+     * the finding: no alarm, and no pairing claim in its place.</p>
+     */
+    @Test
+    public void aHealthyRunOnAnotherRunsDeliveryDoesNotDecideTheRecording()
+            throws Exception {
+        Path iteration = folder.newFolder("own-pairing").toPath();
+        Endpoint producer = Endpoint.of(PRODUCER, "PORT.id",
+                at("export#1", 0), 0);
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.id",
+                at("attach#1", 0), 0);
+        for (String[] each : new String[][]{{"s0", "false", "10", "10"},
+                {"s1", "true", "20", "10"}, {"s2", "false", "30", "30"}}) {
+            boolean fatal = !each[2].equals(each[3]);
+            Session session = new Session(iteration, each[0],
+                    !"s0".equals(each[0]));
+            session.activation(PRODUCER);
+            session.marker(each[1]);
+            session.expression("EXPR.v1.id", integer("I",
+                    Long.parseLong(each[2])));
+            session.export(producer, "EXPR.v1.id", 1L, each[2]);
+            session.attach(consumer, "vh", "I", each[2], producer);
+            session.read(Endpoint.of(ANCHOR,
+                            "<Manager: int count>#PLACEHOLDER#0:READ",
+                            at("count#1", 0), 0),
+                    LocationId.of(LocationKind.INSTANCE, "Manager", "held"),
+                    -1L, PLACEHOLDER, "I", each[3]);
+            session.expression("EXPR.0000000000000fc2", binary("!=",
+                    symbol("vh", "I"), symbol(PLACEHOLDER, "I")));
+            session.target("EXPR.0000000000000fc2", fatal, true);
+            session.write();
+        }
+
+        Composer.Composition composition = compose(iteration, 8);
+        assertEquals("the three runs reach the anchor", 3,
+                composition.paths().size());
+        assertEquals("every path is held to its own pairing", 3,
+                composition.recordedPairings().size());
+
+        ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
+                solver());
+        assertFalse("a pairing no run had is not the run as it happened: "
+                        + decision.claim().gaps(),
+                says(decision.claim().gaps(),
+                        GapKind.FORMULA_SAT_AT_RECORDED_VALUATION, ""));
+        assertEquals(decision.claim().gaps().toString(),
+                ClaimKind.MARKER_FLIPPED, decision.claim().kind());
+        assertEquals(Collections.singletonMap(MARKER_ROOT, "true"),
+                decision.claim().movedRoots());
+        assertTrue("the refutation held to the recording is the polarity",
+                decision.claim().polarityDecides());
+    }
+
+    // ------------------------------------------------------------------
     // 5. Each path carries its own session's arrival -- and a read no
     //    attested arm delivers is refused, never pinned to one.
     // ------------------------------------------------------------------
