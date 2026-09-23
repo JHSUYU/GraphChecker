@@ -75,6 +75,14 @@ workflow_config_keys=(
   # existed: every worker local, no ssh anywhere.  A host spelled `localhost`
   # or spelled as this machine's own hostname runs locally too.
   "campaign_worker_hosts CAUSYNTH_CAMPAIGN_WORKER_HOSTS krp -"
+  # The memory, in MB, one obligation takes on the host that runs it: its
+  # solver JVM (which loads the session corpus) and its replay JVM together.
+  # A slot starts an obligation only on a host with that much available
+  # beyond what the obligations started there in the last ramp window will
+  # still claim (campaign_await_host_memory), whichever campaign started
+  # them -- the hosts are shared, and so is this accounting.  No default: the
+  # need is the case's, measured, and a campaign that states none is refused.
+  "obligation_memory_mb CAUSYNTH_OBLIGATION_MEMORY_MB krp -"
   # The stage a measurement run stops after, once its measurement is
   # complete.  `IMPORT` returns successfully right after the IMPORT stage:
   # the seed session and its per-kind row census are what a runtime change
@@ -479,7 +487,7 @@ validate_config() {
   local key
   for key in solver_timeout_ms replay_timeout_s schedule_max_jobs \
       concolic_worker_count region_path_max_waves compose_max_valuations \
-      causynth_loop_default_bound; do
+      causynth_loop_default_bound obligation_memory_mb; do
     require_positive_integer "${key}"
   done
   # The one stage a campaign may be asked to stop after.  Refused here rather
@@ -2548,6 +2556,152 @@ $(hostname -s 2>/dev/null) "
   [[ -z "${host}" || "${campaign_local_host_names}" == *" ${host} "* ]]
 }
 
+# ---------------------------------------------------------------------------
+# MEMORY PER HOST
+#
+# Every lift has 30 GB and every campaign's pool spans every lift, so what
+# decides whether one more obligation fits on a host is the host, not the
+# campaign: one 11741 wave of eight workers filled lift11 to 26 GB with 9 GB
+# swapped while two other lifts idled.  So a slot asks the HOST before it
+# starts an obligation there, through a ledger every campaign shares -- the
+# home directory is the same on every lift -- one directory per host:
+#
+#   ${campaign_host_gate_root}/<host>/lock       an mkdir lock, held for the
+#                                                 few lines that read and
+#                                                 append the ledger
+#   ${campaign_host_gate_root}/<host>/starts     "<epoch> <mb>" per obligation
+#                                                 started in the ramp window
+#   ${campaign_host_gate_root}/<host>/available  "<epoch> <mb>": MemAvailable,
+#                                                 read at most every poll
+#
+# An obligation may start when MemAvailable, less what every start of the
+# last ramp window will still grow into, leaves its obligation_memory_mb
+# plus the host's reserve.  A solver JVM takes tens of seconds to reach its
+# size and MemAvailable says nothing about memory a JVM has not touched yet,
+# so a start is charged in full until the window has passed; after it, what
+# it holds is in MemAvailable.  A slot that does not fit WAITS -- the
+# obligation is the wave's and is never skipped -- and says so once.
+# ---------------------------------------------------------------------------
+
+campaign_host_gate_root="${HOME}/gc-out/hosts"
+# How long a start is charged in full: the time a solver JVM takes to load
+# its corpus (11741 wave 2: about half a minute to 5 GB RSS).
+campaign_host_ramp_s=60
+# What every host keeps free whatever the campaigns ask: the page cache the
+# JVMs read their jars and corpora through, and the owner's own sessions.
+campaign_host_reserve_mb=3072
+# How often a waiting slot asks again, and how old a MemAvailable reading
+# may be before it is read again.
+campaign_host_poll_s=5
+# A lock older than this was left by a campaign that died holding it.
+campaign_host_lock_stale_s=30
+
+# The ledger's name for a host: this machine's short name for a local one,
+# so a campaign on lift11 and one addressing lift11 over ssh share one entry.
+campaign_host_key() {
+  if campaign_host_is_local "$1"; then
+    hostname -s
+  else
+    printf '%s\n' "$1"
+  fi
+}
+
+# MemAvailable of one host, in MB.  Local: /proc/meminfo.  Remote: the same
+# file over the same batch-mode ssh every remote obligation uses.
+campaign_host_available_mb() {
+  local host=$1
+  local read_it="awk '/^MemAvailable:/ {print int(\$2 / 1024)}' /proc/meminfo"
+  if campaign_host_is_local "${host}"; then
+    bash -c "${read_it}"
+  else
+    ssh "${campaign_ssh_options[@]}" -o ConnectTimeout=20 -- "${host}" \
+      "${read_it}"
+  fi
+}
+
+# The host's MemAvailable, from the ledger when it is fresh enough.
+campaign_host_memory_reading() {
+  local host=$1 dir=$2 now=$3 at mb
+  if read -r at mb 2>/dev/null <"${dir}/available" \
+      && [[ "${at}" =~ ^[0-9]+$ && "${mb}" =~ ^[0-9]+$ ]] \
+      && (( now - at < campaign_host_poll_s )); then
+    printf '%s\n' "${mb}"
+    return 0
+  fi
+  mb=$(campaign_host_available_mb "${host}") || return 1
+  [[ "${mb}" =~ ^[0-9]+$ ]] || return 1
+  printf '%s %s\n' "${now}" "${mb}" >"${dir}/available.$$"
+  mv -f -- "${dir}/available.$$" "${dir}/available"
+  printf '%s\n' "${mb}"
+}
+
+# One try: 0 when this obligation may start now and is charged to the host,
+# 1 when it does not fit yet (why, in campaign_host_wait_reason), 2 when the
+# host's memory cannot be read.
+campaign_host_wait_reason=""
+campaign_host_try_start() {
+  local host=$1 key dir now available lock_at charged=0 at mb kept=""
+  key=$(campaign_host_key "${host}")
+  dir="${campaign_host_gate_root}/${key}"
+  mkdir -p "${dir}"
+  now=$(date +%s)
+  available=$(campaign_host_memory_reading "${host}" "${dir}" "${now}") \
+    || return 2
+  if ! mkdir "${dir}/lock" 2>/dev/null; then
+    lock_at=$(stat -c %Y "${dir}/lock" 2>/dev/null || echo "${now}")
+    if (( now - lock_at >= campaign_host_lock_stale_s )); then
+      rmdir "${dir}/lock" 2>/dev/null || true
+    fi
+    campaign_host_wait_reason="the ledger of ${key} is locked"
+    return 1
+  fi
+  if [[ -f "${dir}/starts" ]]; then
+    while read -r at mb; do
+      [[ "${at}" =~ ^[0-9]+$ && "${mb}" =~ ^[0-9]+$ ]] || continue
+      (( now - at < campaign_host_ramp_s )) || continue
+      charged=$((charged + mb))
+      kept+="${at} ${mb}"$'\n'
+    done <"${dir}/starts"
+  fi
+  if (( available - charged
+        < obligation_memory_mb + campaign_host_reserve_mb )); then
+    printf '%s' "${kept}" >"${dir}/starts"
+    rmdir "${dir}/lock"
+    campaign_host_wait_reason="${key} has ${available} MB available and \
+${charged} MB charged to obligations started in the last \
+${campaign_host_ramp_s}s; one needs ${obligation_memory_mb} MB beyond a \
+${campaign_host_reserve_mb} MB reserve"
+    return 1
+  fi
+  printf '%s%s %s\n' "${kept}" "${now}" "${obligation_memory_mb}" \
+    >"${dir}/starts"
+  rmdir "${dir}/lock"
+  return 0
+}
+
+# Blocks until one obligation fits on its host, then charges it there.
+# Fails -- the obligation's own failure, named -- only when the host's
+# memory cannot be read, which is a host the obligation could not run on.
+campaign_await_host_memory() {
+  local host=$1 obligation_id=$2 said=false status=0
+  while true; do
+    run_capturing_status campaign_host_try_start "${host}"
+    case "${status}" in
+      0) return 0 ;;
+      2)
+        campaign_log "obligation ${obligation_id}: the memory of host \
+${host} cannot be read"
+        return 1 ;;
+    esac
+    if [[ "${said}" == false ]]; then
+      campaign_log "obligation ${obligation_id} waits for memory on \
+${host}: ${campaign_host_wait_reason}"
+      said=true
+    fi
+    sleep "${campaign_host_poll_s}"
+  done
+}
+
 # One obligation, on the host its slot belongs to.
 #
 # The local branch is character-for-character what campaign_explore's inner
@@ -2586,8 +2740,10 @@ campaign_wave_slot() {
     [[ -n "${job}" ]] || continue
     worker_dir="${wave_dir}/${job}"
     printf '%s\n' "${host}" >"${worker_dir}/host.txt"
-    if campaign_run_obligation_on_host "${host}" "${job}" "${obligations}" \
-        "${classes}" "${worker_dir}" "${sessions}" "${seed_plan}"; then
+    if campaign_await_host_memory "${host}" "${job}" \
+        && campaign_run_obligation_on_host "${host}" "${job}" \
+          "${obligations}" "${classes}" "${worker_dir}" "${sessions}" \
+          "${seed_plan}"; then
       campaign_log "obligation ${job}: host=${host} verdict=$(jq -r \
         '.verdict // "?"' "${worker_dir}/obligation_result.jsonl" \
         2>/dev/null || echo '?')"
@@ -2906,6 +3062,9 @@ obligation ${obligation_id}, so it was not withdrawn from the corpus"
     [[ ! -e "${worker}/${file}" ]] || mv -- "${worker}/${file}" "${aside}/"
   done
   printf 'localhost\n' >"${worker}/host.txt"
+  campaign_await_host_memory localhost "${obligation_id}" \
+    || campaign_fail EXPLORE CAMPAIGN "${worker}" \
+      "the re-run of ${obligation_id} found no readable memory on the head"
   (
     set -euo pipefail
     campaign_obligation_replay "${obligation_id}" "${classes}" "${worker}" \

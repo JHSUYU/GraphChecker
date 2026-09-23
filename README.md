@@ -418,21 +418,29 @@ a tree edit. Per-case notes: `experiments/hadoop/<case>/README.md`.
 ```bash
 # 1. snapshot the commit you want to run (from ~/GraphChecker, tree clean and committed)
 git worktree add ~/gc-run/p24 HEAD && (cd ~/gc-run/p24 && mvn -q -o package -DskipTests)
-# 2. launch: two cases per host, the rest queued behind them
-tools/rounds/queue-launch.sh /u/vnr3ne/gc-run/p24 v21 \
-    lift12:hdfs-17899-bug3,hdfs-17967-pathA lift13:hdfs-17899-bug1,hdfs-17967-pathB:hdfs-17967-pathC \
-    lift15:hdfs-17899-bug2 lift11:hdfs-11741,hdfs-17897:hdfs-17960
+# 2. launch all nine at once, heads spread over the five lifts, obligations on all of them
+tools/rounds/launch-round.sh /u/vnr3ne/gc-run/p25 v22          # [workers-per-host], default 4
+CASES="hdfs-17960 hdfs-11741" tools/rounds/launch-round.sh /u/vnr3ne/gc-run/p25 v22b   # a subset
 # 3. watch: one DONE line per finished campaign (exit, seconds, claim, blockers, verdict, moved roots)
-tools/rounds/round-monitor.sh 'v21-*' | grep --line-buffered "DONE "
-# 4. stop one run: the launcher log names its process group
-ssh lift12 "kill -TERM -$(grep -o 'process group [0-9]*' ~/gc-out/launch-v21-17899-bug3.log | awk '{print $3}')"
-ssh lift12 "pkill -TERM -f 'gc-run/p2[4]'"    # the driver keeps spawning obligation JVMs; kill those too
+tools/rounds/round-monitor.sh 'v22-*' | grep --line-buffered "DONE "
+# 4. stop one run: the launcher log names its process group; its remote workers end with it
+ssh lift13 "kill -TERM -$(grep -o 'process group [0-9]*' ~/gc-out/launch-v22-17899-bug1.log | awk '{print $3}')"
 ```
 
-`tools/rounds/launch-run.sh` is what each host runs (it sets `JAR`, `CASES`, `OUT`, `Z3_BIN`,
-`CAUSYNTH_CUSTOM_JDK_HOME`, `SKIP_BUILD=1` and execs `experiments/hadoop/accept/accept.sh`).
-Campaign durations at two per host: 17960 ≈ 5 min, the block-key cases 12–25 min, 11741 up to
-an hour. The acceptance rule is in `experiments/hadoop/accept/README.md`: `SAT_CANDIDATE`,
+`tools/rounds/launch-round.sh` places the HEADS (seed, planner, composer): 11741 alone on
+lift12, lift11 — the owner's interactive machine — the lightest pair (17960, 17967-pathC), two
+block-key cases on each of lift13–15. Every campaign's OBLIGATIONS run on all five lifts
+(`CAUSYNTH_CAMPAIGN_WORKER_HOSTS`, `workers-per-host` slots on each), so a wave of one case uses
+the whole cluster. What keeps a lift's memory safe is the gate in `run_engine.sh`
+(`campaign_await_host_memory`): a slot starts an obligation on a host only when its
+`MemAvailable` covers the case's `obligation_memory_mb` (11741 6000, the others 2500, measured)
+plus a 3072 MB reserve **beyond every start of the last 60 s on that host, by any campaign** — a
+solver JVM takes tens of seconds to load its corpus, so a recent start is charged in full until
+its memory shows. The ledger is one directory per host under `~/gc-out/hosts/` (shared home: an
+mkdir lock, the recent starts, the last `MemAvailable` reading); a slot that does not fit waits
+and logs `obligation … waits for memory on <host>: …` once. `tools/rounds/launch-run.sh` is
+what each head runs (it sets `JAR`, `CASES`, `OUT`, `Z3_BIN`, `CAUSYNTH_CUSTOM_JDK_HOME`,
+`SKIP_BUILD=1` and execs `experiments/hadoop/accept/accept.sh`). The acceptance rule is in `experiments/hadoop/accept/README.md`: `SAT_CANDIDATE`,
 `FINAL_READY`, no BLOCKING gap at any stage, the case's expected mechanism (`EXPECTED_MECHANISM`
 in `report.py`: 17960 `MARKER_FLIPPED` on `SNAPSHOT_DELETION_ORDERED=false`; 11741 `CLOCK_SKEW`
 (no expiry check: a branch flip alone reaches it) or `MARKER_FLIPPED`;
@@ -568,10 +576,9 @@ is due.
 3. **Read v21 to the end, then finish the round**: v21 on p24 ended `CLOCK_SKEW` for bug1, bug3,
    pathB, pathC and 17897 (FAIL under the RPC rule, item 0); pathA is `SAT_UNCONFIRMED` (CONFIRM
    left the selected path's schedule — item 1); 17960 died at REPLAY (item 1); 11741 and bug2
-   were still running. Place the next round by
-   memory (§12): each lift has 30 GB; 11741's obligation workers each load the whole corpus
-   (1.5–5.5 GB per solver JVM in wave 2, growing per wave), so 11741 runs alone on a host with at
-   most 3–4 workers, the light cases at most two per host, the head (lift11) lightest. Any FAIL is diagnosed by §11 before a fix; `PATH_SELF_CONTRADICTORY` on
+   were still running. The next round runs all nine at once with `tools/rounds/launch-round.sh`
+   (§8): heads placed by weight, every wave's obligations on all five lifts behind the per-host
+   memory gate. Any FAIL is diagnosed by §11 before a fix; `PATH_SELF_CONTRADICTORY` on
    every path still means no session observed the fatal. Then all nine on one snapshot, the
    acceptance checks of §8, and `main` fast-forwarded to that commit.
 4. **The cleanup the read found (§14, R-items).** *Now, before the round* — each after `git
@@ -587,7 +594,9 @@ is due.
    the sessions its obligation's world and arms need (the family-arm rule reads every session
    that states the family — check `Arms` before narrowing), or a slot claims its next obligation
    only when its host has the memory for one (`campaign_wave_slot`, `/proc/meminfo`
-   `MemAvailable`, a reserve the case states). Until then the round is placed by hand (item 3).
+   `MemAvailable`, a reserve the case states). The second half is done: the per-host memory
+   gate (§8, `campaign_await_host_memory`, `obligation_memory_mb`). The first would let more
+   obligations share a host and stays open.
 6. **Exercise GROW end to end.** `growth.jsonl` has had 0 rows in every run so far. Either no
    admitted world reaches an unwoven region in these nine cases, or `WaveGraph.writeGrowth` never
    sees one: it requires an activation row (`instrumented=false`) inside `corpus.upstreamOf(
@@ -618,7 +627,9 @@ is due.
 
 ## 11. Debugging a round
 
-Where to look, in order, for a FAIL line:
+Where to look, in order, for a FAIL line (a campaign that seems stalled first: `grep 'waits for
+memory' logs/<case>.log` and `cat ~/gc-out/hosts/<host>/{available,starts}` — a slot waiting on a
+host is the gate doing its job, not a hang):
 
 1. `summary.tsv` — `claim`, `finalStatus`, `blockers`, `reason`. `MISSING` means the campaign
    died before EMIT: `logs/<case>.log` has the stage (`[campaign:error] stage=… reason=…`); a
@@ -706,10 +717,10 @@ The owner's standing rules; every one of them has been paid for.
   pass only with an IPC door fault flipped and the clocks at the recording; a clock witness for
   them is not a pass. Fault points are the transport doors (DESIGN4 §1), both directions.
 - **Balance memory across the lifts; never blow one up** (owner, 2026-09-23 15:30). Each lift has
-  30 GB RAM and 48 CPUs; check `free -g` everywhere before a launch and place by measured need
-  (§10 items 3 and 5). A running campaign that over-commits is capped between obligations —
-  SIGSTOP the wave's extra slot subshells, resume them once the queue is claimed — never by
-  stopping a running JVM (z3's wall-clock timeout would fire).
+  30 GB RAM and 48 CPUs. Every campaign's obligations span all five lifts and the memory gate
+  (§8) admits a start only where the host has room for it, counted across campaigns; a case's
+  `obligation_memory_mb` is its measured need, raised when a round shows more. Never relieve a
+  host by stopping a running JVM (z3's wall-clock timeout would fire).
 - **Never**: `git add -A` (`experiments/hbase` is unrelated and untracked); edit a running
   campaign's inputs or scripts; rebuild a tree under a running campaign; push without the owner's
   approval; claim a PASS from the claim kind alone (§8).
@@ -727,7 +738,7 @@ run_engine.sh                                 the campaign driver
 experiments/hadoop/<case>/                    declarations + README + tree-edits/ per case
 experiments/hadoop/lib/                       the one harness every case runs through (README: workload rules)
 experiments/hadoop/accept/                    accept.sh, probe.sh, report.py (README: what PASS means)
-tools/rounds/                                 queue-launch.sh, round-monitor.sh, launch-run.sh (§8)
+tools/rounds/                                 launch-round.sh, launch-run.sh, round-monitor.sh (§8)
 third_party/OpenJDK-Concolic-Execution-Engine/ the concolic VM (in tree)
 docs/CONCOLIC_INTEGRATION.md                  the VM boundary: broker ABI, capabilities, refusals
 docs/design/DESIGN4-FAULTS-INPUTS-ITERATION.md the current design (fault points, inputs, iteration, CONFIRM, nearest world)
