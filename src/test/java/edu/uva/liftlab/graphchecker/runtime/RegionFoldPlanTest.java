@@ -131,7 +131,7 @@ public class RegionFoldPlanTest {
                         Arrays.asList(HANDLER, LEAF),
                         activations.runtimeInstances,
                         activations.regionFolds, cutObservations(),
-                        activations.occurrenceLinks, StaticScopeMap.empty());
+                        StaticScopeMap.empty());
 
         assertEquals("the folded region has no row: it has no occurrence",
                 1, closure.regions.size());

@@ -1043,14 +1043,18 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * Returns the replay model for one explicitly named application fault.
+     * The value a fault marker ({@code Debug.makeSymbolicBoolean}) is handed
+     * at its call: the recorded polarity, which is {@code false} -- a
+     * recording injects no fault, and the marker mints unconditionally.
+     * The marker becomes a root where the plan binds the local it defines
+     * ({@code LOCAL_DEFINITION}, {@link RootMint#materializePrimitive}), and
+     * that mint plants the wave's polarity; nothing is decided here.
      *
-     * <p>Called from outside this repository ({@code ipc.Client:1247} in the
-     * 17899 bugs, through {@code annotation.Debug}), so the name stays here
-     * and the cluster behind it is {@link FaultMarker}.</p>
+     * <p>Called from outside this repository (the workload trees, through
+     * {@code annotation.Debug}), so the name stays.</p>
      */
     public static boolean materializeSymbolicBoolean(String name) {
-        return FaultMarker.materialize(name);
+        return false;
     }
 
 
@@ -2176,18 +2180,6 @@ public final class ConcolicRegionRuntime {
         int field(String method, int unitIndex) {
             return observe("FIELD\u0000"
                     + SiteId.render(method, unitIndex));
-        }
-
-        /**
-         * A workload-declared fault marker counts per activation and per
-         * declared symbol.  The recorder counts the same firings per
-         * activation and per call site
-         * ({@code RuntimeRefinedGraphBuilder.collectAccessorBindings}); one
-         * marker literal names one call site, so the two ordinals agree and
-         * {@code replayOccurrence} selects the exact recorded firing.
-         */
-        int explicitFault(String symbolicName) {
-            return observe("EXPLICIT_FAULT\u0000" + safe(symbolicName));
         }
 
 

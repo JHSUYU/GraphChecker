@@ -1329,8 +1329,8 @@ final class ConcolicTaskPlan {
             this.capturesTargetReach =
                     task.goalKind().capturesTargetReach();
             // The plan names the propagation ledger every task of this
-            // invocation shares: ConcolicScheduler stamps the seed replay,
-            // PathReplayTaskFactory stamps each flip replay. A row that
+            // invocation shares: ConcolicScheduler stamps every row of the
+            // plan, and a flip replay links that same plan.  A row that
             // names none is a plan no scheduler wrote, and the importer
             // refuses its results by name (CONCOLIC_RESULT_REPLAY_GROUP_MISSING).
             this.replayGroupId = optionalString(task.json(),

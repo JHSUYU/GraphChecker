@@ -371,52 +371,6 @@ final class ActiveRegion {
     }
 
     /**
-     * Records one firing of a fault marker this replay could not answer.
-     *
-     * <p>{@link #materializeSymbolicBoolean} must hand the workload a
-     * {@code boolean}: the marker stands at a call site the program is
-     * about to branch on, so there is no third value to return and no
-     * point at which the replay can stop.  What it must not do is let
-     * the {@code false} it returns pass for an answer.</p>
-     *
-     * <p>There are two answers, and a firing is unanswered only when it
-     * has neither.  A flip replay answers from its model assignment; a
-     * seed replay has no model by construction and answers from the
-     * recording's own polarity, which the plan states as the action's
-     * {@code primitiveValue} gated on {@code observed}.</p>
-     *
-     * <p>{@code controlled} decides the class, and it decides it the
-     * way the frame does.  A marker the plan declares is a question the
-     * search asked and neither answer came, so the polarity handed back
-     * is the very one the obligation asked to move: the run did not run
-     * what was asked, which is BLOCKING and is exactly what {@code
-     * ASSIGNMENT_UNPLANTED} names.  A marker the plan never declared
-     * put no question to this replay -- the recording ran the same hook
-     * to the same {@code false} -- so it is named on the diagnostic
-     * stream and nothing is refused.</p>
-     *
-     * <p>Both bodies used to be empty, so a fault that fired the plan's
-     * controls and could not answer was silently {@code false}.</p>
-     */
-    void noteFaultIdle(String name, int occurrence, boolean controlled,
-                       String reason) {
-        String subject = "marker=" + safe(name) + "#" + occurrence;
-        if (controlled) {
-            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.ASSIGNMENT_UNPLANTED,
-                    edu.uva.liftlab.graphchecker.contract.GapClass.BLOCKING, subject,
-                    "this activation's plan controls the marker and had"
-                            + " neither answer for this firing ("
-                            + safe(reason) + "), so it ran the polarity"
-                            + " the obligation asked to move");
-            return;
-        }
-        RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.DECLARATION_MISSING,
-                edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC, subject,
-                "this fault marker fired where the case declares no"
-                        + " action for it (" + safe(reason) + ")");
-    }
-
-    /**
      * Whether a configured-source hook may mint where it just fired.
      *
      * <p>A CONCRETELY RUN REGION CONTRIBUTES LITERALS, NEVER FREEDOM

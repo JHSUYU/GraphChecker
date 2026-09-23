@@ -1380,7 +1380,7 @@ public final class CausynthTraceRecorder {
                     observedMethods, activationGraph.runtimeInstances,
                     activationGraph.regionFolds,
                     runtimeObservations(trace.execution, trace.methods),
-                    activationGraph.occurrenceLinks, scopeMap);
+                    scopeMap);
             for (Map<String, Object> row : closure.regions) {
                 RuntimeRefinedGraphBuilder.normalizeNumbersInPlace(row);
             }

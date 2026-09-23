@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import edu.uva.liftlab.graphchecker.annotation.Debug;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 
 import java.nio.charset.StandardCharsets;
@@ -170,7 +171,6 @@ public final class DeclaredSiteCapture {
         StaticScopeMap.Declared declared = site.declared;
         boolean accessor = StaticScopeMap.ACCESSOR_RETURN.equals(
                 declared.kind);
-        String regionId = plan.regionId();
         String occurrenceId = plan.occurrenceId();
         // Published identity, spelled from content alone.  The accessor
         // family names the candidate edge the declaration was read from, as
@@ -179,36 +179,77 @@ public final class DeclaredSiteCapture {
                 ? occurrenceId + "\n" + declared.edgeId + "\n" + siteId
                 + "\n" + declaredCallee + "\n" + ordinal
                 : occurrenceId + "\n" + siteId + "\n" + ordinal;
-        String portId = regionId + ".in." + UUID.nameUUIDFromBytes(
-                (regionId + "\n" + key).getBytes(StandardCharsets.UTF_8));
-        String caller = SiteId.methodOf(siteId);
-        JsonObject port = new JsonObject();
-        port.addProperty("portId", portId);
-        port.addProperty("symbol", portId);
-        port.addProperty("occurrenceId", occurrenceId);
-        port.addProperty("cell", site.cell);
-        port.addProperty("javaType", declared.javaType);
-        port.addProperty(DECLARED_CALLEE, declaredCallee);
-        port.addProperty(SiteId.MEMBER, siteId);
-        port.addProperty("staticAccessSiteId", siteId);
-        port.addProperty("unitIndex", SiteId.unitIndexOf(siteId));
-        port.addProperty("callerMethod", caller);
-        port.addProperty("dependencyRole", DependencyRole.VALUE_FRONTIER);
-        port.addProperty("transportKind", "ACTIVATION_LOCAL");
+        JsonObject port = staticPort(plan, site, key);
         port.addProperty("observed", true);
         port.addProperty("replayOccurrence", ordinal);
         port.addProperty(PRIMITIVE_VALUE, primitiveValue);
         port.addProperty(EVENT_SEQ, eventSeq);
         port.addProperty(CALL_ID, callId);
-        JsonArray dependencyCells = new JsonArray();
-        dependencyCells.add(declared.dependencyCell);
-        port.add("dependencyCells", dependencyCells);
+        dependencyCells(port, site);
         if (accessor) {
-            accessorPort(port, site, caller, regionId);
+            accessorPort(port, site, SiteId.methodOf(siteId),
+                    plan.regionId());
         } else {
-            callReturnPort(port, caller);
+            callReturnPort(port, site);
+            if (!sourceKey.isEmpty()) port.addProperty(SOURCE_KEY, sourceKey);
+            if (!requestKey.isEmpty()) port.addProperty(REQUEST_KEY, requestKey);
+            if (!requestApi.isEmpty()) port.addProperty(REQUEST_API, requestApi);
         }
         return port;
+    }
+
+    /**
+     * The port a CALL_RETURN declaration mints at a site no recording
+     * captured: the static half alone, for an occurrence a replay exposed
+     * (DESIGN4 section 3.3b).  Its id carries no ordinal, so the one action
+     * answers every firing of the site ({@code SymbolizeAction
+     * #acceptsOccurrence}), and it states no observed value.  An accessor
+     * return is ported from the recorded receiver, which such an occurrence
+     * has none of, and is refused by name.
+     */
+    public static JsonObject declaredPort(RegionInstancePlan plan,
+                                          StaticScopeMap.Site site) {
+        if (StaticScopeMap.ACCESSOR_RETURN.equals(site.declared.kind)) {
+            throw new IllegalArgumentException("an accessor return needs the"
+                    + " recorded receiver, which an exposed occurrence has"
+                    + " none of: " + site);
+        }
+        JsonObject port = staticPort(plan, site,
+                plan.occurrenceId() + "\n" + site.siteId);
+        port.addProperty("observed", false);
+        dependencyCells(port, site);
+        callReturnPort(port, site);
+        return port;
+    }
+
+    /** The members every declared port takes from the scope map alone. */
+    private static JsonObject staticPort(RegionInstancePlan plan,
+                                         StaticScopeMap.Site site,
+                                         String key) {
+        String regionId = plan.regionId();
+        String portId = regionId + ".in." + UUID.nameUUIDFromBytes(
+                (regionId + "\n" + key).getBytes(StandardCharsets.UTF_8));
+        JsonObject port = new JsonObject();
+        port.addProperty("portId", portId);
+        port.addProperty("symbol", portId);
+        port.addProperty("occurrenceId", plan.occurrenceId());
+        port.addProperty("cell", site.cell);
+        port.addProperty("javaType", site.declared.javaType);
+        port.addProperty(DECLARED_CALLEE, site.declaredCallee);
+        port.addProperty(SiteId.MEMBER, site.siteId);
+        port.addProperty("staticAccessSiteId", site.siteId);
+        port.addProperty("unitIndex", SiteId.unitIndexOf(site.siteId));
+        port.addProperty("callerMethod", SiteId.methodOf(site.siteId));
+        port.addProperty("dependencyRole", DependencyRole.VALUE_FRONTIER);
+        port.addProperty("transportKind", "ACTIVATION_LOCAL");
+        return port;
+    }
+
+    private static void dependencyCells(JsonObject port,
+                                        StaticScopeMap.Site site) {
+        JsonArray dependencyCells = new JsonArray();
+        dependencyCells.add(site.declared.dependencyCell);
+        port.add("dependencyCells", dependencyCells);
     }
 
     /**
@@ -276,19 +317,25 @@ public final class DeclaredSiteCapture {
         port.addProperty("location", "HEAP_OBJECT_FIELD");
     }
 
-    /** An external call's return: the local it lands in is the port. */
-    private void callReturnPort(JsonObject port, String caller) {
+    /**
+     * An external call's return: the local it lands in is the port.  The
+     * one callee the workload declares in its own text, the fault marker
+     * ({@code Debug.makeSymbolicBoolean}), is stamped as such: its
+     * {@code boolean} local is the MARKER root the replay flips.
+     */
+    private static void callReturnPort(JsonObject port,
+                                       StaticScopeMap.Site site) {
+        String caller = SiteId.methodOf(site.siteId);
         port.addProperty("sourceKind",
-                RuntimeSelectedRegionFinalizer.EXTERNAL_CALL_RETURN);
+                Debug.isBooleanMarkerSignature(site.declaredCallee)
+                        ? RuntimeSelectedRegionFinalizer.EXPLICIT_SYMBOLIC_FAULT
+                        : RuntimeSelectedRegionFinalizer.EXTERNAL_CALL_RETURN);
         port.addProperty("rootKind", "CALL_RETURN");
         port.addProperty("method", caller);
         port.addProperty("rootMethod", caller);
         port.addProperty("definitionMethod", caller);
         port.addProperty("definitionUnitIndex",
-                SiteId.unitIndexOf(siteId));
+                SiteId.unitIndexOf(site.siteId));
         port.addProperty("location", "CALL_RETURN");
-        if (!sourceKey.isEmpty()) port.addProperty(SOURCE_KEY, sourceKey);
-        if (!requestKey.isEmpty()) port.addProperty(REQUEST_KEY, requestKey);
-        if (!requestApi.isEmpty()) port.addProperty(REQUEST_API, requestApi);
     }
 }

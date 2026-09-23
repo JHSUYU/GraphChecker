@@ -3,7 +3,6 @@ package edu.uva.liftlab.graphchecker.runtime;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
 import org.junit.After;
 import org.junit.Test;
@@ -12,7 +11,6 @@ import java.lang.reflect.Field;
 import java.util.ArrayDeque;
 import java.util.Deque;
 
-import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
@@ -27,7 +25,6 @@ import static org.junit.Assert.assertTrue;
 public class NoFabricatedChainElementTest {
     private static final String METHOD = "<a.B: void run(int)>";
     private static final String SITE = METHOD + "#u4";
-    private static final String MARKER = "hadoopIpcRequestFails";
     private final Deque<Long> opened = new ArrayDeque<>();
 
     @After
@@ -42,28 +39,6 @@ public class NoFabricatedChainElementTest {
     public void anAbsentExpressionIsStillTheHonestNothing() throws Exception {
         region(false);
         assertNull(ConcolicRegionRuntime.engineExpression("{}"));
-    }
-
-    /**
-     * A marker is answered from the recording or a model, or is a named gap.
-     *
-     * <p>A seed has no model, so "no model assignment" is not "unanswered":
-     * the recorded polarity is {@code primitiveValue} gated on {@code
-     * observed}, and a flip answers from its model.</p>
-     */
-    @Test
-    public void aControlledMarkerIsAnsweredOrNamedUnanswered()
-            throws Exception {
-        for (String recorded : new String[] {"false", "true"}) {
-            region(false, faultAction(MARKER, recorded));
-            assertEquals("the recording's polarity is read, not assumed",
-                    recorded, String.valueOf(ConcolicRegionRuntime
-                            .materializeSymbolicBoolean(MARKER)));
-        }
-        // No recorded value is the unanswered case: the idle polarity of a
-        // marker this plan controls is not an answer to it.
-        region(false, faultAction(MARKER, null));
-        assertFalse(ConcolicRegionRuntime.materializeSymbolicBoolean(MARKER));
     }
 
     /**
@@ -96,20 +71,6 @@ public class NoFabricatedChainElementTest {
                 + "','occurrence':1,'outcome':true}"));
     }
 
-    /** One declared fault marker, with the polarity the recording saw. */
-    private static JsonObject faultAction(String name, String recorded) {
-        JsonObject json = new JsonParser().parse("{'symbol':'REGION.ipc.in."
-                + name + ".1','javaType':'boolean','location':'CALL_RETURN',"
-                + "'rootKind':'ACTIVATION_LOCAL','symbolicName':'" + name
-                + "','replayOccurrence':1,'mode':'SYMBOLIC','sourceKind':'"
-                + RuntimeSelectedRegionFinalizer.EXPLICIT_SYMBOLIC_FAULT
-                + "'}").getAsJsonObject();
-        if (recorded != null) {
-            json.addProperty("observed", true);
-            json.addProperty("primitiveValue", recorded);
-        }
-        return json;
-    }
     private static ExecutionTask task(boolean target, JsonObject... acts) {
         JsonObject encoded = new JsonParser().parse(
                 "{'taskId':'TASK.1','goalId':'GOAL.1','regionId':'REGION.1',"
