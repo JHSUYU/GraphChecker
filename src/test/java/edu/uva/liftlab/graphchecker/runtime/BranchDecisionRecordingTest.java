@@ -410,6 +410,11 @@ public class BranchDecisionRecordingTest {
         ConcolicRegionRuntime.ACTIVE.put(token, active);
         currentTokens().push(token);
         opened.push(token);
+        // As production stands: the ordinal is counted on the occurrence
+        // running on this thread (Identity.nextBranchOrdinal).
+        Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
+        Identity.enterFrame(METHOD + "#u0", null);
+        Identity.occurrence(NODE, "REGION.1", true);
         Method record = active.getClass().getDeclaredMethod(
                 "recordConcreteDecision", String.class, int.class,
                 nested("BranchDecision"));

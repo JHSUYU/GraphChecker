@@ -81,7 +81,6 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.configuration;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.beginLiveSelectedRegion;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.beginSelectedResultPublication;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.haltWhenCampaignSettled;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.endSelectedResultPublication;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.endLiveSelectedRegion;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.submitCompletedResultPublication;
@@ -110,8 +109,6 @@ public final class ConcolicRegionRuntime {
     static final AtomicLong TOKEN_COUNTER = new AtomicLong();
     private static final AtomicLong ACCESSOR_CONTEXT_TOKEN_COUNTER =
             new AtomicLong();
-    static final String HALT_AFTER_SELECTED_RESULT_PROPERTY =
-            "causynth.concolic.halt.after.selected.result";
     static final Map<Long, ActiveRegion> ACTIVE = new ConcurrentHashMap<>();
     /**
      * Selected activations on this Java thread, innermost first.
@@ -1868,7 +1865,6 @@ public final class ConcolicRegionRuntime {
             configuration().releaseCandidate(active.activation);
             if (active.terminalGap && !active.activation.loopBodyRoot) {
                 active.activation.reserveCompletedEvidence(false);
-                haltWhenCampaignSettled(active.activation.taskId, 2);
             }
             return false;
         }

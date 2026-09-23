@@ -83,10 +83,6 @@ import java.util.TreeMap;
  * turnstile admitted.</p>
  */
 public final class ScheduleLog {
-    /** Recording on or off; on unless a run says otherwise (A/B switch). */
-    public static final String RECORD_PROPERTY = "causynth.schedule.record";
-    /** Enforcement on or off when a prefix is handed (A/B switch). */
-    public static final String ENFORCE_PROPERTY = "causynth.schedule.enforce";
     /** How long nothing may be admitted while a thread waits, in ms. */
     public static final String TIMEOUT_PROPERTY =
             "causynth.schedule.timeout.ms";
@@ -191,7 +187,7 @@ public final class ScheduleLog {
      * @return whether the event was written
      */
     public static boolean observe(ScheduleEvent.Kind kind, String site) {
-        if (kind == null || !recording()) return false;
+        if (kind == null || !RecordingWindow.opened()) return false;
         mute();
         try {
             Pending event = pending(kind, site);
@@ -245,7 +241,7 @@ public final class ScheduleLog {
      * event was next, or the watchdog just released the prefix.</p>
      */
     static boolean tryObserve(ScheduleEvent.Kind kind, String site) {
-        if (kind == null || !recording()) return true;
+        if (kind == null || !RecordingWindow.opened()) return true;
         mute();
         try {
             Pending event = pending(kind, site);
@@ -314,7 +310,7 @@ public final class ScheduleLog {
      * the window is not open, or the event cannot be named.
      */
     static Wake wake(String site) {
-        if (!recording()) return null;
+        if (!RecordingWindow.opened()) return null;
         mute();
         try {
             Pending event = pending(ScheduleEvent.Kind.WAKE, site);
@@ -402,7 +398,7 @@ public final class ScheduleLog {
      * written, as {@link #observe} writes it.
      */
     static Turn awaitTurn(ScheduleEvent.Kind kind, String site) {
-        if (kind == null || !recording()) return Turn.NO_EVENT;
+        if (kind == null || !RecordingWindow.opened()) return Turn.NO_EVENT;
         mute();
         try {
             Pending event = pending(kind, site);
@@ -503,7 +499,7 @@ public final class ScheduleLog {
      */
     static void mark(String occurrenceId) {
         String id = Text.safe(occurrenceId);
-        if (id.isEmpty() || !recording()) return;
+        if (id.isEmpty() || !RecordingWindow.opened()) return;
         synchronized (LOCK) {
             if (!MARKED.add(id)) return;
             JsonObject row = new JsonObject();
@@ -521,12 +517,6 @@ public final class ScheduleLog {
     static String contextHere() {
         String node = Text.safe(RuntimeTraceContext.nodeHere());
         return node + "|" + Identity.contextHere().render();
-    }
-
-    private static boolean recording() {
-        if (!CausynthTraceRecorder.recordingStarted()) return false;
-        return !"false".equalsIgnoreCase(
-                Text.safe(System.getProperty(RECORD_PROPERTY)));
     }
 
     /**
@@ -858,7 +848,7 @@ public final class ScheduleLog {
      * for.</p>
      */
     public static boolean enforcing() {
-        if (!CausynthTraceRecorder.recordingStarted()) return false;
+        if (!RecordingWindow.opened()) return false;
         synchronized (LOCK) {
             loadPrefixLocked();
             return !freeRun;
@@ -937,17 +927,12 @@ public final class ScheduleLog {
      *
      * <p>The prefix from the property, else the environment, else the file
      * beside the focus row in the worker directory; the rest from its
-     * property, else beside the focus row.  Neither, or enforcement switched
-     * off, is a free run from the first event -- which is exactly the replay
-     * this class replaced.</p>
+     * property, else beside the focus row.  Neither is a free run from the
+     * first event.</p>
      */
     private static void loadPrefixLocked() {
         if (prefixLoaded) return;
         prefixLoaded = true;
-        if ("false".equalsIgnoreCase(
-                Text.safe(System.getProperty(ENFORCE_PROPERTY)))) {
-            return;
-        }
         Path file = prefixFile();
         Path restFile = suffixFile();
         if (file == null && restFile == null) return;

@@ -140,9 +140,8 @@ final class WireExport {
             HandoffResult result = attach(owner, declaringClass,
                     fieldName, descriptor, carried.handle());
             if (result.ok()) {
-                HandoffMint.mintDelivered(declared, result, owner, declaringClass,
-                        fieldName, descriptor, carried.producerTaskId(),
-                        carried.producerOccurrenceId());
+                HandoffMint.mintDelivered(declared, result, owner,
+                        declaringClass, fieldName, descriptor);
             }
             return result;
         } finally {
@@ -150,29 +149,11 @@ final class WireExport {
         }
     }
 
-    /** Stages one VM handle and its producer on the next outbound message. */
+    /** Stages one VM handle on the next outbound message. */
     private static boolean stageMessageExpression(String portId,
                                                   long handle) {
-        ActiveRegion active = ConcolicRegionRuntime.activeRegion();
-        // The producer site ran, so the message carries the value.  Which
-        // occurrence produced it and which the plan addressed are what the
-        // entry says about itself, not conditions on saying it.
-        String producerTask = active == null ? UNPLANNED_ENDPOINT
-                : active.activation.taskId;
-        String producerOccurrence = active == null ? UNPLANNED_ENDPOINT
-                : active.occurrenceId();
-        return SymbolicMessageEnvelope.stage(portId, handle, producerTask,
-                producerOccurrence);
+        return SymbolicMessageEnvelope.stage(portId, handle);
     }
-
-    /**
-     * Stands in for an endpoint no plan named.
-     *
-     * <p>A leaf may be staged or taken under an identity the plan did not
-     * select.  The value is still the value; the entry says plainly that its
-     * endpoint was not planned rather than pretending to an occurrence.</p>
-     */
-    static final String UNPLANNED_ENDPOINT = "UNPLANNED";
 
     /**
      * Opens the frame around one message instance being serialized.

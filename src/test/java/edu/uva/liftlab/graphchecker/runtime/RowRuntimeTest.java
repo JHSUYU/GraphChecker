@@ -210,7 +210,7 @@ public class RowRuntimeTest {
             for (int send = 0; send < setUpSends; send++) {
                 Identity.endpointAt(at, "HADOOP_IPC#REQUEST", 0);
             }
-            Identity.openWindow();
+            RecordingWindow.open();
             firstInWindow.add(Identity.endpointAt(at, "HADOOP_IPC#REQUEST",
                     0));
             Endpoint second = Identity.endpointAt(at, "HADOOP_IPC#REQUEST",
@@ -242,7 +242,7 @@ public class RowRuntimeTest {
                 null);
         assertEquals("Cluster.startDataNodes()#u1@1",
                 Identity.siteIndex().render());
-        Identity.openWindow();
+        RecordingWindow.open();
         assertEquals("set-up history is not part of the address",
                 "Cluster.startDataNodes()#u1@0",
                 Identity.siteIndex().render());
@@ -657,7 +657,7 @@ public class RowRuntimeTest {
         // at and the activation that ran it.  The reduction used to drop
         // both and the whole read log, which is why every write endpoint
         // carried its location as a site and the empty index.
-        JsonObject reduced = SharedStateCapture.reduceWriteLogForTest(
+        JsonObject reduced = SharedStateCapture.writeLogRecord(
                 vmEnvelopeRecord());
         JsonObject envelope = reduced.getAsJsonObject("envelope");
         JsonObject version = envelope.getAsJsonArray("versions").get(0)

@@ -60,9 +60,6 @@ public final class CausynthTraceRecorder {
             ThreadLocal.withInitial(ArrayDeque::new);
     /** A concolic replay keeps call stacks but does not publish a trace. */
     private static volatile boolean contextOnlyConcolicReplay;
-    private static volatile boolean recordingEnabled = true;
-    /** Whether the workload has called {@link #startRecording()} here. */
-    private static volatile boolean recordingStarted;
 
     private static volatile File outputDir;
     private static volatile String testName;
@@ -82,39 +79,10 @@ public final class CausynthTraceRecorder {
     /** Opens the workload-defined trace boundary after source initialization. */
     public static void startRecording() {
         initialize();
-        recordingEnabled = true;
-        recordingStarted = true;
-        // k is window-local on both ends: the recording counts from the
-        // moment the workload opens its window and so does every replay of
-        // it, so a hop's k names the same activation in both.
-        edu.uva.liftlab.graphchecker.runtime.Lineage.openWindow();
-        // ...and so is every count an address is made of (Identity#window).
-        Identity.openWindow();
+        RecordingWindow.open();
         // A replay held to a prefix: every timed wait already running
         // converts to the prefix's virtual time where it stands.
         if (ScheduleLog.enforcing()) TimedWaits.windowOpened();
-    }
-
-    /**
-     * Whether the workload has opened its recorded window in this run.
-     *
-     * <p>One moment, shared by both executions because the workload makes
-     * it: the recording writes its first trace line here, so the plan counts
-     * activations from here and a replay must count from here too.</p>
-     *
-     * <p>Monotonic, and deliberately not {@link #recordingEnabled}: the
-     * trace pass starts paused and the replay pass does not, so that flag is
-     * already true in a replay before the workload has opened anything.
-     * Nor is it "a source has been registered" -- registration is state the
-     * workload may establish long before it starts recording.  On hdfs-11741
-     * it registers the balancer, then {@code TestBalancer} restarts the
-     * cluster, and only then registers the new NameNode's RPC server and
-     * starts recording; a whole NameNode generation runs in between, whose
-     * handler activations the recording never wrote a line for and the
-     * replay counted, numbering a population the plan never numbered.</p>
-     */
-    static boolean recordingStarted() {
-        return recordingStarted;
     }
 
     /**
@@ -125,11 +93,6 @@ public final class CausynthTraceRecorder {
      */
     public static boolean replaying() {
         return RuntimeTraceMode.configured() == RuntimeTraceMode.REPLAY_CONTEXT;
-    }
-
-    /** Test hook: a fixture states whether its run has opened the window. */
-    static void setRecordingStartedForTests(boolean started) {
-        recordingStarted = started;
     }
 
     public static void main(String[] args) {
@@ -323,10 +286,6 @@ public final class CausynthTraceRecorder {
                             + "be claimed, so the occurrences it publishes "
                             + "carry no start-site frame in their execution "
                             + "index: " + unnamed);
-            writeLineageGap(subject, "the start frame filed for this work "
-                    + "could not be claimed, so the occurrences it publishes "
-                    + "carry no start-site frame in their execution index: "
-                    + unnamed);
         }
     }
 
@@ -344,16 +303,11 @@ public final class CausynthTraceRecorder {
                             + "so the work it started carries no start-site "
                             + "frame in its execution index: "
                             + unnamed);
-            writeLineageGap(lineageSubject(site.isEmpty() && carrier != null
-                            ? carrier.getClass().getName() : site),
-                    "the frame of this work start could not be "
-                    + "filed, so the work it started carries no start-site "
-                    + "frame in its execution index: " + unnamed);
         }
     }
 
-    /** {@code event} of one lineage gap the RECORDING states. */
-    static final String LINEAGE_GAP_EVENT = "LINEAGE_GAP";
+    /** {@code event} of one gap the RECORDING states. */
+    static final String GAP_EVENT = "GAP";
 
     /**
      * A gap row names its own subject.
@@ -384,31 +338,27 @@ public final class CausynthTraceRecorder {
     }
 
     /**
-     * States one lineage gap of the recording, for the plan to publish.
+     * States one gap of the recording, for the plan to publish.
      *
-     * <p>The recording has no session to hold a gap row, and the aggregation
+     * <p>The recording has no session to hold a gap row -- {@code
+     * RowRuntime.gap} routes here while none is open -- and the aggregation
      * is the next reader of everything it writes, so the fact travels as a
      * trace row and {@link #aggregateStateTrace} hands it to the plan's own
      * gap list.  A gap the recording cannot state is a gap nobody ever
      * hears about.</p>
      */
-    private static void writeLineageGap(String subject, String detail) {
-        if (!recordingEnabled) return;
+    static void recordingGap(
+            edu.uva.liftlab.graphchecker.contract.GapKind kind,
+            edu.uva.liftlab.graphchecker.contract.GapClass cls,
+            String subject, String detail) {
         synchronized (LOCK) {
             writeTraceRow(
                     "schemaVersion", 3,
-                    "event", LINEAGE_GAP_EVENT,
+                    "event", GAP_EVENT,
                     "seq", EVENT_COUNTER.incrementAndGet(),
-                    // Stated the way every other gap row states it: the
-                    // kind, and the class its producer decided (item 1 of
-                    // the PLAN cleanup -- there is no ledger to look it up
-                    // in).  A degraded address is a diagnostic: the row it
-                    // is about still says what it observed.
-                    "kind", edu.uva.liftlab.graphchecker.contract.GapKind
-                            .LINEAGE_LOST.name(),
-                    "cls", edu.uva.liftlab.graphchecker.contract.GapClass
-                            .DIAGNOSTIC.name(),
-                    "subject", MapFields.safe(subject),
+                    "kind", kind.name(),
+                    "cls", cls.name(),
+                    "subject", lineageSubject(subject),
                     "detail", MapFields.safe(detail));
         }
     }
@@ -805,7 +755,6 @@ public final class CausynthTraceRecorder {
                         .LINEAGE_LOST,
                 edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
                 producer.id(), detail);
-        writeLineageGap(producer.id(), detail);
     }
 
     /** Installs a received message context until {@link #endInboundExchange}. */
@@ -1081,8 +1030,7 @@ public final class CausynthTraceRecorder {
     public static ActiveCallSiteContext currentCallSiteContext() {
         ActiveCallSite site = ACTIVE_CALL_SITES.get().peek();
         return site == null ? null : new ActiveCallSiteContext(
-                site.siteId, site.declaredCallee, site.ownerCallId,
-                site.invocationId);
+                site.siteId, site.declaredCallee);
     }
 
     /**
@@ -1260,8 +1208,6 @@ public final class CausynthTraceRecorder {
             // nothing exported at all wrote its trace over the seed's.
             boolean configuredContextOnly = RuntimeTraceMode.configured()
                     == RuntimeTraceMode.REPLAY_CONTEXT;
-            recordingEnabled = !Boolean.getBoolean(
-                    "causynth.trace.start.paused");
             File configuredOutputDir = configuredContextOnly ? null
                     : new File(firstNonBlank(
                     System.getenv("CAUSYNTH_TRACE_OUTPUT_DIR"),
@@ -1913,7 +1859,6 @@ public final class CausynthTraceRecorder {
         OBJECT_IDS.clear();
         nextObjectId = 1;
         contextOnlyConcolicReplay = false;
-        recordingEnabled = true;
         traceWriteFailure = false;
         traceWriter = null;
     }
@@ -2102,7 +2047,7 @@ public final class CausynthTraceRecorder {
                     row.stringValue("requestApi"),
                     row.stringValue("producerEndpointId"),
                     row.stringValue("producerEndpoint")));
-        } else if (LINEAGE_GAP_EVENT.equals(eventKind)) {
+        } else if (GAP_EVENT.equals(eventKind)) {
             Map<String, Object> gap = new LinkedHashMap<>();
             gap.put("schemaVersion", 1);
             gap.put("kind", row.stringValue("kind"));
@@ -2153,7 +2098,6 @@ public final class CausynthTraceRecorder {
     }
 
     private static void writeTraceLine(RuntimeRegionPlanner.MethodEvent event) {
-        if (!recordingEnabled) return;
         writeTraceRow(
                 "schemaVersion", 3,
                 "event", "METHOD_ENTER",
@@ -2195,7 +2139,6 @@ public final class CausynthTraceRecorder {
 
     private static void writeFieldTraceLine(
             RuntimeRegionPlanner.FieldAccessEvent event) {
-        if (!recordingEnabled) return;
         writeTraceRow(
                 "schemaVersion", 3,
                 "event", event.kind,
@@ -2226,7 +2169,6 @@ public final class CausynthTraceRecorder {
 
     private static void writeProtocolTraceLine(
             RuntimeRegionPlanner.ProtocolEvent event) {
-        if (!recordingEnabled) return;
         String kind = protocolEventKind(event.direction);
         writeTraceRow(
                 "schemaVersion", 3,
@@ -2298,7 +2240,7 @@ public final class CausynthTraceRecorder {
     }
 
     private static void writeExecutionTraceLine(ExecutionEvent event) {
-        if (event == null || !recordingEnabled) return;
+        if (event == null) return;
         writeTraceRow(
                 "schemaVersion", 3,
                 "event", event.kind,
@@ -2604,24 +2546,15 @@ public final class CausynthTraceRecorder {
     public static final class ActiveCallSiteContext {
         private final String siteId;
         private final String declaredCallee;
-        private final long ownerCallId;
-        private final long invocationId;
 
-        private ActiveCallSiteContext(String siteId, String declaredCallee,
-                                      long ownerCallId, long invocationId) {
+        private ActiveCallSiteContext(String siteId, String declaredCallee) {
             this.siteId = MapFields.safe(siteId);
             this.declaredCallee = MapFields.safe(declaredCallee);
-            this.ownerCallId = ownerCallId;
-            this.invocationId = invocationId;
         }
 
         public String siteId() { return siteId; }
 
         public String declaredCallee() { return declaredCallee; }
-
-        public long ownerCallId() { return ownerCallId; }
-
-        public long invocationId() { return invocationId; }
     }
 
 }

@@ -57,30 +57,6 @@ public final class Identity {
     }
 
     /**
-     * The recording window this JVM's counts are taken in: 0 until the
-     * workload opens its window, then 1.
-     *
-     * <p>THE window rule for counts, as {@link Lineage#openWindow} is for
-     * root k: the recording states only what happened inside the window, and
-     * a replay is held to the window's schedule only, so a count carried in
-     * from before it is the one part of an address neither run controls.
-     * hdfs-11741 is why: the balancer's {@code balance-block} request opens
-     * before the window, its {@code main} sends a varying number of set-up
-     * RPCs under it -- a block write that retries until the DataNodes have
-     * reported, and they now report on their own clock -- and the first send
-     * inside the window was {@code @12} in the recording and something else
-     * in the replay, so its anchor, and every context downstream of it,
-     * differed.  A count filed before the window opened is dropped the first
-     * time its level counts inside it, on whichever thread that is.</p>
-     */
-    private static volatile int window;
-
-    /** The workload opened its recording window: counts start again here. */
-    public static void openWindow() {
-        window++;
-    }
-
-    /**
      * One thread's index levels: the thread root and one level per frame.
      *
      * <p>A LEVEL is one entered frame and the events minted while it was the
@@ -146,8 +122,8 @@ public final class Identity {
          * The same frame as an ADDRESS states it: a frame entered before the
          * recording window stands at iteration 0.
          *
-         * <p>The window rule for frames, as {@link Identity#window} is for
-         * counts and {@link Lineage#openWindow} for root k: an iteration
+         * <p>The window rule for frames, as {@link RecordingWindow} is for
+         * counts and {@link RecordingWindow} for root k: an iteration
          * counted before the window is set-up history neither run controls.
          * hdfs-17899-bug1 is why: every DataXceiver thread inherits the main
          * thread's frames from DataNode start-up, {@code
@@ -391,14 +367,14 @@ public final class Identity {
         private final List<Counters> counters = new ArrayList<Counters>();
 
         /**
-         * The window {@link #frame} was entered in ({@link Identity#window}).
+         * The window {@link #frame} was entered in ({@link RecordingWindow}).
          * A frame entered before the window stands in no in-window address
          * with the iteration it was counted at ({@link State#from}).
          */
         private final int window;
 
         private Level(Frame frame, long token, Object receiver) {
-            this(frame, token, receiver, Identity.window);
+            this(frame, token, receiver, RecordingWindow.index());
         }
 
         private Level(Frame frame, long token, Object receiver, int window) {
@@ -410,7 +386,7 @@ public final class Identity {
 
         /** The frame as an address states it in the current window. */
         private Frame addressed() {
-            if (frame == null || window == Identity.window
+            if (frame == null || window == RecordingWindow.index()
                     || frame.iteration() == 0) {
                 return frame;
             }
@@ -439,8 +415,8 @@ public final class Identity {
                     }
                     // Counted before the recording window opened: what the
                     // hop made there is nothing either run states
-                    // (Identity#window), so it counts again from here.
-                    if (filed.window != Identity.window) {
+                    // ({@link RecordingWindow}), so it counts again from here.
+                    if (filed.window != RecordingWindow.index()) {
                         filed = new Counters(rootToken);
                         counters.set(index, filed);
                     }
@@ -461,8 +437,8 @@ public final class Identity {
     /** One level's site counts under one root hop. */
     private static final class Counters {
         private final long rootToken;
-        /** The window these counts were taken in ({@link Identity#window}). */
-        private final int window = Identity.window;
+        /** The window these counts were taken in ({@link RecordingWindow}). */
+        private final int window = RecordingWindow.index();
         private final Map<String, Integer> events =
                 new HashMap<String, Integer>();
 
@@ -498,7 +474,7 @@ public final class Identity {
         private final Frame frame;
         private final Attribution.Reference starter;
         /** The window the start was counted in ({@link Level#window}). */
-        private final int window = Identity.window;
+        private final int window = RecordingWindow.index();
 
         private Start(Frame frame, Attribution.Reference starter) {
             this.frame = frame;
@@ -950,12 +926,12 @@ public final class Identity {
         Region running = state.activeRegion();
         if (running == null) return 0;
         String key = Text.safe(site);
-        // The same window rule as every other count (Identity#window): an
+        // The same window rule as every other count ({@link RecordingWindow}): an
         // activation that straddles the window's opening numbers its
         // decisions from there.
-        if (running.window != window) {
+        if (running.window != RecordingWindow.index()) {
             running.branchOrdinals.clear();
-            running.window = window;
+            running.window = RecordingWindow.index();
         }
         Integer previous = running.branchOrdinals.get(key);
         int ordinal = previous == null ? 1 : previous + 1;
@@ -1371,7 +1347,7 @@ public final class Identity {
         private final Map<String, Integer> branchOrdinals =
                 new HashMap<String, Integer>();
         /** The window {@link #branchOrdinals} were counted in. */
-        private int window = Identity.window;
+        private int window = RecordingWindow.index();
 
         private Region(int base) {
             this.base = base;
@@ -1381,7 +1357,6 @@ public final class Identity {
     public static void resetForTests() {
         CURRENT.remove();
         STARTS.clear();
-        window = 0;
         CLOCK = UNAVAILABLE;
         FrameJournal.resetForTests();
     }

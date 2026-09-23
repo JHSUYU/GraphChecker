@@ -567,10 +567,9 @@ public final class RowRuntime {
     public static void gap(GapKind kind, GapClass cls, String subject,
                            String detail) {
         SessionPublisher session = publisher;
-        if (session == null) return;
         String named = Text.safe(subject).trim();
         String says = Text.safe(detail);
-        if (named.isEmpty()) {
+        if (named.isEmpty() && session != null) {
             // A session is open, so sessionId() is not blank: configure()
             // sets both under one lock.
             named = sessionId();
@@ -580,6 +579,13 @@ public final class RowRuntime {
         // One statement, stated once: the same refusal is reached from every
         // activation that met it, and a reader counts named gaps.
         if (!claimEvent("gap", kind + "#" + cls + "#" + named + "#" + says)) {
+            return;
+        }
+        if (session == null) {
+            // No session holds a row: the recording states its refusal
+            // through its trace, and the aggregation files it with the
+            // plan's gaps.
+            CausynthTraceRecorder.recordingGap(kind, cls, named, says);
             return;
         }
         session.gap(GapRow.of(sessionId(), kind, cls, named, says));

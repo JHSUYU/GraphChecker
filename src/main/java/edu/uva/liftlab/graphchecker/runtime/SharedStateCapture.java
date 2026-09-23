@@ -261,7 +261,7 @@ final class SharedStateCapture {
      * container at the first symbolic write to it; the runtime used to offer
      * that snapshot itself, one declared container at a time.</p>
      */
-    private static JsonObject writeLogRecord(JsonObject record) {
+    static JsonObject writeLogRecord(JsonObject record) {
         JsonObject envelope = edu.uva.liftlab.graphchecker.smt.JsonFields
                 .object(record, "envelope");
         JsonObject published = new JsonObject();
@@ -321,11 +321,6 @@ final class SharedStateCapture {
         copyIfPresent(envelope, publishedEnvelope, "readLogTruncated");
         published.add("envelope", publishedEnvelope);
         return published;
-    }
-
-    /** The reduction, for a test that pins what a version publishes. */
-    static JsonObject reduceWriteLogForTest(JsonObject record) {
-        return writeLogRecord(record);
     }
 
     private static void copyIfPresent(JsonObject from, JsonObject to,

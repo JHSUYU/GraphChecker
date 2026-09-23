@@ -105,29 +105,24 @@ public final class SymbolicMessageEnvelope {
      * Adds one declared port to the next message sent by this thread.
      *
      * <p>The entry carries what only the run knows: which VM expression the
-     * producer staged, and which occurrence of which task staged it.  Which
-     * consumer occurrences the plan authorised for the port is not carried,
-     * because it is not the run's fact and no receiver reads it from here:
-     * the plan is the authority on the planned consumers, both sides hold
-     * the same plan, and the attach names the live activation that declares
-     * the port ({@code ConcolicRegionRuntime.declaredConsumerOccurrence}).
+     * producer staged, and where in the message it stands.  Which
+     * occurrences the plan names for the port -- the producer's or the
+     * consumers' -- is not carried, because it is not the run's fact and no
+     * receiver reads it from here: the plan is the authority, both sides
+     * hold the same plan, the attach pairs with the export by the VM's own
+     * event ids, and the attach names the live activation that declares the
+     * port ({@code ConcolicRegionRuntime.declaredConsumerOccurrence}).
      * Carried, one 19-occurrence consumer set was 12,944 of the 13,738
      * characters of every entry and five entries overran the wire.</p>
      */
-    public static boolean stage(String portId, long handle,
-                                String producerTaskId,
-                                String producerOccurrenceId) {
-        if (empty(portId) || handle < 0L || empty(producerTaskId)
-                || empty(producerOccurrenceId)) {
-            return false;
-        }
+    public static boolean stage(String portId, long handle) {
+        if (empty(portId) || handle < 0L) return false;
         Outbound message = OUTBOUND.get();
         if (message == null) {
             message = new Outbound();
             OUTBOUND.set(message);
         }
-        return message.stage(portId, handle, producerTaskId,
-                producerOccurrenceId);
+        return message.stage(portId, handle);
     }
 
     /**
@@ -164,8 +159,6 @@ public final class SymbolicMessageEnvelope {
         for (Entry entry : message.entries) {
             wire.append(';').append(token(entry.portId)).append(',')
                     .append(entry.handle).append(',')
-                    .append(token(entry.producerTaskId)).append(',')
-                    .append(token(entry.producerOccurrenceId)).append(',')
                     .append(entry.frame).append(',').append(entry.ordinal);
         }
         return wire.toString();
@@ -371,16 +364,14 @@ public final class SymbolicMessageEnvelope {
             return open.isEmpty() ? 0 : open.peekLast();
         }
 
-        boolean stage(String portId, long handle, String producerTaskId,
-                      String producerOccurrenceId) {
+        boolean stage(String portId, long handle) {
             if (entries.size() >= MAX_ENTRIES) return false;
             int frame = frame();
             String counter = frame + "\n" + portId;
             Integer held = next.get(counter);
             int ordinal = held == null ? 0 : held;
             next.put(counter, ordinal + 1);
-            entries.add(new Entry(true, portId, handle, producerTaskId,
-                    producerOccurrenceId, frame, ordinal));
+            entries.add(new Entry(true, portId, handle, frame, ordinal));
             return true;
         }
     }
@@ -393,29 +384,25 @@ public final class SymbolicMessageEnvelope {
         List<Entry> entries = new ArrayList<>();
         for (int index = 1; index < rows.length; index++) {
             String[] fields = rows[index].split(",", -1);
-            if (fields.length != 6) throw malformed();
+            if (fields.length != 4) throw malformed();
             String portId = text(fields[0]);
-            String producerTaskId = text(fields[2]);
-            String producerOccurrenceId = text(fields[3]);
             long handle;
             int frame;
             int ordinal;
             try {
                 handle = Long.parseLong(fields[1]);
-                frame = Integer.parseInt(fields[4]);
-                ordinal = Integer.parseInt(fields[5]);
+                frame = Integer.parseInt(fields[2]);
+                ordinal = Integer.parseInt(fields[3]);
             } catch (NumberFormatException invalid) {
                 throw malformed();
             }
             if (handle < 0L || !Long.toString(handle).equals(fields[1])
                     || frame < 0 || frame > MAX_FRAMES
-                    || !Integer.toString(frame).equals(fields[4])
+                    || !Integer.toString(frame).equals(fields[2])
                     || ordinal < 0 || ordinal >= MAX_ENTRIES
-                    || !Integer.toString(ordinal).equals(fields[5])
-                    || empty(portId) || empty(producerTaskId)
-                    || empty(producerOccurrenceId)) throw malformed();
-            entries.add(new Entry(true, portId, handle,
-                    producerTaskId, producerOccurrenceId, frame, ordinal));
+                    || !Integer.toString(ordinal).equals(fields[3])
+                    || empty(portId)) throw malformed();
+            entries.add(new Entry(true, portId, handle, frame, ordinal));
         }
         return entries;
     }
@@ -449,23 +436,18 @@ public final class SymbolicMessageEnvelope {
     /** One immutable entry physically decoded from the current message. */
     public static final class Entry {
         private static final Entry MISSING =
-                new Entry(false, "", 0L, "", "", -1, -1);
+                new Entry(false, "", 0L, -1, -1);
         private final boolean present;
         private final String portId;
         private final long handle;
-        private final String producerTaskId;
-        private final String producerOccurrenceId;
         private final int frame;
         private final int ordinal;
 
         private Entry(boolean present, String portId, long handle,
-                      String producerTaskId, String producerOccurrenceId,
                       int frame, int ordinal) {
             this.present = present;
             this.portId = portId;
             this.handle = handle;
-            this.producerTaskId = producerTaskId;
-            this.producerOccurrenceId = producerOccurrenceId;
             this.frame = frame;
             this.ordinal = ordinal;
         }
@@ -473,11 +455,5 @@ public final class SymbolicMessageEnvelope {
         public boolean present() { return present; }
 
         public long handle() { return handle; }
-
-        public String producerTaskId() { return producerTaskId; }
-
-        public String producerOccurrenceId() {
-            return producerOccurrenceId;
-        }
     }
 }
