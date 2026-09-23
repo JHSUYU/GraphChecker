@@ -244,9 +244,13 @@ final class HandoffMint {
         // reported twice, unplanned there and unreproduced here.
         String consumerOccurrenceId = declaredConsumerOccurrence(portId,
                 active);
+        // k is the OCCURRENCE's count (I3: ordinals belong to the performer),
+        // not the activation's: every element of one message converted in a
+        // call of its own is an activation of its own, all folding into one
+        // occurrence, and a per-activation k restarted at 1 for each.
         String phaseId = handoffMintKey(portId,
                 consumerOccurrenceId,
-                active.nextHandoffAttach(portId + "\n" + elementPath),
+                nextAttach(consumerOccurrenceId, portId, elementPath),
                 elementPath);
         if (phaseId.isEmpty()) return;
         Object owner = leaf.owner;
@@ -492,17 +496,40 @@ final class HandoffMint {
     }
 
     /**
-     * The k-th ambient attach of one element at one consumer occurrence, as
-     * an activation counts its own ({@link ActiveRegion#nextHandoffAttach}).
-     * Guarded by itself.
+     * The attaches of each element so far at each consumer occurrence, by
+     * {@code (occurrence, port, element path)}: k of a handoff's identity,
+     * selected or ambient.  Guarded by itself.
      */
-    private static final Map<String, Integer> AMBIENT_ATTACHES =
+    private static final Map<String, Integer> ATTACHES =
             new HashMap<String, Integer>();
+
+    /**
+     * k for the next attach of one element at one consumer occurrence.
+     *
+     * <p>Counted per OCCURRENCE, as every ordinal a row carries is (I3): a
+     * count kept on the activation restarts in each activation that folds
+     * into the occurrence.  hdfs-17967 path A, after the ambient fix: the
+     * mirror's heartbeat delivered four block keys, each converted by a
+     * {@code convert(BlockKeyProto)} activation of its own, and each
+     * activation counted its attach as the first -- four keys, one symbol.</p>
+     */
+    static int nextAttach(String consumer, String portId,
+                          String elementPath) {
+        String element = safe(consumer) + "\n" + safe(portId) + "\n"
+                + safe(elementPath);
+        synchronized (ATTACHES) {
+            Integer previous = ATTACHES.get(element);
+            int ordinal = previous == null ? 1 : previous + 1;
+            ATTACHES.put(element, ordinal);
+            return ordinal;
+        }
+    }
 
     /**
      * The identity an ambient attach mints v_H under: THE SAME
      * {@code (port, consumer occurrence, k-th attach of this element,
-     * element path)} a selected attach is keyed by, k counted here.
+     * element path)} a selected attach is keyed by, k counted by
+     * {@link #nextAttach} for both.
      *
      * <p>k was the constant 1, so every element one occurrence received on
      * one port was ONE variable.  hdfs-17899 bug1: target-dn's heartbeat
@@ -516,20 +543,13 @@ final class HandoffMint {
      */
     static String ambientMintKey(String portId, String consumer,
                                  String elementPath) {
-        String element = safe(consumer) + "\n" + safe(portId) + "\n"
-                + safe(elementPath);
-        int ordinal;
-        synchronized (AMBIENT_ATTACHES) {
-            Integer previous = AMBIENT_ATTACHES.get(element);
-            ordinal = previous == null ? 1 : previous + 1;
-            AMBIENT_ATTACHES.put(element, ordinal);
-        }
-        return handoffMintKey(portId, consumer, ordinal, elementPath);
+        return handoffMintKey(portId, consumer,
+                nextAttach(consumer, portId, elementPath), elementPath);
     }
 
     static void resetForTests() {
-        synchronized (AMBIENT_ATTACHES) {
-            AMBIENT_ATTACHES.clear();
+        synchronized (ATTACHES) {
+            ATTACHES.clear();
         }
     }
 

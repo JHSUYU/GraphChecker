@@ -91,9 +91,6 @@ final class ActiveRegion {
      * inside.
      */
     final Set<String> observedSourceKeys = new LinkedHashSet<>();
-    /** element key -> attaches of it so far in this activation. */
-    private final Map<String, Integer> handoffAttachOrdinals =
-            new LinkedHashMap<>();
     /**
      * Every stable source this occurrence can be attributed to by the
      * application's own registration.
@@ -276,14 +273,6 @@ final class ActiveRegion {
             String backedgeId, int maxTraversals, String reason) {
         loopBoundCut = true;
         return new LoopBoundCut(backedgeId, maxTraversals, reason);
-    }
-
-    /** k for the next attach of one element in this activation. */
-    int nextHandoffAttach(String elementKey) {
-        Integer previous = handoffAttachOrdinals.get(elementKey);
-        int ordinal = previous == null ? 1 : previous + 1;
-        handoffAttachOrdinals.put(elementKey, ordinal);
-        return ordinal;
     }
 
     /**

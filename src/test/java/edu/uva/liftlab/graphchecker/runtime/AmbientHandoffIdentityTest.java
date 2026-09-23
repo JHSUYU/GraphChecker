@@ -38,6 +38,18 @@ public class AmbientHandoffIdentityTest {
     }
 
     @Test
+    public void aSelectedAttachCountsOnTheOccurrenceNotTheActivation() {
+        // Four activations -- one convert(BlockKeyProto) each -- folding
+        // into one consumer occurrence: the count runs on across them.
+        assertEquals(1, HandoffMint.nextAttach(CONSUMER, PORT, "keyId"));
+        assertEquals(2, HandoffMint.nextAttach(CONSUMER, PORT, "keyId"));
+        assertEquals(3, HandoffMint.nextAttach(CONSUMER, PORT, "keyId"));
+        assertEquals(4, HandoffMint.nextAttach(CONSUMER, PORT, "keyId"));
+        assertEquals("another consumer counts its own", 1,
+                HandoffMint.nextAttach(CONSUMER + "other", PORT, "keyId"));
+    }
+
+    @Test
     public void theOrdinalIsPerElementPathAndPerConsumer() {
         String key = HandoffMint.ambientMintKey(PORT, CONSUMER, "keyId");
         String expiry = HandoffMint.ambientMintKey(PORT, CONSUMER,
