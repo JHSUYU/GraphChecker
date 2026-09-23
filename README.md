@@ -538,12 +538,16 @@ that `main` moves and the parked housekeeping is due.
    updates on DAEMON heartbeats (path B's verifier's among them, applied by the unrecorded
    command-processor thread), so the closure had no workload RPC to fail; and a run is stopped
    by its output directory (`tools/rounds/stop-run.sh`), never by the logged group id.
-1. **Read v24** (`~/gc-out/accept-v24-*`, snapshot `p27`, trees at their `driveHeartbeats`
-   commits; 11741 still from v23 on `p26`, 17960 PASSED as v23b on `p27`), diagnose every FAIL
-   by §11 before a fix, and repeat until the nine pass the acceptance checks of §8 on one
-   snapshot; then fast-forward `main`. The first question: does the verifier's heartbeat reply
-   door (`getRpcResponse`, a CONTROL_PRODUCER of the anchor) now appear in each block-key
-   closure, and does its fault world reach the declared target's fatal.
+   *And since v24* (`4ae5016da`, snapshot `p28`): the run as it happened holds every path to its
+   own pairing (DESIGN4 §1.5). v24's six block-key composes were refused
+   FORMULA_SAT_AT_RECORDED_VALUATION: a healthy path paired its key-map puts with another
+   heartbeat answer's ids. Re-composed offline with `p28`, pathB, bug1, bug3, 17897, A and C all
+   give MARKER_FLIPPED on `FAULT:HADOOP_IPC:REQUEST` (`REGION.763d087e`), polarity deciding, no
+   clock, no blocking gap. 11741 PASSED as v23 on `p26`; 17960 PASSED as v23b on `p27`.
+1. **Read v25** (`~/gc-out/accept-v25-*`, all nine on snapshot `p28`, launched 2026-09-23 19:34),
+   diagnose every FAIL by §11 before a fix, and repeat until the nine pass the acceptance checks
+   of §8 on one snapshot; then fast-forward `main`. Open: bug2's corpus has not yet reached
+   COMPOSE under the heartbeat rule; CONFIRM has not yet run on a fault witness.
 4. **The cleanup the read found (§14, R-items).** *Now, before the round* — each after `git
    grep` for readers, one commit per package: the dead members and second spellings (R1, R3,
    R8, R11, R12, R23, R25, R27–R29, R31, R35–R37, R40, R42, R43, R45, R47, R49, R50, R55–R57,
