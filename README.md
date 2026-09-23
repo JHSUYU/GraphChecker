@@ -510,77 +510,31 @@ them.
 
 ## 10. The to-do, in order
 
-Work from the top; each item states its evidence and where the fix goes. Items 1–3 are what
-stands between the branch and a 9/9 accepted round; item 4 is the cleanup the read of §14
-found, in two halves (now, and after 9/9); after that `main` moves and the parked housekeeping
-is due.
+Work from the top; each item states its evidence and where the fix goes. Item 1 is what stands
+between the branch and a 9/9 accepted round; item 4 is the cleanup the read of §14 found; after
+that `main` moves and the parked housekeeping is due.
 
-0. **The block-key bugs are RPC failures** (owner's ruling 2026-09-23, §12; DESIGN4 V3/V5 as
-   corrected). Three parts, all general:
-   - *The claim* (`compose/ClaimPolicy`, done): once the clock pins refute the recorded
-     valuation, every moved valuation that is sat is asked again with every clock pinned at the
-     recording's instant; sat there is `MARKER_FLIPPED` with that pinned refutation as its
-     polarity. Before, loop 1 was skipped outright for a clock-driven composition, so no fault
-     witness could ever be claimed beside a clock witness. The witness a claim publishes keeps
-     every clock pin it can (`leastClocks`).
-   - *More fault points* (the trees' canonical hunk): the door on the reply,
-     `FAULT:HADOOP_IPC:RESPONSE`, minted unconditionally where the caller takes the NameNode's
-     answer (`Client.getRpcResponse`), true = the reply is lost after the server applied the
-     request (NameNode→DataNode heartbeat commands, NameNode→application answers). One such
-     failure leaves the node stale; a failed request is retried by the next heartbeat, which
-     the waves' nesting (iterative graph construction) answers with a flip of the retry.
-   - *The gate* (`accept/report.py`, done): these seven cases pass only with an IPC door fault
-     flipped to true and no clock cell moved.
-1. **The schedule enforcer: one order, one rule** (§14 D3; blocks 17960 at REPLAY and pathA at
-   CONFIRM in v21, and sits under every `SCHEDULE_DIVERGED` of v18–v21). Today `ScheduleLog`
-   holds a replay in three regimes — the prefix strictly, event by event; on the first event that
-   does not come within 15 s it abandons the *whole* prefix to the rest; the rest holds timeouts
-   only — an event whose key the prefix does not hold at all waits for the watchdog, and a `WAKE`
-   is written whether a timeout or an interrupt ended the wait. On 17960 the recording's prefix
-   holds a SEND the replay can never make (an IPC attempt on a connection that turned stale
-   between Hadoop's two `shouldCloseConnection` checks, retried outside the weave), so the order
-   was abandoned 53 events before its end; in v20 the event came, just >15 s later
-   (saveNamespace on the concolic VM), and the wall-clock watchdog called it a divergence; the
-   old NameNode's daemons, interrupted by `stop()` in the recording, were "woken" by virtual time
-   in the replay and ran an iteration more. The fix, in `contract.ScheduleEvent`,
-   `runtime.ScheduleLog`, `runtime.TimedWaits` and `runtime.Identity`:
-   - `Kind.INTERRUPT`: a timed wait the workload's interrupt ended. Written when it happens,
-     never held, never made by virtual time; a held wait takes a turn only at a `WAKE` slot.
-   - One list of slots — the prefix, then the rest, the cut between. An event takes the earliest
-     slot of its key `(kind, c, site)` that is OPEN or GIVEN_UP; with none it runs free at once
-     (counted, never held). A slot before the cut, or a `WAKE` slot anywhere, is held until every
-     earlier slot is settled; any other slot past the cut is taken at once.
-   - Two settlements. A turn's `END` gives up what the turn did not do (as today: the event may
-     still come, and then takes its slot). An occurrence's CLOSE (`Identity.regionExit` of the
-     entry that opened it) settles every OPEN slot of that occurrence as DEAD: it cannot come any
-     more, so no later event of the key takes it — the v21 stale SEND belongs to occurrence
-     `1c0a…`, which closes before the retry opens `4550…`, so the retry's SEND takes its own slot.
-   - The watchdog: nothing settled for the timeout while some thread waits for a turn **and the
-     threads not waiting used less than half a CPU over it** (`ThreadMXBean`) → every OPEN slot
-     before the earliest waiting slot is GIVEN_UP, stated `schedule#<slot>` before the cut (the
-     subject CONFIRM's rule (a) reads) and `schedule-rest#<slot>` past it; so that it never blocks
-     for good, 8× the timeout with nothing settled fires whatever the CPU; after `REST_STALLS`
-     give-ups past the cut the rest is let go.
-   - Deleted with it: the prefix→rest jump, the `freeRun`/`timeouts` pair, `ASK_FRESH_MS`, the
-     doors `tryObserve`/`awaitTurn`/`admitNow` (one blocking door, one polling door remain), and
-     the interrupted admission that never advanced the cursor. `ScheduleLogTest` follows the rule.
-   Then a fresh 17960 recording + seed replay must admit its prefix to the end with no watchdog
-   give-up, and pathA's CONFIRM is judged again.
-2. **bug2's IMPORT death: a mint's own store published as somebody else's write** (§14 D1/D2).
-   `RowRuntime.declaredMintSymbol` is filled *after* `api.symbolizeField` made the fresh-box
-   store, so an activation that closes in between reads the store out and publishes it as a
-   `WriteRow` at its own site, and invariant 7 refuses the session as a fabricated write. Fix:
-   register the mint before the store (keyed by the label the VM spells,
-   `M_<sort>_field_<label>`), make `RowPlaceholderMint.declaredMint` one test (the register),
-   and key invariant 7 by the placeholder's `(location@mintVersion)` rather than by symbol.
-3. **Read v21 to the end, then finish the round**: v21 on p24 ended `CLOCK_SKEW` for bug1, bug3,
-   pathB, pathC and 17897 (FAIL under the RPC rule, item 0); pathA is `SAT_UNCONFIRMED` (CONFIRM
-   left the selected path's schedule — item 1); 17960 died at REPLAY (item 1); 11741 and bug2
-   were still running. The next round runs all nine at once with `tools/rounds/launch-round.sh`
-   (§8): heads placed by weight, every wave's obligations on all five lifts behind the per-host
-   memory gate. Any FAIL is diagnosed by §11 before a fix; `PATH_SELF_CONTRADICTORY` on
-   every path still means no session observed the fatal. Then all nine on one snapshot, the
-   acceptance checks of §8, and `main` fast-forwarded to that commit.
+0. **Done for round v22 (snapshot `~/gc-run/p25` = `4390f2af0`, launched 2026-09-23 16:37 on
+   all five lifts).** Each is general, each has its commit:
+   - *The block-key bugs are RPC failures* (§12). The claim asks a moved marker with every clock
+     pinned at the recording before it names a clock (`d079c9d0e`); the gate passes the seven
+     block-key cases only with an IPC door fault flipped and no clock moved; the reply door
+     `FAULT:HADOOP_IPC:RESPONSE` is in `Client.getRpcResponse` of eight trees (17960 maps no IPC
+     transport and keeps its older `Client`); the receiving door is a control producer of the
+     closure, so its fault is a flip site (`996879297`).
+   - *The schedule is one order and one rule* (§14 D3, `fad63f044`): slots with a cut, an event
+     takes the earliest open or given-up slot of its key or runs free, INTERRUPT is an event of
+     its own, an occurrence's close and a turn's END settle what did not happen, and the
+     watchdog fires only when the threads not waiting are idle (or after 8 timeouts).
+   - *bug2's fabricated write* (§14 D1/D2, `56479867f`): a declared mint's label is filed before
+     its store; invariant 7 is keyed by the mint's own `location@mintVersion`.
+   - *Parallel rounds behind a memory gate* (`75417e648`): `obligation_memory_mb` per case, a
+     per-host ledger in the shared home, `tools/rounds/launch-round.sh` placing the nine heads
+     and spreading every wave's obligations over lift11–lift15.
+1. **Read v22** (`~/gc-out/accept-v22-*`), diagnose every FAIL by §11 before a fix, and repeat
+   until the nine pass the acceptance checks of §8 on one snapshot; then fast-forward `main`.
+   The first questions to answer: does a reply-door fault world reach each block-key case's
+   declared target's fatal, and does 17960's seed replay admit its prefix to the end.
 4. **The cleanup the read found (§14, R-items).** *Now, before the round* — each after `git
    grep` for readers, one commit per package: the dead members and second spellings (R1, R3,
    R8, R11, R12, R23, R25, R27–R29, R31, R35–R37, R40, R42, R43, R45, R47, R49, R50, R55–R57,
