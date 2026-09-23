@@ -247,6 +247,21 @@ Prefix up to the flipped send (the cut is at the target as today); the recovery
 path's events are unnamed and run free; the rest holds the timeouts (D3 rule 26).
 Nothing new is needed.
 
+### 3.7 The nearest world (obligation queries)
+
+A root's domain is a window and a flip query is satisfiable at many points of
+it; z3 answers with one of them, usually on a boundary. The formula is
+satisfied there, but the program is not held to the formula: a clock moved by
+the whole window rotates keys the path never read and reorders the loop the
+flipped decision sits in, so the replay takes an inherited flip the other way
+(bug3/pathA v18: 29-41 NOT_ADMITTED, no path observed the fatal; v15 passed
+the same corpus because z3 happened to answer +10.9M ms instead of +30 days).
+Every obligation query therefore asks for the world nearest the recording:
+`(minimize Σ |x − recorded(x)|)` over the Int roots and clocks it bounds
+(`FlipQuery.Builder#nearest`, rendered by `FlipQueryText`). The answer is the
+smallest move that still takes the other arm, with the margin -- what a
+witness means -- and it is deterministic across encodings of the same corpus.
+
 ## 4. Validation
 
 - V1 PLAN: bug1/bug2/17897 plans carry one `EXPLICIT_SYMBOLIC_FAULT` action per

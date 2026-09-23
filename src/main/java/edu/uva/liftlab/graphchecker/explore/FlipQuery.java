@@ -275,6 +275,24 @@ final class FlipQuery {
          */
         private final List<String> rootFacts = new ArrayList<String>();
         /**
+         * query variable -> the literal the recording read it at, for the
+         * Int roots and clocks this query bounds: THE NEAREST-WORLD RULE.
+         *
+         * <p>A domain is a window, and z3 answers with any point of it --
+         * on the boundary, as a simplex does.  The formula is satisfied
+         * there; the program is not held to the formula: a clock moved by
+         * the whole window rotates keys the path never read and reorders
+         * the loop the flipped decision sits in, so the replay takes the
+         * inherited flip the other way (bug3 v18: 41 NOT_ADMITTED, no path
+         * observed the fatal; v15 passed the same corpus because z3
+         * happened to answer +10.9M ms rather than +30 days).  The query
+         * therefore asks for the world NEAREST the recording -- minimize
+         * the sum of |x - recorded| over these -- which is the smallest
+         * move that still takes the other arm, with the margin.</p>
+         */
+        private final Map<String, String> nearest =
+                new LinkedHashMap<String, String>();
+        /**
          * What each session's LOWERING states about the names this query
          * declares: an identity the execution read fields off was not
          * null, an integral leaf inside its Java domain, a container
@@ -497,7 +515,7 @@ final class FlipQuery {
             // of one query are projected by one notion of reached.
             Set<String> reached = reachedVariables();
             return new Built(FlipQueryText.render(corpus, task,
-                    path, lowered, this, meaning, sorts, asserted(),
+                    path, lowered, this, meaning, sorts, asserted(), nearest,
                     flipped, flipIndex),
                     new ArrayList<String>(sorts.keySet()), "", flipped,
                     new ArrayList<Control>(controls.values()),
@@ -792,6 +810,7 @@ final class FlipQuery {
                 rootFacts.add(JavaPrimitiveSmtSemantics.clockDomain(variable,
                         reading.isEmpty() ? "0" : reading,
                         JavaPrimitiveSmtSemantics.clockSkewCeiling(reading)));
+                if (!reading.isEmpty()) nearest.put(variable, reading);
                 return;
             }
             rootVariables.put(variable, row.rootId());
@@ -827,6 +846,11 @@ final class FlipQuery {
             }
             rootFacts.add("(and (>= " + variable + " " + min + ") (<= "
                     + variable + " " + max + "))");
+            String recorded = SmtText.literal(row.recordedValue(),
+                    sorts.get(variable));
+            if (!recorded.isEmpty() && "Int".equals(sorts.get(variable))) {
+                nearest.put(variable, recorded);
+            }
         }
 
         /**
@@ -973,12 +997,26 @@ final class FlipQuery {
             if (!lowered.ok()) return "";
             String delivered = rename(lowered.text(), arm.sessionId(),
                     unknown);
-            if (!unknown.isEmpty()) return "";
+            if (!unknown.isEmpty() || malformed(delivered)) return "";
             List<String> conjuncts = new ArrayList<String>();
             for (String term : arm.pi()) {
                 String renamed = rename(lower(term, arm.sessionId()),
                         arm.sessionId(), unknown);
                 if (!unknown.isEmpty()) return "";
+                // The same rule the prefix is held to: a conjunct this
+                // query cannot state is not wrapped and asserted.  Wrapped,
+                // it was `(and (not ) (not ) (= vH_... 119980))`, z3
+                // rejected the whole query, and the flip was lost to a
+                // spelling (bug3 v18: 9 obligations "arguments missing").
+                if (malformed(renamed)) {
+                    gaps.add(GapRow.of(arm.sessionId(),
+                            GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                            arm.slotId(), "arm dropped: a conjunct of its "
+                                    + "producer path lowers to a term this "
+                                    + "query cannot state (\"" + renamed
+                                    + "\")"));
+                    return "";
+                }
                 conjuncts.add(renamed);
             }
             for (Map.Entry<String, String> valued : arm.guard().entrySet()) {

@@ -78,6 +78,7 @@ final class FlipQueryText {
                          Corpus.RecordedPath path, Set<String> lowered,
                          Scope scope, Map<String, String> meaning,
                          Map<String, String> sorts, List<String> assertions,
+                         Map<String, String> nearest,
                          DecisionRow flipped, int flipIndex) {
         StringBuilder text = new StringBuilder();
         text.append("; task ").append(task.taskId())
@@ -128,6 +129,18 @@ final class FlipQueryText {
         }
         for (String assertion : assertions) {
             text.append("(assert ").append(assertion).append(")\n");
+        }
+        // THE NEAREST WORLD (FlipQuery.Builder#nearest): of the models,
+        // the one that moves the recording's roots and clocks least.
+        if (!nearest.isEmpty()) {
+            StringBuilder distance = new StringBuilder();
+            for (Map.Entry<String, String> entry : nearest.entrySet()) {
+                distance.append(" (abs (- ").append(entry.getKey())
+                        .append(' ').append(entry.getValue()).append("))");
+            }
+            text.append("(minimize ").append(nearest.size() == 1
+                    ? distance.substring(1) : "(+" + distance + ")")
+                    .append(")\n");
         }
         // No check-sat here: the body is the formula, and what is
         // ASKED of it -- the verdict, then the values of the variables
