@@ -1002,12 +1002,6 @@ public final class Identity {
         return "";
     }
 
-    /** The whole path this thread is at, for a degraded address. */
-    public static ExecutionIndex here() {
-        State state = state();
-        return state.from(0);
-    }
-
     /**
      * The address of the activation entering here (IDENTITY-IMPL A).
      *
@@ -1239,7 +1233,13 @@ public final class Identity {
 
     /**
      * The address of work that ran under no region this plan selected: its
-     * role, on its node, at the path the thread stood on.
+     * role, on its node, at its index from the scope root -- the one
+     * scope-base rule ({@link #scopeStart}), as a region's is.  Measured
+     * from the thread's first frame instead, a response the pooled handler
+     * sent outside every region carried that handler's start iteration
+     * ({@code Server.start()#u31@N}), and hdfs-17960's replay -- one
+     * heartbeat shifting the handler rotation -- anchored the client's
+     * next request on an endpoint the recording never minted.
      *
      * <p>REPORT-ENTRY §4: the region slot carries a role id rather than a
      * plan region, so a reader tells an ambient occurrence from a planned
@@ -1252,7 +1252,7 @@ public final class Identity {
         if (Text.safe(nodeKey).isEmpty()) return null;
         Role kind = role == null ? Role.UNKNOWN : role;
         return OccurrenceAddress.of(NodeId.parse(Text.safe(nodeKey)),
-                "ROLE." + kind.name(), here(kind), here());
+                "ROLE." + kind.name(), here(kind), atScope());
     }
 
     /**
