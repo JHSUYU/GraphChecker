@@ -7,6 +7,9 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)
 source "${repo}/run_engine.sh"
 
 test_tmp=$(mktemp -d)
+# The per-host memory ledger is shared through the home directory in a
+# campaign; a test keeps its own.
+campaign_host_gate_root="${test_tmp}/hosts"
 cleanup() {
   [[ "${test_tmp}" == /tmp/* ]] || return 1
   rm -r -- "${test_tmp}"
@@ -679,10 +682,14 @@ done
 # 47: `region_path_max_world_depth` joined it with the nesting bound: how deep
 # a world a wave cuts from is a rule the exploration ran under, and two runs
 # that nested to different depths did not explore the same space.
+# 48: `obligation_memory_mb` joined it when the obligation pool started
+# spanning every lift: what one obligation takes on the host that runs it is
+# the case's measured need, and the gate that keeps every host's memory safe
+# reads it (campaign_await_host_memory).
 # 44: `campaign_max_iterations` left with the epoch loop (one iteration per
 # campaign; growth happens inside EXPLORE's waves), `causynth_cache_dir` with
 # the seed cache, and `causynth_process_dirs`, which no case ever set.
-[[ "$(print_normalized_config | wc -l)" -eq 44 ]] \
+[[ "$(print_normalized_config | wc -l)" -eq 45 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 # CONFIG-4: the discovery artifacts are derived from causynth_output_dir and
@@ -873,6 +880,7 @@ stop_after_config() {
   concolic_worker_count=1
   region_path_max_waves=1
   compose_max_valuations=1
+  obligation_memory_mb=2500
   region_path_max_paths_per_region=""
   region_path_max_flips_per_path=""
   region_path_max_tasks=""
@@ -1449,6 +1457,7 @@ mkdir -p "${pool_dir}/wave"
 reset_config
 concolic_worker_count=2
 campaign_worker_hosts=""
+obligation_memory_mb=1
 pool_jobs=(LONG F1 F2 F3 F4 F5)
 for pool_job in "${pool_jobs[@]}"; do
   mkdir -p "${pool_dir}/wave/${pool_job}"
@@ -1626,6 +1635,7 @@ campaign_obligation_worker() {
 }
 concolic_worker_count=2
 campaign_worker_hosts=""
+obligation_memory_mb=1
 campaign_dispatch_wave "${nossh_dir}/wave" /dev/null /dev/null /dev/null \
   /dev/null A B C >"${nossh_dir}/dispatch.log" 2>&1 \
   || fail "the local default did not finish its wave: \
@@ -1692,6 +1702,8 @@ ssh() {
 concolic_worker_count=2
 campaign_worker_hosts="lift12 lift13"
 campaign_local_host_names=" localhost this-machine "
+obligation_memory_mb=1
+campaign_host_available_mb() { echo 30000; }
 campaign_dispatch_wave "${twohost_dir}/wave" "${twohost_dir}/obligations.jsonl" \
   "${twohost_dir}/classes" "${twohost_dir}/sessions" \
   "${twohost_dir}/seed.jsonl" A B C D \
@@ -1997,6 +2009,7 @@ EOF
 chmod +x "${grow_dir}/replay.sh"
 reset_config
 concolic_replay_command="${grow_dir}/replay.sh"
+obligation_memory_mb=1
 replay_timeout_s=60
 schedule_max_jobs=1
 trace_test=T
@@ -2367,5 +2380,91 @@ jq -e '.claim == "INCONCLUSIVE_PARTIAL" and .confirmation == null' \
   "${campaign_final}/result.json" >/dev/null \
   || fail "a claim that was never confirmed does not carry null: \
 $(jq -c '{claim, confirmation}' "${campaign_final}/result.json")"
+
+# MEMORY-1: `obligation_memory_mb` is a declared workflow key, and a
+# campaign that states none -- or a nonsense one -- is refused by name.
+[[ "$(grep -c 'CAUSYNTH_OBLIGATION_MEMORY_MB' "${repo}/run_engine.sh")" \
+    -eq 1 ]] \
+  || fail "CAUSYNTH_OBLIGATION_MEMORY_MB is not declared once, in the table"
+known_config_key obligation_memory_mb \
+  || fail "obligation_memory_mb is not loadable from a workflow file"
+memory_dir="${test_tmp}/memory"
+mkdir -p "${memory_dir}"
+memory_validate() (
+  stop_after_config ""
+  obligation_memory_mb=$1
+  validate_config
+)
+for bad in "" "0" "2g" "-1"; do
+  run_capturing_status memory_validate "${bad}" \
+    >/dev/null 2>"${memory_dir}/validate.err"
+  [[ "${status}" -ne 0 ]] \
+    || fail "validate accepted obligation_memory_mb='${bad}'"
+  grep -q 'obligation_memory_mb must be' "${memory_dir}/validate.err" \
+    || fail "the refusal does not name obligation_memory_mb: \
+$(cat "${memory_dir}/validate.err")"
+done
+for case_config in "${repo}"/experiments/hadoop/hdfs-*/workflow.properties; do
+  grep -q '^obligation_memory_mb=[1-9][0-9]*$' "${case_config}" \
+    || fail "${case_config} states no obligation_memory_mb"
+done
+
+# MEMORY-2: the gate's decision.  A start is charged in full for the ramp
+# window, whichever campaign made it; after it only MemAvailable counts; a
+# local host and the same host named over ssh are one ledger; a lock a dead
+# campaign left behind is broken.
+reset_config
+campaign_host_gate_root="${memory_dir}/hosts"
+campaign_local_host_names=" localhost gate-head "
+hostname() { echo gate-head; }
+memory_available=20000
+campaign_host_available_mb() { echo "${memory_available}"; }
+obligation_memory_mb=6000
+campaign_host_reserve_mb=3000
+campaign_host_ramp_s=60
+campaign_host_poll_s=0
+campaign_host_try_start lift14 \
+  || fail "20000 MB free did not admit a 6000 MB obligation"
+campaign_host_try_start lift14 \
+  || fail "20000 MB less one 6000 MB start did not admit a second"
+run_capturing_status campaign_host_try_start lift14
+[[ "${status}" -eq 1 ]] \
+  || fail "two starts charged 12000 MB, and a third was admitted over the \
+3000 MB reserve"
+[[ "${campaign_host_wait_reason}" == *"12000 MB charged"* ]] \
+  || fail "the wait does not say what is charged: ${campaign_host_wait_reason}"
+# Another campaign, the same host: the same ledger refuses it too.
+( run_capturing_status campaign_host_try_start lift14; exit "${status}" ) \
+  && fail "another campaign's start ignored the charges on the host"
+# The window passes: the JVMs are in MemAvailable now, and the charge lapses.
+sed -i 's/^[0-9]* /1 /' "${campaign_host_gate_root}/lift14/starts"
+campaign_host_try_start lift14 \
+  || fail "starts older than the ramp window are still charged"
+# The head is one ledger under both of its names.
+campaign_host_try_start localhost \
+  || fail "the head's first start was refused"
+[[ -s "${campaign_host_gate_root}/gate-head/starts" \
+    && ! -e "${campaign_host_gate_root}/localhost" ]] \
+  || fail "a local start is not charged to the head's own name"
+# A stale lock: the next try breaks it and the one after starts.
+mkdir "${campaign_host_gate_root}/lift15"
+mkdir "${campaign_host_gate_root}/lift15/lock"
+touch -d '10 minutes ago' "${campaign_host_gate_root}/lift15/lock"
+run_capturing_status campaign_host_try_start lift15
+[[ "${status}" -eq 1 && ! -e "${campaign_host_gate_root}/lift15/lock" ]] \
+  || fail "a lock a dead campaign left was not broken"
+campaign_host_try_start lift15 || fail "the host stayed locked"
+# A host whose memory cannot be read is the obligation's named failure.
+campaign_host_available_mb() { return 1; }
+campaign_log() { printf '%s\n' "$*" >>"${memory_dir}/gate.log"; }
+campaign_host_poll_s=5
+run_capturing_status campaign_await_host_memory lift13 OB.unreadable
+[[ "${status}" -ne 0 ]] \
+  || fail "an unreadable host admitted an obligation"
+grep -q 'OB.unreadable: the memory of host lift13 cannot be read' \
+    "${memory_dir}/gate.log" \
+  || fail "the unreadable host is not named: $(cat "${memory_dir}/gate.log")"
+unset -f hostname campaign_host_available_mb campaign_log
+reset_config
 
 echo "run_engine campaign helper tests passed"

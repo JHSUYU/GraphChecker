@@ -4,7 +4,7 @@
 # GC_OUT (default /u/vnr3ne/gc-out) holds accept-<round>-<case>/ per campaign.
 shopt -s nullglob
 declare -A seen=()
-# launcher logs are written beside the outputs (see queue-launch.sh)
+# launcher logs are written beside the outputs (see launch-round.sh)
 scratch=${ROUNDS_LOG_DIR:-/u/vnr3ne/gc-out}
 while :; do
   for pat in "$@"; do
