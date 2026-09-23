@@ -69,3 +69,28 @@ the window itself:
   anchor (hdfs-17967 path B lost all 22 of its admitted replays so).  Only
   reads go in the supplier: a call that acts, or that is itself a recorded
   occurrence, stays in every run and only its result is checked.
+
+## The block-key window: the key flows the RPC's way
+
+Every tree of the block-key family (hdfs-17899 bug1/2/3, hdfs-17897, hdfs-17967
+A/B/C) carries 11741's expiry check, so a key goes stale there only through a
+failed RPC (README §12, the owner's ruling). A workload of the family is
+therefore written so that the verifying node's key arrives over an RPC INSIDE
+the window, and the consumer presents that key:
+
+1. inside the window the master rotates (`updateKeys`, as a `KEY_MANAGER_TICK`
+   of the request that owns the rotation);
+2. every node that will verify a key takes the master's new keys over its OWN
+   NameNode RPC inside the window — its heartbeat, whose answer carries the
+   `KeyUpdateCommand` — through the IPC doors, whose fault points
+   (`FAULT:HADOOP_IPC:REQUEST`, `FAULT:HADOOP_IPC:RESPONSE`) are the witness;
+   one heartbeat per node in the window, so a request that never reached the
+   NameNode is not redelivered before the transfer;
+3. the consumer (Balancer, SPS, a source DataNode, the client) then takes the
+   master's CURRENT key — over its own in-window RPC where it has one — and
+   presents it in the transfer the annotated check verifies.
+
+The recording succeeds (a `recordingPrecondition` checks the verifier holds
+the presented key); a world whose step-2 delivery failed has the verifier
+without it, which is the fatal. No workload of the family relies on a key
+expiring: the clocks stay at the recording in every accepted witness.

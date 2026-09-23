@@ -1159,7 +1159,8 @@ ${campaign_local_scratch_root:-<shared home, as before>}"
   local worker_host
   for worker_host in ${campaign_worker_hosts}; do
     campaign_host_is_local "${worker_host}" && continue
-    ssh "${campaign_ssh_options[@]}" -o ConnectTimeout=20 -- "${worker_host}" \
+    campaign_ssh "${campaign_ssh_options[@]}" -o ConnectTimeout=20 -- \
+      "${worker_host}" \
       "test -x $(printf '%q' "${graphchecker_dir}/run_engine.sh")" \
       || die "campaign_worker_hosts names ${worker_host}, which this host \
 cannot reach over ssh in batch mode, or which cannot see \
@@ -1262,6 +1263,34 @@ campaign_ssh_options=(
   -o ServerAliveCountMax=3
   -n
 )
+
+# THE ssh of a campaign: one connection, retried while sshd REFUSES it.
+#
+# A round opens hundreds of connections at once and sshd's MaxStartups
+# closes some during key exchange (v22: "kex_exchange_identification:
+# Connection closed by remote host" on five of nine campaigns, each of which
+# then failed its wave).  A refused connection ran nothing on the far side,
+# so it is retried with a jittered pause, for campaign_ssh_patience_s; a
+# connection that was made and then failed -- or a command that failed -- is
+# ssh's answer and is returned as it is, never re-run.  Every call site that
+# runs one command over ssh goes through here.
+campaign_ssh_refused='kex_exchange_identification|^ssh: connect to host|Connection closed by [0-9a-f.:]+ port|banner exchange'
+campaign_ssh() {
+  local started=${SECONDS} err rc
+  err=$(mktemp "${TMPDIR:-/tmp}/graphchecker-ssh.XXXXXX") || return 255
+  while true; do
+    ssh "$@" 2>"${err}"
+    rc=$?
+    if (( rc == 255 )) && grep -qE "${campaign_ssh_refused}" "${err}" \
+        && (( SECONDS - started < campaign_ssh_patience_s )); then
+      sleep $((campaign_host_poll_s + RANDOM % campaign_host_poll_s))
+      continue
+    fi
+    cat "${err}" >&2
+    rm -f -- "${err}"
+    return "${rc}"
+  done
+}
 
 # How long the remote side has to poll for the connection that started it.
 campaign_remote_watchdog_interval_s=5
@@ -1423,8 +1452,9 @@ campaign_dispatch_remote_obligation() {
   # lands here is ssh's OWN diagnostics -- a refused connection, a host key,
   # a peer that has no /bin/bash -- which would otherwise be the one part of
   # a failed remote obligation that nothing recorded.
-  run_capturing_status ssh "${campaign_ssh_options[@]}" -- "${host}" \
-    "exec /bin/bash $(printf '%q' "${script}")" >"${worker}/ssh.log" 2>&1
+  run_capturing_status campaign_ssh "${campaign_ssh_options[@]}" -- \
+    "${host}" "exec /bin/bash $(printf '%q' "${script}")" \
+    >"${worker}/ssh.log" 2>&1
   if [[ "${status}" -ne 0 ]]; then
     campaign_log "obligation ${obligation_id} on ${host}: the remote worker \
 exited ${status}; ssh's own output is in ${worker}/ssh.log"
@@ -2593,6 +2623,10 @@ campaign_host_reserve_mb=3072
 # How often a waiting slot asks again, and how old a MemAvailable reading
 # may be before it is read again.
 campaign_host_poll_s=5
+# How long a host may stay unreachable over ssh -- its memory unreadable, a
+# worker's connection refused before it started -- before the obligation
+# fails by name.  sshd refuses connections under a round's burst of them.
+campaign_ssh_patience_s=300
 # A lock older than this was left by a campaign that died holding it.
 campaign_host_lock_stale_s=30
 
@@ -2614,8 +2648,8 @@ campaign_host_available_mb() {
   if campaign_host_is_local "${host}"; then
     bash -c "${read_it}"
   else
-    ssh "${campaign_ssh_options[@]}" -o ConnectTimeout=20 -- "${host}" \
-      "${read_it}"
+    campaign_ssh "${campaign_ssh_options[@]}" -o ConnectTimeout=20 -- \
+      "${host}" "${read_it}"
   fi
 }
 
@@ -2628,7 +2662,8 @@ campaign_host_memory_reading() {
     printf '%s\n' "${mb}"
     return 0
   fi
-  mb=$(campaign_host_available_mb "${host}") || return 1
+  mb=$(campaign_host_available_mb "${host}" | grep -E '^[0-9]+$' | tail -n 1) \
+    || return 1
   [[ "${mb}" =~ ^[0-9]+$ ]] || return 1
   printf '%s %s\n' "${now}" "${mb}" >"${dir}/available.$$"
   mv -f -- "${dir}/available.$$" "${dir}/available"
@@ -2637,7 +2672,8 @@ campaign_host_memory_reading() {
 
 # One try: 0 when this obligation may start now and is charged to the host,
 # 1 when it does not fit yet (why, in campaign_host_wait_reason), 2 when the
-# host's memory cannot be read.
+# host's memory cannot be read, 3 when another slot holds the ledger's lock
+# for the instant it takes to charge a start.
 campaign_host_wait_reason=""
 campaign_host_try_start() {
   local host=$1 key dir now available lock_at charged=0 at mb kept=""
@@ -2652,8 +2688,7 @@ campaign_host_try_start() {
     if (( now - lock_at >= campaign_host_lock_stale_s )); then
       rmdir "${dir}/lock" 2>/dev/null || true
     fi
-    campaign_host_wait_reason="the ledger of ${key} is locked"
-    return 1
+    return 3
   fi
   if [[ -f "${dir}/starts" ]]; then
     while read -r at mb; do
@@ -2683,15 +2718,28 @@ ${campaign_host_reserve_mb} MB reserve"
 # Fails -- the obligation's own failure, named -- only when the host's
 # memory cannot be read, which is a host the obligation could not run on.
 campaign_await_host_memory() {
-  local host=$1 obligation_id=$2 said=false status=0
+  local host=$1 obligation_id=$2 said=false status=0 unread_since=""
   while true; do
     run_capturing_status campaign_host_try_start "${host}"
     case "${status}" in
       0) return 0 ;;
       2)
-        campaign_log "obligation ${obligation_id}: the memory of host \
-${host} cannot be read"
-        return 1 ;;
+        # Unreadable is not "no room": sshd refuses some connections while a
+        # round opens hundreds.  Waited out, stated, within the patience.
+        [[ -n "${unread_since}" ]] || unread_since=${SECONDS}
+        if (( SECONDS - unread_since >= campaign_ssh_patience_s )); then
+          campaign_log "obligation ${obligation_id}: the memory of host \
+${host} could not be read for ${campaign_ssh_patience_s}s"
+          return 1
+        fi
+        campaign_host_wait_reason="the memory of ${host} could not be read"
+        ;;
+      3)
+        # Another start is being charged: a moment, not a poll interval --
+        # a wave's opening fill is every slot at once.
+        sleep 0.$(( (RANDOM % 9) + 1 ))
+        continue ;;
+      *) unread_since="" ;;
     esac
     if [[ "${said}" == false ]]; then
       campaign_log "obligation ${obligation_id} waits for memory on \

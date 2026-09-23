@@ -56,15 +56,16 @@ export CAUSYNTH_CUSTOM_JDK_HOME=/absolute/path/to/j2sdk-image
 CASES=hdfs-17897 bash experiments/hadoop/accept/accept.sh
 ```
 
+## The workload
+
+`TestCausynthStripedChecksum` follows the block-key window rule (`../lib/README.md`): inside
+the window the master rotates twice, every DataNode takes the new keys over exactly one
+heartbeat of its own, the client fetches the current encryption key over its own RPC
+(`cache-encryption-key`), and `striped-file-checksum` presents it to the DataNodes. The
+recording succeeds; a failed heartbeat of the verifying DataNode leaves it without the key.
+
 ## What the harness expects
 
-`report.py` passes this case on `claim` `SAT_CANDIDATE`, `finalStatus` `FINAL_READY`, empty
-`blockers` and no open BLOCKING gap, `polarityDecides` true, `valuationOrdinal` >= 1,
-non-empty `movedRoots`, and `findingKind` `CLOCK_SKEW`. This is the one case whose expected
-set has a single entry: `EXPECTED_MECHANISM` in `report.py` names no other mechanism for it,
-so a witness of any other kind fails the case rather than passing it.
-
-## Status
-
-Prepared, not run under the current design. No claim, and no artifacts are committed for
-this case.
+`report.py` passes this case on `claim` `SAT_CANDIDATE` confirmed, `finalStatus`
+`FINAL_READY`, no BLOCKING gap at any stage, `polarityDecides` true, and `findingKind`
+`MARKER_FLIPPED` whose `movedRoots` hold an IPC door fault flipped to true and no clock cell.

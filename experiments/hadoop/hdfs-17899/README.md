@@ -29,9 +29,9 @@ pass and the replay.
 
 | Case | Test | Shape |
 | --- | --- | --- |
-| `bug1` | `TestCausynthBalancerCachedKey` (`…server.balancer`) | three DataNodes; the mover is the test, holding a real `KeyManager`. It takes the NameNode's keys over the recorded RPC, caches its one `DataEncryptionKey` while the master's current key is still the pinned one, and then sends one REPLACE_BLOCK the way `Dispatcher.PendingMove.dispatch` does |
-| `bug2` | `TestExternalStoragePolicySatisfier#testCausynthSpsKeyRefreshRpcFailure` | the SPS asks one DataNode once |
-| `bug3` | `TestCausynthDataTransferRpcFailure` | one replication, one target DataNode read |
+| `bug1` | `TestCausynthBalancerCachedKey` (`…server.balancer`) | the master rotates twice in-window, each DataNode takes the keys over one heartbeat, the Balancer's KeyManager fetches them (`fetch-block-keys`) and presents the current key in one REPLACE_BLOCK (`balance-block`) |
+| `bug2` | `TestExternalStoragePolicySatisfier#testCausynthSpsKeyRefreshRpcFailure` | the same order with the SPS: rotate twice, one heartbeat of the target DataNode, the SPS `updateBlockKeys` (`refresh-block-keys`), the move presents the current key |
+| `bug3` | `TestCausynthDataTransferRpcFailure` | rotate twice, one heartbeat each of target and source, the source replicates to the target presenting the current key (`replicate-block`) |
 
 The mover of `bug1` is the test itself, holding a real `KeyManager`: its cached
 `DataEncryptionKey` IS the defect, and `Balancer` and `Dispatcher`, which no part of the

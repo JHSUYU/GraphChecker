@@ -1296,6 +1296,27 @@ public class ScheduleLogTest {
     }
 
     @Test
+    public void aClosedOccurrenceDoesNotShiftTheSlotsOfAnother()
+            throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        ScheduleLog.enforceForTests(Arrays.asList(
+                inOccurrence(ScheduleEvent.Kind.SEND, "req", "o1"),
+                event(ScheduleEvent.Kind.START, "a"),
+                inOccurrence(ScheduleEvent.Kind.SEND, "req", "o2"),
+                event(ScheduleEvent.Kind.START, "b")));
+        ScheduleLog.closed("o2");
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "req");
+        ScheduleLog.observe(ScheduleEvent.Kind.START, "a");
+        long before = System.nanoTime();
+        ScheduleLog.observe(ScheduleEvent.Kind.START, "b");
+        assertTrue("o2's dead slot does not hold b",
+                TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
+                        < 1000L);
+        assertEquals(Arrays.asList("req", "a", "b"), sites());
+        assertFalse(ScheduleLog.enforcing());
+    }
+
+    @Test
     public void aComputingRunIsNoStall() throws Exception {
         System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "300");
         ScheduleLog.enforceForTests(Arrays.asList(

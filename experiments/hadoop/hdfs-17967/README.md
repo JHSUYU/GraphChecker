@@ -88,27 +88,15 @@ byte between the planning pass and the replay; a client-driven path A was refuse
 | `pathB` | `TestCausynthReplaceBlockProxyStaleKey` | three DataNodes; the mover is the test, reproducing `Dispatcher.PendingMove.dispatch` (`SaslDataTransferClient.socketSend` then `Sender.replaceBlock`). `DFSTestUtil.replaceBlock` cannot be used: raw socket, `DUMMY_TOKEN`, no SASL |
 | `pathC` | `TestCausynthStripedReconstructTargetStaleKey` | four DataNodes and a user-defined XOR-2-1 policy at a **1 KiB** cell, so the window moves 2 KiB instead of 2 MiB on an interpreter-only replay VM. The reconstruction task is handed to the chosen node's `ErasureCodingWorker` directly, so the reconstructing node, the sources, the missing index and the target are all fixed by the test rather than by the NameNode's redundancy monitor |
 
-Three properties every one of them has to keep:
-
-* **A rotation gap, running the right way.** The key the failing party puts on the wire is
-  serials BEHIND the master's current one. With a zero gap nothing can expire, so every
-  composed path is either self-contradictory or satisfied at the recorded valuation. Each
-  workload pins the block keys, rotates the master twice inside the window, refreshes every
-  DataNode so all of them can still verify block tokens, and then rolls back **only** the
-  failing party's `currentKey`.
-* **Asymmetry.** Two participants skewed identically share one address
-  (`OCCURRENCE_ADDRESS_SHARED`) and one consumer gets paired with two producers
-  (`TOPOLOGY_DIVERGENCE`).
-* **Nothing decided by wall-clock timing.** Rotations are driven explicitly inside a request
-  scope on a registered source, never by the key-updater daemon; heartbeats are sent
-  synchronously by the test; `dfs.namenode.stale.datanode.interval` is pushed past any
-  replay, because suppressed heartbeats plus a slow VM otherwise make every DataNode look
-  stale and block placement silently gives a one-node pipeline.
-
-The recording stays HEALTHY in all three: a DataNode RETAINS its older keys until they
-expire, and that expiry is exactly what a witness has to buy with a clock move. Each workload
-asserts the gap itself, so a mistake surfaces as a one-line assertion failure instead of a
-campaign refusal three stages later.
+Every one of them follows the block-key window rule (`../lib/README.md`: the key flows the
+RPC's way). Inside the window the master rotates twice under `rotate-block-keys`; every
+DataNode is marked for a key update and takes the new keys over exactly one heartbeat of its
+own, whose answer carries the `KeyUpdateCommand`; the presenter (head, target, reconstruction
+worker) then presents the master's current key to the verifier (mirror, proxy, target). The
+recording succeeds, asserted by `recordingPrecondition`s. A world where the verifier's heartbeat
+failed -- its request never reached the NameNode, or the NameNode's answer was lost -- leaves
+the verifier without that key: the fatal, with every clock at the recording. Nothing is
+decided by wall-clock timing: rotations and heartbeats are driven explicitly by the test.
 
 ## Build and run
 
@@ -132,7 +120,6 @@ CASES="hdfs-17967-pathA hdfs-17967-pathB hdfs-17967-pathC" bash experiments/hado
 
 ## What the harness expects
 
-`report.py` passes each path on `claim` `SAT_CANDIDATE`, `finalStatus` `FINAL_READY`, empty
-`blockers` and no open BLOCKING gap, `polarityDecides` true, non-empty `movedRoots`, and a
-`findingKind` of `CLOCK_SKEW` or `MARKER_FLIPPED`. `CLOCK_SKEW` is the mechanism the
-workloads are written for.
+`report.py` passes each path on `claim` `SAT_CANDIDATE` confirmed, `finalStatus` `FINAL_READY`,
+no BLOCKING gap at any stage, `polarityDecides` true, and `findingKind` `MARKER_FLIPPED` whose
+`movedRoots` hold an IPC door fault flipped to true and no clock cell.

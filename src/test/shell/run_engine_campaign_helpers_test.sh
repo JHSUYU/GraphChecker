@@ -2451,17 +2451,20 @@ mkdir "${campaign_host_gate_root}/lift15"
 mkdir "${campaign_host_gate_root}/lift15/lock"
 touch -d '10 minutes ago' "${campaign_host_gate_root}/lift15/lock"
 run_capturing_status campaign_host_try_start lift15
-[[ "${status}" -eq 1 && ! -e "${campaign_host_gate_root}/lift15/lock" ]] \
+[[ "${status}" -eq 3 && ! -e "${campaign_host_gate_root}/lift15/lock" ]] \
   || fail "a lock a dead campaign left was not broken"
 campaign_host_try_start lift15 || fail "the host stayed locked"
-# A host whose memory cannot be read is the obligation's named failure.
+# A host whose memory stays unreadable past the ssh patience is the
+# obligation's named failure; within it the slot waits (sshd refuses
+# connections under a round's burst).
 campaign_host_available_mb() { return 1; }
 campaign_log() { printf '%s\n' "$*" >>"${memory_dir}/gate.log"; }
-campaign_host_poll_s=5
+campaign_host_poll_s=0
+campaign_ssh_patience_s=1
 run_capturing_status campaign_await_host_memory lift13 OB.unreadable
 [[ "${status}" -ne 0 ]] \
   || fail "an unreadable host admitted an obligation"
-grep -q 'OB.unreadable: the memory of host lift13 cannot be read' \
+grep -q 'OB.unreadable: the memory of host lift13 could not be read for 1s' \
     "${memory_dir}/gate.log" \
   || fail "the unreadable host is not named: $(cat "${memory_dir}/gate.log")"
 unset -f hostname campaign_host_available_mb campaign_log

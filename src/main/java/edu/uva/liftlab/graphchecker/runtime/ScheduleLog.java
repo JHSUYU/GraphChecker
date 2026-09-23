@@ -275,7 +275,7 @@ public final class ScheduleLog {
                 loadOrderLocked();
                 Thread self = Thread.currentThread();
                 while (true) {
-                    int slot = holds ? slotOf(wake.event.key) : -1;
+                    int slot = holds ? slotOf(wake.event) : -1;
                     if (slot < 0) {
                         WAITERS.remove(self);
                         return Turn.FREE;
@@ -463,7 +463,7 @@ public final class ScheduleLog {
         Thread self = Thread.currentThread();
         try {
             while (true) {
-                int slot = slotOf(event.key);
+                int slot = slotOf(event);
                 if (slot < 0) {
                     ranFree++;
                     appendLocked(event);
@@ -484,7 +484,7 @@ public final class ScheduleLog {
             // workload's to see.  The event happened here, so it takes its
             // slot here, and the order stands for everyone else.
             Thread.currentThread().interrupt();
-            int slot = slotOf(event.key);
+            int slot = slotOf(event);
             if (slot >= 0) takeLocked(slot);
             appendLocked(event);
         } finally {
@@ -492,10 +492,27 @@ public final class ScheduleLog {
         }
     }
 
-    /** The earliest slot of {@code key} still open or given up, or -1. */
-    private static int slotOf(String key) {
-        ArrayDeque<Integer> slots = SLOTS.get(key);
-        return slots == null || slots.isEmpty() ? -1 : slots.peekFirst();
+    /**
+     * The slot an event takes: of the slots of its key still open or given
+     * up, the earliest one its OWN occurrence made in the recording, else
+     * the earliest one; -1 when none is left.  Two threads under one
+     * context make events of one key -- two RPCs a request issues at once
+     * -- and which one comes first is the scheduler's; the occurrence is
+     * what the event IS, so it keeps its own slot and its message its own
+     * anchor (hdfs-17899-bug2, v22: two SPS sends swapped slots and every
+     * later event of both exchanges was unnamed).
+     */
+    private static int slotOf(Pending event) {
+        ArrayDeque<Integer> slots = SLOTS.get(event.key);
+        if (slots == null || slots.isEmpty()) return -1;
+        if (!event.occurrence.isEmpty()) {
+            for (int slot : slots) {
+                if (event.occurrence.equals(order.get(slot).occurrence())) {
+                    return slot;
+                }
+            }
+        }
+        return slots.peekFirst();
     }
 
     /** Whether a slot holds its event: before the cut, or a WAKE. */
