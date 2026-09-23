@@ -119,21 +119,13 @@ public final class ConcolicScheduler {
                 LoopBoundPolicy.declaredDefault(), loaded.regionPlans);
         Result result = new Result();
         for (Candidate candidate : candidates) {
-            JsonArray taskInputActions = candidate.inputActions;
-            JsonArray selectedInputs = loaded.symbolicInputs.select(
-                    candidate.goal.plan().regionId(), taskInputActions);
-            selectedInputs = removeInboundProtocolHandoffInputs(
-                    selectedInputs,
-                    CommunicationHandoffSpec.decode(
-                            candidate.goal.plan().json()));
-            String taskId = candidate.seedTaskId(selectedInputs);
             if (result.executionTasks.size() >= arguments.maxJobs) {
                 throw overMaxJobs(candidates.size(), arguments.maxJobs,
                         loaded.regionPlans);
             }
-            ExecutionTask scheduled = ExecutionTask.create(candidate.goal,
-                    taskId, selectedInputs,
-                    branchMethods(candidate.branches), loopBound);
+            ExecutionTask scheduled = task(candidate,
+                    branchMethods(candidate.branches), loopBound,
+                    loaded.symbolicInputs);
             // json() is the live row by decision (contract/PlanRow): the
             // scheduler annotates the task it has just created, and no typed
             // member it already decoded is derived from these carriers.
@@ -170,6 +162,33 @@ public final class ConcolicScheduler {
             }
         }
         return result;
+    }
+
+    /**
+     * The task of one region-path goal whose inputs and woven methods the
+     * caller states: the schedule's own rule ({@link #task}), for an
+     * occurrence a replay exposed ({@code ExposedRegionPlanMain}).
+     */
+    static ExecutionTask regionPathTask(
+            Goal goal, JsonArray inputActions, JsonArray branchMethods,
+            LoopBoundPolicy loopBound, SymbolicInputSelection symbolicInputs) {
+        return task(new Candidate(goal, new JsonArray(), "", 1, false,
+                inputActions, goal.plan().occurrenceId()), branchMethods,
+                loopBound, symbolicInputs);
+    }
+
+    /** One candidate's task: its declared inputs, its identity, its row. */
+    private static ExecutionTask task(
+            Candidate candidate, JsonArray branchMethods,
+            LoopBoundPolicy loopBound, SymbolicInputSelection symbolicInputs) {
+        RegionInstancePlan plan = candidate.goal.plan();
+        JsonArray selected = symbolicInputs.select(plan.regionId(),
+                candidate.inputActions);
+        selected = removeInboundProtocolHandoffInputs(selected,
+                CommunicationHandoffSpec.decode(plan.json()));
+        return ExecutionTask.create(candidate.goal,
+                candidate.seedTaskId(selected), selected, branchMethods,
+                loopBound);
     }
 
     /**
@@ -324,7 +343,6 @@ public final class ConcolicScheduler {
         RuntimeWorkflowDiscovery.RankedWorkflow workflow =
                 RuntimeWorkflowDiscovery.workflow(loaded.regionPlans,
                         arguments.targetOccurrence);
-        requireRetainedRegions(arguments.retainRegions, workflow);
         if (workflow.scheduledTaskCount() > arguments.maxJobs) {
             throw overMaxJobs(workflow.scheduledTaskCount(),
                     arguments.maxJobs, loaded.regionPlans);
@@ -359,10 +377,7 @@ public final class ConcolicScheduler {
         for (ExecutionTask task : result.executionTasks) {
             taskRows.add(task.json());
         }
-        if (arguments.closureMode == ClosureMode.SEED_REPLAY) {
-            taskRows = withSeedReplayGroup(taskRows);
-        }
-        ArtifactIO.replaceJsonl(taskPlan, taskRows);
+        ArtifactIO.replaceJsonl(taskPlan, withSeedReplayGroup(taskRows));
         JsonObject taskPlanIdentity = artifactIdentity(taskPlan);
         JsonObject index = workflow.scheduleIndex(result.executionTasks,
                 loaded.regionPlanIdentity, taskPlanIdentity);
@@ -412,19 +427,14 @@ public final class ConcolicScheduler {
     }
 
     /**
-     * Names the propagation ledger of the seed replay.
+     * Names the propagation ledger of the plan's replays.
      *
      * <p>Every task replayed in one workload JVM shares one ledger, and the
-     * ledger's identity is what a reader joins two runs on.  A flip replay
-     * already carries that identity from {@link PathReplayTaskFactory}; the
-     * seed replay comes from no earlier bundle, so nothing has named its
-     * ledger yet.  It is minted here, in the same spelling and from the same
-     * authority, so one side -- this scheduler and that factory -- names
-     * every replay group and no caller has to derive one.</p>
-     *
-     * <p>The seed is the plan itself, which makes the identity stable across
-     * iterations and campaign roots: the same tasks replayed again are the
-     * same ledger.</p>
+     * ledger's identity is what a reader joins two runs on.  The seed is
+     * the plan itself, which makes the identity stable across iterations
+     * and campaign roots: the same tasks replayed again are the same
+     * ledger.  A flip replay links this same plan, so it carries the same
+     * group.</p>
      */
     private static List<JsonObject> withSeedReplayGroup(
             List<JsonObject> taskRows) {
@@ -1626,13 +1636,48 @@ public final class ConcolicScheduler {
                         scopeMap.declaredSitesAt(capture.siteId(),
                                 capture.declaredCallee()))) {
                     JsonObject port = capture.port(plan, site);
-                    if (!admits(plan.regionId(), port)) continue;
+                    if (!declares(plan.regionId(), port)) continue;
                     ports.putIfAbsent(optionalString(port, "portId"), port);
                 }
             }
             JsonArray minted = new JsonArray();
             for (JsonObject port : ports.values()) minted.add(port);
             return minted;
+        }
+
+        /**
+         * The ports the same rule mints in an occurrence no recording
+         * captured -- one a replay exposed (DESIGN4 section 3.3b): one
+         * static port per CALL_RETURN declared site the region's text
+         * holds, from the scope map alone.  Accessor returns need the
+         * recorded receiver and are not minted here.
+         */
+        JsonArray declaredSitePorts(RegionInstancePlan plan,
+                                    StaticScopeMap scopeMap,
+                                    Set<String> regionMethods) {
+            Map<String, JsonObject> ports = new LinkedHashMap<>();
+            for (StaticScopeMap.Site site : scopeMap.declaredSites()) {
+                if (!regionMethods.contains(SiteId.methodOf(site.siteId))
+                        || !StaticScopeMap.CALL_RETURN.equals(
+                        site.declared.kind)) {
+                    continue;
+                }
+                JsonObject port = DeclaredSiteCapture.declaredPort(plan, site);
+                if (!declares(plan.regionId(), port)) continue;
+                ports.putIfAbsent(optionalString(port, "portId"), port);
+            }
+            JsonArray minted = new JsonArray();
+            for (JsonObject port : ports.values()) minted.add(port);
+            return minted;
+        }
+
+        /**
+         * Whether one region declares one proposed action: named by the
+         * selection file, or written into the workload's own text (a fault
+         * marker).  Both are declarations in the same sense.
+         */
+        private boolean declares(String regionId, JsonObject action) {
+            return admits(regionId, action) || workloadOwnedSymbol(action);
         }
 
         /** The accessor declarations of one site, or all of them when it
@@ -1697,11 +1742,7 @@ public final class ConcolicScheduler {
                 // not allowed to reach it.
                 return;
             }
-            boolean declared = admits(regionId, action);
-            // The workload wrote this symbol into its own program text; that
-            // is a declaration in the same sense a hook call is one.
-            boolean workloadOwned = workloadOwnedSymbol(action);
-            if (!declared && !workloadOwned) {
+            if (!declares(regionId, action)) {
                 // No declaration names this read, so it is not an input of
                 // this campaign.  It observes whatever the run put in the
                 // location, and the expression of a root-derived store
@@ -1713,15 +1754,13 @@ public final class ConcolicScheduler {
                 retained.addProperty("symbolicDemand", UNDECLARED);
                 return;
             }
-            if (declared) {
-                // Named by hand: the replay mints here, which is what
-                // "the search starts at this cell" means.
+            // Declared: the replay mints here, which is what "the search
+            // starts at this cell" means.
+            retained.addProperty(
+                    InputActionCatalog.DECLARED_SYMBOLIC_ROOT, true);
+            if (names(clocks, regionId, action)) {
                 retained.addProperty(
-                        InputActionCatalog.DECLARED_SYMBOLIC_ROOT, true);
-                if (names(clocks, regionId, action)) {
-                    retained.addProperty(
-                            InputActionCatalog.DECLARED_WALL_CLOCK, true);
-                }
+                        InputActionCatalog.DECLARED_WALL_CLOCK, true);
             }
         }
 
@@ -1895,69 +1934,6 @@ public final class ConcolicScheduler {
         }
     }
 
-    /**
-     * Which closure the schedule is drawn from.  It names the scope once, so
-     * two independent flags cannot contradict each other; it is read by
-     * {@link #withSeedReplayGroup}, which is the one thing the seed replay
-     * does differently.
-     */
-    public enum ClosureMode {
-        /** Every candidate occurrence the frozen region plan declares. */
-        CANDIDATE("candidate"),
-        /** Only the occurrences a seed activation can replay. */
-        SEED_REPLAY("seed-replay");
-
-        private final String option;
-
-        ClosureMode(String option) {
-            this.option = option;
-        }
-
-        static ClosureMode parse(String value) {
-            String requested = value == null || value.trim().isEmpty()
-                    ? CANDIDATE.option : value.trim();
-            for (ClosureMode mode : values()) {
-                if (mode.option.equals(requested)) return mode;
-            }
-            throw new IllegalArgumentException("--closure-mode must be "
-                    + "candidate or seed-replay, not: " + requested);
-        }
-    }
-
-    /**
-     * Every region a previous epoch's divergence said the retained set must
-     * grow to include (INTERACTION-ID section 8, case 2).
-     *
-     * <p>A flipped path reached a region the workload never retained -- only
-     * lightweight entry hooks ran there, so it published activations and no
-     * decisions.  The next epoch has to instrument it, and INSTRUMENT
-     * instruments the regions this plan names, so the plan has to name it.
-     * If no candidate of this recording carries the region, the epoch cannot
-     * grow the way the divergence asked and says so here rather than
-     * instrumenting the same set again and diverging identically.</p>
-     */
-    private static void requireRetainedRegions(
-            java.util.Set<String> required,
-            RuntimeWorkflowDiscovery.RankedWorkflow workflow) {
-        if (required.isEmpty()) return;
-        java.util.Set<String> planned = new LinkedHashSet<>();
-        for (RuntimeWorkflowDiscovery.Selection selection
-                : workflow.selections()) {
-            planned.add(selection.regionId);
-        }
-        List<String> missing = new ArrayList<>();
-        for (String regionId : required) {
-            if (!planned.contains(regionId)) missing.add(regionId);
-        }
-        if (!missing.isEmpty()) {
-            throw new IllegalArgumentException(
-                    "RETAINED_SET_CANNOT_GROW: this epoch was asked to retain "
-                            + missing + ", and no candidate of this recording"
-                            + " carries them; instrumenting the same set again"
-                            + " would diverge identically");
-        }
-    }
-
     public static final class Arguments {
         public final Path regionPlan;
         public final Path candidateGraph;
@@ -1971,22 +1947,13 @@ public final class ConcolicScheduler {
         public final Path symbolicInputs;
         /** The occurrence of the annotated site the case declares, or "". */
         public final String targetOccurrence;
-        /** Regions a previous epoch's divergence requires this plan to keep. */
-        public final java.util.Set<String> retainRegions;
-        private final ClosureMode closureMode;
 
         private Arguments(Path regionPlan, Path candidateGraph,
                           Path staticScopeMap,
                           Path outputDirectory, String regionId,
                           String occurrenceId, String goalId,
                           int maxJobs,
-                          Path symbolicInputs, ClosureMode closureMode,
-                          String targetOccurrence,
-                          java.util.Set<String> retainRegions) {
-            this.retainRegions = retainRegions == null
-                    ? java.util.Collections.<String>emptySet()
-                    : java.util.Collections.unmodifiableSet(
-                            new LinkedHashSet<>(retainRegions));
+                          Path symbolicInputs, String targetOccurrence) {
             this.regionPlan = regionPlan;
             this.candidateGraph = candidateGraph;
             this.staticScopeMap = staticScopeMap;
@@ -1996,20 +1963,13 @@ public final class ConcolicScheduler {
             this.goalId = safe(goalId);
             this.maxJobs = Math.max(1, maxJobs);
             this.symbolicInputs = symbolicInputs;
-            this.closureMode = closureMode;
             this.targetOccurrence = safe(targetOccurrence);
         }
 
         public static Arguments parse(String[] args) {
-            // "retain-regions" was missing from this list while
-            // run_engine.sh passed it on every epoch after the first, so the
-            // scheduler died with "Unknown scheduler option
-            // --retain-regions" the moment a divergence asked for a grown
-            // retained set.  Every option the shell passes is declared here.
             Map<String, String> values = parseArgs(args, "region-plan",
                     "candidate-graph", "static-scope-map", "output-dir",
-                    "max-jobs", "symbolic-inputs", "retain-regions",
-                    "closure-mode", "target-occurrence");
+                    "max-jobs", "symbolic-inputs", "target-occurrence");
             Path regionPlan = requiredPath(values, "region-plan");
             Path output = Paths.get(firstNonBlank(values.get("output-dir"),
                     ArtifactIO.sibling(regionPlan,
@@ -2018,24 +1978,10 @@ public final class ConcolicScheduler {
             Path staticScopeMap = requiredPath(values, "static-scope-map");
             Path symbolicInputs = optionalPath(
                     values.get("symbolic-inputs"));
-            ClosureMode closureMode = ClosureMode.parse(
-                    values.get("closure-mode"));
             return new Arguments(regionPlan, candidateGraph, staticScopeMap,
                     output, "", "", "",
                     positiveInt(values.get("max-jobs"), 1, "max-jobs"),
-                    symbolicInputs, closureMode,
-                    values.get("target-occurrence"),
-                    splitRegions(values.get("retain-regions")));
-        }
-
-        /** {@code --retain-regions a,b,c}, or an empty set. */
-        private static java.util.Set<String> splitRegions(String value) {
-            java.util.Set<String> regions = new LinkedHashSet<>();
-            for (String part : (value == null ? "" : value).split(",")) {
-                String regionId = part.trim();
-                if (!regionId.isEmpty()) regions.add(regionId);
-            }
-            return regions;
+                    symbolicInputs, values.get("target-occurrence"));
         }
 
         private static Path requiredPath(Map<String, String> values,
@@ -2081,8 +2027,7 @@ public final class ConcolicScheduler {
                     outputDirectory,
                     selection.regionId, selection.occurrenceId,
                     selection.goalId, 1,
-                    symbolicInputs, closureMode, targetOccurrence,
-                    retainRegions);
+                    symbolicInputs, targetOccurrence);
         }
 
     }

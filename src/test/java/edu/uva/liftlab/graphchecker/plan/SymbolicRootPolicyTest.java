@@ -88,9 +88,8 @@ public class SymbolicRootPolicyTest {
                 member(selected, 1, "symbolicDemand"));
         assertEquals("and the fault marker the workload wrote stays symbolic",
                 "SYMBOLIC", member(selected, 2, "mode"));
-        assertFalse("without the marker, whose mint the runtime finds by "
-                        + "sourceKind",
-                selected.get(2).getAsJsonObject().has(ROOT));
+        assertTrue("and is a declared root: the workload's text declared it",
+                selected.get(2).getAsJsonObject().get(ROOT).getAsBoolean());
         JsonArray actions = proposals();
         actions.add(action("COMMUNICATION_SITE_PORT", "<C: int getKeyId()>#u2",
                 "<C: int getKeyId()>.return"));

@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import edu.uva.liftlab.graphchecker.annotation.Debug;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
@@ -165,9 +166,9 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * Finalizes the selected runtime graph using the occurrence links already
-     * produced by the runtime planner.  Those links are scheduling evidence;
-     * symbolic values still cross only through VM VALUE_HANDOFF edges.
+     * Finalizes the selected runtime graph.  Symbolic values cross
+     * occurrences only through VM VALUE_HANDOFF edges; no offline pairing
+     * is read here.
      */
     public static Result finalizeRegions(
             List<Map<String, Object>> graph,
@@ -176,7 +177,6 @@ public final class RuntimeSelectedRegionFinalizer {
             Collection<Map<String, Object>> runtimeInstances,
             Collection<Map<String, Object>> runtimeRegionFolds,
             Collection<Map<String, Object>> runtimeObservations,
-            Collection<Map<String, Object>> runtimeOccurrenceLinks,
             StaticScopeMap scopeMap)
             throws IOException {
         Set<String> observed = new LinkedHashSet<>();
@@ -346,24 +346,48 @@ public final class RuntimeSelectedRegionFinalizer {
         Map<String, List<CutPort>> byRegion = new LinkedHashMap<>();
         for (StaticProgram.RegionRow skeleton : program.skeletons.values()) {
             List<CutPort> ports = new ArrayList<>();
-            for (Map<String, Object> port : skeleton.communicationPorts) {
-                String portId = text(port.get("portId"));
-                if (portId.isEmpty()) {
-                    continue;
+            for (Map.Entry<String, List<Map<String, Object>>> side
+                    : cutPortRows(skeleton, program.regionGraph(
+                            skeleton.regionId)).entrySet()) {
+                for (Map<String, Object> row : side.getValue()) {
+                    ports.add(new CutPort(side.getKey(),
+                            text(row.get("portId")), row));
                 }
-                Map<String, Object> row = new LinkedHashMap<>(port);
-                row.remove(REGION_PORT_SIDE);
-                Set<String> cells = callReturnValueCells(
-                        program.regionGraph(skeleton.regionId), row);
-                if (cells.size() == 1) {
-                    row.put("dependencyCells", new ArrayList<>(cells));
-                }
-                ports.add(new CutPort(text(port.get(REGION_PORT_SIDE)),
-                        portId, row));
             }
             if (!ports.isEmpty()) byRegion.put(skeleton.regionId, ports);
         }
         return byRegion;
+    }
+
+    /**
+     * The region-level rows of one skeleton's declared cut ports, by side
+     * ({@code IN} / {@code OUT}): the port as the mappings declare it, with
+     * the one value cell the region graph names for it when it names
+     * exactly one.  The static statement about the cut, so an occurrence a
+     * replay exposed ({@code ExposedRegionPlanMain}) holds the same rows a
+     * recorded one does.
+     */
+    public static Map<String, List<Map<String, Object>>> cutPortRows(
+            StaticProgram.RegionRow skeleton,
+            List<Map<String, Object>> regionGraph) {
+        Map<String, List<Map<String, Object>>> bySide = new LinkedHashMap<>();
+        bySide.put("IN", new ArrayList<>());
+        bySide.put("OUT", new ArrayList<>());
+        for (Map<String, Object> port : skeleton.communicationPorts) {
+            String portId = text(port.get("portId"));
+            String side = text(port.get(REGION_PORT_SIDE));
+            if (portId.isEmpty() || !bySide.containsKey(side)) {
+                continue;
+            }
+            Map<String, Object> row = new LinkedHashMap<>(port);
+            row.remove(REGION_PORT_SIDE);
+            Set<String> cells = callReturnValueCells(regionGraph, row);
+            if (cells.size() == 1) {
+                row.put("dependencyCells", new ArrayList<>(cells));
+            }
+            bySide.get(side).add(row);
+        }
+        return bySide;
     }
 
     /**
@@ -1296,16 +1320,18 @@ public final class RuntimeSelectedRegionFinalizer {
      * activations no shared-location demand arrives on.</p>
      *
      * <p>The recording's half is the capture ({@code DeclaredSiteCapture}),
-     * the declaration's half is the case file, and neither is re-decided
-     * here: a callee the case did not name admits nothing.</p>
+     * the declaration's half is the case file or, for a fault marker, the
+     * workload's own text ({@code Debug.makeSymbolicBoolean}), and neither
+     * is re-decided here: a callee nothing declared admits nothing.</p>
      */
     private static boolean declaresACapturedCallee(
             Map<String, Object> activation, Set<String> declaredCallees) {
-        if (declaredCallees.isEmpty()) return false;
         for (Map<String, Object> capture
                 : rows(activation.get(DeclaredSiteCapture.PLAN_FIELD))) {
-            if (declaredCallees.contains(text(
-                    capture.get(DeclaredSiteCapture.DECLARED_CALLEE)))) {
+            String callee = text(capture.get(
+                    DeclaredSiteCapture.DECLARED_CALLEE));
+            if (declaredCallees.contains(callee)
+                    || Debug.isBooleanMarkerSignature(callee)) {
                 return true;
             }
         }

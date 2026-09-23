@@ -5,6 +5,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 
+import edu.uva.liftlab.graphchecker.annotation.Debug;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
 import java.io.IOException;
@@ -44,7 +45,9 @@ import java.util.Set;
  *       outside the slice's own text and the campaign may therefore have
  *       DECLARED it symbolic -- a structural field accessor's return
  *       ({@code declaredKind} {@code ACCESSOR_RETURN}) or an external
- *       call's return ({@code CALL_RETURN}).  It carries the whole static
+ *       call's return ({@code CALL_RETURN}), including the workload's own
+ *       fault markers ({@code Debug.makeSymbolicBoolean}, declared by the
+ *       program text).  It carries the whole static
  *       half of the port such a declaration mints: the {@code
  *       declaredCallee}, the {@code implementationMethod} that answers it,
  *       the {@code cell} the declaration names, the {@code dependencyCell}
@@ -517,14 +520,17 @@ public final class StaticScopeMap {
      * The DECLARED_SITE row of one candidate edge that produces a value from
      * outside the slice's own text.
      *
-     * <p>Two edge kinds, one row family.  An {@code accessor_field_return}
+     * <p>Three edge kinds, one row family.  An {@code accessor_field_return}
      * edge is a closed-world structural getter of a declared field, so the
      * cell a declaration would name is the field and the value lands in the
      * edge's {@code toCell}.  A {@code call_return} edge of a DECLARED
      * callee is the callee's own {@code .return} cell, and only when no
      * retained region holds the callee: a callee that is itself a region
      * publishes its own rows, and minting a call-result symbol beside them
-     * would give one value two authorities.</p>
+     * would give one value two authorities.  An {@code
+     * explicit_symbolic_fault} edge is the same call-return shape for the
+     * one callee the workload declares in its own text, the fault marker:
+     * its {@code boolean} return is the root the replay flips.</p>
      *
      * <p>Every value here is the program text's.  Whether the site ran, how
      * often, and what it returned are the recording's to state, and no row
@@ -546,7 +552,9 @@ public final class StaticScopeMap {
             if (implementation.isEmpty()) return;
         } else if ("call_return".equals(kind)
                 && declaredCallees.contains(callee)
-                && !regionMethods.contains(callee)) {
+                && !regionMethods.contains(callee)
+                || "explicit_symbolic_fault".equals(kind)
+                && Debug.isBooleanMarkerSignature(callee)) {
             cell = text(edge.get("fromCell"));
         } else {
             return;

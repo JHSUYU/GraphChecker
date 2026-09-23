@@ -17,7 +17,6 @@ import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.plan.DeclaredSiteCapture;
 import edu.uva.liftlab.graphchecker.plan.DeclaredSymbolicInputs;
-import edu.uva.liftlab.graphchecker.plan.MaterializationSpec;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.plan.RuntimePlanArtifact;
 import edu.uva.liftlab.graphchecker.plan.StaticSymbolicSourceDeclaration;
@@ -38,8 +37,6 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.UUID;
 import java.util.function.ToLongFunction;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.longNumber;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.object;
@@ -49,18 +46,13 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.stringValue;
 
 /** Binds region skeletons and refined region state to concrete activations. */
-final class RuntimeRegionPlanner {
+public final class RuntimeRegionPlanner {
     private static final Gson GSON = new GsonBuilder()
             .setObjectToNumberStrategy(ToNumberPolicy.LONG_OR_DOUBLE)
             .create();
-    private static final Pattern FIELD = Pattern.compile(
-            "^<[^:]+:\\s+([^()<>]+)\\s+[^\\s()>]+>$");
     /** Logical source of a workload whose tracing never registered one. */
-    static final SourceRef UNREGISTERED_SOURCE = new SourceRef(
+    public static final SourceRef UNREGISTERED_SOURCE = new SourceRef(
             "TEST_DRIVER", "WORKLOAD", "workload/unregistered", 0L);
-    /** Authority of one recorded exchange link between two occurrences. */
-    static final String DELIVERY_LINK_AUTHORITY =
-            "RECORDED_EXCHANGE_OCCURRENCE_LINK_V1";
     /** The protocol server stub a run entered as its own region root. */
     static final String COMMUNICATION_ENTRY = "COMMUNICATION_ENTRY";
     private RuntimeRegionPlanner() {
@@ -258,8 +250,7 @@ final class RuntimeRegionPlanner {
 
 
     /** Stamps every planned activation with the exchanges its own transport
-     * hooks recorded, and links an exporting occurrence to the occurrence
-     * that received the same exchange. */
+     * hooks recorded. */
     private static void stampRecordedExchanges(
             Result result, TraceIndex trace,
             List<ProtocolEvent> protocolEvents) {
@@ -285,54 +276,6 @@ final class RuntimeRegionPlanner {
         bindObservedCommunicationCaptures(result.runtimeInstances,
                 protocolByActivationRoot, protocolEvents);
         retainInnermostCommunicationCaptureOwners(result.runtimeInstances);
-
-        Map<String, List<Map<String, Object>>> receivedBy =
-                new LinkedHashMap<>();
-        Map<String, List<Map<String, Object>>> exportedByActivation =
-                new LinkedHashMap<>();
-        for (Map<String, Object> activation : result.runtimeInstances) {
-            List<Map<String, Object>> exported = new ArrayList<>();
-            for (ProtocolEvent event : protocolByActivationRoot.getOrDefault(
-                    longNumber(activation.get("rootCallId"), -1L),
-                    Collections.<ProtocolEvent>emptyList())) {
-                if (event.correlationId.isEmpty()) continue;
-                Map<String, Object> row = new LinkedHashMap<>();
-                row.put("exchangeLeg", event.exchangeLeg());
-                row.put("eventSeq", event.seq);
-                row.put("attemptId", event.attemptId);
-                row.put("half", event.half);
-                row.put("transport", event.transport);
-                row.put("requestKey", event.requestKey);
-                row.put("requestApi", event.requestApi);
-                // The hook runs inside the transport.
-                String callSiteId = trace.callSiteId(event.callId,
-                        event.invocationId);
-                if (callSiteId.isEmpty()) {
-                    callSiteId = trace.entrySiteId(event.callId);
-                }
-                row.put("callSiteId", callSiteId);
-                row.put("declaredCallee", event.declaredCallee);
-                if ("SEND".equals(event.direction)) {
-                    exported.add(row);
-                } else if ("RECEIVE".equals(event.direction)) {
-                    Map<String, Object> receipt = new LinkedHashMap<>(row);
-                    receipt.put("activation", activation);
-                    receivedBy.computeIfAbsent(event.exchangeLeg(),
-                            ignored -> new ArrayList<>()).add(receipt);
-                }
-            }
-            exportedByActivation.put(stringValue(activation.get(
-                    "activationId")),
-                    exported);
-        }
-        for (Map<String, Object> activation : result.runtimeInstances) {
-            for (Map<String, Object> exported
-                    : exportedByActivation.getOrDefault(
-                    stringValue(activation.get("activationId")),
-                    Collections.<Map<String, Object>>emptyList())) {
-                linkOneDelivery(result, activation, exported, receivedBy);
-            }
-        }
     }
 
     /** The retained loops of one occurrence: the region's declared rows whose
@@ -404,60 +347,6 @@ final class RuntimeRegionPlanner {
         return result;
     }
 
-    private static void linkOneDelivery(
-            Result result, Map<String, Object> activation,
-            Map<String, Object> exported,
-            Map<String, List<Map<String, Object>>> receivedBy) {
-        String activationId = stringValue(activation.get("activationId"));
-        List<Map<String, Object>> deliveries = new ArrayList<>();
-        for (Map<String, Object> delivery : receivedBy.getOrDefault(
-                stringValue(exported.get("exchangeLeg")),
-                Collections.<Map<String, Object>>emptyList())) {
-            Map<String, Object> candidate = (Map<String, Object>)
-                    delivery.get("activation");
-            if (candidate != null && !activationId.equals(
-                    stringValue(candidate.get("activationId")))) {
-                deliveries.add(delivery);
-            }
-        }
-        if (deliveries.isEmpty()) return;
-        // Replay is distributed and therefore not required to reproduce one
-        // receiver instance.
-        Set<String> emitted = new LinkedHashSet<>();
-        for (Map<String, Object> delivery : deliveries) {
-            Map<String, Object> toActivation = (Map<String, Object>)
-                    delivery.get("activation");
-            String requestKey = stringValue(exported.get("requestKey"));
-            if (!requestKey.equals(stringValue(
-                    delivery.get("requestKey")))) {
-                continue;
-            }
-            String identity = activationId + "\n"
-                    + stringValue(toActivation.get("activationId")) + "\n"
-                    + stringValue(exported.get("exchangeLeg")) + "\n"
-                    + stringValue(exported.get("callSiteId"));
-            if (!emitted.add(identity)) continue;
-            Map<String, Object> link = new LinkedHashMap<>();
-            link.put("schemaVersion", 3);
-            link.put("kind", "RUNTIME_OCCURRENCE_LINK");
-            link.put("fromActivationId", activationId);
-            link.put("fromRootCallId", activation.get("rootCallId"));
-            link.put("callSiteId", stringValue(exported.get("callSiteId")));
-            link.put("toActivationId",
-                    stringValue(toActivation.get("activationId")));
-            link.put("toRootCallId", toActivation.get("rootCallId"));
-            link.put("exchangeLeg", stringValue(exported.get("exchangeLeg")));
-            link.put("senderEventSeq", exported.get("eventSeq"));
-            link.put("receiverEventSeq", delivery.get("eventSeq"));
-            link.put("attemptId", stringValue(exported.get("attemptId")));
-            link.put("direction", stringValue(exported.get("half")));
-            link.put("transport", stringValue(exported.get("transport")));
-            link.put("requestKey", requestKey);
-            link.put("requestApi", stringValue(exported.get("requestApi")));
-            link.put("authority", DELIVERY_LINK_AUTHORITY);
-            result.occurrenceLinks.add(link);
-        }
-    }
 
     /** Attributes the two transport hooks bracketing one synchronous server
      * invocation to the exact planned handler activation between them. */
@@ -1237,7 +1126,6 @@ final class RuntimeRegionPlanner {
         // before retention, just as OccurrenceBinding does for evidence ids.
         Map<String, Integer> replayInvocationOrdinals =
                 new LinkedHashMap<>();
-        Map<String, String> exactPorts = new LinkedHashMap<>();
         // The recorded correlation key of every planned activation, against
         // the content-addressed name the plan publishes for it.  An
         // activation's own name is spelled from its own occurrence, so the
@@ -1340,9 +1228,8 @@ final class RuntimeRegionPlanner {
             if (!retainedOccurrences.contains(occurrenceId)) continue;
             OccurrenceBinding.bindOccurrence(region.json, rootCallId,
                     occurrenceId);
-            registerExactPorts(region, occurrenceId, exactPorts);
             List<Map<String, Object>> occurrenceSymbolize = symbolize(
-                    region.symbolicInputs, occurrenceId, trace);
+                    region.symbolicInputs, occurrenceId);
             List<Map<String, Object>> occurrenceBranches = branches;
             // Static discovery supplies the candidate region; this concrete
             // activation supplies the methods worth slicing in the current
@@ -1579,12 +1466,6 @@ final class RuntimeRegionPlanner {
         return GSON.toJsonTree(value);
     }
 
-    /** The accessor identity a port row states, decoded once per read. */
-    private static MaterializationSpec accessor(Map<String, Object> port) {
-        return MaterializationSpec.decode(
-                toJsonTreeFast(port).getAsJsonObject());
-    }
-
     /** Whether this activation plans a target-reach closure. */
     private static boolean observedFailureTargetActivation(
             List<Map<String, Object>> branches) {
@@ -1597,33 +1478,9 @@ final class RuntimeRegionPlanner {
         return !declared;
     }
 
-    /** True when this row is bound to the occurrence, comparing occurrence
-     * identity only. */
-    private static boolean boundTo(Map<String, Object> row,
-                                   String occurrenceId) {
-        return occurrenceId.equals(stringValue(row.get("occurrenceId")));
-    }
-
-    /** True when this row is the named occurrence's input-side port.
-     *
-     * <p>{@link OccurrenceBinding#bindPorts} is the only thing that stamps an
-     * {@code occurrenceId} on a port row, and it keys on the recorded {@code
-     * rootCallId} of the access that produced the port - which a declaration
-     * does not have and must not have: README section 2's {@code
-     * exchangeSiteKey} is pure static identity, and a cut port is a fact
-     * about the region , stated before any activation of it ran.</p> */
-    private static boolean boundToInput(Map<String, Object> port,
-                                        String occurrenceId) {
-        if (declaredCutPort(port)) {
-            String owned = stringValue(port.get("occurrenceId"));
-            return owned.isEmpty() || owned.equals(occurrenceId);
-        }
-        return occurrenceId.equals(stringValue(port.get("occurrenceId")));
-    }
-
     /** The declared communication ports this region hands to the VM, and the
      * site each is handed at. */
-    private static List<Map<String, Object>> communicationHandoffSites(
+    public static List<Map<String, Object>> communicationHandoffSites(
             StaticProgram.RegionRow region) {
         Map<String, Map<String, Object>> byRole = new LinkedHashMap<>();
         for (boolean inbound : new boolean[]{true, false}) {
@@ -1869,83 +1726,42 @@ final class RuntimeRegionPlanner {
         return captures;
     }
 
-    /** The symbolic inputs one activation of a region is planned over.
+    /**
+     * The symbolic inputs one activation of a region is planned over: its
+     * declared cut ports -- README section 3's {@code Req_in}, {@code
+     * Resp_in}, {@code Live_in} -- whose site the declaration carries.  A
+     * region row holds nothing else ({@code RuntimeSelectedRegionFinalizer
+     * #declareCommunicationPorts}); every other root is minted at PLAN from
+     * the scope map's DECLARED_SITE rows.
      *
-     * <p>A heap port is an observed access and its site comes from what the
-     * run recorded; a declared cut port is a static statement about the cut -
-     * README section 3's {@code Req_in}, {@code Resp_in}, {@code Live_in} -
-     * and its site comes from the capture the declaration carries.</p> */
-    private static List<Map<String, Object>> symbolize(
-            List<Map<String, Object>> ports, String occurrenceId,
-            TraceIndex trace) {
-        // A declared cut port can appear twice: the region-level declaration
-        // and, once a recorded delivery named it, this occurrence's own
-        // stamped copy of it.
+     * <p>A declared cut port can appear twice: the region-level declaration
+     * and, once a recorded delivery named it, this occurrence's own stamped
+     * copy of it.  The copy wins.</p>
+     */
+    public static List<Map<String, Object>> symbolize(
+            List<Map<String, Object>> ports, String occurrenceId) {
         Set<String> occurrenceOwnedCutPorts =
                 occurrenceOwnedCutPortIds(ports, occurrenceId);
         List<Map<String, Object>> result = new ArrayList<>();
         for (Map<String, Object> port : ports) {
-            if (!boundToInput(port, occurrenceId)) {
+            if (!declaredCutPort(port)) {
+                throw new IllegalArgumentException("a region row holds a port"
+                        + " that is not a declared cut port: " + port);
+            }
+            String owned = stringValue(port.get("occurrenceId"));
+            if (!owned.isEmpty() && !owned.equals(occurrenceId)
+                    || owned.isEmpty() && occurrenceOwnedCutPorts.contains(
+                            stringValue(port.get("portId")))) {
                 continue;
             }
-            if (declaredCutPort(port)) {
-                if (stringValue(port.get("occurrenceId")).isEmpty()
-                        && occurrenceOwnedCutPorts.contains(
-                        stringValue(port.get("portId")))) {
-                    continue;
-                }
-                // A declared cut port is not a heap access.
-                Map<String, Object> declared = declaredCutPortAction(port);
-                if (declared != null) {
-                    result.add(declared);
-                }
-                continue;
-            }
-            List<String> path = strings(port.get("fieldPath"));
-            Map<String, Object> action = new LinkedHashMap<>(port);
-            MaterializationSpec materialization = accessor(port);
-            action.put("symbol", port.get("portId"));
-            action.put("observed", true);
-            action.put("objectId", port.get("rootObjectId"));
-            String javaType = leafType(
-                    strings(port.get("fieldPathDeclarations")));
-            String sourceKind = stringValue(port.get("sourceKind"));
-            if (RuntimeSelectedRegionFinalizer.EXPLICIT_SYMBOLIC_FAULT.equals(
-                    sourceKind)) {
-                javaType = "boolean";
-            } else if (RuntimeSelectedRegionFinalizer.EXTERNAL_CALL_RETURN
-                    .equals(sourceKind)) {
-                javaType = stringValue(port.get("javaType"));
-            }
-            action.put("javaType", javaType);
-            if (RuntimeSelectedRegionFinalizer.EXPLICIT_SYMBOLIC_FAULT.equals(
-                    sourceKind)
-                    || RuntimeSelectedRegionFinalizer.EXTERNAL_CALL_RETURN
-                    .equals(sourceKind)) {
-                action.put("location", "CALL_RETURN");
-            } else if ("PARAMETER".equals(stringValue(port.get("rootKind")))) {
-                action.put("argumentIndex", port.get("rootParameterIndex"));
-                action.put("location", path.isEmpty()
-                        ? "ARGUMENT" : "ARGUMENT_FIELD_PATH");
-            } else if ("OBSERVED_FIELD_RECEIVER".equals(
-                    stringValue(port.get("rootKind")))) {
-                action.put("location", "HEAP_OBJECT_FIELD");
-                addFieldAccessIdentity(action, port, path);
-            } else {
-                action.put("location", "RECEIVER_FIELD");
-            }
-            if (!path.isEmpty()) {
-                action.put("fieldPaths",
-                        Collections.singletonList(path));
-            }
-            action.putAll(materialization.actionFields());
-            result.add(action);
+            Map<String, Object> declared = declaredCutPortAction(port);
+            if (declared != null) result.add(declared);
         }
         return result;
     }
 
     /** Names the value cell of every declared cut port of one region, once. */
-    private static void declareCutPortCells(StaticProgram.RegionRow region) {
+    public static void declareCutPortCells(StaticProgram.RegionRow region) {
         List<Map<String, Object>> ports =
                 new ArrayList<>(region.symbolicInputs);
         ports.addAll(region.outputs);
@@ -2079,58 +1895,6 @@ final class RuntimeRegionPlanner {
                 && "ZBCSIJFD".indexOf(descriptor.charAt(component)) >= 0;
     }
 
-    private static void addFieldAccessIdentity(
-            Map<String, Object> action, Map<String, Object> port,
-            List<String> path) {
-        List<String> declarations = strings(
-                port.get("fieldPathDeclarations"));
-        if (!declarations.isEmpty()) {
-            action.put("accessFieldSignature", declarations.get(0));
-            action.put("leafFieldSignature",
-                    declarations.get(declarations.size() - 1));
-        }
-        String site = stringValue(port.get("siteId"));
-        if (!site.isEmpty()) {
-            action.put("accessSites", Collections.singletonList(site));
-        }
-        action.put("fieldPath", path);
-    }
-
-    /** Binds the exact ports of one region occurrence. */
-    private static void registerExactPorts(
-            StaticProgram.RegionRow region, String occurrenceId,
-            Map<String, String> exactPorts) {
-        registerExactPorts(region.symbolicInputs, occurrenceId, "IN",
-                exactPorts);
-        registerExactPorts(region.outputs, occurrenceId, "OUT", exactPorts);
-    }
-
-    private static void registerExactPorts(
-            List<Map<String, Object>> ports,
-            String occurrenceId, String direction,
-            Map<String, String> exactPorts) {
-        for (Map<String, Object> port : ports) {
-            if (!("IN".equals(direction)
-                    ? boundToInput(port, occurrenceId)
-                    : boundTo(port, occurrenceId))) {
-                continue;
-            }
-            String id = stringValue(port.get("portId"));
-            if (id.isEmpty()) continue;
-            String key = exactPortKey(occurrenceId, direction, id);
-            String previous = exactPorts.putIfAbsent(key, id);
-            if (previous != null && !previous.equals(id)) {
-                throw new IllegalArgumentException(
-                        "conflicting exact runtime port binding: " + key);
-            }
-        }
-    }
-
-    private static String exactPortKey(String occurrenceId,
-                                       String direction, String portId) {
-        return occurrenceId + "\n" + direction + "\n" + portId;
-    }
-
     /** Package-visible for the required-outcome selection contract test. */
     static List<Map<String, Object>> branches(
             List<Map<String, Object>> policies,
@@ -2213,13 +1977,13 @@ final class RuntimeRegionPlanner {
     /** The activation ran on a source the application registered. */
     static final String ANCHOR_REGISTERED_SOURCE = "REGISTERED_SOURCE";
     /** The activation registered no source and ran under the default. */
-    static final String ANCHOR_UNREGISTERED_SOURCE = "UNREGISTERED_SOURCE";
+    public static final String ANCHOR_UNREGISTERED_SOURCE = "UNREGISTERED_SOURCE";
     /**
      * The activation inherited a registered source from its creating thread,
      * while its own receiver had no source alias. Replay therefore uses the
      * thread context as the anchor.
      */
-    static final String ANCHOR_INHERITED_CONTEXT = "INHERITED_CONTEXT";
+    public static final String ANCHOR_INHERITED_CONTEXT = "INHERITED_CONTEXT";
 
     /** What causally produced this activation, named rather than counted. */
     private static Map<String, Object> causalAnchor(MethodEvent root,
@@ -2373,7 +2137,7 @@ final class RuntimeRegionPlanner {
      * <p>The {@code ACT.} prefix and the UUID shape are the ones consumers
      * already parse; only what the UUID is taken over changes.</p>
      */
-    static String activationId(String occurrenceId,
+    public static String activationId(String occurrenceId,
                                Map<String, Object> rootSelector) {
         return "ACT." + UUID.nameUUIDFromBytes((safe(occurrenceId) + "\n"
                 + canonicalIdentity(rootSelector))
@@ -2422,15 +2186,6 @@ final class RuntimeRegionPlanner {
         }
     }
 
-    private static String leafType(List<String> declarations) {
-        if (declarations.isEmpty()) {
-            return "java.lang.Object";
-        }
-        Matcher matcher = FIELD.matcher(
-                declarations.get(declarations.size() - 1));
-        return matcher.matches() ? matcher.group(1) : "java.lang.Object";
-    }
-
     @SuppressWarnings("unchecked")
 
     private static List<String> strings(Object value) {
@@ -2470,8 +2225,6 @@ final class RuntimeRegionPlanner {
          * over.
          */
         final List<Map<String, Object>> regionFolds = new ArrayList<>();
-        /** Recorded exchange and shared-location links across occurrences. */
-        final List<Map<String, Object>> occurrenceLinks = new ArrayList<>();
         int staticRegionCount;
 
         String runtimePlanJsonl() {

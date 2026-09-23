@@ -4,7 +4,6 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.ToNumberPolicy;
 import com.google.gson.reflect.TypeToken;
-import edu.uva.liftlab.graphchecker.annotation.Debug;
 import edu.uva.liftlab.graphchecker.causynth.MapFields;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
@@ -84,8 +83,6 @@ final class RuntimeRefinedGraphBuilder {
 
         Map<StaticSite, List<RuntimeFieldBinding>> bindingsBySite =
                 new LinkedHashMap<>();
-        Map<AccessorSite, List<RuntimeAccessorBinding>> accessorBindingsBySite =
-                new LinkedHashMap<>();
         List<Activation> activations = activations(runtimeInstances,
                 skeletons, methodEvents);
         for (Activation activation : activations) {
@@ -97,8 +94,6 @@ final class RuntimeRefinedGraphBuilder {
                         completedCalls = completedCalls(activationRuntime);
                 Map<Long, List<RuntimeRegionPlanner.RuntimeEvent>>
                         callArguments = callArguments(activationRuntime);
-                collectAccessorBindings(activation, activationRuntime,
-                        accessorBindingsBySite);
                 List<RuntimeRegionPlanner.FieldAccessEvent> activationFields =
                         eventsForCalls(calls, fieldsByCall);
                 if (activationFields.isEmpty()) {
@@ -182,28 +177,7 @@ final class RuntimeRefinedGraphBuilder {
             List<String> regionIds = new ArrayList<>(values(
                     skeletons.regionsByMethod.get(method)));
             edge.put("regionIds", regionIds);
-            if (Boolean.TRUE.equals(edge.get("explicitSymbolicFault"))) {
-                List<RuntimeAccessorBinding> bindings = values(
-                        accessorBindingsBySite.get(AccessorSite.from(edge)));
-                if (bindings.isEmpty()) {
-                    edge.put("runtimeObserved", false);
-                } else {
-                    edge.put("runtimeExplicitFaultBindings",
-                            encodeExplicitFaultBindings(bindings));
-                    edge.put("runtimeObserved", true);
-                }
-            } else if ("accessor_field_return".equals(
-                    stringValue(edge.get("kind")))) {
-                List<RuntimeAccessorBinding> bindings = values(
-                        accessorBindingsBySite.get(AccessorSite.from(edge)));
-                if (bindings.isEmpty()) {
-                    edge.put("runtimeObserved", false);
-                } else {
-                    edge.put("runtimeAccessorBindings",
-                            encodeAccessorBindings(bindings, edge));
-                    edge.put("runtimeObserved", true);
-                }
-            } else if ("HEAP_READ".equals(transfer)
+            if ("HEAP_READ".equals(transfer)
                     || "HEAP_WRITE".equals(transfer)) {
                 StaticSite site = StaticSite.from(edge);
                 List<RuntimeFieldBinding> bindings = values(
@@ -406,41 +380,6 @@ final class RuntimeRefinedGraphBuilder {
         return result;
     }
 
-    private static void collectAccessorBindings(
-            Activation activation,
-            List<RuntimeRegionPlanner.RuntimeEvent> events,
-            Map<AccessorSite, List<RuntimeAccessorBinding>> destination) {
-        Map<Long, AccessorInvocation> entered = new LinkedHashMap<>();
-        Map<AccessorSite, Integer> occurrences = new LinkedHashMap<>();
-        for (RuntimeRegionPlanner.RuntimeEvent event : events) {
-            AccessorSite site = AccessorSite.from(event);
-            if (site == null) continue;
-            if ("CALL_SITE_ENTER".equals(event.kind)
-                    && event.invocationId > 0L
-                    && (event.objectId != 0
-                    || Debug.isBooleanMarkerSignature(
-                    event.declaredCallee))) {
-                int occurrence = occurrences.getOrDefault(site, 0) + 1;
-                occurrences.put(site, occurrence);
-                entered.put(event.invocationId,
-                        new AccessorInvocation(site, event, occurrence));
-            } else if ("CALL_SITE_RETURN".equals(event.kind)
-                    && (!event.primitiveValue.isEmpty()
-                    || event.objectId != 0)) {
-                AccessorInvocation invocation = entered.remove(
-                        event.invocationId);
-                if (invocation == null || !invocation.site.equals(site)) {
-                    continue;
-                }
-                destination.computeIfAbsent(site,
-                        ignored -> new ArrayList<>()).add(
-                        new RuntimeAccessorBinding(activation,
-                                invocation.enter, event,
-                                invocation.occurrence));
-            }
-        }
-    }
-
     private static List<Activation> activations(
             Collection<Map<String, Object>> runtimeInstances,
             SkeletonCatalog skeletons,
@@ -542,34 +481,6 @@ final class RuntimeRefinedGraphBuilder {
         Map<String, Map<String, Object>> unique = new LinkedHashMap<>();
         for (RuntimeFieldBinding binding : bindings) {
             unique.put(JsonFields.WRITER.toJson(binding.toMap()), binding.toMap());
-        }
-        return new ArrayList<>(unique.values());
-    }
-
-    private static List<Map<String, Object>> encodeAccessorBindings(
-            Collection<RuntimeAccessorBinding> bindings,
-            Map<String, Object> edge) {
-        Map<String, Map<String, Object>> unique = new LinkedHashMap<>();
-        for (RuntimeAccessorBinding binding : bindings) {
-            Map<String, Object> encoded = binding.toMap(edge);
-            unique.put(JsonFields.WRITER.toJson(encoded), encoded);
-        }
-        return new ArrayList<>(unique.values());
-    }
-
-    private static List<Map<String, Object>> encodeExplicitFaultBindings(
-            Collection<RuntimeAccessorBinding> bindings) {
-        Map<String, Map<String, Object>> unique = new LinkedHashMap<>();
-        for (RuntimeAccessorBinding binding : bindings) {
-            Map<String, Object> encoded = binding.toMap(
-                    Collections.<String, Object>emptyMap());
-            encoded.remove("receiverObjectId");
-            encoded.remove("receiverRuntimeType");
-            encoded.remove("declaredFieldSignature");
-            encoded.remove("accessorImplementationMethod");
-            encoded.put("authority",
-                    "EXACT_RUNTIME_EXPLICIT_FAULT_RETURN_V1");
-            unique.put(JsonFields.WRITER.toJson(encoded), encoded);
         }
         return new ArrayList<>(unique.values());
     }
@@ -811,113 +722,6 @@ final class RuntimeRefinedGraphBuilder {
             result = 31 * result + unitIndex;
             result = 31 * result + operation.hashCode();
             return 31 * result + field.hashCode();
-        }
-    }
-
-    private static final class AccessorSite {
-        private final String method;
-        private final String siteId;
-        private final String declaredCallee;
-
-        private AccessorSite(String method, String siteId,
-                             String declaredCallee) {
-            this.method = stringValue(method);
-            this.siteId = stringValue(siteId);
-            this.declaredCallee = stringValue(declaredCallee);
-        }
-
-        private static AccessorSite from(Map<String, Object> edge) {
-            return new AccessorSite(stringValue(edge.get("method")),
-                    stringValue(edge.get("siteId")),
-                    stringValue(edge.get("invoke")));
-        }
-
-        private static AccessorSite from(
-                RuntimeRegionPlanner.RuntimeEvent event) {
-            if (event == null
-                    || !("CALL_SITE_ENTER".equals(event.kind)
-                    || "CALL_SITE_RETURN".equals(event.kind))
-                    || event.method.isEmpty() || event.siteId.isEmpty()
-                    || event.declaredCallee.isEmpty()) {
-                return null;
-            }
-            return new AccessorSite(event.method, event.siteId,
-                    event.declaredCallee);
-        }
-
-        @Override
-        public boolean equals(Object other) {
-            if (!(other instanceof AccessorSite)) return false;
-            AccessorSite site = (AccessorSite) other;
-            return method.equals(site.method) && siteId.equals(site.siteId)
-                    && declaredCallee.equals(site.declaredCallee);
-        }
-
-        @Override
-        public int hashCode() {
-            int result = method.hashCode();
-            result = 31 * result + siteId.hashCode();
-            return 31 * result + declaredCallee.hashCode();
-        }
-    }
-
-    private static final class AccessorInvocation {
-        private final AccessorSite site;
-        private final RuntimeRegionPlanner.RuntimeEvent enter;
-        private final int occurrence;
-
-        private AccessorInvocation(AccessorSite site,
-                                   RuntimeRegionPlanner.RuntimeEvent enter,
-                                   int occurrence) {
-            this.site = site;
-            this.enter = enter;
-            this.occurrence = occurrence;
-        }
-    }
-
-    private static final class RuntimeAccessorBinding {
-        private final Activation activation;
-        private final RuntimeRegionPlanner.RuntimeEvent enter;
-        private final RuntimeRegionPlanner.RuntimeEvent returned;
-        private final int occurrence;
-
-        private RuntimeAccessorBinding(
-                Activation activation,
-                RuntimeRegionPlanner.RuntimeEvent enter,
-                RuntimeRegionPlanner.RuntimeEvent returned,
-                int occurrence) {
-            this.activation = activation;
-            this.enter = enter;
-            this.returned = returned;
-            this.occurrence = occurrence;
-        }
-
-        private Map<String, Object> toMap(Map<String, Object> edge) {
-            Map<String, Object> result = new LinkedHashMap<>();
-            result.put("regionId", activation.regionId);
-            result.put("rootCallId", activation.root.callId);
-            result.put("callId", enter.callId);
-            result.put("invocationId", enter.invocationId);
-            result.put("callerMethod", enter.method);
-            result.put("unitIndex", SiteId.unitIndexOf(enter.siteId));
-            result.put("siteId", enter.siteId);
-            result.put("eventSeq", returned.seq);
-            result.put("receiverObjectId", enter.objectId);
-            result.put("receiverRuntimeType", enter.runtimeType);
-            result.put("primitiveValue", returned.primitiveValue);
-            if (returned.objectId != 0) {
-                result.put("valueObjectId", returned.objectId);
-            }
-            result.put("accessorOccurrence", occurrence);
-            result.put("declaredCallee", enter.declaredCallee);
-            result.put("declaredFieldSignature",
-                    edge.get("declaredFieldSignature"));
-            result.put("accessorImplementationMethod",
-                    edge.get("accessorImplementationMethod"));
-            result.put("sourceKey", activation.root.sourceKey);
-            result.put("authority",
-                    "EXACT_RUNTIME_ACCESSOR_RECEIVER_RETURN_V1");
-            return result;
         }
     }
 
