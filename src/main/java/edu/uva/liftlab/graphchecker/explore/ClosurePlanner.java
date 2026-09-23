@@ -321,23 +321,28 @@ public final class ClosurePlanner {
     }
 
     /**
-     * The occurrence that SENT the message a demanded occurrence served is
-     * in the closure as its control producer: it contributes no value, but
-     * its fault point decides whether the message -- and everything the
-     * served occurrence produced -- exists at all (DESIGN4 SS1.4).  The
-     * pairing is the served occurrence's ANCHOR, which is the sender's
-     * producer endpoint, and the schedule's SEND event states which
-     * occurrence minted it.
+     * The occurrences at both doors of the message a demanded occurrence
+     * served are in the closure as its control producers: they contribute
+     * no value, but their fault points decide whether the message -- and
+     * everything the served occurrence produced -- exists at all (DESIGN4
+     * SS1.2, SS1.4).  The sender's door fails the request before it leaves;
+     * the receiver's door loses the reply after the server applied it.  The
+     * pairing is the served occurrence's ANCHOR, which is the producer
+     * endpoint: the schedule's SEND event states which occurrence minted
+     * it, and its RECV event which occurrence took it in.
      */
     private static void controlProducer(Corpus corpus, Demand demand,
                                         List<Demand> next) {
         if (!(demand.occurrence.context() instanceof CausalContext.Anchor)) {
             return;
         }
-        OccurrenceAddress sender = corpus.senderOf(
-                ((CausalContext.Anchor) demand.occurrence.context())
-                        .producerEndpointId());
-        if (sender != null) next.add(new Demand(sender, CONTROL_PRODUCER, false));
+        String endpoint = ((CausalContext.Anchor) demand.occurrence.context())
+                .producerEndpointId();
+        for (OccurrenceAddress door : new OccurrenceAddress[] {
+                corpus.senderOf(endpoint), corpus.receiverOf(endpoint)}) {
+            if (door == null || door.equals(demand.occurrence)) continue;
+            next.add(new Demand(door, CONTROL_PRODUCER, false));
+        }
     }
 
     /**

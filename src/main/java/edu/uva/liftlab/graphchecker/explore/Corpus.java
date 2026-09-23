@@ -25,6 +25,7 @@ import edu.uva.liftlab.graphchecker.compose.JavaSmtSorts;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Sort;
 import edu.uva.liftlab.graphchecker.smt.Arms;
+import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
@@ -477,6 +478,9 @@ public final class Corpus implements Arms.Rows {
     /** Producer endpoint id of a SEND -> the occurrence that sent it. */
     private final Map<String, String> senderByEndpoint =
             new LinkedHashMap<String, String>();
+    /** Producer endpoint id of a RECV -> the occurrence that took it in. */
+    private final Map<String, String> receiverByEndpoint =
+            new LinkedHashMap<String, String>();
 
     /**
      * The occurrence that sent the message a consumer served under
@@ -488,6 +492,19 @@ public final class Corpus implements Arms.Rows {
         return sender == null ? null : occurrenceById.get(sender);
     }
 
+    /**
+     * The occurrence that TOOK IN the message a consumer served under
+     * {@code producerEndpointId}, or null: a RECV event runs under the
+     * scope the message opened, so its context is that anchor, and it
+     * happened inside the occurrence the receiving door stands in -- the
+     * door whose receive-side fault point decides whether the reply is
+     * delivered at all (DESIGN4 SS1.2).
+     */
+    public OccurrenceAddress receiverOf(String producerEndpointId) {
+        String receiver = receiverByEndpoint.get(producerEndpointId);
+        return receiver == null ? null : occurrenceById.get(receiver);
+    }
+
     private void indexSchedule(SessionReader session) {
         List<ScheduleEvent> events;
         try {
@@ -496,12 +513,22 @@ public final class Corpus implements Arms.Rows {
             throw new java.io.UncheckedIOException(unreadable);
         }
         for (ScheduleEvent event : events) {
-            if (event.kind() != ScheduleEvent.Kind.SEND
-                    || event.endpoint().isEmpty()
-                    || event.occurrence().isEmpty()) {
-                continue;
+            if (event.occurrence().isEmpty()) continue;
+            if (event.kind() == ScheduleEvent.Kind.SEND
+                    && !event.endpoint().isEmpty()) {
+                senderByEndpoint.put(event.endpoint(), event.occurrence());
+            } else if (event.kind() == ScheduleEvent.Kind.RECV) {
+                // "node|Anchor:<producer endpoint>@<site>": the anchor the
+                // message opened on the receiving thread.
+                String context = event.context();
+                int split = context.indexOf('|');
+                CausalContext anchor = CausalContext.parse(
+                        split < 0 ? context : context.substring(split + 1));
+                if (anchor instanceof CausalContext.Anchor) {
+                    receiverByEndpoint.put(((CausalContext.Anchor) anchor)
+                            .producerEndpointId(), event.occurrence());
+                }
             }
-            senderByEndpoint.put(event.endpoint(), event.occurrence());
         }
     }
 
