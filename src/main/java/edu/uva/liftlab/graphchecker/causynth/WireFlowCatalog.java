@@ -26,7 +26,7 @@ import java.util.Map;
 import static edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.firstNonBlank;
 
 /** Strict, transport-neutral declarations of values carried by messages. */
-final class WireFlowCatalog {
+public final class WireFlowCatalog {
     static final String PROPERTY = "causynth.communication.mappings";
     static final String ENVIRONMENT = "CAUSYNTH_COMMUNICATION_MAPPINGS";
     static final String KIND = "WIRE_FLOW";
@@ -77,6 +77,43 @@ final class WireFlowCatalog {
 
     List<WireFlow> flows() {
         return flows;
+    }
+
+    /** The transports the case maps, read once; none when it maps nothing. */
+    private static volatile java.util.Set<String> transports;
+
+    /**
+     * The transports whose doors are the case's fault points: a door fault
+     * {@code FAULT:<TRANSPORT>:<DIRECTION>} is declared exactly when the
+     * case maps that transport, so a case that maps no wire (hdfs-17960)
+     * plans no IPC door.  Read off the mapping file's {@code transport}
+     * fields alone, so the static pass can ask before it resolves methods.
+     */
+    public static java.util.Set<String> declaredTransports() {
+        java.util.Set<String> known = transports;
+        if (known != null) return known;
+        java.util.Set<String> found = new java.util.LinkedHashSet<String>();
+        String configured = firstNonBlank(System.getProperty(PROPERTY),
+                System.getenv(ENVIRONMENT));
+        if (configured != null) {
+            Path path = Paths.get(configured).toAbsolutePath().normalize();
+            try {
+                for (String line : Files.readAllLines(path,
+                        StandardCharsets.UTF_8)) {
+                    if (line.trim().isEmpty()) continue;
+                    JsonElement parsed = JsonParser.parseString(line);
+                    if (!parsed.isJsonObject()) continue;
+                    String transport = string(parsed.getAsJsonObject(),
+                            "transport");
+                    if (!transport.isEmpty()) found.add(transport);
+                }
+            } catch (IOException | RuntimeException unreadable) {
+                throw new IllegalStateException(
+                        "Communication mapping unreadable: " + path, unreadable);
+            }
+        }
+        transports = Collections.unmodifiableSet(found);
+        return transports;
     }
 
     private static WireFlow parse(JsonObject row,

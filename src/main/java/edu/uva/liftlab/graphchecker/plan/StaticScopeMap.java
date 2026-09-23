@@ -554,7 +554,8 @@ public final class StaticScopeMap {
                 && declaredCallees.contains(callee)
                 && !regionMethods.contains(callee)
                 || "explicit_symbolic_fault".equals(kind)
-                && Debug.isBooleanMarkerSignature(callee)) {
+                && Debug.isBooleanMarkerSignature(callee)
+                && declaredFault(text(edge.get("symbolicName")))) {
             cell = text(edge.get("fromCell"));
         } else {
             return;
@@ -592,6 +593,18 @@ public final class StaticScopeMap {
      * primitive states none: a non-primitive return is not a leaf the SMT
      * layer has a term for, and the admission rule refuses it anyway.</p>
      */
+    /**
+     * Whether a marker is one of the case's fault points: a door fault
+     * ({@code FAULT:<TRANSPORT>:<DIRECTION>}) when the case maps that
+     * transport; any other name is the workload's own declaration.
+     */
+    static boolean declaredFault(String name) {
+        if (!name.startsWith("FAULT:")) return true;
+        String[] parts = name.split(":", -1);
+        return parts.length >= 2 && edu.uva.liftlab.graphchecker.causynth
+                .WireFlowCatalog.declaredTransports().contains(parts[1]);
+    }
+
     private static String declaredType(String cell, String callee,
                                        String kind) {
         String signature = "accessor_field_return".equals(kind)
