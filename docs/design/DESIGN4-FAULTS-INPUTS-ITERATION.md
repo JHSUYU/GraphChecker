@@ -98,17 +98,23 @@ any handoff: (occurrence, door site, k-th firing) — `HandoffMint.nextAttach`'s
   that read a declared clock; `DeclaredSiteCapture.callReturnPort` (279-292) stamps
   `sourceKind=EXPLICIT_SYMBOLIC_FAULT`, `symbolicName`, `javaType=boolean`;
   `ConcolicScheduler` (1629) lets a workload-owned symbol through the
-  declaration check it already states at 1700-1702. A door marker is a catalog
-  declaration with a fixed callee (the shim door) and follows the same path.
+  declaration check it already states at 1700-1702. A door marker
+  `FAULT:<TRANSPORT>:<DIRECTION>` is declared iff the case's
+  communication-mappings.jsonl maps that transport
+  (`WireFlowCatalog.declaredTransports`, `StaticScopeMap.declaredFault`): a
+  case that maps no transport admits no door, so its unregistered client is
+  not planned (hdfs-17960).  Every other symbolic name follows the same path.
 - **REPLAY.** The plan's `CALL_RETURN` action binds the local the firing defines
   (`$z1` at `sendRpcRequest#u16`) as `LOCAL_DEFINITION`
   (ConcolicScheduler:734-760; woven by ConcolicInstrumentationSelections:464).
   The mint is `RootMint.materializePrimitiveValue` (867-935): kind MARKER
   (`javaType=boolean`, RowPlaceholderMint:819), concrete = the recorded polarity
-  (`FaultMarker.materialize`), planted = `FocusedReplay.rootAssignment(symbol)`
-  when the wave asks for the flip. The branch on `m` is then a DecisionRow whose
-  term is `m` — a flip site like any other. `FaultMarker` keeps one job: answer
-  the recorded polarity.
+  (`ConcolicRegionRuntime.materializeSymbolicBoolean`, always false), planted =
+  `FocusedReplay.rootAssignment(symbol)` when the wave asks for the flip, and
+  the mint row states the value the region was handed (the plant where one
+  followed). The branch on `m` is then a DecisionRow whose term is `m` — a
+  flip site like any other; at the door `if (fault) throw`, the throw branch
+  is the decision's `false` outcome and the solver assigns `m = true` for it.
 
 ### 1.4 Which fault points are explored
 
