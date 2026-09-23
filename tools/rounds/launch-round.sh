@@ -21,10 +21,10 @@
 #
 # CASES narrows the round to some of its cases, each still on its own head.
 # Outputs: $GC_OUT/accept-<round>-<case without hdfs->/, launcher logs
-# $GC_OUT/launch-<round>-<case without hdfs->.log (its "process group N"
-# line is how to stop one campaign: ssh <head> kill -TERM -N; the remote
-# workers watch their head and end with it).  A round's directories are
-# written once: a name already used is refused.
+# $GC_OUT/launch-<round>-<case without hdfs->.log.  One campaign is stopped
+# with tools/rounds/stop-run.sh <round>-<case without hdfs->: a campaign is
+# many process groups on five lifts, so no one group id stops it.  A round's
+# directories are written once: a name already used is refused.
 set -euo pipefail
 
 snapshot=${1:?usage: launch-round.sh <snapshot> <round> [workers-per-host]}

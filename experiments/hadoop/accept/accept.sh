@@ -40,9 +40,12 @@
 # workers of its own, and the standing ruling is at most two campaign lanes on
 # this host; a second lane is a second invocation of this script, not a knob.
 #
-# Process discipline: the run re-execs under setsid so every child is in one
-# process group, whose id is written to $OUT/pgid.  Nothing is ever killed by
-# this script; the file is there so a reader can stop exactly this run.
+# Process discipline: the run re-execs under setsid, so no signal meant for
+# another run reaches this one; its group id is written to $OUT/pgid.  It is
+# not the whole run -- a case runs under `timeout`, which takes a group of its
+# own, and the engine gives each replay and remote worker one too -- so a run
+# is stopped by its output directory (tools/rounds/stop-run.sh).  Nothing is
+# ever killed by this script.
 set -uo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
@@ -338,7 +341,7 @@ fi
 # ---- run ------------------------------------------------------------------
 mkdir -p "$OUT"/logs "$OUT"/out "$OUT"/report
 echo $$ >"$OUT/pgid"
-acc_log "process group $$ (kill -TERM -$$ stops this run and only this run)"
+acc_log "process group $$ (stop the run by its OUT: tools/rounds/stop-run.sh)"
 acc_build_jar || { acc_log "ABORT: build failed"; exit 2; }
 
 TSV="$OUT/summary.tsv"
