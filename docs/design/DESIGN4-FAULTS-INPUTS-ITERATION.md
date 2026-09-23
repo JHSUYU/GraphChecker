@@ -247,8 +247,8 @@ nothing, and nothing is planted for it.
 The claim is confirmed iff (a) no
 `SCHEDULE_DIVERGED` before the anchor's cut, (b) every edge the model chose
 is the edge the run took -- per message family the selected arm (consumer
-endpoint ← producer endpoint), per state join the writer version the read
-observed, per marker its planted polarity -- and (c) the anchor's target
+endpoint ← producer endpoint), per state join the model chose among alternative writers the writer the read
+observed (a join with one candidate is the recording's, and rule (c) checks where it leads), per marker its planted polarity -- and (c) the anchor's target
 row states `observedFatal` and `reachedAnchor`. Checking, never enforcing:
 the existing hooks (the attach, the read and write rows, the target row)
 compare against `expected_edges.jsonl` and file `CONFIRM_MISMATCH`

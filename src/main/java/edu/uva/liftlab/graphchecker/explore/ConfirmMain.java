@@ -350,12 +350,11 @@ public final class ConfirmMain {
     }
 
     /**
-     * One STATE edge per state join of the selected path: the reads of the
-     * occurrences the anchor's joins reach (Composer's P3 closure, the same
-     * rule over the same rows), each joined to the write of the same
-     * session whose version it observed -- unless a selected {@code
-     * writer_arm__} names another writer for that reader, in which case
-     * the model's choice is the edge.
+     * One STATE edge per state join of the selected path where the MODEL
+     * CHOSE the writer: the reads of the occurrences the anchor's joins
+     * reach (Composer's P3 closure, the same rule over the same rows) whose
+     * selected {@code writer_arm__} names their writer.  A join with no
+     * alternative is the recording's and is not an edge to confirm.
      */
     private static List<JsonObject> stateEdges(SessionReader session,
                                                OccurrenceAddress anchor,
@@ -453,6 +452,14 @@ public final class ConfirmMain {
         }
         List<JsonObject> edges = new ArrayList<JsonObject>();
         for (Map.Entry<String, WriteRow> join : joined.entrySet()) {
+            // ONLY WHAT THE MODEL CHOSE.  A join with one candidate writer
+            // is the recording's, not the model's: the formula pinned it,
+            // and which iteration's write a read happens to observe in
+            // another run -- 17960's snapshot builders, serialized in the
+            // order a set yields them -- is not a choice the confirmation
+            // holds the program to.  Rule (c), the fatal at the anchor, is
+            // what checks that the recorded joins still lead there.
+            if (!chosen.containsKey(join.getKey())) continue;
             JsonObject edge = new JsonObject();
             edge.addProperty("kind", "STATE");
             edge.addProperty("reader", join.getKey());
@@ -467,9 +474,7 @@ public final class ConfirmMain {
             // (runtime/Confirmation), not by the reader's occurrence.
             edge.addProperty("mint", readers.get(join.getKey())
                     .mintVersion() != ReadRow.UNKNOWN_VERSION);
-            String writer = chosen.containsKey(join.getKey())
-                    ? chosen.get(join.getKey())
-                    : join.getValue().endpoint().id();
+            String writer = chosen.get(join.getKey());
             edge.addProperty("writer", writer);
             edge.addProperty("version", join.getValue().version());
             edge.addProperty("location", location(

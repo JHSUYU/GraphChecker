@@ -265,19 +265,18 @@ public class ConfirmMainTest {
         for (JsonObject edge : rows) {
             edges.put(edge.get("kind").getAsString(), edge);
         }
-        assertEquals("one edge each, and none from the free arm of the"
-                + " path the model did not select", 4, rows.size());
-        assertEquals(4, edges.size());
+        assertEquals("one edge each, none from the free arm of the path the"
+                + " model did not select, and none for a state join with one"
+                + " candidate writer", 3, rows.size());
+        assertEquals(3, edges.size());
         assertEquals("the export the arm's own session paired the consumer"
                 + " with", producer.id(),
                 edges.get("WIRE").get("producer").getAsString());
         assertEquals(consumer.id(),
                 edges.get("WIRE").get("consumer").getAsString());
-        assertEquals("the read joined to the version it observed",
-                reader.id(), edges.get("STATE").get("reader").getAsString());
-        assertEquals(writer.id(),
-                edges.get("STATE").get("writer").getAsString());
-        assertEquals(5L, edges.get("STATE").get("version").getAsLong());
+        assertTrue("a read's recorded join is the recording's, not a choice"
+                + " of the model: " + reader.id() + " <- " + writer.id(),
+                !edges.containsKey("STATE"));
         assertEquals("FAULT:IPC", edges.get("MARKER").get("root").getAsString());
         assertTrue(edges.get("MARKER").get("value").getAsBoolean());
         assertEquals(anchor.id(),
