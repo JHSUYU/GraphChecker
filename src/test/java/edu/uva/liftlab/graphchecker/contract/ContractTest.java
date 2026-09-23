@@ -405,12 +405,22 @@ public class ContractTest {
                 "M_I_field_" + REGION + ".in.a1", "I", "2", 99L));
         assertInvariant(7, GapClass.DIAGNOSTIC, "field=observedVersion",
                 unstated);
+        // The mint's own store published as a write: the version the
+        // placeholder minted, whatever expression the row carries.
         Rows fabricated = clean();
-        fabricated.writes.set(0, WriteRow.of("s-gate", 10L,
-                fabricated.writeAt, keys, 7L, "EXPR.0000000000000002",
+        fabricated.writes.add(WriteRow.of("s-gate", 11L,
+                fabricated.writeAt, keys, 8L, "EXPR.0000000000000002",
                 BLOCK_KEY));
-        assertInvariant(7, GapClass.BLOCKING, "field=expressionRef",
-                fabricated);
+        assertInvariant(7, GapClass.BLOCKING, "field=version", fabricated);
+        // A legitimate copy: a later version of the cell assigned the minted
+        // symbol is a write of its own, whole expression that symbol or not.
+        Rows copied = clean();
+        copied.writes.add(WriteRow.of("s-gate", 11L, copied.writeAt, keys,
+                9L, "EXPR.0000000000000002", BLOCK_KEY));
+        assertTrue("a write of another version that carries the minted "
+                        + "symbol is no fabricated write: "
+                        + names(gate(copied)),
+                noViolation(gate(copied), 7));
         // Contract v2.4: a placeholder read states the version it mints, so
         // a version no write carries is stated all the same -- and a
         // placeholder that states none is refused, once the recording
@@ -588,7 +598,7 @@ public class ContractTest {
         rows.reads.add(ReadRow.of("s-gate", 16L, rows.placeholderAt,
                 LocationId.of(LocationKind.MAP,
                         "o.a.h.h.s.t.b.BlockTokenSecretManager", "allKeys"),
-                7L, "M_I_field_" + REGION + ".in.a1", "I", "2", 7L));
+                7L, "M_I_field_" + REGION + ".in.a1", "I", "2", 8L));
         rows.targets.add(TargetRow.of("s-gate", 15L, rows.anchor, "Guard#u8",
                 "EXPR.0000000000000001", true, true));
         return rows;

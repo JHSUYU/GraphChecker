@@ -738,22 +738,19 @@ public final class RowInvariants {
      * carries, so a missing write is a DIAGNOSTIC naming the version -- not a
      * refusal of a recording the contract has not caught up with.
      *
-     * <p>A WriteRow whose whole expression is a bare symbol some placeholder
-     * read minted is the opposite failure and is BLOCKING: the write states
-     * no value of its own, so the placeholder would join a write that exists
-     * only to be joined -- a value fabricated by the pair of them.</p>
+     * <p>A WriteRow that states the very version a placeholder read MINTED
+     * is the opposite failure and is BLOCKING: that version is the mint's own
+     * store, nobody wrote it, and publishing it as a write states one event
+     * twice -- the placeholder would join a write that exists only to be
+     * joined.  Keyed by the store, {@code location@mintVersion}, and never by
+     * the symbol: a field later assigned the minted value
+     * ({@code x.f = <mint symbol>}) is a real write of its own version whose
+     * whole expression is that same symbol.</p>
      */
     private static void versions(SessionReader session, List<GapRow> gaps) {
         Set<String> stated = new LinkedHashSet<String>();
         for (WriteRow row : session.writes()) {
             stated.add(row.location() + "@" + row.version());
-        }
-        Set<String> placeholders = new LinkedHashSet<String>();
-        for (ReadRow row : session.reads()) {
-            if (row.endpoint().site().contains(PLACEHOLDER)
-                    && row.symbol() != null && !row.symbol().isEmpty()) {
-                placeholders.add(row.symbol());
-            }
         }
         // Contract v2.4: a placeholder read STATES a version of its own,
         // which is NOT the version it observed -- seq 243 of laneA5 observed
@@ -761,9 +758,14 @@ public final class RowInvariants {
         // stated versions and never compared with each other.  Keying the
         // mint by the observed version is what made the gate refuse a row
         // whose field was right there in it.
+        Set<String> minted = new LinkedHashSet<String>();
         for (ReadRow row : session.reads()) {
             if (row.mintVersion() >= 0) {
-                stated.add(row.location() + "@" + row.mintVersion());
+                String store = row.location() + "@" + row.mintVersion();
+                stated.add(store);
+                if (row.endpoint().site().contains(PLACEHOLDER)) {
+                    minted.add(store);
+                }
             }
         }
         Set<String> said = new LinkedHashSet<String>();
@@ -791,18 +793,15 @@ public final class RowInvariants {
                             + "mints): this placeholder row states none"));
         }
         for (WriteRow row : session.writes()) {
-            JsonObject node = session.expressions()
-                    .expression(row.expressionRef());
-            if (node == null) continue;
-            if (!"SymbolExpression".equals(text(node, "_type"))) continue;
-            if (!placeholders.contains(text(node, "_exp"))) continue;
+            String store = row.location() + "@" + row.version();
+            if (!minted.contains(store)) continue;
             gaps.add(violation(session, GapKind.UNSTATED_VALUE,
-                    GapClass.BLOCKING, "writes", row.seq(), "expressionRef",
-                    row.location() + "@" + row.version(),
-                    "invariant 7 (fabricated write): this write's whole "
-                            + "expression is the symbol a placeholder read of "
-                            + "this session minted, so it states no value of "
-                            + "its own and the pair would join to nothing"));
+                    GapClass.BLOCKING, "writes", row.seq(), "version",
+                    store,
+                    "invariant 7 (fabricated write): this write states the "
+                            + "version a placeholder read of this session "
+                            + "minted -- the mint's own store, which nobody "
+                            + "wrote -- so the pair would join to nothing"));
         }
     }
 
