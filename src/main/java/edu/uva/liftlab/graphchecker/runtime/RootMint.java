@@ -542,7 +542,7 @@ final class RootMint {
                     .engineLabelForPhase(entry.phaseId(), safe(sourceId));
             if (!reused) {
                 api.symbolizeExactField(owner, exactFieldSignature(field),
-                        symbol);
+                        declaring(symbol));
             }
             // The mint is a symbolic write, so the VM has started this
             // field's version log by itself; the declaration that used to be
@@ -792,9 +792,10 @@ final class RootMint {
         Object held = readExactField(owner, leafFieldSignature);
         if (held == MissingValue.INSTANCE) held = value;
         api.symbolizeExactField(owner, leafFieldSignature,
-                manualMintLabel(symbol, active.activation.occurrenceId,
+                declaring(manualMintLabel(symbol,
+                        active.activation.occurrenceId,
                         JavaPrimitiveSmtSemantics.primitive(
-                                field.type())));
+                                field.type()))));
         ConcolicRegionRuntime.ensurePathRecordingStarted(active);
         return new MintedLeaf(ConcolicRegionRuntime.engineExpression(api.fieldExpression(owner,
                 field.owner(), field.name(), descriptor, held)), recorded);
@@ -917,8 +918,8 @@ final class RootMint {
         }
         Object fresh = freshPrimitiveBox(planted);
         try {
-            api.symbolizeField(fresh, "value", manualMintLabel(action.symbol,
-                    active.activation.occurrenceId, true));
+            api.symbolizeField(fresh, "value", declaring(manualMintLabel(
+                    action.symbol, active.activation.occurrenceId, true)));
             ConcolicRegionRuntime.ensurePathRecordingStarted(active);
             JsonElement expression = primitiveBoxExpression(api, fresh);
             active.recordManualSymbolization(action, action.symbol,
@@ -1014,9 +1015,9 @@ final class RootMint {
                     "declared input at " + action.cell)) {
                 return;
             }
-            api.symbolize(value, manualMintLabel(action.symbol,
+            api.symbolize(value, declaring(manualMintLabel(action.symbol,
                     active.activation.occurrenceId,
-                    isPrimitiveBox(value)));
+                    isPrimitiveBox(value))));
             ConcolicRegionRuntime.ensurePathRecordingStarted(active);
             JsonElement expression = value == null ? null
                     : ConcolicRegionRuntime.engineExpression(api.expression(value));
@@ -1115,6 +1116,18 @@ final class RootMint {
     private static boolean declaredContainerCell(Object value) {
         return value != null && value != MissingValue.INSTANCE
                 && containerValue(value);
+    }
+
+    /**
+     * THE label of a declared mint, filed in the session's register BEFORE
+     * the VM is asked to make the store ({@link RowRuntime#declaredMintLabel}):
+     * every declared mint hands the VM its label through here, so no
+     * activation closing on another thread between the store and the mint
+     * row can publish that store as a write of its own.
+     */
+    private static String declaring(String label) {
+        RowRuntime.declaredMintLabel(label);
+        return label;
     }
 
     /**

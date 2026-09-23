@@ -307,12 +307,6 @@ final class RowPlaceholderMint {
                                     JsonObject row, String symbol,
                                     String[] installedAt,
                                     boolean declaredRoot) {
-        // A declared mint, session-wide, so no activation's write log offers
-        // the mint's own version as a write of that location.  The register
-        // is already filled -- at the mint, by ActiveRegion -- and this is
-        // the backstop for a mint row that reached publication by some other
-        // road than the two recorders.
-        RowRuntime.declaredMintSymbol(symbol);
         // The location is the VM's own -- owner rid, slot offset -- so this
         // read and every write of the same storage spell one location.
         // Naming the Java field signature instead left the read saying
@@ -541,44 +535,6 @@ final class RowPlaceholderMint {
     }
 
     /**
-     * Whether one symbol is a mint of THIS activation's declared inputs.
-     *
-     * <p>A version whose whole value is a bare symbol is not by itself a
-     * mint: the VM writes a named reference's identity the same way
-     * ({@code M_L'org/apache/...FsImage...'}), and a field assigned a
-     * symbolized object carries that object's symbol.  Treating every such
-     * version as a mint suppressed four real writes of hdfs-17960 --
-     * INSTANCE/39#96@226, 35#64@233, 43#96@251, 37#64@263 -- and the reads
-     * that observed them lost their writer, which took the anchor's
-     * admitted paths from 2 to 0.  A mint is a symbol a DECLARED INPUT of
-     * this activation asked for: the VM answers a request for
-     * {@code field_<portId>} with {@code M_<sort>_field_<portId>}, and a row
-     * that knows its own {@code rawSymbol} states it outright.  The key the
-     * suppression and {@code mintVersion} share is still (location,
-     * version); this is only which versions are mints at all.</p>
-     *
-     * <p>And it is a question about the SESSION, not about this activation:
-     * the mint files its symbol where it runs
-     * ({@code RowRuntime#declaredMintSymbol}), so an activation that merely
-     * read the same VM record out gets the same answer as the one that
-     * minted, whichever of them publishes first.  Asked of {@code active}
-     * alone, hdfs-11741 campaign #5b published 284 clock mint stores as
-     * WriteRows of a second activation and bound 593 of 877 reads by
-     * accident.</p>
-     */
-    private static boolean declaredMint(ActiveRegion active, String symbol) {
-        for (JsonObject row : active.symbolizedRows) {
-            if (symbol.equals(optionalString(row, "rawSymbol"))) return true;
-            String requested = optionalString(row, "symbol");
-            if (!requested.isEmpty()
-                    && symbol.endsWith("_field_" + requested)) {
-                return true;
-            }
-        }
-        return RowRuntime.isDeclaredMintSymbol(symbol);
-    }
-
-    /**
      * Every mint store of this activation, keyed {@code location#version}.
      *
      * <p>The same scan {@link #mintedLocations} performs, keyed the other
@@ -615,7 +571,8 @@ final class RowPlaceholderMint {
                     continue;
                 }
                 String symbol = optionalString(node, "_exp");
-                if (minted.contains(symbol) && declaredMint(active, symbol)) {
+                if (minted.contains(symbol)
+                        && RowRuntime.isDeclaredMint(symbol)) {
                     stores.put(locationKey + "#" + id, symbol);
                 }
             }
@@ -656,7 +613,7 @@ final class RowPlaceholderMint {
                     continue;
                 }
                 String symbol = optionalString(node, "_exp");
-                if (symbol.isEmpty() || !declaredMint(active, symbol)) {
+                if (symbol.isEmpty() || !RowRuntime.isDeclaredMint(symbol)) {
                     continue;
                 }
                 // Only a write EARLIER than the mint is the one the read

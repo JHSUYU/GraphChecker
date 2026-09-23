@@ -600,45 +600,69 @@ public final class RowRuntime {
         session.gap(GapRow.of(sessionId(), kind, cls, named, says));
     }
 
-    /** The symbols this session minted at declared region inputs. */
-    private static final Map<String, Boolean> DECLARED_MINTS =
-            new ConcurrentHashMap<String, Boolean>();
+    /** The labels this session's declared mints asked the VM for. */
+    private static final java.util.Set<String> MINT_LABELS =
+            ConcurrentHashMap.<String>newKeySet();
 
     /**
-     * Records that one symbol was minted at a declared region input.
+     * Files one declared mint's label, BEFORE the VM makes its store.
      *
-     * <p>SESSION-WIDE, AND FILED AT THE MINT.  A mint installs its symbol
-     * into a field the VM versions, and that version is no write -- nobody
-     * stored it, the mint made it ({@link RowPublication} suppresses it and
-     * the placeholder read states it instead).  The mint happens in the
-     * innermost activation, and every activation it runs inside sees the
-     * same field shadow afterwards, so the write log of an OUTER activation
-     * offers that version as a write of the location: only a session-wide
-     * answer suppresses it, and the per-activation one let hdfs-17960's
-     * version 173 through on {@code REGION.f167c8f6}.</p>
+     * <p>SESSION-WIDE.  A mint installs its symbol into a field the VM
+     * versions, and that version is no write -- nobody stored it, the mint
+     * made it ({@link RowPublication} suppresses it and the placeholder read
+     * states it instead).  Every activation that reads the same VM record
+     * out afterwards sees that version, so only a session-wide answer
+     * suppresses it: the per-activation one let hdfs-17960's version 173
+     * through on {@code REGION.f167c8f6}.</p>
      *
-     * <p>WHEN it is filed is the other half, and it is what makes the
-     * suppression independent of which activation publishes first.  This is
-     * called from {@code ActiveRegion#recordManualSymbolization} and
-     * {@code ActiveRegion#recordConfiguredSourceMint} -- where the mint RUNS
-     * -- and every publication happens when an activation closes, which is
-     * strictly later than the mint of any store that activation's write log
-     * can hold.  Filed at publication instead, the answer depended on the
-     * order two activations happened to close in: on hdfs-11741 campaign #5b
-     * a second activation published 284 of the clock mints' stores as
-     * WriteRows at {@code sun.reflect.NativeMethodAccessorImpl#invoke}
-     * before the minting activation had said anything at all.  The
-     * publication-time call is kept as well, for a mint row that reached
-     * publication by some other road than the two recorders.</p>
+     * <p>BEFORE THE STORE, because every later filing point races it.  The
+     * version exists the moment the VM returns, and an activation that
+     * closes on another thread from then on reads it out of its write log:
+     * filed after the store, at the mint row (hdfs-17899-bug2 v20,
+     * {@code writes.jsonl} INSTANCE 204.24@855 published by
+     * {@code GeneratedMethodAccessor#invoke#40:WRITE}), or at publication
+     * (hdfs-11741 campaign #5b, 284 clock mint stores published as another
+     * activation's WriteRows), the answer depended on which thread got
+     * there first.  The label is what the runtime hands the VM, so it is
+     * known before the VM names anything ({@link #isDeclaredMint}).</p>
      */
-    public static void declaredMintSymbol(String symbol) {
-        DECLARED_MINTS.put(Text.safe(symbol), Boolean.TRUE);
+    public static void declaredMintLabel(String label) {
+        String named = Text.safe(label);
+        if (!named.isEmpty()) MINT_LABELS.add(named);
     }
 
-    /** Whether one symbol was minted at a declared region input. */
-    public static boolean isDeclaredMintSymbol(String symbol) {
-        return DECLARED_MINTS.containsKey(Text.safe(symbol));
+    /**
+     * Whether one VM symbol names a declared mint's store.
+     *
+     * <p>THE VM's spelling of a field it mints under a label:
+     * {@code M_<sort>_field_<label>_<owner class>} for one selected field
+     * ({@code FieldSymbolExp} over the symbolizer's prefix and the owner's
+     * internal class name), and {@code M_<sort>_field_<label>_<path>} for
+     * the fields a whole-object mint reaches.  So a symbol is a mint's store
+     * iff the name after {@code M_<sort>_field_} is a filed label, or begins
+     * with one followed by {@code _}.  A field later assigned a minted
+     * symbol (a legitimate copy) carries the same name, so this answers
+     * only which symbols are mints; which VERSION is the mint's own store is
+     * the store key's question ({@code RowPlaceholderMint#mintStores}).</p>
+     */
+    public static boolean isDeclaredMint(String symbol) {
+        String name = Text.safe(symbol);
+        if (name.length() <= FIELD_SYMBOL_HEAD || name.charAt(0) != 'M'
+                || name.charAt(1) != '_'
+                || !name.startsWith("_field_", 3)) {
+            return false;
+        }
+        String rest = name.substring(FIELD_SYMBOL_HEAD);
+        if (MINT_LABELS.contains(rest)) return true;
+        for (int split = rest.indexOf('_'); split > 0;
+             split = rest.indexOf('_', split + 1)) {
+            if (MINT_LABELS.contains(rest.substring(0, split))) return true;
+        }
+        return false;
     }
+
+    /** The length of {@code M_<sort>_field_}. */
+    private static final int FIELD_SYMBOL_HEAD = "M_J_field_".length();
 
     /**
      * Enters one level of the execution index: an application method's entry.
@@ -1140,7 +1164,7 @@ public final class RowRuntime {
         synchronized (LOCK) {
             AMBIENT.clear();
             CLAIMED_READS.clear();
-            DECLARED_MINTS.clear();
+            MINT_LABELS.clear();
             REFS.clear();
             Identity.resetForTests();
             CLOCK_CELLS.clear();

@@ -70,8 +70,10 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
     /** The version that mint installed: the one the unbox read observes. */
     private static final long MINT_VERSION = 1155L;
     /** The VM's own name for what it installed there. */
+    private static final String CLOCK_LABEL =
+            "REGION.ba3902cd.in.559a1724.occ.e36a3c48";
     private static final String CLOCK_SYMBOL =
-            "M_J_field_REGION.ba3902cd.in.559a1724.occ.e36a3c48_java/lang/Long";
+            "M_J_field_" + CLOCK_LABEL + "_java/lang/Long";
     private static final String INSTANT = "1789965233929";
 
     /** The configured source the second half of the fixture declares. */
@@ -185,10 +187,15 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
                     active.observeConfiguredSourceEntry(SOURCE_ID,
                             SOURCE_FIELD);
             assertNotNull("the fixture declares this source's site", entry);
-            String symbol = ConfiguredSourcePhaseContract
+            String label = ConfiguredSourcePhaseContract
                     .engineLabelForPhase(phaseId(), SOURCE_ID);
+            // The VM's spelling of the field it mints under that label
+            // (FieldSymbolExp: M_<sort>_field_<label>_<owner class>), with
+            // the label filed before the store, as RootMint files it.
+            String symbol = "M_Z_field_" + label + "_a/Manager";
+            RowRuntime.declaredMintLabel(label);
             active.recordConfiguredSourceMint(entry, SOURCE_ID, SOURCE_FIELD,
-                    symbol, symbolExpression(symbol, "Z"), false, "true");
+                    label, symbolExpression(symbol, "Z"), false, "true");
             active.sharedStateRecords.put(SOURCE_CELL,
                     record(SOURCE_CELL, version(SOURCE_MINT_VERSION,
                             symbolExpression(symbol, "Z"))));
@@ -227,6 +234,7 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
         RowRuntime.configure(sessionFile());
         OccurrenceAddress at = address();
         ActiveRegion active = region(at);
+        RowRuntime.declaredMintLabel("PORT.count");
         active.recordManualSymbolization(
                 new SymbolizeAction(counterAction()), "PORT.count",
                 Collections.<String>emptyList(),
@@ -261,8 +269,11 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
      * it claims the write event -- so a second activation that merely read
      * the same VM record out published the mint's store as a WriteRow and
      * won the claim.  Here that second activation publishes FIRST and knows
-     * nothing about the mint: it is the minting activation's own
-     * registration, filed where the mint RAN, that answers for it.</p>
+     * nothing about the mint -- and it publishes BETWEEN the VM's store and
+     * the mint row, the window bug2 v20 lost a session to (INSTANCE
+     * 204.24@855, published at {@code GeneratedMethodAccessor#invoke#40}):
+     * it is the label the mint filed BEFORE the store that answers for
+     * it.</p>
      *
      * <p>Which is also what keeps invariant 7 from firing.  Now that a clock
      * publishes a placeholder, any surviving mint-store WriteRow is
@@ -276,7 +287,9 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
         RowRuntime.configure(sessionFile());
         OccurrenceAddress at = address();
         ActiveRegion minting = region(at);
-        clockMint(minting);
+        // RootMint files the label, then the VM makes the store; the mint
+        // row comes later, after the bystander below has published.
+        RowRuntime.declaredMintLabel(CLOCK_LABEL);
 
         // The VM record as EVERY activation reads it out: the mint's store,
         // and one real write of the same cell by the same performer.
@@ -293,6 +306,7 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
                 NODE + "/region/REGION.16ba41cf#1"));
         bystander.sharedStateRecords.put(CLOCK_CELL, shared);
         writes(bystander);
+        clockMint(minting);
         minting.sharedStateRecords.put(CLOCK_CELL, shared);
         writes(minting);
         RowPlaceholderMint.roots(minting, at);
@@ -321,6 +335,8 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
 
     /** One declared CLOCK mint, through the runtime's own recorder. */
     private void clockMint(ActiveRegion active) {
+        // Filed before the store, as RootMint files every declared mint.
+        RowRuntime.declaredMintLabel(CLOCK_LABEL);
         active.recordManualSymbolization(
                 new SymbolizeAction(clockAction()), "PORT.now",
                 Collections.<String>emptyList(),
