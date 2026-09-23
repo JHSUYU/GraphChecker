@@ -520,11 +520,14 @@ public final class FocusedReplay {
                     if (unstated.isEmpty()) unstated = inherited();
                     results.add(unstated.isEmpty()
                             ? ObligationResult.of(id, Verdict.ADMITTED,
-                                    sessionId,
-                                    "the focused prefix reproduced and "
+                                    sessionId, obligation.flips()
+                                    ? "the focused prefix reproduced and "
                                     + Text.safe(obligation.siteId()) + "#"
                                     + obligation.ordinal() + " took "
-                                    + obligation.flippedOutcome())
+                                    + obligation.flippedOutcome()
+                                    : "the focused prefix reproduced and "
+                                    + "every root the model assigns was "
+                                    + "planted; no flip was owed")
                             : ObligationResult.of(id, Verdict.NOT_ADMITTED,
                                     sessionId, unstated));
                 } else if (Text.safe(FOCUS.get(id)).isEmpty()) {
@@ -644,34 +647,55 @@ public final class FocusedReplay {
         try {
             for (JsonObject row : RowCodec.readJsonl(path)) {
                 if (!row.has("flip") || !row.has("taskId")) continue;
-                JsonObject flip = row.getAsJsonObject("flip");
                 String obligationId = string(row, "obligationId");
                 if (obligationId.isEmpty()) {
                     obligationId = string(row, "taskId");
                 }
-                // The flip IS the obligation: which decision, which
-                // occurrence of it, and which arm.  A row that states no
-                // ordinal or no outcome used to be read as "occurrence 1,
-                // arm false", so the replay enforced a flip nothing asked
-                // for and published its verdict as though it had run the
-                // obligation.  Every focus row missing either member is
-                // refused here and the shortfall is stated at the close.
-                if (!flip.has("ordinal") || !flip.has("outcome")) {
-                    SHORTFALLS.add("the focus row for obligation "
-                            + obligationId + " states a flip with no "
-                            + (flip.has("ordinal") ? "outcome" : "ordinal")
-                            + ", so this replay enforces no flip for it and"
-                            + " answers it with no verdict");
-                    continue;
+                if (row.get("flip").isJsonNull()) {
+                    // A CONFIRM row: {@code flip: null}.  The model's roots
+                    // are planted and the selected path's schedule held
+                    // exactly as for a flip, and NO decision is owed the
+                    // other arm -- the values drive them.  So the
+                    // obligation is taken at load: {@link #complete} never
+                    // abandons the anchor for a decision it was not asked
+                    // to take, and {@link #results} admits it by its
+                    // plants and its prefix alone.  Whether the run agreed
+                    // with the model is what {@link Confirmation} reads off
+                    // the rows.
+                    OBLIGATIONS.add(Obligation.confirming(obligationId,
+                            string(row, "taskId"), string(row, "pathId"),
+                            strings(row, "rootAssignments"),
+                            strings(row, "answers"),
+                            list(row, "unproducible")));
+                    FLIPPED.add(obligationId);
+                } else {
+                    JsonObject flip = row.getAsJsonObject("flip");
+                    // The flip IS the obligation: which decision, which
+                    // occurrence of it, and which arm.  A row that states
+                    // no ordinal or no outcome used to be read as
+                    // "occurrence 1, arm false", so the replay enforced a
+                    // flip nothing asked for and published its verdict as
+                    // though it had run the obligation.  Every focus row
+                    // missing either member is refused here and the
+                    // shortfall is stated at the close.
+                    if (!flip.has("ordinal") || !flip.has("outcome")) {
+                        SHORTFALLS.add("the focus row for obligation "
+                                + obligationId + " states a flip with no "
+                                + (flip.has("ordinal") ? "outcome"
+                                : "ordinal")
+                                + ", so this replay enforces no flip for it"
+                                + " and answers it with no verdict");
+                        continue;
+                    }
+                    OBLIGATIONS.add(Obligation.of(obligationId,
+                            string(row, "taskId"), string(row, "pathId"),
+                            string(flip, "siteId"),
+                            flip.get("ordinal").getAsInt(),
+                            flip.get("outcome").getAsBoolean(),
+                            strings(row, "rootAssignments"),
+                            strings(row, "answers"),
+                            list(row, "unproducible")));
                 }
-                OBLIGATIONS.add(Obligation.of(obligationId,
-                        string(row, "taskId"), string(row, "pathId"),
-                        string(flip, "siteId"),
-                        flip.get("ordinal").getAsInt(),
-                        flip.get("outcome").getAsBoolean(),
-                        strings(row, "rootAssignments"),
-                        strings(row, "answers"),
-                        list(row, "unproducible")));
                 FOCUS.put(obligationId,
                         string(row, "focusedOccurrenceId"));
                 CLOCK_DELTAS.putAll(strings(row, "clockDeltas"));
@@ -915,10 +939,22 @@ public final class FocusedReplay {
 
     /** Where the focus row is, or null when this replay was handed none. */
     private static Path focusRow() {
+        return workerFile(ObligationDir.FOCUSED_TASK);
+    }
+
+    /**
+     * One file of the worker directory this replay was handed, or null.
+     *
+     * <p>The one lookup for everything a worker hands its replay: the
+     * focus row, and the expected edges of a CONFIRM run
+     * ({@link Confirmation}).  In the worker directory the campaign names,
+     * else beside the plan -- the same directory in a campaign.</p>
+     */
+    static Path workerFile(String name) {
         String worker = Text.safe(
                 System.getenv("CAUSYNTH_CONCOLIC_WORKER_DIR"));
         if (!worker.isEmpty()) {
-            Path inWorker = readable(Paths.get(worker).resolve(ObligationDir.FOCUSED_TASK));
+            Path inWorker = readable(Paths.get(worker).resolve(name));
             if (inWorker != null) return inWorker;
         }
         String plan = Text.safe(System.getProperty(PLAN_PROPERTY));
@@ -927,7 +963,7 @@ public final class FocusedReplay {
         }
         if (plan.isEmpty()) return null;
         Path beside = Paths.get(plan).getParent();
-        return beside == null ? null : readable(beside.resolve(ObligationDir.FOCUSED_TASK));
+        return beside == null ? null : readable(beside.resolve(name));
     }
 
     private static Path readable(Path file) {

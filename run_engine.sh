@@ -3096,6 +3096,135 @@ campaign_decide() {
     "${composition_manifest}"
 }
 
+# CONFIRM: a SAT claim, checked by one replay (DESIGN4 §5).
+#
+# SAT says the model satisfies the formula; CONFIRM says the program agrees.
+# ConfirmMain writes what an obligation replay is handed -- a focus row that
+# plants the model's roots and flips nothing, the selected session's
+# schedule cut at the anchor, and the edges the model chose -- and the
+# replay runs through campaign_obligation_replay exactly as an obligation
+# does, into its own sessions directory under final/confirm.  The verdict is
+# read off the session it published: ADMITTED (the roots were planted and
+# the prefix reproduced), no SCHEDULE_DIVERGED before the anchor's cut, no
+# CONFIRM_MISMATCH, and a target row that reached the anchor and observed
+# the fatal.  Every other outcome -- a refused task, a replay that published
+# no verdict -- is "unconfirmed, because ...": EMIT downgrades the claim,
+# the campaign does not fail.  Only a SAT_CANDIDATE is confirmed; any other
+# claim has nothing to confirm and the stage says so.
+campaign_confirm() {
+  local iteration_dir=$1
+  local claim confirm_dir="${campaign_final}/confirm"
+  local worker sessions status=0 reason
+  claim=$(jq -r '.solver.campaignClaim.claim // ""' "${composition_manifest}")
+  if [[ "${claim}" != SAT_CANDIDATE ]]; then
+    campaign_log "claim=${claim}: nothing to confirm"
+    return 0
+  fi
+  [[ ! -e "${confirm_dir}" ]] \
+    || die "the confirmation directory already exists: ${confirm_dir}"
+  worker="${confirm_dir}/worker"
+  sessions="${confirm_dir}/sessions"
+  mkdir -p "${worker}" "${sessions}"
+  run_capturing_status run_java_main \
+    edu.uva.liftlab.graphchecker.explore.ConfirmMain \
+    --iteration "${iteration_dir}" \
+    --claim "${campaign_final}/claim.json" \
+    --manifest "${composition_manifest}" \
+    --output "${worker}" >"${confirm_dir}/confirm.log" 2>&1
+  if [[ "${status}" -ne 0 ]]; then
+    reason=$(grep -m 1 'CONFIRM refused:' "${confirm_dir}/confirm.log" \
+      || grep -v -E '^[[:space:]]+at ' "${confirm_dir}/confirm.log" \
+        | tail -n 1)
+    campaign_confirm_verdict false \
+      "${reason:-ConfirmMain exited ${status}}" "" \
+      >"${campaign_final}/confirm.json"
+  else
+    # The replay, exactly as an obligation's.  A campaign_fail inside it
+    # ends a wave; here, in a subshell, it ends the confirmation as "no
+    # verdict", which is one more way of not agreeing with the model.
+    ( campaign_obligation_replay CONFIRM \
+        "${iteration_dir}/instrumented-classes" "${worker}" "${sessions}" \
+        "${iteration_dir}/seed-replay/execution_task_plan.jsonl" ) \
+      >>"${confirm_dir}/confirm.log" 2>&1 || status=$?
+    if [[ "${status}" -ne 0 ]]; then
+      campaign_confirm_verdict false "the confirmation replay published no \
+verdict (exit ${status}); its log is ${confirm_dir}/confirm.log" "" \
+        >"${campaign_final}/confirm.json"
+    else
+      campaign_confirm_decide "${worker}" "${sessions}" \
+        >"${campaign_final}/confirm.json"
+    fi
+  fi
+  require_nonempty "confirmation" "${campaign_final}/confirm.json"
+  jq -r '"  confirmed=\(.confirmed) session=\(.sessionId) \(.reason)"' \
+    "${campaign_final}/confirm.json"
+}
+
+# The one shape of final/confirm.json.
+campaign_confirm_verdict() {
+  local confirmed=$1 reason=$2 session_id=$3
+  jq -n --argjson confirmed "${confirmed}" --arg reason "${reason}" \
+    --arg sessionId "${session_id}" \
+    '{schemaVersion: 1, kind: "CONFIRMATION", confirmed: $confirmed,
+      reason: $reason, sessionId: $sessionId}'
+}
+
+# The decision, off the session the confirmation replay published: the
+# three conditions of the rule in order, the first one failing named.
+campaign_confirm_decide() {
+  local worker=$1 sessions=$2
+  local result_row="${worker}/obligation_result.jsonl"
+  local verdict session_id detail session_dir cut diverged mismatch fatal
+  verdict=$(jq -r '.verdict // ""' "${result_row}")
+  session_id=$(jq -r '.sessionId // ""' "${result_row}")
+  detail=$(jq -r '.detail // ""' "${result_row}")
+  if [[ "${verdict}" != ADMITTED ]]; then
+    campaign_confirm_verdict false "the confirmation replay was \
+${verdict:-not run}: ${detail}" "${session_id}"
+    return 0
+  fi
+  session_dir="${sessions}/${session_id}"
+  if [[ ! -d "${session_dir}" ]]; then
+    campaign_confirm_verdict false "the confirmation replay names session \
+${session_id}, which ${sessions} does not hold" "${session_id}"
+    return 0
+  fi
+  # (a) The schedule held to the anchor.  The turnstile files a divergence
+  # as schedule#<position>; one before the prefix's cut means the run left
+  # the selected path before the anchor.  Past the cut it runs free.
+  cut=$(jq -r '.schedulePrefix.events // 0' "${worker}/focused_task.jsonl")
+  diverged=$(jq -r --argjson cut "${cut}" '
+    select(.kind == "SCHEDULE_DIVERGED")
+    | select(.subject | startswith("schedule#"))
+    | select((.subject | sub("^schedule#"; "") | tonumber) < $cut)
+    | "\(.subject) (prefix of \($cut)): \(.detail)"' \
+    "${session_dir}/gaps.jsonl" 2>/dev/null | head -n 1)
+  if [[ -n "${diverged}" ]]; then
+    campaign_confirm_verdict false "the run left the selected path's \
+schedule before the anchor at ${diverged}" "${session_id}"
+    return 0
+  fi
+  # (b) Every edge the model chose is the edge the run took.
+  mismatch=$(jq -r 'select(.kind == "CONFIRM_MISMATCH") | .detail' \
+    "${session_dir}/gaps.jsonl" 2>/dev/null | head -n 1)
+  if [[ -n "${mismatch}" ]]; then
+    campaign_confirm_verdict false "the run took an edge the model did \
+not choose: ${mismatch}" "${session_id}"
+    return 0
+  fi
+  # (c) The fatal, observed at the anchor.
+  fatal=$(jq -r 'select(.reachedAnchor == true and .observedFatal == true)
+    | "observed"' "${session_dir}/targets.jsonl" 2>/dev/null | head -n 1)
+  if [[ "${fatal}" != observed ]]; then
+    campaign_confirm_verdict false "the run published no target row that \
+reached the anchor and observed the fatal" "${session_id}"
+    return 0
+  fi
+  campaign_confirm_verdict true "the schedule held to the anchor, every \
+edge the model chose was taken, and the anchor observed the fatal" \
+    "${session_id}"
+}
+
 campaign_artifact_digests() {
   local name path bytes sha row
   local -a required=(candidate.smt2 candidate_composition_manifest.json
@@ -3320,8 +3449,27 @@ campaign_emit() {
   # reason, and every named blocker, so one Java policy decides acceptance and
   # the shell only publishes what it decided.
   campaign_require_claim "${composition_manifest}"
+  # CONFIRM's answer (DESIGN4 §5).  A SAT claim is a claim about the model;
+  # whether the program agreed is final/confirm.json, required for every
+  # SAT_CANDIDATE, and an unconfirmed one is published as SAT_UNCONFIRMED
+  # with the first mismatch named.  Any other claim was never confirmed
+  # and carries null.
+  local confirmation=null
+  if [[ "$(jq -r '.solver.campaignClaim.claim' "${composition_manifest}")" \
+      == SAT_CANDIDATE ]]; then
+    require_nonempty "confirmation" "${campaign_final}/confirm.json"
+    campaign_require_json "confirmation" "${campaign_final}/confirm.json" \
+      || campaign_fail EMIT CONFIRM "${campaign_final}/confirm.json" \
+        "the confirmation is malformed"
+    jq -e '(.confirmed | type) == "boolean" and (.reason | type) == "string"' \
+      "${campaign_final}/confirm.json" >/dev/null \
+      || campaign_fail EMIT CONFIRM "${campaign_final}/confirm.json" \
+        "the confirmation states no boolean confirmed and string reason"
+    confirmation=$(cat "${campaign_final}/confirm.json")
+  fi
   jq -n \
     --argjson provenance "${campaign_provenance}" \
+    --argjson confirmation "${confirmation}" \
     --slurpfile composedDocuments "${composition_manifest}" \
     --slurpfile gapDocuments "${campaign_final}/gaps.json" '
     $composedDocuments[0] as $c | ($c.solver // {}) as $r |
@@ -3332,16 +3480,27 @@ campaign_emit() {
     ($gaps.gapCount) as $gapCount |
     ($gaps.telemetryCount) as $telemetryCount |
     (($c.finalStatusRefusals // []) | length) as $blockers |
+    (if $decided.claim == "SAT_CANDIDATE"
+        and ($confirmation.confirmed != true)
+     then "SAT_UNCONFIRMED" else $decided.claim end) as $claim |
     {schemaVersion: 1,
      kind: "CAMPAIGN_RESULT",
      provenance: $provenance,
-     claim: $decided.claim,
-     claimReason: $decided.claimReason,
+     claim: $claim,
+     claimReason: (if $claim == "SAT_UNCONFIRMED"
+       then "the confirmation replay did not agree with the model: "
+            + $confirmation.reason
+       else $decided.claimReason end),
      blockers: $decided.blockers,
      # ClaimPolicy counts its own blockers; re-counting the array here let
      # the published count drift from the policy that decided the claim.
      blockerCount: $decided.blockerCount,
-     whyNotAccepted: $decided.whyNotAccepted,
+     whyNotAccepted: (if $claim == "SAT_UNCONFIRMED"
+       then "SAT_UNCONFIRMED: " + $confirmation.reason
+       else $decided.whyNotAccepted end),
+     # The confirmation itself, so a reader of result.json sees which
+     # session answered and why, not only that the claim was downgraded.
+     confirmation: $confirmation,
      # WHICH mechanism the formula supports, beside WHETHER the run is
      # accepted.  Two questions, and a reader of result.json alone could
      # answer only the second: the ClaimKind, the valuation that carried it
@@ -3370,8 +3529,7 @@ campaign_emit() {
      # gaps.  This is the conjunction the exit code below already tests,
      # published so a reader of result.json alone does not have to infer it
      # from two numbers.
-     accepted: (($decided.claim == "SAT_CANDIDATE"
-                 or $decided.claim == "UNSAT_CLOSED")
+     accepted: (($claim == "SAT_CANDIDATE" or $claim == "UNSAT_CLOSED")
                 and $gapCount == 0),
      blockingGapCodes: ($gaps.byCode // {}),
      # What each satisfying witness named, and whether the policy read it as a
@@ -3619,6 +3777,7 @@ do_campaign() {
   campaign_stage COMPOSE campaign_compose "${iteration_dir}"
   campaign_stage SOLVE campaign_solve
   campaign_stage DECIDE campaign_decide
+  campaign_stage CONFIRM campaign_confirm "${iteration_dir}"
   campaign_stage EMIT campaign_emit "${iteration_dir}"
 }
 

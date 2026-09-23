@@ -55,6 +55,31 @@ public final class Obligation {
                 Fields.copy(answers), Fields.copy(unproducible));
     }
 
+    /**
+     * The same prefix and valuation, flipping NOTHING: a CONFIRM run.
+     *
+     * <p>A SAT claim's model is planted and the selected path's schedule
+     * held exactly as for a flip, but no decision is owed the other arm --
+     * the values drive every decision, and whether the run agrees with the
+     * model is read off the rows it publishes.  {@link #flips()} is false,
+     * {@link #siteId()} is empty and {@link #ordinal()} is 0.</p>
+     */
+    public static Obligation confirming(String obligationId, String taskId,
+                                        String pathId,
+                                        Map<String, String> rootAssignments,
+                                        Map<String, String> answers,
+                                        List<String> unproducible) {
+        return new Obligation(Fields.text(obligationId, "obligationId"),
+                Fields.text(taskId, "taskId"), Fields.text(pathId, "pathId"),
+                "", 0, false, Fields.copy(rootAssignments),
+                Fields.copy(answers), Fields.copy(unproducible));
+    }
+
+    /** Whether this obligation owes a decision the other arm at all. */
+    public boolean flips() {
+        return !siteId.isEmpty();
+    }
+
     public String obligationId() {
         return obligationId;
     }

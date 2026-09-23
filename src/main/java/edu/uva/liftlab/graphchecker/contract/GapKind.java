@@ -179,5 +179,19 @@ public enum GapKind {
      * is why this is BLOCKING and why {@code polarityDecides} is withheld
      * beside it.</p>
      */
-    PATH_SELF_CONTRADICTORY
+    PATH_SELF_CONTRADICTORY,
+    /**
+     * The confirmation replay took an edge the model did not choose.
+     *
+     * <p>DIAGNOSTIC on the confirmation session, and read by CONFIRM: a SAT
+     * claim says the model satisfies the formula, and the one replay that
+     * plants the model's roots and holds the selected path's schedule says
+     * whether the program agrees.  Each row names one expected edge -- a
+     * message family's arm (consumer endpoint <- producer endpoint), a
+     * state join (reader <- writer version) -- and the edge the run took
+     * instead; any one of them downgrades the claim to SAT_UNCONFIRMED.
+     * The run itself is never steered by the expectation: it is scheduled
+     * by the session's schedule as every focused replay is.</p>
+     */
+    CONFIRM_MISMATCH
 }

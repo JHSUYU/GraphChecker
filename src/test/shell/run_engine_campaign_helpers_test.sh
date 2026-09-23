@@ -105,6 +105,11 @@ emit_fixture() {
         rootSpace: {reachability: "REACHABLE",
                     faultSensitive: true}}}}' \
     >"${composition_manifest}"
+  # CONFIRM's answer for that SAT claim: the one replay agreed.  EMIT
+  # requires it for every SAT_CANDIDATE and copies it into the result.
+  jq -n '{schemaVersion: 1, kind: "CONFIRMATION", confirmed: true,
+    reason: "the schedule held to the anchor, every edge the model chose was taken, and the anchor observed the fatal",
+    sessionId: "CONFIRM-1"}' >"${campaign_final}/confirm.json"
   # One replay session, per kind, as the runtime publishes it.  IMPORT
   # counted these into the census EMIT requires; the fixture states both.
   for session_kind in activations decisions exports attaches writes reads \
@@ -927,7 +932,7 @@ stop_after_campaign "${stop_after_dir}/campaign-full" \
   || fail "a campaign with campaign_stop_after unset did not exit 0"
 [[ "$(tr '\n' ' ' <"${stop_after_dir}/labels-full.tsv")" == \
     "PREFLIGHT FREEZE_TOOL FREEZE SEED PLAN INSTRUMENT REPLAY IMPORT EXPLORE \
-COMPOSE SOLVE DECIDE EMIT " ]] \
+COMPOSE SOLVE DECIDE CONFIRM EMIT " ]] \
   || fail "a full campaign is not the one iteration's stages, each once: \
 $(tr '\n' ' ' <"${stop_after_dir}/labels-full.tsv")"
 
@@ -2205,5 +2210,162 @@ grep -q 'wave growth rows' "${nogrowth_loop}/explore.err" \
   || fail "the missing growth file is not named: \
 $(cat "${nogrowth_loop}/explore.err")"
 reset_config
+
+
+# CONFIRM-1: a SAT claim, checked by one replay (DESIGN4 §5).  ConfirmMain
+# and the replay are stubbed -- the first writes the focus row and the
+# expected edges, the second publishes a session and its verdict -- and the
+# stage's own decision is the production code: the three conditions of the
+# rule in order, the first one failing named, and never a failed campaign.
+confirm_root="${test_tmp}/confirm"
+confirm_iteration="${confirm_root}/iteration-0000"
+mkdir -p "${confirm_iteration}/instrumented-classes" \
+  "${confirm_iteration}/seed-replay" "${confirm_root}/final"
+: >"${confirm_iteration}/seed-replay/execution_task_plan.jsonl"
+campaign_final="${confirm_root}/final"
+composition_manifest="${campaign_final}/candidate_composition_manifest.json"
+# What each run's stubs state: the replay's verdict, the session's gap rows
+# and whether its target row observed the fatal.
+confirm_stub_verdict=ADMITTED
+confirm_stub_gaps=""
+confirm_stub_fatal=true
+confirm_stub_task_status=0
+confirm_stub_main() {
+  local out=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --output) out=$2; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  if [[ "${confirm_stub_task_status}" -ne 0 ]]; then
+    echo "CONFIRM refused: the claim moves a cell nobody minted" >&2
+    return "${confirm_stub_task_status}"
+  fi
+  printf '%s\n' '{"schemaVersion":1,"kind":"FOCUSED_TASK","taskId":"CONFIRM","obligationId":"CONFIRM","flip":null,"schedulePrefix":{"sessionId":"S.sel","events":10,"rest":3,"of":13,"cutAtFocus":true}}' \
+    >"${out}/focused_task.jsonl"
+  printf '%s\n' '{"kind":"ANCHOR","occurrence":"OCC.anchor","seq":40}' \
+    >"${out}/expected_edges.jsonl"
+}
+confirm_stub_replay() {
+  local worker=$3 sessions=$4
+  mkdir -p "${sessions}/CONFIRM-1"
+  jq -n -c --arg v "${confirm_stub_verdict}" '{schemaVersion: 1,
+    kind: "OBLIGATION_RESULT", obligationId: "CONFIRM", verdict: $v,
+    sessionId: "CONFIRM-1", detail: "stub"}' \
+    >"${worker}/obligation_result.jsonl"
+  printf '%s' "${confirm_stub_gaps}" >"${sessions}/CONFIRM-1/gaps.jsonl"
+  jq -n -c --argjson fatal "${confirm_stub_fatal}" '{sessionId: "CONFIRM-1",
+    seq: 40, anchorSiteId: "T#u1#1", observedFatal: $fatal,
+    reachedAnchor: true}' >"${sessions}/CONFIRM-1/targets.jsonl"
+}
+run_confirm() {
+  local claim=$1
+  rm -rf -- "${campaign_final}/confirm" "${campaign_final}/confirm.json"
+  jq -n --arg claim "${claim}" \
+    '{solver: {campaignClaim: {claim: $claim}}}' >"${composition_manifest}"
+  (
+    run_java_main() { confirm_stub_main "$@"; }
+    campaign_obligation_replay() { confirm_stub_replay "$@"; }
+    campaign_confirm "${confirm_iteration}"
+  ) >"${confirm_root}/confirm-stage.log" 2>&1 \
+    || fail "the CONFIRM stage failed the campaign on claim=${claim}: \
+$(cat "${confirm_root}/confirm-stage.log")"
+}
+confirm_says() {
+  jq -e --argjson confirmed "$1" --arg reason "$2" \
+    '.kind == "CONFIRMATION" and .confirmed == $confirmed
+     and (.reason | contains($reason))' "${campaign_final}/confirm.json" \
+    >/dev/null \
+    || fail "$3: $(cat "${campaign_final}/confirm.json")"
+}
+reset_config
+# Only a SAT_CANDIDATE is confirmed: any other claim has nothing to confirm.
+run_confirm INCONCLUSIVE_PARTIAL
+[[ ! -e "${campaign_final}/confirm.json" && ! -e "${campaign_final}/confirm" ]] \
+  || fail "a claim that is not SAT_CANDIDATE was confirmed"
+grep -q 'nothing to confirm' "${confirm_root}/confirm-stage.log" \
+  || fail "the stage did not say why it ran nothing"
+# The rule, all three conditions holding.
+run_confirm SAT_CANDIDATE
+confirm_says true "the anchor observed the fatal" "a clean replay was not confirmed"
+[[ $(jq -r '.sessionId' "${campaign_final}/confirm.json") == CONFIRM-1 ]] \
+  || fail "the confirmation does not name the session that answered"
+[[ -s "${campaign_final}/confirm/worker/focused_task.jsonl" \
+    && -s "${campaign_final}/confirm/worker/expected_edges.jsonl" ]] \
+  || fail "the confirmation replay was not handed the focus row and the edges"
+# (a) A divergence BEFORE the anchor's cut (prefix of 10 events) is not
+# confirmed; one past it is the run running free, as every replay does.
+confirm_stub_gaps='{"sessionId":"CONFIRM-1","kind":"SCHEDULE_DIVERGED","cls":"DIAGNOSTIC","subject":"schedule#3","detail":"the run took RECV b, the prefix names SEND a"}'
+run_confirm SAT_CANDIDATE
+confirm_says false "schedule#3 (prefix of 10)" \
+  "a divergence before the anchor was confirmed"
+confirm_stub_gaps='{"sessionId":"CONFIRM-1","kind":"SCHEDULE_DIVERGED","cls":"DIAGNOSTIC","subject":"schedule#12","detail":"past the cut"}
+{"sessionId":"CONFIRM-1","kind":"SCHEDULE_DIVERGED","cls":"DIAGNOSTIC","subject":"schedule-rest#2","detail":"the rest gave up"}'
+run_confirm SAT_CANDIDATE
+confirm_says true "every edge" "a divergence past the anchor's cut was held against the claim"
+# (b) An edge the model chose that the run did not take.
+confirm_stub_gaps='{"sessionId":"CONFIRM-1","kind":"CONFIRM_MISMATCH","cls":"DIAGNOSTIC","subject":"WIRE e1","detail":"WIRE e1: the model chose producer p1, the run paired p2"}'
+run_confirm SAT_CANDIDATE
+confirm_says false "the model chose producer p1, the run paired p2" \
+  "a mismatched edge was confirmed"
+confirm_stub_gaps=""
+# (c) The fatal not observed at the anchor.
+confirm_stub_fatal=false
+run_confirm SAT_CANDIDATE
+confirm_says false "observed the fatal" "a healthy anchor was confirmed"
+confirm_stub_fatal=true
+# A replay whose roots were not planted, or whose prefix was abandoned,
+# states NOT_ADMITTED, and that is the reason.
+confirm_stub_verdict=NOT_ADMITTED
+run_confirm SAT_CANDIDATE
+confirm_says false "was NOT_ADMITTED: stub" "an unadmitted replay was confirmed"
+confirm_stub_verdict=ADMITTED
+# A confirmation nothing can run is refused by name, and the claim is
+# unconfirmed for that reason -- the campaign goes on to EMIT.
+confirm_stub_task_status=1
+run_confirm SAT_CANDIDATE
+confirm_says false "CONFIRM refused: the claim moves a cell nobody minted" \
+  "a refused confirmation task did not name its reason"
+confirm_stub_task_status=0
+unset -f confirm_stub_main confirm_stub_replay run_confirm confirm_says
+
+# EMIT-CONFIRM: an unconfirmed SAT claim is published as SAT_UNCONFIRMED,
+# not accepted, with the confirmation and its reason in the result, and
+# the campaign exits 2 as for any claim that is not an accepted candidate.
+emit_fixture
+jq -n '{schemaVersion: 1, kind: "CONFIRMATION", confirmed: false,
+  reason: "the run took an edge the model did not choose: WIRE e1",
+  sessionId: "CONFIRM-2"}' >"${campaign_final}/confirm.json"
+run_emit
+[[ "${emit_status}" -eq 2 ]] \
+  || fail "an unconfirmed SAT claim exited ${emit_status}, not 2: \
+$(<"${emit_root}/emit.log")"
+jq -e '.claim == "SAT_UNCONFIRMED" and .accepted == false
+  and .confirmation.confirmed == false
+  and .confirmation.sessionId == "CONFIRM-2"
+  and (.claimReason | contains("WIRE e1"))
+  and (.whyNotAccepted | startswith("SAT_UNCONFIRMED: "))
+  and .findingKind == "MARKER_FLIPPED"' \
+  "${campaign_final}/result.json" >/dev/null \
+  || fail "the unconfirmed claim was not downgraded in the result: \
+$(jq -c '{claim, accepted, confirmation, whyNotAccepted}' \
+    "${campaign_final}/result.json")"
+grep -q 'no accepted candidate: claim=SAT_UNCONFIRMED' "${emit_root}/emit.log" \
+  || fail "EMIT did not name the unconfirmed claim: $(<"${emit_root}/emit.log")"
+# A SAT claim with no confirmation at all is a malformed run, not a pass.
+emit_fixture
+rm -f -- "${campaign_final}/confirm.json"
+run_emit
+[[ "${emit_status}" -ne 0 ]] \
+  || fail "a SAT claim with no confirmation was published as accepted"
+# A claim that is not SAT_CANDIDATE needs none and carries null.
+emit_fixture_undecided_roots
+rm -f -- "${campaign_final}/confirm.json"
+run_emit
+jq -e '.claim == "INCONCLUSIVE_PARTIAL" and .confirmation == null' \
+  "${campaign_final}/result.json" >/dev/null \
+  || fail "a claim that was never confirmed does not carry null: \
+$(jq -c '{claim, confirmation}' "${campaign_final}/result.json")"
 
 echo "run_engine campaign helper tests passed"
