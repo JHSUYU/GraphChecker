@@ -788,12 +788,11 @@ candidate_graph="${plan2_dir}/candidate.jsonl.gz"
 causynth_static_scope_map="${plan2_dir}/static_scope_map.jsonl"
 schedule_output_dir="${plan2_dir}/out"
 schedule_max_jobs=8
-schedule_closure_mode=candidate
 causynth_symbolic_inputs=""
 declared_target_occurrence=""
 do_schedule
 unset -f run_java_main
-for retired_option in --retain-regions --summaries --refined-graph; do
+for retired_option in --retain-regions --summaries --refined-graph --closure-mode; do
   [[ "${scheduler_args}" != *"${retired_option}"* ]] \
     || fail "PLAN still passes ${retired_option}: ${scheduler_args}"
 done
@@ -1938,7 +1937,7 @@ mkdir -p "${grow_wave0}/OB.x" "${grow_wave1}" "${grow_dir}/seed-replay" \
   "${grow_dir}/workers/task-a" "${grow_sessions}/SESSION.exposing" \
   "${grow_sessions}/SESSION.other"
 printf '{"taskId":"TASK.1","regionId":"REGION.a"}\n' >"${grow_plan}"
-printf '{"taskId":"TASK.1","regionId":"REGION.a"}\n' >"${grow_seed_plan}"
+ln -f "${grow_plan}" "${grow_seed_plan}"
 # The links PLAN and the obligation worker make: a member's plan is the
 # iteration plan, an obligation worker's is the seed plan.
 ln -f "${grow_plan}" "${grow_dir}/workers/task-a/execution_task_plan.jsonl"

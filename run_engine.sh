@@ -134,8 +134,6 @@ workflow_config_keys=(
   "causynth_region_skeletons - rp -"
   "analysis_classes_dir - rp -"
   "schedule_output_dir - rp -"
-  # Internal campaign state: which closure PLAN schedules.
-  "schedule_closure_mode - r candidate"
   "schedule_max_jobs CAUSYNTH_SCHEDULE_MAX_JOBS krp -"
   # Per solver run, in milliseconds.  The composer runs z3 once per
   # valuation while it composes, so this is the budget of one of those runs.
@@ -658,7 +656,6 @@ do_schedule() {
     require_file "symbolic input selection" "${causynth_symbolic_inputs}"
     args+=(--symbolic-inputs "${causynth_symbolic_inputs}")
   fi
-  args+=(--closure-mode "${schedule_closure_mode}")
   [[ -z "${declared_target_occurrence}" ]] \
     || args+=(--target-occurrence "${declared_target_occurrence}")
   run_java_main edu.uva.liftlab.graphchecker.plan.ConcolicScheduler \
@@ -1831,7 +1828,6 @@ campaign_plan() {
   local index="${iteration_dir}/runtime_workflow_schedule_index.json"
   local seed_dir="${iteration_dir}/seed-replay"
   local seed_plan="${seed_dir}/execution_task_plan.jsonl"
-  local seed_index="${seed_dir}/runtime_workflow_schedule_index.json"
   local frozen="${iteration_dir}/concolic_region_plan.jsonl"
   local role campaign_id region occurrence goal task worker
   local region_hash region_size
@@ -1878,29 +1874,10 @@ campaign_plan() {
     || campaign_fail PLAN ConcolicScheduler "${index}" \
       "the region-path schedule index does not commit the frozen region plan"
 
+  # The seed replay runs the same plan: one file, linked, so a GROW append
+  # reaches every reader through the one inode.
   mkdir -p "${seed_dir}"
-  schedule_output_dir="${seed_dir}"
-  schedule_closure_mode=seed-replay
-  do_schedule
-  schedule_closure_mode=candidate
-  require_nonempty "seed replay task plan" "${seed_plan}"
-  require_nonempty "seed replay workflow index" "${seed_index}"
-  # Seed activation may narrow candidate membership, but task identity must
-  # stay byte-for-byte compatible with the union-instrumented candidate plan.
-  jq -e --slurpfile candidate "${index}" --slurpfile candidateTasks "${plan}" \
-    --slurpfile seedTasks "${seed_plan}" '
-      . as $seed
-      | $candidate[0] as $all
-      | [$candidateTasks[].taskId] as $allTasks
-      | [$seedTasks[].taskId] as $activeTasks
-      | $seed.target.taskId == $all.target.taskId
-        and all($seed.members[];
-          .taskId as $task | ($allTasks | index($task)) != null)
-        and (($activeTasks | unique | sort)
-             == ([$seed.members[].taskId] | unique | sort))
-    ' "${seed_index}" >/dev/null || campaign_fail \
-      PLAN ConcolicScheduler "${seed_index}" \
-      "the seed value closure is not a stable subset of instrumentation candidates"
+  ln -f "${plan}" "${seed_plan}"
 
   # The one task-set membership decode of this iteration. Every later stage
   # reads these rows; the index is frozen beside them and is never re-decoded.
@@ -1926,7 +1903,6 @@ campaign_plan() {
   campaign_log "planned tasks: $(jq -s 'length' "${plan}") by goal $(jq -r -s '
     group_by(.goalKind) | map("\(.[0].goalKind)=\(length)") | join(" ")' \
     "${plan}")"
-  campaign_log "seed replay tasks: $(jq -s 'length' "${seed_plan}")"
 }
 
 campaign_task_ids() {
@@ -2884,7 +2860,6 @@ exposure can be grown into"
     "the exposed-region planner failed with exit ${status}"
   require_nonempty "exposed region plan rows" "${rows}"
   cat "${rows}" >>"${plan}"
-  cat "${rows}" >>"${seed_plan}"
   campaign_log "$(basename "${wave_dir}"): grown by \
 $(jq -r -s 'map(.regionId) | unique | join(",")' "${rows}") \
 ($(wc -l <"${rows}") task row(s)); weaving the grown plan"
@@ -2965,8 +2940,8 @@ verdict=$(jq -r '.verdict // "?"' "${worker}/obligation_result.jsonl")"
 # nothing between the runtime and the report is in a position to change it.
 campaign_publish_iteration_manifest() {
   local iteration_dir=$1 iteration=$2
-  local index="${iteration_dir}/seed-replay/runtime_workflow_schedule_index.json"
-  local plan="${iteration_dir}/seed-replay/execution_task_plan.jsonl"
+  local index="${iteration_dir}/runtime_workflow_schedule_index.json"
+  local plan="${iteration_dir}/execution_task_plan.jsonl"
   local members="${iteration_dir}/.members.jsonl"
   local role campaign_id region occurrence goal task worker
   local obligations plan_sha index_sha census_sha obligations_sha
