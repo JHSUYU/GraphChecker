@@ -910,6 +910,10 @@ public class ScheduleLogTest {
             Thread parker = new Thread(new Runnable() {
                 @Override
                 public void run() {
+                    // JDK 8 hands a new thread a finished thread's park
+                    // state with its permit still set: an inherited permit
+                    // would return the first park at once, an unpark.
+                    java.util.concurrent.locks.LockSupport.parkNanos(1L);
                     TimedWaits.parkNanos(TimeUnit.SECONDS.toNanos(20L), site);
                     flagged[0] = Thread.currentThread().isInterrupted();
                 }
@@ -1191,6 +1195,121 @@ public class ScheduleLogTest {
                 TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
                         < 10000L);
         assertEquals(Arrays.asList("x", "a", site), sites());
+    }
+
+    @Test
+    public void aDivergedPrefixGivesUpOnlyTheEventItWaitedFor()
+            throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "300");
+        for (int round = 0; round < 5; round++) {
+            written.clear();
+            ScheduleLog.resetForTests();
+            ScheduleLog.install(new ScheduleLog.Sink() {
+                @Override
+                public void write(JsonObject row) {
+                    written.add(row);
+                }
+            });
+            ScheduleLog.enforceForTests(Arrays.asList(
+                    event(ScheduleEvent.Kind.SEND, "never"),
+                    event(ScheduleEvent.Kind.SEND, "refresh"),
+                    event(ScheduleEvent.Kind.WAKE, "tick.hb")));
+            // Whichever of them the watchdog wakes first, the heartbeat
+            // does not jump the refresh the prefix held back.
+            Thread heartbeat = observer(ScheduleEvent.Kind.WAKE, "tick.hb");
+            Thread refresh = observer(ScheduleEvent.Kind.SEND, "refresh");
+            heartbeat.join(5000L);
+            refresh.join(5000L);
+            assertFalse(heartbeat.isAlive() || refresh.isAlive());
+            assertEquals("round " + round,
+                    Arrays.asList("refresh", "tick.hb"), sites());
+        }
+    }
+
+    @Test
+    public void aTurnsEndSettlesWhatTheTurnDidNotDo() throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        ScheduleLog.enforceForTests(prefix("x"), Arrays.asList(
+                event(ScheduleEvent.Kind.WAKE, "tick.a"),
+                event(ScheduleEvent.Kind.SEND, "heartbeat"),
+                event(ScheduleEvent.Kind.START, "call"),
+                event(ScheduleEvent.Kind.END, "tick.a"),
+                event(ScheduleEvent.Kind.WAKE, "tick.b")));
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+        long before = System.nanoTime();
+        // The turn found its heartbeat not due: WAKE, then END.
+        ScheduleLog.observe(ScheduleEvent.Kind.WAKE, "tick.a");
+        ScheduleLog.observe(ScheduleEvent.Kind.END, "tick.a");
+        ScheduleLog.observe(ScheduleEvent.Kind.WAKE, "tick.b");
+        assertTrue("the next turn does not wait for what this one skipped",
+                TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
+                        < 1000L);
+        assertEquals(Arrays.asList("x", "tick.a", "tick.a", "tick.b"),
+                sites());
+        assertTrue(ScheduleLog.progress(),
+                ScheduleLog.progress().contains("2 settled"));
+    }
+
+    @Test
+    public void theRestIsLetGoAfterItsStalls() throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "300");
+        List<ScheduleEvent> after = new ArrayList<ScheduleEvent>();
+        for (int turn = 1; turn <= 4; turn++) {
+            after.add(event(ScheduleEvent.Kind.SEND, "never" + turn));
+            after.add(event(ScheduleEvent.Kind.WAKE, "tick.d" + turn));
+        }
+        ScheduleLog.enforceForTests(prefix("x"), after);
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+        for (int turn = 1; turn <= ScheduleLog.REST_STALLS; turn++) {
+            ScheduleLog.observe(ScheduleEvent.Kind.WAKE, "tick.d" + turn);
+            assertTrue("stall " + turn + " holds", ScheduleLog.enforcing());
+        }
+        ScheduleLog.observe(ScheduleEvent.Kind.WAKE,
+                "tick.d" + (ScheduleLog.REST_STALLS + 1));
+        assertFalse("the stall after them lets the rest go",
+                ScheduleLog.enforcing());
+        long before = System.nanoTime();
+        ScheduleLog.observe(ScheduleEvent.Kind.WAKE, "tick.d4");
+        assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
+                < 200L);
+    }
+
+    @Test
+    public void aWaitASignalEndedNoLongerDefersAGiveUp() throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "400");
+        final String site = "<C: boolean waitForWork()>#u21";
+        ScheduleLog.enforceForTests(prefix("x"), Arrays.asList(
+                event(ScheduleEvent.Kind.SEND, "never"),
+                event(ScheduleEvent.Kind.WAKE, site),
+                event(ScheduleEvent.Kind.SEND, "never2"),
+                event(ScheduleEvent.Kind.WAKE, "tick.e")));
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+        final Object monitor = new Object();
+        Thread idle = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                synchronized (monitor) {
+                    try {
+                        TimedWaits.waitOn(monitor, 60000L, site);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+            }
+        });
+        idle.start();
+        Thread.sleep(200L);
+        synchronized (monitor) {
+            TimedWaits.notifyOn(monitor, "<C: boolean addCall(Call)>#u3");
+        }
+        idle.join(5000L);
+        assertFalse(idle.isAlive());
+        long before = System.nanoTime();
+        ScheduleLog.observe(ScheduleEvent.Kind.WAKE, "tick.e");
+        long took = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before);
+        assertTrue("released by the watchdog, not by an ask gone stale: "
+                + took, took < 1500L);
+        assertEquals(Arrays.asList("x", "tick.e"), sites());
     }
 
     /** A thread that makes one event, blocking for its turn; started. */

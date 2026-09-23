@@ -61,12 +61,23 @@ import java.util.TreeMap;
  * the workload's explicit key refresh, reached the NameNode before it, took
  * the one KeyUpdateCommand, and the planned refresh occurrence never ran in
  * any world that flipped the NameNode -- so no DataNode flip was ever
- * proposed inside one.  When nothing the rest names happens for the timeout
- * while one of its WAKEs waits, the events before the earliest waiting WAKE
- * are given up (stated as {@code SCHEDULE_DIVERGED}) and it takes its turn.
- * The rest holds while a timeout it names is still to come; after that the
- * run is free.  A prefix that diverges hands its own unadmitted events to
- * the rest the same way.</p>
+ * proposed inside one.  What a turn did not do is settled at its END: the
+ * events the recording has inside the turn's span that the run has not made
+ * by then are given up, since a daemon turn decides on the wall clock
+ * whether its heartbeat is due.  When nothing the rest names happens for the
+ * timeout while one of its WAKEs waits, the events before the earliest
+ * waiting WAKE are given up (stated as {@code SCHEDULE_DIVERGED}) and it
+ * takes its turn; after {@link #REST_STALLS} such stalls the next one lets
+ * the rest go as a whole.  The rest holds while a timeout it names is still
+ * to come; after that the run is free.  A prefix that diverges gives up the
+ * one event it waited for and hands the rest of its unadmitted events to
+ * the rest.</p>
+ *
+ * <p>ONE LIMIT, stated: the rest holds every WAKE it names, and a turn's
+ * WAKE does not say what began the turn -- a DataXceiver op, begun by the
+ * peer's message, is held like a daemon's timer tick.  Its recorded
+ * predecessors are then its causes and have happened, unless the flip
+ * removed one; that costs a stall, and the watchdog ends it.</p>
  *
  * <p>One lock for both halves, so the order this log writes IS the order the
  * turnstile admitted.</p>
@@ -91,11 +102,19 @@ public final class ScheduleLog {
     public static final String SUFFIX_PROPERTY = "causynth.schedule.suffix";
 
     /**
-     * Shorter than the waits a workload makes for its own results (20 s is
-     * the common bound): a prefix that cannot be held must be let go before
-     * the workload gives up on what the held threads would have done.
+     * Shorter than the waits a workload makes inside its window for its own
+     * results ({@code CausynthCluster.WINDOW_WAIT_MS}, 60 s): an order that
+     * cannot be held must be let go before the workload gives up on what the
+     * held threads would have done.  One prefix divergence and the rest's
+     * stalls ({@link #REST_STALLS}) stay under that bound together.
      */
     static final long DEFAULT_TIMEOUT_MS = 15000L;
+    /**
+     * How many times the rest may give events up before it is let go as a
+     * whole: a run that keeps leaving the recorded order has left it, and
+     * every further stall is a timeout the workload's own waits pay for.
+     */
+    static final int REST_STALLS = 2;
 
     private static final Object LOCK = new Object();
 
@@ -145,6 +164,13 @@ public final class ScheduleLog {
     private static long lastProgress;
     private static int restSeen;
     private static int givenUp;
+    /** Positions a turn's END gave up: what its turn did not do. */
+    private static int settledByEnd;
+    /** How many times the rest has given events up. */
+    private static int restStalls;
+    /** Per WAKE key, the rest position it took: where its turn began. */
+    private static final Map<String, Integer> TAKEN_WAKES =
+            new HashMap<String, Integer>();
     /** The rest positions WAKEs wait at, each with when it last asked. */
     private static final TreeMap<Integer, Long> ASKING =
             new TreeMap<Integer, Long>();
@@ -259,9 +285,27 @@ public final class ScheduleLog {
      */
     static final class Wake {
         private final Pending event;
+        /** The rest position this wait last asked at, or -1; under LOCK. */
+        private int asked = -1;
 
         private Wake(Pending event) {
             this.event = event;
+        }
+    }
+
+    /**
+     * The wait ended without its turn -- a signal, an element, its own
+     * deadline, an interrupt: it no longer waits at the rest position it
+     * asked at, and a later WAKE the watchdog would release must not keep
+     * deferring to it.
+     */
+    static void withdraw(Wake wake) {
+        if (wake == null) return;
+        synchronized (LOCK) {
+            if (wake.asked < 0) return;
+            ASKING.remove(wake.asked);
+            wake.asked = -1;
+            LOCK.notifyAll();
         }
     }
 
@@ -335,7 +379,11 @@ public final class ScheduleLog {
                 if (!timeouts) return Turn.FREE;
                 int slot = restSlotLocked(wake.event.key);
                 if (slot < 0) return Turn.FREE;
-                if (!dueLocked(slot)) return Turn.NOT_YET;
+                if (!dueLocked(slot)) {
+                    wake.asked = slot;
+                    return Turn.NOT_YET;
+                }
+                wake.asked = -1;
                 takeLocked(wake.event.key);
                 appendLocked(wake.event);
                 return Turn.ADMITTED;
@@ -546,6 +594,7 @@ public final class ScheduleLog {
      */
     private static Admission admitLocked(Pending event) {
         long timeout = timeoutMillis();
+        int asked = -1;
         waiting++;
         try {
             while (true) {
@@ -576,8 +625,11 @@ public final class ScheduleLog {
                     takeLocked(event.key);
                     return Admission.NEXT;
                 }
+                asked = slot;
+                // Past the timeout, an earlier WAKE is still asking: it
+                // decides, and every take, give-up or withdrawal notifies.
                 long idle = System.currentTimeMillis() - lastProgress;
-                LOCK.wait(Math.max(1L, Math.min(timeout - idle, 1000L)));
+                LOCK.wait(Math.max(10L, Math.min(timeout - idle, 1000L)));
             }
         } catch (InterruptedException interrupted) {
             // The workload interrupted its own thread -- a shutdown, a
@@ -589,6 +641,7 @@ public final class ScheduleLog {
             if (timeouts) takeLocked(event.key);
             return Admission.INTERRUPTED;
         } finally {
+            if (asked >= 0) ASKING.remove(asked);
             waiting--;
         }
     }
@@ -622,15 +675,14 @@ public final class ScheduleLog {
 
     /**
      * Past the prefix: the rest of the order, whose timeout WAKEs hold.  Free
-     * at once when it names none.  Its watchdog starts from the last
-     * admission, so a prefix that diverged -- already a timeout with nothing
-     * admitted -- gives the rest's first events up at the next ask.
+     * at once when it names none.  Its watchdog starts now.
      */
     private static void enterRestLocked(List<ScheduleEvent> events) {
         rest = events;
         restState = new byte[events.size()];
         UNTAKEN.clear();
         ASKING.clear();
+        TAKEN_WAKES.clear();
         firstOpen = 0;
         openWakes = 0;
         for (int index = 0; index < events.size(); index++) {
@@ -643,7 +695,7 @@ public final class ScheduleLog {
             slots.addLast(index);
             if (event.kind() == ScheduleEvent.Kind.WAKE) openWakes++;
         }
-        lastProgress = lastAdmit;
+        lastProgress = System.currentTimeMillis();
         timeouts = openWakes > 0;
         freeRun = !timeouts;
         LOCK.notifyAll();
@@ -678,7 +730,12 @@ public final class ScheduleLog {
             if (asks.next().getValue() < now - ASK_FRESH_MS) asks.remove();
         }
         if (!ASKING.isEmpty() && ASKING.firstKey() < slot) return false;
-        giveUpLocked(slot);
+        if (restStalls >= REST_STALLS) {
+            releaseRestLocked(slot);
+        } else {
+            restStalls++;
+            giveUpLocked(slot);
+        }
         return true;
     }
 
@@ -688,12 +745,67 @@ public final class ScheduleLog {
         if (slots == null || slots.isEmpty()) return;
         int slot = slots.pollFirst();
         ASKING.remove(slot);
+        ScheduleEvent event = rest.get(slot);
         if (restState[slot] == OPEN
-                && rest.get(slot).kind() == ScheduleEvent.Kind.WAKE) {
+                && event.kind() == ScheduleEvent.Kind.WAKE) {
             openWakes--;
         }
         restState[slot] = SEEN;
         restSeen++;
+        if (event.kind() == ScheduleEvent.Kind.WAKE) {
+            TAKEN_WAKES.put(key, slot);
+        } else if (event.kind() == ScheduleEvent.Kind.END) {
+            settleTurnLocked(event, slot);
+        }
+        settleLocked();
+    }
+
+    /**
+     * A turn's END settles the turn: what the recording has between the
+     * turn's WAKE and its END and the run has not made by now -- other than
+     * another turn's WAKE -- is given up.  The turn is over, and what it did
+     * not do it will not do: a daemon's turn decides on the wall clock
+     * whether its heartbeat is due, so a recorded turn's RPC need not recur,
+     * and every timeout the rest names after it would otherwise wait out the
+     * watchdog for it.  Another thread's event recorded inside the span loses
+     * only its place ahead of later timeouts; it takes its position when it
+     * comes.
+     */
+    private static void settleTurnLocked(ScheduleEvent end, int endSlot) {
+        Integer began = TAKEN_WAKES.get(ScheduleEvent.key(
+                ScheduleEvent.Kind.WAKE, end.context(), end.site()));
+        if (began == null || began >= endSlot) return;
+        for (int index = Math.max(began + 1, firstOpen); index < endSlot;
+             index++) {
+            if (restState[index] != OPEN
+                    || rest.get(index).kind() == ScheduleEvent.Kind.WAKE) {
+                continue;
+            }
+            restState[index] = GIVEN_UP;
+            settledByEnd++;
+        }
+    }
+
+    /**
+     * The rest has stalled {@link #REST_STALLS} times and would again: it is
+     * let go as a whole, stated, and the run is free.
+     */
+    private static void releaseRestLocked(int slot) {
+        int open = 0;
+        for (int index = firstOpen; index < restState.length; index++) {
+            if (restState[index] == OPEN) {
+                restState[index] = GIVEN_UP;
+                open++;
+            }
+        }
+        givenUp += open;
+        openWakes = 0;
+        stateLocked("schedule-rest#" + firstOpen, "past the prefix, the rest"
+                + " of the discovering run's order stalled " + restStalls
+                + " time(s) and would again ("
+                + rest.get(slot).render() + " at rest position " + slot
+                + " waited " + timeoutMillis() + " ms): its " + open
+                + " open event(s) are given up and the run is free");
         settleLocked();
     }
 
@@ -766,10 +878,22 @@ public final class ScheduleLog {
                 + prefix.size() + " the run's next event was "
                 + render(actual) + " and the prefix's was " + expected
                 + "; nothing was admitted for " + timeoutMillis()
-                + " ms, so every waiter is released: the prefix's "
-                + (prefix.size() - cursor) + " unadmitted event(s) join the"
-                + " rest of the order, whose timeouts alone hold from here";
+                + " ms, so every waiter is released: that event is given up"
+                + " and the prefix's other " + (prefix.size() - cursor - 1)
+                + " unadmitted event(s) join the rest of the order, whose"
+                + " timeouts alone hold from here";
         enterRestLocked(remaining);
+        // Only the prefix's next event is known not to have happened for
+        // the timeout; the events behind it were held back by it, and get
+        // their own time -- the rest's watchdog starts now, and the waits
+        // blocked here ask for their positions before anything else is
+        // given up.
+        if (timeouts && restState[0] == OPEN) {
+            if (rest.get(0).kind() == ScheduleEvent.Kind.WAKE) openWakes--;
+            restState[0] = GIVEN_UP;
+            givenUp++;
+            settleLocked();
+        }
         stateLocked("schedule#" + cursor, divergence);
     }
 
@@ -893,8 +1017,10 @@ public final class ScheduleLog {
                     + (divergedAt >= 0 ? ", diverged at " + divergedAt : "");
             if (!rest.isEmpty()) {
                 held += "; of the rest's " + rest.size() + " events "
-                        + restSeen + " happened and " + givenUp
-                        + " were given up";
+                        + restSeen + " happened, " + givenUp
+                        + " were given up in " + restStalls + " stall(s)"
+                        + " and " + settledByEnd + " settled by their"
+                        + " turn's END";
             }
             return held;
         }
@@ -941,6 +1067,9 @@ public final class ScheduleLog {
             lastProgress = 0L;
             restSeen = 0;
             givenUp = 0;
+            settledByEnd = 0;
+            restStalls = 0;
+            TAKEN_WAKES.clear();
             waiting = 0;
             lastAdmit = 0L;
             divergence = "";

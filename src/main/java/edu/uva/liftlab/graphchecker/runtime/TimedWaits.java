@@ -844,6 +844,17 @@ public final class TimedWaits {
             if (element != null) return element;
         }
         ScheduleLog.Wake wake = ScheduleLog.wake(site);
+        try {
+            return heldPoll(queue, wake, deadline, site);
+        } finally {
+            // However it ended, it no longer waits for a turn.
+            ScheduleLog.withdraw(wake);
+        }
+    }
+
+    private static Object heldPoll(BlockingQueue<?> queue,
+                                   ScheduleLog.Wake wake, long deadline,
+                                   String site) throws InterruptedException {
         long wait = TimeUnit.MILLISECONDS.toNanos(QUANTUM_MS);
         while (true) {
             Object element = queue.poll(wait, TimeUnit.NANOSECONDS);
@@ -929,6 +940,19 @@ public final class TimedWaits {
         // Null: the window is not open, or the event has no name.  The wait
         // then has no turn to take, and ends as a free one does.
         ScheduleLog.Wake wake = ScheduleLog.wake(site);
+        try {
+            return turns(site, signalled, quantum, deadline, wake);
+        } finally {
+            // However it ended -- a signal above all -- it no longer waits
+            // at the position it asked at.
+            ScheduleLog.withdraw(wake);
+        }
+    }
+
+    private static boolean turns(String site, boolean signalled,
+                                 Quantum quantum, long deadline,
+                                 ScheduleLog.Wake wake)
+            throws InterruptedException {
         while (true) {
             if (quantum.endsNow()) {
                 // The same rule an interrupted admission follows: the wait
