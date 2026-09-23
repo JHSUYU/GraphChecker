@@ -2655,7 +2655,7 @@ campaign_host_available_mb() {
 
 # The host's MemAvailable, from the ledger when it is fresh enough.
 campaign_host_memory_reading() {
-  local host=$1 dir=$2 now=$3 at mb
+  local host=$1 dir=$2 now=$3 at mb fresh
   if read -r at mb 2>/dev/null <"${dir}/available" \
       && [[ "${at}" =~ ^[0-9]+$ && "${mb}" =~ ^[0-9]+$ ]] \
       && (( now - at < campaign_host_poll_s )); then
@@ -2665,8 +2665,11 @@ campaign_host_memory_reading() {
   mb=$(campaign_host_available_mb "${host}" | grep -E '^[0-9]+$' | tail -n 1) \
     || return 1
   [[ "${mb}" =~ ^[0-9]+$ ]] || return 1
-  printf '%s %s\n' "${now}" "${mb}" >"${dir}/available.$$"
-  mv -f -- "${dir}/available.$$" "${dir}/available"
+  # A name of its own: the campaign's slots are subshells sharing $$, and
+  # every campaign on every lift writes this ledger.
+  fresh=$(mktemp "${dir}/available.XXXXXX") || return 1
+  printf '%s %s\n' "${now}" "${mb}" >"${fresh}"
+  mv -f -- "${fresh}" "${dir}/available"
   printf '%s\n' "${mb}"
 }
 
