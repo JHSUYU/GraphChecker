@@ -531,10 +531,19 @@ that `main` moves and the parked housekeeping is due.
    - *Parallel rounds behind a memory gate* (`75417e648`): `obligation_memory_mb` per case, a
      per-host ledger in the shared home, `tools/rounds/launch-round.sh` placing the nine heads
      and spreading every wave's obligations over lift11–lift15.
-1. **Read v22** (`~/gc-out/accept-v22-*`), diagnose every FAIL by §11 before a fix, and repeat
-   until the nine pass the acceptance checks of §8 on one snapshot; then fast-forward `main`.
-   The first questions to answer: does a reply-door fault world reach each block-key case's
-   declared target's fatal, and does 17960's seed replay admit its prefix to the end.
+   *Since v22*, each general too: an event takes a slot of its own occurrence first (`b86ea7182`);
+   CONFIRM holds the run only to the joins the model chose (`be881f27d`, snapshot `p27`); a
+   workload that sends a heartbeat sends them all (`fb544cd06` and each tree's
+   `CausynthCluster.driveHeartbeats`) — v23's seeds of bug1/2/3, 17897, A, B and C took key
+   updates on DAEMON heartbeats (path B's verifier's among them, applied by the unrecorded
+   command-processor thread), so the closure had no workload RPC to fail; and a run is stopped
+   by its output directory (`tools/rounds/stop-run.sh`), never by the logged group id.
+1. **Read v24** (`~/gc-out/accept-v24-*`, snapshot `p27`, trees at their `driveHeartbeats`
+   commits; 11741 still from v23 on `p26`, 17960 PASSED as v23b on `p27`), diagnose every FAIL
+   by §11 before a fix, and repeat until the nine pass the acceptance checks of §8 on one
+   snapshot; then fast-forward `main`. The first question: does the verifier's heartbeat reply
+   door (`getRpcResponse`, a CONTROL_PRODUCER of the anchor) now appear in each block-key
+   closure, and does its fault world reach the declared target's fatal.
 4. **The cleanup the read found (§14, R-items).** *Now, before the round* — each after `git
    grep` for readers, one commit per package: the dead members and second spellings (R1, R3,
    R8, R11, R12, R23, R25, R27–R29, R31, R35–R37, R40, R42, R43, R45, R47, R49, R50, R55–R57,
