@@ -17,7 +17,7 @@ CASES=hdfs-17960 bash experiments/hadoop/accept/accept.sh
 `lib/run.sh <case dir> <case id> validate` and `... campaign` (which read the
 case's declarations, set `lib/execute.sh` as workload and replay command and
 exec `run_engine.sh`), with a
-fresh `CAUSYNTH_OUTPUT_DIR` and `CAUSYNTH_CACHE_DIR`. Cases run one at a time.
+fresh `CAUSYNTH_OUTPUT_DIR`. Cases run one at a time.
 
 Defaults, all overridable by environment: `JAR` = `<repo>/target/GraphChecker-
 1.0-SNAPSHOT-jar-with-dependencies.jar` (setting it moves the run to that

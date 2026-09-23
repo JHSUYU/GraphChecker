@@ -122,8 +122,8 @@ acc_await_disk() {
 # CAUSYNTH_WORKLOAD_COMMAND and CAUSYNTH_CONCOLIC_REPLAY_COMMAND to its own
 # execute.sh, its CAUSYNTH_CLASSPATH to its own classpath.sh, and execs
 # ../../../run_engine.sh with its workflow.properties.  This function starts
-# that and states the three things a harness run must not inherit -- a fresh
-# output directory, a fresh cache, and the VM image -- and nothing else.
+# that and states the two things a harness run must not inherit -- a fresh
+# output directory and the VM image -- and nothing else.
 acc_build_jar() {
   [[ "$SKIP_BUILD" == 1 ]] && { acc_log "SKIP_BUILD=1: using $JAR"; return 0; }
   acc_log "building $ACCEPT_JAR_NAME in $REPO"
@@ -139,24 +139,22 @@ acc_run_case() {  # acc_run_case <case-id>
   local exp; exp=$(acc_experiment_of "$case_id")
   local arg; arg=$(acc_case_arg_of "$case_id")
   local dir="$REPO/experiments/hadoop/$exp"
-  local out="$OUT/out/$case_id" cache="$OUT/out/${case_id}-cache"
+  local out="$OUT/out/$case_id"
   local log="$OUT/logs/$case_id.log" rc
 
-  rm -rf -- "$out" "$cache"
-  mkdir -p "$out" "$cache"
+  rm -rf -- "$out"
+  mkdir -p "$out"
   {
     echo "### repo=$REPO"
     echo "### experiment=$dir"
     echo "### case_arg=${arg:-<none>}"
     echo "### CAUSYNTH_OUTPUT_DIR=$out"
-    echo "### CAUSYNTH_CACHE_DIR=$cache"
     echo "### CAUSYNTH_CUSTOM_JDK_HOME=$IMG"
     echo "### ---- validate ----"
   } >"$log"
   (
     cd "$dir" || exit 97
-    export CAUSYNTH_OUTPUT_DIR="$out" CAUSYNTH_CACHE_DIR="$cache"
-    export CAUSYNTH_CUSTOM_JDK_HOME="$IMG"
+    export CAUSYNTH_OUTPUT_DIR="$out" CAUSYNTH_CUSTOM_JDK_HOME="$IMG"
     bash "$ACCEPT_LIB/run.sh" "$dir" "$arg" validate
   ) >>"$log" 2>&1
   rc=$?
@@ -164,8 +162,7 @@ acc_run_case() {  # acc_run_case <case-id>
     echo "### ---- campaign ----" >>"$log"
     (
       cd "$dir" || exit 97
-      export CAUSYNTH_OUTPUT_DIR="$out" CAUSYNTH_CACHE_DIR="$cache"
-      export CAUSYNTH_CUSTOM_JDK_HOME="$IMG"
+      export CAUSYNTH_OUTPUT_DIR="$out" CAUSYNTH_CUSTOM_JDK_HOME="$IMG"
       bash "$ACCEPT_LIB/run.sh" "$dir" "$arg" campaign
     ) >>"$log" 2>&1
     rc=$?
@@ -178,40 +175,32 @@ acc_run_case() {  # acc_run_case <case-id>
 # ---------------------------------------------------------------------------
 # Optional pruning
 # ---------------------------------------------------------------------------
-# Everything a later reading of a finished case needs.  GLOBS relative to the
-# case directory, epoch-agnostic on purpose (iteration-*): a campaign publishes
-# one directory per topology epoch, and a list naming iteration-0000 would
-# delete every later epoch's evidence.  Read it against the run you are
-# pruning before you set PRUNE=1 -- a name the pipeline has moved on from is
-# the evidence this harness exists to read.
+# Everything a later reading of a finished case needs, as globs relative to
+# the case directory.  A name here is one the pipeline writes: read the list
+# against the run you are pruning before you set PRUNE=1, because a name the
+# pipeline has moved on from is the evidence this harness exists to read.
 ACCEPT_KEEP_GLOBS=(
   'schedule/final/result.json'
-  'schedule/final/claim.json'
   'schedule/final/candidate.smt2'
   'schedule/final/candidate_composition_manifest.json'
   'schedule/final/gaps.json'
   'schedule/final/run-manifest.json'
   'schedule/final/compose.log'
   'schedule/stage_metrics.tsv'
-  'schedule/iteration-*/final/result.json'
-  'schedule/iteration-*/final/claim.json'
-  'schedule/iteration-*/final/candidate.smt2'
-  'schedule/iteration-*/final/candidate_composition_manifest.json'
-  'schedule/iteration-*/final/gaps.json'
-  'schedule/iteration-*/final/compose.log'
   'schedule/iteration-*/iteration_manifest.json'
   'static_scope_map.jsonl'
-  'target_resolved.json'
   'schedule/iteration-*/execution_task_plan.jsonl'
   'schedule/iteration-*/runtime_workflow_schedule_index.json'
   'schedule/iteration-*/sessions/*/*.jsonl'
   'schedule/iteration-*/sessions/*/expressions.json'
-  'schedule/iteration-*/sessions/*/session_manifest.json'
+  'schedule/iteration-*/sessions/*/manifest.json'
   'schedule/iteration-*/session_census.jsonl'
   'schedule/iteration-*/slots.jsonl'
   'schedule/iteration-*/obligation_results.jsonl'
   'schedule/iteration-*/campaign_gaps.jsonl'
   'schedule/iteration-*/obligations-*/obligations.jsonl'
+  'schedule/iteration-*/obligations-*/growth.jsonl'
+  'schedule/iteration-*/obligations-*/exposed_region_plan.jsonl'
   'schedule/iteration-*/obligations-*/tasks.jsonl'
   'schedule/iteration-*/obligations-*/gaps.jsonl'
   'schedule/iteration-*/obligations-*/*/obligation_result.jsonl'
@@ -237,17 +226,14 @@ acc_prune_case() {
       [[ -f "$f" ]] && printf '%s\n' "$f" >>"$keep"
     done
   done
-  find "$dir" -type f \( -name 'reach_query.jsonl' -o -name '*telemetry*' \
-      -o -name 'replay.log' -o -name 'stage_metrics.tsv' \
-      -o -name 'path_flip_query.smt2' -o -name 'branch_queries.jsonl' \
-      -o -name 'exploration_record.jsonl' -o -name 'execution_task_plan.jsonl' \
-      -o -name '*recorded_shared_state*' \) -print >>"$keep" 2>/dev/null
+  find "$dir" -type f \( -name '*telemetry*' -o -name 'replay.log' \
+      -o -name 'stage_metrics.tsv' -o -name 'execution_task_plan.jsonl' \) \
+      -print >>"$keep" 2>/dev/null
   while IFS= read -r -d '' f; do
     grep -qxF "$f" "$keep" || rm -f -- "$f"
   done < <(find "$dir" -type f -print0 2>/dev/null)
   rm -f "$keep"
   find "$dir" -type d -empty -delete 2>/dev/null
-  rm -rf "${dir}-cache" 2>/dev/null
   after=$(acc_dir_mb "$dir")
   acc_log "PRUNE $(basename "$dir"): ${before}M -> ${after}M (cap ${ACCEPT_CASE_CAP_MB}M)"
   (( ${after:-0} > ACCEPT_CASE_CAP_MB )) && acc_log "WARN $(basename "$dir") over cap"
@@ -334,8 +320,7 @@ for c in "${CASE_LIST[@]}"; do
   cat <<CMD
   --- $c
   (d=$REPO/experiments/hadoop/$(acc_experiment_of "$c"); \\
-     export CAUSYNTH_OUTPUT_DIR=$OUT/out/$c CAUSYNTH_CACHE_DIR=$OUT/out/$c-cache \\
-     CAUSYNTH_CUSTOM_JDK_HOME=$IMG; \\
+     export CAUSYNTH_OUTPUT_DIR=$OUT/out/$c CAUSYNTH_CUSTOM_JDK_HOME=$IMG; \\
      bash $ACCEPT_LIB/run.sh \$d "$(acc_case_arg_of "$c")" validate && \\
      bash $ACCEPT_LIB/run.sh \$d "$(acc_case_arg_of "$c")" campaign)
   bash $here/probe.sh $c $(acc_case_dir "$OUT" "$c") $OUT/report/$c

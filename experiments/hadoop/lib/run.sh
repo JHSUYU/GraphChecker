@@ -20,7 +20,6 @@ export CAUSYNTH_TEST_CLASSES_DIR=${module}/target/test-classes
 export CAUSYNTH_CLASSPATH
 CAUSYNTH_CLASSPATH=$(bash "${lib}/classpath.sh" "${case_dir}" "${case_id}")
 export CAUSYNTH_OUTPUT_DIR=${CAUSYNTH_OUTPUT_DIR:-/tmp/graphchecker-${tag}}
-export CAUSYNTH_CACHE_DIR=${CAUSYNTH_CACHE_DIR:-/tmp/graphchecker-${tag}-cache}
 export CAUSYNTH_LOOP_BOUNDS=${loop_bounds}
 export CAUSYNTH_TARGET_SPEC=${target_spec}
 export CAUSYNTH_WORKLOAD_WORK_DIR=${repo}

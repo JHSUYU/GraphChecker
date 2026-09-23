@@ -36,11 +36,9 @@ emit_fixture() {
   emit_bounds="${emit_root}/loop-bounds.jsonl"
   emit_classes="${emit_root}/classes"
   campaign_root="${emit_root}"
-  # The production layout: each epoch composes into its own final/ and the
-  # campaign publishes the last one at ${campaign_root}/final.  The fixture
-  # used to point campaign_final straight at the published directory, which
-  # made the publish a no-op and hid the bug the checks below now pin.
-  campaign_final="${emit_iteration}/final"
+  # The production layout: the one iteration composes straight into
+  # ${campaign_root}/final, which is the path every later reader opens.
+  campaign_final="${campaign_root}/final"
   campaign_stage_metrics="${emit_root}/stage_metrics.tsv"
   composition_manifest="${campaign_final}/candidate_composition_manifest.json"
 
@@ -128,8 +126,7 @@ emit_fixture() {
     >"${emit_iteration}/session_census.jsonl"
   : >"${emit_iteration}/campaign_gaps.jsonl"
   jq -n '{schemaVersion: 1, kind: "CAMPAIGN_ITERATION_MANIFEST",
-    iterationId: "iteration-0000", parentIterationId: "",
-    externalWorkerCount: 1, topologyDelta: {rows: 0, divergences: 0},
+    iterationId: "iteration-0000", externalWorkerCount: 1,
     members: [{role: "TARGET", taskId: "task-target",
                obligationDigests: []}]}' \
     >"${emit_iteration}/iteration_manifest.json"
@@ -191,12 +188,10 @@ jq -e '.evidence.symbolicPropagationComplete == false
   and .telemetryCount >= 2' \
   "${campaign_final}/result.json" >/dev/null \
   || fail "the result lost its propagation provenance"
-# EMIT-1: the epoch's artifacts are published at ${campaign_root}/final, which
-# is the one path every later reader and the harness open.
+# EMIT-1: the artifacts are published at ${campaign_root}/final, which is the
+# one path every later reader and the harness open.
 [[ -s "${campaign_root}/final/result.json" ]] \
-  || fail "an accepted epoch published no ${campaign_root}/final"
-cmp -s "${campaign_final}/result.json" "${campaign_root}/final/result.json" \
-  || fail "the published final is not this epoch's final"
+  || fail "an accepted run published no ${campaign_root}/final"
 
 # DECIDE-1: a campaign answers about one anchor -- the occurrence its case
 # declares and the composer composed -- and the result names it.  Ranking
@@ -291,15 +286,10 @@ jq -e '.gapCount == 0
   || fail "the diagnostic catalog row was not published as telemetry: \
 $(jq -c '[(.gaps+.telemetryGaps)[]|{stage,code,class}]' \
     "${campaign_final}/gaps.json")"
-# EMIT-2: and a WITHHELD epoch publishes too.  campaign_emit leaves this shell
-# with exit 3 on a blocking gap, so the epoch loop's own publish call never
-# ran: lane17897h composed, solved and decided, then published nothing at
-# ${campaign_root}/final and the harness read claim=MISSING for it.
+# EMIT-2: and a WITHHELD run publishes too: campaign_emit leaves this shell
+# with exit 3 on a blocking gap, after result.json and gaps.json are written.
 [[ -s "${campaign_root}/final/result.json" ]] \
-  || fail "a withheld epoch published no ${campaign_root}/final"
-[[ $(jq -r '.claim' "${campaign_root}/final/result.json") \
-    == $(jq -r '.claim' "${campaign_final}/result.json") ]] \
-  || fail "the published final does not carry the withheld epoch's claim"
+  || fail "a withheld run published no ${campaign_root}/final"
 [[ -s "${campaign_root}/final/gaps.json" ]] \
   || fail "the published final lost the gaps that withheld it"
 
@@ -598,26 +588,6 @@ jq -e '.gapCount == 0 and .telemetryCount == 1
   || fail "the exploration stop is not telemetry in gaps.json: \
 $(jq -c '.telemetryGaps' "${campaign_final}/gaps.json")"
 
-# The iteration loop advances on a topology it has just learned, and stops
-# when a wave exposes none.  A divergent bundle is held out of this epoch, so
-# without this the campaign would compose an epoch whose evidence it refused.
-div_dir="${test_tmp}/divergence"
-mkdir -p "${div_dir}/sessions/SESSION.a"
-[[ "$(campaign_topology_divergences "${div_dir}")" == "0" ]] \
-  || fail "an iteration with no session gaps reported a divergence"
-printf '%s\n' \
-  '{"kind":"ADMISSION_GAP","subject":"t","detail":"x"}' \
-  >"${div_dir}/sessions/SESSION.a/gaps.jsonl"
-[[ "$(campaign_topology_divergences "${div_dir}")" == "0" ]] \
-  || fail "an unrelated gap row was counted as a topology divergence"
-printf '%s\n' \
-  '{"kind":"TOPOLOGY_DIVERGENCE","subject":"IXN.1","detail":"unplanned producer"}' \
-  '{"kind":"TOPOLOGY_DIVERGENCE","subject":"IXN.2","detail":"unplanned producer"}' \
-  >>"${div_dir}/sessions/SESSION.a/gaps.jsonl"
-[[ "$(campaign_topology_divergences "${div_dir}")" == "2" ]] \
-  || fail "the topology divergence rows were not counted: \
-$(campaign_topology_divergences "${div_dir}")"
-
 # CONFIG-1: the one workflow-key table answers all four questions about a key.
 config_table_keys=()
 for config_row in "${workflow_config_keys[@]}"; do
@@ -704,19 +674,36 @@ done
 # 47: `region_path_max_world_depth` joined it with the nesting bound: how deep
 # a world a wave cuts from is a rule the exploration ran under, and two runs
 # that nested to different depths did not explore the same space.
-[[ "$(print_normalized_config | wc -l)" -eq 47 ]] \
+# 44: `campaign_max_iterations` left with the epoch loop (one iteration per
+# campaign; growth happens inside EXPLORE's waves), `causynth_cache_dir` with
+# the seed cache, and `causynth_process_dirs`, which no case ever set.
+[[ "$(print_normalized_config | wc -l)" -eq 44 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
+# CONFIG-4: the discovery artifacts are derived from causynth_output_dir and
+# nothing else -- not loadable, not overridable -- so every stage of a run
+# and every peer of a wave reads the same file.  `config` still prints them.
+for derived_key in candidate_graph refined_graph runtime_region_plan \
+    schedule_output_dir analysis_classes_dir causynth_static_scope_map \
+    causynth_region_skeletons; do
+  [[ " ${config_table_keys[*]} " == *" ${derived_key} "* ]] \
+    || fail "${derived_key} is not in the workflow-key table"
+  ! known_config_key "${derived_key}" \
+    || fail "${derived_key} is loadable from a workflow file: it is derived"
+  print_normalized_config | grep "^${derived_key}=" >/dev/null \
+    || fail "config does not print the derived ${derived_key}"
+done
 # CONFIG-3: the region skeletons are ONE path, and every weave takes them
 # from that one key.
-[[ " ${config_table_keys[*]} " == *" causynth_region_skeletons "* ]] \
-  || fail "the region skeletons are not a declared workflow key"
-grep -qF 'causynth_region_skeletons=${causynth_region_skeletons:-${causynth_output_dir}/runtime/skeleton-pass/region_skeletons.jsonl}' \
+grep -qF 'causynth_region_skeletons="${causynth_output_dir}/runtime/skeleton-pass/region_skeletons.jsonl"' \
     "${repo}/run_engine.sh" \
-  || fail "the region skeletons do not default beside the discovery artifacts"
-grep -qF '"-Dcausynth.region.skeletons=${CAUSYNTH_REGION_SKELETONS:-${causynth_region_skeletons}}"' \
+  || fail "the region skeletons are not derived beside the discovery artifacts"
+grep -qF '"-Dcausynth.region.skeletons=${causynth_region_skeletons}"' \
     "${repo}/run_engine.sh" \
   || fail "the weaves are not given the region skeletons key"
+[[ "$(grep -cF -- '-Dcausynth.region.skeletons=' "${repo}/run_engine.sh")" \
+    -eq 1 ]] \
+  || fail "the region skeletons reach the weave by more than one spelling"
 # CONFIG-2: the static scope map is ONE path, and both of its readers take it
 # from that one key.  The workload JVM installs the guard sites the map names
 # and EXPLORE flips at them, so a second derivation of the path is two stages
@@ -735,41 +722,15 @@ grep -qF 'unknown workflow config key' "${unknown_config}.err" \
 grep -qF 'reach_max_inputs' "${unknown_config}.err" \
   || fail "the refusal does not name the key: $(<"${unknown_config}.err")"
 
-[[ " ${config_table_keys[*]} " == *" causynth_static_scope_map "* ]] \
-  || fail "the static scope map is not a declared workflow key"
-grep -qF 'causynth_static_scope_map=${causynth_static_scope_map:-${causynth_output_dir}/static_scope_map.jsonl}' \
+grep -qF 'causynth_static_scope_map="${causynth_output_dir}/static_scope_map.jsonl"' \
     "${repo}/run_engine.sh" \
-  || fail "the static scope map does not default beside the discovery artifacts"
+  || fail "the static scope map is not derived beside the discovery artifacts"
 grep -qF -- '--static-scope-map "${causynth_static_scope_map}"' \
     "${repo}/run_engine.sh" \
   || fail "EXPLORE does not read the static scope map key"
 grep -qF 'CAUSYNTH_STATIC_SCOPE_MAP=${causynth_static_scope_map}' \
     "${repo}/run_engine.sh" \
   || fail "the workload JVM is not given the static scope map key"
-
-# SEED-ARTIFACTS-1: the seed boundary caches every artifact a later stage
-# reads and nothing else.  A cache HIT skips do_analyze, so an artifact left
-# out of these rows is simply absent on the next run -- which is how the
-# static scope map came to be missing while EXPLORE read it as "this epoch
-# published no map".  And three files whose content nothing read are no
-# longer written at all.
-causynth_output_dir="${test_tmp}/seed-rows"
-candidate_graph="${causynth_output_dir}/candidate_dataflow_edges.jsonl.gz"
-runtime_region_plan="${causynth_output_dir}/runtime/concolic_region_plan.jsonl"
-refined_graph="${causynth_output_dir}/runtime/refined_dataflow_edges.jsonl.gz"
-causynth_static_scope_map="${causynth_output_dir}/static_scope_map.jsonl"
-seed_rows=$(campaign_seed_artifact_rows)
-[[ "${seed_rows}" == *"staticScopeMap"$'\t'"${causynth_static_scope_map}"* ]] \
-  || fail "the seed cache does not carry the static scope map: ${seed_rows}"
-for absent in targetResolved communicationCallSites retainedLoops; do
-  [[ "${seed_rows}" != *"${absent}"* ]] \
-    || fail "the seed cache still carries ${absent}, whose content nothing \
-reads: ${seed_rows}"
-done
-grep -qF 'outputDir.resolve("target_resolved.json")' \
-    "${repo}/src/main/java/edu/uva/liftlab/graphchecker/causynth/CausynthArtifactWriter.java" \
-  && fail "ANALYZE still writes target_resolved.json" || true
-reset_config
 
 # FREEZE-1: one dispatch decides how each kind of frozen input is digested.
 digest_root="${test_tmp}/kind-digest"
@@ -812,144 +773,48 @@ for positive_key in "" abc 0 -1 "3 4"; do
     && fail "an invalid count was accepted: '${positive_key}'"
 done
 
-# EPOCH-1: two divergence causes, two epochs (INTERACTION-ID section 8).
-# A path that reached a region the workload never retained names that region,
-# and the next epoch has to INSTRUMENT it before it replays or it diverges
-# identically.  Every other divergence is a pairing or a context the catalog
-# did not carry: a new epoch over the same retained set.
-grow_dir="${test_tmp}/epoch-growth"
-mkdir -p "${grow_dir}/sessions/SESSION.a"
-printf '%s\n' \
-  '{"kind":"TOPOLOGY_DIVERGENCE","subject":"IXN.1","detail":"a replaced pairing: the catalog names another producer"}' \
-  '{"kind":"TOPOLOGY_DIVERGENCE","subject":"REGION.k","detail":"retained set must grow: REGION.k (entry hooks only)"}' \
-  '{"kind":"TOPOLOGY_DIVERGENCE","subject":"REGION.k","detail":"retained set must grow: REGION.k (entry hooks only)"}' \
-  '{"kind":"ADMISSION_GAP","subject":"x","detail":"retained set must grow: REGION.ignored"}' \
-  >"${grow_dir}/sessions/SESSION.a/gaps.jsonl"
-[[ "$(campaign_topology_divergences "${grow_dir}")" == "3" ]] \
-  || fail "the divergence rows were not counted: \
-$(campaign_topology_divergences "${grow_dir}")"
-[[ "$(campaign_retained_growth "${grow_dir}")" == "REGION.k" ]] \
-  || fail "the retained-set growth is not read off the divergence: \
-$(campaign_retained_growth "${grow_dir}")"
-
-# A divergence that names no growth grows nothing: the next epoch plans the
-# same retained set.
-pair_dir="${test_tmp}/epoch-pairing"
-mkdir -p "${pair_dir}/sessions/SESSION.a"
-printf '%s\n' \
-  '{"kind":"TOPOLOGY_DIVERGENCE","subject":"IXN.9","detail":"a replaced pairing"}' \
-  >"${pair_dir}/sessions/SESSION.a/gaps.jsonl"
-[[ "$(campaign_topology_divergences "${pair_dir}")" == "1" ]] \
-  || fail "a pairing divergence was not counted"
-[[ -z "$(campaign_retained_growth "${pair_dir}")" ]] \
-  || fail "a pairing divergence grew the retained set: \
-$(campaign_retained_growth "${pair_dir}")"
-
-# And an epoch that diverged not at all grows nothing either.
-[[ -z "$(campaign_retained_growth "${test_tmp}/epoch-absent")" ]] \
-  || fail "an iteration with no sessions grew the retained set"
-
-# EPOCH-2: the explorer states growth on the wave it was planning, not on a
-# session, and only an admitted replay's statement (BLOCKING) is owed.
-wave_dir="${test_tmp}/epoch-wave-growth"
-mkdir -p "${wave_dir}/obligations-0001"
-printf '%s\n' \
-  '{"kind":"TOPOLOGY_DIVERGENCE","cls":"BLOCKING","detail":"retained set must grow: REGION.w"}' \
-  '{"kind":"TOPOLOGY_DIVERGENCE","cls":"DIAGNOSTIC","detail":"retained set must grow: REGION.u (not admitted)"}' \
-  >"${wave_dir}/obligations-0001/gaps.jsonl"
-[[ "$(campaign_retained_growth "${wave_dir}")" == "REGION.w" ]] \
-  || fail "the explorer's growth row was not read, or an unadmitted one was: \
-$(campaign_retained_growth "${wave_dir}")"
-# The retained set only ever grows across epochs.
-[[ "$(campaign_union_regions "REGION.b,REGION.a" "REGION.a,REGION.c")" \
-    == "REGION.a,REGION.b,REGION.c" ]] \
-  || fail "two retained sets were not merged into one"
-[[ "$(campaign_union_regions "" "")" == "" ]] \
-  || fail "two empty retained sets merged into something"
-
-# EPOCH-3: an epoch re-plans the SAME recording, so it can only grow to a
-# region some task of that recording's plan names; PLAN refuses any other
-# (RETAINED_SET_CANNOT_GROW), and the loop must not ask it to.
-plan_dir="${test_tmp}/epoch-plannable"
-mkdir -p "${plan_dir}"
-printf '%s\n' '{"regionId":"REGION.a"}' '{"regionId":"REGION.b"}' \
-  '{"regionId":"REGION.a"}' >"${plan_dir}/execution_task_plan.jsonl"
-[[ "$(campaign_unplannable_regions "${plan_dir}" "REGION.a,REGION.z")" \
-    == "REGION.z" ]] \
-  || fail "a region no task names was not found unplannable: \
-$(campaign_unplannable_regions "${plan_dir}" "REGION.a,REGION.z")"
-[[ -z "$(campaign_unplannable_regions "${plan_dir}" "REGION.b")" ]] \
-  || fail "a planned region was found unplannable"
-[[ -z "$(campaign_unplannable_regions "${plan_dir}" "")" ]] \
-  || fail "no growth named an unplannable region"
-
-# A divergent epoch names the replay the next one is seeded from, and the
-# harness reads that name off the row rather than re-deriving which replay
-# diverged.  Both helpers answer empty when the topology closed, which is what
-# makes the loop return instead of planning an epoch from nothing.
-seed_dir="${test_tmp}/seeding/iteration-0000"
-mkdir -p "${seed_dir}/sessions/SESSION.diverged"
-[[ -z "$(campaign_seeding_replay "${seed_dir}")" ]] \
-  || fail "a closed topology seeds no epoch"
-printf '%s\n' \
-  '{"sessionId":"SESSION.diverged","kind":"TOPOLOGY_DIVERGENCE","cls":"DIAGNOSTIC","subject":"IXN.1","detail":"unplanned producer","seedsNextEpoch":true}' \
-  '{"sessionId":"SESSION.diverged","kind":"ADMISSION_GAP","cls":"BLOCKING","subject":"OCC.x","detail":"never observed"}' \
-  >"${seed_dir}/sessions/SESSION.diverged/gaps.jsonl"
-[[ "$(campaign_seeding_replay "${seed_dir}")" == "SESSION.diverged" ]] \
-  || fail "the seeding session is not read off the divergent row: \
-$(campaign_seeding_replay "${seed_dir}")"
-
-# EPOCH-2: the second epoch's PLAN reaches the scheduler.
-#
-# It used to die before it started.  campaign_seeding_results handed
-# do_schedule a session DIRECTORY as --summaries, do_schedule ran require_file
-# on it, and [[ -f <dir> ]] is false -- so every epoch after the first exited
-# at that line.  The option it fed is gone with it, and so is the option: the
-# scheduler no longer declares --summaries at all, because its only consumer
-# was ClosureMode.ACTIVE_OBSERVED and no caller ever asked for that scope.
-# What a second epoch actually varies is the retained set, through
-# --retain-regions.
-epoch2_dir="${test_tmp}/epoch2"
-mkdir -p "${epoch2_dir}/out"
-: >"${epoch2_dir}/region_plan.jsonl"
-: >"${epoch2_dir}/refined.jsonl.gz"
-: >"${epoch2_dir}/candidate.jsonl.gz"
-: >"${epoch2_dir}/static_scope_map.jsonl"
+# PLAN-2: what PLAN hands the scheduler.  One recording, one plan: there is
+# no retained set to carry from an earlier epoch and no scope to re-derive
+# from summaries, so neither option is passed.
+plan2_dir="${test_tmp}/plan2"
+mkdir -p "${plan2_dir}/out"
+: >"${plan2_dir}/region_plan.jsonl"
+: >"${plan2_dir}/candidate.jsonl.gz"
+: >"${plan2_dir}/static_scope_map.jsonl"
 scheduler_args=""
 run_java_main() { scheduler_args="$*"; }
-runtime_region_plan="${epoch2_dir}/region_plan.jsonl"
-refined_graph="${epoch2_dir}/refined.jsonl.gz"
-candidate_graph="${epoch2_dir}/candidate.jsonl.gz"
-causynth_static_scope_map="${epoch2_dir}/static_scope_map.jsonl"
-schedule_output_dir="${epoch2_dir}/out"
+runtime_region_plan="${plan2_dir}/region_plan.jsonl"
+candidate_graph="${plan2_dir}/candidate.jsonl.gz"
+causynth_static_scope_map="${plan2_dir}/static_scope_map.jsonl"
+schedule_output_dir="${plan2_dir}/out"
 schedule_max_jobs=8
 schedule_closure_mode=candidate
 causynth_symbolic_inputs=""
 declared_target_occurrence=""
-schedule_retain_regions="REGION.grown"
 do_schedule
 unset -f run_java_main
-[[ "${scheduler_args}" == *"--retain-regions REGION.grown"* ]] \
-  || fail "the second epoch did not carry its grown retained set: \
-${scheduler_args}"
-[[ "${scheduler_args}" != *"--summaries"* ]] \
-  || fail "PLAN still passes --summaries, which no stage in this pipeline \
-writes: ${scheduler_args}"
+for retired_option in --retain-regions --summaries --refined-graph; do
+  [[ "${scheduler_args}" != *"${retired_option}"* ]] \
+    || fail "PLAN still passes ${retired_option}: ${scheduler_args}"
+done
 # GUARD-1: one guard authority.  The scheduler reads the fatal arm of the
 # declared target branch off static_scope_map's TARGET_SITE row, so PLAN has
 # to hand it the same file EXPLORE and the workload JVM are handed.
-[[ "${scheduler_args}" == *"--static-scope-map ${epoch2_dir}/static_scope_map.jsonl"* ]] \
+[[ "${scheduler_args}" == *"--static-scope-map ${plan2_dir}/static_scope_map.jsonl"* ]] \
   || fail "PLAN did not hand the scheduler the static scope map: \
 ${scheduler_args}"
 # GRAPH-1: PLAN reads the STATIC candidate graph and no runtime-refined one.
-[[ "${scheduler_args}" == *"--candidate-graph ${epoch2_dir}/candidate.jsonl.gz"* ]] \
+[[ "${scheduler_args}" == *"--candidate-graph ${plan2_dir}/candidate.jsonl.gz"* ]] \
   || fail "PLAN did not hand the scheduler the candidate graph: \
 ${scheduler_args}"
-[[ "${scheduler_args}" != *"--refined-graph"* ]] \
-  || fail "PLAN still passes the runtime-refined graph to the scheduler: \
-${scheduler_args}"
-[[ "$(type -t campaign_seeding_results)" != function ]] \
-  || fail "campaign_seeding_results survived the option it fed"
+for retired_function in campaign_seeding_results campaign_seeding_replay \
+    campaign_retained_growth campaign_unplannable_regions \
+    campaign_union_regions campaign_topology_divergences \
+    campaign_publish_pending_refinement campaign_publish_epoch_final \
+    campaign_restore_seed_cache campaign_store_seed_cache; do
+  [[ "$(type -t "${retired_function}")" != function ]] \
+    || fail "${retired_function} survived the epoch loop"
+done
 
 # STOP-1: `campaign_stop_after` is a declared workflow key, so it answers the
 # four table questions, resolves from a config file, and resolves from
@@ -987,7 +852,6 @@ stop_after_config() {
   project_classes_dir="${stop_after_dir}"
   project_classpath="${stop_after_dir}"
   causynth_output_dir="${stop_after_dir}/out"
-  causynth_cache_dir="${stop_after_dir}/cache"
   causynth_target_spec="${stop_after_dir}/target.yaml"
   custom_jdk_home="${stop_after_dir}/jdk"
   z3_bin=z3
@@ -1003,7 +867,6 @@ stop_after_config() {
   replay_timeout_s=2400
   schedule_max_jobs=1
   concolic_worker_count=1
-  campaign_max_iterations=1
   region_path_max_waves=1
   compose_max_valuations=1
   region_path_max_paths_per_region=""
@@ -1031,47 +894,42 @@ grep -q 'campaign_stop_after must be empty or IMPORT: EXPLORE' \
   || fail "the refusal does not name the key and the value it refused: \
 $(cat "${stop_after_dir}/validate.err")"
 
-# STOP-3: what the key does to the campaign.  IMPORT returns 0 right after the
-# IMPORT stage of epoch 0 -- EXPLORE and everything after it never run -- and
-# an empty value proceeds to EXPLORE and on through EMIT.  The stages are
-# driven through a campaign_stage stub, so this pins the control flow of
+# STOP-3: what the key does to the campaign.  IMPORT returns 0 right after
+# the IMPORT stage -- EXPLORE and everything after it never run -- and an
+# empty value proceeds to EXPLORE and on through EMIT, once: a campaign is
+# one iteration, and every stage is named once in its metrics.  The stages
+# are driven through a campaign_stage stub, so this pins the control flow of
 # do_campaign itself rather than any stage's work.
-stop_after_epoch() {
+stop_after_campaign() {
   local root=$1
   local labels=$2
   (
     campaign_stage() { printf '%s\n' "$1" >>"${labels}"; }
     campaign_publish_iteration_manifest() { :; }
-    campaign_publish_epoch_final() { :; }
-    campaign_topology_divergences() { printf '0\n'; }
-    campaign_retained_growth() { printf '\n'; }
-    campaign_seeding_replay() { printf '\n'; }
     schedule_output_dir="${root}"
     campaign_setup_command=""
-    campaign_max_iterations=1
     do_campaign >/dev/null
   )
 }
 stop_after_config IMPORT
 : >"${stop_after_dir}/labels-import.tsv"
-stop_after_epoch "${stop_after_dir}/campaign-import" \
+stop_after_campaign "${stop_after_dir}/campaign-import" \
   "${stop_after_dir}/labels-import.tsv" \
   || fail "a campaign stopping after IMPORT did not exit 0"
-[[ "$(tail -n 1 "${stop_after_dir}/labels-import.tsv")" == "IMPORT[0]" ]] \
-  || fail "the last stage of a stopped campaign is not IMPORT[0]: \
+[[ "$(tail -n 1 "${stop_after_dir}/labels-import.tsv")" == "IMPORT" ]] \
+  || fail "the last stage of a stopped campaign is not IMPORT: \
 $(tr '\n' ' ' <"${stop_after_dir}/labels-import.tsv")"
 ! grep -q 'EXPLORE' "${stop_after_dir}/labels-import.tsv" \
   || fail "a campaign stopping after IMPORT still ran EXPLORE"
 stop_after_config ""
 : >"${stop_after_dir}/labels-full.tsv"
-stop_after_epoch "${stop_after_dir}/campaign-full" \
+stop_after_campaign "${stop_after_dir}/campaign-full" \
   "${stop_after_dir}/labels-full.tsv" \
   || fail "a campaign with campaign_stop_after unset did not exit 0"
-grep -q 'EXPLORE\[0\]' "${stop_after_dir}/labels-full.tsv" \
-  || fail "an unset campaign_stop_after did not proceed to EXPLORE: \
-$(tr '\n' ' ' <"${stop_after_dir}/labels-full.tsv")"
-[[ "$(tail -n 1 "${stop_after_dir}/labels-full.tsv")" == "EMIT[0]" ]] \
-  || fail "an unset campaign_stop_after did not run through EMIT: \
+[[ "$(tr '\n' ' ' <"${stop_after_dir}/labels-full.tsv")" == \
+    "PREFLIGHT FREEZE_TOOL FREEZE SEED PLAN INSTRUMENT REPLAY IMPORT EXPLORE \
+COMPOSE SOLVE DECIDE EMIT " ]] \
+  || fail "a full campaign is not the one iteration's stages, each once: \
 $(tr '\n' ' ' <"${stop_after_dir}/labels-full.tsv")"
 
 # IMPORT-GATE: the row contract stops the campaign at IMPORT, or records.
@@ -2059,5 +1917,294 @@ grep -q 'CAUSYNTH_LOCAL_SCRATCH=${campaign_local_scratch_root:+' \
   || fail "the campaign does not hand the adapter a per-worker scratch path"
 grep -q 'CAUSYNTH_LOCAL_SCRATCH=%q' "${repo}/run_engine.sh" \
   || fail "the peers are not handed the run's local scratch root"
+
+# GROW-1: the growth step (DESIGN4 SS3.3b).  ExploreMain named a region an
+# obligation's replay reached without its hooks; the step plans it, weaves
+# it and re-runs that obligation's replay in its own worker directory, and
+# the corpus ends up holding the re-run's session in place of the exposing
+# one.  The planner JVM and the weave are stubbed (run_java_main and
+# campaign_instrument); the replay is a script that publishes a session, so
+# everything between -- the plan appends reaching the workers through their
+# hard links, the withdrawal, the re-run and the verdict rewrite -- is the
+# production code.
+grow_dir="${test_tmp}/grow/iteration-0000"
+grow_wave0="${grow_dir}/obligations-0000"
+grow_wave1="${grow_dir}/obligations-0001"
+grow_sessions="${grow_dir}/sessions"
+grow_plan="${grow_dir}/execution_task_plan.jsonl"
+grow_seed_plan="${grow_dir}/seed-replay/execution_task_plan.jsonl"
+grow_results="${grow_dir}/obligation_results.jsonl"
+mkdir -p "${grow_wave0}/OB.x" "${grow_wave1}" "${grow_dir}/seed-replay" \
+  "${grow_dir}/workers/task-a" "${grow_sessions}/SESSION.exposing" \
+  "${grow_sessions}/SESSION.other"
+printf '{"taskId":"TASK.1","regionId":"REGION.a"}\n' >"${grow_plan}"
+printf '{"taskId":"TASK.1","regionId":"REGION.a"}\n' >"${grow_seed_plan}"
+# The links PLAN and the obligation worker make: a member's plan is the
+# iteration plan, an obligation worker's is the seed plan.
+ln -f "${grow_plan}" "${grow_dir}/workers/task-a/execution_task_plan.jsonl"
+ln -f "${grow_seed_plan}" "${grow_wave0}/OB.x/execution_task_plan.jsonl"
+# What the exposing replay left in its worker and in the corpus.
+printf '{"taskId":"TASK.1"}\n' >"${grow_wave0}/OB.x/focused_task.jsonl"
+printf 'the exposing replay\n' >"${grow_wave0}/OB.x/replay.log"
+printf 'lift12\n' >"${grow_wave0}/OB.x/host.txt"
+jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: "OB.x",
+  verdict: "ADMITTED", sessionId: "SESSION.exposing", detail: ""}' \
+  >"${grow_wave0}/OB.x/obligation_result.jsonl"
+jq -n -c '{schemaVersion: 1, kind: "SESSION_MANIFEST",
+  sessionId: "SESSION.exposing", role: "FOCUSED", obligationIds: ["OB.x"]}' \
+  >"${grow_sessions}/SESSION.exposing/manifest.json"
+jq -n -c '{schemaVersion: 1, kind: "SESSION_MANIFEST",
+  sessionId: "SESSION.other", role: "FOCUSED", obligationIds: ["OB.y"]}' \
+  >"${grow_sessions}/SESSION.other/manifest.json"
+printf '%s\n' \
+  '{"schemaVersion":1,"kind":"OBLIGATION_RESULT","obligationId":"OB.y","verdict":"ADMITTED","sessionId":"SESSION.other","detail":""}' \
+  '{"schemaVersion":1,"kind":"OBLIGATION_RESULT","obligationId":"OB.x","verdict":"ADMITTED","sessionId":"SESSION.exposing","detail":""}' \
+  >"${grow_results}"
+# The wave planner's statement: one exposure, and the frontier summary that
+# is always there.
+printf '%s\n' \
+  '{"kind":"EXPOSED_REGION","regionId":"REGION.grown","node":"nn0","occurrence":"REGION.grown#1","sessionId":"SESSION.exposing","obligationId":"OB.x"}' \
+  '{"kind":"FRONTIER","open":0}' \
+  >"${grow_wave1}/growth.jsonl"
+[[ "$(campaign_exposures "${grow_wave1}/growth.jsonl")" \
+    == "OB.x	REGION.grown	SESSION.exposing" ]] \
+  || fail "the exposures are not read off growth.jsonl: \
+$(campaign_exposures "${grow_wave1}/growth.jsonl")"
+# The re-run: it must be handed the grown plan and task, and it publishes a
+# session naming OB.x and the verdict row RowRuntime writes.
+cat >"${grow_dir}/replay.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+grep -q '"REGION.grown"' "${CAUSYNTH_CONCOLIC_TASK_PLAN}" \
+  || { echo "the re-run's plan carries no grown row" >&2; exit 9; }
+[[ "${CAUSYNTH_CONCOLIC_TASK_ID}" == *TASK.grown* ]] \
+  || { echo "the re-run's task ids omit the grown task" >&2; exit 8; }
+[[ -f "${CAUSYNTH_CONCOLIC_CLASSES}/woven" ]] \
+  || { echo "the re-run does not stand on the grown tree" >&2; exit 7; }
+mkdir -p "${CAUSYNTH_CONCOLIC_SESSIONS}/SESSION.regrown"
+jq -n -c '{schemaVersion: 1, kind: "SESSION_MANIFEST",
+  sessionId: "SESSION.regrown", role: "FOCUSED", obligationIds: ["OB.x"]}' \
+  >"${CAUSYNTH_CONCOLIC_SESSIONS}/SESSION.regrown/manifest.json"
+jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: "OB.x",
+  verdict: "NOT_ADMITTED", sessionId: "SESSION.regrown",
+  detail: "the grown region refused the flip"}' \
+  >"${CAUSYNTH_CONCOLIC_WORKER_DIR}/obligation_result.jsonl"
+EOF
+chmod +x "${grow_dir}/replay.sh"
+reset_config
+concolic_replay_command="${grow_dir}/replay.sh"
+replay_timeout_s=60
+schedule_max_jobs=1
+trace_test=T
+causynth_static_scope_map=""
+custom_jdk_home=""
+workload_work_dir="${grow_dir}"
+(
+  run_java_main() {
+    [[ "$1" == edu.uva.liftlab.graphchecker.plan.ExposedRegionPlanMain ]] \
+      || fail "GROW ran a JVM other than the exposed-region planner: $*"
+    local args=" $* " output
+    [[ "${args}" == *" --iteration ${grow_dir} "* \
+        && "${args}" == *" --growth ${grow_wave1}/growth.jsonl "* ]] \
+      || fail "the exposed-region planner was not handed the iteration and \
+the wave's growth rows: $*"
+    output=${args##* --output }
+    output=${output%% *}
+    printf '{"taskId":"TASK.grown","regionId":"REGION.grown","admissionBasis":"EXPOSED_BY"}\n' \
+      >"${output}"
+  }
+  campaign_instrument() {
+    [[ "$1" == "${grow_dir}" ]] || fail "the weave was given $1"
+    grep -q TASK.grown "${grow_plan}" \
+      || fail "the weave ran before the grown rows reached the iteration plan"
+    mkdir -p "${grow_dir}/instrumented-classes"
+    : >"${grow_dir}/instrumented-classes/woven"
+  }
+  campaign_grow "${grow_dir}" "${grow_wave1}" \
+    "${grow_dir}/instrumented-classes" "${grow_sessions}" "${grow_seed_plan}" \
+    "${grow_results}"
+) >"${grow_dir}/grow.log" 2>&1 \
+  || fail "the growth step did not finish: $(cat "${grow_dir}/grow.log")"
+# Both plans carry the row, and so does every worker's link of them.
+grep -q TASK.grown "${grow_dir}/workers/task-a/execution_task_plan.jsonl" \
+  || fail "the member worker's plan did not see the grown row"
+grep -q TASK.grown "${grow_wave0}/OB.x/execution_task_plan.jsonl" \
+  || fail "the obligation worker's plan did not see the grown row"
+[[ -s "${grow_wave1}/exposed_region_plan.jsonl" ]] \
+  || fail "the grown rows are not kept beside the wave that grew them"
+# The exposing session left the corpus and is kept under its worker; the
+# re-run's session is in the corpus; another obligation's session is where
+# it was.
+[[ ! -e "${grow_sessions}/SESSION.exposing" ]] \
+  || fail "the exposing session is still in the corpus"
+[[ -f "${grow_wave0}/OB.x/before-obligations-0001/sessions/SESSION.exposing/manifest.json" ]] \
+  || fail "the exposing session is not kept under the worker: \
+$(find "${grow_wave0}" | LC_ALL=C sort)"
+[[ -f "${grow_sessions}/SESSION.regrown/manifest.json" ]] \
+  || fail "the re-run's session did not reach the corpus"
+[[ -f "${grow_sessions}/SESSION.other/manifest.json" ]] \
+  || fail "another obligation's session was withdrawn with the exposing one"
+# The exposing replay's log and verdict are aside; the re-run's are the
+# worker's, and the re-run ran on the head.
+[[ "$(cat "${grow_wave0}/OB.x/before-obligations-0001/replay.log")" \
+    == "the exposing replay" ]] \
+  || fail "the exposing replay's log was not kept aside"
+[[ "$(jq -r '.verdict' "${grow_wave0}/OB.x/obligation_result.jsonl")" \
+    == NOT_ADMITTED ]] \
+  || fail "the worker's verdict row is not the re-run's: \
+$(cat "${grow_wave0}/OB.x/obligation_result.jsonl")"
+[[ "$(cat "${grow_wave0}/OB.x/host.txt")" == localhost ]] \
+  || fail "the re-run did not record that it ran on the head"
+# The results file: OB.y untouched, OB.x replaced, each once.
+jq -e -s 'length == 2
+  and ([.[] | select(.obligationId == "OB.x")] | length == 1
+       and .[0].verdict == "NOT_ADMITTED"
+       and .[0].sessionId == "SESSION.regrown")
+  and ([.[] | select(.obligationId == "OB.y")] | length == 1)' \
+  "${grow_results}" >/dev/null \
+  || fail "the re-run's verdict did not replace the exposing one, once: \
+$(cat "${grow_results}")"
+grep -q 'grown by REGION.grown' "${grow_dir}/grow.log" \
+  || fail "the step did not say what grew: $(cat "${grow_dir}/grow.log")"
+grep -q 'OB.x: re-run under the grown tree, verdict=NOT_ADMITTED' \
+    "${grow_dir}/grow.log" \
+  || fail "the step did not say what the re-run decided"
+# An exposure that names no obligation is the seed's, and the seed is not
+# re-run: refused by name before any plan is touched.
+printf '%s\n' \
+  '{"kind":"EXPOSED_REGION","regionId":"REGION.seed","node":"nn0","occurrence":"REGION.seed#1","sessionId":"SESSION.seed","obligationId":""}' \
+  >"${grow_wave1}/growth.jsonl"
+(
+  run_java_main() { fail "the planner ran on an exposure GROW must refuse"; }
+  campaign_grow "${grow_dir}" "${grow_wave1}" \
+    "${grow_dir}/instrumented-classes" "${grow_sessions}" "${grow_seed_plan}" \
+    "${grow_results}"
+) >/dev/null 2>"${grow_dir}/refuse.log" \
+  && fail "an exposure with no obligation was grown into"
+grep -q 'names no obligation' "${grow_dir}/refuse.log" \
+  || fail "the refusal does not say why: $(cat "${grow_dir}/refuse.log")"
+reset_config
+
+# EXPLORE-3: the wave loop around the step.  The planner is stubbed to say
+# what each wave proposes and exposes, the pool to answer each obligation,
+# and the step and the gate to record that they ran; the loop's own order
+# and its fixed point are the production code.  Wave 0 proposes one
+# obligation and exposes nothing; wave 1 proposes nothing and exposes one
+# region; wave 2 proposes and exposes nothing, which is the fixed point.
+loop_dir="${test_tmp}/explore-loop/iteration-0000"
+mkdir -p "${loop_dir}/sessions" "${loop_dir}/seed-replay"
+: >"${loop_dir}/seed-replay/execution_task_plan.jsonl"
+explore_loop_planner() {
+  local wave="" out=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --wave) wave=$2; shift 2 ;;
+      --output-dir) out=$2; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  : >"${out}/obligations.jsonl"
+  printf '{"kind":"FRONTIER","open":0}\n' >"${out}/growth.jsonl"
+  case "${wave}" in
+    0) printf '{"obligationId":"OB.a"}\n' >"${out}/obligations.jsonl" ;;
+    1) printf '%s\n' \
+        '{"kind":"EXPOSED_REGION","regionId":"REGION.g","node":"nn0","occurrence":"REGION.g#1","sessionId":"SESSION.a","obligationId":"OB.a"}' \
+        >>"${out}/growth.jsonl" ;;
+  esac
+}
+reset_config
+concolic_worker_count=1
+region_path_max_waves=12
+causynth_static_scope_map=""
+causynth_root_domains=""
+declared_target_occurrence=""
+(
+  run_java_main() { explore_loop_planner "$@"; }
+  campaign_dispatch_wave() {
+    local wave_dir=$1
+    shift 5
+    printf '%s\n' "$*" >>"${loop_dir}/dispatched.txt"
+    local job
+    for job in "$@"; do
+      jq -n -c --arg id "${job}" '{schemaVersion: 1,
+        kind: "OBLIGATION_RESULT", obligationId: $id, verdict: "ADMITTED",
+        sessionId: "SESSION.a", detail: ""}' \
+        >"${wave_dir}/${job}/obligation_result.jsonl"
+    done
+  }
+  campaign_grow() { printf '%s\n' "$(basename "$2")" >>"${loop_dir}/grown.txt"; }
+  campaign_import_wave_gate() {
+    printf '%s\n' "$(basename "$3")" >>"${loop_dir}/gated.txt"
+  }
+  campaign_explore "${loop_dir}" iteration-0000
+) >"${loop_dir}/explore.log" 2>&1 \
+  || fail "the wave loop did not finish: $(cat "${loop_dir}/explore.log")"
+[[ "$(cat "${loop_dir}/dispatched.txt")" == "OB.a" ]] \
+  || fail "the pool did not run exactly wave 0's obligation: \
+$(cat "${loop_dir}/dispatched.txt")"
+[[ "$(cat "${loop_dir}/grown.txt")" == "obligations-0001" ]] \
+  || fail "the growth step did not run exactly once, on wave 1: \
+$(cat "${loop_dir}/grown.txt")"
+[[ "$(tr '\n' ' ' <"${loop_dir}/gated.txt")" \
+    == "obligations-0000 obligations-0001 " ]] \
+  || fail "the gate did not run once per wave that did work: \
+$(tr '\n' ' ' <"${loop_dir}/gated.txt")"
+[[ -d "${loop_dir}/obligations-0002" && ! -e "${loop_dir}/obligations-0003" ]] \
+  || fail "the loop did not stop at the first wave with nothing open and \
+nothing exposed"
+grep -q 'wave 2: no obligation open and no region exposed' \
+    "${loop_dir}/explore.log" \
+  || fail "the fixed point is not stated: $(cat "${loop_dir}/explore.log")"
+[[ "$(jq -r '.obligationId' "${loop_dir}/obligation_results.jsonl")" == OB.a ]] \
+  || fail "the wave's verdict was not collected"
+[[ ! -e "${loop_dir}/campaign_gaps.jsonl" ]] \
+  || fail "a loop that reached its fixed point wrote a stop row"
+# The wave bound: an exposure still owed when region_path_max_waves is
+# reached is stated, as a gap row and in the log, and the loop stops.
+bound_loop="${test_tmp}/explore-bound/iteration-0000"
+mkdir -p "${bound_loop}/sessions" "${bound_loop}/seed-replay"
+: >"${bound_loop}/seed-replay/execution_task_plan.jsonl"
+region_path_max_waves=1
+(
+  run_java_main() { explore_loop_planner "$@"; }
+  campaign_dispatch_wave() {
+    local wave_dir=$1
+    shift 5
+    local job
+    for job in "$@"; do
+      jq -n -c --arg id "${job}" '{schemaVersion: 1,
+        kind: "OBLIGATION_RESULT", obligationId: $id, verdict: "ADMITTED",
+        sessionId: "SESSION.a", detail: ""}' \
+        >"${wave_dir}/${job}/obligation_result.jsonl"
+    done
+  }
+  campaign_grow() { fail "the growth step ran past the wave bound"; }
+  campaign_import_wave_gate() { :; }
+  campaign_explore "${bound_loop}" iteration-0000
+) >"${bound_loop}/explore.log" 2>&1 \
+  || fail "the bounded wave loop did not finish: \
+$(cat "${bound_loop}/explore.log")"
+jq -e 'select(.subject == "REGION_PATH_WAVE_BUDGET_REACHED")
+  | .detail | test("region_path_max_waves=1") and test("1 region exposure")' \
+  "${bound_loop}/campaign_gaps.jsonl" >/dev/null \
+  || fail "the wave bound is not stated as a gap row naming the exposure: \
+$(cat "${bound_loop}/campaign_gaps.jsonl")"
+grep -q 'region_path_max_waves=1' "${bound_loop}/explore.log" \
+  || fail "the wave bound is not stated in the campaign log"
+# And a planner that states no growth file is a planner that did not run
+# to completion: refused by name, never read as "nothing exposed".
+nogrowth_loop="${test_tmp}/explore-nogrowth/iteration-0000"
+mkdir -p "${nogrowth_loop}/sessions" "${nogrowth_loop}/seed-replay"
+: >"${nogrowth_loop}/seed-replay/execution_task_plan.jsonl"
+region_path_max_waves=12
+(
+  run_java_main() { :; }
+  campaign_explore "${nogrowth_loop}" iteration-0000
+) >/dev/null 2>"${nogrowth_loop}/explore.err" \
+  && fail "a wave with no growth.jsonl was read as nothing exposed"
+grep -q 'wave growth rows' "${nogrowth_loop}/explore.err" \
+  || fail "the missing growth file is not named: \
+$(cat "${nogrowth_loop}/explore.err")"
+reset_config
 
 echo "run_engine campaign helper tests passed"
