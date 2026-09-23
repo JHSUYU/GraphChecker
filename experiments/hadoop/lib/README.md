@@ -34,9 +34,12 @@ The Hadoop side of a case calls the GraphChecker Hadoop shim
 facade.  A workload registers every node through
 `org.apache.hadoop.hdfs.server.datanode.CausynthCluster` before any traffic,
 and opens the recorded window with it.  Daemons are not suppressed: the
-schedule prefix reproduces them.  Two more rules keep the world the window
-starts from the same in every run, because the prefix orders only the window
-itself -- five, in fact:
+schedule reproduces them -- before a replay's cut event by event, and after
+it in their timeouts, so a daemon turn the recording took after the
+workload's own request is not taken before it just because the replay runs
+many times slower than the recording did.  More rules keep the world the
+window starts from the same in every run, because the schedule orders only
+the window itself:
 
 - the cluster's configuration goes through `CausynthCluster.configure`, so
   nothing set up before the window expires on the wall clock (the recording

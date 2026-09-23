@@ -1,0 +1,79 @@
+package edu.uva.liftlab.graphchecker.explore;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
+
+import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.RowCodec;
+import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
+import edu.uva.liftlab.graphchecker.contract.SessionDir;
+import edu.uva.liftlab.graphchecker.contract.SessionReader;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
+
+/**
+ * The schedule a focused replay is handed: the discovering session's order,
+ * cut at the target -- the prefix before the cut, and the rest after it,
+ * whose timeouts still hold.
+ */
+public class SchedulePrefixTest {
+    @Rule
+    public final TemporaryFolder folder = new TemporaryFolder();
+
+    @Test
+    public void theCutSplitsTheOrderIntoThePrefixAndTheRest()
+            throws Exception {
+        Path iteration = folder.newFolder("iteration").toPath();
+        SessionDir session = SessionDir.of(iteration, "s1");
+        Files.createDirectories(session.schedule().getParent());
+        List<JsonObject> rows = new ArrayList<JsonObject>();
+        rows.add(row(0, ScheduleEvent.Kind.SEND, "a", ""));
+        rows.add(row(1, ScheduleEvent.Kind.WAKE, "tick.nn", ""));
+        JsonObject mark = new JsonObject();
+        mark.addProperty("mark", "OCC.focus");
+        mark.addProperty("at", 2L);
+        rows.add(mark);
+        rows.add(row(2, ScheduleEvent.Kind.RECV, "b", "OCC.focus"));
+        rows.add(row(3, ScheduleEvent.Kind.WAKE, "tick.dn", ""));
+        RowCodec.writeJsonl(session.schedule(), rows);
+        Path out = folder.newFolder("worker").toPath();
+
+        SchedulePrefix.Cut cut = SchedulePrefix.write(iteration, "s1",
+                Collections.singletonList("OCC.focus"), out);
+
+        assertEquals(Arrays.asList("a", "tick.nn"),
+                sites(out.resolve(SchedulePrefix.FILE)));
+        assertEquals("the rest is handed too: its timeouts hold",
+                Arrays.asList("b", "tick.dn"),
+                sites(out.resolve(SchedulePrefix.REST_FILE)));
+        JsonObject stated = cut.toJson();
+        assertEquals(2, stated.get("events").getAsInt());
+        assertEquals(2, stated.get("rest").getAsInt());
+        assertEquals(4, stated.get("of").getAsInt());
+        assertTrue(stated.get("cutAtFocus").getAsBoolean());
+        assertEquals("the replay reads the rest under the name it looks for",
+                edu.uva.liftlab.graphchecker.runtime.ScheduleLog.SUFFIX_FILE,
+                SchedulePrefix.REST_FILE);
+    }
+
+    private static JsonObject row(long seq, ScheduleEvent.Kind kind,
+                                  String site, String occurrence) {
+        return RowCodec.writeScheduleEvent(ScheduleEvent.of(seq, kind,
+                "node|Root:X", site, 0, occurrence));
+    }
+
+    private static List<String> sites(Path file) throws Exception {
+        List<String> sites = new ArrayList<String>();
+        for (ScheduleEvent event : SessionReader.readSchedule(file)) {
+            sites.add(event.site());
+        }
+        return sites;
+    }
+}

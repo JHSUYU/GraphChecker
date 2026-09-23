@@ -1041,6 +1041,171 @@ public class ScheduleLogTest {
         }
     }
 
+    @Test
+    public void pastThePrefixATimeoutWaitsForTheEventsItFollowed()
+            throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        ScheduleLog.enforceForTests(prefix("x"), Arrays.asList(
+                event(ScheduleEvent.Kind.SEND, "a"),
+                event(ScheduleEvent.Kind.WAKE, "tick.d")));
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+        assertTrue("the rest's timeout is still to come",
+                ScheduleLog.enforcing());
+        Thread daemon = observer(ScheduleEvent.Kind.WAKE, "tick.d");
+        Thread.sleep(300L);
+        assertTrue("the daemon's turn waits for what it followed",
+                daemon.isAlive());
+        assertEquals(Collections.singletonList("x"), sites());
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "a");
+        daemon.join(5000L);
+        assertFalse(daemon.isAlive());
+        assertEquals(Arrays.asList("x", "a", "tick.d"), sites());
+        assertFalse("no timeout of the rest is still to come",
+                ScheduleLog.enforcing());
+    }
+
+    @Test
+    public void pastThePrefixEverythingButTheRestsTimeoutsRunsFree() {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        ScheduleLog.enforceForTests(prefix("x"), Arrays.asList(
+                event(ScheduleEvent.Kind.SEND, "a"),
+                event(ScheduleEvent.Kind.WAKE, "tick.d")));
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+        long before = System.nanoTime();
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "unnamed");
+        ScheduleLog.observe(ScheduleEvent.Kind.WAKE, "tick.other");
+        assertEquals(ScheduleLog.Turn.FREE,
+                ScheduleLog.turn(ScheduleLog.wake("<L: void other()>#u1")));
+        assertTrue("nothing the rest does not hold waits",
+                TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
+                        < 200L);
+        assertEquals(ScheduleLog.Turn.NOT_YET,
+                ScheduleLog.turn(ScheduleLog.wake("tick.d")));
+        assertEquals(Arrays.asList("x", "unnamed", "tick.other"), sites());
+        assertTrue(ScheduleLog.enforcing());
+    }
+
+    @Test
+    public void theRestGivesUpOnlyWhatCameBeforeTheEarliestWaitingTimeout()
+            throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "1000");
+        ScheduleLog.enforceForTests(prefix("x"), Arrays.asList(
+                event(ScheduleEvent.Kind.SEND, "never"),
+                event(ScheduleEvent.Kind.WAKE, "tick.d"),
+                event(ScheduleEvent.Kind.SEND, "y"),
+                event(ScheduleEvent.Kind.WAKE, "tick.e")));
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+        Thread later = observer(ScheduleEvent.Kind.WAKE, "tick.e");
+        Thread earlier = observer(ScheduleEvent.Kind.WAKE, "tick.d");
+        earlier.join(10000L);
+        assertFalse("the earliest waiting timeout gives up what it followed",
+                earlier.isAlive());
+        assertTrue("the later one still waits for y, which is no older than"
+                + " the give-up", later.isAlive());
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "y");
+        later.join(5000L);
+        assertFalse(later.isAlive());
+        assertEquals(Arrays.asList("x", "tick.d", "y", "tick.e"), sites());
+        assertTrue(ScheduleLog.progress(),
+                ScheduleLog.progress().contains("1 were given up"));
+    }
+
+    @Test
+    public void aDivergedPrefixHandsWhatItDidNotAdmitToTheRest()
+            throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "300");
+        ScheduleLog.enforceForTests(Arrays.asList(
+                event(ScheduleEvent.Kind.SEND, "never"),
+                event(ScheduleEvent.Kind.WAKE, "tick.d"),
+                event(ScheduleEvent.Kind.SEND, "y")),
+                Collections.singletonList(
+                        event(ScheduleEvent.Kind.WAKE, "tick.e")));
+        Thread daemon = observer(ScheduleEvent.Kind.WAKE, "tick.d");
+        daemon.join(5000L);
+        assertFalse(daemon.isAlive());
+        assertTrue(ScheduleLog.divergence().contains("prefix position 0"));
+        assertTrue("tick.e is still to come", ScheduleLog.enforcing());
+        Thread other = observer(ScheduleEvent.Kind.WAKE, "tick.e");
+        Thread.sleep(100L);
+        assertTrue("tick.e follows y", other.isAlive());
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "y");
+        other.join(5000L);
+        assertFalse(other.isAlive());
+        assertEquals(Arrays.asList("tick.d", "y", "tick.e"), sites());
+        assertFalse(ScheduleLog.enforcing());
+    }
+
+    @Test
+    public void aSleepTheRestDoesNotNameRunsOnTheWallClock()
+            throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        final String site = "<L: void loop()>#u9";
+        ScheduleLog.enforceForTests(prefix("x"), Collections.singletonList(
+                event(ScheduleEvent.Kind.WAKE, "tick.d")));
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+        long before = System.nanoTime();
+        TimedWaits.sleep(500L, site);
+        long took = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before);
+        assertTrue("to its own deadline, not at once: " + took,
+                took >= 450L);
+        assertTrue("and not held for the rest: " + took, took < 5000L);
+        assertEquals(Arrays.asList("x", site), sites());
+    }
+
+    @Test
+    public void aHeldWaitPastThePrefixTakesItsTurnFromTheRest()
+            throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        final String site = "<C: boolean waitForWork()>#u21";
+        ScheduleLog.enforceForTests(prefix("x"), Arrays.asList(
+                event(ScheduleEvent.Kind.SEND, "a"),
+                event(ScheduleEvent.Kind.WAKE, site)));
+        final Object monitor = new Object();
+        final CountDownLatch waiting = new CountDownLatch(1);
+        Thread idle = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                synchronized (monitor) {
+                    waiting.countDown();
+                    try {
+                        TimedWaits.waitOn(monitor, 60000L, site);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+            }
+        });
+        long before = System.nanoTime();
+        idle.start();
+        waiting.await();
+        synchronized (monitor) {
+            // The wait has entered it, held.
+        }
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+        Thread.sleep(300L);
+        assertTrue("past the prefix its timeout follows a", idle.isAlive());
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "a");
+        idle.join(5000L);
+        assertFalse(idle.isAlive());
+        assertTrue("virtual time, not its 60 s",
+                TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
+                        < 10000L);
+        assertEquals(Arrays.asList("x", "a", site), sites());
+    }
+
+    /** A thread that makes one event, blocking for its turn; started. */
+    private static Thread observer(final ScheduleEvent.Kind kind,
+                                   final String site) {
+        Thread thread = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                ScheduleLog.observe(kind, site);
+            }
+        });
+        thread.start();
+        return thread;
+    }
+
     /** A prefix of SEND events at these sites, on this thread's context. */
     private static List<ScheduleEvent> prefix(String... sites) {
         List<ScheduleEvent> events = new ArrayList<ScheduleEvent>();

@@ -22,17 +22,19 @@ import java.util.concurrent.locks.LockSupport;
  * argument and the call site the last.  What each does:</p>
  *
  * <ul>
- *   <li>FREE (the recording, a replay with no prefix, a replay past its
- *       prefix, anything before the recording window opens): the original
- *       wait's semantics, on the wall clock, and a WAKE event when its
- *       TIMEOUT ends it.  A wait a signal ends (a notify, a condition
+ *   <li>FREE (the recording, a replay with no prefix, a replay whose
+ *       order no longer names the wait's timeout -- free, or past its
+ *       prefix where the rest does not name it -- anything before the
+ *       recording window opens): the original wait's semantics, on the
+ *       wall clock, and a WAKE event when its TIMEOUT ends it.  A wait a signal ends (a notify, a condition
  *       signal, an unpark) is no event: another thread ended it, and that
  *       thread's own events are the schedule's ({@link #takeTurn}).</li>
  *   <li>HELD to a prefix: VIRTUAL TIME, which stands in for the CLOCK and
  *       never for the NOTIFIER.  The wait does not read the wall clock: it
  *       ends when a real signal comes, or when its timeout WAKE is the
- *       prefix's next event.  hdfs-17967 is why the notifier is never
- *       stood in for: an idle IPC connection the recording saw woken by the
+ *       prefix's next event -- or, past the prefix, when the rest of the
+ *       order names it and it is due ({@code ScheduleLog.turn}).
+ *       hdfs-17967 is why the notifier is never stood in for: an idle IPC connection the recording saw woken by the
  *       call it then served returned at a turn before the call was added,
  *       found nothing to read, and closed itself.  A wait that holds a
  *       monitor or a lock waits on its own primitive between asks, so
@@ -218,11 +220,16 @@ public final class TimedWaits {
             if (ScheduleLog.enforcing()) {
                 ScheduleLog.Turn turn = heldWake(site);
                 if (turn == ScheduleLog.Turn.ADMITTED) return;
-                if (turn == ScheduleLog.Turn.NO_EVENT) {
-                    // No event to hold it to: the sleep is the wall clock's.
+                // No event to hold it to, or no order holds it any more --
+                // free, or past the prefix with a WAKE the rest does not
+                // name: the sleep is the wall clock's, to its own deadline.
+                try {
                     wallSleep(deadline);
-                    break;
+                } catch (InterruptedException interrupted) {
+                    interruptedWake(site);
+                    throw interrupted;
                 }
+                break;
             }
             if (!freeSleep(deadline, site)) break;
         }
@@ -909,10 +916,11 @@ public final class TimedWaits {
      * reading the clock (virtual time).  Asking for the turn every quantum
      * is also what keeps the watchdog looking.</p>
      *
-     * <p>When the run goes free -- the prefix used up, or given up -- a held
-     * wait is not ended: it waits on for a signal or to its own deadline, on
-     * the wall clock, as the same wait does in a replay with no prefix, and
-     * its WAKE is written only if that deadline ends it
+     * <p>When no order holds its timeout any more -- the run is free, or
+     * past its prefix with a WAKE the rest does not name -- a held wait is
+     * not ended: it waits on for a signal or to its own deadline, on the
+     * wall clock, as the same wait does in a replay with no prefix, and its
+     * WAKE is written only if that deadline ends it
      * ({@code ScheduleLog.turn}).</p>
      */
     private static boolean takeTurn(String site, boolean signalled,

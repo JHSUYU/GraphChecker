@@ -15,11 +15,13 @@ import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 
 /**
  * THE schedule of one run, and the turnstile that holds a replay to a prefix
@@ -38,12 +40,33 @@ import java.util.Map;
  * its events only when it is the prefix's next one: a thread whose event is
  * not next waits, so the occurrences the replay re-runs before its flip run in
  * the order the discovering session ran them and are numbered as it numbered
- * them.  When the prefix is used up the replay runs free, exactly as a replay
- * with no prefix does, and goes on recording -- its own schedule is what its
+ * them.  It goes on recording throughout -- its own schedule is what its
  * children inherit.  When nothing is admitted for {@link #TIMEOUT_PROPERTY}
  * while some thread waits, the prefix cannot be held: the turnstile states
- * {@code SCHEDULE_DIVERGED} with the position and both events, releases every
- * waiter and runs free.  It never blocks the run for good.</p>
+ * {@code SCHEDULE_DIVERGED} with the position and both events and releases
+ * every waiter.  It never blocks the run for good.</p>
+ *
+ * <p>PAST THE PREFIX, THE CLOCK STILL HOLDS.  The discovering session's order
+ * does not end at the cut: the rest of it ({@link #SUFFIX_FILE}) is handed
+ * too, and holds TIMEOUTS only.  A timeout WAKE the rest names is admitted
+ * once every event the rest states before it has happened (or been given
+ * up); a WAKE it does not name, and every other event, runs free.  Virtual
+ * time stands in for the clock on both sides of the flip, and the flip keeps
+ * everything its messages and signals cause: only the order time made is
+ * kept.  Freeing the clock at the cut was a change of its own, and a large
+ * one -- the replay runs on the concolic VM many times slower than the
+ * recording ran, so by the cut every daemon's wall-clock timer had long run
+ * out, and every daemon took its next turn at once.  hdfs-17899 bug1 and
+ * hdfs-17967 paths A and C: the stale DataNode's heartbeat, recorded after
+ * the workload's explicit key refresh, reached the NameNode before it, took
+ * the one KeyUpdateCommand, and the planned refresh occurrence never ran in
+ * any world that flipped the NameNode -- so no DataNode flip was ever
+ * proposed inside one.  When nothing the rest names happens for the timeout
+ * while one of its WAKEs waits, the events before the earliest waiting WAKE
+ * are given up (stated as {@code SCHEDULE_DIVERGED}) and it takes its turn.
+ * The rest holds while a timeout it names is still to come; after that the
+ * run is free.  A prefix that diverges hands its own unadmitted events to
+ * the rest the same way.</p>
  *
  * <p>One lock for both halves, so the order this log writes IS the order the
  * turnstile admitted.</p>
@@ -62,6 +85,10 @@ public final class ScheduleLog {
     public static final String PREFIX_PROPERTY = "causynth.schedule.prefix";
     /** The prefix beside a focused replay's focus row. */
     public static final String PREFIX_FILE = "schedule_prefix.jsonl";
+    /** The rest of the same order, beside the prefix: its timeouts hold. */
+    public static final String SUFFIX_FILE = "schedule_suffix.jsonl";
+    /** The rest, as a system property; else it stands beside the prefix. */
+    public static final String SUFFIX_PROPERTY = "causynth.schedule.suffix";
 
     /**
      * Shorter than the waits a workload makes for its own results (20 s is
@@ -96,6 +123,32 @@ public final class ScheduleLog {
     private static String divergence = "";
     private static long divergedAt = -1L;
 
+    // ---- the rest of the order, past the prefix, guarded by LOCK ---------
+    private static final byte OPEN = 0;
+    private static final byte SEEN = 1;
+    private static final byte GIVEN_UP = 2;
+    /** How long a waiting WAKE's last ask counts as waiting, in ms. */
+    private static final long ASK_FRESH_MS = 3000L;
+    /** The rest as loaded, until the prefix ends or diverges. */
+    private static List<ScheduleEvent> suffixEvents = Collections.emptyList();
+    /** Whether the run is past its prefix and the rest's timeouts hold. */
+    private static boolean timeouts;
+    private static List<ScheduleEvent> rest = Collections.emptyList();
+    private static byte[] restState = new byte[0];
+    /** Per key, the rest positions no event has taken yet, in order. */
+    private static final Map<String, ArrayDeque<Integer>> UNTAKEN =
+            new HashMap<String, ArrayDeque<Integer>>();
+    /** The first OPEN rest position: every one before it is settled. */
+    private static int firstOpen;
+    /** The rest's WAKEs still OPEN: while there are none, nothing holds. */
+    private static int openWakes;
+    private static long lastProgress;
+    private static int restSeen;
+    private static int givenUp;
+    /** The rest positions WAKEs wait at, each with when it last asked. */
+    private static final TreeMap<Integer, Long> ASKING =
+            new TreeMap<Integer, Long>();
+
     private ScheduleLog() {
     }
 
@@ -119,7 +172,7 @@ public final class ScheduleLog {
             if (event == null) return false;
             synchronized (LOCK) {
                 loadPrefixLocked();
-                admitLocked(event.key);
+                admitLocked(event);
                 appendLocked(event);
             }
             return true;
@@ -181,12 +234,17 @@ public final class ScheduleLog {
     private static boolean tryAdmit(Pending event) {
         synchronized (LOCK) {
             loadPrefixLocked();
-            if (!freeRun && !prefix.get(cursor).equals(event.key)) {
+            if (held() && !prefix.get(cursor).equals(event.key)) {
                 long idle = System.currentTimeMillis() - lastAdmit;
                 if (idle < timeoutMillis()) return false;
                 divergeLocked(event.key);
             }
-            if (!freeRun) advanceLocked();
+            if (held()) {
+                advanceLocked();
+            } else if (timeouts) {
+                // Asked only of a wait an interrupt ended: it happened now.
+                takeLocked(event.key);
+            }
             appendLocked(event);
             return true;
         }
@@ -229,9 +287,10 @@ public final class ScheduleLog {
         /** Another event is next: the wait asks again after a quantum. */
         NOT_YET,
         /**
-         * The run holds no prefix any more -- used up, or given up by the
-         * watchdog -- and nothing was written: the rest of the wait is on
-         * the wall clock, as it is in a replay with no prefix.
+         * No order holds this wait's timeout any more -- the run is free, or
+         * past its prefix and the rest names no such WAKE still to come --
+         * and nothing was written: the rest of the wait is on the wall
+         * clock, as it is in a replay with no prefix.
          */
         FREE,
         /**
@@ -243,12 +302,13 @@ public final class ScheduleLog {
     }
 
     /**
-     * Admits the wait's timeout WAKE if it is the prefix's next event NOW.
+     * Admits the wait's timeout WAKE if it is its turn NOW: the prefix's
+     * next event, or -- past the prefix -- a WAKE of the rest that is due.
      *
-     * <p>A run that goes free does not end the waits it held.  Its prefix
-     * stood for their timeouts only while it lasted; past it the replay runs
-     * as one with no prefix does, where a wait ends at its own deadline or
-     * by a signal.  Ending every held wait the moment the prefix ran out made
+     * <p>An order that lets a wait go does not end it.  A WAKE the rest does
+     * not name, or any WAKE once the run is free, is FREE: the wait runs as
+     * one in a replay with no prefix does, where it ends at its own deadline
+     * or by a signal.  Ending every held wait the moment the prefix ran out made
      * each of them time out at once -- an idle IPC connection closed itself,
      * a request sender gave up its turn -- at the very point a focused
      * replay's flip is, and the session's schedule then carried those WAKEs
@@ -262,14 +322,21 @@ public final class ScheduleLog {
         try {
             synchronized (LOCK) {
                 loadPrefixLocked();
-                if (freeRun) return Turn.FREE;
-                if (!prefix.get(cursor).equals(wake.event.key)) {
+                if (held()) {
+                    if (prefix.get(cursor).equals(wake.event.key)) {
+                        advanceLocked();
+                        appendLocked(wake.event);
+                        return Turn.ADMITTED;
+                    }
                     long idle = System.currentTimeMillis() - lastAdmit;
                     if (idle < timeoutMillis()) return Turn.NOT_YET;
                     divergeLocked(wake.event.key);
-                    return Turn.FREE;
                 }
-                advanceLocked();
+                if (!timeouts) return Turn.FREE;
+                int slot = restSlotLocked(wake.event.key);
+                if (slot < 0) return Turn.FREE;
+                if (!dueLocked(slot)) return Turn.NOT_YET;
+                takeLocked(wake.event.key);
                 appendLocked(wake.event);
                 return Turn.ADMITTED;
             }
@@ -279,9 +346,9 @@ public final class ScheduleLog {
     }
 
     /**
-     * A held sleep's WAKE: blocks until it is the prefix's next event, and
-     * admits and writes it -- ADMITTED.  FREE, with nothing written, when
-     * the run goes free first, and NO_EVENT when there is no event to make:
+     * A held sleep's WAKE: blocks until it is its turn ({@link #turn}), and
+     * admits and writes it -- ADMITTED.  FREE, with nothing written, when no
+     * order holds it any more, and NO_EVENT when there is no event to make:
      * either way the sleep goes on on the wall clock ({@link #turn}).  An
      * interrupt while it waits ends the wait where it is, and the event is
      * written, as {@link #observe} writes it.
@@ -294,7 +361,7 @@ public final class ScheduleLog {
             if (event == null) return Turn.NO_EVENT;
             synchronized (LOCK) {
                 loadPrefixLocked();
-                if (admitLocked(event.key) == Admission.FREED) {
+                if (admitLocked(event) == Admission.FREED) {
                     return Turn.FREE;
                 }
                 appendLocked(event);
@@ -316,8 +383,12 @@ public final class ScheduleLog {
         try {
             synchronized (LOCK) {
                 loadPrefixLocked();
-                if (!freeRun && prefix.get(cursor).equals(wake.event.key)) {
-                    advanceLocked();
+                if (held()) {
+                    if (prefix.get(cursor).equals(wake.event.key)) {
+                        advanceLocked();
+                    }
+                } else if (timeouts) {
+                    takeLocked(wake.event.key);
                 }
                 appendLocked(wake.event);
             }
@@ -462,56 +533,79 @@ public final class ScheduleLog {
     // ---- enforcement -----------------------------------------------------
 
     /**
-     * Admits one event: at once when the run is free, else when it is the
-     * prefix's next one.
+     * Admits one event: held to the prefix, when it is the prefix's next one;
+     * past the prefix, a timeout WAKE the rest names when it is due, and
+     * anything else at once; free, at once.
      *
      * <p>A thread whose event is not next waits on the lock -- which it
      * releases while it waits, so the thread whose event IS next can be
      * admitted.  The watchdog is PROGRESS, not a per-thread clock: a replay
      * on the concolic VM may take long between two events, and what shows the
-     * prefix cannot be held is that nothing at all was admitted for the whole
+     * order cannot be held is that nothing at all was admitted for the whole
      * timeout while someone waited.</p>
      */
-    private static Admission admitLocked(String key) {
-        if (freeRun) return Admission.FREED;
+    private static Admission admitLocked(Pending event) {
         long timeout = timeoutMillis();
         waiting++;
         try {
-            while (!freeRun && !prefix.get(cursor).equals(key)) {
-                long idle = System.currentTimeMillis() - lastAdmit;
-                if (idle >= timeout) {
-                    divergeLocked(key);
-                    break;
-                }
-                try {
+            while (true) {
+                if (held()) {
+                    if (prefix.get(cursor).equals(event.key)) {
+                        advanceLocked();
+                        return Admission.NEXT;
+                    }
+                    long idle = System.currentTimeMillis() - lastAdmit;
+                    if (idle >= timeout) {
+                        divergeLocked(event.key);
+                        continue;
+                    }
                     LOCK.wait(Math.max(1L, Math.min(timeout - idle, 1000L)));
-                } catch (InterruptedException interrupted) {
-                    // The workload interrupted its own thread -- a shutdown,
-                    // a cancelled task.  That is the workload's to see, not
-                    // the prefix's to answer: this thread stops waiting for
-                    // its turn, the flag is put back, and the prefix stands
-                    // for everyone else.  The event is still written, where
-                    // it happened, because it did.
-                    Thread.currentThread().interrupt();
-                    return Admission.INTERRUPTED;
+                    continue;
                 }
+                if (!timeouts) return Admission.FREED;
+                if (event.kind != ScheduleEvent.Kind.WAKE) {
+                    // Only time is held past the prefix: whatever else the
+                    // run does happens when it happens, and the flip keeps
+                    // what it changes.
+                    takeLocked(event.key);
+                    return Admission.NEXT;
+                }
+                int slot = restSlotLocked(event.key);
+                if (slot < 0) return Admission.FREED;
+                if (dueLocked(slot)) {
+                    takeLocked(event.key);
+                    return Admission.NEXT;
+                }
+                long idle = System.currentTimeMillis() - lastProgress;
+                LOCK.wait(Math.max(1L, Math.min(timeout - idle, 1000L)));
             }
+        } catch (InterruptedException interrupted) {
+            // The workload interrupted its own thread -- a shutdown, a
+            // cancelled task.  That is the workload's to see, not the
+            // order's to answer: this thread stops waiting for its turn, the
+            // flag is put back, and the order stands for everyone else.  The
+            // event is still written, where it happened, because it did.
+            Thread.currentThread().interrupt();
+            if (timeouts) takeLocked(event.key);
+            return Admission.INTERRUPTED;
         } finally {
             waiting--;
         }
-        if (freeRun) return Admission.FREED;
-        advanceLocked();
-        return Admission.NEXT;
     }
 
     /** How one blocking admission ended. */
     private enum Admission {
-        /** The event was the prefix's next one, and the cursor moved. */
+        /** The event was next (or due), and the order moved. */
         NEXT,
-        /** The run is free: no prefix holds the event any more. */
+        /** Nothing holds the event: the run is free, or the rest names no such WAKE. */
         FREED,
         /** The workload interrupted the thread while it waited. */
         INTERRUPTED
+    }
+
+    /** Whether the replay is held to its prefix, event by event, right now. */
+    private static boolean held() {
+        return !freeRun && !timeouts;
     }
 
     /** One admission: the cursor moves, and every waiter looks again. */
@@ -519,22 +613,137 @@ public final class ScheduleLog {
         cursor++;
         lastAdmit = System.currentTimeMillis();
         if (cursor >= prefix.size()) {
-            // The prefix is used up: from here the replay runs free, which
-            // is where its flip is.
+            // The prefix is used up, which is where the flip is: from here
+            // only the rest's timeouts hold.
+            enterRestLocked(suffixEvents);
+        }
+        LOCK.notifyAll();
+    }
+
+    /**
+     * Past the prefix: the rest of the order, whose timeout WAKEs hold.  Free
+     * at once when it names none.  Its watchdog starts from the last
+     * admission, so a prefix that diverged -- already a timeout with nothing
+     * admitted -- gives the rest's first events up at the next ask.
+     */
+    private static void enterRestLocked(List<ScheduleEvent> events) {
+        rest = events;
+        restState = new byte[events.size()];
+        UNTAKEN.clear();
+        ASKING.clear();
+        firstOpen = 0;
+        openWakes = 0;
+        for (int index = 0; index < events.size(); index++) {
+            ScheduleEvent event = events.get(index);
+            ArrayDeque<Integer> slots = UNTAKEN.get(event.key());
+            if (slots == null) {
+                slots = new ArrayDeque<Integer>();
+                UNTAKEN.put(event.key(), slots);
+            }
+            slots.addLast(index);
+            if (event.kind() == ScheduleEvent.Kind.WAKE) openWakes++;
+        }
+        lastProgress = lastAdmit;
+        timeouts = openWakes > 0;
+        freeRun = !timeouts;
+        LOCK.notifyAll();
+    }
+
+    /** The rest position an event of {@code key} takes, or -1: none left. */
+    private static int restSlotLocked(String key) {
+        ArrayDeque<Integer> slots = UNTAKEN.get(key);
+        return slots == null || slots.isEmpty() ? -1 : slots.peekFirst();
+    }
+
+    /**
+     * Whether the rest's WAKE at {@code slot} may take its turn now: every
+     * event the rest states before it has happened or was given up -- or
+     * nothing the rest names has happened for the timeout, and no WAKE before
+     * it is waiting, and the events before it are given up now.
+     *
+     * <p>A given-up position may still be taken by its event when it comes
+     * late: the position it takes is the earliest of its key not yet taken,
+     * given up or not.</p>
+     */
+    private static boolean dueLocked(int slot) {
+        if (firstOpen >= slot) return true;
+        long now = System.currentTimeMillis();
+        ASKING.put(slot, now);
+        if (now - lastProgress < timeoutMillis()) return false;
+        // An ask not renewed for a few quanta is a wait that ended
+        // otherwise (a signal); it waits for nothing.
+        java.util.Iterator<Map.Entry<Integer, Long>> asks =
+                ASKING.entrySet().iterator();
+        while (asks.hasNext()) {
+            if (asks.next().getValue() < now - ASK_FRESH_MS) asks.remove();
+        }
+        if (!ASKING.isEmpty() && ASKING.firstKey() < slot) return false;
+        giveUpLocked(slot);
+        return true;
+    }
+
+    /** An event of {@code key} happened: it takes its rest position. */
+    private static void takeLocked(String key) {
+        ArrayDeque<Integer> slots = UNTAKEN.get(key);
+        if (slots == null || slots.isEmpty()) return;
+        int slot = slots.pollFirst();
+        ASKING.remove(slot);
+        if (restState[slot] == OPEN
+                && rest.get(slot).kind() == ScheduleEvent.Kind.WAKE) {
+            openWakes--;
+        }
+        restState[slot] = SEEN;
+        restSeen++;
+        settleLocked();
+    }
+
+    /** Gives up every OPEN rest position before {@code slot}, stated. */
+    private static void giveUpLocked(int slot) {
+        int from = firstOpen;
+        int count = 0;
+        ScheduleEvent first = null;
+        for (int index = firstOpen; index < slot; index++) {
+            if (restState[index] != OPEN) continue;
+            if (first == null) first = rest.get(index);
+            if (rest.get(index).kind() == ScheduleEvent.Kind.WAKE) openWakes--;
+            restState[index] = GIVEN_UP;
+            count++;
+        }
+        givenUp += count;
+        stateLocked("schedule-rest#" + from, "past the prefix, " + count
+                + " event(s) of the discovering run's order from rest"
+                + " position " + from + " on (the first "
+                + (first == null ? "?" : first.render()) + ") did not"
+                + " happen for " + timeoutMillis() + " ms while the timeout "
+                + rest.get(slot).render() + " at rest position " + slot
+                + " waited: they are given up and it takes its turn");
+        settleLocked();
+    }
+
+    /** The rest moved: its first open position, and whether it still holds. */
+    private static void settleLocked() {
+        lastProgress = System.currentTimeMillis();
+        while (firstOpen < restState.length && restState[firstOpen] != OPEN) {
+            firstOpen++;
+        }
+        if (openWakes <= 0) {
+            // No timeout the rest names is still to come: nothing holds.
+            timeouts = false;
             freeRun = true;
         }
         LOCK.notifyAll();
     }
 
     /**
-     * Whether this replay is held to its prefix right now.
+     * Whether this replay is held to its order right now -- its prefix, or
+     * the rest's timeouts.
      *
-     * <p>Only inside the recording window: the prefix is the window's order,
-     * and a wait begun before the workload opened it -- an idle IPC
-     * connection, a daemon's first sleep -- is the set-up's, which runs on
-     * the wall clock exactly as it did when the prefix was recorded.  Taking
-     * it over would return it at once, over and over, and time out whatever
-     * it was idling for.</p>
+     * <p>Only inside the recording window: the order is the window's, and a
+     * wait begun before the workload opened it -- an idle IPC connection, a
+     * daemon's first sleep -- is the set-up's, which runs on the wall clock
+     * exactly as it did when the order was recorded.  Taking it over would
+     * return it at once, over and over, and time out whatever it was idling
+     * for.</p>
      */
     public static boolean enforcing() {
         if (!CausynthTraceRecorder.recordingStarted()) return false;
@@ -546,24 +755,33 @@ public final class ScheduleLog {
 
 
     private static void divergeLocked(String actual) {
-        if (freeRun) return;
+        if (!held()) return;
         String expected = cursor < prefixEvents.size()
                 ? prefixEvents.get(cursor).render() : "(end of prefix)";
         divergedAt = cursor;
+        List<ScheduleEvent> remaining = new ArrayList<ScheduleEvent>(
+                prefixEvents.subList(cursor, prefixEvents.size()));
+        remaining.addAll(suffixEvents);
         divergence = "at prefix position " + cursor + " of "
                 + prefix.size() + " the run's next event was "
                 + render(actual) + " and the prefix's was " + expected
                 + "; nothing was admitted for " + timeoutMillis()
-                + " ms, so every waiter is released and the replay runs free";
-        freeRun = true;
-        LOCK.notifyAll();
+                + " ms, so every waiter is released: the prefix's "
+                + (prefix.size() - cursor) + " unadmitted event(s) join the"
+                + " rest of the order, whose timeouts alone hold from here";
+        enterRestLocked(remaining);
+        stateLocked("schedule#" + cursor, divergence);
+    }
+
+    /** One SCHEDULE_DIVERGED statement, on the session and on stderr. */
+    private static void stateLocked(String where, String detail) {
         try {
             RowRuntime.gap(GapKind.SCHEDULE_DIVERGED, GapClass.DIAGNOSTIC,
-                    "schedule#" + cursor, divergence);
+                    where, detail);
         } catch (Throwable unpublished) {
-            System.err.println("Causynth schedule diverged: " + divergence);
+            // stderr below is the statement then.
         }
-        System.err.println("Causynth schedule diverged: " + divergence);
+        System.err.println("Causynth schedule diverged: " + detail);
     }
 
     private static String render(String key) {
@@ -591,10 +809,11 @@ public final class ScheduleLog {
     }
 
     /**
-     * Reads the prefix this replay was handed, once.
+     * Reads the order this replay was handed, once: its prefix, and the rest.
      *
-     * <p>From the property, else the environment, else the file beside the
-     * focus row in the worker directory.  No prefix, or enforcement switched
+     * <p>The prefix from the property, else the environment, else the file
+     * beside the focus row in the worker directory; the rest from its
+     * property, else beside the focus row.  Neither, or enforcement switched
      * off, is a free run from the first event -- which is exactly the replay
      * this class replaced.</p>
      */
@@ -606,22 +825,39 @@ public final class ScheduleLog {
             return;
         }
         Path file = prefixFile();
-        if (file == null) return;
+        Path restFile = suffixFile();
+        if (file == null && restFile == null) return;
         try {
-            List<ScheduleEvent> events = SessionReader.readSchedule(file);
-            if (events.isEmpty()) return;
-            List<String> keys = new ArrayList<String>(events.size());
-            for (ScheduleEvent event : events) {
-                keys.add(event.key());
-            }
-            prefixEvents = events;
-            prefix = keys;
-            cursor = 0;
-            freeRun = false;
-            lastAdmit = System.currentTimeMillis();
+            installLocked(file == null
+                            ? Collections.<ScheduleEvent>emptyList()
+                            : SessionReader.readSchedule(file),
+                    restFile == null
+                            ? Collections.<ScheduleEvent>emptyList()
+                            : SessionReader.readSchedule(restFile));
         } catch (IOException | RuntimeException unreadable) {
-            System.err.println("Causynth could not read the schedule prefix "
-                    + file + ": " + unreadable + "; the replay runs free");
+            System.err.println("Causynth could not read the schedule "
+                    + file + " / " + restFile + ": " + unreadable
+                    + "; the replay runs free");
+        }
+    }
+
+    /** Holds the run to {@code events}, then to the timeouts of {@code after}. */
+    private static void installLocked(List<ScheduleEvent> events,
+                                      List<ScheduleEvent> after) {
+        List<String> keys = new ArrayList<String>(events.size());
+        for (ScheduleEvent event : events) {
+            keys.add(event.key());
+        }
+        prefixEvents = new ArrayList<ScheduleEvent>(events);
+        prefix = keys;
+        suffixEvents = new ArrayList<ScheduleEvent>(after);
+        cursor = 0;
+        lastAdmit = System.currentTimeMillis();
+        if (keys.isEmpty()) {
+            enterRestLocked(suffixEvents);
+        } else {
+            timeouts = false;
+            freeRun = false;
         }
     }
 
@@ -629,35 +865,56 @@ public final class ScheduleLog {
         String named = Text.safe(System.getProperty(PREFIX_PROPERTY));
         if (named.isEmpty()) named = Text.safe(System.getenv(PREFIX_ENV));
         if (!named.isEmpty()) return Paths.get(named);
+        return besideFocus(PREFIX_FILE);
+    }
+
+    private static Path suffixFile() {
+        String named = Text.safe(System.getProperty(SUFFIX_PROPERTY));
+        if (!named.isEmpty()) return Paths.get(named);
+        return besideFocus(SUFFIX_FILE);
+    }
+
+    private static Path besideFocus(String name) {
         String worker = Text.safe(
                 System.getenv("CAUSYNTH_CONCOLIC_WORKER_DIR"));
         if (!worker.isEmpty()) {
-            Path beside = Paths.get(worker).resolve(PREFIX_FILE);
+            Path beside = Paths.get(worker).resolve(name);
             if (beside.toFile().isFile()) return beside;
         }
         return null;
     }
 
-    /** How far the replay got through its prefix, for its session. */
+    /** How far the replay got through its order, for its session. */
     public static String progress() {
         synchronized (LOCK) {
-            if (prefix.isEmpty()) return "no prefix";
-            return cursor + " of " + prefix.size() + " prefix events admitted"
+            if (prefix.isEmpty() && suffixEvents.isEmpty()) return "no prefix";
+            String held = cursor + " of " + prefix.size()
+                    + " prefix events admitted"
                     + (divergedAt >= 0 ? ", diverged at " + divergedAt : "");
+            if (!rest.isEmpty()) {
+                held += "; of the rest's " + rest.size() + " events "
+                        + restSeen + " happened and " + givenUp
+                        + " were given up";
+            }
+            return held;
         }
     }
 
     /** Test hook: installs a prefix directly and starts enforcing it. */
     static void enforceForTests(List<ScheduleEvent> events) {
+        enforceForTests(events, Collections.<ScheduleEvent>emptyList());
+    }
+
+    /** Test hook: a prefix, and the rest of the order past it. */
+    static void enforceForTests(List<ScheduleEvent> events,
+                                List<ScheduleEvent> after) {
         synchronized (LOCK) {
             prefixLoaded = true;
-            prefixEvents = new ArrayList<ScheduleEvent>(events);
-            List<String> keys = new ArrayList<String>(events.size());
-            for (ScheduleEvent event : events) keys.add(event.key());
-            prefix = keys;
-            cursor = 0;
-            freeRun = keys.isEmpty();
-            lastAdmit = System.currentTimeMillis();
+            if (events.isEmpty() && after.isEmpty()) {
+                freeRun = true;
+                return;
+            }
+            installLocked(events, after);
         }
     }
 
@@ -671,8 +928,19 @@ public final class ScheduleLog {
             prefixLoaded = false;
             prefix = Collections.emptyList();
             prefixEvents = Collections.emptyList();
+            suffixEvents = Collections.emptyList();
             cursor = 0;
             freeRun = true;
+            timeouts = false;
+            rest = Collections.emptyList();
+            restState = new byte[0];
+            UNTAKEN.clear();
+            ASKING.clear();
+            firstOpen = 0;
+            openWakes = 0;
+            lastProgress = 0L;
+            restSeen = 0;
+            givenUp = 0;
             waiting = 0;
             lastAdmit = 0L;
             divergence = "";

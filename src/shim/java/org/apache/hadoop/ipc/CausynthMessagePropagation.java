@@ -270,6 +270,15 @@ public final class CausynthMessagePropagation {
     CausynthTraceRecorder.startRecording();
   }
 
+  /**
+   * Whether this run is a concolic replay: a world the engine chose, where a
+   * workload's check of the RECORDING's world (the key a node must still
+   * retain, the gap that must still be open) is not the workload's to make.
+   */
+  public static boolean replaying() {
+    return CausynthTraceRecorder.replaying();
+  }
+
   public static void registerSource(Object anchor, String kind, String role,
       String sourceId, long epoch) {
     CausynthTraceRecorder.registerSource(anchor, kind, role, sourceId, epoch);

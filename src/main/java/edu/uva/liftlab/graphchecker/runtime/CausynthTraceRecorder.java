@@ -117,6 +117,16 @@ public final class CausynthTraceRecorder {
         return recordingStarted;
     }
 
+    /**
+     * Whether this JVM is a concolic replay (the seed's or an obligation's)
+     * rather than the recording or a native run: the world it runs is the
+     * engine's to change, so a workload check of the recording's world does
+     * not hold it.
+     */
+    public static boolean replaying() {
+        return RuntimeTraceMode.configured() == RuntimeTraceMode.REPLAY_CONTEXT;
+    }
+
     /** Test hook: a fixture states whether its run has opened the window. */
     static void setRecordingStartedForTests(boolean started) {
         recordingStarted = started;

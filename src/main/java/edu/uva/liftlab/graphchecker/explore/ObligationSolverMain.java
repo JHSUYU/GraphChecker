@@ -111,7 +111,8 @@ public final class ObligationSolverMain {
         ObligationFactory.Outcome outcome = ObligationFactory.solve(corpus,
                 candidate, z3, timeoutMillis);
         // The schedule half of the world: the discovering session's order,
-        // cut at the target.
+        // cut at the target -- held event by event before it, and in its
+        // timeouts after it.
         SchedulePrefix.Cut cut = null;
         if (outcome.result.verdict() == Verdict.SAT_MODEL_READY) {
             cut = SchedulePrefix.write(iteration, candidate.path.sessionId,
