@@ -932,7 +932,23 @@ final class RootMint {
                     // and differently"); a marker row that kept stating the
                     // recording's polarity under an obligation assigning the
                     // other refused every fault-flip session of bug3.
-                    ConcolicRegionRuntime.recordedScalar(planted));
+                    //
+                    // A CLOCK STATES ITS READING, NEVER ITS PLANT.  Every
+                    // execution reads a clock fresh, so the wave states a
+                    // SKEW on the focus row and this mint adds it to the
+                    // instant it read (#focusedRootValue); the row is the
+                    // instant, which is what a skew is relative to.  It is
+                    // the floor of the clock's variable in every flip query
+                    // cut from this session (FlipQuery#clockReading) and the
+                    // reading a child obligation's skew is computed against
+                    // (ObligationFactory, model - reading): stating the
+                    // planted instant here made a nested obligation's skew
+                    // relative to its parent's plant, the replay added it to
+                    // a fresh wall reading, and the inherited flip was not
+                    // taken (bug3 v20, 07caf1adc2a95d5b: 3 600 072 where
+                    // the world needed 10 919 859).
+                    ConcolicRegionRuntime.recordedScalar(
+                            action.clock ? concrete : planted));
             if (!assigned.isEmpty()) {
                 edu.uva.liftlab.graphchecker.runtime.FocusedReplay.planted(
                         action.symbol);

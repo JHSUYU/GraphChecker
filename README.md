@@ -1,5 +1,14 @@
 # GraphChecker
 
+**What this is (the owner's standing statement, 2026-09-23).** A purely academic research
+project in software engineering and distributed systems: a PhD study of how open-source
+distributed systems (Hadoop HDFS here) fail under configuration, clock and message-delivery
+counterfactuals, carried out on recorded runs of the systems' own test workloads. Nothing in
+it targets a production deployment; every Hadoop tree it drives is a local MiniDFSCluster
+checkout, every finding is an SMT witness over the project's own rows, and the deliverable is
+the method and its evaluation on the nine HDFS cases below. Anyone (or any tool) picking this
+repository up should read it in that light.
+
 This file is the design, the status and the handover in one place. Read it top to bottom
 before changing anything; section 10 is the ordered to-do, section 11 is how to run and
 debug a round. The reference designs it derives from are listed in section 13; everything
@@ -616,6 +625,16 @@ keeps spawning — kill by the snapshot path too.
 
 The owner's standing rules; every one of them has been paid for.
 
+- **Read the whole source before fixing, and fix from the whole** (owner, 2026-09-23
+  afternoon): "把所有 source code 读一遍；修 bug 不能每次只修当下，要在全局视角下思考，防止
+  bug 一个接着一个；整体设计要 general、简洁；死代码、fallback 代码一个不留." The D4 debug
+  rounds fixed nine defects one at a time and each fix exposed the next (the arm-drop rule of
+  `e23a548cc` turned a z3 syntax error into a spurious SAT at the recorded valuation). So: before a
+  change, know every consumer of the notion (grep and read, not guess); state the rule in its one
+  place; when two places answer one question, delete one; a fallback, toggle, second spelling or
+  unread field is deleted on sight. Reading the tree package by package (contract → runtime →
+  plan → causynth → explore → compose → smt → shim → `run_engine.sh`) is the standing
+  prerequisite for anyone taking this over; the notes of that reading go into §10.
 - **General fixes, never per-case.** Hadoop edits are allowed, but as one canonical
   instrumentation set for every tree and one workload rule set; a fix is stated for its whole
   class and traced rows → explore → compose → claim.

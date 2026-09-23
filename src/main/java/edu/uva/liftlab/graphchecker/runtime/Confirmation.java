@@ -3,13 +3,16 @@ package edu.uva.liftlab.graphchecker.runtime;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
+import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * The edges a CONFIRM run is expected to take, and whether it took them.
@@ -47,6 +50,18 @@ public final class Confirmation {
     /** Consumer endpoint id -> the producer endpoint id the model chose. */
     private static final Map<String, String> WIRE =
             new LinkedHashMap<String, String>();
+    /**
+     * Writer endpoint id -> version, for every join of a declared cell's
+     * PLACEHOLDER: the mint of a declared cell lands on whichever
+     * occurrence of the region reads it first (17960's two FSImageSaver
+     * threads), so the edge is held by the writer the mint observed and
+     * not by the reader's occurrence.
+     */
+    private static final Map<String, String> MINT =
+            new LinkedHashMap<String, String>();
+    /** Every (location@version) a placeholder of this run observed. */
+    private static final Set<String> MINTED =
+            new LinkedHashSet<String>();
     /** Reader endpoint id -> the writer endpoint id the model joined to. */
     private static final Map<String, String> STATE =
             new LinkedHashMap<String, String>();
@@ -70,7 +85,7 @@ public final class Confirmation {
     static boolean expected() {
         load();
         synchronized (LOCK) {
-            return !WIRE.isEmpty() || !STATE.isEmpty();
+            return !WIRE.isEmpty() || !STATE.isEmpty() || !MINT.isEmpty();
         }
     }
 
@@ -102,11 +117,18 @@ public final class Confirmation {
         }
     }
 
-    /** One read this run published, with the version it observed. */
+    /**
+     * One read this run published, with the version it observed; a
+     * placeholder states its mint's version too ({@link
+     * ReadRow#mintVersion}) and is remembered by the cell it observed.
+     */
     static void read(Endpoint reader, LocationId location,
-                     long observedVersion) {
+                     long observedVersion, long mintVersion) {
         if (!expected() || reader == null || location == null) return;
         synchronized (LOCK) {
+            if (mintVersion != ReadRow.UNKNOWN_VERSION) {
+                MINTED.add(key(location, observedVersion));
+            }
             if (!STATE.containsKey(reader.id())) return;
             READ.put(reader.id(), key(location, observedVersion));
         }
@@ -127,6 +149,24 @@ public final class Confirmation {
                 mismatches.add("WIRE " + edge.getKey() + ": the model chose"
                         + " producer " + edge.getValue()
                         + ", the run never attached at this consumer");
+            }
+            for (Map.Entry<String, String> edge : MINT.entrySet()) {
+                boolean taken = false;
+                List<String> observed = new ArrayList<String>();
+                for (String minted : MINTED) {
+                    String writer = WROTE.get(minted);
+                    observed.add(minted + (writer == null ? "" : " by "
+                            + writer));
+                    taken |= edge.getKey().equals(writer);
+                }
+                if (taken) continue;
+                mismatches.add("STATE mint: the model joined a declared "
+                        + "cell's placeholder to writer " + edge.getKey()
+                        + " (version " + edge.getValue() + "), and no "
+                        + "placeholder of the run observed a version that "
+                        + "writer wrote" + (observed.isEmpty() ? ""
+                        : "; the run's placeholders observed "
+                        + observed));
             }
             for (Map.Entry<String, String> edge : STATE.entrySet()) {
                 String observed = READ.get(edge.getKey());
@@ -168,6 +208,10 @@ public final class Confirmation {
                     String kind = text(row, "kind");
                     if ("WIRE".equals(kind)) {
                         WIRE.put(text(row, "consumer"), text(row, "producer"));
+                    } else if ("STATE".equals(kind)
+                            && row.has("mint") && !row.get("mint").isJsonNull()
+                            && row.get("mint").getAsBoolean()) {
+                        MINT.put(text(row, "writer"), text(row, "version"));
                     } else if ("STATE".equals(kind)) {
                         STATE.put(text(row, "reader"), text(row, "writer"));
                         VERSION.put(text(row, "reader"), text(row, "version"));
@@ -186,6 +230,7 @@ public final class Confirmation {
                 WIRE.clear();
                 STATE.clear();
                 VERSION.clear();
+                MINT.clear();
             }
         }
     }
@@ -201,6 +246,8 @@ public final class Confirmation {
             WIRE.clear();
             STATE.clear();
             VERSION.clear();
+            MINT.clear();
+            MINTED.clear();
             ATTACHED.clear();
             READ.clear();
             WROTE.clear();

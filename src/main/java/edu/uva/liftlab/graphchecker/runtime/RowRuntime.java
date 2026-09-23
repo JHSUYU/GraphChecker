@@ -467,7 +467,7 @@ public final class RowRuntime {
                 observedVersion, Text.safe(symbol), type,
                 Text.safe(concreteValue).isEmpty() ? null
                         : Text.safe(concreteValue), mintVersion));
-        Confirmation.read(at, location, observedVersion);
+        Confirmation.read(at, location, observedVersion, mintVersion);
     }
 
     /**

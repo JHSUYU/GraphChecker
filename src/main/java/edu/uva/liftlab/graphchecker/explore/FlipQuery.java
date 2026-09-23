@@ -910,11 +910,13 @@ final class FlipQuery {
             Set<String> seen = new LinkedHashSet<String>();
             Map<String, List<String>> bySlot =
                     new LinkedHashMap<String, List<String>>();
+            int offered = 0;
             if (attach.producer() != null) {
                 Interaction slot = Interaction.of(InteractionKind.WIRE,
                         attach.producer(), attach.endpoint());
                 for (Arms.Arm arm : corpus.arms().wireArms(slot,
                         attach.symbol())) {
+                    offered++;
                     String term = arm(arm, variable, attach.symbol());
                     if (term.isEmpty() || !seen.add(arm.slotId() + "|" + term)) {
                         continue;
@@ -938,6 +940,28 @@ final class FlipQuery {
             // one this obligation can be answered out of.
             if (!disjuncts.isEmpty()) {
                 registerControl(attach, variable, false);
+                return;
+            }
+            // A PAIRED handoff whose every arm this query dropped is
+            // REFUSED, not invented.  The corpus states who sent it; an
+            // answer no producer sent is a synthesized value, and a replay
+            // planted with one records a world nothing attests (bug3 v20,
+            // de821262b1c957b6: the SASL key id answered 0 after its one
+            // arm was dropped, the key absent, the fatal observed at the
+            // recorded valuation).  Only an UNPAIRED arrival -- a value
+            // from outside this corpus -- is a free input the obligation
+            // may answer, and it is named unproducible.
+            if (offered > 0) {
+                refusal = "UNPRODUCIBLE_ANSWER:" + attach.endpoint();
+                gaps.add(GapRow.of(attach.sessionId(),
+                        GapKind.UNPRODUCIBLE_ANSWER, GapClass.DIAGNOSTIC,
+                        attach.endpoint().toString(),
+                        "the corpus pairs this handoff with a producer and "
+                                + "none of its " + offered + " arm(s) can be"
+                                + " stated by this query (the arm gaps name"
+                                + " why), so the flip is not asked rather "
+                                + "than answered with a value no producer "
+                                + "sent"));
                 return;
             }
             registerControl(attach, variable, true);
@@ -994,28 +1018,58 @@ final class FlipQuery {
             Set<String> unknown = new LinkedHashSet<String>();
             SmtLowering.Lowered lowered = corpus.lowering(arm.sessionId())
                     .lower(arm.expressionRef());
-            if (!lowered.ok()) return "";
+            if (!lowered.ok()) {
+                gaps.add(GapRow.of(arm.sessionId(),
+                        GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                        arm.slotId(), "arm dropped: its delivered "
+                                + "expression " + arm.expressionRef()
+                                + " does not lower"));
+                return "";
+            }
             String delivered = rename(lowered.text(), arm.sessionId(),
                     unknown);
-            if (!unknown.isEmpty() || malformed(delivered)) return "";
+            if (!unknown.isEmpty() || malformed(delivered)) {
+                gaps.add(GapRow.of(arm.sessionId(),
+                        GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                        arm.slotId(), "arm dropped: its delivered "
+                                + "expression "
+                                + (unknown.isEmpty()
+                                ? "lowers to a term this query cannot state"
+                                : "names " + unknown.iterator().next()
+                                + ", which is undeclared")));
+                return "";
+            }
             List<String> conjuncts = new ArrayList<String>();
             for (String term : arm.pi()) {
+                // THE SAME RULE THE PREFIX IS HELD TO (#inheritedFlips, and
+                // the composer's pi_p): a concrete decision -- a branch the
+                // VM published no expression for, 71 of the 95 decision
+                // rows of bug3's seed -- is no conjunct, and a conjunct this
+                // query cannot state is dropped by name while THE ARM
+                // STAYS.  The arm is the producer's delivery; its prefix is
+                // context.  Wrapped, the concrete decisions were `(and
+                // (not ) (not ) (= vH_... 119980))` and z3 rejected the
+                // query (bug3 v15/v18: "arguments missing", NOT_ADMITTED);
+                // dropping the whole ARM for them (e23a548cc) left the
+                // control's slot with no family at all, z3 answered the
+                // SASL key id with 0, the replay planted a key no producer
+                // ever sent, and bug3 v20 observed the fatal at the
+                // recorded valuation (de821262b1c957b6).
+                if (!Arms.predicate(term)) continue;
+                Set<String> undeclared = new LinkedHashSet<String>();
                 String renamed = rename(lower(term, arm.sessionId()),
-                        arm.sessionId(), unknown);
-                if (!unknown.isEmpty()) return "";
-                // The same rule the prefix is held to: a conjunct this
-                // query cannot state is not wrapped and asserted.  Wrapped,
-                // it was `(and (not ) (not ) (= vH_... 119980))`, z3
-                // rejected the whole query, and the flip was lost to a
-                // spelling (bug3 v18: 9 obligations "arguments missing").
-                if (malformed(renamed)) {
+                        arm.sessionId(), undeclared);
+                if (!undeclared.isEmpty() || malformed(renamed)) {
                     gaps.add(GapRow.of(arm.sessionId(),
                             GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
-                            arm.slotId(), "arm dropped: a conjunct of its "
-                                    + "producer path lowers to a term this "
-                                    + "query cannot state (\"" + renamed
-                                    + "\")"));
-                    return "";
+                            arm.slotId(), "arm conjunct dropped: "
+                                    + (undeclared.isEmpty()
+                                    ? "it lowers to a term this query cannot "
+                                    + "state (\"" + renamed + "\")"
+                                    : undeclared.iterator().next()
+                                    + " is undeclared")
+                                    + "; the arm is asserted without it"));
+                    continue;
                 }
                 conjuncts.add(renamed);
             }

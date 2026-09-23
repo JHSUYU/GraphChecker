@@ -141,7 +141,8 @@ public class ConfirmationTest {
                 Confirmation.attached(other, chosen));
         // The writer of a version is published after the read that saw
         // it, so the state edge is answered at the close.
-        Confirmation.read(reader, cell, 121L);
+        Confirmation.read(reader, cell, 121L,
+                edu.uva.liftlab.graphchecker.contract.ReadRow.UNKNOWN_VERSION);
         Confirmation.wrote(cell, 121L, other);
         List<String> close = Confirmation.close();
         assertEquals(close.toString(), 2, close.size());

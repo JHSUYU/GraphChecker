@@ -456,6 +456,17 @@ public final class ConfirmMain {
             JsonObject edge = new JsonObject();
             edge.addProperty("kind", "STATE");
             edge.addProperty("reader", join.getKey());
+            // A PLACEHOLDER read is the mint of a declared cell, and the
+            // mint lands on whichever occurrence of the region reads the
+            // cell first: two occurrences racing for one cell -- 17960's
+            // two FSImageSaver threads, saveFSImageInAllDirs@0 and @1 --
+            // mint it at @0 in one run and at @1 in the next, while the
+            // version the placeholder stands for is the same.  So the
+            // edge is stated as what it is, a join of the CELL to the
+            // model's writer, and the run is held to it by the writer
+            // (runtime/Confirmation), not by the reader's occurrence.
+            edge.addProperty("mint", readers.get(join.getKey())
+                    .mintVersion() != ReadRow.UNKNOWN_VERSION);
             String writer = chosen.containsKey(join.getKey())
                     ? chosen.get(join.getKey())
                     : join.getValue().endpoint().id();
