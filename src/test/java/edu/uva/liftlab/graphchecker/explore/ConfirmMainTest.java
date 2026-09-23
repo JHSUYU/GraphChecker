@@ -2,7 +2,6 @@ package edu.uva.liftlab.graphchecker.explore;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
 
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
@@ -12,6 +11,7 @@ import edu.uva.liftlab.graphchecker.contract.ExpressionTable;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
@@ -123,6 +123,29 @@ public class ConfirmMainTest {
         schedule.add(event(3, "d", ""));
         RowCodec.writeJsonl(sel.schedule(), schedule);
         manifest(sel, SessionManifest.Role.FOCUSED);
+        // The obligation whose replay published "sel": the world it ran.
+        Path worker = Files.createDirectories(
+                iteration.resolve("obligations-0000").resolve("w1"));
+        JsonObject result = new JsonObject();
+        result.addProperty("sessionId", "sel");
+        RowCodec.writeJsonl(worker.resolve(ObligationDir.RESULT),
+                Collections.singletonList(result));
+        JsonObject world = new JsonObject();
+        JsonObject assignments = new JsonObject();
+        assignments.addProperty("HDFS.SERIAL", "119980");
+        assignments.addProperty("FAULT:IPC", "true");
+        world.add("rootAssignments", assignments);
+        JsonObject deltas = new JsonObject();
+        deltas.addProperty("CLOCK.a", "43000");
+        world.add("clockDeltas", deltas);
+        world.add("answers", new JsonObject());
+        JsonObject mints = new JsonObject();
+        mints.addProperty("HDFS.SERIAL", "M_I_serial");
+        mints.addProperty("CLOCK.a", MINT);
+        mints.addProperty("FAULT:IPC", "M_Z_fault");
+        world.add("rootMints", mints);
+        RowCodec.writeJsonl(worker.resolve(ObligationDir.FOCUSED_TASK),
+                Collections.singletonList(world));
         return iteration;
     }
 
@@ -215,21 +238,19 @@ public class ConfirmMainTest {
         assertEquals(anchor.id(), row.get("focusedOccurrenceId").getAsString());
         assertEquals("seed", row.get("seedSessionId").getAsString());
         JsonObject roots = row.getAsJsonObject("rootAssignments");
-        assertEquals("the valuation's assignment", "119980",
+        assertEquals("the world the selected session ran", "119980",
                 roots.get("HDFS.SERIAL").getAsString());
-        assertEquals("the valuation's moved marker", "true",
+        assertEquals("its marker, planted rather than forced", "true",
                 roots.get("FAULT:IPC").getAsString());
-        assertTrue("a root the valuation left unvaried is not planted: it"
-                + " needs no plant, and its mint may not recur",
+        assertTrue("a root that session did not plant is not planted",
                 !roots.has("OTHER"));
         assertTrue("a clock is a skew, never a value",
                 !roots.has("CLOCK.a"));
-        assertEquals("model instant minus the selected session's reading",
-                "43000", row.getAsJsonObject("clockDeltas").get("CLOCK.a")
+        assertEquals("the skew that session ran with", "43000", row.getAsJsonObject("clockDeltas").get("CLOCK.a")
                         .getAsString());
         JsonObject mints = row.getAsJsonObject("rootMints");
         assertEquals(3, mints.size());
-        assertEquals("where the RECORDING mints it", MINT,
+        assertEquals("where that session minted it", MINT,
                 mints.get("CLOCK.a").getAsString());
         assertEquals("cut at the anchor's first event", 2,
                 row.getAsJsonObject("schedulePrefix").get("events").getAsInt());
@@ -262,20 +283,5 @@ public class ConfirmMainTest {
         assertEquals(anchor.id(),
                 edges.get("ANCHOR").get("occurrence").getAsString());
         assertEquals(40L, edges.get("ANCHOR").get("seq").getAsLong());
-    }
-
-    @Test
-    public void aMovedCellNoSessionOfTheWitnessMintedIsRefusedByName()
-            throws Exception {
-        Path iteration = iteration();
-        try {
-            ConfirmMain.write(iteration, claim("M_J_clock.elsewhere"),
-                    manifest(), folder.newFolder("worker").toPath());
-            fail("a cell nobody minted was planted");
-        } catch (ConfirmMain.Refused refused) {
-            assertTrue(refused.getMessage(), refused.getMessage().contains(
-                    "M_J_clock.elsewhere") && refused.getMessage()
-                    .contains("no session of the witness minted"));
-        }
     }
 }

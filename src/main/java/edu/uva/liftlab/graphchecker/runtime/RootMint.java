@@ -923,14 +923,16 @@ final class RootMint {
             JsonElement expression = primitiveBoxExpression(api, fresh);
             active.recordManualSymbolization(action, action.symbol,
                     exactPath, fieldSignature, expression, true, false,
-                    // WHAT THIS REGION OBSERVED, whether or not a plant
-                    // followed: `concrete` is the value the mint was handed,
-                    // and the plant above builds a FRESH box rather than
-                    // writing into it, so this is the live read and never the
-                    // wave's value.  The wave's value is the focus row's
-                    // statement; a row that states neither leaves the root
-                    // with no centre for its domain (invariant 8).
-                    ConcolicRegionRuntime.recordedScalar(concrete));
+                    // WHAT THIS REGION RAN THE ROOT AT.  A field mint reads
+                    // its plant back from the cell it stands on; this mint
+                    // hands the region a fresh box, so the row states the
+                    // box's value -- the wave's where a plant followed, the
+                    // live read where none did.  The composer holds one
+                    // replay to one value per root (Composer, "stated twice
+                    // and differently"); a marker row that kept stating the
+                    // recording's polarity under an obligation assigning the
+                    // other refused every fault-flip session of bug3.
+                    ConcolicRegionRuntime.recordedScalar(planted));
             if (!assigned.isEmpty()) {
                 edu.uva.liftlab.graphchecker.runtime.FocusedReplay.planted(
                         action.symbol);

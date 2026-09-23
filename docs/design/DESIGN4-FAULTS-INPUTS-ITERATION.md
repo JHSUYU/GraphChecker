@@ -261,12 +261,18 @@ Nothing new is needed.
 ## 5. CONFIRM (a SAT claim, checked by one replay)
 
 SAT says the model satisfies our formula; CONFIRM says the program agrees.
-One focused replay after DECIDE, only for a `SAT_CANDIDATE`: plant the
-model's root values (every declared root, MARKERs included; a clock as the
-skew model instant − the minting session's reading), hold the selected
-path's session schedule exactly as an obligation replay does (strict prefix
-to the anchor, timeouts after), force no flip and inherit none -- the values
-drive the decisions -- and run once. The claim is confirmed iff (a) no
+One focused replay after DECIDE, only for a `SAT_CANDIDATE`: re-run the
+world the selected path's own session ran -- the root values, clock skews
+and answers its obligation's focus row planted, MARKERs included, proven in
+an execution -- with no flip forced and none inherited (the values drive the
+decisions), hold that session's schedule exactly as an obligation replay
+does (strict prefix to the anchor, timeouts after), and run once. The
+model's own instants are the published witness, not what the run is held
+to: a solver sits on the boundary of its constraints and a run's timeline
+moves by more than that (bug1: the anchor reached, the fatal not observed,
+with the model's clock deltas planted). The recording's own session planted
+nothing, and nothing is planted for it.
+The claim is confirmed iff (a) no
 `SCHEDULE_DIVERGED` before the anchor's cut, (b) every edge the model chose
 is the edge the run took -- per message family the selected arm (consumer
 endpoint ← producer endpoint), per state join the writer version the read

@@ -19,7 +19,6 @@ import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import java.io.IOException;
-import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -43,22 +42,25 @@ import java.util.Set;
  * </pre>
  *
  * <p>THE RULE (DESIGN4 §5).  SAT says the model satisfies our formula;
- * CONFIRM says the program agrees: plant the model's root values, hold the
- * selected path's session schedule -- strict prefix to the anchor, timeouts
- * after, exactly what an obligation replay does -- force no flip, run once,
- * and require (a) no SCHEDULE_DIVERGED before the anchor, (b) every edge
- * the model chose is the edge the run took, (c) the fatal observed at the
- * anchor.  This writes what that replay is handed, in the shapes the replay
- * already reads:</p>
+ * CONFIRM says the program agrees: re-run the world the selected path's own
+ * session ran -- the root values, clock skews and answers its obligation
+ * planted, proven in an execution -- with no flip forced, hold that
+ * session's schedule (strict prefix to the anchor, timeouts after, exactly
+ * what an obligation replay does), run once, and require (a) no
+ * SCHEDULE_DIVERGED before the anchor, (b) every edge the model chose is
+ * the edge the run took, (c) the fatal observed at the anchor.  The model's
+ * own instants are the published witness, not what the run is held to: a
+ * solver sits on the boundary of its constraints and a run's timeline moves
+ * by more than that.  This writes what that replay is handed, in the shapes
+ * the replay already reads:</p>
  * <ul>
  *   <li>{@code focused_task.jsonl}: an obligation focus row whose {@code
  *       flip} is {@code null}, focused on the anchor, with {@code
- *       rootAssignments} = the model's value of every declared non-clock
- *       root (the valuation's moved value, else its assignment, else the
- *       recorded value the domain pins it to), {@code clockDeltas} = the
- *       model's instant of every moved clock cell minus the reading of the
- *       session that minted it, {@code rootMints} from the recording, no
- *       inherited flips -- flips are not forced, the values decide;</li>
+ *       rootAssignments}, {@code clockDeltas}, {@code answers} and {@code
+ *       rootMints} copied from the focus row of the obligation whose replay
+ *       is the selected session, no inherited flips -- flips are not
+ *       forced, the values decide.  The recording's own session planted
+ *       nothing, and nothing is planted for it;</li>
  *   <li>{@code schedule_prefix.jsonl} / {@code schedule_suffix.jsonl}: the
  *       selected session's schedule cut at the anchor;</li>
  *   <li>{@code expected_edges.jsonl}: the edges the model chose -- {@code
@@ -66,7 +68,8 @@ import java.util.Set;
  *       arm, {@code STATE} (reader endpoint, writer endpoint, version) per
  *       state join of the selected path (the session's own join, or the
  *       writer a selected {@code writer_arm__} names), {@code MARKER}
- *       (root, polarity), {@code ANCHOR} (occurrence, seq).</li>
+ *       (root, polarity) per marker that world planted, {@code ANCHOR}
+ *       (occurrence, seq).</li>
  * </ul>
  *
  * <p>WHICH PATH AND WHICH ARMS.  {@code claim.json} states the valuation
@@ -76,9 +79,8 @@ import java.util.Set;
  * composer already reads off the model.  Nothing is re-solved.</p>
  *
  * <p>A confirmation nothing can run is refused by name (exit 1, the reason
- * on stderr and in the summary): a moved clock cell no session of the
- * witness minted, a root the recording mints nowhere, a selected session
- * without a target row at the anchor.  The driver reads a refusal as
+ * on stderr and in the summary): a selected session without a target row
+ * at the anchor, a selected arm no session attested.  The driver reads a refusal as
  * "unconfirmed, because ...".</p>
  */
 public final class ConfirmMain {
@@ -180,48 +182,32 @@ public final class ConfirmMain {
                     + " states no target row at the anchor " + anchor.id());
         }
 
-        // The model's values.  The valuation's moved roots win, then its
-        // assignment, then the recorded value the domain pins an unvaried
-        // root to -- ClaimPolicy's own overlay, read the same way.
-        Map<String, String> model = new LinkedHashMap<String, String>();
-        model.putAll(strings(valuation, "assignment"));
-        model.putAll(strings(valuation, "moved"));
-        Map<String, String> assignments =
-                new LinkedHashMap<String, String>();
+        // THE WORLD THE SELECTED PATH RAN IN, values only.  Its own session
+        // planted these roots and clocks and observed the fatal with its
+        // flips forced; the confirmation re-runs that world with nothing
+        // forced, so the values alone must drive every decision.  The
+        // model's re-solved instants are the published witness, not what a
+        // run is held to: a solver sits on the boundary of its constraints,
+        // and a run's own timeline moves by more than that.
+        JsonObject world = obligationWorld(iteration, sessionId);
+        Map<String, String> assignments = strings(world, "rootAssignments");
+        Map<String, String> clockDeltas = strings(world, "clockDeltas");
+        Map<String, String> mints = strings(world, "rootMints");
+        Map<String, String> answers = strings(world, "answers");
         List<JsonObject> markers = new ArrayList<JsonObject>();
-        Map<String, String> kinds = new LinkedHashMap<String, String>();
         for (JsonElement element : array(manifest, "roots")) {
             JsonObject root = element.getAsJsonObject();
             String rootId = text(root, "rootId");
-            String kind = text(root, "kind");
-            kinds.put(rootId, kind);
-            if ("CLOCK".equals(kind)) continue;
-            String value = model.containsKey(rootId) ? model.get(rootId)
-                    : text(root, "recordedValue");
-            // Only a MOVED root is planted: one at its recorded value needs
-            // no plant, and a mint the confirmation's own world never
-            // reaches (a door that does not fire there) must not be owed.
-            if (value.isEmpty() || value.equals(text(root, "recordedValue"))) {
+            if (!"MARKER".equals(text(root, "kind"))
+                    || !assignments.containsKey(rootId)) {
                 continue;
             }
-            assignments.put(rootId, value);
-            if ("MARKER".equals(kind)) {
-                JsonObject marker = new JsonObject();
-                marker.addProperty("kind", "MARKER");
-                marker.addProperty("root", rootId);
-                marker.addProperty("value", Boolean.parseBoolean(value));
-                markers.add(marker);
-            }
-        }
-
-        // A clock's counterfactual is a SKEW: the model's instant for the
-        // cell minus the reading of the session that minted it, which is
-        // the selected session or an arm's.  The claim names the cell by
-        // its symbol; the mint row is what joins symbol to root.
-        Map<String, RootMintRow> bySymbol =
-                new LinkedHashMap<String, RootMintRow>();
-        for (RootMintRow row : session.roots()) {
-            bySymbol.put(row.symbol(), row);
+            JsonObject marker = new JsonObject();
+            marker.addProperty("kind", "MARKER");
+            marker.addProperty("root", rootId);
+            marker.addProperty("value",
+                    Boolean.parseBoolean(assignments.get(rootId)));
+            markers.add(marker);
         }
         Map<String, SessionReader> armSessions =
                 new LinkedHashMap<String, SessionReader>();
@@ -231,77 +217,8 @@ public final class ConfirmMain {
             if (armSession.isEmpty() || armSessions.containsKey(armSession)) {
                 continue;
             }
-            SessionReader reader = SessionReader.read(iteration, armSession);
-            armSessions.put(armSession, reader);
-            for (RootMintRow row : reader.roots()) {
-                if (!bySymbol.containsKey(row.symbol())) {
-                    bySymbol.put(row.symbol(), row);
-                }
-            }
-        }
-        Map<String, String> clockDeltas = new LinkedHashMap<String, String>();
-        for (Map.Entry<String, String> moved
-                : strings(decided, "movedRoots").entrySet()) {
-            RootMintRow cell = bySymbol.get(moved.getKey());
-            if (cell == null) {
-                if (kinds.containsKey(moved.getKey())) continue;
-                throw new Refused("the claim moves cell " + moved.getKey()
-                        + ", which no session of the witness minted");
-            }
-            if (!"CLOCK".equals(cell.kind().name())) continue;
-            String reading = cell.recordedValue() == null ? ""
-                    : cell.recordedValue().trim();
-            BigInteger instant;
-            BigInteger skew;
-            try {
-                instant = new BigInteger(moved.getValue().trim());
-                skew = instant.subtract(new BigInteger(reading));
-            } catch (NumberFormatException notAnInstant) {
-                throw new Refused("clock cell " + cell.rootId()
-                        + " is moved to " + moved.getValue() + " against a"
-                        + " reading of \"" + reading + "\", so no skew can"
-                        + " be stated");
-            }
-            // FAIL CLOSED, as ObligationFactory does: a CLOCK cell is a
-            // millisecond count in a Java long, so both the skew the row
-            // carries and the instant the mint plants have to be one.
-            if (!JavaPrimitiveSmtSemantics.fitsJavaLong(skew)
-                    || !JavaPrimitiveSmtSemantics.fitsJavaLong(instant)) {
-                throw new Refused("clock cell " + cell.rootId()
-                        + " is owed instant " + instant + ", a skew of "
-                        + skew + " on the " + reading + " its session read,"
-                        + " and a clock is a Java long: no replay could"
-                        + " apply it");
-            }
-            clockDeltas.put(cell.rootId(), skew.toString());
-        }
-
-        // Where each root is minted, by the RECORDING -- the same rule an
-        // obligation's focus row follows (ObligationFactory): a value is
-        // planted at its mint and nowhere else.
-        Map<String, String> mints = new LinkedHashMap<String, String>();
-        SessionReader seed = SessionReader.read(iteration, seedSessionId);
-        Set<String> planted = new LinkedHashSet<String>(assignments.keySet());
-        planted.addAll(clockDeltas.keySet());
-        for (String rootId : planted) {
-            RootMintRow mint = null;
-            // The selected session's mint first: a root minted only in the
-            // witness's world (a door the recording never fired) is planted
-            // where that world minted it.
-            for (RootMintRow row : session.roots()) {
-                if (row.rootId().equals(rootId)) mint = row;
-            }
-            for (RootMintRow row : mint == null ? seed.roots()
-                    : Collections.<RootMintRow>emptyList()) {
-                if (row.rootId().equals(rootId)) mint = row;
-            }
-            if (mint == null) {
-                throw new Refused("the model assigns root " + rootId
-                        + ", which neither the selected session nor the"
-                        + " recording " + seedSessionId
-                        + " mints, so no occurrence can plant it");
-            }
-            mints.put(rootId, mint.occurrence().render());
+            armSessions.put(armSession, SessionReader.read(iteration,
+                    armSession));
         }
 
         // The schedule half: the selected session's order, cut at the
@@ -328,7 +245,7 @@ public final class ConfirmMain {
                         .Confirmation.FILE), edges);
 
         JsonObject focus = focusRow(anchor, seedSessionId, pathId,
-                assignments, clockDeltas, mints, cut);
+                assignments, clockDeltas, answers, mints, cut);
         // {@code flip: null} IS the row's statement, so the null is written
         // -- the codec's Gson drops nulls, and a row with no flip member is
         // no obligation at all to the replay.
@@ -349,11 +266,28 @@ public final class ConfirmMain {
         return summary;
     }
 
+    /**
+     * The focus row of the obligation whose replay is {@code sessionId}:
+     * the world that session ran (roots planted, clock skews, answers,
+     * mints).  Empty for the recording's own session, which planted nothing.
+     */
+    static JsonObject obligationWorld(Path iteration, String sessionId)
+            throws IOException {
+        for (ObligationDir worker : ObligationDir.workersIn(iteration)) {
+            if (!sessionId.equals(worker.sessionId())) continue;
+            List<JsonObject> rows = RowCodec.readJsonl(
+                    worker.dir().resolve(ObligationDir.FOCUSED_TASK));
+            if (!rows.isEmpty()) return rows.get(0);
+        }
+        return new JsonObject();
+    }
+
     /** The focus row: an obligation that flips nothing. */
     private static JsonObject focusRow(OccurrenceAddress anchor,
                                        String seedSessionId, String pathId,
                                        Map<String, String> assignments,
                                        Map<String, String> clockDeltas,
+                                       Map<String, String> answers,
                                        Map<String, String> mints,
                                        SchedulePrefix.Cut cut) {
         JsonObject task = new JsonObject();
@@ -372,7 +306,7 @@ public final class ConfirmMain {
         task.add("inheritedFlips", new JsonArray());
         task.add("rootAssignments", object(assignments));
         task.add("clockDeltas", object(clockDeltas));
-        task.add("answers", new JsonObject());
+        task.add("answers", object(answers));
         task.add("rootMints", object(mints));
         task.add("unproducible", new JsonArray());
         task.add("schedulePrefix", cut.toJson());
