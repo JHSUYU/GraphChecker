@@ -36,7 +36,7 @@ import java.util.function.Predicate;
  * <p>{@link SmtLowering} keeps a delegator for each member its callers name,
  * so nothing outside this package had to change.</p>
  */
-final class SmtNames {
+public final class SmtNames {
 
     private SmtNames() {
     }
@@ -81,7 +81,7 @@ final class SmtNames {
      * name was looked up, no declaration was found for it, and a query
      * emitted a subterm over a constant it never declared.</p>
      */
-    static boolean symbolCharacter(char value) {
+    public static boolean symbolCharacter(char value) {
         if (Character.isLetterOrDigit(value)) return true;
         return "~!@$%^&*_-+=<>.?/#'".indexOf(value) >= 0;
     }

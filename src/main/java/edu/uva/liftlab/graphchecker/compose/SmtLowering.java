@@ -29,9 +29,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Collection;
 import java.util.Set;
-import java.util.function.Predicate;
 
 import static edu.uva.liftlab.graphchecker.compose.VmTermLowering.smtLiteral;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
@@ -494,19 +492,19 @@ public final class SmtLowering extends VmLoweringCore {
         int index = 0;
         while (index < term.length()) {
             char value = term.charAt(index);
-            if (!symbolCharacter(value)) {
+            if (!SmtNames.symbolCharacter(value)) {
                 text.append(value);
                 index++;
                 continue;
             }
             int end = index;
             while (end < term.length()
-                    && symbolCharacter(term.charAt(end))) {
+                    && SmtNames.symbolCharacter(term.charAt(end))) {
                 end++;
             }
             String token = term.substring(index, end);
             index = end;
-            if (!reference(token)) {
+            if (!SmtNames.reference(token)) {
                 text.append(token);
                 continue;
             }
@@ -1410,14 +1408,14 @@ public final class SmtLowering extends VmLoweringCore {
         int index = 0;
         while (index < text.length()) {
             char value = text.charAt(index);
-            if (!symbolCharacter(value)) {
+            if (!SmtNames.symbolCharacter(value)) {
                 out.append(value);
                 index++;
                 continue;
             }
             int end = index;
             while (end < text.length()
-                    && symbolCharacter(text.charAt(end))) {
+                    && SmtNames.symbolCharacter(text.charAt(end))) {
                 end++;
             }
             String token = text.substring(index, end);
@@ -1693,7 +1691,7 @@ public final class SmtLowering extends VmLoweringCore {
      * it would put a name in the query that nothing there binds.</p>
      */
     public List<String> facts(Iterable<String> texts) {
-        Set<String> reached = new LinkedHashSet<String>(preambleNames());
+        Set<String> reached = new LinkedHashSet<String>(SmtNames.preambleNames());
         for (Declaration declaration : reachedBy(texts)) {
             reached.add(declaration.name);
         }
@@ -1701,8 +1699,8 @@ public final class SmtLowering extends VmLoweringCore {
         for (Stated held : assertions) {
             if (!held.label.isEmpty()) continue;
             boolean whole = true;
-            for (String name : names(held.formula)) {
-                if (BUILTIN.contains(name) || reached.contains(name)) {
+            for (String name : SmtNames.names(held.formula)) {
+                if (SmtNames.BUILTIN.contains(name) || reached.contains(name)) {
                     continue;
                 }
                 whole = false;
@@ -1773,7 +1771,7 @@ public final class SmtLowering extends VmLoweringCore {
     private void reach(String text, Set<String> done,
                        List<Declaration> ordered, int depth) {
         if (text == null || text.isEmpty() || depth > 512) return;
-        for (String token : names(text)) {
+        for (String token : SmtNames.names(text)) {
             if (!done.add(token)) continue;
             SharedTerm shared = sharedByName.get(token);
             if (shared != null) {
@@ -1839,8 +1837,8 @@ public final class SmtLowering extends VmLoweringCore {
                                 Set<String> into, Set<String> states,
                                 int depth) {
         if (text == null || text.isEmpty() || depth > 512) return;
-        for (String name : names(text)) {
-            if (BUILTIN.contains(name) || !seen.add(name)) continue;
+        for (String name : SmtNames.names(text)) {
+            if (SmtNames.BUILTIN.contains(name) || !seen.add(name)) continue;
             SharedTerm shared = sharedByName.get(name);
             if (shared != null) {
                 // A container subterm is the value of a recorded STATE, and
@@ -1876,62 +1874,6 @@ public final class SmtLowering extends VmLoweringCore {
      * variables" -- so the three questions are asked of one tokenizer and
      * cannot disagree about where a name ends.</p>
      */
-    // ------------------------------------------------------------------
-    // The one tokenizer, relocated (SmtNames), named here for its callers.
-    // ------------------------------------------------------------------
-
-    /** Every name SMT-LIB itself states; see {@link SmtNames#BUILTIN}. */
-    public static final Set<String> BUILTIN = SmtNames.BUILTIN;
-
-    /** The names a {@code let} in this term binds; see {@link
-     * SmtNames#letBound}. */
-    public static Set<String> letBound(String term) {
-        return SmtNames.letBound(term);
-    }
-
-    /** Every token of one SMT-LIB text; see {@link SmtNames#names}. */
-    public static List<String> names(String text) {
-        return SmtNames.names(text);
-    }
-
-    /** The free names of one text; see {@link SmtNames#symbols}. */
-    public static Set<String> symbols(String text, Set<String> into) {
-        return SmtNames.symbols(text, into);
-    }
-
-    /** One renaming pass; see {@link SmtNames#rename}. */
-    public static String rename(String text, Map<String, String> renames,
-                                Predicate<String> stated,
-                                Set<String> unknown) {
-        return SmtNames.rename(text, renames, stated, unknown);
-    }
-
-    /** The preamble lines a query reaches; {@link SmtNames#reachedPreamble}. */
-    public static List<String> reachedPreamble(List<String> preamble,
-                                               Iterable<String> texts) {
-        return SmtNames.reachedPreamble(preamble, texts);
-    }
-
-    /** The names the preamble states; see {@link SmtNames#preambleNames}. */
-    public static Set<String> preambleNames() {
-        return SmtNames.preambleNames();
-    }
-
-    /** Whether a term names a symbol; see {@link SmtNames#mentions}. */
-    static boolean mentions(String term, String symbol) {
-        return SmtNames.mentions(term, symbol);
-    }
-
-    /** Whether a token is an expression reference; {@link SmtNames#reference}. */
-    static boolean reference(String token) {
-        return SmtNames.reference(token);
-    }
-
-    /** Whether a character may stand in a symbol; see {@link SmtNames}. */
-    private static boolean symbolCharacter(char value) {
-        return SmtNames.symbolCharacter(value);
-    }
-
     /** The preamble alone: the sorts and functions, no declaration. */
     public List<String> preambleLines() {
         List<String> lines = new ArrayList<String>();
@@ -1955,7 +1897,7 @@ public final class SmtLowering extends VmLoweringCore {
         query.append("(set-option :produce-unsat-cores true)").append('\n');
         // ONE preamble, and the query states the part of it the query
         // reaches: #preambleLines is the list, #reachedPreamble the rule.
-        for (String line : reachedPreamble(preambleLines(), texts)) {
+        for (String line : SmtNames.reachedPreamble(preambleLines(), texts)) {
             query.append(line).append('\n');
         }
     }
@@ -2011,12 +1953,7 @@ public final class SmtLowering extends VmLoweringCore {
         for (Stated held : assertions) {
             query.append(held.render()).append('\n');
         }
-        return legalSymbols(query.toString());
-    }
-
-    /** One query text, spelled legally; see {@link SmtNames#legalSymbols}. */
-    public static String legalSymbols(String query) {
-        return SmtNames.legalSymbols(query);
+        return SmtNames.legalSymbols(query.toString());
     }
 
     // ------------------------------------------------------------------

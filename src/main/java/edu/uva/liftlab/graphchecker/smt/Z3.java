@@ -209,6 +209,8 @@ public final class Z3 {
         }
         List<String> core = Collections.emptyList();
         if (wantCore && "unsat".equals(status)) {
+            // The core as z3 returns it; (set-option :smt.core.minimize
+            // true) before this check-sat is an optional later switch.
             core = parseCore(run(text + "(check-sat)\n(get-unsat-core)\n"));
         }
         // Why it did not decide, asked the same way: one more run, only

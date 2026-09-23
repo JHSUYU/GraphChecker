@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.explore;
 
 import edu.uva.liftlab.graphchecker.compose.JavaSmtSorts;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
+import edu.uva.liftlab.graphchecker.compose.SmtNames;
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering;
 import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
@@ -691,11 +692,11 @@ final class FlipQuery {
         private Set<String> reachedVariables() {
             Set<String> names = new LinkedHashSet<String>();
             for (String assertion : assertions) {
-                SmtLowering.symbols(assertion, names);
+                SmtNames.symbols(assertion, names);
             }
             for (String line : FlipQueryText.statedDeclarations(corpus,
                     lowered, this, assertions)) {
-                SmtLowering.symbols(line, names);
+                SmtNames.symbols(line, names);
             }
             return names;
         }
@@ -714,7 +715,7 @@ final class FlipQuery {
         /** Whether the rendered query already states this name. */
         @Override
         public boolean stated(String name, String sessionId) {
-            if (SmtLowering.preambleNames().contains(name)) return true;
+            if (SmtNames.preambleNames().contains(name)) return true;
             SmtLowering lowering = corpus.lowering(sessionId);
             return lowering != null && lowering.minted(name);
         }
@@ -1275,7 +1276,7 @@ final class FlipQuery {
                 bound.add(sessionId + "|" + symbol);
                 state(sessionId, symbol);
             }
-            return SmtLowering.rename(term, rename,
+            return SmtNames.rename(term, rename,
                     name -> stated(name, sessionId), unknown);
         }
 
@@ -1522,7 +1523,7 @@ final class FlipQuery {
                 Map<String, String> rename = renamesOf(sessionId);
                 for (String fact : lowering.facts(texts)) {
                     Set<String> unknown = new LinkedHashSet<String>();
-                    String renamed = SmtLowering.rename(fact, rename,
+                    String renamed = SmtNames.rename(fact, rename,
                             name -> stated(name, sessionId), unknown);
                     if (!unknown.isEmpty()) {
                         gaps.add(GapRow.of(sessionId,
