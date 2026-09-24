@@ -46,9 +46,10 @@ import java.util.Set;
  * session ran -- the root values, clock skews and answers its obligation
  * planted, proven in an execution -- with no flip forced, hold that
  * session's schedule (strict prefix to the anchor, timeouts after, exactly
- * what an obligation replay does), run once, and require (a) no
- * SCHEDULE_DIVERGED before the anchor, (b) every edge the model chose is
- * the edge the run took, (c) the fatal observed at the anchor.  The model's
+ * what an obligation replay does), run once, and require (a) every edge the
+ * model chose is the edge the run took and (b) the fatal observed at the
+ * anchor.  The schedule is how the replay reproduces the session, not what
+ * the claim says; a divergence of the order stays a diagnostic.  The model's
  * own instants are the published witness, not what the run is held to: a
  * solver sits on the boundary of its constraints and a run's timeline moves
  * by more than that.  This writes what that replay is handed, in the shapes

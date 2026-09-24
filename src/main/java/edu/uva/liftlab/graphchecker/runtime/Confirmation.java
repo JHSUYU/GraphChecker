@@ -21,8 +21,8 @@ import java.util.Set;
  * program agrees: the model's roots are planted, the selected path's
  * session schedule is held (strict prefix to the anchor, timeouts after --
  * an obligation replay), no flip is forced, and the run is required to (a)
- * not diverge from the schedule before the anchor, (b) take every edge the
- * model chose, (c) observe the fatal at the anchor.  This class is (b):
+ * take every edge the model chose and (b) observe the fatal at the anchor.
+ * This class is (a):
  * {@code explore.ConfirmMain} writes {@value #FILE} beside the focus row --
  * one {@code WIRE} row per selected arm (consumer endpoint id, producer
  * endpoint id), one {@code STATE} row per state join of the selected path

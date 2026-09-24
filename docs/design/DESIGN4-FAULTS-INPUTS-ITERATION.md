@@ -254,15 +254,24 @@ to: a solver sits on the boundary of its constraints and a run's timeline
 moves by more than that (bug1: the anchor reached, the fatal not observed,
 with the model's clock deltas planted). The recording's own session planted
 nothing, and nothing is planted for it.
-The claim is confirmed iff (a) no
-`SCHEDULE_DIVERGED` before the anchor's cut, (b) every edge the model chose
+The claim is confirmed iff (a) every edge the model chose
 is the edge the run took -- per message family the selected arm (consumer
 endpoint ← producer endpoint), per state join the model chose among alternative writers the writer the read
-observed (a join with one candidate is the recording's, and rule (c) checks where it leads), per marker its planted polarity -- and (c) the anchor's target
-row states `observedFatal` and `reachedAnchor`. Checking, never enforcing:
+observed (a join with one candidate is the recording's, and rule (b) checks where it leads), per marker its planted polarity -- and (b) the anchor's target
+row states `observedFatal` and `reachedAnchor`. The edges and the fatal are
+the evidence; the schedule is how the replay reproduces the selected
+session, and a divergence of it stays a diagnostic gap (2026-09-24): the
+order holds communication and thread events, not plain field accesses, so a
+race between threads can move events the model's explanation does not
+depend on. Round v36's hdfs-17899-bug2 CONFIRM took every edge the model
+chose and observed the fatal at the anchor, and was refused on the order
+alone: the workload's `triggerHeartbeatForTests` read the DataNode actor's
+`nextHeartbeatTime` after that actor's heartbeat instead of before, waited
+for the next one, which the order places after the workload's own request,
+and the watchdog gave the slots up. Checking, never enforcing:
 the existing hooks (the attach, the read and write rows, the target row)
 compare against `expected_edges.jsonl` and file `CONFIRM_MISMATCH`
 (DIAGNOSTIC) gaps; the run is scheduled by the session's schedule as today.
-Failing any of the three downgrades the claim to `SAT_UNCONFIRMED` with the
+Failing either downgrades the claim to `SAT_UNCONFIRMED` with the
 first mismatch named (`final/confirm.json`, copied into `result.json`); the
 acceptance harness passes a case only on `confirmed=true`.

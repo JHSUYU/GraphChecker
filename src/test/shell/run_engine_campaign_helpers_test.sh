@@ -95,7 +95,6 @@ emit_fixture() {
     solver: {schemaVersion: 4, kind: "ROOT_VALUATION_REPORT",
       state: "sat", reachability: "REACHABLE",
       unsatClosureComplete: false, gaps: [],
-      symbolicVariableModels: [],
       valuations: [{values: [false], status: "unsat"},
                    {values: [true], status: "sat"}],
       campaignClaim: {schemaVersion: 1, kind: "CAMPAIGN_CLAIM",
@@ -105,13 +104,14 @@ emit_fixture() {
         findingKind: "MARKER_FLIPPED", polarityDecides: true,
         valuationOrdinal: 1,
         movedRoots: {"HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED": "true"},
-        rootSpace: {reachability: "REACHABLE",
-                    faultSensitive: true}}}}' \
+        witnessFindings: [{findingKind: "MARKER_FLIPPED",
+          valuationOrdinal: 1, polarityDecides: true,
+          movedRoots: {"HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED": "true"}}]}}}' \
     >"${composition_manifest}"
   # CONFIRM's answer for that SAT claim: the one replay agreed.  EMIT
   # requires it for every SAT_CANDIDATE and copies it into the result.
   jq -n '{schemaVersion: 1, kind: "CONFIRMATION", confirmed: true,
-    reason: "the schedule held to the anchor, every edge the model chose was taken, and the anchor observed the fatal",
+    reason: "every edge the model chose was taken, and the anchor observed the fatal",
     sessionId: "CONFIRM-1"}' >"${campaign_final}/confirm.json"
   # One replay session, per kind, as the runtime publishes it.  IMPORT
   # counted these into the census EMIT requires; the fixture states both.
@@ -163,9 +163,7 @@ emit_fixture_undecided_roots() {
          detail: "no satisfying witness names a mechanism"}],
       whyNotAccepted: ("claim=INCONCLUSIVE_PARTIAL: 2 blocker(s) withhold acceptance\n  TARGET_UNCONSTRAINED_BY_ROOTS: no symbolic root flips the target predicate\n  FINDING_MECHANISM_UNNAMED [NO_MECHANISM]: no satisfying witness names a mechanism"),
       findingKind: "NO_SUPPORTED_WITNESS", polarityDecides: false,
-      valuationOrdinal: 0, movedRoots: {},
-      rootSpace: {reachability: "REACHABLE",
-                  faultSensitive: true}}}' \
+      valuationOrdinal: 0, movedRoots: {}, witnessFindings: []}}' \
     "${composition_manifest}" >"${composition_manifest}.tmp"
   mv "${composition_manifest}.tmp" "${composition_manifest}"
 }
@@ -209,13 +207,18 @@ jq -e '.targetOccurrence == "REGION.T#1"
   "${campaign_final}/result.json" >/dev/null \
   || fail "the result does not name the composed anchor: \
 $(jq -c '.targetOccurrence' "${campaign_final}/result.json")"
-# CLAIM-1: the whole policy decision, so no consumer has to open the solver
-# report to find the claim this file was written from.
-jq -e '.rootSpace.reachability == "REACHABLE"
-  and (.rootSpace | has("faultSensitive"))' \
+# CLAIM-1: the policy decision, so no consumer has to open the solver
+# report to find the claim this file was written from -- the mechanism, the
+# valuation it rests on, the roots it moved, and the witness findings once.
+jq -e '.findingKind == "MARKER_FLIPPED" and .polarityDecides == true
+  and .valuationOrdinal == 1
+  and .movedRoots["HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED"] == "true"
+  and (.witnessFindings | length) == 1
+  and .witnessFindings[0].findingKind == "MARKER_FLIPPED"
+  and (has("rootSpace") | not)' \
   "${campaign_final}/result.json" >/dev/null \
-  || fail "the result does not carry the claim root space: \
-$(jq -c '.rootSpace' "${campaign_final}/result.json")"
+  || fail "the result does not carry the claim's decision: \
+$(jq -c '{findingKind, polarityDecides, valuationOrdinal, movedRoots, witnessFindings}' "${campaign_final}/result.json")"
 
 # An obligation the solver could not decide in its budget is an unexplored
 # sibling path.  The runtime classes it DIAGNOSTIC on the row, so it leaves a
@@ -689,7 +692,11 @@ done
 # 44: `campaign_max_iterations` left with the epoch loop (one iteration per
 # campaign; growth happens inside EXPLORE's waves), `causynth_cache_dir` with
 # the seed cache, and `causynth_process_dirs`, which no case ever set.
-[[ "$(print_normalized_config | wc -l)" -eq 45 ]] \
+# 46: `causynth_lineage_roots` joined it with the lineage scope: which class
+# roots the weave scanned for thread starts, handoffs and timed waits decides
+# which threads a run attributes and which waits the schedule holds, so two
+# runs that scanned different roots did not replay under the same rules.
+[[ "$(print_normalized_config | wc -l)" -eq 46 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 # CONFIG-4: the discovery artifacts are derived from causynth_output_dir and
@@ -2299,7 +2306,7 @@ run_confirm INCONCLUSIVE_PARTIAL
   || fail "a claim that is not SAT_CANDIDATE was confirmed"
 grep -q 'nothing to confirm' "${confirm_root}/confirm-stage.log" \
   || fail "the stage did not say why it ran nothing"
-# The rule, all three conditions holding.
+# The rule, both conditions holding.
 run_confirm SAT_CANDIDATE
 confirm_says true "the anchor observed the fatal" "a clean replay was not confirmed"
 [[ $(jq -r '.sessionId' "${campaign_final}/confirm.json") == CONFIRM-1 ]] \
@@ -2307,23 +2314,24 @@ confirm_says true "the anchor observed the fatal" "a clean replay was not confir
 [[ -s "${campaign_final}/confirm/worker/focused_task.jsonl" \
     && -s "${campaign_final}/confirm/worker/expected_edges.jsonl" ]] \
   || fail "the confirmation replay was not handed the focus row and the edges"
-# (a) A divergence BEFORE the anchor's cut (prefix of 10 events) is not
-# confirmed; one past it is the run running free, as every replay does.
+# The order is how the replay reproduces the session, not what the claim
+# says: a divergence before the anchor's cut (prefix of 10 events) or past it
+# stays the diagnostic it is, and the edges and the fatal decide.
 confirm_stub_gaps='{"sessionId":"CONFIRM-1","kind":"SCHEDULE_DIVERGED","cls":"DIAGNOSTIC","subject":"schedule#3","detail":"the run took RECV b, the prefix names SEND a"}'
 run_confirm SAT_CANDIDATE
-confirm_says false "schedule#3 (prefix of 10)" \
-  "a divergence before the anchor was confirmed"
+confirm_says true "every edge" \
+  "a divergence of the order was held against a claim whose edges and fatal held"
 confirm_stub_gaps='{"sessionId":"CONFIRM-1","kind":"SCHEDULE_DIVERGED","cls":"DIAGNOSTIC","subject":"schedule#12","detail":"past the cut"}
 {"sessionId":"CONFIRM-1","kind":"SCHEDULE_DIVERGED","cls":"DIAGNOSTIC","subject":"schedule-rest#2","detail":"the rest gave up"}'
 run_confirm SAT_CANDIDATE
 confirm_says true "every edge" "a divergence past the anchor's cut was held against the claim"
-# (b) An edge the model chose that the run did not take.
+# (a) An edge the model chose that the run did not take.
 confirm_stub_gaps='{"sessionId":"CONFIRM-1","kind":"CONFIRM_MISMATCH","cls":"DIAGNOSTIC","subject":"WIRE e1","detail":"WIRE e1: the model chose producer p1, the run paired p2"}'
 run_confirm SAT_CANDIDATE
 confirm_says false "the model chose producer p1, the run paired p2" \
   "a mismatched edge was confirmed"
 confirm_stub_gaps=""
-# (c) The fatal not observed at the anchor.
+# (b) The fatal not observed at the anchor.
 confirm_stub_fatal=false
 run_confirm SAT_CANDIDATE
 confirm_says false "observed the fatal" "a healthy anchor was confirmed"

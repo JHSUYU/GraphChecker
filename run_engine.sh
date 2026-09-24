@@ -3359,9 +3359,10 @@ campaign_decide() {
 # replay runs through campaign_obligation_replay exactly as an obligation
 # does, into its own sessions directory under final/confirm.  The verdict is
 # read off the session it published: ADMITTED (the roots were planted and
-# the prefix reproduced), no SCHEDULE_DIVERGED before the anchor's cut, no
-# CONFIRM_MISMATCH, and a target row that reached the anchor and observed
-# the fatal.  Every other outcome -- a refused task, a replay that published
+# the anchor was reached), no CONFIRM_MISMATCH, and a target row that reached
+# the anchor and observed the fatal.  The schedule is how the replay
+# reproduces the selected session, not what the claim says: a divergence of
+# the order stays a diagnostic gap of the session (DESIGN4 SS5).  Every other outcome -- a refused task, a replay that published
 # no verdict -- is "unconfirmed, because ...": EMIT downgrades the claim,
 # the campaign does not fail.  Only a SAT_CANDIDATE is confirmed; any other
 # claim has nothing to confirm and the stage says so.
@@ -3423,12 +3424,12 @@ campaign_confirm_verdict() {
       reason: $reason, sessionId: $sessionId}'
 }
 
-# The decision, off the session the confirmation replay published: the
-# three conditions of the rule in order, the first one failing named.
+# The decision, off the session the confirmation replay published: the two
+# conditions of the rule in order, the first one failing named.
 campaign_confirm_decide() {
   local worker=$1 sessions=$2
   local result_row="${worker}/obligation_result.jsonl"
-  local verdict session_id detail session_dir cut diverged mismatch fatal
+  local verdict session_id detail session_dir mismatch fatal
   verdict=$(jq -r '.verdict // ""' "${result_row}")
   session_id=$(jq -r '.sessionId // ""' "${result_row}")
   detail=$(jq -r '.detail // ""' "${result_row}")
@@ -3443,22 +3444,7 @@ ${verdict:-not run}: ${detail}" "${session_id}"
 ${session_id}, which ${sessions} does not hold" "${session_id}"
     return 0
   fi
-  # (a) The schedule held to the anchor.  The turnstile files a divergence
-  # as schedule#<position>; one before the prefix's cut means the run left
-  # the selected path before the anchor.  Past the cut it runs free.
-  cut=$(jq -r '.schedulePrefix.events // 0' "${worker}/focused_task.jsonl")
-  diverged=$(jq -r --argjson cut "${cut}" '
-    select(.kind == "SCHEDULE_DIVERGED")
-    | select(.subject | startswith("schedule#"))
-    | select((.subject | sub("^schedule#"; "") | tonumber) < $cut)
-    | "\(.subject) (prefix of \($cut)): \(.detail)"' \
-    "${session_dir}/gaps.jsonl" 2>/dev/null | head -n 1)
-  if [[ -n "${diverged}" ]]; then
-    campaign_confirm_verdict false "the run left the selected path's \
-schedule before the anchor at ${diverged}" "${session_id}"
-    return 0
-  fi
-  # (b) Every edge the model chose is the edge the run took.
+  # (a) Every edge the model chose is the edge the run took.
   mismatch=$(jq -r 'select(.kind == "CONFIRM_MISMATCH") | .detail' \
     "${session_dir}/gaps.jsonl" 2>/dev/null | head -n 1)
   if [[ -n "${mismatch}" ]]; then
@@ -3466,7 +3452,7 @@ schedule before the anchor at ${diverged}" "${session_id}"
 not choose: ${mismatch}" "${session_id}"
     return 0
   fi
-  # (c) The fatal, observed at the anchor.
+  # (b) The fatal, observed at the anchor.
   fatal=$(jq -r 'select(.reachedAnchor == true and .observedFatal == true)
     | "observed"' "${session_dir}/targets.jsonl" 2>/dev/null | head -n 1)
   if [[ "${fatal}" != observed ]]; then
@@ -3474,9 +3460,8 @@ not choose: ${mismatch}" "${session_id}"
 reached the anchor and observed the fatal" "${session_id}"
     return 0
   fi
-  campaign_confirm_verdict true "the schedule held to the anchor, every \
-edge the model chose was taken, and the anchor observed the fatal" \
-    "${session_id}"
+  campaign_confirm_verdict true "every edge the model chose was taken, and \
+the anchor observed the fatal" "${session_id}"
 }
 
 campaign_artifact_digests() {
