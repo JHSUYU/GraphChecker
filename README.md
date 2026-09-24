@@ -452,7 +452,12 @@ with no clock cell moved — the owner's ruling, §12), `polarityDecides`, non-e
 that clock values are plausible under a monotone floor. The last accepted round was judged by an
 assessor plus two skeptics per case on exactly those four checks.
 
-## 9. Status (2026-09-23, evening)
+## 9. Status (2026-09-24: 9/9 on `main`; the history below stands as written)
+
+**2026-09-24 04:01: nine of nine pass on one snapshot, `p37` = `6e21b90e3`, which is `main`**
+(§10 item 1 has the table and the evidence directories). The paragraphs below are the
+history that led there, kept as written on 2026-09-23.
+
 
 **Superseded acceptance: 9/9 on `main` = `497dc8beb` (round v15, 2026-09-23 02:00)** — its
 block-key witnesses are `CLOCK_SKEW`, which the owner ruled is not acceptance for those cases
@@ -589,16 +594,36 @@ that `main` moves and the parked housekeeping is due.
    | hdfs-17967-pathC | SAT_CANDIDATE, confirmed | MARKER_FLIPPED, IPC request door true, no clock | 669 |
    | hdfs-11741 | SAT_CANDIDATE, confirmed | CLOCK_SKEW, the NameNode's rotation clocks moved, polarity deciding | 3666 |
 
-   Next, the owner's post-goal directive (2026-09-24): delete every intermediate product, delete
-   dead and redundant code and refactor (item 4), re-validate the nine on the refactored
-   snapshot, fast-forward `main`, and keep one Hadoop branch per case (`gc/<case>`).
-4. **The cleanup the read found (§14, R-items).** *Now, before the round* — each after `git
-   grep` for readers, one commit per package: the dead members and second spellings (R1, R3,
-   R8, R11, R12, R23, R25, R27–R29, R31, R35–R37, R40, R42, R43, R45, R47, R49, R50, R55–R57,
-   R59–R65) and the fallbacks that become refusals (R6, R20+R51, R24+R54, R44, R46). *After
-   9/9* — the structural ones: one thread context instead of three stacks (R18), fold
-   `VmLoweringCore` into `SmtLowering` (R58), decide the refined graph (R48, R14), delete
-   recording pass 1 (R13), `transferKind` (R32), and the D4 review plan (item 9).
+   **Re-validated 2026-09-24 04:01 on the refactored snapshot `p37` = `6e21b90e3` (round v35,
+   `~/gc-out/accept-v35-*`, the evidence that stands; v32/v33 and `p35` are deleted):** the
+   same nine mechanisms, 17960 306 s, bug1 388, pathC 501, pathB 505, bug3 513, pathA 541,
+   17897 575, bug2 752 (the SPS reply door `REGION.9ffdee3d`), 11741 3706 s (CLOCK_SKEW, four
+   waves, confirmed). Round v34 on `p36` = `fbf3fb523` failed every case at DECIDE (item 4's
+   lesson) and was stopped after 17960. The owner's post-goal directive (2026-09-24) is then
+   done except the push: intermediates deleted, dead code and fallbacks removed in four batches
+   (item 4), `main` fast-forwarded to the branch locally, one Hadoop branch per case
+   (`gc/<case>`); nothing is pushed without the owner's word.
+4. **The cleanup the read found (§14, R-items) -- done 2026-09-24 in four batches on the
+   branch** (`6ad752ef7`, `3e0768815`, `fbf3fb523`, `6e21b90e3`), each after `git grep` for
+   readers in `src`, `run_engine.sh`, `experiments/hadoop` and `tools`, 156 tests green at each:
+   the dead members and second spellings R1, R3, R8, R11, R12, R16, R23, R25, R26, R28, R29,
+   R35, R36 (`graphKind`; the three list members are read by the planner and stay), R37, R40,
+   R42, R43, R45, R47, R49, R50, R55, R56, R57, R59, R60, R64; the fallbacks that became
+   refusals R2, R20 (an unreadable skeleton file; a missing one still means "compare ids",
+   because three test fixtures write a map alone), R44, R46, R61, R62; the folds R33 (one read
+   of the mapping file) and R39 (one exit row per guard site). R5 was folded by D3, R63 and R65
+   earlier. *Round v34's lesson*: batch one deleted R55's row shape after grepping `src` only,
+   and `run_engine.sh`'s DECIDE gate still validated it field by field, so every case failed at
+   "no valid symbolic variable model" (17960 at 239 s) -- a published shape's readers include
+   the scripts, and the fastest case proves a snapshot before the round is read. *Deferred, each
+   a design pass plus a re-validation round*: R4 (the CLOCK cell filed at the mint and again at
+   the root row; the second filing is documented as deliberate -- decide, do not delete), R6 (a
+   refusal path inside a runtime hook), R7 (`materializeSymbolicBoolean` is called from the
+   workload trees through `annotation.Debug`, so its name stays), R13, R14/R48, R18/R9, R19,
+   R21/R22 (a port's receiver id under four names and the field whitelist in
+   `ConcolicScheduler`), R24/R54, R27 (`DependencyRole` has readers), R31, R32, R34 (readers),
+   R41, R52 (every named member has a reader), R58, and item 9. R30's note was stale
+   (`declaredLoopBounds` is computed once); R10 and R15 are kept by design.
 5. **Memory per obligation worker.** `ObligationSolverMain` calls `Corpus.read(iteration, …)`
    for one obligation, so every worker holds the whole corpus and a wave of 8 holds it 8 times
    (lift11, 11741 v21 wave 2: 26 of 30 GB used and 9 GB swapped). Either a worker reads only
@@ -773,6 +798,10 @@ causynth, smt, explore, compose, shim, `run_engine.sh`, `experiments/hadoop/lib`
 `git grep` verifies it; nothing here is fixed until §10 says so. D = a defect that costs a
 case; R = redundancy, dead code, a fallback or a second spelling, which the owner's rule
 deletes on sight after its readers are listed.
+
+*Status 2026-09-24*: the R-items §10 item 4 names as done are deleted on the branch; the rest
+are deferred there by name, with the reason. The D-items were fixed by the commits §10 item 0
+names.
 
 ### Defects
 
