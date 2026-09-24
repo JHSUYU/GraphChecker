@@ -16,6 +16,10 @@ fi
 export CAUSYNTH_REPO=${repo}
 export CAUSYNTH_MODULE_DIR=${module}
 export CAUSYNTH_CLASSES_DIR=${analysis}
+# The lineage scope is the whole tree's, whatever the case analyses
+# (plan.LineageScan): a thread start or queue handoff in a class outside the
+# analysis scope is still where a thread's cause comes from.
+export CAUSYNTH_LINEAGE_ROOTS="${repo}/hadoop-common-project/hadoop-common/target/classes:${repo}/hadoop-hdfs-project/hadoop-hdfs-client/target/classes:${module}/target/classes"
 export CAUSYNTH_TEST_CLASSES_DIR=${module}/target/test-classes
 export CAUSYNTH_CLASSPATH
 CAUSYNTH_CLASSPATH=$(bash "${lib}/classpath.sh" "${case_dir}" "${case_id}")

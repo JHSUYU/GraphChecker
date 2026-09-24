@@ -1896,8 +1896,13 @@ public final class CausynthPipeline {
         int framed = 0;
         int walked = 0;
         int waited = 0;
+        int lineage = 0;
         for (SootClass type : new ArrayList<>(
                 Scene.v().getApplicationClasses())) {
+            // A class the lineage scope alone brought in carries its work
+            // starts and claims and nothing else (LineageScope).
+            boolean lineageOnly = LineageScope.lineageOnly(type.getName());
+            if (lineageOnly) lineage++;
             for (SootMethod method : new ArrayList<>(type.getMethods())) {
                 Body body = CausynthStaticFacts.activeBody(method);
                 if (body == null) continue;
@@ -1938,7 +1943,8 @@ public final class CausynthPipeline {
                     // claims it where it takes it -- the element may be a
                     // lambda no weave reaches, so its own entry cannot.
                     boolean claims = claimsFromQueue(stmt.getInvokeExpr());
-                    Unit last = replaceTimedWait(body, stmt, site);
+                    Unit last = lineageOnly ? null
+                            : replaceTimedWait(body, stmt, site);
                     if (last != null) waited++;
                     else last = stmt;
                     if (claims && last instanceof AssignStmt
@@ -1960,16 +1966,17 @@ public final class CausynthPipeline {
                 // frame above what the work has already entered.
                 Unit entry = safeInstrumentationEntry(body, method);
                 if (claimWorkEntry(body, method, entry, refs)) claimed++;
-                if (openMethodLevel(body, method, originalUnits, entry,
-                        refs)) {
+                if (!lineageOnly && openMethodLevel(body, method,
+                        originalUnits, entry, refs)) {
                     framed++;
                 }
             }
         }
         LOG.info("Instrumented {} calling-context frame(s), {} work start(s),"
                 + " {} work claim(s) and {} timed wait(s) across {} method(s)"
-                + " of the application scope for the execution index", framed,
-                filed, claimed, waited, walked);
+                + " of the application scope for the execution index, {} "
+                + "class(es) of it for their lineage alone", framed, filed,
+                claimed, waited, walked, lineage);
     }
 
     /**

@@ -119,6 +119,7 @@ workflow_config_keys=(
   # No default here: a campaign that states none is refused by name.
   "causynth_loop_default_bound CAUSYNTH_LOOP_DEFAULT_BOUND krp -"
   "causynth_symbolic_inputs CAUSYNTH_SYMBOLIC_INPUTS krp -"
+  "causynth_lineage_roots CAUSYNTH_LINEAGE_ROOTS krp -"
   # What the case says its declared roots may be, beside what the recording
   # read: one row per source id, with declaredDomainMin/Max absolute or
   # written +k / -k from the recorded value.  A root with no row stays pinned
@@ -603,6 +604,16 @@ do_analyze() {
   system_properties+=(
     "-Dcausynth.region.skeletons=${causynth_region_skeletons}"
   )
+  # The lineage scope (plan.LineageScan), on the two weave runs and never on
+  # discovery: every class of the application that starts, hands off or
+  # runs work gets the lineage hooks, whatever the case analyses.
+  if [[ -n "${causynth_lineage_roots}" ]] && [[ "${concolic_selected}" == true \
+      || "${CAUSYNTH_TRACE_MODE:-}" == region-state ]]; then
+    local lineage
+    lineage=$(campaign_lineage_classes) \
+      || die "the lineage scan failed over ${causynth_lineage_roots}"
+    system_properties+=("-Dcausynth.lineage.dirs=${lineage}")
+  fi
   if [[ "${concolic_selected}" == true ]]; then
     system_properties+=(
       "-Dcausynth.instrument.concolic=true"
@@ -623,6 +634,23 @@ do_analyze() {
     "${input_flag}" "${project_classes_dir}" \
     -x "${project_classpath}" \
     -o "${analysis_classes_dir}"
+}
+
+# The lineage scope's classes, scanned once per output directory from the
+# application's own class roots (causynth_lineage_roots, colon-separated),
+# leaving out what the analysis scope already holds.  Prints the directory.
+campaign_lineage_classes() {
+  local out="${causynth_output_dir}/lineage-classes"
+  local -a roots=()
+  if [[ ! -d "${out}" ]]; then
+    IFS=: read -r -a roots <<<"${causynth_lineage_roots}"
+    rm -rf -- "${out}.partial"
+    mkdir -p "${out}.partial"
+    run_java_main edu.uva.liftlab.graphchecker.plan.LineageScan \
+      "${out}.partial" "${project_classes_dir}" "${roots[@]}" >&2 || return 1
+    mv -- "${out}.partial" "${out}"
+  fi
+  printf '%s\n' "${out}"
 }
 
 # The occurrence of the annotated site the case declares.  It is a config

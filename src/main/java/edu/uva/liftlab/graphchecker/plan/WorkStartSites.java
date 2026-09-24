@@ -211,10 +211,19 @@ public final class WorkStartSites {
      * list's writes too.</p>
      */
     private static final Set<String> QUEUE_SUBMISSIONS =
-            names("put", "offer", "add");
+            names("put", "offer", "add", "putFirst", "putLast", "offerFirst",
+                    "offerLast", "addFirst", "addLast");
 
-    /** The claims of a queue handoff: what the call RETURNS is the work. */
-    private static final Set<String> QUEUE_CLAIMS = names("take", "poll");
+    /**
+     * The claims of a queue handoff: what the call RETURNS is the work.
+     *
+     * <p>A deque's ends are handoffs too: the DataNode actor puts a
+     * KeyUpdateCommand at the head of its command queue ({@code putFirst})
+     * and its command processor takes it, and a list without the ends left
+     * that key delivery with no cause.</p>
+     */
+    private static final Set<String> QUEUE_CLAIMS = names("take", "poll",
+            "takeFirst", "takeLast", "pollFirst", "pollLast");
 
     /** Whether this call hands its first argument to a queue's consumer. */
     public static boolean submitsToQueue(String calleeName, int argumentCount,
@@ -231,6 +240,50 @@ public final class WorkStartSites {
         return calleeName != null && receiverType != null
                 && QUEUE_CLAIMS.contains(calleeName)
                 && receiverType.is(QUEUE_TYPE);
+    }
+
+    // ---- the lineage scan ------------------------------------------------
+
+    /**
+     * Whether a call, read off bytecode with no class hierarchy, may be a
+     * work start or a queue handoff: the names above, the receiver-carried
+     * starts with no argument, the submissions with one, and a queue's by a
+     * {@code java.util.concurrent} owner.  It errs wide on purpose -- a class
+     * it keeps is only handed to the weave, which asks the exact shapes of
+     * {@link #startsReceiver}, {@link #submitsArguments}, {@link
+     * #submitsToQueue} and {@link #claimsFromQueue} with the hierarchy in
+     * hand; a class it drops is a lineage hole ({@code LineageScan}).
+     */
+    public static boolean mayHandOffWork(String ownerInternalName,
+                                         String calleeName,
+                                         int argumentCount) {
+        if (calleeName == null) return false;
+        if (argumentCount == 0) {
+            for (Set<String> starts : RECEIVER_STARTS.values()) {
+                if (starts.contains(calleeName)) return true;
+            }
+        }
+        if (argumentCount >= 1 && SUBMISSION_NAMES.contains(calleeName)) {
+            return true;
+        }
+        boolean concurrent = ownerInternalName != null
+                && ownerInternalName.startsWith("java/util/concurrent/");
+        return concurrent && (QUEUE_CLAIMS.contains(calleeName)
+                || (argumentCount >= 1
+                        && QUEUE_SUBMISSIONS.contains(calleeName)));
+    }
+
+    /**
+     * Whether a method, read off bytecode, may be the entry of started work:
+     * a no-argument method named as one of {@link #WORK_ENTRIES}' entries.
+     * Wide for the same reason as {@link #mayHandOffWork}.
+     */
+    public static boolean mayEnterWork(String methodName, int argumentCount) {
+        if (argumentCount != 0 || methodName == null) return false;
+        for (Set<String> entries : WORK_ENTRIES.values()) {
+            if (entries.contains(methodName)) return true;
+        }
+        return false;
     }
 
     // ---- timed waits -----------------------------------------------------

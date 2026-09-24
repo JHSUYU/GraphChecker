@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker;
 
+import edu.uva.liftlab.graphchecker.causynth.LineageScope;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections;
 import edu.uva.liftlab.graphchecker.option.GraphCheckerOptions;
 import edu.uva.liftlab.graphchecker.option.OptionError;
@@ -282,6 +283,9 @@ public class GraphCheckerMain {
                 dirs.add(file.getAbsolutePath());
             }
         }
+        // The lineage scope, on the two weave runs that name it: application
+        // classes of the run, woven for their lineage alone (LineageScope).
+        dirs.addAll(LineageScope.dirs());
         if (dirs.size() > inputDirs.size()) {
             LOG.info("Expanded Soot process dirs to {}", dirs);
         }
