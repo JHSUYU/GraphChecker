@@ -336,11 +336,26 @@ public final class ScheduleLog {
         return pending(kind, site, "");
     }
 
+    /**
+     * The event this hook makes, or null when it makes none.
+     *
+     * <p>AN EVENT WITH NO IDENTITY HOLDS NO PLACE.  A thread whose context
+     * is {@code Lost} is one no scope reached, and every such thread shares
+     * that one context, so the k of its key would count all their events
+     * together -- a cross-thread counter, which an event's identity may
+     * never be (G8).  Ordered by it, the slower replay met the recording's
+     * k's in another interleaving and waited for them: hdfs-17967 path B
+     * v26, once the lineage weave put work starts on the NameNode's IPC
+     * reader threads, stalled five times and gave up 42 of 80 slots.  So it
+     * is neither written nor held, in the recording and in the replay alike,
+     * and runs free.</p>
+     */
     private static Pending pending(ScheduleEvent.Kind kind, String site,
                                    String endpoint) {
         String stable = JvmNames.stable(Text.safe(site));
         if (stable.isEmpty()) return null;
         try {
+            if (Identity.contextHere().isLost()) return null;
             return new Pending(kind, contextHere(), stable,
                     Identity.innermostRegionId(), Text.safe(endpoint));
         } catch (Throwable unnamed) {

@@ -30,11 +30,22 @@ public class ScheduleLogTest {
     private final List<JsonObject> written =
             Collections.synchronizedList(new ArrayList<JsonObject>());
 
+    /**
+     * The node every test's threads run for.  An event with no identity
+     * holds no place in the order, so the test thread opens one request and
+     * every thread a test starts inherits it, as work a request starts does:
+     * they all state one context.
+     */
+    private static final SourceRef NODE =
+            new SourceRef("CLUSTER_NODE", "DATANODE", "t/dn0", 0L);
+    private long request;
+
     @Before
     public void reset() {
         RuntimeTraceContext.resetForTests();
         Identity.resetForTests();
         ScheduleLog.resetForTests();
+        openRequest();
         RecordingWindow.open();
         System.clearProperty(ScheduleLog.TIMEOUT_PROPERTY);
         ScheduleLog.install(new ScheduleLog.Sink() {
@@ -45,10 +56,30 @@ public class ScheduleLogTest {
         });
     }
 
+    /** The test's one request, on a freshly reset runtime. */
+    private void openRequest() {
+        Object node = new Object();
+        RuntimeTraceContext.registerSource(node, NODE);
+        request = RuntimeTraceContext.beginRequest(node, "schedule-test");
+    }
+
     @After
     public void tearDown() {
         System.clearProperty(ScheduleLog.TIMEOUT_PROPERTY);
         ScheduleLog.resetForTests();
+        if (request != 0L) RuntimeTraceContext.endRequest(request);
+    }
+
+    @Test
+    public void anEventWithNoIdentityHoldsNoPlace() {
+        RuntimeTraceContext.endRequest(request);
+        request = 0L;
+        assertTrue(Identity.contextHere().isLost());
+        ScheduleLog.observe(ScheduleEvent.Kind.START, "<A: void a()>#u1");
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "HADOOP_IPC#REQUEST");
+        assertTrue("every unattributed thread shares one context, so its k "
+                + "would be a cross-thread counter: " + events(),
+                written.isEmpty());
     }
 
     @Test
@@ -643,6 +674,7 @@ public class ScheduleLogTest {
         RuntimeTraceContext.resetForTests();
         Identity.resetForTests();
         ScheduleLog.resetForTests();
+        openRequest();
         ScheduleLog.install(new ScheduleLog.Sink() {
             @Override
             public void write(JsonObject row) {
@@ -1396,8 +1428,8 @@ public class ScheduleLogTest {
     }
 
     /**
-     * One event as this JVM's threads compute it: none of them is attributed
-     * to a node, so every one of them states the same context.
+     * One event as this JVM's threads compute it: every one of them runs in
+     * the test's one request, so every one states the same context.
      */
     private static ScheduleEvent event(ScheduleEvent.Kind kind, String site) {
         return ScheduleEvent.of(0L, kind, ScheduleLog.contextHere(), site, 0,
