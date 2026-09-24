@@ -444,9 +444,9 @@ public final class ExploreMain {
         manifest.addProperty("proposed", open.obligations.size());
         manifest.addProperty("answered", frontier.answeredCount());
         JsonArray rows = new JsonArray();
-        Map<String, int[]> perTask = frontier.perTask();
+        Map<String, Integer> proposedPerTask = frontier.proposedPerTask();
         for (Task task : tasks) {
-            int[] counts = perTask.get(task.taskId());
+            Integer proposedHere = proposedPerTask.get(task.taskId());
             JsonObject row = new JsonObject();
             row.addProperty("taskId", task.taskId());
             row.addProperty("focused", task.focused().render());
@@ -455,7 +455,7 @@ public final class ExploreMain {
             // Why this occurrence is a task at all: a reader of the manifest
             // must not have to re-derive the closure to find out.
             row.addProperty("why", why.get(task.taskId()));
-            row.addProperty("proposed", counts == null ? 0 : counts[1]);
+            row.addProperty("proposed", proposedHere == null ? 0 : proposedHere);
             rows.add(row);
         }
         manifest.add("taskRows", rows);

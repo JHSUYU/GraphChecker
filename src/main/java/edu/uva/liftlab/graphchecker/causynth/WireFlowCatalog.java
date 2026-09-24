@@ -254,8 +254,6 @@ public final class WireFlowCatalog {
                     client().method);
             row.put(CommunicationCatalogContract.SERVER_ENTRY_METHOD,
                     server().method);
-            row.put(CommunicationCatalogContract.SERVER_ENTRY_CANDIDATES,
-                    Collections.singletonList(server().method));
             row.put(PRODUCER, producer.row());
             row.put(CONSUMER, consumer.row());
             return row;

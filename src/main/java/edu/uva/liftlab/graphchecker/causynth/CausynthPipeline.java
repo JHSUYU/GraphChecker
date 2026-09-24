@@ -3469,11 +3469,6 @@ public final class CausynthPipeline {
                 ? ((AssignStmt) stmt).getLeftOp() : NullConstant.v();
     }
 
-    /** Static worklist admission is not receiver-type evidence. */
-    static List<String> conservativeDispatchTargets(List<String> targets) {
-        return targets == null ? Collections.<String>emptyList()
-                : new ArrayList<>(targets);
-    }
 
     private void instrumentBranch(Body body, SootMethod method, IfStmt branch,
                                   int unitIndex, Local callId,

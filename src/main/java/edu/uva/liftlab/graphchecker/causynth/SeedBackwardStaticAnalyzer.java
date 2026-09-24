@@ -2059,8 +2059,6 @@ final class SeedBackwardStaticAnalyzer {
         if (targetMethods.isEmpty()) {
             return;
         }
-        targetMethods = CausynthPipeline.conservativeDispatchTargets(
-                targetMethods);
         for (String targetMethod : targetMethods) {
             if (targetMethod.equals(callee.raw)) {
                 continue;

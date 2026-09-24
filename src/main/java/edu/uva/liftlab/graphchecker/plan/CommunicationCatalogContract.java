@@ -32,9 +32,6 @@ public final class CommunicationCatalogContract {
     public static final String DECLARED_CALLEE = "declaredCallee";
     /** Consumer-side method of the declared wire flow. */
     public static final String SERVER_ENTRY_METHOD = "serverEntryMethod";
-    /** Consumer-side methods reachable from this static flow. */
-    public static final String SERVER_ENTRY_CANDIDATES =
-            "serverEntryCandidates";
     public static final String PORT_ID = "portId";
     /** REQUEST or RESPONSE. */
     public static final String PORT_DIRECTION = "direction";

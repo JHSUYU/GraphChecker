@@ -311,10 +311,8 @@ final class RuntimeTraceContext {
      */
     static View enterRoot(Object receiver) {
         State state = CURRENT.get();
-        // No seed here: a start's scope is taken back where the work CLAIMS
-        // it (#claimCarried), in both passes, and this hook is the
-        // recording's alone.
-        Seed seed = null;
+        // A start's scope is taken back where the work CLAIMS it
+        // (#claimCarried), in both passes; this hook is the recording's alone.
         SourceRef registered = sourceFor(receiver);
         // Which authority answered: the receiver's own registration, or the
         // context this thread inherited.  Replay can reproduce the first by
@@ -326,9 +324,7 @@ final class RuntimeTraceContext {
         SourceRef source = Attribution.resolve(receiver);
         // A receiver that named no source of its own keeps the ambient stamp,
         // which is the only answer available while the trace is being written.
-        String requestKey = seed == null ? state.requestKey : seed.requestKey;
-        String requestApi = seed == null ? state.requestApi : seed.requestApi;
-        if (seed != null || state.laneId == 0L) {
+        if (state.laneId == 0L) {
             state.laneId = nextId();
         }
         long spanId = nextId();
@@ -340,23 +336,7 @@ final class RuntimeTraceContext {
                 state.requestKey, state.requestApi,
                 state.exchangeTransport, state.exchangeCorrelationId,
                 state.exchangeAttemptId, state.exchangeHalf);
-        if (seed != null) {
-            // The work was created inside a scope and is running on a
-            // thread that may never have been in one: the carried lineage
-            // is installed here, with the task itself as its own hop.
-            frame.lineageToken = Lineage.restore(seed.lineage,
-                    source == null ? "" : source.key(), Role.EXECUTOR_TASK,
-                    "");
-        }
         state.source = source;
-        state.requestKey = requestKey;
-        state.requestApi = requestApi;
-        if (seed != null) {
-            state.exchangeTransport = seed.exchangeTransport;
-            state.exchangeCorrelationId = seed.exchangeCorrelationId;
-            state.exchangeAttemptId = seed.exchangeAttemptId;
-            state.exchangeHalf = seed.exchangeHalf;
-        }
         state.frames.push(frame);
         publishCausalSource(state);
         return state.view();

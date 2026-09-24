@@ -1242,8 +1242,6 @@ final class ConcolicTaskPlan {
                 new LinkedHashSet<>();
         /** Turns run and given back for carrying no selected anchor. */
         /** Stable identity shared by every task in one linked replay. */
-        final String replayGroupId;
-        final String topologyEpoch;
         /** The declared target branch event of a target-reach task. */
         final String targetBranchSite;
         final int targetBranchOccurrence;
@@ -1333,9 +1331,6 @@ final class ConcolicTaskPlan {
             // plan, and a flip replay links that same plan.  A row that
             // names none is a plan no scheduler wrote, and the importer
             // refuses its results by name (CONCOLIC_RESULT_REPLAY_GROUP_MISSING).
-            this.replayGroupId = optionalString(task.json(),
-                    "replayGroupId");
-            this.topologyEpoch = optionalString(task.json(), "topologyEpoch");
             // The plan row decoded this catalog once; phase ids are already
             // one strict ordered ledger by then, so this is an index, not a
             // second admission.

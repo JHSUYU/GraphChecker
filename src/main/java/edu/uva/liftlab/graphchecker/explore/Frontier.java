@@ -211,17 +211,13 @@ public final class Frontier {
         return new Wave(index, obligations);
     }
 
-    /** Per task: how many queries are answered, and how many this wave asks. */
-    public Map<String, int[]> perTask() {
-        Map<String, int[]> counts = new LinkedHashMap<String, int[]>();
-        for (Task task : tasks) counts.put(task.taskId(), new int[]{0, 0});
-        for (Map.Entry<String, String> entry : proposedBy.entrySet()) {
-            int[] count = counts.get(entry.getValue());
-            if (count == null) {
-                count = new int[]{0, 0};
-                counts.put(entry.getValue(), count);
-            }
-            count[1]++;
+    /** Per task: how many obligations this wave proposes. */
+    public Map<String, Integer> proposedPerTask() {
+        Map<String, Integer> counts = new LinkedHashMap<String, Integer>();
+        for (Task task : tasks) counts.put(task.taskId(), 0);
+        for (String taskId : proposedBy.values()) {
+            Integer count = counts.get(taskId);
+            counts.put(taskId, count == null ? 1 : count + 1);
         }
         return counts;
     }

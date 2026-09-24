@@ -275,8 +275,6 @@ public final class ComposeMain {
         // valuation IS the model here: the composer asks one question per
         // valuation, so a satisfying answer names the values it was asked
         // about rather than values the solver chose.
-        row.add("symbolicVariableModels",
-                symbolicVariableModels(composition, decision));
         row.add("valuations", valuations(decision));
         row.add("campaignClaim", campaignClaim(decision, anySat, decided));
         return row;
@@ -355,48 +353,6 @@ public final class ComposeMain {
         return row;
     }
 
-    private static JsonArray symbolicVariableModels(
-            Composer.Composition composition,
-            ClaimPolicy.Decision decision) {
-        JsonArray models = new JsonArray();
-        Claim claim = decision.claim();
-        if (claim.kind() == ClaimKind.NO_SUPPORTED_WITNESS) return models;
-        for (ClaimPolicy.Outcome outcome : decision.outcomes()) {
-            if (outcome.valuation().ordinal() != claim.valuationOrdinal()
-                    || !outcome.answer().sat()) {
-                continue;
-            }
-            JsonObject model = new JsonObject();
-            model.addProperty("schemaVersion", 1);
-            model.addProperty("kind", "SYMBOLIC_VARIABLE_MODEL");
-            model.addProperty("valuationOrdinal",
-                    outcome.valuation().ordinal());
-            JsonArray variables = new JsonArray();
-            for (Map.Entry<String, String> value
-                    : outcome.valuation().assignment().entrySet()) {
-                RootDomain domain = null;
-                for (RootDomain candidate : composition.roots()) {
-                    if (candidate.rootId().equals(value.getKey())) {
-                        domain = candidate;
-                        break;
-                    }
-                }
-                JsonObject variable = new JsonObject();
-                variable.addProperty("inputKind", "CONFIGURED_SOURCE_FIELD");
-                variable.addProperty("sourceKey", value.getKey());
-                variable.addProperty("sourceId", value.getKey());
-                variable.addProperty("sourcePhaseId",
-                        composition.anchor().render());
-                variable.addProperty("fieldSignature", domain == null
-                        ? value.getKey() : domain.kind().name());
-                variable.addProperty("value", value.getValue());
-                variables.add(variable);
-            }
-            model.add("variables", variables);
-            models.add(model);
-        }
-        return models;
-    }
 
     private static JsonArray valuations(ClaimPolicy.Decision decision) {
         JsonArray valuations = new JsonArray();
