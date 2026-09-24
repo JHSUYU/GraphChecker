@@ -320,9 +320,6 @@ final class HandoffMint {
      * mints the same variable and an answer written for one is found by the
      * other.  Empty when any part is missing, which is an attach no replay
      * could be joined at.</p>
-     *
-     * <p>// D2: keyed by the consumer Endpoint and published as an AttachRow
-     * by SessionPublisher (M2).</p>
      */
     private static final String HANDOFF_MINT_PREFIX = "HANDOFF_PHASE.";
 

@@ -341,7 +341,7 @@ public final class RuntimeRegionPlanner {
             }
             result.add(ConfiguredSourcePhaseContract.occurrence(
                     declaration, occurrenceId, event.seq,
-                    event.callId, event.invocationId,
+                    event.invocationId,
                     event.declaredCallee, enclosingCallIds));
         }
         return result;

@@ -937,48 +937,29 @@ campaign_require_claim() {
       "the composition manifest published no ClaimPolicy decision"
 }
 
-# Prints every explicit symbolic root without exposing internal SMT terms.
-# Configured source fields and planned manual symbolizations share this model
-# contract; a missing propagation source is reported as a gap, never minted as
-# another input here.
-campaign_print_symbolic_variable_models() {
-  local report=$1 model_count
+# Prints what the solver answered for each valuation the composer enumerated:
+# its status and the assignment it was asked about, off the manifest's own
+# valuation rows.
+campaign_print_valuations() {
+  local report=$1 count
   campaign_require_json "composition manifest" "${report}" \
     || return 1
-  jq -e '.solver as $r
-    | ($r.symbolicVariableModels | type) == "array"
-    and all($r.symbolicVariableModels[];
-      .schemaVersion == 1
-      and .kind == "SYMBOLIC_VARIABLE_MODEL"
-      and (.valuationOrdinal | type) == "number"
-      and (.variables | type) == "array"
-      and all(.variables[];
-        (.inputKind == "CONFIGURED_SOURCE_FIELD"
-         and ([.sourceKey, .sourceId, .sourcePhaseId, .fieldSignature]
-              | all(type == "string" and length > 0))
-         or .inputKind == "REGION_SYMBOLIC_INPUT"
-         and ([.occurrenceId, .portId, .sourceIdentity,
-               .sourceIdentityAuthority]
-              | all(type == "string" and length > 0)))
-        and has("value")))
+  jq -e '.solver.valuations as $v
+    | ($v | type) == "array"
+    and all($v[];
+      (.ordinal | type) == "number"
+      and (.status | type) == "string"
+      and (.assignment | type) == "object")
   ' "${report}" >/dev/null || return 1
-  model_count=$(jq -r '.solver.symbolicVariableModels | length' "${report}")
-  campaign_count SOLVE SymbolicModels "${report}" \
-    "the solver's model count" "${model_count}"
-  if [[ "${model_count}" -eq 0 ]]; then
-    campaign_log "symbolic variables: no satisfying model"
-    return 0
-  fi
-  while IFS=$'\t' read -r valuation kind source variable phase field value nullness; do
-    campaign_log "symbolic valuation=${valuation} kind=${kind} source=${source} variable=${variable} phase=${phase} field=${field} value=${value}${nullness:+ nullness=${nullness}}"
+  count=$(jq -r '.solver.valuations | length' "${report}")
+  campaign_count SOLVE Valuations "${report}" \
+    "the solver's valuation count" "${count}"
+  while IFS=$'\t' read -r ordinal status assignment; do
+    campaign_log "valuation=${ordinal} ${status}: ${assignment}"
   done < <(jq -r '
-    .solver.symbolicVariableModels[] as $model
-    | $model.variables[]
-    | [$model.valuationOrdinal, .inputKind,
-       (.sourceKey // .occurrenceId), (.sourceId // .portId),
-       (.sourcePhaseId // ""),
-       .fieldSignature, (.value | tostring),
-       (.nullnessValue // "" | tostring)]
+    .solver.valuations[]
+    | [.ordinal, .status,
+       (.assignment | to_entries | map("\(.key)=\(.value)") | join(" "))]
     | @tsv
   ' "${report}")
 }
@@ -1903,18 +1884,10 @@ campaign_plan() {
   cp -f "${runtime_region_plan}" "${frozen}"
   # The recording's schedule is frozen with the plan it was recorded beside:
   # the seed replay of this iteration is held to it (campaign_session_replay).
-  local discovered_schedule candidate
-  discovered_schedule=""
-  for candidate in "$(dirname "${runtime_region_plan}")/schedule.jsonl" \
-      "$(dirname "${runtime_region_plan}")/recorded_schedule.jsonl"; do
-    if [[ -s "${candidate}" ]]; then
-      discovered_schedule="${candidate}"
-      break
-    fi
-  done
-  if [[ -n "${discovered_schedule}" && "${discovered_schedule}" \
-      != "${iteration_dir}/recorded_schedule.jsonl" ]]; then
-    cp -f "${discovered_schedule}" "${iteration_dir}/recorded_schedule.jsonl"
+  local recorded_schedule
+  recorded_schedule="$(dirname "${runtime_region_plan}")/schedule.jsonl"
+  if [[ -s "${recorded_schedule}" ]]; then
+    cp -f "${recorded_schedule}" "${iteration_dir}/recorded_schedule.jsonl"
   fi
   schedule_output_dir="${iteration_dir}"
   do_schedule
@@ -3368,9 +3341,9 @@ valuations=$(jq -r '(.solver.valuations // []) | length' "${report}")"
 campaign_decide() {
   require_nonempty "candidate SMT" "${composed_smt}"
   require_nonempty "candidate composition manifest" "${composition_manifest}"
-  campaign_print_symbolic_variable_models "${composition_manifest}" \
+  campaign_print_valuations "${composition_manifest}" \
     || campaign_fail DECIDE ComposeMain "${composition_manifest}" \
-      "the solver result has no valid symbolic variable model"
+      "the solver result states no valid valuation rows"
   jq -r '"  anchor=\(.anchor // "") finalStatus=\(.finalStatus // "")"
     + " claim=\(.solver.campaignClaim.claim // "")"
     + " blockers=\(.solver.campaignClaim.blockerCount // 0)"' \
@@ -3539,19 +3512,13 @@ campaign_artifact_digests() {
 # cached ones.
 campaign_static_gaps_json() {
   local gzipped="${causynth_output_dir}/communication_gaps.jsonl.gz"
-  if [[ ! -s "${gzipped}" ]]; then
-    echo '[]'
-    return 0
-  fi
+  require_nonempty "static communication gaps" "${gzipped}"
   gzip -d -c -- "${gzipped}" | jq -c -s '.' || return 1
 }
 
 # The planning gaps the runtime plan artifact carries in its catalog row.
 campaign_plan_gaps_json() {
-  if [[ ! -s "${runtime_region_plan}" ]]; then
-    echo '[]'
-    return 0
-  fi
+  require_nonempty "runtime region plan" "${runtime_region_plan}"
   head -n 1 -- "${runtime_region_plan}" | jq -c '.gaps // []' || return 1
 }
 
@@ -3609,7 +3576,9 @@ campaign_write_gaps() {
     case "${gapfile}" in
       */sessions/*/gaps.jsonl) gapstage=REPLAY ;;
       */obligations-*/gaps.jsonl) gapstage=EXPLORE ;;
-      *) gapstage=REPLAY ;;
+      *) rm -rf -- "${scratch}"
+         campaign_fail EMIT campaign_write_gaps "${gapfile}" \
+           "a gaps.jsonl at a path no stage of this campaign writes" ;;
     esac
     jq -c --arg stage "${gapstage}" '. + {stage: (.stage // $stage)}' \
       "${gapfile}" >>"${scratch}/session-gaps.jsonl"
@@ -3818,12 +3787,6 @@ campaign_emit() {
      # sat" gets the mechanism narrative here rather than having to rebuild it
      # from the model.
      witnessFindings: ($decided.witnessFindings // []),
-     reportedFindings: ($decided.rootSpace.reportedFindings // []),
-     # The whole policy decision, not a selection from it.  A consumer asking
-     # which valuation the acceptance rests on, or what shape that witness
-     # has, reads it here rather than opening the composition manifest to
-     # find the claim this file was written from.
-     rootSpace: ($decided.rootSpace // {}),
      # Which execution of the annotated target this claim is about: the one
      # the case declares and the composer anchored on.  A campaign answers
      # about one anchor, so there is no ledger of runners-up to publish.

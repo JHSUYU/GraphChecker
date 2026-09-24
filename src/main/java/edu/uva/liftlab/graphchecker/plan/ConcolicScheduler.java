@@ -340,7 +340,7 @@ public final class ConcolicScheduler {
     static Result scheduleTargetFirst(Arguments arguments)
             throws IOException {
         LoadedInputs loaded = loadInputs(arguments);
-        RuntimeWorkflowDiscovery.RankedWorkflow workflow =
+        RuntimeWorkflowDiscovery.Workflow workflow =
                 RuntimeWorkflowDiscovery.workflow(loaded.regionPlans,
                         arguments.targetOccurrence);
         if (workflow.scheduledTaskCount() > arguments.maxJobs) {
@@ -409,7 +409,7 @@ public final class ConcolicScheduler {
 
     private static List<Result> scheduleSelections(
             Arguments arguments, LoadedInputs loaded,
-            RuntimeWorkflowDiscovery.RankedWorkflow workflow)
+            RuntimeWorkflowDiscovery.Workflow workflow)
             throws IOException {
         List<Result> result = new ArrayList<>();
         for (RuntimeWorkflowDiscovery.Selection selection

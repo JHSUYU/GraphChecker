@@ -12,7 +12,9 @@ import java.util.ArrayDeque;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * R5 bounds: what a replay is allowed to run, and the terminal it takes
@@ -241,7 +243,7 @@ final class LoopAccounting {
         // whole invocation rather than re-asking F1 deeper down where the
         // innermost marker is some other region's fold.
         contexts.push(new LoopRootInvocationContext(token, group.key,
-                Math.max(0, group.hookCount - 1), admittedTasks,
+                Math.max(0, group.hookCount - 1), admittedTasks.keySet(),
                 edu.uva.liftlab.graphchecker.runtime.Identity
                         .foldedEntry()));
         return token;
@@ -279,7 +281,7 @@ final class LoopAccounting {
             if (!context.groupKey.equals(task.loopRootHookGroupKey())) {
                 continue;
             }
-            return context.ordinalByTaskId.containsKey(task.taskId)
+            return context.offeredTaskIds.contains(task.taskId)
                     ? context : null;
         }
         return null;
@@ -322,18 +324,18 @@ final class LoopAccounting {
             extends ConcolicRegionRuntime.SiblingHookGroupEntry {
         /** This invocation's entry event: what a loop task is bound to. */
         final long token;
-        /** Which k this entry was counted at, per task it was offered to. */
-        private final Map<String, Integer> ordinalByTaskId;
+        /** The tasks this entry was offered to. */
+        private final Set<String> offeredTaskIds;
         /** Whether the region entry at this same Java entry folded. */
         private final boolean foldedEntry;
 
         private LoopRootInvocationContext(
                 long token, String groupKey, int remainingSiblingHooks,
-                Map<String, Integer> ordinalByTaskId, boolean foldedEntry) {
+                Set<String> offeredTaskIds, boolean foldedEntry) {
             super(groupKey, remainingSiblingHooks);
             this.token = token;
-            this.ordinalByTaskId = Collections.unmodifiableMap(
-                    new LinkedHashMap<>(ordinalByTaskId));
+            this.offeredTaskIds = Collections.unmodifiableSet(
+                    new LinkedHashSet<>(offeredTaskIds));
             this.foldedEntry = foldedEntry;
         }
     }

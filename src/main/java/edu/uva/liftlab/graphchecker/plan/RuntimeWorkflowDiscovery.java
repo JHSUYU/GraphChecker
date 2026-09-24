@@ -59,7 +59,7 @@ public final class RuntimeWorkflowDiscovery {
      * recording published the activations in and therefore the order a case
      * author counted.</p>
      */
-    static RankedWorkflow workflow(List<RegionInstancePlan> plans,
+    static Workflow workflow(List<RegionInstancePlan> plans,
                                    String declaredOccurrence)
             throws IOException {
         if (plans == null || plans.isEmpty()) {
@@ -112,7 +112,7 @@ public final class RuntimeWorkflowDiscovery {
             selections.add(Selection.dependency(target.campaignId, plan,
                     goal, targetReachGoals.contains(goal.goalId())));
         }
-        return new RankedWorkflow(selections);
+        return new Workflow(selections);
     }
 
     /**
@@ -272,10 +272,10 @@ public final class RuntimeWorkflowDiscovery {
         return !failureSites(goal).isEmpty();
     }
 
-    static final class RankedWorkflow {
+    static final class Workflow {
         private final List<Selection> selections;
 
-        private RankedWorkflow(List<Selection> selections) {
+        private Workflow(List<Selection> selections) {
             this.selections = Collections.unmodifiableList(
                     new ArrayList<>(selections));
         }

@@ -223,7 +223,6 @@ other = probes.get("other", "-")
 # result.json is the one source: EMIT copies the ClaimPolicy decision into it,
 # so there is nothing to fall back to and no second document to reconcile.
 findings = result.get("witnessFindings") or []
-reported = result.get("reportedFindings") or []
 
 
 # ---- PASS criterion -------------------------------------------------------
@@ -406,14 +405,7 @@ if (plain, buggy, other) != ("-", "-", "-"):
     out += ["probe: plain `%s` | buggy `%s` | other `%s` (reported, not a"
             " gate)" % (plain, buggy, other), ""]
 
-if polarity.get("otherMode") == "CLOCKS_PINNED":
-    out += ["## What each polarity asserted", "",
-            "* buggy: nothing asserted — every clock root free, so drift is"
-            " allowed",
-            "* other: every wall clock pinned to the value it recorded"
-            " (%s root(s))" % polarity.get("pinnedClockRoots", "-"),
-            ""]
-elif polarity.get("terms"):
+if polarity.get("terms"):
     names = polarity.get("identities") or polarity.get("terms") or []
 
     def spell(values):
@@ -499,24 +491,6 @@ if findings:
                       else "does not decide"))
     out.append("")
 
-if reported:
-    # rootSpace.reportedFindings carries FINDING rows, the same shape as
-    # witnessFindings -- not gap rows.  Rendered as gaps they came out as
-    # "* **?** `` -- " on every case.
-    out += ["## Reported findings", "",
-            "What the policy read as a finding without letting it carry the"
-            " claim.", ""]
-    for row in reported:
-        moved = row.get("movedRoots") or {}
-        out.append("* **%s** at valuation %s -- %s; polarity %s"
-                   % (row.get("findingKind", "?"),
-                      row.get("valuationOrdinal", "?"),
-                      ", ".join("`%s` = `%s`" % (r, moved[r])
-                                for r in sorted(moved))
-                      if moved else "no root moved off its recorded value",
-                      "**decides**" if row.get("polarityDecides")
-                      else "does not decide"))
-    out.append("")
 
 # The valuations the composer enumerated and what z3 answered for each.
 # Read off result.json, which EMIT copies from the composition manifest: the

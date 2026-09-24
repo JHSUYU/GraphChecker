@@ -512,7 +512,7 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
         phases.add(ConfiguredSourcePhaseContract.occurrence(
                 ConfiguredSourcePhaseContract.declarationsOf(declarations)
                         .get(0),
-                OCCURRENCE, 11L, 7L, 3L, SOURCE_METHOD,
+                OCCURRENCE, 11L, 3L, SOURCE_METHOD,
                 Arrays.asList(Long.valueOf(7L), Long.valueOf(5L))));
         encoded.add(ConfiguredSourcePhaseContract.PLAN_FIELD, phases);
         return encoded;

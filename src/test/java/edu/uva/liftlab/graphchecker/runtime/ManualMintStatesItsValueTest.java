@@ -1133,7 +1133,7 @@ public class ManualMintStatesItsValueTest {
         phases.add(ConfiguredSourcePhaseContract.occurrence(
                 ConfiguredSourcePhaseContract.declarationsOf(declarations)
                         .get(0),
-                occurrence, 11L, 7L, 3L, PHASE_METHOD,
+                occurrence, 11L, 3L, PHASE_METHOD,
                 Arrays.asList(7L, 5L)));
         encoded.add(ConfiguredSourcePhaseContract.PLAN_FIELD, phases);
 

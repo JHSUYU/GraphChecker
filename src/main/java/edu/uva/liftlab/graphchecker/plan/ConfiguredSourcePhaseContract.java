@@ -52,8 +52,8 @@ public final class ConfiguredSourcePhaseContract {
     private static final Set<String> OCCURRENCE_FIELDS = names(
             "schemaVersion", "kind", "authority", "phase", "sourceId",
             "fieldSignature", "declarationMethod", "declarationUnitIndex",
-            "siteId", "phaseId", "phaseKind", "sourceOccurrenceId",
-            "eventSeq", "ownerCallId", "invocationId",
+            "siteId", "phaseId", "sourceOccurrenceId",
+            "eventSeq", "invocationId",
             "runtimeDeclaredCallee", "enclosingCallIds");
 
     private ConfiguredSourcePhaseContract() {
@@ -150,8 +150,7 @@ public final class ConfiguredSourcePhaseContract {
 
     public static JsonObject occurrence(
             Declaration declaration, String occurrenceId,
-            long runtimeEventSeq,
-            long ownerCallId, long runtimeInvocationId,
+            long runtimeEventSeq, long runtimeInvocationId,
             String declaredCallee, Collection<Long> enclosingCallIds) {
         if (declaration == null) {
             throw new IllegalArgumentException("phase declaration is required");
@@ -170,10 +169,8 @@ public final class ConfiguredSourcePhaseContract {
         row.addProperty("siteId", declaration.siteId());
         row.addProperty("phaseId", phaseId(declaration.sourceId(),
                 declaration.siteId(), declaration.phase()));
-        row.addProperty("phaseKind", declaration.phase().name());
         row.addProperty("sourceOccurrenceId", occurrence);
         row.addProperty("eventSeq", runtimeEventSeq);
-        row.addProperty("ownerCallId", ownerCallId);
         row.addProperty("invocationId", runtimeInvocationId);
         row.addProperty("runtimeDeclaredCallee", required(
                 declaredCallee, "runtimeDeclaredCallee"));
@@ -290,11 +287,6 @@ public final class ConfiguredSourcePhaseContract {
                     PLAN_FIELD + " has an unsupported schema");
         }
         Declaration declared = validateHookSite(row, PLAN_FIELD);
-        // phaseKind is the phase under a second name.
-        if (!declared.phase().name().equals(text(row, "phaseKind"))) {
-            throw new IllegalArgumentException(
-                    PLAN_FIELD + " phaseKind disagrees with phase");
-        }
         String sourceOccurrenceId = required(
                 text(row, "sourceOccurrenceId"), "sourceOccurrenceId");
         long eventSeq = exactLong(row, "eventSeq");
@@ -322,11 +314,9 @@ public final class ConfiguredSourcePhaseContract {
             }
             ancestry.add(callId);
         }
-        // ownerCallId is enclosingCallIds[0] under a second name.
-        if (ancestry.isEmpty() || exactLong(row, "ownerCallId")
-                != ancestry.get(0).longValue()) {
+        if (ancestry.isEmpty()) {
             throw new IllegalArgumentException(
-                    PLAN_FIELD + " ancestry does not begin at ownerCallId");
+                    PLAN_FIELD + " requires a non-empty enclosingCallIds");
         }
         return new Occurrence(declared, phaseId, sourceOccurrenceId,
                 eventSeq, invocationId, declaredCallee, ancestry);

@@ -248,8 +248,6 @@ public final class LoopBoundPolicy {
         JsonObject encoded = new JsonObject();
         encoded.addProperty("schemaVersion", SCHEMA_VERSION);
         encoded.addProperty(DEFAULT_FIELD, defaultBackedgeTraversals);
-        encoded.addProperty("maxBackedgeTraversals",
-                maxBackedgeTraversals);
         if (!declared.isEmpty()) {
             JsonObject bounds = new JsonObject();
             for (Map.Entry<String, Integer> entry : declared.entrySet()) {

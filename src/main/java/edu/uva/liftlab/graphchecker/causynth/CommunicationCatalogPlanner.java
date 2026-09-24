@@ -170,14 +170,13 @@ final class CommunicationCatalogPlanner {
                 if (position == null || shape == null) continue;
                 String site = SiteId.of(method,
                         position.intValue());
-                for (int successor = 0;
-                     successor < shape.successors.size(); successor++) {
-                    if (loop.members.contains(
-                            shape.successors.get(successor))) continue;
-                    Map<String, Object> exit = newRow("LOOP_EXIT_DECISION");
-                    exit.put("siteId", site);
-                    exitDecisions.add(exit);
-                }
+                // One row per guard that leaves the loop, however many of
+                // its arms do: the row names the site, its consumer the
+                // method.
+                if (loop.members.containsAll(shape.successors)) continue;
+                Map<String, Object> exit = newRow("LOOP_EXIT_DECISION");
+                exit.put("siteId", site);
+                exitDecisions.add(exit);
             }
             row.put(LoopBoundPolicy.LOOP_EXIT_DECISIONS, exitDecisions);
             int latchIndex = headerPosition.intValue();

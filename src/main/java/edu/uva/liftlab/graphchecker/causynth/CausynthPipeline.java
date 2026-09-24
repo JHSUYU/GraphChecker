@@ -2573,7 +2573,7 @@ public final class CausynthPipeline {
      * Materializes a primitive {@code getstatic} on the exact local that
      * consumed it.
      */
-    private static String instrumentConsumedStaticPrimitiveFieldRead(
+    private static void instrumentConsumedStaticPrimitiveFieldRead(
             Body body, SootMethod method, Stmt stmt, int unitIndex,
             StaticFieldRef field, HookCatalog refs) {
         String declaredSignature =
@@ -2583,13 +2583,10 @@ public final class CausynthPipeline {
                 CausynthStaticFacts.declaredField(field.getFieldRef());
         String declaredName = declared == null
                 ? field.getFieldRef().name() : declared.getName();
-        String unsupportedVerdict = declared != null && declared.isFinal()
-                ? ConcolicMaterializationSelection.STATIC_CONSTANT
-                : ConcolicMaterializationSelection.STATIC_FIELD_UNSUPPORTED;
         if (!(stmt instanceof AssignStmt)
                 || ((AssignStmt) stmt).getRightOp() != field
                 || !(((AssignStmt) stmt).getLeftOp() instanceof Local)) {
-            return unsupportedVerdict;
+            return;
         }
         Local consumed = (Local) ((AssignStmt) stmt).getLeftOp();
         List<Unit> after = new ArrayList<>();
@@ -2604,10 +2601,9 @@ public final class CausynthPipeline {
                         StringConstant.v(declaredSignature),
                         StringConstant.v(declaredName), boxed));
         if (!supported) {
-            return unsupportedVerdict;
+            return;
         }
         insertAfterSequence(body, stmt, after);
-        return "";
     }
 
     private static boolean addPrimitiveRoundTrip(
@@ -2680,7 +2676,7 @@ public final class CausynthPipeline {
      * no bound can be installed on an abrupt transfer out of a protected
      * range.</p>
      */
-    int instrumentConcolicLoopBounds(
+    void instrumentConcolicLoopBounds(
             Set<String> methods, LoopBoundPolicy policy,
             Set<String> fixedCountLoopSites) {
         if (policy == null) {
@@ -2691,7 +2687,6 @@ public final class CausynthPipeline {
         SootMethodRef openInvocation = hooks.ref(Hook.OPEN_LOOP_INVOCATION);
         SootMethodRef closeInvocation = hooks.ref(Hook.CLOSE_LOOP_INVOCATION);
         SootMethodRef checkBackedge = hooks.ref(Hook.CHECK_LOOP_BACKEDGE);
-        int instrumented = 0;
         for (String methodSignature : methods) {
             SootMethod method = CausynthStaticFacts.method(methodSignature);
             if (method == null || !method.isConcrete()) {
@@ -2763,16 +2758,12 @@ public final class CausynthPipeline {
                     splitCfgEdge(body, method, backedge.source,
                             backedge.target, loopId, loopBodyBound,
                             resourceLoop ? replayBody : checkBackedge);
-                    instrumented++;
                 }
                 for (CfgLoopControl.Edge continuation : continuations) {
                     if (!resourceLoop) continue;
                     splitCfgEdge(body, method, continuation.source,
                             continuation.target, loopId, loopBodyBound,
                             replayBody);
-                    // In bounded mode the return value counts the backedges
-                    // this pass split, which a continuation edge is not.
-                    instrumented++;
                 }
                 if (fixedCount) {
                     for (CfgLoopControl.Edge exit : loopExits) {
@@ -2786,7 +2777,6 @@ public final class CausynthPipeline {
                 }
             }
         }
-        return instrumented;
     }
 
     private static boolean naturalLoopHasSite(
@@ -3328,7 +3318,7 @@ public final class CausynthPipeline {
     }
 
     /** Wraps one method in a balanced skeleton envelope. */
-    private Local instrumentLiteMethod(
+    private void instrumentLiteMethod(
             Body body, SootMethod method, List<Unit> originalUnits,
             Unit insertionPoint, Unit lowerBound, Value receiver,
             HookCatalog refs, boolean recordExceptionalExit) {
@@ -3352,7 +3342,6 @@ public final class CausynthPipeline {
         addThrowHandler(body, insertionPoint, refs,
                 recordExceptionalExit ? Hook.THROW_ACTIVE_METHOD
                         : Hook.THROW_ACTIVE_METHOD_LITE, "$causynthThrown");
-        return callId;
     }
 
     private void instrumentRichMethod(

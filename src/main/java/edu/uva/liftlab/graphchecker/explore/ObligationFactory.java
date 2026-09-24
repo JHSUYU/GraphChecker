@@ -492,7 +492,7 @@ public final class ObligationFactory {
                     continue;
                 }
                 DecisionRow decision = path.decisions.get(index);
-                if (!FlipQuery.flippable(corpus, path.sessionId, decision)) {
+                if (!FlipQuery.flippable(decision)) {
                     continue;
                 }
                 if (flipSites == null

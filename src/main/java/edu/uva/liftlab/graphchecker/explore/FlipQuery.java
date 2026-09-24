@@ -190,8 +190,7 @@ final class FlipQuery {
      * is left of E7's rule -- a branch that carries a symbol is flippable --
      * and it is still one rule, asked in one place.</p>
      */
-    static boolean flippable(Corpus corpus, String sessionId,
-                             DecisionRow decision) {
+    static boolean flippable(DecisionRow decision) {
         return Arms.predicate(decision.term());
     }
 

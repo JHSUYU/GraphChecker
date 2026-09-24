@@ -115,9 +115,9 @@ def page(case):
     print("  state          %s" % reach.get("state", "<none>"))
     print("  reachability   %s" % reach.get("reachability", "<none>"))
     claim = reach.get("campaignClaim", {})
-    space = claim.get("rootSpace", {})
-    print("  finding kind   %s" % (space.get("acceptedFindingKind")
-                                   or "<none named>"))
+    findings = claim.get("witnessFindings") or []
+    print("  finding kind   %s" % (findings[0].get("findingKind")
+                                   if findings else "<none named>"))
     for valuation in reach.get("valuations", [])[:6]:
         finding = valuation.get("witnessFinding", {})
         if finding.get("narrative"):

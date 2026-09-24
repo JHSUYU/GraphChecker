@@ -105,7 +105,6 @@ public final class ConcolicInstrumentationSelections {
         private final List<ConfiguredSourcePhaseContract.Occurrence>
                 configuredSourcePhases;
         private final Set<String> instrumentationMethods;
-        private final Set<String> replayAnchorMethods;
         private final String targetMethod;
 
         private InstrumentationPlan(ExecutionTask task) throws IOException {
@@ -135,15 +134,9 @@ public final class ConcolicInstrumentationSelections {
             communicationHandoffs = task.communicationHandoffs();
             configuredSourcePhases = task.configuredSourcePhases();
 
-            LinkedHashSet<String> anchorMethods = new LinkedHashSet<>();
-            if (!task.targetMethod().isEmpty()) {
-                anchorMethods.add(task.targetMethod());
-            }
-
             LinkedHashSet<String> methods = new LinkedHashSet<>();
             methods.add(rootMethod);
             methods.addAll(branchMethods);
-            anchorMethods.addAll(branchMethods);
             // A cut's own frame is where the port's value is presented and
             // received.
             for (CommunicationHandoffSpec site : communicationHandoffs) {
@@ -162,8 +155,6 @@ public final class ConcolicInstrumentationSelections {
                 methods.add(phase.declarationMethod());
             }
             instrumentationMethods = Collections.unmodifiableSet(methods);
-            anchorMethods.remove(rootMethod);
-            replayAnchorMethods = Collections.unmodifiableSet(anchorMethods);
         }
 
         static List<InstrumentationPlan> campaign(Path taskPlan,
@@ -370,7 +361,6 @@ public final class ConcolicInstrumentationSelections {
             methods.add(rootMethod);
             methods.addAll(instrumentationMethods);
             if (!targetMethod.isEmpty()) methods.add(targetMethod);
-            methods.addAll(replayAnchorMethods);
             methods.remove("");
             return methods;
         }

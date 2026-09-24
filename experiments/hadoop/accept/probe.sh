@@ -63,20 +63,10 @@
 # refuse, on a weaker reading of the same evidence, runs the policy accepted;
 # report.py prints what the polarity named instead.
 #
-# For hdfs-17897 and hdfs-11741 there is no Boolean root: the mechanism is
-# wall-clock skew, so "other polarity" is every clock root pinned to the value
-# it recorded, i.e. the world as it happened. Free sat with pinned unsat says
-# the skew is what reaches the target, which is worth reporting; pinned sat
-# says the target is reached without any skew at all, which is worth reporting
-# too.
-#
-# Both cases declare the same two root families (DelegationKey#expiryDate and
-# <org.apache.hadoop.util.Timer: long now()>.return), so one code path serves
-# both: the recorded values come from the composition manifest's
-# recordedRootValues rows, whose "wallClock" flag the composer sets from
-# ClockRootPhysics.clockCallee -- true for Timer.now(), Time.now(),
-# Time.monotonicNow() and System.currentTimeMillis(). Nothing in the pinning is
-# case-specific.
+# A case whose manifest declares no Boolean root (hdfs-11741: its mechanism
+# is wall-clock skew) has no second polarity to spell: the probe says NO_ROOT
+# and the claim layer's CLOCK_SKEW finding, which report.py reads out of
+# result.json, is the answer.
 #
 # Writes probe.tsv (label, verdict, seconds) and probe/polarity.json (what each
 # polarity asserted and where it came from, which report.py reads back); it
@@ -89,35 +79,6 @@ set -uo pipefail
 
 ACCEPT_Z3=${Z3_BIN:-z3}
 ACCEPT_Z3_TIMEOUT=${Z3_TIMEOUT_SECONDS:-600}
-
-# Which root decides this case, and how its two polarities are spelled.
-#   MARKER  -- a Debug.makeSymbolicBoolean fault marker (17899 bug1/2/3)
-#   CONFIG  -- a configured Boolean source (17960's snapshotDeletionOrdered)
-#   CLOCK   -- no Boolean root at all; the mechanism is wall-clock skew
-#              (17897, 11741)
-#
-# 11741 is a CLOCK case, not a MARKER one: /opt/hadoop-hdfs-11741 contains no
-# Debug.makeSymbolicBoolean anywhere (grep over the whole checkout), so there
-# is no fault marker to flip.  Its declared roots are the same two families
-# 17897 declares -- DelegationKey#expiryDate and <org.apache.hadoop.util.Timer:
-# long now()>.return -- and the mechanism is the same: a BlockKey ages out of
-# allKeys under a symbolic clock while the Balancer's cached
-# DataEncryptionKey keeps naming it.
-#
-# This table says how the PROBE spells a case's two polarities (the probe is
-# reported, never gated on; report.py's EXPECTED_MECHANISM is the gate).  What the
-# composition must have CONCLUDED for the case to pass is the other per-case
-# table, EXPECTED_MECHANISM at the top of report.py, which is where the PASS
-# criterion is computed.  Keep the two consistent: a case whose root kind
-# changes here needs its expected witness kind revisited there.
-acc_root_kind_of() {
-  case "$1" in
-    hdfs-17899-*)            echo MARKER ;;
-    hdfs-17960)              echo CONFIG ;;
-    hdfs-17897|hdfs-11741)   echo CLOCK ;;
-    *)                       echo MARKER ;;
-  esac
-}
 
 # The declared-polarity table that used to sit beside this one is gone.  It
 # held one row -- hdfs-17960 = false, from that case's README.md -- as the last
@@ -159,36 +120,32 @@ run() {  # run <label> <assert-file-or-empty>
   printf 'PROBE %-22s %-10s %ss\n' "$label" "$out" "$(( $(date +%s)-t0 ))"
 }
 
-kind=$(acc_root_kind_of "$case_id")
-printf '%s\n' "$kind" >"$work/probe/kind.txt"
-echo "== $case_id plain probe (root kind: $kind)"
+echo "== $case_id plain probe"
 run plain ""
 
-case "$kind" in
-MARKER|CONFIG)
-  # Read the accepted assignment out of the claim layer's own output and
-  # spell it as asserts.
-  #
-  # THREE sources of Boolean roots are deleted here, not repaired.  Two were
-  # already gone: z3-result.json's roots.booleanInputs (design 3's SOLVE
-  # stage writes no such file) and a regex for one case's variable spelling
-  # in candidate.smt2.  The third is manifest.booleanRoots, which this probe
-  # read until now and which no stage has published since design 3 -- so the
-  # probe reported `buggy NO_ROOT / other NO_ROOT` on every run, including
-  # the accepted 17960 one.
-  #
-  # What replaces it is the field the composer DOES publish: manifest.roots,
-  # one {rootId, kind, recordedValue} row per declared root.  recordedValue
-  # is the recording's own observation, so recordedRootValues and the
-  # configured-source materialization row go with booleanRoots.
-  #
-  # The question the deleted sources served -- does the recorded valuation
-  # refute the recording -- is still ClaimPolicy.polarityDecides, computed by
-  # the composer that holds the formula, the domains and the arms.  This
-  # probe is a reported signal; it does not gate, and it does not re-derive
-  # the composer's answer from its artifacts.
-  python3 - "$final/result.json" "$M" "$C" "$work/probe" "$case_id" \
-           <<'PY'
+# Read the accepted assignment out of the claim layer's own output and
+# spell it as asserts.
+#
+# THREE sources of Boolean roots are deleted here, not repaired.  Two were
+# already gone: z3-result.json's roots.booleanInputs (design 3's SOLVE
+# stage writes no such file) and a regex for one case's variable spelling
+# in candidate.smt2.  The third is manifest.booleanRoots, which this probe
+# read until now and which no stage has published since design 3 -- so the
+# probe reported `buggy NO_ROOT / other NO_ROOT` on every run, including
+# the accepted 17960 one.
+#
+# What replaces it is the field the composer DOES publish: manifest.roots,
+# one {rootId, kind, recordedValue} row per declared root.  recordedValue
+# is the recording's own observation, so recordedRootValues and the
+# configured-source materialization row go with booleanRoots.
+#
+# The question the deleted sources served -- does the recorded valuation
+# refute the recording -- is still ClaimPolicy.polarityDecides, computed by
+# the composer that holds the formula, the domains and the arms.  This
+# probe is a reported signal; it does not gate, and it does not re-derive
+# the composer's answer from its artifacts.
+python3 - "$final/result.json" "$M" "$C" "$work/probe" "$case_id" \
+         <<'PY'
 import json, os, re, sys
 
 (result_path, manifest_path, smt_path, out, case_id) = sys.argv[1:6]
@@ -441,93 +398,46 @@ print("  %s: enumerating %d single-marker flip(s)" % (detail, len(terms)))
 print("  other  = %s [%s]" % (spell(other_values), other_mode))
 PY
 
-  source=$(cat "$work/probe/source.txt" 2>/dev/null || echo NO_ROOT)
-  case "$source" in
-  NO_ROOT)
-    printf 'buggy\tNO_ROOT\t0\nother\tNO_ROOT\t0\n' >>"$work/probe.tsv"
-    exit 0
-    ;;
-  UNSTATED_RECORDED_VALUE)
-    # Nothing observed what a declared root held, so there is no polarity to
-    # call buggy and none to call other. Reported as the open question it is.
-    printf 'buggy\tUNSTATED_RECORDED_VALUE\t0\n' >>"$work/probe.tsv"
-    printf 'other\tUNSTATED_RECORDED_VALUE\t0\n' >>"$work/probe.tsv"
-    exit 0
-    ;;
-  ACCEPTED_WITNESS)
-    run buggy "$work/probe/buggy.assert"
-    ;;
-  SINGLE_MARKER_ENUMERATION)
-    # Every flip is reported under its own marker, and "buggy" is the
-    # question the case asks: is there a way to move one marker that reaches
-    # the target. sat from any one of them answers it.
-    best=unsat
-    while IFS=$'\t' read -r index identity; do
-      [[ -n "$index" ]] || continue
-      run "buggy.${identity}" "$work/probe/flip_${index}.assert"
-      verdict=$(awk -F'\t' -v l="buggy.${identity}" '$1==l{print $2}' \
-                  "$work/probe.tsv" | tail -1)
-      case "$verdict" in
-        sat) best=sat ;;
-        unsat) ;;
-        *) [[ "$best" == unsat ]] && best=$verdict ;;
-      esac
-    done <"$work/probe/flips.txt"
-    # One row named "buggy", so a reader and the report agree on what the
-    # case's own question answered; the per-marker rows stay beside it.
-    printf 'buggy\t%s\t0\n' "$best" >>"$work/probe.tsv"
-    printf 'PROBE %-22s %-10s (from single-marker flips)\n' buggy "$best"
-    ;;
-  esac
-  if [[ -s "$work/probe/other.assert" ]]; then
-    run other "$work/probe/other.assert"
-  else
-    printf 'other\tUNSTATED_RECORDED_VALUE\t0\n' >>"$work/probe.tsv"
-  fi
+source=$(cat "$work/probe/source.txt" 2>/dev/null || echo NO_ROOT)
+case "$source" in
+NO_ROOT)
+  printf 'buggy\tNO_ROOT\t0\nother\tNO_ROOT\t0\n' >>"$work/probe.tsv"
+  exit 0
   ;;
-CLOCK)
-  # No Boolean root. Pin every wall clock to what it actually read: if the
-  # target is then unreachable, the skew is the mechanism.
-  #
-  # A manifest that carries no recordedRootValues pins nothing, and then the
-  # two polarities are the same query and the probe decides nothing. Say so
-  # rather than reporting an accidental sat/sat as a verdict.
-  #
-  # That is the state of the pipeline as this lands: no stage publishes a
-  # recordedRootValues row, and a clock root has no solver term in the manifest
-  # (roots[] names it by rootId), so on a clock case this branch pins nothing
-  # and warns by name.  The reading it would give is reported, never gated on:
-  # whether the skew is the mechanism is ClaimPolicy's CLOCK_SKEW finding,
-  # which report.py reads out of result.json.
-  python3 - "$M" "$work/probe/pinned.assert" "$work/probe/polarity.json" \
-           "$case_id" <<'PY'
-import json, sys
-manifest, out, polarity_out, case_id = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-rows = []
-try:
-    doc = json.load(open(manifest))
-except Exception:
-    doc = {}
-for row in doc.get("recordedRootValues", []) or []:
-    if not row.get("wallClock"):
-        continue
-    term, value = row.get("solverTerm", ""), str(row.get("recordedValue", ""))
-    if not term or not value:
-        continue
-    literal = "(- %s)" % value[1:] if value.startswith("-") else value
-    rows.append("(assert (= %s %s))" % (term, literal))
-open(out, "w").write("\n".join(rows) + ("\n" if rows else ""))
-json.dump({"case": case_id, "source": "CLOCKS_FREE", "terms": [],
-           "otherMode": "CLOCKS_PINNED", "pinnedClockRoots": len(rows)},
-          open(polarity_out, "w"), indent=1)
-print("pinned %d wall-clock root(s)" % len(rows))
-PY
-  if [[ ! -s "$work/probe/pinned.assert" ]]; then
-    echo "  WARN no wall-clock root pinned: the manifest carries no" \
-         "recordedRootValues row with wallClock=true, so other would" \
-         "repeat buggy and decide nothing"
-  fi
-  run buggy ""                              # clocks free: skew allowed
-  run other "$work/probe/pinned.assert"     # clocks as recorded: no skew
+UNSTATED_RECORDED_VALUE)
+  # Nothing observed what a declared root held, so there is no polarity to
+  # call buggy and none to call other. Reported as the open question it is.
+  printf 'buggy\tUNSTATED_RECORDED_VALUE\t0\n' >>"$work/probe.tsv"
+  printf 'other\tUNSTATED_RECORDED_VALUE\t0\n' >>"$work/probe.tsv"
+  exit 0
+  ;;
+ACCEPTED_WITNESS)
+  run buggy "$work/probe/buggy.assert"
+  ;;
+SINGLE_MARKER_ENUMERATION)
+  # Every flip is reported under its own marker, and "buggy" is the
+  # question the case asks: is there a way to move one marker that reaches
+  # the target. sat from any one of them answers it.
+  best=unsat
+  while IFS=$'\t' read -r index identity; do
+    [[ -n "$index" ]] || continue
+    run "buggy.${identity}" "$work/probe/flip_${index}.assert"
+    verdict=$(awk -F'\t' -v l="buggy.${identity}" '$1==l{print $2}' \
+                "$work/probe.tsv" | tail -1)
+    case "$verdict" in
+      sat) best=sat ;;
+      unsat) ;;
+      *) [[ "$best" == unsat ]] && best=$verdict ;;
+    esac
+  done <"$work/probe/flips.txt"
+  # One row named "buggy", so a reader and the report agree on what the
+  # case's own question answered; the per-marker rows stay beside it.
+  printf 'buggy\t%s\t0\n' "$best" >>"$work/probe.tsv"
+  printf 'PROBE %-22s %-10s (from single-marker flips)\n' buggy "$best"
   ;;
 esac
+if [[ -s "$work/probe/other.assert" ]]; then
+  run other "$work/probe/other.assert"
+else
+  printf 'other\tUNSTATED_RECORDED_VALUE\t0\n' >>"$work/probe.tsv"
+fi

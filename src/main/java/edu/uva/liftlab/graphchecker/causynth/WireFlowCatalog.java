@@ -42,78 +42,95 @@ public final class WireFlowCatalog {
 
     static WireFlowCatalog fromConfiguration(
             Map<String, SootMethod> methods) throws IOException {
-        String configured = firstNonBlank(System.getProperty(PROPERTY),
-                System.getenv(ENVIRONMENT));
-        if (configured == null) return new WireFlowCatalog(
-                Collections.<WireFlow>emptyList());
-        Path path = Paths.get(configured).toAbsolutePath().normalize();
-        if (!Files.isRegularFile(path)) {
-            throw new IOException("Communication mapping not found: " + path);
-        }
         List<WireFlow> flows = new ArrayList<>();
-        try (BufferedReader reader = Files.newBufferedReader(path,
-                StandardCharsets.UTF_8)) {
-            String line;
-            int lineNumber = 0;
-            while ((line = reader.readLine()) != null) {
-                lineNumber++;
-                if (line.trim().isEmpty()) continue;
-                try {
-                    JsonElement parsed = JsonParser.parseString(line);
-                    if (!parsed.isJsonObject()) {
-                        throw new IllegalArgumentException(
-                                "mapping must be an object");
-                    }
-                    flows.add(parse(parsed.getAsJsonObject(), methods));
-                } catch (RuntimeException invalid) {
-                    throw new IOException("Invalid communication mapping at "
-                            + path + ":" + lineNumber + ": "
-                            + invalid.getMessage(), invalid);
-                }
+        for (Row row : rows()) {
+            try {
+                flows.add(parse(row.json, methods));
+            } catch (RuntimeException invalid) {
+                throw new IOException("Invalid communication mapping at "
+                        + row.at + ": " + invalid.getMessage(), invalid);
             }
         }
         return new WireFlowCatalog(flows);
+    }
+
+    /** One mapping row, and where the file states it. */
+    private static final class Row {
+        final String at;
+        final JsonObject json;
+
+        Row(String at, JsonObject json) {
+            this.at = at;
+            this.json = json;
+        }
+    }
+
+    /** The mapping file's rows, read once; none when the case maps nothing. */
+    private static volatile List<Row> rows;
+
+    private static List<Row> rows() throws IOException {
+        List<Row> known = rows;
+        if (known != null) return known;
+        List<Row> read = new ArrayList<>();
+        String configured = firstNonBlank(System.getProperty(PROPERTY),
+                System.getenv(ENVIRONMENT));
+        if (configured != null) {
+            Path path = Paths.get(configured).toAbsolutePath().normalize();
+            if (!Files.isRegularFile(path)) {
+                throw new IOException("Communication mapping not found: "
+                        + path);
+            }
+            try (BufferedReader reader = Files.newBufferedReader(path,
+                    StandardCharsets.UTF_8)) {
+                String line;
+                int lineNumber = 0;
+                while ((line = reader.readLine()) != null) {
+                    lineNumber++;
+                    if (line.trim().isEmpty()) continue;
+                    String at = path + ":" + lineNumber;
+                    JsonElement parsed;
+                    try {
+                        parsed = JsonParser.parseString(line);
+                    } catch (RuntimeException invalid) {
+                        throw new IOException("Invalid communication mapping"
+                                + " at " + at + ": " + invalid.getMessage(),
+                                invalid);
+                    }
+                    if (!parsed.isJsonObject()) {
+                        throw new IOException("Invalid communication mapping"
+                                + " at " + at + ": mapping must be an object");
+                    }
+                    read.add(new Row(at, parsed.getAsJsonObject()));
+                }
+            }
+        }
+        rows = Collections.unmodifiableList(read);
+        return rows;
     }
 
     List<WireFlow> flows() {
         return flows;
     }
 
-    /** The transports the case maps, read once; none when it maps nothing. */
-    private static volatile java.util.Set<String> transports;
-
     /**
      * The transports whose doors are the case's fault points: a door fault
      * {@code FAULT:<TRANSPORT>:<DIRECTION>} is declared exactly when the
      * case maps that transport, so a case that maps no wire (hdfs-17960)
-     * plans no IPC door.  Read off the mapping file's {@code transport}
+     * plans no IPC door.  Read off the mapping rows' {@code transport}
      * fields alone, so the static pass can ask before it resolves methods.
      */
     public static java.util.Set<String> declaredTransports() {
-        java.util.Set<String> known = transports;
-        if (known != null) return known;
         java.util.Set<String> found = new java.util.LinkedHashSet<String>();
-        String configured = firstNonBlank(System.getProperty(PROPERTY),
-                System.getenv(ENVIRONMENT));
-        if (configured != null) {
-            Path path = Paths.get(configured).toAbsolutePath().normalize();
-            try {
-                for (String line : Files.readAllLines(path,
-                        StandardCharsets.UTF_8)) {
-                    if (line.trim().isEmpty()) continue;
-                    JsonElement parsed = JsonParser.parseString(line);
-                    if (!parsed.isJsonObject()) continue;
-                    String transport = string(parsed.getAsJsonObject(),
-                            "transport");
-                    if (!transport.isEmpty()) found.add(transport);
-                }
-            } catch (IOException | RuntimeException unreadable) {
-                throw new IllegalStateException(
-                        "Communication mapping unreadable: " + path, unreadable);
+        try {
+            for (Row row : rows()) {
+                String transport = string(row.json, "transport");
+                if (!transport.isEmpty()) found.add(transport);
             }
+        } catch (IOException unreadable) {
+            throw new IllegalStateException(
+                    "Communication mapping unreadable", unreadable);
         }
-        transports = Collections.unmodifiableSet(found);
-        return transports;
+        return found;
     }
 
     private static WireFlow parse(JsonObject row,

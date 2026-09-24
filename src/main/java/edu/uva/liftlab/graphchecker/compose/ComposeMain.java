@@ -344,12 +344,6 @@ public final class ComposeMain {
             findings.add(finding);
         }
         row.add("witnessFindings", findings);
-        JsonObject rootSpace = new JsonObject();
-        rootSpace.addProperty("acceptedFindingKind",
-                claim.kind() == ClaimKind.NO_SUPPORTED_WITNESS ? ""
-                        : claim.kind().name());
-        rootSpace.add("reportedFindings", findings);
-        row.add("rootSpace", rootSpace);
         return row;
     }
 

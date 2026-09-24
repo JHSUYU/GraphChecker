@@ -660,7 +660,6 @@ public final class StaticProgram {
         public final Map<String, Object> rootLoop;
         public final String anchorMethod;
         public final String selection;
-        public final String graphKind;
         /** The admission anchors, the single {@code anchorMethod} included. */
         public final List<String> anchorMethods;
         public final List<String> methods;
@@ -695,7 +694,6 @@ public final class StaticProgram {
                     row.get(DeclaredSymbolicInputs.ROOT_FIELD));
             anchorMethod = stringValue(row.get("anchorMethod"));
             selection = stringValue(row.get("selection"));
-            graphKind = stringValue(row.get("graphKind"));
             methods = strings(row.get("methods"));
             if (regionId.isEmpty() || rootMethod.isEmpty()
                     || !methods.contains(rootMethod)
