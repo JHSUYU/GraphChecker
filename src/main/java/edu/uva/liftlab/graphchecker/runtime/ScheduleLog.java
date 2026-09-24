@@ -137,6 +137,20 @@ public final class ScheduleLog {
     private static final Map<Thread, Integer> WAITERS =
             new HashMap<Thread, Integer>();
     private static int firstOpen;
+    /**
+     * The first open slot that stands in a later event's way: an open WAKE
+     * slot never does.  A WAKE is a daemon's turn, and the thread that
+     * makes it may be behind a lock a held thread holds -- hdfs-17960's
+     * NameNode restart held the namesystem lock at its slot 169 while the
+     * replication-queue daemon needed it to reach its WAKE at 168, an order
+     * no run under the schedule can make and the recording made by timing
+     * -- so nobody waits for a late WAKE; the WAKE, when it comes, still
+     * takes its slot.  A WAKE that comes EARLY is held to its slot as
+     * before, and one the recording did not make at all waits at the cut:
+     * a daemon's turn never comes sooner than recorded, and is never waited
+     * for.
+     */
+    private static int firstBlocking;
     /** Open slots that hold: before the cut, or a WAKE. */
     private static int openHeld;
     private static long lastProgress;
@@ -285,7 +299,7 @@ public final class ScheduleLog {
                 Thread self = Thread.currentThread();
                 while (true) {
                     int slot = holds ? slotOf(wake.event) : -1;
-                    if (slot < 0 && (!holds || firstOpen >= cut)) {
+                    if (slot < 0 && !prefixStandsLocked()) {
                         WAITERS.remove(self);
                         return Turn.FREE;
                     }
@@ -503,6 +517,19 @@ public final class ScheduleLog {
         try {
             while (true) {
                 int slot = slotOf(event);
+                if (slot < 0 && event.kind == ScheduleEvent.Kind.WAKE
+                        && prefixStandsLocked()) {
+                    // A daemon's turn the recording did not make waits at
+                    // the cut, as a timed wait no slot holds does (#turn):
+                    // hdfs-17967 path B's DataNode actors slept into the
+                    // window and, on the replay's slower clock, took their
+                    // turns -- and their heartbeats -- before the workload's
+                    // own, where the recording's slept through.
+                    WAITERS.put(self, AT_THE_CUT);
+                    if (watchdogLocked()) continue;
+                    LOCK.wait(Math.max(1L, Math.min(timeoutMillis(), 1000L)));
+                    continue;
+                }
                 if (slot < 0) {
                     ranFree++;
                     appendLocked(event);
@@ -560,9 +587,14 @@ public final class ScheduleLog {
                 || order.get(slot).kind() == ScheduleEvent.Kind.WAKE;
     }
 
-    /** Whether every slot before {@code slot} is settled. */
+    /** Whether every slot before {@code slot} is settled or an open WAKE. */
     private static boolean dueLocked(int slot) {
-        return firstOpen >= slot;
+        return firstBlocking >= slot;
+    }
+
+    /** Whether the prefix still stands: an open non-WAKE slot before the cut. */
+    private static boolean prefixStandsLocked() {
+        return holds && firstBlocking < cut;
     }
 
     /** An event took its slot. */
@@ -617,6 +649,13 @@ public final class ScheduleLog {
         cpuSampledAt = 0L;
         while (firstOpen < state.length && state[firstOpen] != OPEN) {
             firstOpen++;
+        }
+        firstBlocking = Math.max(firstBlocking, firstOpen);
+        while (firstBlocking < state.length
+                && (state[firstBlocking] != OPEN
+                || order.get(firstBlocking).kind()
+                        == ScheduleEvent.Kind.WAKE)) {
+            firstBlocking++;
         }
         holds = openHeld > 0;
         LOCK.notifyAll();
@@ -861,6 +900,7 @@ public final class ScheduleLog {
             if (heldKind(index)) openHeld++;
         }
         firstOpen = 0;
+        firstBlocking = 0;
         restStalls = 0;
         settleLocked();
     }
@@ -932,6 +972,7 @@ public final class ScheduleLog {
             TAKEN_WAKES.clear();
             WAITERS.clear();
             firstOpen = 0;
+            firstBlocking = 0;
             openHeld = 0;
             lastProgress = 0L;
             restStalls = 0;

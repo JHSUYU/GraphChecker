@@ -401,6 +401,42 @@ public class ScheduleLogTest {
         assertEquals(Arrays.asList("x", site), sites());
     }
 
+    @Test(timeout = 20000L)
+    public void nobodyWaitsForALateWakeAndItStillTakesItsSlot()
+            throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        ScheduleLog.enforceForTests(Arrays.asList(
+                event(ScheduleEvent.Kind.WAKE, "tick.d"),
+                event(ScheduleEvent.Kind.SEND, "x"),
+                event(ScheduleEvent.Kind.SEND, "y")));
+        long before = System.nanoTime();
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+        assertTrue("x did not wait for the daemon's turn before it",
+                TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
+                        < 5000L);
+        ScheduleLog.observe(ScheduleEvent.Kind.WAKE, "tick.d");
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "y");
+        assertEquals(Arrays.asList("x", "tick.d", "y"), sites());
+        assertTrue(ScheduleLog.progress(),
+                ScheduleLog.progress().contains(" 0 given up"));
+        assertFalse("every slot taken", ScheduleLog.enforcing());
+    }
+
+    @Test(timeout = 20000L)
+    public void aTurnTheRecordingDidNotMakeWaitsAtTheCut() throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        ScheduleLog.enforceForTests(prefix("x"));
+        Thread daemon = observer(ScheduleEvent.Kind.WAKE, "tick.e");
+        Thread.sleep(300L);
+        assertTrue("the recording made no such turn before x",
+                daemon.isAlive());
+        assertTrue(written.isEmpty());
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+        daemon.join(5000L);
+        assertFalse(daemon.isAlive());
+        assertEquals(Arrays.asList("x", "tick.e"), sites());
+    }
+
     @Test
     public void aHeldWaitOutlivesThePrefixOnTheWallClock() throws Exception {
         System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
