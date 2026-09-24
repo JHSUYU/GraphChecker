@@ -1996,40 +1996,6 @@ public final class RuntimeSelectedRegionFinalizer {
         }
     }
 
-    private static final class DeclaredFieldCell {
-        private static final Set<String> PRIMITIVES = new LinkedHashSet<>(
-                Arrays.asList("boolean", "byte", "short", "char",
-                        "int", "long", "float", "double"));
-        /** Declaring class, which with the name is the cross-run identity. */
-        private final String owner;
-        private final String type;
-        private final String name;
-
-        private DeclaredFieldCell(String owner, String type, String name) {
-            this.owner = owner;
-            this.type = type;
-            this.name = name;
-        }
-
-        private boolean primitive() {
-            return PRIMITIVES.contains(type);
-        }
-
-        private static DeclaredFieldCell parse(String cell) {
-            String value = text(cell).trim();
-            if (!StaticProgram.declaredField(value)) return null;
-            int colon = value.indexOf(':');
-            int separator = value.lastIndexOf(' ', value.length() - 2);
-            if (colon < 1 || separator <= colon + 1) return null;
-            String owner = value.substring(1, colon).trim();
-            String type = value.substring(colon + 1, separator).trim();
-            String name = value.substring(separator + 1,
-                    value.length() - 1).trim();
-            return type.isEmpty() || name.isEmpty() ? null
-                    : new DeclaredFieldCell(owner, type, name);
-        }
-    }
-
     /** The occurrences one finalization's demand reached. */
     private static final class ClosureWalk {
         private final Set<String> reached;

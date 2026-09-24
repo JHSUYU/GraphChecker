@@ -479,7 +479,6 @@ public final class CausynthPipeline {
          * write hook mints a writer, and a writer the relation did not ask
          * for is not a cheaper envelope, it is a different model.
          */
-        private final Set<String> writerMethods = new LinkedHashSet<>();
         /** Exact configured-source call sites, deduplicated across tasks. */
         private final Map<String, ConfiguredSourcePhaseContract.Occurrence>
                 configuredSourcePhaseSites = new LinkedHashMap<>();
@@ -500,7 +499,6 @@ public final class CausynthPipeline {
             for (InstrumentationPlan plan : campaign) {
                 materializations.mergeFrom(plan.materializations());
                 methods.addAll(plan.envelopeMethods());
-                writerMethods.addAll(plan.instrumentationMethods());
                 for (ConfiguredSourcePhaseContract.Occurrence phase
                         : plan.configuredSourcePhases()) {
                     ConfiguredSourcePhaseContract.Occurrence prior =
@@ -528,7 +526,6 @@ public final class CausynthPipeline {
                 // The logical region remains rooted at the plan's root.
                 bounded.add(replayEntry.getSignature());
                 methods.add(replayEntry.getSignature());
-                writerMethods.add(replayEntry.getSignature());
                 loopBoundMethods.addAll(bounded);
                 fixedCountLoopSites.addAll(plan.fixedCountLoopSites());
                 if (loopBound != null && !loopBound.identity()

@@ -2356,30 +2356,6 @@ public final class RuntimeRegionPlanner {
             this.requestApi = safe(requestApi);
         }
 
-        /**
-         * Applies the owner its receiver registered anywhere in this trace.
-         *
-         * <p>{@code receiverOwned} says the owner is this receiver's own
-         * registration rather than one the calling frame's registration
-         * named.  That is the whole difference between an address replay can
-         * re-check by object identity and one it can only re-check by the
-         * context the thread inherited, so it is recorded rather than
-         * re-derived.</p>
-         */
-        void reattribute(SourceRef owner, boolean receiverOwned) {
-            if (owner == null) return;
-            if (receiverOwned) {
-                this.receiverAttributed = true;
-            } else if (!owner.equals(source)) {
-                // The calling frame's registration named this frame, so
-                // whatever the run knew about this receiver no longer
-                // describes the source now recorded for it.
-                this.receiverAttributed = false;
-            }
-            if (owner.equals(source)) return;
-            this.source = owner;
-            this.sourceKey = owner.key();
-        }
     }
 
     static final class ProtocolEvent {

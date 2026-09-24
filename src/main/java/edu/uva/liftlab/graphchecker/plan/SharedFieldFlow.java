@@ -5,11 +5,6 @@ import edu.uva.liftlab.graphchecker.smt.JavaContainerTypes;
 
 /** Stable vocabulary for shared-location replay-scope edges. */
 public final class SharedFieldFlow {
-    /** Authority for a trace-observed match of receiver and declared leaf. */
-    public static final String LOCATION_MATCH_AUTHORITY =
-            "RUNTIME_SHARED_LOCATION_MATCH_V1";
-    /** Declared owner/name address shared by the two observed accesses. */
-    public static final String EDGE_LOCATION = "sharedLocation";
     private SharedFieldFlow() {
     }
 
