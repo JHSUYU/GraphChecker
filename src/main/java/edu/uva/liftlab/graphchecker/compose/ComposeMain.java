@@ -39,9 +39,9 @@ import java.util.Map;
  * separate pass over the artifact.</p>
  *
  * <pre>
- *   --sessions &lt;dir&gt;      the corpus (also: --iteration &lt;dir&gt;, its parent)
- *   --anchor &lt;addr&gt;       the declared occurrence (also: --target-occurrence)
- *   --output &lt;file&gt;       the composed query   (also: --out &lt;dir&gt;)
+ *   --sessions &lt;dir&gt;      the corpus
+ *   --anchor &lt;addr&gt;       the declared occurrence
+ *   --output &lt;file&gt;       the composed query
  *   --manifest &lt;file&gt;     the composition manifest
  *   --root-domains &lt;file&gt; what the CASE says each root may be
  *   --z3 &lt;path&gt;           default "z3"

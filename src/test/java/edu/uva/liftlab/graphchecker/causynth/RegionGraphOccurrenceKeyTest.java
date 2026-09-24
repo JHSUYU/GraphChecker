@@ -3,7 +3,6 @@ package edu.uva.liftlab.graphchecker.causynth;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.plan.DeclaredSiteCapture;
-import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import java.io.IOException;

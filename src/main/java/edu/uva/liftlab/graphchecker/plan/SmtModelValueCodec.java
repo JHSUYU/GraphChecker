@@ -2,7 +2,6 @@ package edu.uva.liftlab.graphchecker.plan;
 
 import java.math.BigDecimal;
 import java.math.MathContext;
-import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
 

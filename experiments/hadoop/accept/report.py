@@ -167,10 +167,6 @@ def probe_rows():
 
 
 
-def blocker_name(row):
-    return row.get("kind") or row.get("code") or "?"
-
-
 def polarity_doc():
     """What probe.sh asserted, and where each polarity came from."""
     try:

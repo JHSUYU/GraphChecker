@@ -25,7 +25,6 @@ import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
-import edu.uva.liftlab.graphchecker.contract.RootDomain;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;

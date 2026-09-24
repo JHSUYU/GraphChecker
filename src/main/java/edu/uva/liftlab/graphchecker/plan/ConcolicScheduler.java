@@ -173,8 +173,7 @@ public final class ConcolicScheduler {
             Goal goal, JsonArray inputActions, JsonArray branchMethods,
             LoopBoundPolicy loopBound, SymbolicInputSelection symbolicInputs) {
         return task(new Candidate(goal, new JsonArray(), "", 1, false,
-                inputActions, goal.plan().occurrenceId()), branchMethods,
-                loopBound, symbolicInputs);
+                inputActions), branchMethods, loopBound, symbolicInputs);
     }
 
     /** One candidate's task: its declared inputs, its identity, its row. */
@@ -568,17 +567,17 @@ public final class ConcolicScheduler {
                 scopeMap, definitionMethods);
         if (goal.kind().capturesRegionPath()) {
             result.add(new Candidate(goal, branches, "", 1, false,
-                    inputActions, goal.plan().occurrenceId()));
+                    inputActions));
             return;
         }
+        requireSelectedOccurrence(arguments, goal);
         JsonObject fatal = fatalBranch(branches, scopeMap);
         result.add(new Candidate(goal, branches,
                 optionalString(fatal, "siteId"),
                 Math.max(1, optionalInteger(fatal, "selectedOccurrence", 1)),
                 fatalArm(scopeMap, optionalString(fatal, "siteId"))
                         .booleanValue(),
-                inputActions,
-                targetQueryInstance(arguments, goal)));
+                inputActions));
     }
 
     /**
@@ -623,16 +622,16 @@ public final class ConcolicScheduler {
         return bySite.values().iterator().next();
     }
 
-    private static String targetQueryInstance(
-            Arguments arguments, Goal goal) {
-        String selected = arguments.occurrenceId.isEmpty()
-                ? goal.plan().occurrenceId() : arguments.occurrenceId;
-        if (!selected.equals(goal.plan().occurrenceId())) {
+    /** A target goal is the occurrence the arguments selected, if any. */
+    private static void requireSelectedOccurrence(Arguments arguments,
+                                                  Goal goal) {
+        if (!arguments.occurrenceId.isEmpty()
+                && !arguments.occurrenceId.equals(
+                goal.plan().occurrenceId())) {
             throw new IllegalArgumentException(
                     "target goal does not match selected occurrence "
-                            + selected);
+                            + arguments.occurrenceId);
         }
-        return selected;
     }
 
     /**
@@ -974,22 +973,17 @@ public final class ConcolicScheduler {
         private final int targetOccurrence;
         private final boolean targetRequiredOutcome;
         private final JsonArray inputActions;
-        private final String queryOccurrenceId;
 
         private Candidate(Goal goal, JsonArray branches,
                           String targetSiteId, int targetOccurrence,
                           boolean targetRequiredOutcome,
-                          JsonArray inputActions,
-                          String queryOccurrenceId) {
+                          JsonArray inputActions) {
             this.goal = goal;
             this.branches = branches;
             this.targetSiteId = safe(targetSiteId);
             this.targetOccurrence = Math.max(1, targetOccurrence);
             this.targetRequiredOutcome = targetRequiredOutcome;
             this.inputActions = inputActions;
-            this.queryOccurrenceId = firstNonBlank(
-                    queryOccurrenceId,
-                    goal.plan().occurrenceId());
         }
 
         /** Stable task identity: source occurrence x relation content x exact

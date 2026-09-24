@@ -1,83 +1,34 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
-import edu.uva.liftlab.graphchecker.plan.ConcolicScheduler;
 
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
-import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
-import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import edu.uva.liftlab.graphchecker.plan.BranchPredicateAlgebra;
-import edu.uva.liftlab.graphchecker.plan.BranchWitness;
-import edu.uva.liftlab.graphchecker.smt.CanonicalJson;
-import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
-import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
 import edu.uva.liftlab.graphchecker.plan.VmExpressionTable;
-import edu.uva.liftlab.graphchecker.plan.SmtModelValueCodec;
-import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
-import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
-import edu.uva.liftlab.graphchecker.plan.FieldPathSpec.DeclaredField;
-import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
-import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveBoxing;
-import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.runtime.RowRuntime;
-import edu.uva.liftlab.graphchecker.runtime.Interactions;
-import edu.uva.liftlab.graphchecker.runtime.FieldAccess.MissingValue;
 import edu.uva.liftlab.graphchecker.runtime.BranchObservation.BranchDecision;
-import edu.uva.liftlab.graphchecker.runtime.BranchObservation.PreparedBranch;
-import edu.uva.liftlab.graphchecker.runtime.LoopAccounting.LoopBackedgeBudget;
 import edu.uva.liftlab.graphchecker.runtime.LoopAccounting.LoopBoundCut;
-import edu.uva.liftlab.graphchecker.runtime.LoopAccounting.ReplayLoopResourceCut;
 
-import static edu.uva.liftlab.graphchecker.runtime.FieldAccess.declaredInstanceField;
-import static edu.uva.liftlab.graphchecker.runtime.FieldAccess.exactFieldSignature;
-import static edu.uva.liftlab.graphchecker.runtime.FieldAccess.freshPrimitiveBox;
-import static edu.uva.liftlab.graphchecker.runtime.FieldAccess.instanceOfName;
-import static edu.uva.liftlab.graphchecker.runtime.FieldAccess.readExactField;
-import static edu.uva.liftlab.graphchecker.runtime.FieldAccess.resolveFieldPathLeafOwner;
-import static edu.uva.liftlab.graphchecker.runtime.ModelValues.isPrimitiveBox;
 
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
 import edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.RawSharedStateReadOut;
-import java.lang.reflect.Array;
-import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Modifier;
 import java.nio.file.Files;
 import java.util.ArrayDeque;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
 import java.util.Deque;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.nio.charset.StandardCharsets;
-import java.util.UUID;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
-import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
-import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
-import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
-import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
-import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
-import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
-import static edu.uva.liftlab.graphchecker.smt.JsonFields.shallowCopy;
-import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.configuration;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.beginLiveSelectedRegion;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.beginSelectedResultPublication;
@@ -87,8 +38,6 @@ import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.submi
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.taskUnanswered;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicVmBroker.engine;
 import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.captureRecordedSharedStateRaw;
-import static edu.uva.liftlab.graphchecker.runtime.PathConditionWindow.contiguousConditionIndices;
-import static edu.uva.liftlab.graphchecker.runtime.PathConditionWindow.vmEventConditionIndices;
 
 /**
  * Runtime bridge injected at symbolic-region roots for the second (concolic)

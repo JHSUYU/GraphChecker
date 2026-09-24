@@ -140,11 +140,11 @@ public class ContractTest {
                 second, attach).id());
         assertNotEquals(delivered.id(), Interaction.of(InteractionKind.STATE,
                 first, attach).id());
-        assertFalse(delivered.producerDegraded());
+        assertFalse(delivered.producer().occurrence().lineageLost());
         assertTrue(Interaction.of(InteractionKind.WIRE,
                 Endpoint.of(OccurrenceAddress.of(NN0, "REGION.a1b2",
                         CausalContext.of(Role.UNKNOWN), site), PORT, site, 0),
-                attach).producerDegraded());
+                attach).producer().occurrence().lineageLost());
 
         // ONE owner spelling, the one the runtime writes: the VM's
         // symbolic rid of the object whose state this is.  A join is per
@@ -609,7 +609,8 @@ public class ContractTest {
         Path root = iteration.newFolder().toPath();
         List<SessionReader> read = new java.util.ArrayList<>();
         for (Rows rows : sessions) read.add(rows.read(root));
-        return RowInvariants.check(read);
+        return RowInvariants.check(read,
+                java.util.Collections.<String, JsonObject>emptyMap());
     }
 
     /** That rule, that class, that subject -- and nothing silent. */

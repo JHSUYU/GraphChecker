@@ -7,7 +7,6 @@ import com.google.gson.reflect.TypeToken;
 import edu.uva.liftlab.graphchecker.causynth.MapFields;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
-import edu.uva.liftlab.graphchecker.smt.JavaContainerTypes;
 
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import java.io.BufferedReader;
@@ -31,7 +30,6 @@ import java.util.List;
 import java.util.function.Function;
 import java.util.Map;
 import java.util.Set;
-import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;

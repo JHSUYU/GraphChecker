@@ -49,13 +49,11 @@ import java.util.Set;
  *       consumer endpoint.  Never every export at the endpoint: a producer
  *       replayed many times contributes only where its run paired with this
  *       consumer.</li>
- *   <li><b>Guard (R-GUARD)</b> — exactly the declared roots the delivered
- *       expression mentions, at the delivering replay's values.  Not the
- *       prefix's roots: pi_q is conjoined as the arm's own prefix, so its
- *       root dependence is already inside the arm.  No "varied" filter: an
- *       unvaried root is pinned to its recording everywhere, so guarding on
- *       it is trivially true, and uniformity is worth more than the
- *       conjunct.</li>
+ *   <li><b>Guard (R-GUARD)</b> — the declared roots the delivered expression
+ *       mentions, and every root the corpus ran at more than one value, at
+ *       the delivering replay's values; never a clock.  Not the prefix's
+ *       roots: pi_q is conjoined as the arm's own prefix, so its root
+ *       dependence is already inside the arm.</li>
  *   <li><b>Prefix</b> — the producer's decisions with {@code seq} below the
  *       export's: what that replay had decided by the time it delivered.</li>
  *   <li><b>Attestation (R-I5)</b> — an arm is ATTESTED when the arm's
@@ -72,7 +70,7 @@ import java.util.Set;
  */
 public final class Arms {
 
-    /** What one stage must be able to look up; both corpora can answer it. */
+    /** What one stage must be able to look up ({@code explore.Corpus}). */
     public interface Rows {
         /** The expression this session published under this ref, or null. */
         JsonObject expression(String sessionId, String expressionRef);
@@ -384,37 +382,6 @@ public final class Arms {
     // ------------------------------------------------------------------
 
     /**
-     * The writer occurrences a read could have seen, as arms.
-     *
-     * <p>Not "versions earlier by seq": the alternatives for a reader
-     * occurrence R on location L are the writer OCCURRENCES that are
-     * HB-CONCURRENT with R -- not ordered against it by program order, by
-     * message causality along the causal-anchor chain, or by thread
-     * start/join.  Locks are not constraints: a lock orders the two
-     * executions that took it, not the two the checker is asking about.</p>
-     *
-     * <p>A writer's writes to L move as a BLOCK -- wholly before or wholly
-     * after R -- so there is one arm per writer occurrence, binding to that
-     * occurrence's last write of L, and every read of L inside R takes the
-     * same arm.  A writer interposed between two reads of one occurrence is
-     * not an interleaving this rule admits.</p>
-     *
-     * <p>Only ATTESTED writer occurrences are alternatives.  An unattested
-     * writer, or one whose causal context is Lost, states its delivery and
-     * no more: with no path condition behind it nothing says the delivery
-     * would survive a move, and with no context HB is unknown, which is not
-     * the same as concurrent.</p>
-     *
-     * <p>An arm carries no symbol: the caller binds every read of L in the
-     * reader occurrence to the arm's expression, which is what "the block"
-     * means in the formula.</p>
-     *
-     * @param readerEndpoint one read of L in the reading occurrence
-     * @param session        the reader's own session: eligibility is its
-     *                       happens-before and no other run's
-     * @param location       the join key of L
-     */
-    /**
      * Whether a location's owner NAMES its storage.
      *
      * <p>ONE owner spelling, the one the runtime writes: the VM's symbolic
@@ -458,6 +425,37 @@ public final class Arms {
         return true;
     }
 
+    /**
+     * The writer occurrences a read could have seen, as arms.
+     *
+     * <p>Not "versions earlier by seq": the alternatives for a reader
+     * occurrence R on location L are the writer OCCURRENCES that are
+     * HB-CONCURRENT with R -- not ordered against it by program order, by
+     * message causality along the causal-anchor chain, or by thread
+     * start/join.  Locks are not constraints: a lock orders the two
+     * executions that took it, not the two the checker is asking about.</p>
+     *
+     * <p>A writer's writes to L move as a BLOCK -- wholly before or wholly
+     * after R -- so there is one arm per writer occurrence, binding to that
+     * occurrence's last write of L, and every read of L inside R takes the
+     * same arm.  A writer interposed between two reads of one occurrence is
+     * not an interleaving this rule admits.</p>
+     *
+     * <p>Only ATTESTED writer occurrences are alternatives.  An unattested
+     * writer, or one whose causal context is Lost, states its delivery and
+     * no more: with no path condition behind it nothing says the delivery
+     * would survive a move, and with no context HB is unknown, which is not
+     * the same as concurrent.</p>
+     *
+     * <p>An arm carries no symbol: the caller binds every read of L in the
+     * reader occurrence to the arm's expression, which is what "the block"
+     * means in the formula.</p>
+     *
+     * @param readerEndpoint one read of L in the reading occurrence
+     * @param session        the reader's own session: eligibility is its
+     *                       happens-before and no other run's
+     * @param location       the join key of L
+     */
     public List<Arm> stateArms(Endpoint readerEndpoint, String session,
                                String location, long observedVersion) {
         OccurrenceAddress reader = readerEndpoint.occurrence();
@@ -492,12 +490,12 @@ public final class Arms {
     /**
      * Whether two occurrences of one session are HB-concurrent.
      *
-     * <p>The three orderings the rows can state: program order (one
-     * occurrence is the other), message causality (one is an ancestor of the
-     * other along the causal-anchor chain), and thread start/join -- which
-     * the rows do not carry today, and its absence is stated here rather
-     * than assumed away.  A Lost context answers "unknown", and unknown is
-     * not concurrent.</p>
+     * <p>The orderings the rows can state: program order (one occurrence is
+     * the other, or both ran on one thread -- {@code ActivationRow.threadKey})
+     * and message causality (one is an ancestor of the other along the
+     * causal-anchor chain).  Thread start/join the rows do not carry, and
+     * its absence is stated here rather than assumed away.  A Lost context
+     * answers "unknown", and unknown is not concurrent.</p>
      */
     public boolean concurrent(OccurrenceAddress reader,
                               OccurrenceAddress writer, String session) {

@@ -7,7 +7,6 @@ import edu.uva.liftlab.graphchecker.contract.Frame;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.Role;
-import edu.uva.liftlab.graphchecker.contract.Selector;
 import org.junit.Test;
 
 import java.util.ArrayList;

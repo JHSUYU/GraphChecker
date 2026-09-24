@@ -20,16 +20,12 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.Map;
 
 import static java.util.Collections.singletonList;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -153,14 +149,6 @@ public class OccurrenceAddressIsNotARequestTest {
         assertFalse("and still refuses every other occurrence",
                 task.acceptsRootInvocation(balancerAddress(4)));
 
-        // Noting the request an activation entered is not a refusal.
-        ConcolicTaskPlan.RuntimeTask producer = task();
-        producer.noteRequestContext("matching root entered request "
-                + "client#epoch0/record-ordered-deletes#1 instead of "
-                + "nn0#epoch1/restart-namenode#1");
-        assertTrue("a request note leaves the address answered",
-                producer.unansweredAddress().startsWith(
-                        "0 compatible activation(s)"));
 
         // Nothing about a source phase is asked, and nothing was observed.
         RuntimeTraceContext.resetForTests();

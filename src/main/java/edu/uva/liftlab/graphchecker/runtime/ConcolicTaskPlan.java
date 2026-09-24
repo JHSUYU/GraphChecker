@@ -105,11 +105,6 @@ final class ConcolicTaskPlan {
             new LinkedHashMap<String, RootHookGroup>();
     private final Map<String, RootHookGroup> loopRootHookGroups =
             new LinkedHashMap<String, RootHookGroup>();
-    /** Next observed physical entry in each planner-authored scope. */
-    final Map<String, Integer> invocationOrdinals =
-            new LinkedHashMap<>();
-    /** Halt-status contribution of each task that has settled. */
-    final Map<String, Integer> settled = new LinkedHashMap<>();
     boolean unansweredAddressesPublished;
 
     ConcolicTaskPlan(Path resultFile, List<RuntimeTask> tasks) {
@@ -801,30 +796,8 @@ final class ConcolicTaskPlan {
         // and target-dn all registered -- that is five tasks refused with
         // "matching root inherited hdfs-17899/nn0#epoch0 instead of
         // hdfs-17899/source-dn#epoch0" and five
-        // PUBLICATION_TASK_ANSWERED_BY_NO_RUN behind them.  The difference
-        // is still worth saying, so it is recorded rather than dropped.
-        if (inherited != null && !inheritedMatches) {
-            task.noteRequestContext("matching root inherited "
-                    + inherited.key() + " instead of " + task.sourceKey);
-        }
+        // PUBLICATION_TASK_ANSWERED_BY_NO_RUN behind them.
         return "";
-    }
-
-    /**
-     * Records one task's terminal outcome and returns the campaign's halt
-     * status once every task has settled, or {@code -1} while any task can
-     * still produce evidence.
-     */
-    synchronized int settle(String taskId, int status) {
-        if (tasks.isEmpty()) return -1;
-        Integer previous = settled.get(safe(taskId));
-        if (previous == null) settled.put(safe(taskId), status);
-        if (settled.size() < tasks.size()) return -1;
-        int worst = 0;
-        for (Integer contribution : settled.values()) {
-            worst = Math.max(worst, contribution);
-        }
-        return worst;
     }
 
     static ConcolicTaskPlan load() {
@@ -1233,15 +1206,6 @@ final class ConcolicTaskPlan {
         private long enclosingInvocationEvent;
         /** Whether the one bounded-cut marker for this region was written. */
         boolean loopBoundCutRecorded;
-        /** Turns of the root loop examined for this bounded address. */
-        int admittedTurns;
-        private boolean loopBoundGapClaimed;
-        /** Kept occurrences that carried the selected causal anchor. */
-        /** Exact phase/exchange identities committed by published turns. */
-        final Set<String> observedSemanticAnchorIds =
-                new LinkedHashSet<>();
-        /** Turns run and given back for carrying no selected anchor. */
-        /** Stable identity shared by every task in one linked replay. */
         /** The declared target branch event of a target-reach task. */
         final String targetBranchSite;
         final int targetBranchOccurrence;
@@ -1256,11 +1220,6 @@ final class ConcolicTaskPlan {
         /** Exact baseline hook executions, in recorded event order. */
         final List<ConfiguredSourcePhaseContract.Occurrence>
                 configuredSourcePhases;
-        /** Strict phase lookup; phase ids never alias source ids. */
-        final Map<String, ConfiguredSourcePhaseContract.Occurrence>
-                configuredSourcePhasesById = new LinkedHashMap<>();
-        /** Every protocol input this occurrence attaches from the VM. */
-        final Set<String> attachPortIds = new LinkedHashSet<>();
         /**
          * Activations that ran as candidates for this address and were not the
          * addressed occurrence, and every distinct reason they were not.
@@ -1335,13 +1294,6 @@ final class ConcolicTaskPlan {
             // one strict ordered ledger by then, so this is an index, not a
             // second admission.
             this.configuredSourcePhases = task.configuredSourcePhases();
-            for (ConfiguredSourcePhaseContract.Occurrence phase
-                    : configuredSourcePhases) {
-                // One id, many executions: the first is the one the
-                // recording saw first, and the rest differ only in where.
-                configuredSourcePhasesById.putIfAbsent(phase.phaseId(),
-                        phase);
-            }
             JsonObject targetBranch = object(task.json(), "targetBranch");
             this.targetBranchSite = optionalString(targetBranch, "siteId");
             this.targetBranchOccurrence = optionalInteger(targetBranch,
@@ -1358,9 +1310,6 @@ final class ConcolicTaskPlan {
             }
             for (CommunicationHandoffSpec site
                     : task.communicationHandoffs()) {
-                if (!site.outgoing()) {
-                    attachPortIds.add(site.portId());
-                }
                 // A region that holds both sides of a cut declares the same
                 // port twice, once per role, and each role has its own site.
                 if (communicationHandoffs.put(handoffKey(site.portId(),
@@ -1370,20 +1319,6 @@ final class ConcolicTaskPlan {
                             + "in " + taskId + ": " + site.portId());
                 }
             }
-        }
-
-        /**
-         * The cells this task's declared SYMBOLIC inputs stand on.
-         *
-         * <p>For the one row that has to say what did not materialize.</p>
-         */
-        List<String> declaredInputCells() {
-            List<String> cells = new ArrayList<>();
-            for (SymbolizeAction action : symbolize) {
-                cells.add(safe(action.cell).isEmpty()
-                        ? safe(action.symbol) : safe(action.cell));
-            }
-            return cells;
         }
 
         /** The declared handoff site of one communication port role. */
@@ -1397,8 +1332,6 @@ final class ConcolicTaskPlan {
             return (exporting ? "EXPORT\n" : "ATTACH\n") + safe(portId);
         }
 
-        private final Set<String> requestContexts = new LinkedHashSet<>();
-
         /**
          * Records that one candidate ran and was not this address, as the
          * facts of the refusal rather than a sentence about them.
@@ -1408,15 +1341,6 @@ final class ConcolicTaskPlan {
             unaddressedCandidates++;
             unaddressedReasons.add(refusal);
             registerRunTotalsHook();
-        }
-
-        /**
-         * Records which request a matching root entered, when it is not the
-         * planned one.  Kept so the run can say where an admitted occurrence
-         * was reached from; it never withholds the address.
-         */
-        synchronized void noteRequestContext(String enteredUnder) {
-            requestContexts.add(safe(enteredUnder));
         }
 
         /**
@@ -1470,9 +1394,7 @@ final class ConcolicTaskPlan {
             // turns carrying a "semantic anchor" -- which was a second
             // admission condition deciding which activation mattered outside
             // the address, and is gone with it.
-            if (publishedActivations >= loopOccurrenceBudget) return true;
-            admittedTurns++;
-            return false;
+            return publishedActivations >= loopOccurrenceBudget;
         }
 
         /**

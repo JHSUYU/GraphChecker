@@ -6,21 +6,18 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import edu.uva.liftlab.graphchecker.plan.SharedFieldFlow;
-import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
 import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
 import edu.uva.liftlab.graphchecker.plan.FieldPathSpec.DeclaredField;
 import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
-import edu.uva.liftlab.graphchecker.smt.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import soot.PrimType;
 import soot.SootClass;
 import soot.SootField;
 import soot.SootFieldRef;
-import soot.SootMethodRef;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -29,7 +26,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -258,10 +254,6 @@ public final class ConcolicInstrumentationSelections {
 
         String instrumentationSelector() {
             return instrumentationSelector;
-        }
-
-        Set<String> branchMethods() {
-            return branchMethods;
         }
 
         /**

@@ -1,21 +1,8 @@
 package edu.uva.liftlab.graphchecker.plan;
 
-import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
-import edu.uva.liftlab.graphchecker.smt.JavaContainerTypes;
-
 /** Stable vocabulary for shared-location replay-scope edges. */
 public final class SharedFieldFlow {
     private SharedFieldFlow() {
-    }
-
-    /** Joins a declared field across static analysis and runtime selection. */
-    public static String fieldKey(String declaringClass, String fieldName) {
-        if (declaringClass == null || fieldName == null
-                || declaringClass.trim().isEmpty()
-                || fieldName.trim().isEmpty()) {
-            return "";
-        }
-        return declaringClass.trim() + "#" + fieldName.trim();
     }
 
     /** Compiler-owned enum ordinal dispatch storage, not application state. */

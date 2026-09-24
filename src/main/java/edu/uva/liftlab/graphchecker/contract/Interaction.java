@@ -48,17 +48,6 @@ public final class Interaction {
         return ArtifactIO.digest(kind.name() + producer.id() + consumer.id(), 16);
     }
 
-    /**
-     * Whether the producer side is a DEGRADED endpoint (INTERACTION-ID R-I1).
-     *
-     * <p>The interaction still exists and is still keyed by both endpoints; the
-     * flag is what the claim gate consults before letting a witness move a root
-     * that only an unnamed producer could have stated.</p>
-     */
-    public boolean producerDegraded() {
-        return producer.occurrence().lineageLost();
-    }
-
     @Override
     public boolean equals(Object value) {
         if (this == value) return true;

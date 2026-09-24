@@ -3391,11 +3391,8 @@ public final class CausynthPipeline {
             Body body, SootMethod method, List<Unit> originalUnits,
             Unit insertionPoint, Unit lowerBound, Value receiver,
             HookCatalog refs, boolean recordExceptionalExit) {
-        Local callId = newTraceLocal(body, LongType.v(),
-                "$causynthLiteCallId");
         List<Unit> entry = new ArrayList<>();
-        entry.add(Jimple.v().newAssignStmt(callId, LongConstant.v(0L)));
-        emit(entry, callId, refs.ref(Hook.ENTER_METHOD_LITE),
+        emit(entry, refs.ref(Hook.ENTER_METHOD_LITE),
                 StringConstant.v(method.getSignature()), receiver);
         insertBeforeOrAppendNoRedirect(body, insertionPoint, entry);
 

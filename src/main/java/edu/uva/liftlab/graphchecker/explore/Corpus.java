@@ -27,7 +27,6 @@ import edu.uva.liftlab.graphchecker.compose.JavaSmtSorts;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Sort;
 import edu.uva.liftlab.graphchecker.smt.Arms;
-import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
@@ -71,15 +70,13 @@ public final class Corpus implements Arms.Rows {
         public final String sessionId;
         public final OccurrenceAddress occurrence;
         public final List<DecisionRow> decisions;
-        public final boolean focused;
 
         private RecordedPath(String sessionId, OccurrenceAddress occurrence,
-                             List<DecisionRow> decisions, boolean focused) {
+                             List<DecisionRow> decisions) {
             this.pathId = pathId(sessionId, occurrence);
             this.sessionId = sessionId;
             this.occurrence = occurrence;
             this.decisions = Collections.unmodifiableList(decisions);
-            this.focused = focused;
         }
     }
 
@@ -217,10 +214,10 @@ public final class Corpus implements Arms.Rows {
     /** Root symbol -> every root id declared under it. */
     private final Map<String, Set<String>> rootIdsBySymbol =
             new LinkedHashMap<String, Set<String>>();
-    /** endpoint id -> the endpoint, so an anchor's producer can be found. */
     /** session|occurrence -> that session's activation of it. */
     private final Map<String, ActivationRow> activationByOccurrence =
             new LinkedHashMap<String, ActivationRow>();
+    /** endpoint id -> the endpoint, so an anchor's producer can be found. */
     private final Map<String, Endpoint> endpointById =
             new LinkedHashMap<String, Endpoint>();
     /** node|location -> every occurrence of that node touching it. */
@@ -696,8 +693,7 @@ public final class Corpus implements Arms.Rows {
             return null;
         }
         return new RecordedPath(sessionId, occurrence,
-                taken == null ? new ArrayList<DecisionRow>() : taken,
-                activation != null && activation.focused());
+                taken == null ? new ArrayList<DecisionRow>() : taken);
     }
 
     public ActivationRow activation(String sessionId,
@@ -1302,9 +1298,14 @@ public final class Corpus implements Arms.Rows {
                 : bySession.values().iterator().next();
     }
 
+    /** What the CASE declares for one root, or null when it declares none. */
+    public RootDomain declaredDomain(String rootId) {
+        return declaredDomains.get(rootId);
+    }
+
     /**
      * What one root may be, as an absolute {@code [min, max]}, or null when
-     * the case declares no domain and the runtime published none.
+     * it is pinned.
      *
      * <p>The case file is the authority; a bound written {@code +k} or
      * {@code -k} is that many steps from what the recording read, which is
@@ -1313,12 +1314,6 @@ public final class Corpus implements Arms.Rows {
      * in the composition -- so exploration never spends a wave on a move the
      * composition cannot accept.</p>
      */
-    /** What the CASE declares for one root, or null when it declares none. */
-    public RootDomain declaredDomain(String rootId) {
-        return declaredDomains.get(rootId);
-    }
-
-    /** The window this root may move in, or null when it is pinned. */
     public String[] domainOf(RootMintRow root) {
         // A CLOCK has a floor and no window: every execution reads it fresh,
         // so it is never an equality between paths (FlipQuery's rule).

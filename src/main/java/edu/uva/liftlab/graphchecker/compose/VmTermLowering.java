@@ -2,12 +2,10 @@ package edu.uva.liftlab.graphchecker.compose;
 
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
-import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
 
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.FloatingKind;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.IntegralWidth;
 
-import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 

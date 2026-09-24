@@ -289,7 +289,7 @@ public class RowRuntimeTest {
         AttachRow row = rows.get(0);
         assertEquals(attached, row.endpoint());
         assertEquals(exported, row.producer());
-        assertTrue(row.interaction().producerDegraded() == false);
+        assertFalse(row.interaction().producer().occurrence().lineageLost());
         assertTrue(row.endpoint().occurrence().lineageLost());
         // Pairing is the run's own RECORDED evidence and nothing else: the
         // handle the VM handed out, or the correlation the workload named

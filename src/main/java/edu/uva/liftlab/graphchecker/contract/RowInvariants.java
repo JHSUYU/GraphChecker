@@ -55,19 +55,6 @@ public final class RowInvariants {
     }
 
     /**
-     * Every violation one epoch's sessions state, in rule order, where the
-     * epoch states no ask for any of them.
-     *
-     * <p>Right for a set of SEED recordings and fail-closed for anything
-     * else: a session that states role FOCUSED ran at a valuation this set
-     * does not carry, so {@link #executed} refuses it by name instead of
-     * reading its mints as the values it ran.</p>
-     */
-    public static List<GapRow> check(List<SessionReader> sessions) {
-        return check(sessions, Collections.<String, JsonObject>emptyMap());
-    }
-
-    /**
      * Every violation one epoch's sessions state, in rule order.
      *
      * @param sessions the epoch's sessions

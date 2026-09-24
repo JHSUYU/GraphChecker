@@ -220,26 +220,6 @@ public final class VmExpressionIr {
         return "I".equals(javaType) || "int".equals(javaType);
     }
 
-    public static Integer exactIntLiteral(JsonElement expression) {
-        if (expression == null || !expression.isJsonObject()) return null;
-        JsonObject object = expression.getAsJsonObject();
-        String type = optionalString(object, "_type");
-        if (!("ConstExpr".equals(type) || "ConSymbolExp".equals(type))) {
-            return null;
-        }
-        String javaType = optionalString(object, "_java_type");
-        if (!("I".equals(javaType) || "int".equals(javaType))) {
-            return null;
-        }
-        String value = constantPayload(optionalString(object, "_exp"));
-        if (!value.matches("-?[0-9]+")) return null;
-        try {
-            return Integer.valueOf(value);
-        } catch (NumberFormatException ignored) {
-            return null;
-        }
-    }
-
     public static String exactStringLiteral(JsonElement expression,
                                      Predicate<String> stringTyped) {
         if (expression == null || !expression.isJsonObject()) return null;
