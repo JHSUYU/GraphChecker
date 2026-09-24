@@ -148,7 +148,7 @@ public final class Arms {
 
     /** One delivery a slot records, and what it happened under. */
     public static final class Arm {
-        private final String slotId;
+        private final Interaction interaction;
         private final String symbol;
         private final String sessionId;
         private final OccurrenceAddress producer;
@@ -161,12 +161,12 @@ public final class Arms {
         private final boolean attested;
         private final Set<String> nested;
 
-        Arm(String slotId, String symbol, String sessionId,
+        Arm(Interaction interaction, String symbol, String sessionId,
             OccurrenceAddress producer, long deliveredAt,
             String producerPathId, String expressionRef, List<String> pi,
             Map<String, String> guard, Set<String> guardRoots,
             boolean attested, Set<String> nested) {
-            this.slotId = slotId;
+            this.interaction = interaction;
             this.symbol = symbol;
             this.sessionId = sessionId;
             this.producer = producer;
@@ -182,7 +182,16 @@ public final class Arms {
 
         /** The slot (interaction id) this arm fills. */
         public String slotId() {
-            return slotId;
+            return interaction.id();
+        }
+
+        /**
+         * The interaction this arm fills: the producer endpoint delivered
+         * (an export, or the write of a version) to the consumer endpoint
+         * (an attach, or the read).
+         */
+        public Interaction interaction() {
+            return interaction;
         }
 
         /** The variable this arm binds: the consumer's v_H, or the read. */
@@ -254,7 +263,7 @@ public final class Arms {
 
         @Override
         public String toString() {
-            return (attested ? "arm " : "unattested arm ") + slotId + " of "
+            return (attested ? "arm " : "unattested arm ") + slotId() + " of "
                     + sessionId + " binding " + symbol;
         }
     }
@@ -361,7 +370,7 @@ public final class Arms {
             String session = paired.sessionId();
             for (ExportRow export : rows.exportsOf(slot.producer())) {
                 if (!export.sessionId().equals(session)) continue;
-                Arm arm = arm(slot.id(), symbol, session,
+                Arm arm = arm(slot, symbol, session,
                         slot.producer().occurrence(), export.expressionRef(),
                         export.seq());
                 if (arm != null) arms.add(arm);
@@ -468,7 +477,7 @@ public final class Arms {
             boolean observed = write.version() == observedVersion;
             if (!observed && !concurrent(reader, writer, session)) continue;
             Arm arm = arm(Interaction.of(InteractionKind.STATE,
-                            write.endpoint(), readerEndpoint).id(),
+                            write.endpoint(), readerEndpoint),
                     "", session, writer, write.expressionRef(),
                     write.seq());
             if (arm == null) continue;
@@ -592,9 +601,13 @@ public final class Arms {
         return ancestor(session, left, right);
     }
 
-    /** Whether one session ran these two occurrences on one thread. */
-    private boolean sameThread(String session, OccurrenceAddress left,
-                               OccurrenceAddress right) {
+    /**
+     * Whether one session ran these two occurrences on one thread: then
+     * program order, and not the interleaving, decides what one of them
+     * reads of the other's writes.
+     */
+    public boolean sameThread(String session, OccurrenceAddress left,
+                              OccurrenceAddress right) {
         String one = threadKey(session, left);
         String other = threadKey(session, right);
         return !one.isEmpty() && one.equals(other);
@@ -636,7 +649,7 @@ public final class Arms {
     // One arm.
     // ------------------------------------------------------------------
 
-    private Arm arm(String slotId, String symbol, String session,
+    private Arm arm(Interaction slot, String symbol, String session,
                     OccurrenceAddress producer, String expressionRef,
                     long deliveredAt) {
         JsonObject expression = rows.expression(session, expressionRef);
@@ -664,7 +677,7 @@ public final class Arms {
                 // guarded by nothing is available under every valuation of a
                 // root its own session cannot answer for.
                 if (names(symbols, entry.getValue())) {
-                    refusals.add(slotId + "|" + session + "|"
+                    refusals.add(slot.id() + "|" + session + "|"
                             + entry.getKey());
                     return null;
                 }
@@ -698,7 +711,7 @@ public final class Arms {
                 nested.add(named);
             }
         }
-        return new Arm(slotId, symbol, session, producer, deliveredAt,
+        return new Arm(slot, symbol, session, producer, deliveredAt,
                 attested ? rows.pathIdOf(session, producer) : "",
                 expressionRef, pi, guard, guardRoots, attested, nested);
     }

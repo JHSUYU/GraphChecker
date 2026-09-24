@@ -1059,6 +1059,31 @@ public final class ConcolicRegionRuntime {
 
 
     /**
+     * Before one read of shared state: a field load (a static field's owner
+     * is its declaring Class), or a call that reads a container's modeled
+     * state (no field).  The site is last so INSTRUMENT can name the
+     * bytecode this hook stands before ({@code causynth.AccessSiteTable}).
+     * A read the world holds waits here for its version ({@link Versions}).
+     */
+    public static void sharedRead(Object owner, String declaringClass,
+                                  String field, String descriptor,
+                                  String site) {
+        Versions.read(owner, declaringClass, field, descriptor, site);
+    }
+
+    /** Before one write of shared state; {@link #sharedRead}'s shape. */
+    public static void sharedWrite(Object owner, String declaringClass,
+                                   String field, String descriptor,
+                                   String site) {
+        Versions.write(owner, declaringClass, field, descriptor, site);
+    }
+
+    /** After the shared access the last hook of this thread stood before. */
+    public static void sharedDone(String site) {
+        Versions.done(site);
+    }
+
+    /**
      * Tracks a declared region input's cell from this write onwards.
      *
      * <p>The VM retains a location BY VALUE: its version log begins at the

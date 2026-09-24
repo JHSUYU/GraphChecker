@@ -1,6 +1,5 @@
 package edu.uva.liftlab.graphchecker.explore;
 
-import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -9,15 +8,17 @@ import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
 import edu.uva.liftlab.graphchecker.contract.InteractionKind;
+import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.contract.ReadsFrom;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
+import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
-import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -44,32 +45,30 @@ import java.util.Set;
  * <p>THE RULE (DESIGN4 §5).  SAT says the model satisfies our formula;
  * CONFIRM says the program agrees: re-run the world the selected path's own
  * session ran -- the root values, clock skews and answers its obligation
- * planted, proven in an execution -- with no flip forced, hold that
- * session's schedule (strict prefix to the anchor, timeouts after, exactly
- * what an obligation replay does), run once, and require (a) every edge the
- * model chose is the edge the run took and (b) the fatal observed at the
- * anchor.  The schedule is how the replay reproduces the session, not what
- * the claim says; a divergence of the order stays a diagnostic.  The model's
- * own instants are the published witness, not what the run is held to: a
- * solver sits on the boundary of its constraints and a run's timeline moves
- * by more than that.  This writes what that replay is handed, in the shapes
- * the replay already reads:</p>
+ * planted, proven in an execution -- with no flip forced, holding every
+ * read the model rests on to the version the model chose, run once, and
+ * require (a) every edge the model chose is the edge the run took and (b)
+ * the fatal observed at the anchor.  The model's own instants are the
+ * published witness, not what the run is held to: a solver sits on the
+ * boundary of its constraints and a run's timeline moves by more than
+ * that.  This writes what that replay is handed, in the shapes the replay
+ * already reads:</p>
  * <ul>
- *   <li>{@code focused_task.jsonl}: an obligation focus row whose {@code
- *       flip} is {@code null}, focused on the anchor, with {@code
- *       rootAssignments}, {@code clockDeltas}, {@code answers} and {@code
- *       rootMints} copied from the focus row of the obligation whose replay
- *       is the selected session, no inherited flips -- flips are not
- *       forced, the values decide.  The recording's own session planted
- *       nothing, and nothing is planted for it;</li>
- *   <li>{@code schedule_prefix.jsonl} / {@code schedule_suffix.jsonl}: the
- *       selected session's schedule cut at the anchor;</li>
- *   <li>{@code expected_edges.jsonl}: the edges the model chose -- {@code
- *       WIRE} (consumer endpoint, producer endpoint) per selected message
- *       arm, {@code STATE} (reader endpoint, writer endpoint, version) per
- *       state join of the selected path (the session's own join, or the
- *       writer a selected {@code writer_arm__} names), {@code MARKER}
- *       (root, polarity) per marker that world planted, {@code ANCHOR}
+ *   <li>{@code focused_task.jsonl}: a focus row whose {@code flip} is
+ *       {@code null}, focused on the anchor, with {@code rootAssignments},
+ *       {@code clockDeltas}, {@code answers} and {@code rootMints} copied
+ *       from the focus row of the obligation whose replay is the selected
+ *       session, no inherited flips -- flips are not forced, the values
+ *       decide -- and the {@code versions} of the selected path's state
+ *       joins: the writer a selected {@code writer_arm__} names, and the
+ *       recorded writer of a join across threads
+ *       ({@link ObligationFactory#held}).  The recording's own session
+ *       planted nothing, and nothing is planted for it;</li>
+ *   <li>{@code expected_edges.jsonl}: the edges the model chose that the
+ *       versions do not state -- {@code WIRE} (consumer endpoint, producer
+ *       endpoint) per selected message arm, {@code STATE} with {@code mint}
+ *       per placeholder the model joined to a writer, {@code MARKER} (root,
+ *       polarity) per marker that world planted, {@code ANCHOR}
  *       (occurrence, seq).</li>
  * </ul>
  *
@@ -176,7 +175,11 @@ public final class ConfirmMain {
                 arms.add(arm);
             }
         }
-        SessionReader session = SessionReader.read(iteration, sessionId);
+        Corpus corpus = Corpus.read(iteration, null);
+        SessionReader session = corpus.session(sessionId);
+        if (session == null) {
+            throw new Refused("the corpus holds no session " + sessionId);
+        }
         TargetRow target = null;
         for (TargetRow row : session.targets()) {
             if (row.occurrence().id().equals(anchor.id())
@@ -227,11 +230,8 @@ public final class ConfirmMain {
         // model's re-solved instants are the published witness, not what a
         // run is held to: a solver sits on the boundary of its constraints,
         // and a run's own timeline moves by more than that.
-        JsonObject world = obligationWorld(iteration, sessionId);
-        Map<String, String> assignments = strings(world, "rootAssignments");
-        Map<String, String> clockDeltas = strings(world, "clockDeltas");
-        Map<String, String> mints = strings(world, "rootMints");
-        Map<String, String> answers = strings(world, "answers");
+        Corpus.World world = corpus.world(sessionId);
+        Map<String, String> assignments = world.rootAssignments;
         List<JsonObject> markers = new ArrayList<JsonObject>();
         for (JsonElement element : array(manifest, "roots")) {
             JsonObject root = element.getAsJsonObject();
@@ -255,14 +255,17 @@ public final class ConfirmMain {
             if (armSession.isEmpty() || armSessions.containsKey(armSession)) {
                 continue;
             }
-            armSessions.put(armSession, SessionReader.read(iteration,
-                    armSession));
+            SessionReader delivering = corpus.session(armSession);
+            if (delivering != null) armSessions.put(armSession, delivering);
         }
 
-        // The edges the model chose.
+        // The edges the model chose: the versions the replay holds its
+        // reads to, and the rest it checks.
+        StateJoins joins = stateJoins(corpus, session, anchor, target.seq(),
+                arms);
         List<JsonObject> edges = new ArrayList<JsonObject>();
         edges.addAll(wireEdges(arms, armSessions));
-        edges.addAll(stateEdges(session, anchor, target.seq(), arms));
+        edges.addAll(joins.mints);
         edges.addAll(markers);
         JsonObject anchorRow = new JsonObject();
         anchorRow.addProperty("kind", "ANCHOR");
@@ -273,14 +276,17 @@ public final class ConfirmMain {
                 out.resolve(edu.uva.liftlab.graphchecker.runtime
                         .Confirmation.FILE), edges);
 
-        JsonObject focus = focusRow(anchor, seedSessionId, pathId,
-                assignments, clockDeltas, answers, mints);
-        // {@code flip: null} IS the row's statement, so the null is written
-        // -- the codec's Gson drops nulls, and a row with no flip member is
-        // no obligation at all to the replay.
-        Files.write(out.resolve(ObligationDir.FOCUSED_TASK),
-                (new GsonBuilder().serializeNulls().create().toJson(focus)
-                        + "\n").getBytes(StandardCharsets.UTF_8));
+        // NO FLIP: the values drive every decision, and the replay reads
+        // {@code flip: null} as "nothing is owed at any decision".
+        ExploreCodec.writeFocusFile(out.resolve(ObligationDir.FOCUSED_TASK),
+                ExploreCodec.writeFocusRow(Task.of(OBLIGATION_ID, anchor,
+                                Collections.<OccurrenceAddress>emptyList(),
+                                seedSessionId),
+                        Obligation.confirming(OBLIGATION_ID, OBLIGATION_ID,
+                                pathId, assignments, world.answers,
+                                Collections.<String>emptyList()),
+                        world.clockDeltas, world.rootMints,
+                        Collections.<Corpus.Flip>emptyList(), joins.versions));
 
         JsonObject summary = new JsonObject();
         summary.addProperty("kind", "CONFIRM_TASK");
@@ -289,7 +295,8 @@ public final class ConfirmMain {
         summary.addProperty("selectedSessionId", sessionId);
         summary.addProperty("valuationOrdinal", ordinal);
         summary.addProperty("rootAssignments", assignments.size());
-        summary.addProperty("clockDeltas", clockDeltas.size());
+        summary.addProperty("clockDeltas", world.clockDeltas.size());
+        summary.addProperty("versions", joins.versions.size());
         summary.addProperty("expectedEdges", edges.size());
         return summary;
     }
@@ -335,51 +342,6 @@ public final class ConfirmMain {
     }
 
     /**
-     * The focus row of the obligation whose replay is {@code sessionId}:
-     * the world that session ran (roots planted, clock skews, answers,
-     * mints).  Empty for the recording's own session, which planted nothing.
-     */
-    static JsonObject obligationWorld(Path iteration, String sessionId)
-            throws IOException {
-        for (ObligationDir worker : ObligationDir.workersIn(iteration)) {
-            if (!sessionId.equals(worker.sessionId())) continue;
-            List<JsonObject> rows = RowCodec.readJsonl(
-                    worker.dir().resolve(ObligationDir.FOCUSED_TASK));
-            if (!rows.isEmpty()) return rows.get(0);
-        }
-        return new JsonObject();
-    }
-
-    /** The focus row: an obligation that flips nothing. */
-    private static JsonObject focusRow(OccurrenceAddress anchor,
-                                       String seedSessionId, String pathId,
-                                       Map<String, String> assignments,
-                                       Map<String, String> clockDeltas,
-                                       Map<String, String> answers,
-                                       Map<String, String> mints) {
-        JsonObject task = new JsonObject();
-        task.addProperty("schemaVersion", 1);
-        task.addProperty("kind", "FOCUSED_TASK");
-        task.addProperty("taskId", OBLIGATION_ID);
-        task.addProperty("focused", anchor.render());
-        task.addProperty("focusedOccurrenceId", anchor.id());
-        task.addProperty("seedSessionId", seedSessionId);
-        task.add("factor", new JsonArray());
-        task.addProperty("obligationId", OBLIGATION_ID);
-        task.addProperty("pathId", pathId);
-        // NO FLIP: the values drive every decision, and the replay reads
-        // {@code flip: null} as "nothing is owed at any decision".
-        task.add("flip", null);
-        task.add("inheritedFlips", new JsonArray());
-        task.add("rootAssignments", object(assignments));
-        task.add("clockDeltas", object(clockDeltas));
-        task.add("answers", object(answers));
-        task.add("rootMints", object(mints));
-        task.add("unproducible", new JsonArray());
-        return task;
-    }
-
-    /**
      * One WIRE edge per consumer of every selected message arm: the
      * producer is the export that arm's own session paired the consumer
      * with, which its attach row states.
@@ -415,17 +377,35 @@ public final class ConfirmMain {
         return edges;
     }
 
+    /** The selected path's state joins, as CONFIRM hands them on. */
+    static final class StateJoins {
+        /** The versions the replay holds its reads to. */
+        final List<ReadsFrom> versions = new ArrayList<ReadsFrom>();
+        /**
+         * One {@code STATE} edge per placeholder the model joined to a
+         * writer: a placeholder stands on no bytecode, so it is checked by
+         * its writer ({@code runtime.Confirmation}) and never held.
+         */
+        final List<JsonObject> mints = new ArrayList<JsonObject>();
+    }
+
     /**
-     * One STATE edge per state join of the selected path where the MODEL
-     * CHOSE the writer: the reads of the occurrences the anchor's joins
-     * reach (Composer's P3 closure, the same rule over the same rows) whose
-     * selected {@code writer_arm__} names their writer.  A join with no
-     * alternative is the recording's and is not an edge to confirm.
+     * THE STATE JOINS OF THE SELECTED PATH: the reads of the occurrences the
+     * anchor's joins reach (Composer's P3 closure, the same rule over the
+     * same rows), each with the writer the model joined it to -- the one a
+     * selected {@code writer_arm__} names, else the version the session
+     * observed.  A join is held where the model chose among writers or the
+     * writer ran on another thread ({@link ObligationFactory#held}): which
+     * iteration's write a read observes on its own thread -- 17960's
+     * snapshot builders, serialized in the order a set yields them -- is
+     * program order's, and rule (b), the fatal at the anchor, is what checks
+     * that such joins still lead there.
      */
-    private static List<JsonObject> stateEdges(SessionReader session,
-                                               OccurrenceAddress anchor,
-                                               long cutoff,
-                                               List<JsonObject> arms) {
+    private static StateJoins stateJoins(Corpus corpus,
+                                         SessionReader session,
+                                         OccurrenceAddress anchor,
+                                         long cutoff,
+                                         List<JsonObject> arms) {
         Map<String, WriteRow> writes = new LinkedHashMap<String, WriteRow>();
         Map<String, List<WriteRow>> byLocation =
                 new LinkedHashMap<String, List<WriteRow>>();
@@ -516,40 +496,41 @@ public final class ConfirmMain {
                 }
             }
         }
-        List<JsonObject> edges = new ArrayList<JsonObject>();
+        StateJoins joins = new StateJoins();
         for (Map.Entry<String, WriteRow> join : joined.entrySet()) {
-            // ONLY WHAT THE MODEL CHOSE.  A join with one candidate writer
-            // is the recording's, not the model's: the formula pinned it,
-            // and which iteration's write a read happens to observe in
-            // another run -- 17960's snapshot builders, serialized in the
-            // order a set yields them -- is not a choice the confirmation
-            // holds the program to.  Rule (c), the fatal at the anchor, is
-            // what checks that the recorded joins still lead there.
-            if (!chosen.containsKey(join.getKey())) continue;
-            JsonObject edge = new JsonObject();
-            edge.addProperty("kind", "STATE");
-            edge.addProperty("reader", join.getKey());
-            // A PLACEHOLDER read is the mint of a declared cell, and the
-            // mint lands on whichever occurrence of the region reads the
-            // cell first: two occurrences racing for one cell -- 17960's
-            // two FSImageSaver threads, saveFSImageInAllDirs@0 and @1 --
-            // mint it at @0 in one run and at @1 in the next, while the
-            // version the placeholder stands for is the same.  So the
-            // edge is stated as what it is, a join of the CELL to the
-            // model's writer, and the run is held to it by the writer
-            // (runtime/Confirmation), not by the reader's occurrence.
-            edge.addProperty("mint", readers.get(join.getKey())
-                    .mintVersion() != ReadRow.UNKNOWN_VERSION);
-            String writer = chosen.get(join.getKey());
-            edge.addProperty("writer", writer);
-            edge.addProperty("version", join.getValue().version());
-            edge.addProperty("location", location(
-                    join.getValue().location().kind().name(),
-                    join.getValue().location().owner(),
-                    join.getValue().location().slot()));
-            edges.add(edge);
+            ReadRow reader = readers.get(join.getKey());
+            String chosenWriter = chosen.get(join.getKey());
+            if (reader.mintVersion() != ReadRow.UNKNOWN_VERSION) {
+                if (chosenWriter == null) continue;
+                // A PLACEHOLDER read is the mint of a declared cell, and the
+                // mint lands on whichever occurrence of the region reads the
+                // cell first: two occurrences racing for one cell -- 17960's
+                // two FSImageSaver threads, saveFSImageInAllDirs@0 and @1 --
+                // mint it at @0 in one run and at @1 in the next, while the
+                // version the placeholder stands for is the same.  So the
+                // edge is a join of the CELL to the model's writer, checked
+                // by the writer (runtime/Confirmation).
+                JsonObject edge = new JsonObject();
+                edge.addProperty("kind", "STATE");
+                edge.addProperty("reader", join.getKey());
+                edge.addProperty("mint", true);
+                edge.addProperty("writer", chosenWriter);
+                edge.addProperty("version", join.getValue().version());
+                edge.addProperty("location", location(
+                        join.getValue().location().kind().name(),
+                        join.getValue().location().owner(),
+                        join.getValue().location().slot()));
+                joins.mints.add(edge);
+                continue;
+            }
+            Endpoint writer = chosenWriter == null
+                    ? join.getValue().endpoint() : writers.get(chosenWriter);
+            if (ObligationFactory.held(corpus, reader, writer,
+                    chosenWriter == null ? 1 : 2)) {
+                joins.versions.add(ReadsFrom.of(reader.endpoint(), writer));
+            }
         }
-        return edges;
+        return joins;
     }
 
     /** One write the path rests on: its writer reached, its state swept. */
@@ -605,24 +586,4 @@ public final class ConfirmMain {
                 ? json.get(member).getAsString() : "";
     }
 
-    private static Map<String, String> strings(JsonObject json,
-                                               String member) {
-        Map<String, String> values = new LinkedHashMap<String, String>();
-        if (!json.has(member) || !json.get(member).isJsonObject()) {
-            return values;
-        }
-        for (Map.Entry<String, JsonElement> entry
-                : json.getAsJsonObject(member).entrySet()) {
-            values.put(entry.getKey(), entry.getValue().getAsString());
-        }
-        return values;
-    }
-
-    private static JsonObject object(Map<String, String> values) {
-        JsonObject json = new JsonObject();
-        for (Map.Entry<String, String> entry : values.entrySet()) {
-            json.addProperty(entry.getKey(), entry.getValue());
-        }
-        return json;
-    }
 }

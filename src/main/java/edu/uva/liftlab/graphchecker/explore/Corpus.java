@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.explore;
 
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
+import edu.uva.liftlab.graphchecker.contract.AccessSites;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
@@ -422,6 +423,24 @@ public final class Corpus implements Arms.Rows {
     /** Obligation id -> the verdict the wave's own file states. */
     private final Map<String, ObligationResult> waveVerdicts =
             new LinkedHashMap<String, ObligationResult>();
+
+    /** The woven access sites of this iteration, read once. */
+    private AccessSites accessSites;
+
+    /**
+     * The shared-state accesses a replay of this iteration can hold: those
+     * the weave put a hook before ({@link AccessSites}).
+     */
+    public AccessSites accessSites() {
+        if (accessSites == null) {
+            try {
+                accessSites = AccessSites.ofIteration(iteration);
+            } catch (java.io.IOException unreadable) {
+                throw new java.io.UncheckedIOException(unreadable);
+            }
+        }
+        return accessSites;
+    }
 
     /**
      * The directory the sessions were read from.

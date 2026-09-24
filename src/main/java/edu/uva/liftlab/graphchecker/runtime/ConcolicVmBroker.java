@@ -100,6 +100,7 @@ final class ConcolicVmBroker {
     private Method attach;
     private Method range;
     private Method trackedLocations;
+    private Method liveSharedVersion;
     private Method installGuardedStoreSites;
 
     void requireCurrentCapabilities() {
@@ -191,6 +192,20 @@ final class ConcolicVmBroker {
         Object value = currentEventId.invoke(null);
         return value instanceof Number
                 ? ((Number) value).longValue() : -1L;
+    }
+
+    /**
+     * The id of the version live right now at one shared location, or 0
+     * when the location holds none: a field of {@code owner} (a static one
+     * through its Class) when {@code declaringClass} is named, else an array
+     * element when {@code index} is not negative, else the whole state of a
+     * container -- a view naming the container it views.
+     */
+    long liveSharedVersion(Object owner, String declaringClass, String field,
+                           String descriptor, int index) throws Exception {
+        Object value = liveSharedVersion.invoke(null, owner, declaringClass,
+                field, descriptor, index);
+        return value instanceof Number ? ((Number) value).longValue() : 0L;
     }
 
     void symbolize(Object value, String prefix) throws Exception {
@@ -403,6 +418,9 @@ final class ConcolicVmBroker {
                 long[].class);
         api.trackedLocations = method(system,
                 "getTrackedLocationVersions", long.class, int.class);
+        api.liveSharedVersion = method(system, "getLiveSharedVersion",
+                Object.class, String.class, String.class, String.class,
+                int.class);
         api.range = method(system, "getConcolicPathConditionRange",
                 int.class, int.class);
         api.installGuardedStoreSites = method(system,

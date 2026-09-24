@@ -568,9 +568,9 @@ public class ContractTest {
                 "BlockTokenSecretManager", "retrieve", 61, false), site, 0);
         rows.writeAt = Endpoint.of(rows.anchor, Endpoint.stateSite(
                 "BlockTokenSecretManager", "addKeys", 12, true), site, 0);
-        rows.placeholderAt = Endpoint.of(rows.anchor,
-                "INSTANCE_FIELD/2#24" + RowInvariants.PLACEHOLDER + "0:READ",
-                site, 0);
+        rows.placeholderAt = Endpoint.of(rows.anchor, Endpoint.stateSite(
+                "INSTANCE_FIELD/2#24", Endpoint.PLACEHOLDER, 0, false), site,
+                0);
         rows.activations.add(ActivationRow.of("s-gate", rows.anchor, "t", false,
                 true, "DataXceiver-7#41"));
         // A marker the session minted true, and a term that is true at it.

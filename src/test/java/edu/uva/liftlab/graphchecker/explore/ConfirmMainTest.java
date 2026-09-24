@@ -3,16 +3,20 @@ package edu.uva.liftlab.graphchecker.explore;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.AccessSites;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.ExpressionTable;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
-import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
+import edu.uva.liftlab.graphchecker.contract.ObligationResult;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.contract.ReadsFrom;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
@@ -20,6 +24,7 @@ import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.contract.SessionManifest;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
+import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.runtime.Confirmation;
 import java.nio.charset.StandardCharsets;
@@ -115,10 +120,10 @@ public class ConfirmMainTest {
         // The obligation whose replay published "sel": the world it ran.
         Path worker = Files.createDirectories(
                 iteration.resolve("obligations-0000").resolve("w1"));
-        JsonObject result = new JsonObject();
-        result.addProperty("sessionId", "sel");
         RowCodec.writeJsonl(worker.resolve(ObligationDir.RESULT),
-                Collections.singletonList(result));
+                Collections.singletonList(RowCodec.writeObligationResult(
+                        ObligationResult.of("OBL.x", Verdict.ADMITTED, "sel",
+                                "the replay ran the world"))));
         JsonObject world = new JsonObject();
         JsonObject assignments = new JsonObject();
         assignments.addProperty("HDFS.SERIAL", "119980");
@@ -135,6 +140,14 @@ public class ConfirmMainTest {
         world.add("rootMints", mints);
         RowCodec.writeJsonl(worker.resolve(ObligationDir.FOCUSED_TASK),
                 Collections.singletonList(world));
+        // The woven access sites: a hook stands before the handler's read
+        // and before the manager's write, so the join can be held.
+        Path classes = Files.createDirectories(
+                iteration.resolve(AccessSites.CLASSES));
+        Map<String, String> sites = new LinkedHashMap<String, String>();
+        sites.put("<a.Handler: void h()>#u3", reader.site());
+        sites.put("<a.Manager: void tick()>#u9", writer.site());
+        AccessSites.write(classes, sites);
         return iteration;
     }
 
@@ -296,9 +309,15 @@ public class ConfirmMainTest {
                 edges.get("WIRE").get("producer").getAsString());
         assertEquals(consumer.id(),
                 edges.get("WIRE").get("consumer").getAsString());
-        assertTrue("a read's recorded join is the recording's, not a choice"
-                + " of the model: " + reader.id() + " <- " + writer.id(),
-                !edges.containsKey("STATE"));
+        assertTrue("a state join is a version the replay holds, not an"
+                + " edge it checks: " + edges, !edges.containsKey("STATE"));
+        JsonArray versions = row.getAsJsonArray("versions");
+        assertEquals("the join the selected path rests on, its writer on"
+                + " another thread than its reader: " + versions, 1,
+                versions.size());
+        ReadsFrom held = RowCodec.readReadsFrom(
+                versions.get(0).getAsJsonObject());
+        assertEquals(ReadsFrom.of(reader, writer), held);
         assertEquals("FAULT:IPC", edges.get("MARKER").get("root").getAsString());
         assertTrue(edges.get("MARKER").get("value").getAsBoolean());
         assertEquals(anchor.id(),

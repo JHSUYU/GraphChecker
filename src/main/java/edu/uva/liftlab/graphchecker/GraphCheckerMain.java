@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker;
 
+import edu.uva.liftlab.graphchecker.causynth.AccessSiteTable;
 import edu.uva.liftlab.graphchecker.causynth.LineageScope;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections;
 import edu.uva.liftlab.graphchecker.option.GraphCheckerOptions;
@@ -85,6 +86,13 @@ public class GraphCheckerMain {
             Scene.v().loadNecessaryClasses();
             PackManager.v().runPacks();
             PackManager.v().writeOutput();
+            // The replay weave's access hooks, named by the bytecode the VM
+            // will log each access at: only the written class knows it.
+            if (ConcolicInstrumentationSelections.instrumentationRequested()) {
+                LOG.info("Stated the VM site of {} shared-access hook(s)",
+                        AccessSiteTable.write(
+                                Paths.get(Options.v().output_dir())));
+            }
 
             Timers.v().totalTimer.end();
             if (Options.v().time()) {
@@ -104,6 +112,10 @@ public class GraphCheckerMain {
             return false;
         } catch (RuntimeException exception) {
             LOG.error("Unexpected exception encountered", exception);
+            return false;
+        } catch (java.io.IOException unwritten) {
+            LOG.error("The woven classes could not be read back for their "
+                    + "access sites", unwritten);
             return false;
         }
     }

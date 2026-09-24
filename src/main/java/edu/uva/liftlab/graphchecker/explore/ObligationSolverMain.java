@@ -1,6 +1,5 @@
 package edu.uva.liftlab.graphchecker.explore;
 
-import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.smt.Z3;
@@ -11,7 +10,7 @@ import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
-import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.ReadsFrom;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
@@ -103,6 +102,7 @@ public final class ObligationSolverMain {
                     Collections.<String, String>emptyMap(),
                     Collections.<String, String>emptyMap(),
                     Collections.<Corpus.Flip>emptyList(),
+                    Collections.<ReadsFrom>emptyList(),
                     Collections.singletonList(GapRow.of(ExploreCodec.EXPLORATION,
                             GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                             obligationId, "the obligation names a path the "
@@ -113,7 +113,8 @@ public final class ObligationSolverMain {
         return publish(out, candidate.task,
                 outcome.issued() ? outcome.obligation : proposal,
                 outcome.result, outcome.smt2, outcome.clockDeltas,
-                outcome.rootMints, outcome.inheritedFlips, outcome.gaps);
+                outcome.rootMints, outcome.inheritedFlips, outcome.versions,
+                outcome.gaps);
     }
 
     /**
@@ -135,6 +136,7 @@ public final class ObligationSolverMain {
                                       Map<String, String> clockDeltas,
                                       Map<String, String> rootMints,
                                       List<Corpus.Flip> inheritedFlips,
+                                      List<ReadsFrom> versions,
                                       List<GapRow> gaps)
             throws IOException {
         JsonObject row = RowCodec.writeObligationResult(result);
@@ -157,111 +159,14 @@ public final class ObligationSolverMain {
                         ? "; no query was encoded: " + result.verdict() + " "
                         + result.detail() + System.lineSeparator()
                         : smt2).getBytes(StandardCharsets.UTF_8));
-        List<JsonObject> focus = new ArrayList<JsonObject>();
+        Path focus = out.resolve(ObligationDir.FOCUSED_TASK);
         if (result.verdict() == Verdict.SAT_MODEL_READY) {
-            focus.add(replayTask(task, obligation, clockDeltas, rootMints,
-                    inheritedFlips));
+            ExploreCodec.writeFocusFile(focus, ExploreCodec.writeFocusRow(
+                    task, obligation, clockDeltas, rootMints, inheritedFlips,
+                    versions));
+        } else {
+            RowCodec.writeJsonl(focus, Collections.<JsonObject>emptyList());
         }
-        RowCodec.writeJsonl(out.resolve(ObligationDir.FOCUSED_TASK), focus);
         return row;
-    }
-
-    /**
-     * The focused replay this obligation asks for.
-     *
-     * <p>One task: the obligation's own focused occurrence, its factor
-     * members, the MINT OCCURRENCE of every root the model assigns, the
-     * decision it flips, the value to apply at every mint (a clock's as the
-     * skew to add to the replay's own reading) and the value to answer at
-     * every attach.  A handoff the corpus cannot produce is named rather
-     * than hidden, so a replay that rests on one is a known hypothesis.</p>
-     *
-     * <p>The mints are on the row because the focused set is what the
-     * replay is told, not what it derives: a focused replay is one run of
-     * the WHOLE workload, so nn0's key rotation can be focused in the same
-     * replay as the balancer occurrence whose guard the flip is about --
-     * which is the only way the balancer's flip ever runs under the serial
-     * the obligation assigns.</p>
-     */
-    private static JsonObject replayTask(Task focused,
-                                         Obligation obligation,
-                                         Map<String, String> clockDeltas,
-                                         Map<String, String> rootMints,
-                                         List<Corpus.Flip> inheritedFlips) {
-        JsonObject task = new JsonObject();
-        task.addProperty("schemaVersion", 1);
-        task.addProperty("kind", "FOCUSED_TASK");
-        task.addProperty("taskId", obligation.taskId());
-        // The Task's own fields, so the replay knows WHICH occurrence it
-        // focuses without re-deriving a closure: the render is what
-        // OccurrenceAddress.parse reads back, the id is what a reader greps.
-        if (focused != null) {
-            task.addProperty("focused", focused.focused().render());
-            task.addProperty("focusedOccurrenceId", focused.focused().id());
-            task.addProperty("seedSessionId", focused.seedSessionId());
-            JsonArray factor = new JsonArray();
-            for (OccurrenceAddress member : focused.factor()) {
-                factor.add(member.render());
-            }
-            task.add("factor", factor);
-        }
-        task.addProperty("obligationId", obligation.obligationId());
-        task.addProperty("pathId", obligation.pathId());
-        JsonObject flip = new JsonObject();
-        flip.addProperty("siteId", obligation.siteId());
-        flip.addProperty("ordinal", obligation.ordinal());
-        flip.addProperty("outcome", obligation.flippedOutcome());
-        task.add("flip", flip);
-        // THE FLIPS THIS REPLAY INHERITS.  The path this obligation was cut
-        // from ran inside a world of its own, and its flips are part of it:
-        // the replay is held to each one exactly as it is to the flip above
-        // -- a wrong arm un-admits the obligation -- and their occurrences
-        // run symbolic so their mints plant.  ONE OBLIGATION ROW still:
-        // run_engine.sh reads exactly one verdict per worker, and this
-        // replay answers for the primary flip alone.  Each entry carries the
-        // obligation id that first asked for it, so the chain is readable.
-        JsonArray inherited = new JsonArray();
-        for (Corpus.Flip carried : inheritedFlips) {
-            inherited.add(ExploreCodec.writeFlip(carried));
-        }
-        task.add("inheritedFlips", inherited);
-        JsonObject roots = new JsonObject();
-        for (Map.Entry<String, String> assignment
-                : obligation.rootAssignments().entrySet()) {
-            roots.addProperty(assignment.getKey(), assignment.getValue());
-        }
-        task.add("rootAssignments", roots);
-        // A clock's counterfactual is a SKEW, never an instant: the replay
-        // reads the clock for itself and moves that reading by this much.
-        // Written apart from rootAssignments so nothing has to guess which
-        // of the two a value is.
-        JsonObject clocks = new JsonObject();
-        for (Map.Entry<String, String> delta : clockDeltas.entrySet()) {
-            clocks.addProperty(delta.getKey(), delta.getValue());
-        }
-        task.add("clockDeltas", clocks);
-        JsonObject answers = new JsonObject();
-        for (Map.Entry<String, String> answer
-                : obligation.answers().entrySet()) {
-            answers.addProperty(answer.getKey(), answer.getValue());
-        }
-        task.add("answers", answers);
-        // Where each assigned root is MINTED, so the replay focuses those
-        // occurrences too: an assignment is planted at its mint, and a mint
-        // that runs unfocused reads the recording's value under an
-        // obligation asking for another one.  A CLOCK's skew names its mint
-        // here as well -- the two are one focused set, however the value is
-        // stated.
-        JsonObject mints = new JsonObject();
-        for (Map.Entry<String, String> mint : rootMints.entrySet()) {
-            mints.addProperty(mint.getKey(), mint.getValue());
-        }
-        task.add("rootMints", mints);
-        JsonArray unproducible = new JsonArray();
-        for (String endpoint : obligation.unproducible()) {
-            unproducible.add(endpoint);
-        }
-        task.add("unproducible", unproducible);
-        return task;
     }
 }

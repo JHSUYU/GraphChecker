@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import edu.uva.liftlab.graphchecker.smt.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ObservedWriteTarget;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.AccessorCallTarget;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ConcolicMaterializationSelection;
@@ -33,6 +34,7 @@ import soot.Scene;
 import soot.ShortType;
 import soot.SootClass;
 import soot.SootField;
+import soot.AbstractJasminClass;
 import soot.SootFieldRef;
 import soot.SootMethod;
 import soot.SootMethodRef;
@@ -56,6 +58,7 @@ import soot.jimple.IntConstant;
 import soot.jimple.InvokeExpr;
 import soot.jimple.Jimple;
 import soot.jimple.LongConstant;
+import soot.jimple.ClassConstant;
 import soot.jimple.NullConstant;
 import soot.jimple.ReturnStmt;
 import soot.jimple.ReturnVoidStmt;
@@ -1891,6 +1894,7 @@ public final class CausynthPipeline {
      * events, never a cross-thread counter).</p>
      */
     private void instrumentApplicationScope(HookCatalog refs) {
+        int accesses = 0;
         int filed = 0;
         int claimed = 0;
         int framed = 0;
@@ -1923,8 +1927,12 @@ public final class CausynthPipeline {
                     int unitIndex = originalUnitIndex(unit);
                     if (unitIndex < from || !(unit instanceof Stmt)) continue;
                     Stmt stmt = (Stmt) unit;
-                    if (!stmt.containsInvokeExpr()) continue;
                     String site = SiteId.of(method.getSignature(), unitIndex);
+                    if (!lineageOnly
+                            && instrumentSharedAccess(body, stmt, site, refs)) {
+                        accesses++;
+                    }
+                    if (!stmt.containsInvokeExpr()) continue;
                     List<Unit> before = new ArrayList<>();
                     int started = 0;
                     for (Value carried : startedWork(stmt.getInvokeExpr())) {
@@ -1972,10 +1980,72 @@ public final class CausynthPipeline {
             }
         }
         LOG.info("Instrumented {} calling-context frame(s), {} work start(s),"
-                + " {} work claim(s) and {} timed wait(s) across {} method(s)"
-                + " of the application scope for the execution index, {} "
+                + " {} work claim(s), {} timed wait(s) and {} shared access(es)"
+                + " across {} method(s) of the application scope, {} "
                 + "class(es) of it for their lineage alone", framed, filed,
-                claimed, waited, walked, lineage);
+                claimed, waited, accesses, walked, lineage);
+    }
+
+    /**
+     * One shared-state access, bracketed for the replay's version gate
+     * ({@code runtime.Versions}): a field load or store, or a call that
+     * reads or changes a container's modeled state.  The hook before it
+     * names the access as the VM will log it -- the owner, the field (a
+     * static one through its declaring Class; none for a container's whole
+     * state) -- and its woven site last, which is how INSTRUMENT finds the
+     * bytecode it stands before ({@link AccessSiteTable}); the hook after it
+     * says the access is done.  The recording weaves none: the gate holds
+     * nothing there, and the hook opens no frame and counts no event.
+     *
+     * @return whether the statement was one
+     */
+    private static boolean instrumentSharedAccess(Body body, Stmt stmt,
+                                                  String site,
+                                                  HookCatalog refs) {
+        if (refs.ref(Hook.SHARED_READ) == null) return false;
+        Value owner = null;
+        Value declaring = NullConstant.v();
+        Value field = NullConstant.v();
+        Value descriptor = NullConstant.v();
+        boolean write;
+        if (stmt instanceof AssignStmt
+                && (((AssignStmt) stmt).getLeftOp() instanceof FieldRef
+                || ((AssignStmt) stmt).getRightOp() instanceof FieldRef)) {
+            AssignStmt assign = (AssignStmt) stmt;
+            write = assign.getLeftOp() instanceof FieldRef;
+            SootFieldRef ref = ((FieldRef) (write ? assign.getLeftOp()
+                    : assign.getRightOp())).getFieldRef();
+            FieldRef access = (FieldRef) (write ? assign.getLeftOp()
+                    : assign.getRightOp());
+            owner = access instanceof InstanceFieldRef
+                    ? ((InstanceFieldRef) access).getBase()
+                    : ClassConstant.v(ref.declaringClass().getName()
+                            .replace('.', '/'));
+            declaring = StringConstant.v(ref.declaringClass().getName());
+            field = StringConstant.v(ref.name());
+            descriptor = StringConstant.v(
+                    AbstractJasminClass.jasminDescriptorOf(ref.type()));
+        } else if (stmt.containsInvokeExpr()
+                && stmt.getInvokeExpr() instanceof InstanceInvokeExpr) {
+            JavaContainerTypes.StateAccess state =
+                    JavaContainerTypes.stateAccess(stmt.getInvokeExpr()
+                            .getMethodRef().getSignature());
+            if (state == JavaContainerTypes.StateAccess.NONE) return false;
+            write = state == JavaContainerTypes.StateAccess.WRITE;
+            owner = ((InstanceInvokeExpr) stmt.getInvokeExpr()).getBase();
+        } else {
+            return false;
+        }
+        Stmt before = invoke(refs.ref(write ? Hook.SHARED_WRITE
+                : Hook.SHARED_READ), owner, declaring, field, descriptor,
+                StringConstant.v(site));
+        Stmt after = invoke(refs.ref(Hook.SHARED_DONE),
+                StringConstant.v(site));
+        insertBeforeSequence(body, stmt, Collections.<Unit>singletonList(
+                before));
+        insertAfterSequence(body, stmt, Collections.<Unit>singletonList(
+                after));
+        return true;
     }
 
     /**
@@ -3937,7 +4007,10 @@ public final class CausynthPipeline {
         OPEN_LOOP_INVOCATION,
         CLOSE_LOOP_INVOCATION,
         EXIT_REGION_FRAME,
-        THROW_REGION_FRAME
+        THROW_REGION_FRAME,
+        SHARED_READ,
+        SHARED_WRITE,
+        SHARED_DONE
     }
 
     /** Typed registry for static instrumentation hooks. */
@@ -4057,6 +4130,14 @@ public final class CausynthPipeline {
             Type object = RefType.v("java.lang.Object");
             SootClass system = phantomClass("java.lang.System");
             return new HookCatalog()
+                    .add(Hook.SHARED_READ, runtime, "sharedRead",
+                            VoidType.v(), object, string, string, string,
+                            string)
+                    .add(Hook.SHARED_WRITE, runtime, "sharedWrite",
+                            VoidType.v(), object, string, string, string,
+                            string)
+                    .add(Hook.SHARED_DONE, runtime, "sharedDone",
+                            VoidType.v(), string)
                     .add(Hook.ENTER_LOOP_ROOT_INVOCATION_FRAME, runtime,
                             "enterLoopRootInvocationFrame", LongType.v(),
                             string, string, object, ArrayType.v(object, 1))

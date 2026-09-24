@@ -407,6 +407,21 @@ public final class RowCodec {
                 string(json, SESSION_ID), string(json, "detail"));
     }
 
+    public static JsonObject writeReadsFrom(ReadsFrom row) {
+        JsonObject json = new JsonObject();
+        json.addProperty("reader", row.reader());
+        json.addProperty("readerSite", row.readerSite());
+        json.addProperty("writer", row.writer());
+        json.addProperty("writerSite", row.writerSite());
+        return json;
+    }
+
+    public static ReadsFrom readReadsFrom(JsonObject json) {
+        return ReadsFrom.of(string(json, "reader"),
+                string(json, "readerSite"), string(json, "writer"),
+                string(json, "writerSite"));
+    }
+
     public static JsonObject writeDoor(DoorRow row) {
         JsonObject json = row(row.sessionId());
         json.addProperty("kind", row.kind().name());

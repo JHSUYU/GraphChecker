@@ -28,6 +28,7 @@ cd "$JDK_ROOT"
   test/causynth/RegionDeepExpressionSerializeSmoke.java \
   test/causynth/RegionMapApiSmoke.java \
   test/causynth/RegionMapIteratorRemoveApiSmoke.java \
+  test/causynth/RegionLiveSharedVersionSmoke.java \
   test/causynth/RegionMapValuesToObjectArrayApiSmoke.java \
   test/causynth/RegionNumericLoopApiSmoke.java \
   test/causynth/RegionNumericSemanticsApiSmoke.java \
@@ -69,6 +70,7 @@ for smoke in \
   RegionDeepExpressionSerializeSmoke \
   RegionMapApiSmoke \
   RegionMapIteratorRemoveApiSmoke \
+  RegionLiveSharedVersionSmoke \
   RegionConditionalRemovalApiSmoke \
   RegionMapValuesToObjectArrayApiSmoke \
   RegionNumericLoopApiSmoke \

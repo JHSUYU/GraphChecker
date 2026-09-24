@@ -911,6 +911,30 @@ JVM_ENTRY(jstring, JVM_GetSharedMapVersions(
 #endif
 JVM_END
 
+JVM_ENTRY(jlong, JVM_GetLiveSharedVersion(
+    JNIEnv *env, jclass ignored, jobject owner, jstring declaring_class,
+    jstring field_name, jstring descriptor, jint index))
+  JVMWrapper("JVM_GetLiveSharedVersion");
+#ifdef ENABLE_CONCOLIC
+  HandleMark hm;
+  ResourceMark rm(THREAD);
+  Handle target(THREAD, JNIHandles::resolve(owner));
+  const char *holder = declaring_class == NULL ? NULL
+      : java_lang_String::as_utf8_string(
+          JNIHandles::resolve_non_null(declaring_class));
+  const char *name = field_name == NULL ? NULL
+      : java_lang_String::as_utf8_string(
+          JNIHandles::resolve_non_null(field_name));
+  const char *type = descriptor == NULL ? NULL
+      : java_lang_String::as_utf8_string(
+          JNIHandles::resolve_non_null(descriptor));
+  return ConcolicMngr::getLiveSharedVersion(target, holder, name, type,
+                                            index);
+#else
+  return 0;
+#endif
+JVM_END
+
 JVM_ENTRY(jstring, JVM_GetConcolicRegionSummary(JNIEnv *env, jclass ignored))
   JVMWrapper("JVM_GetConcolicRegionSummary");
 #ifdef ENABLE_CONCOLIC

@@ -440,6 +440,7 @@ public final class RowRuntime {
         session.write(WriteRow.of(sessionId(), sequence(seq), at, location,
                 version, expressionRef(expression), type));
         Confirmation.wrote(location, version, at);
+        Versions.published(location, version, at);
     }
 
     /** One read, at the site index the event itself stood on. */
@@ -477,6 +478,7 @@ public final class RowRuntime {
                 Text.safe(concreteValue).isEmpty() ? null
                         : Text.safe(concreteValue), mintVersion));
         Confirmation.read(at, location, observedVersion, mintVersion);
+        Versions.observed(at, location, observedVersion);
     }
 
     /**
@@ -1183,6 +1185,7 @@ public final class RowRuntime {
             Lineage.resetForTests();
             FocusedReplay.resetForTests();
             Confirmation.resetForTests();
+            Versions.resetForTests();
             SessionPublisher.resetForTests();
             HandoffMint.resetForTests();
         }

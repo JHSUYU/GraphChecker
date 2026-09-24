@@ -138,7 +138,8 @@ final class LoggedEventSites {
                             + (write ? "version" : "read")
                             + ", so the endpoint's site is its location and"
                             + " distinguishes no event of it");
-            return Endpoint.stateSite(locationKey, "UNSTATED_SITE", 0, write);
+            return Endpoint.stateSite(locationKey, Endpoint.UNSTATED_SITE, 0,
+                    write);
         }
         // The per-run number comes out BEFORE the slashes become dots: a
         // lambda proxy's name is <Outer>$$Lambda$14/1234567890, and that

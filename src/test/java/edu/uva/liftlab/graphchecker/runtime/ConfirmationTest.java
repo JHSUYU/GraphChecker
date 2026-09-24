@@ -3,17 +3,22 @@ package edu.uva.liftlab.graphchecker.runtime;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
+import edu.uva.liftlab.graphchecker.contract.AccessSites;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.ReadsFrom;
+import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -21,8 +26,9 @@ import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 /**
- * A CONFIRM replay: the focus row flips nothing, and the expected edges
- * are compared -- never enforced -- against what the run pairs and joins.
+ * A CONFIRM replay: the focus row flips nothing, the expected edges are
+ * compared against what the run pairs, and the versions the model chose are
+ * checked against what the run's reads observed.
  */
 public class ConfirmationTest {
     @Rule
@@ -42,6 +48,7 @@ public class ConfirmationTest {
     @After
     public void reset() {
         System.clearProperty(FocusedReplay.PLAN_PROPERTY);
+        System.clearProperty(Versions.CLASSES_PROPERTY);
         RowRuntime.resetForTests();
     }
 
@@ -105,13 +112,20 @@ public class ConfirmationTest {
     }
 
     @Test
-    public void theEdgesAreComparedAndNeverEnforced() throws Exception {
+    public void theEdgesAreComparedAndTheVersionsChecked() throws Exception {
         Endpoint consumer = endpoint(ANCHOR, "XCH.1.resp.key-id");
         Endpoint chosen = endpoint(PRODUCER, "XCH.1.resp.key-id");
         Endpoint other = endpoint(MINT, "XCH.1.resp.key-id");
         Endpoint reader = endpoint(ANCHOR, "a.Handler#handle()#12:READ");
         Endpoint writer = endpoint(MINT, "a.Manager#tick()#7:WRITE");
         Endpoint absent = endpoint(ANCHOR, "a.Handler#handle()#99:READ");
+        Path classes = folder.newFolder("instrumented-classes").toPath();
+        Map<String, String> sites = new LinkedHashMap<String, String>();
+        sites.put("r1", reader.site());
+        sites.put("r2", absent.site());
+        sites.put("w1", writer.site());
+        AccessSites.write(classes, sites);
+        System.setProperty(Versions.CLASSES_PROPERTY, classes.toString());
         handed("{\"schemaVersion\":1,\"kind\":\"FOCUSED_TASK\","
                 + "\"taskId\":\"CONFIRM\",\"obligationId\":\"CONFIRM\","
                 + "\"pathId\":\"p1\",\"focused\":\"" + ANCHOR + "\","
@@ -119,16 +133,13 @@ public class ConfirmationTest {
                 + OccurrenceAddress.parse(ANCHOR).id() + "\","
                 + "\"seedSessionId\":\"seed\",\"flip\":null,"
                 + "\"rootAssignments\":{},\"clockDeltas\":{},"
-                + "\"answers\":{},\"rootMints\":{}}\n",
+                + "\"answers\":{},\"rootMints\":{},\"versions\":["
+                + RowCodec.writeReadsFrom(ReadsFrom.of(reader, writer)) + ","
+                + RowCodec.writeReadsFrom(ReadsFrom.of(absent, writer))
+                + "]}\n",
                 Arrays.asList(
                         "{\"kind\":\"WIRE\",\"consumer\":\"" + consumer.id()
                                 + "\",\"producer\":\"" + chosen.id() + "\"}",
-                        "{\"kind\":\"STATE\",\"reader\":\"" + reader.id()
-                                + "\",\"writer\":\"" + writer.id()
-                                + "\",\"version\":\"121\"}",
-                        "{\"kind\":\"STATE\",\"reader\":\"" + absent.id()
-                                + "\",\"writer\":\"" + writer.id()
-                                + "\",\"version\":\"122\"}",
                         "{\"kind\":\"MARKER\",\"root\":\"FAULT:IPC\","
                                 + "\"value\":true}"));
         LocationId cell = LocationId.of(LocationKind.INSTANCE, "1", "40");
@@ -139,20 +150,22 @@ public class ConfirmationTest {
                 + chosen.id() + ", the run paired " + other.id()));
         assertEquals("a consumer the model chose nothing for", "",
                 Confirmation.attached(other, chosen));
-        // The writer of a version is published after the read that saw
-        // it, so the state edge is answered at the close.
-        Confirmation.read(reader, cell, 121L,
-                edu.uva.liftlab.graphchecker.contract.ReadRow.UNKNOWN_VERSION);
-        Confirmation.wrote(cell, 121L, other);
+        // The writer of a version is published after the read that saw it,
+        // so the rows are compared at the close.
+        Versions.observed(reader, cell, 121L);
+        Versions.published(cell, 121L, other);
         List<String> close = Confirmation.close();
-        assertEquals(close.toString(), 2, close.size());
-        assertTrue(close.get(0), close.get(0).startsWith("STATE "
-                + reader.id() + ": the model joined this read to writer "
-                + writer.id() + " (version 121), the run observed"));
-        assertTrue(close.get(0), close.get(0).endsWith("written by "
-                + other.id()));
-        assertTrue(close.get(1), close.get(1).contains(absent.id())
-                && close.get(1).endsWith("the run never read here"));
+        assertEquals(close.toString(), 1, close.size());
+        assertTrue("a held read the run never made is an edge not taken: "
+                + close.get(0), close.get(0).contains(absent.id())
+                && close.get(0).endsWith("the run never read here"));
+        String unrealized = Versions.unrealized();
+        assertTrue("a held read that observed another writer is not the "
+                + "world the model chose: " + unrealized,
+                unrealized.contains(reader.id())
+                        && unrealized.contains("written by " + other.id())
+                        && unrealized.contains("where the world chose writer "
+                        + writer.id()));
     }
 
     @Test

@@ -18,28 +18,28 @@ import java.util.Set;
  * The edges a CONFIRM run is expected to take, and whether it took them.
  *
  * <p>THE RULE.  SAT says the model satisfies the formula; CONFIRM says the
- * program agrees: the model's roots are planted, the selected path's
- * session schedule is held (strict prefix to the anchor, timeouts after --
- * an obligation replay), no flip is forced, and the run is required to (a)
- * take every edge the model chose and (b) observe the fatal at the anchor.
- * This class is (a):
+ * program agrees: the model's world is planted, the reads the model rests on
+ * are held to the versions it chose ({@link Versions}), no flip is forced,
+ * and the run is required to (a) take every edge the model chose and (b)
+ * observe the fatal at the anchor.  This class is (a):
  * {@code explore.ConfirmMain} writes {@value #FILE} beside the focus row --
  * one {@code WIRE} row per selected arm (consumer endpoint id, producer
- * endpoint id), one {@code STATE} row per state join of the selected path
- * (reader endpoint id, writer endpoint id, version), the {@code MARKER}
- * polarities and the {@code ANCHOR} -- and the existing hooks compare what
- * the run pairs and joins against it.  CHECKING, NOT ENFORCING: the run is
- * scheduled by the session's schedule as every focused replay is, and a
- * difference is filed as a {@code CONFIRM_MISMATCH} gap naming expected and
- * actual.  A replay handed no such file compares nothing.</p>
+ * endpoint id), one {@code STATE} row per placeholder the model joined to a
+ * writer, the {@code MARKER} polarities and the {@code ANCHOR} -- and the
+ * existing hooks compare what the run pairs and joins against it.  The state
+ * joins the model chose are the focus row's versions: {@link Versions}
+ * holds them and refuses the verdict where one was not realized, and a held
+ * read the run never made is an edge not taken, stated here.  A difference
+ * is filed as a {@code CONFIRM_MISMATCH} gap naming expected and actual; a
+ * replay handed no expected edges and no versions compares nothing.</p>
  *
  * <p>A WIRE edge is compared where the producer is known, at the attach
- * ({@code RowRuntime.attachedAt}).  A STATE edge is compared at the close:
- * a read's observed version names a write of the same run, and the write
- * log of an activation is read out at its end, so the writer of a version
- * may be published after the read that saw it.  Both kinds also mismatch
- * when the consumer, or the reader, never ran at all: an edge the model
- * chose that the run never took is not an edge the run agreed on.</p>
+ * ({@code RowRuntime.attachedAt}).  A placeholder's edge is compared at the
+ * close: a read's observed version names a write of the same run, and the
+ * write log of an activation is read out at its end, so the writer of a
+ * version may be published after the read that saw it.  Both kinds also
+ * mismatch when the consumer, or the reader, never ran at all: an edge the
+ * model chose that the run never took is not an edge the run agreed on.</p>
  */
 public final class Confirmation {
     /** The file the worker hands the replay, beside the focus row. */
@@ -47,6 +47,8 @@ public final class Confirmation {
 
     private static final Object LOCK = new Object();
     private static boolean loaded;
+    /** Whether this replay is a confirmation: it was handed {@value #FILE}. */
+    private static boolean confirming;
     /** Consumer endpoint id -> the producer endpoint id the model chose. */
     private static final Map<String, String> WIRE =
             new LinkedHashMap<String, String>();
@@ -62,17 +64,8 @@ public final class Confirmation {
     /** Every (location@version) a placeholder of this run observed. */
     private static final Set<String> MINTED =
             new LinkedHashSet<String>();
-    /** Reader endpoint id -> the writer endpoint id the model joined to. */
-    private static final Map<String, String> STATE =
-            new LinkedHashMap<String, String>();
-    /** Reader endpoint id -> the version the model joined to (report). */
-    private static final Map<String, String> VERSION =
-            new LinkedHashMap<String, String>();
     /** Consumer endpoint id -> the producer this run paired it with. */
     private static final Map<String, String> ATTACHED =
-            new LinkedHashMap<String, String>();
-    /** Reader endpoint id -> (location key, observed version) this run. */
-    private static final Map<String, String> READ =
             new LinkedHashMap<String, String>();
     /** (location key, version) -> the writer endpoint id of this run. */
     private static final Map<String, String> WROTE =
@@ -85,7 +78,7 @@ public final class Confirmation {
     static boolean expected() {
         load();
         synchronized (LOCK) {
-            return !WIRE.isEmpty() || !STATE.isEmpty() || !MINT.isEmpty();
+            return !WIRE.isEmpty() || !MINT.isEmpty();
         }
     }
 
@@ -118,19 +111,18 @@ public final class Confirmation {
     }
 
     /**
-     * One read this run published, with the version it observed; a
-     * placeholder states its mint's version too ({@link
-     * ReadRow#mintVersion}) and is remembered by the cell it observed.
+     * One read this run published: a placeholder states its mint's version
+     * ({@link ReadRow#mintVersion}) and is remembered by the cell it
+     * observed.
      */
     static void read(Endpoint reader, LocationId location,
                      long observedVersion, long mintVersion) {
-        if (!expected() || reader == null || location == null) return;
+        if (!expected() || reader == null || location == null
+                || mintVersion == ReadRow.UNKNOWN_VERSION) {
+            return;
+        }
         synchronized (LOCK) {
-            if (mintVersion != ReadRow.UNKNOWN_VERSION) {
-                MINTED.add(key(location, observedVersion));
-            }
-            if (!STATE.containsKey(reader.id())) return;
-            READ.put(reader.id(), key(location, observedVersion));
+            MINTED.add(key(location, observedVersion));
         }
     }
 
@@ -142,7 +134,8 @@ public final class Confirmation {
      */
     static List<String> close() {
         List<String> mismatches = new ArrayList<String>();
-        if (!expected()) return mismatches;
+        load();
+        if (!confirming) return mismatches;
         synchronized (LOCK) {
             for (Map.Entry<String, String> edge : WIRE.entrySet()) {
                 if (ATTACHED.containsKey(edge.getKey())) continue;
@@ -168,25 +161,16 @@ public final class Confirmation {
                         : "; the run's placeholders observed "
                         + observed));
             }
-            for (Map.Entry<String, String> edge : STATE.entrySet()) {
-                String observed = READ.get(edge.getKey());
-                String version = VERSION.get(edge.getKey());
-                if (observed == null) {
-                    mismatches.add("STATE " + edge.getKey() + ": the model"
-                            + " joined this read to writer "
-                            + edge.getValue() + " (version " + version
-                            + "), the run never read here");
-                    continue;
-                }
-                String writer = WROTE.get(observed);
-                if (edge.getValue().equals(writer)) continue;
-                mismatches.add("STATE " + edge.getKey() + ": the model"
-                        + " joined this read to writer " + edge.getValue()
-                        + " (version " + version + "), the run observed "
-                        + observed + (writer == null
-                        ? ", a version no write of this run states"
-                        : " written by " + writer));
-            }
+        }
+        // A held read the run never made is a state join the model chose
+        // that the run did not take; one it made and saw another writer's
+        // version is refused by the verdict (Versions#unrealized).
+        Set<String> observed = Versions.readersObserved();
+        for (Map.Entry<String, String> held : Versions.held().entrySet()) {
+            if (observed.contains(held.getKey())) continue;
+            mismatches.add("STATE " + held.getKey() + ": the model joined"
+                    + " this read to writer " + held.getValue()
+                    + ", the run never read here");
         }
         return mismatches;
     }
@@ -203,18 +187,14 @@ public final class Confirmation {
             loaded = true;
             Path file = FocusedReplay.workerFile(FILE);
             if (file == null) return;
+            confirming = true;
             try {
                 for (JsonObject row : RowCodec.readJsonl(file)) {
                     String kind = text(row, "kind");
                     if ("WIRE".equals(kind)) {
                         WIRE.put(text(row, "consumer"), text(row, "producer"));
-                    } else if ("STATE".equals(kind)
-                            && row.has("mint") && !row.get("mint").isJsonNull()
-                            && row.get("mint").getAsBoolean()) {
-                        MINT.put(text(row, "writer"), text(row, "version"));
                     } else if ("STATE".equals(kind)) {
-                        STATE.put(text(row, "reader"), text(row, "writer"));
-                        VERSION.put(text(row, "reader"), text(row, "version"));
+                        MINT.put(text(row, "writer"), text(row, "version"));
                     }
                     // MARKER rows are the root assignments the focus row
                     // already plants; ANCHOR is what the driver reads off
@@ -228,8 +208,6 @@ public final class Confirmation {
                 System.err.println("Causynth could not read " + file + ": "
                         + unreadable);
                 WIRE.clear();
-                STATE.clear();
-                VERSION.clear();
                 MINT.clear();
             }
         }
@@ -243,13 +221,11 @@ public final class Confirmation {
     public static void resetForTests() {
         synchronized (LOCK) {
             loaded = false;
+            confirming = false;
             WIRE.clear();
-            STATE.clear();
-            VERSION.clear();
             MINT.clear();
             MINTED.clear();
             ATTACHED.clear();
-            READ.clear();
             WROTE.clear();
         }
     }

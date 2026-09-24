@@ -1,15 +1,19 @@
 package edu.uva.liftlab.graphchecker.explore;
 
+import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.smt.Z3;
 
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
+import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
+import edu.uva.liftlab.graphchecker.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.contract.ReadsFrom;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
@@ -174,6 +178,12 @@ public final class ObligationFactory {
          * obligation first asked for it.</p>
          */
         public final List<Corpus.Flip> inheritedFlips;
+        /**
+         * The versions this world chose ({@link #versions}): the replay
+         * holds each read to its writer, and a choice it cannot realize
+         * is unreachable.
+         */
+        public final List<ReadsFrom> versions;
         public final List<GapRow> gaps;
 
         private Outcome(String obligationId, String taskId,
@@ -181,7 +191,7 @@ public final class ObligationFactory {
                         String smt2, Map<String, String> clockDeltas,
                         Map<String, String> rootMints,
                         List<Corpus.Flip> inheritedFlips,
-                        List<GapRow> gaps) {
+                        List<ReadsFrom> versions, List<GapRow> gaps) {
             this.obligationId = obligationId;
             this.taskId = taskId;
             this.obligation = obligation;
@@ -191,7 +201,22 @@ public final class ObligationFactory {
             this.rootMints = Collections.unmodifiableMap(rootMints);
             this.inheritedFlips =
                     Collections.unmodifiableList(inheritedFlips);
+            this.versions = Collections.unmodifiableList(versions);
             this.gaps = Collections.unmodifiableList(gaps);
+        }
+
+        /**
+         * An outcome that issues no obligation: nothing is planted, no clock
+         * is moved, no world is extended and no version is chosen.
+         */
+        static Outcome refused(String obligationId, String taskId,
+                               ObligationResult result, String smt2,
+                               List<GapRow> gaps) {
+            return new Outcome(obligationId, taskId, null, result, smt2,
+                    Collections.<String, String>emptyMap(),
+                    Collections.<String, String>emptyMap(),
+                    Collections.<Corpus.Flip>emptyList(),
+                    Collections.<ReadsFrom>emptyList(), gaps);
         }
 
         public boolean issued() {
@@ -202,18 +227,6 @@ public final class ObligationFactory {
             return result.verdict();
         }
     }
-
-    /** No clock was moved, which is every outcome but a satisfied one. */
-    private static final Map<String, String> NO_SKEW =
-            Collections.<String, String>emptyMap();
-
-    /** Nothing is planted, which is every outcome but a satisfied one. */
-    private static final Map<String, String> NO_MINTS =
-            Collections.<String, String>emptyMap();
-
-    /** No world is extended, which is every outcome but a satisfied one. */
-    private static final List<Corpus.Flip> NO_FLIPS =
-            Collections.<Corpus.Flip>emptyList();
 
     /** {@code model - recorded} as a decimal, or "" if either is not one. */
     private static String skew(String model, String recorded) {
@@ -644,10 +657,9 @@ public final class ObligationFactory {
                 candidate.path, candidate.index);
         List<GapRow> gaps = new ArrayList<GapRow>(built.gaps);
         if (!built.ok()) {
-            return new Outcome(id, candidate.task.taskId(), null,
+            return Outcome.refused(id, candidate.task.taskId(),
                     ObligationResult.of(id, Verdict.NOT_ADMITTED, "",
-                            "the query was refused: " + built.refusal),
-                    "", NO_SKEW, NO_MINTS, NO_FLIPS, gaps);
+                            "the query was refused: " + built.refusal), "", gaps);
         }
         long budget = timeoutMillis <= 0 ? Z3.DEFAULT_TIMEOUT_MILLIS
                 : timeoutMillis;
@@ -661,10 +673,9 @@ public final class ObligationFactory {
                     GapKind.SOLVER_TIMEOUT, GapClass.DIAGNOSTIC, id,
                     "no verdict in " + budget + "ms: the flip is an "
                             + "unexplored sibling, not a closed one"));
-            return new Outcome(id, candidate.task.taskId(), null,
+            return Outcome.refused(id, candidate.task.taskId(),
                     ObligationResult.of(id, Verdict.NOT_ADMITTED, "",
-                            "SOLVER_TIMEOUT after " + budget + "ms"),
-                    query, NO_SKEW, NO_MINTS, NO_FLIPS, gaps);
+                            "SOLVER_TIMEOUT after " + budget + "ms"), query, gaps);
         }
         // An answer that is neither sat nor unsat is not a verdict about the
         // corpus: an "(error ...)" says z3 could not READ the query and an
@@ -673,23 +684,21 @@ public final class ObligationFactory {
         // solver's authority.  Refused by name, the way the composer refuses
         // the same two answers.
         if (!answer.decided()) {
-            return new Outcome(id, candidate.task.taskId(), null,
+            return Outcome.refused(id, candidate.task.taskId(),
                     ObligationResult.of(id, Verdict.NOT_ADMITTED, "",
                             "the solver did not decide this flip: "
                                     + answer.status()
                                     + (answer.reason().isEmpty() ? ""
                                     : " " + answer.reason())
                                     + (solver.errors().isEmpty() ? ""
-                                    : " " + solver.errors())),
-                    query, NO_SKEW, NO_MINTS, NO_FLIPS, gaps);
+                                    : " " + solver.errors())), query, gaps);
         }
         if (!answer.sat()) {
-            return new Outcome(id, candidate.task.taskId(), null,
+            return Outcome.refused(id, candidate.task.taskId(),
                     ObligationResult.of(id, Verdict.UNSAT, "",
                             "no world of this corpus takes the other arm at "
                                     + decision.siteId() + "#"
-                                    + decision.ordinal()),
-                    query, NO_SKEW, NO_MINTS, NO_FLIPS, gaps);
+                                    + decision.ordinal()), query, gaps);
         }
         Map<String, String> roots = new LinkedHashMap<String, String>();
         for (Map.Entry<String, String> variable
@@ -741,13 +750,12 @@ public final class ObligationFactory {
                                 + " this replay read, and a clock is a "
                                 + "millisecond count in a Java long: no "
                                 + "replay could apply it"));
-                return new Outcome(id, candidate.task.taskId(), null,
+                return Outcome.refused(id, candidate.task.taskId(),
                         ObligationResult.of(id, Verdict.NOT_ADMITTED, "",
                                 "clock root " + rootId + " is owed a skew of "
                                         + skewed + ", which is not a Java "
                                         + "long, so the obligation states a "
-                                        + "world no replay can run"),
-                        query, NO_SKEW, NO_MINTS, NO_FLIPS, gaps);
+                                        + "world no replay can run"), query, gaps);
             }
             clockDeltas.put(rootId, delta);
         }
@@ -793,9 +801,9 @@ public final class ObligationFactory {
             gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
                     GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC, id,
                     recorded));
-            return new Outcome(id, candidate.task.taskId(), null,
+            return Outcome.refused(id, candidate.task.taskId(),
                     ObligationResult.of(id, Verdict.NOT_ADMITTED, "",
-                            recorded), query, NO_SKEW, NO_MINTS, NO_FLIPS, gaps);
+                            recorded), query, gaps);
         }
         // THE WORLD THIS FLIP EXTENDS.  The path was cut from a session that
         // ran in a world of its own ({@link Corpus.World}), and the replay
@@ -847,15 +855,14 @@ public final class ObligationFactory {
             mints.put(rootId, mint.occurrence().render());
         }
         if (!unmintable.isEmpty()) {
-            return new Outcome(id, candidate.task.taskId(), null,
+            return Outcome.refused(id, candidate.task.taskId(),
                     ObligationResult.of(id, Verdict.NOT_ADMITTED, "",
                             "ASSIGNMENT_UNMINTABLE: the model assigns "
                                     + String.join(", ", unmintable)
                                     + ", which the recording "
                                     + corpus.seedSessionId()
                                     + " mints nowhere, so no occurrence of a "
-                                    + "replay can be focused to plant it"),
-                    query, NO_SKEW, NO_MINTS, NO_FLIPS, gaps);
+                                    + "replay can be focused to plant it"), query, gaps);
         }
         return new Outcome(id, candidate.task.taskId(), solved,
                 ObligationResult.of(id, Verdict.SAT_MODEL_READY, "",
@@ -864,7 +871,50 @@ public final class ObligationFactory {
                                 + roots.size() + " root value(s) and "
                                 + answers.size() + " answered handoff(s), "
                                 + "planted at " + mints.size() + " mint(s)"),
-                query, clockDeltas, mints, inherited.flips, gaps);
+                query, clockDeltas, mints, inherited.flips,
+                versions(corpus, built.stateChoices, answer.values()), gaps);
+    }
+
+    /**
+     * THE VERSIONS THIS WORLD CHOSE: for every read the query bound, the
+     * write the model makes it observe -- where the model had writers to
+     * choose among, or where the writer ran on another thread than the
+     * reader.  Everywhere else program order already decides which write a
+     * read observes, and a replay that runs the same path observes it
+     * again.  A replay holds a read at the hook the weave put before it and
+     * waits for its writer at the writer's own ({@code contract.AccessSites}),
+     * so a read is held only where both sites carry one: a placeholder's
+     * mint, a site the log did not state or an access in a method the weave
+     * does not reach is not one a replay could hold.
+     */
+    static List<ReadsFrom> versions(Corpus corpus,
+                                    List<FlipQuery.StateChoice> choices,
+                                    Map<String, String> model) {
+        List<ReadsFrom> versions = new ArrayList<ReadsFrom>();
+        for (FlipQuery.StateChoice choice : choices) {
+            Arms.Arm chosen = choice.chosen(model);
+            if (chosen == null) continue;
+            Endpoint writer = chosen.interaction().producer();
+            for (ReadRow reader : choice.readers) {
+                if (held(corpus, reader, writer, choice.alternatives())) {
+                    versions.add(ReadsFrom.of(reader.endpoint(), writer));
+                }
+            }
+        }
+        return versions;
+    }
+
+    /** Whether a replay holds this read to this writer (see #versions). */
+    static boolean held(Corpus corpus, ReadRow reader, Endpoint writer,
+                        int alternatives) {
+        if (reader.mintVersion() != ReadRow.UNKNOWN_VERSION) return false;
+        if (!corpus.accessSites().holds(reader.endpoint().site())
+                || !corpus.accessSites().holds(writer.site())) {
+            return false;
+        }
+        return alternatives > 1 || !corpus.arms().sameThread(
+                reader.sessionId(), reader.endpoint().occurrence(),
+                writer.occurrence());
     }
 
     /** {@code base} with {@code over} laid on top: {@code over} wins. */

@@ -1,15 +1,22 @@
 package edu.uva.liftlab.graphchecker.explore;
 
+import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.contract.InteractionKind;
 import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.ReadsFrom;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.Task;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -129,6 +136,90 @@ public final class ExploreCodec {
                 map(object(json, "clockDeltas")),
                 map(object(json, "answers")),
                 map(object(json, "rootMints")), flips);
+    }
+
+    /**
+     * THE FOCUS ROW a focused replay is run from: one writer for both kinds
+     * of focused replay, an obligation's -- which owes one decision the
+     * other arm -- and CONFIRM's ({@link Obligation#flips()} false), which
+     * forces nothing and states {@code flip: null}.  Read back by
+     * {@link #readWorld} and by {@code runtime.FocusedReplay}.
+     *
+     * <p>The row is written with its nulls ({@link #writeFocusFile}): a
+     * row with no flip member is no obligation at all to the replay.</p>
+     */
+    public static JsonObject writeFocusRow(Task focused,
+                                           Obligation obligation,
+                                           Map<String, String> clockDeltas,
+                                           Map<String, String> rootMints,
+                                           List<Corpus.Flip> inheritedFlips,
+                                           List<ReadsFrom> versions) {
+        JsonObject task = new JsonObject();
+        task.addProperty("schemaVersion", 1);
+        task.addProperty("kind", "FOCUSED_TASK");
+        task.addProperty("taskId", obligation.taskId());
+        // The Task's own fields, so the replay knows WHICH occurrence it
+        // focuses without re-deriving a closure: the render is what
+        // OccurrenceAddress.parse reads back, the id is what a reader greps.
+        task.addProperty("focused", focused.focused().render());
+        task.addProperty("focusedOccurrenceId", focused.focused().id());
+        task.addProperty("seedSessionId", focused.seedSessionId());
+        JsonArray factor = new JsonArray();
+        for (OccurrenceAddress member : focused.factor()) {
+            factor.add(member.render());
+        }
+        task.add("factor", factor);
+        task.addProperty("obligationId", obligation.obligationId());
+        task.addProperty("pathId", obligation.pathId());
+        if (obligation.flips()) {
+            JsonObject flip = new JsonObject();
+            flip.addProperty("siteId", obligation.siteId());
+            flip.addProperty("ordinal", obligation.ordinal());
+            flip.addProperty("outcome", obligation.flippedOutcome());
+            task.add("flip", flip);
+        } else {
+            task.add("flip", JsonNull.INSTANCE);
+        }
+        // THE FLIPS THIS REPLAY INHERITS.  The path the obligation was cut
+        // from ran inside a world of its own, and its flips are part of it:
+        // the replay is held to each one exactly as it is to the flip above
+        // -- a wrong arm un-admits the obligation -- and their occurrences
+        // run symbolic so their mints plant.  Each entry carries the
+        // obligation id that first asked for it, so the chain is readable.
+        JsonArray inherited = new JsonArray();
+        for (Corpus.Flip carried : inheritedFlips) {
+            inherited.add(writeFlip(carried));
+        }
+        task.add("inheritedFlips", inherited);
+        task.add("rootAssignments", strings(obligation.rootAssignments()));
+        // A clock's counterfactual is a SKEW, never an instant: the replay
+        // reads the clock for itself and moves that reading by this much.
+        task.add("clockDeltas", strings(clockDeltas));
+        task.add("answers", strings(obligation.answers()));
+        // Where each assigned root is MINTED, so the replay focuses those
+        // occurrences too: an assignment is planted at its mint, and a mint
+        // that runs unfocused reads the recording's value under an
+        // obligation asking for another one.
+        task.add("rootMints", strings(rootMints));
+        JsonArray unproducible = new JsonArray();
+        for (String endpoint : obligation.unproducible()) {
+            unproducible.add(endpoint);
+        }
+        task.add("unproducible", unproducible);
+        // The version each held read observes (contract.ReadsFrom).
+        JsonArray chosen = new JsonArray();
+        for (ReadsFrom version : versions) {
+            chosen.add(RowCodec.writeReadsFrom(version));
+        }
+        task.add("versions", chosen);
+        return task;
+    }
+
+    /** Writes one focus row, its nulls included. */
+    public static void writeFocusFile(Path file, JsonObject row)
+            throws IOException {
+        Files.write(file, (new GsonBuilder().serializeNulls().create()
+                .toJson(row) + "\n").getBytes(StandardCharsets.UTF_8));
     }
 
     /** One inherited flip, as the focus row states it. */
