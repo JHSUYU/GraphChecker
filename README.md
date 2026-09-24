@@ -559,7 +559,15 @@ that `main` moves and the parked housekeeping is due.
    (`a9ec1d250`, `f8a9ce3a6`: a slotless WAKE waits at the cut, an open WAKE slot stands in no
    later event's way -- path B's actors heartbeat ahead of the workload's, 17960's restart held
    the lock its daemon needed to reach its recorded slot).
-1. **Read v30+** (snapshot `p33` = `f8a9ce3a6`, the eight trees at their restored sources:
+   *And since v30* (6/9 on `p33`: 17897, bug1, bug3, A, B, C, each in ONE wave), two identity
+   rules the owner's ruling implied -- for RPC, the send and receive doors propagating the
+   context IS the identity: a served message's endpoints are indexed from the message's own
+   scope root, never from the thread base (`c54ca63ca`; 17960's response ids carried which
+   pool handler served them and the reader's queue count, and matched by luck until the daemons
+   took part), and a start made by a thread with no identity files no frame (`4288081d9`;
+   11741's DataXceiver carried the acceptor's connection count, `Daemon.start#u5@1` vs `@0`).
+1. **Read v31** (snapshot `p34` = `4288081d9`: 17960, 11741, bug2, the three that missed their
+   target in v30's seed), then the nine on one snapshot. (snapshot `p33` = `f8a9ce3a6`, the eight trees at their restored sources:
    11741 d334c85a268, bug1 763968f19c7, bug2 72842405587, bug3 fbac2aa93ef, 17897 97e7d39ad83,
    A 5dfc98f14b7, B e421e92171c, C 8f50cc8446c), diagnose every FAIL by §11 before a fix, and
    repeat until the nine pass the acceptance checks of §8 on one snapshot; then fast-forward
