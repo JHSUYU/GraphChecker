@@ -3352,7 +3352,11 @@ campaign_decide() {
 
 # CONFIRM: a SAT claim, checked by one replay (DESIGN4 §5).
 #
-# SAT says the model satisfies the formula; CONFIRM says the program agrees.
+# SAT says the model satisfies the formula; CONFIRM says the program agrees:
+# one run takes every edge the model chose, with the moved roots at the
+# model's values, and observes the fatal at the anchor.  When the selected
+# session is that run -- every chosen arm its own delivery -- ConfirmMain
+# says so (realized.json) and nothing is replayed.  Otherwise
 # ConfirmMain writes what an obligation replay is handed -- a focus row that
 # plants the model's roots and flips nothing, the selected session's
 # schedule cut at the anchor, and the edges the model chose -- and the
@@ -3393,6 +3397,12 @@ campaign_confirm() {
     campaign_confirm_verdict false \
       "${reason:-ConfirmMain exited ${status}}" "" \
       >"${campaign_final}/confirm.json"
+  elif [[ -s "${worker}/realized.json" ]]; then
+    # The selected session already took every edge the model chose, with
+    # the moved roots at the model's values, and observed the fatal: that
+    # run is the confirmation, and a replay of its world would test only
+    # whether a race the order does not hold goes the same way twice.
+    jq -c '.' "${worker}/realized.json" >"${campaign_final}/confirm.json"
   else
     # The replay, exactly as an obligation's.  A campaign_fail inside it
     # ends a wave; here, in a subshell, it ends the confirmation as "no

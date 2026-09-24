@@ -2250,6 +2250,7 @@ confirm_stub_verdict=ADMITTED
 confirm_stub_gaps=""
 confirm_stub_fatal=true
 confirm_stub_task_status=0
+confirm_stub_realized=false
 confirm_stub_main() {
   local out=""
   while [[ $# -gt 0 ]]; do
@@ -2262,6 +2263,11 @@ confirm_stub_main() {
     echo "CONFIRM refused: the claim moves a cell nobody minted" >&2
     return "${confirm_stub_task_status}"
   fi
+  if [[ "${confirm_stub_realized}" == true ]]; then
+    printf '%s\n' '{"schemaVersion":1,"kind":"CONFIRMATION","confirmed":true,"reason":"the selected session S.sel is itself the run","sessionId":"S.sel"}' \
+      >"${out}/realized.json"
+    return 0
+  fi
   printf '%s\n' '{"schemaVersion":1,"kind":"FOCUSED_TASK","taskId":"CONFIRM","obligationId":"CONFIRM","flip":null,"schedulePrefix":{"sessionId":"S.sel","events":10,"rest":3,"of":13,"cutAtFocus":true}}' \
     >"${out}/focused_task.jsonl"
   printf '%s\n' '{"kind":"ANCHOR","occurrence":"OCC.anchor","seq":40}' \
@@ -2269,6 +2275,7 @@ confirm_stub_main() {
 }
 confirm_stub_replay() {
   local worker=$3 sessions=$4
+  : >"${confirm_root}/replay-ran"
   mkdir -p "${sessions}/CONFIRM-1"
   jq -n -c --arg v "${confirm_stub_verdict}" '{schemaVersion: 1,
     kind: "OBLIGATION_RESULT", obligationId: "CONFIRM", verdict: $v,
@@ -2342,6 +2349,18 @@ confirm_stub_verdict=NOT_ADMITTED
 run_confirm SAT_CANDIDATE
 confirm_says false "was NOT_ADMITTED: stub" "an unadmitted replay was confirmed"
 confirm_stub_verdict=ADMITTED
+# A selected session that already took every edge the model chose, with the
+# moved roots at the model's values, and observed the fatal IS the run that
+# confirms: published as ConfirmMain states it, and nothing is replayed.
+confirm_stub_realized=true
+rm -f -- "${confirm_root}/replay-ran"
+run_confirm SAT_CANDIDATE
+confirm_says true "is itself the run" "a realized claim was not confirmed"
+[[ $(jq -r '.sessionId' "${campaign_final}/confirm.json") == S.sel ]] \
+  || fail "the realized confirmation does not name the session that ran it"
+[[ ! -e "${confirm_root}/replay-ran" ]] \
+  || fail "a claim the selected session already realized was replayed"
+confirm_stub_realized=false
 # A confirmation nothing can run is refused by name, and the claim is
 # unconfirmed for that reason -- the campaign goes on to EMIT.
 confirm_stub_task_status=1

@@ -87,6 +87,12 @@ import java.util.Set;
 public final class ConfirmMain {
     /** The one obligation id a confirmation carries. */
     static final String OBLIGATION_ID = "CONFIRM";
+    /**
+     * The confirmation, when the selected session already realized the
+     * claim ({@link #realizedBy}): the driver publishes it and runs no
+     * replay.
+     */
+    static final String REALIZED = "realized.json";
 
     private ConfirmMain() {
     }
@@ -182,6 +188,37 @@ public final class ConfirmMain {
             throw new Refused("the selected session " + sessionId
                     + " states no target row at the anchor " + anchor.id());
         }
+        // AN EXECUTION THAT ALREADY REALIZED THE CLAIM IS THE CONFIRMATION.
+        // What CONFIRM asks is whether one run of the program takes every
+        // edge the model chose, with the moved roots at the model's values,
+        // and observes the fatal at the anchor.  When every arm the model
+        // chose is a delivery the selected session itself recorded, and
+        // that session ran each moved root at the model's value and
+        // observed the fatal, that session is the run: re-running its
+        // world tests only whether a race the order does not hold goes the
+        // same way twice (hdfs-17899 bug2, rounds v36 and v38).  A model
+        // that combines deliveries of different sessions has no such run,
+        // and the replay below is the one that makes it.
+        String realized = realizedBy(decided, sessionId, arms, session,
+                target);
+        if (!realized.isEmpty()) {
+            JsonObject confirmation = new JsonObject();
+            confirmation.addProperty("schemaVersion", 1);
+            confirmation.addProperty("kind", "CONFIRMATION");
+            confirmation.addProperty("confirmed", true);
+            confirmation.addProperty("reason", realized);
+            confirmation.addProperty("sessionId", sessionId);
+            RowCodec.writeJsonl(out.resolve(REALIZED),
+                    Collections.singletonList(confirmation));
+            JsonObject summary = new JsonObject();
+            summary.addProperty("kind", "CONFIRM_TASK");
+            summary.addProperty("anchor", anchor.id());
+            summary.addProperty("selectedPathId", pathId);
+            summary.addProperty("selectedSessionId", sessionId);
+            summary.addProperty("valuationOrdinal", ordinal);
+            summary.addProperty("realizedBy", sessionId);
+            return summary;
+        }
 
         // THE WORLD THE SELECTED PATH RAN IN, values only.  Its own session
         // planted these roots and clocks and observed the fatal with its
@@ -265,6 +302,46 @@ public final class ConfirmMain {
         summary.addProperty("expectedEdges", edges.size());
         summary.add("schedulePrefix", cut.toJson());
         return summary;
+    }
+
+    /**
+     * Why the selected session is itself the run that confirms the claim,
+     * or {@code ""} when a replay has to make one.
+     *
+     * <p>Every arm the model chose for the selected path is one of that
+     * session's own deliveries, the session's target row at the anchor
+     * observed the fatal, and every root the claim moved is one that
+     * session minted at the model's value -- named by root id or by the
+     * symbol the formula carries, as {@code movedRoots} names it.</p>
+     */
+    static String realizedBy(JsonObject decided, String sessionId,
+                             List<JsonObject> arms, SessionReader session,
+                             TargetRow target) {
+        if (!target.observedFatal()) return "";
+        for (JsonObject arm : arms) {
+            if (!sessionId.equals(text(arm, "sessionId"))) return "";
+        }
+        Map<String, String> ran = new LinkedHashMap<String, String>();
+        for (RootMintRow row : session.roots()) {
+            ran.put(row.rootId(), row.recordedValue());
+            ran.put(row.symbol(), row.recordedValue());
+        }
+        JsonObject moved = decided.has("movedRoots")
+                && decided.get("movedRoots").isJsonObject()
+                ? decided.getAsJsonObject("movedRoots") : new JsonObject();
+        for (Map.Entry<String, JsonElement> root : moved.entrySet()) {
+            String value = ran.get(root.getKey());
+            if (value == null || !value.trim().equalsIgnoreCase(
+                    root.getValue().getAsString().trim())) {
+                return "";
+            }
+        }
+        return "the selected session " + sessionId + " is itself the run: "
+                + "it took every edge the model chose (" + arms.size()
+                + " arm(s), all its own deliveries), ran "
+                + (moved.size() == 0 ? "no moved root"
+                : "every moved root at the model's value")
+                + ", and observed the fatal at the anchor";
     }
 
     /**

@@ -165,11 +165,17 @@ public class ConfirmMainTest {
     }
 
     private Path claim(String movedCell) throws Exception {
-        Path file = folder.newFile("claim.json").toPath();
+        return claim(movedCell, "45000");
+    }
+
+    private Path claim(String movedCell, String movedValue) throws Exception {
+        Path file = Files.createTempFile(folder.getRoot().toPath(), "claim",
+                ".json");
         Files.write(file, ("{\"kind\":\"CLAIM\",\"anchor\":\"" + ANCHOR
                 + "\",\"seedSessionId\":\"seed\","
                 + "\"claim\":{\"kind\":\"CLOCK_SKEW\",\"valuationOrdinal\":1,"
-                + "\"movedRoots\":{\"" + movedCell + "\":\"45000\"},"
+                + "\"movedRoots\":{\"" + movedCell + "\":\"" + movedValue
+                + "\"},"
                 + "\"polarityDecides\":true,\"gaps\":[]},"
                 + "\"valuations\":[{\"ordinal\":0,\"status\":\"unsat\","
                 + "\"selectedPathId\":\"\",\"selectedSessionId\":\"\"},"
@@ -198,7 +204,8 @@ public class ConfirmMainTest {
     }
 
     private Path manifest() throws Exception {
-        Path file = folder.newFile("manifest.json").toPath();
+        Path file = Files.createTempFile(folder.getRoot().toPath(),
+                "manifest", ".json");
         Files.write(file, ("{\"kind\":\"COMPOSITION_MANIFEST\",\"paths\":["
                 + "{\"pathId\":\"p1\",\"sessionId\":\"sel\","
                 + "\"selector\":\"path_selector__1__abc\","
@@ -216,6 +223,44 @@ public class ConfirmMainTest {
                 + "\"recordedValue\":\"7\"}]}")
                 .getBytes(StandardCharsets.UTF_8));
         return file;
+    }
+
+    /**
+     * A selected session that already took every edge the model chose, ran
+     * the moved root at the model's value and observed the fatal IS the run
+     * that confirms the claim: nothing is handed to a replay.
+     */
+    @Test
+    public void aSessionThatRealizedTheClaimIsItsConfirmation()
+            throws Exception {
+        Path iteration = iteration();
+        SessionDir sel = SessionDir.of(iteration, "sel");
+        RowCodec.writeAll(sel.roots(), Arrays.asList(
+                root("sel", "HDFS.SERIAL", "M_I_serial.sel",
+                        RootKind.INTEGRAL, "119978"),
+                root("sel", "FAULT:IPC", "M_Z_fault.sel", RootKind.MARKER,
+                        "true")), RowCodec::writeRootMint);
+        Path out = folder.newFolder("realized").toPath();
+
+        JsonObject summary = ConfirmMain.write(iteration,
+                claim("FAULT:IPC", "true"), manifest(), out);
+
+        assertEquals("sel", summary.get("realizedBy").getAsString());
+        List<JsonObject> rows = RowCodec.readJsonl(
+                out.resolve(ConfirmMain.REALIZED));
+        assertEquals(1, rows.size());
+        assertTrue(rows.get(0).get("confirmed").getAsBoolean());
+        assertEquals("sel", rows.get(0).get("sessionId").getAsString());
+        assertTrue("and no replay is handed anything",
+                !Files.exists(out.resolve("focused_task.jsonl")));
+
+        Path other = folder.newFolder("not-realized").toPath();
+        ConfirmMain.write(iteration, claim("FAULT:IPC", "false"),
+                manifest(), other);
+        assertTrue("a moved root the session ran at another value is a run "
+                        + "a replay has to make",
+                !Files.exists(other.resolve(ConfirmMain.REALIZED))
+                        && Files.exists(other.resolve("focused_task.jsonl")));
     }
 
     @Test

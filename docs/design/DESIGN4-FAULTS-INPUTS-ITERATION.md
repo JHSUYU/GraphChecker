@@ -254,7 +254,19 @@ to: a solver sits on the boundary of its constraints and a run's timeline
 moves by more than that (bug1: the anchor reached, the fatal not observed,
 with the model's clock deltas planted). The recording's own session planted
 nothing, and nothing is planted for it.
-The claim is confirmed iff (a) every edge the model chose
+What the claim needs is one run that took every edge the model chose, with
+the moved roots at the model's values, and observed the fatal at the anchor.
+When every arm the model chose is a delivery the selected session itself
+recorded, and that session minted each moved root at the model's value and
+observed the fatal, the selected session IS that run: it is the confirmation
+(`ConfirmMain.realizedBy`, `realized.json`) and nothing is replayed -- a
+replay of its world would test only whether a race the order does not hold
+goes the same way twice (hdfs-17899 bug2, v38: the replay's schedule stalled
+at the DataNode actor's heartbeat and one chosen consumer never attached,
+while the selected session had taken both chosen edges and the fatal). A
+model that combines deliveries of different sessions has no such run, and
+the replay makes one.
+The replay's claim is confirmed iff (a) every edge the model chose
 is the edge the run took -- per message family the selected arm (consumer
 endpoint ← producer endpoint), per state join the model chose among alternative writers the writer the read
 observed (a join with one candidate is the recording's, and rule (b) checks where it leads), per marker its planted polarity -- and (b) the anchor's target
