@@ -379,7 +379,7 @@ is the current design; this is its summary.
 | stock JDK 8 | `/usr/lib/jvm/java-8-openjdk-amd64` — `export JAVA_HOME=… PATH=$JAVA_HOME/bin:$PATH` before Maven (the environment's default is JDK 11 and the build refuses) |
 | the concolic VM image | `third_party/OpenJDK-Concolic-Execution-Engine/build/linux-x86_64-normal-zero-release/images/j2sdk-image` (built; rebuild: `FULL_JDK=true JOBS=8 bash scripts/causynth_build_in_docker.sh` in that directory) |
 | z3 4.14.1 | `~/.local/bin/z3` |
-| Hadoop workload trees | `~/hadoop-hdfs-11741`, `-17897`, `-17899-bug1/2/3`, `-17960`, `-17967`, `-17967-b`, `-17967-c`; each on its `gc/<case>-v2` branch of `git@github.com:JHSUYU/hadoop.git` (committed, **not pushed**); `experiments/hadoop/<case>/tree-edits/` mirrors the edits |
+| Hadoop workload trees | `~/hadoop-hdfs-11741`, `-17897`, `-17899-bug1/2/3`, `-17960`, `-17967`, `-17967-b`, `-17967-c`; each on its `gc/<case>` branch of `git@github.com:JHSUYU/hadoop.git` (committed, **not pushed**); `experiments/hadoop/<case>/tree-edits/` mirrors the edits |
 | campaign hosts | `lift11`…`lift15` (ssh, BatchMode); at most two campaigns per host, the obligation workers of one campaign already fan out over the hosts named in the case's `workflow.properties` |
 | snapshots | `~/gc-run/pNN` — a `git worktree` of one commit with its own built jar; a campaign runs from a snapshot so the working tree can move |
 | outputs | `~/gc-out/accept-<round>-<case>/` (`summary.tsv`, `logs/`, `out/<case>/schedule/…`, `report/<case>/report.md`), `~/gc-out/launch-<round>-<case>.log` |
@@ -617,7 +617,7 @@ that `main` moves and the parked housekeeping is due.
    the two DESIGN4 §3.3b means (bug1's catch path is the intended case).
 7. **Housekeeping the owner asked for and then parked (2026-09-23 morning)** — do it only when
    asked again: delete old outputs (`~/gc-out/accept-v16..v21-*` once superseded) and snapshots
-   (`git worktree remove ~/gc-run/pNN`); rename the Hadoop branches `gc/<case>-v2` → `gc/<case>`
+   (`git worktree remove ~/gc-run/pNN`); rename the Hadoop branches `gc/<case>` → `gc/<case>`
    ("there is no v1/v2, the current code is the code"), delete the stale remote branches, push
    both repositories; the GraphChecker code lives on `main` only.
 8. **Owner follow-ups noted at v14/v15, not blocking**: the composer's `clock_domain` is asserted
@@ -747,7 +747,7 @@ src/main/java/edu/uva/liftlab/graphchecker/   the engine (§3's package table)
 src/shim/                                     the hadoop-shim jar the trees call
 src/test/                                     143 @Test + src/test/shell/run_engine_campaign_helpers_test.sh
 run_engine.sh                                 the campaign driver
-experiments/hadoop/<case>/                    declarations + README per case (a tree's edits are its own gc/<case>-v2 branch)
+experiments/hadoop/<case>/                    declarations + README per case (a tree's edits are its own gc/<case> branch)
 experiments/hadoop/lib/                       the one harness every case runs through (README: workload rules)
 experiments/hadoop/accept/                    accept.sh, probe.sh, report.py (README: what PASS means)
 tools/rounds/                                 launch-round.sh, launch-run.sh, round-monitor.sh (§8)

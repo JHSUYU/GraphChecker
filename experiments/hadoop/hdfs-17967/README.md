@@ -20,9 +20,9 @@ independent:
 
 | Case | Worktree | Branch |
 | --- | --- | --- |
-| `pathA` | `/u/vnr3ne/hadoop-hdfs-17967` | `gc/hdfs-17967-v2` |
-| `pathB` | `/u/vnr3ne/hadoop-hdfs-17967-b` | `gc/hdfs-17967-pathB-v2` |
-| `pathC` | `/u/vnr3ne/hadoop-hdfs-17967-c` | `gc/hdfs-17967-pathC-v2` |
+| `pathA` | `/u/vnr3ne/hadoop-hdfs-17967` | `gc/hdfs-17967-pathA` |
+| `pathB` | `/u/vnr3ne/hadoop-hdfs-17967-b` | `gc/hdfs-17967-pathB` |
+| `pathC` | `/u/vnr3ne/hadoop-hdfs-17967-c` | `gc/hdfs-17967-pathC` |
 
 All three are cut from `gc/hdfs-17899-bug3-current`, which still has the bug (its
 `DataXceiver.java` holds **0** occurrences of `InvalidEncryptionKeyException` against **5**

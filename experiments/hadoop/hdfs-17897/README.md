@@ -37,7 +37,7 @@ node's own readings came in, and the value each path read.
 
 ## Build and run
 
-Hadoop checkout `/u/vnr3ne/hadoop-hdfs-17897`, branch `gc/hdfs-17897-v2`. Replay
+Hadoop checkout `/u/vnr3ne/hadoop-hdfs-17897`, branch `gc/hdfs-17897`. Replay
 concurrency is fixed at `concolic_worker_count=8` in `workflow.properties`. From this
 directory:
 
