@@ -213,6 +213,51 @@ public class OccurrenceAddressIsNotARequestTest {
 
 
     /**
+     * The occurrence that ran is admitted where the plan named another.
+     *
+     * <p>A replay is held to no order, so a DataNode actor's heartbeat can
+     * take a delivery the recording's workload heartbeat took: an activation
+     * of a planned region, on the node it was planned on, that answers no
+     * planned address.  It is admitted as a task of its own, at the address
+     * it ran at, while the planned task stays open for its own; and one
+     * address is one occurrence, admitted once.</p>
+     */
+    @Test
+    public void theOccurrenceThatRanIsAdmittedWhereThePlanNamedAnother()
+            throws Exception {
+        RuntimeTraceContext.resetForTests();
+        RecordingWindow.open();
+        Object node = new Object();
+        RuntimeTraceContext.registerSource(node,
+                new SourceRef("CLUSTER_NODE", "NAMENODE", NN0, 1L));
+        String planned = OccurrenceAddress.of(NodeId.parse(NN0 + "#epoch1"),
+                SNAPSHOT_REGION, CausalContext.of(
+                        Role.of("BP_SERVICE_ACTOR"), "", 1),
+                ExecutionIndex.empty()).render();
+        ConcolicTaskPlan.RuntimeTask task = new ConcolicTaskPlan.RuntimeTask(
+                ExecutionTask.decode(encoded("TASK.planned", NN0 + "#epoch1",
+                        SNAPSHOT_REGION, SNAPSHOT_ROOT, planned, 1,
+                        "REGISTERED_SOURCE")));
+        ConcolicTaskPlan plan = plan(task);
+
+        ConcolicTaskPlan.RuntimeTask ran = plan.select(task.rootHookGroupKey(),
+                SNAPSHOT_ROOT, node, new Object[0]);
+
+        assertNotNull("the activation that ran is admitted", ran);
+        assertTrue(ran.taskId, ran.taskId.startsWith(
+                ConcolicTaskPlan.DERIVED_TASK_PREFIX));
+        assertTrue("at the address it ran at: " + ran.address,
+                !ran.address.render().equals(planned)
+                        && ran.acceptsRootInvocation(ran.address));
+        assertTrue("the planned task stays open for its own address",
+                task.unansweredAddress().startsWith(
+                        "1 compatible activation(s)"));
+        assertEquals("one address is one occurrence, admitted once", null,
+                plan.select(task.rootHookGroupKey(), SNAPSHOT_ROOT, node,
+                        new Object[0]));
+    }
+
+    /**
      * A value arriving over the wire does not say where the receiver ran.
      *
      * <p>Execution context is set by execution-scope events only, never by

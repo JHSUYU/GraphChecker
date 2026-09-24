@@ -75,6 +75,8 @@ final class ConcolicTaskPlan {
      * address, one at a time, until one of them is the addressed
      * occurrence.</p>
      */
+    /** The task id prefix of a task derived at an unplanned address. */
+    static final String DERIVED_TASK_PREFIX = "TASK.DERIVED.";
     final boolean[] candidateLive;
     final boolean[] occurrenceClaimed;
     /**
@@ -106,6 +108,12 @@ final class ConcolicTaskPlan {
     private final Map<String, RootHookGroup> loopRootHookGroups =
             new LinkedHashMap<String, RootHookGroup>();
     boolean unansweredAddressesPublished;
+    /**
+     * Tasks this run derived for occurrences no planned address answered,
+     * by the id of the address each was derived for ({@link #derive}).
+     */
+    private final Map<String, RuntimeTask> derived =
+            new LinkedHashMap<String, RuntimeTask>();
 
     ConcolicTaskPlan(Path resultFile, List<RuntimeTask> tasks) {
         this.resultFile = resultFile;
@@ -124,7 +132,11 @@ final class ConcolicTaskPlan {
      */
     synchronized void releaseCandidate(RuntimeTask task) {
         Integer index = slots.get(task);
-        if (index != null) candidateLive[index] = false;
+        if (index != null) {
+            candidateLive[index] = false;
+        } else if (task != null && task.address != null) {
+            derived.remove(task.address.id());
+        }
     }
 
     /**
@@ -502,6 +514,8 @@ final class ConcolicTaskPlan {
         // there is no candidate to select.
         if (!RuntimeTraceContext.recordingWindowOpen()) return null;
         ObservedAddresses observedAddresses = new ObservedAddresses();
+        RuntimeTask exemplar = null;
+        OccurrenceAddress unanswered = null;
         for (int index = 0; index < tasks.size(); index++) {
             RuntimeTask task = tasks.get(index);
             if (!task.rootHookGroupKey().equals(
@@ -563,13 +577,44 @@ final class ConcolicTaskPlan {
                 // on the ordinal, and the row said the root never executed.
                 task.noteUnaddressedCandidate(RefusedCandidate.onAddress(
                         "matching root", observed, activationSource));
+                if (exemplar == null && observed != null) {
+                    exemplar = task;
+                    unanswered = observed;
+                }
                 continue;
             }
             if (candidateLive[index]) continue;
             candidateLive[index] = true;
             return task;
         }
-        return null;
+        return exemplar == null ? null : derive(exemplar, unanswered);
+    }
+
+    /**
+     * THE OCCURRENCE THAT RAN, where the recording's plan named another.
+     *
+     * <p>A plan's addresses are the recording's, and a replay is held to
+     * no order: a DataNode actor's heartbeat can take the key update the
+     * recording's workload heartbeat took, and the delivery then runs at an
+     * address the plan never listed.  Refused, it ran unrecorded, and the
+     * witness its IPC doors carry was lost with it (hdfs-17899 bug1 v41: no
+     * {@code addKeys} activation in the seed at all).  So an activation of a
+     * planned region, on a node the plan planned it on, that answers no
+     * planned address is admitted as a task of its own: the plan row of the
+     * first task that offered it, at the address it ran at.  Its rows state
+     * what ran; the planned task stays open for its own address and is
+     * reported unanswered if nothing reaches it.  One activation per
+     * address: a second is not another occurrence.</p>
+     */
+    private RuntimeTask derive(RuntimeTask exemplar,
+                               OccurrenceAddress observed) {
+        if (derived.containsKey(observed.id())) return null;
+        JsonObject row = exemplar.plan.json().deepCopy();
+        row.addProperty("occurrenceId", observed.render());
+        row.addProperty("taskId", DERIVED_TASK_PREFIX + observed.id());
+        RuntimeTask task = new RuntimeTask(ExecutionTask.decode(row));
+        derived.put(observed.id(), task);
+        return task;
     }
 
     /**
@@ -1142,6 +1187,8 @@ final class ConcolicTaskPlan {
     }
 
     static final class RuntimeTask {
+        /** The plan row this task was made from. */
+        final ExecutionTask plan;
         final String taskId;
         final String instrumentationSelector;
         final String regionId;
@@ -1233,6 +1280,7 @@ final class ConcolicTaskPlan {
                         "runtime task must be executable");
             }
             JsonObject rootSelector = task.rootSelector();
+            this.plan = task;
             this.taskId = task.taskId();
             this.instrumentationSelector = task.instrumentationSelector();
             this.regionId = task.regionId();
