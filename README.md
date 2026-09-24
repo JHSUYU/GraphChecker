@@ -390,8 +390,8 @@ is the current design; this is its summary.
 ```bash
 export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64 PATH=/usr/lib/jvm/java-8-openjdk-amd64/bin:$PATH
 mvn -q -o package -DskipTests           # the jar: target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar
-mvn -q -o test                          # 143 @Test (keep it under 150; fold new behaviour into existing tests)
-bash src/test/shell/run_engine_campaign_helpers_test.sh
+mvn -q -o test                          # 156 @Test; fold new behaviour into existing tests
+bash src/test/shell/run_engine_campaign_helpers_test.sh   # run BOTH before every commit
 ```
 
 `-o` (offline) is deliberate: `~/.m2` is NFS-shared and a Hadoop build in parallel with a Maven
@@ -454,9 +454,10 @@ assessor plus two skeptics per case on exactly those four checks.
 
 ## 9. Status (2026-09-24: 9/9 on `main`; the history below stands as written)
 
-**2026-09-24 04:01: nine of nine pass on one snapshot, `p37` = `6e21b90e3`, which is `main`**
-(§10 item 1 has the table and the evidence directories). The paragraphs below are the
-history that led there, kept as written on 2026-09-23.
+**2026-09-24 11:30: nine of nine pass on one snapshot, `p39` = `e41f9e609` (round v37), each
+formula checked for the causality its witness names** (§10 item 1 has the table, the check and
+the evidence directory, `~/gc-out/accept-v37-*`). The paragraphs below are the history that led
+there, kept as written on 2026-09-23.
 
 
 **Superseded acceptance: 9/9 on `main` = `497dc8beb` (round v15, 2026-09-23 02:00)** — its
@@ -603,6 +604,47 @@ that `main` moves and the parked housekeeping is due.
    done except the push: intermediates deleted, dead code and fallbacks removed in four batches
    (item 4), `main` fast-forwarded to the branch locally, one Hadoop branch per case
    (`gc/<case>`); nothing is pushed without the owner's word.
+
+   **The causality in the formula, checked -- 2026-09-24 11:30, round v37 on `p39` =
+   `e41f9e609` (`~/gc-out/accept-v37-*`, the evidence that stands; v34-v36 and `p35`-`p38` are
+   deleted).** Acceptance reads the published `candidate.smt2` and requires every root the
+   witness moved to lie in the causal cone of the selected path's fatal condition -- the
+   constants its `path_fatal` names, closed over the message families asserted under the same
+   selector, each arm binding `v_H` to the producer's expression with the producer path's own
+   condition -- and no fatal condition to name a boundary variable no family binds
+   (`experiments/hadoop/accept/cone.py`, gate in `report.py`, `25d5120b2`). This is the paper's
+   causality as the formula carries it: a value crosses a thread or process boundary as the
+   producer's expression and the composer merges the producers. v37, all nine PASS and all
+   confirmed:
+
+   | case | mechanism in the cone of the selected path | s |
+   | --- | --- | --- |
+   | hdfs-17960 | configured `SNAPSHOT_DELETION_ORDERED=false` | 338 |
+   | hdfs-17899-bug1 | IPC request door `REGION.763d087e` true | 394 |
+   | hdfs-17967-pathC | IPC request door true | 517 |
+   | hdfs-17899-bug3 | IPC request door true | 638 |
+   | hdfs-17897 | IPC request door true | 645 |
+   | hdfs-17899-bug2 | the SPS's IPC reply door `REGION.9ffdee3d` true | 646 |
+   | hdfs-17967-pathB | IPC request door true | 664 |
+   | hdfs-17967-pathA | IPC request door true | 727 |
+   | hdfs-11741 | CLOCK_SKEW: four NameNode `updateKeys` clocks and the DataNode's `addKeys` clock | 4405 |
+
+   A witness edited to move a door marker outside the cone fails the gate. No VM change was
+   needed: the 11741 target reads `(let ((s STATE)) (ite (assoc_has s k) (assoc_read s k)
+   null))`, STATE the DataNode's `AssocState` whose puts carry the heartbeat's `v_H` key ids
+   (bound by family to SERIAL-derived exports, expiry dates to `clk_NN + C`) over the two keys
+   made before the window, and `k` the SASL-delivered `v_H`. (An analysis of mine had read the
+   `let` variable as the state and concluded the map was all constants; it is not.) Rows agree:
+   the seed's reads JOIN their writer's version (365) or MINT (42); the 18 that pin to a
+   recorded value read locations nothing in the window wrote.
+
+   **CONFIRM requires the model's edges and the fatal at the anchor, not the recorded order**
+   (`e41f9e609`, DESIGN4 §5). The order holds communication and thread events, not plain field
+   accesses: v36's bug2 CONFIRM took every edge the model chose and observed the fatal at the
+   anchor, and was refused on the order alone -- the workload's `triggerHeartbeatForTests` read
+   the DataNode actor's `nextHeartbeatTime` after that actor's heartbeat instead of before and
+   waited for the next one, which the order places after the workload's own request. A
+   divergence of the order stays a diagnostic gap of the CONFIRM session.
 4. **The cleanup the read found (§14, R-items) -- done 2026-09-24 in four batches on the
    branch** (`6ad752ef7`, `3e0768815`, `fbf3fb523`, `6e21b90e3`), each after `git grep` for
    readers in `src`, `run_engine.sh`, `experiments/hadoop` and `tools`, 156 tests green at each:
@@ -660,6 +702,23 @@ that `main` moves and the parked housekeeping is due.
    `run_engine.sh` split by stage. Deferred identity items: `Lost` should address to an empty
    index; carry lineage explicitly instead of `InheritableThreadLocal` (= R18); loop bodies get
    their own iteration frames.
+10. **Two engine defects found on 2026-09-24, not yet fixed** (neither affects a formula's
+    causality; both cost determinism or time):
+    - *An event's k counts across threads that share a context (G8).* The schedule keys an event
+      by `(kind, node|context, site, k)`, and threads started under one scope keep that scope's
+      context -- a start adds a frame to the execution index, not a hop to `c`. So their events
+      share one counter: bug2's `Root:CLIENT/satisfy-storage-policy#1` holds ~90 SENDs from
+      many occurrences, and the k-th SEND is whichever thread sends k-th (v36: the recording's
+      SEND#7 was occurrence `e7c2cec3`, CONFIRM's was `466d3827`). `ScheduleLog.pending`
+      already refuses a cross-thread counter for `Lost`; the general fix is the paper's causal
+      context -- `c` carries the thread handoffs (the start frames from the scope base).
+    - *Exploration's unit carries the world.* `ObligationFactory.obligationId` keys an obligation
+      by (task, arm, prefix digest, world digest), and `FlipQuery` pins every handoff but the
+      focused occurrence's to its recorded arrival, so a local behaviour of one occurrence is
+      re-asked in every world whose flips reach it: 11741 v37 asked 641 obligations over four
+      waves (v35: 627 for 69 distinct (arm, root-assignment) questions, one arm 42 times). The
+      paper's unit is the occurrence's local behaviour: boundary inputs free inside their
+      families, the answer planted at the attach, no world in the key.
 
 ## 11. Debugging a round
 
