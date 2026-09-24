@@ -861,15 +861,35 @@ public final class Identity {
      * on the hop, called through the same doors by the recording and by
      * the replay ({@code RuntimeTraceContext}).</p>
      */
-    public static void scopeStart(Hop hop) {
+    public static int scopeStart(Hop hop) {
         if (hop == null) {
             throw new IllegalArgumentException(
                     "a scope start states which hop opens it");
         }
         State state = state();
+        int before = state.scopeBase;
         state.scopeBase = hop == Hop.STARTED_ROOT && state.startDepth >= 0
                 ? Math.min(state.startDepth, state.depth())
                 : state.depth();
+        return before;
+    }
+
+    /**
+     * Puts back the scope root a hop replaced, when the hop ends.
+     *
+     * <p>A HOP'S SCOPE ROOT LASTS AS LONG AS THE HOP.  A served message's
+     * root was set and never put back: once the message's scope had ended
+     * the root stayed where the message had opened it, the frame exit's
+     * clamp then moved it up to the thread's base, and every later
+     * occurrence of that thread lost the frames that name the thread -- its
+     * claimed start above all.  hdfs-17899 bug2's three SPS-node threads
+     * each carried their start frame on their first RPC and none after, so
+     * their k-th calls shared one address (PLAN OCCURRENCE_ADDRESS_SHARED,
+     * six of them).</p>
+     */
+    public static void scopeRestore(int before) {
+        State state = state();
+        state.scopeBase = Math.max(0, Math.min(before, state.depth()));
     }
 
     /** The index from the scope root to here: an occurrence's own index. */
