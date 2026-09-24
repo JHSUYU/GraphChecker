@@ -9,8 +9,10 @@ the mechanism each witness names and how the claim layer read it, which root
 and the probe's reading, so the causal chain can be narrated from the model
 rather than inferred from a verdict.
 
-A case passes when the claim layer accepted it AND the mechanism it concluded
-is the one this case is known to fail by: claim SAT_CANDIDATE, confirmed by
+A case passes when the claim layer accepted it, the formula carries the
+causality the witness names (cone.py: every moved root in the causal cone of
+the selected path, no unbound boundary variable), AND the mechanism it
+concluded is the one this case is known to fail by: claim SAT_CANDIDATE, confirmed by
 the CONFIRM replay (confirmation.confirmed=true), no BLOCKING gap in gaps.json, not withheld,
 finalStatus FINAL_READY, a findingKind among the five mechanisms a composition
 may conclude, polarityDecides -- the seed disjunct unsat at the recorded
@@ -329,6 +331,28 @@ else:
                                " clock where the recording read it"
                                % len(clocks))
 
+# THE CAUSALITY the witness rests on, checked in the formula itself
+# (cone.py): every root it moved must be in the causal cone of the path the
+# claim selected, and no fatal condition may name a boundary variable that no
+# family binds.  A claim whose mechanism the fatal does not depend on, or
+# whose fatal rests on a value no producer made, is not a finding.
+try:
+    with open(os.path.join(work, "cone.json")) as handle:
+        cone = json.load(handle)
+except Exception:
+    cone = None
+if cone is None:
+    reasons.append("no causal cone published (cone.py)")
+else:
+    outside = sorted(r for r, inside in cone.get("moved", {}).items()
+                     if not inside)
+    if outside:
+        reasons.append("moved root(s) outside the witness path's causal"
+                       " cone: %s" % ", ".join(outside))
+    if cone.get("unbound"):
+        reasons.append("%d boundary variable(s) in a fatal condition that no"
+                       " family binds" % len(cone["unbound"]))
+
 verdict = "PASS" if not reasons else "FAIL"
 reason = "; ".join(reasons) if reasons else "-"
 
@@ -489,6 +513,19 @@ if findings:
                       if moved else "no root moved off its recorded value",
                       "**decides**" if row.get("polarityDecides")
                       else "does not decide"))
+    out.append("")
+
+if cone:
+    out += ["## Causal cone", "",
+            "What the fatal condition of the selected path (`%s`) depends on"
+            " in the published formula, closed over the message families"
+            " bound under it (cone.py)." % (cone.get("selector") or "-"), ""]
+    for root, inside in sorted(cone.get("moved", {}).items()):
+        out.append("* moved `%s`: %s" % (root, "in the cone" if inside
+                                         else "**not in the cone**"))
+    out.append("* %d declared root(s) in the cone; %d unbound boundary"
+               " variable(s)" % (len(cone.get("coneRoots") or []),
+                                 len(cone.get("unbound") or [])))
     out.append("")
 
 

@@ -7,8 +7,10 @@
 #
 # Nothing here decides what a case proved.  The campaign publishes
 # schedule/final/result.json, report.py reads the claim out of it and compares
-# the mechanism against this case's expected one; probe.sh asks z3 about the
-# published formula and is reported beside the verdict, never gating it.
+# the mechanism against this case's expected one; cone.py checks in the
+# published formula that the witness's moved roots are causes of its fatal;
+# probe.sh asks z3 about the published formula and is reported beside the
+# verdict, never gating it.
 #
 # Environment (every path is an argument or an env var; none is baked in)
 #   CAUSYNTH_CUSTOM_JDK_HOME  REQUIRED -- the concolic VM image.  Unset, this
@@ -327,6 +329,7 @@ for c in "${CASE_LIST[@]}"; do
      bash $ACCEPT_LIB/run.sh \$d "$(acc_case_arg_of "$c")" validate && \\
      bash $ACCEPT_LIB/run.sh \$d "$(acc_case_arg_of "$c")" campaign)
   bash $here/probe.sh $c $(acc_case_dir "$OUT" "$c") $OUT/report/$c
+  python3 $here/cone.py $c $(acc_case_dir "$OUT" "$c") $OUT/report/$c
   python3 $here/report.py $c $(acc_case_dir "$OUT" "$c") $OUT/report/$c
 CMD
 done
@@ -372,6 +375,8 @@ for c in "${CASE_LIST[@]}"; do
   Z3_BIN="$ACCEPT_Z3" Z3_TIMEOUT_SECONDS="$ACCEPT_Z3_TIMEOUT" \
     bash "$here/probe.sh" "$c" "$dir" "$work" >"$work/probe.log" 2>&1 \
     || acc_log "WARN $c: probe failed (see $work/probe.log)"
+  python3 "$here/cone.py" "$c" "$dir" "$work" >"$work/cone.log" 2>&1 \
+    || acc_log "WARN $c: causal cone failed (see $work/cone.log)"
   python3 "$here/report.py" "$c" "$dir" "$work" \
     || acc_log "WARN $c: report failed"
   [[ -s "$work/row.tsv" ]] && cat "$work/row.tsv" >>"$TSV"
