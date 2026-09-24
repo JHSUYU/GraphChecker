@@ -169,6 +169,7 @@ public final class Composer {
         private final Map<String, Set<String>> unattestedRoots;
         private final Map<String, List<String>> observedReads;
         private final Map<String, List<String>> observedArrivals;
+        private final Map<String, List<String>> heldArrivals;
         private final Map<String, ComposedFamilies.ArmChoice> armChoices;
         private final String seedSessionId;
 
@@ -181,6 +182,7 @@ public final class Composer {
                             Map<String, Set<String>> unattestedRoots,
                             Map<String, List<String>> observedReads,
                             Map<String, List<String>> observedArrivals,
+                            Map<String, List<String>> heldArrivals,
                             Map<String, ComposedFamilies.ArmChoice> armChoices,
                             String seedSessionId) {
             this.anchor = anchor;
@@ -200,6 +202,7 @@ public final class Composer {
                     Collections.unmodifiableMap(observedReads);
             this.observedArrivals =
                     Collections.unmodifiableMap(observedArrivals);
+            this.heldArrivals = Collections.unmodifiableMap(heldArrivals);
             this.armChoices = Collections.unmodifiableMap(armChoices);
             this.seedSessionId = seedSessionId;
         }
@@ -282,7 +285,10 @@ public final class Composer {
             return asserted(observedReads.get(pathId));
         }
 
-        /** Path id -> the values that path's attaches actually received. */
+        /**
+         * Path id -> the values that path's ANCHOR's attaches actually
+         * received: the wire slots a MESSAGE_PAIRING_FLIPPED witness replaces.
+         */
         public List<String> observedArrivals(String pathId) {
             return asserted(observedArrivals.get(pathId));
         }
@@ -307,7 +313,7 @@ public final class Composer {
                 List<String> terms = new ArrayList<String>();
                 List<String> reads = observedReads.get(disjunct.path().pathId);
                 List<String> arrivals =
-                        observedArrivals.get(disjunct.path().pathId);
+                        heldArrivals.get(disjunct.path().pathId);
                 if (reads != null) terms.addAll(reads);
                 if (arrivals != null) terms.addAll(arrivals);
                 if (terms.isEmpty()) continue;
@@ -392,6 +398,17 @@ public final class Composer {
     private final Map<String, List<String>> observedReads =
             new LinkedHashMap<String, List<String>>();
     /** Path id -> the arrivals its attaches actually received. */
+    /**
+     * Path id -> what every attach a family binds received, anchor and
+     * upstream: the pairing the run had, which the run as it happened holds
+     * ({@link Composition#recordedPairings}).  Not what a mechanism is
+     * named by: an upstream arrival is a CONSEQUENCE of its producer's roots
+     * and clocks, so pinning it refutes a clock witness for the clock's own
+     * reason -- hdfs-11741 v25 was published MESSAGE_PAIRING_FLIPPED because
+     * the expiry dates dn1's heartbeat carried are the rotation clock's.
+     */
+    private final Map<String, List<String>> heldArrivals =
+            new LinkedHashMap<String, List<String>>();
     private final Map<String, List<String>> observedArrivals =
             new LinkedHashMap<String, List<String>>();
     /** Attaches already named as unpaired; one row per attach, not per path. */
@@ -630,7 +647,7 @@ public final class Composer {
                 new ArrayList<Family>(families.values()),
                 new ArrayList<RootDomain>(roots.values()), valuations,
                 gaps, clockCells, clockReadings, unattestedRoots,
-                observedReads, observedArrivals,
+                observedReads, observedArrivals, heldArrivals,
                 composedFamilies.armChoices(), seed());
     }
 
@@ -945,7 +962,9 @@ public final class Composer {
         lowering.assertNamed("path_fatal__" + ordinal,
                 "(=> " + selector + " " + VmTermLowering.and(terms) + ")");
         observedReads.put(path.pathId, observed);
-        observedArrivals.put(path.pathId, arrivals(bound));
+        observedArrivals.put(path.pathId,
+                arrivals(corpus.attachesOn(session, anchor)));
+        heldArrivals.put(path.pathId, arrivals(bound));
         return new Disjunct(path, selector, target.observedFatal(),
                 interactionIds);
     }
@@ -1906,23 +1925,19 @@ public final class Composer {
     }
 
     /**
-     * What this session received at each attach a family binds, as the
-     * pairing it took.
+     * What this session received at each of these attaches, one term per
+     * symbol: the anchor's for the mechanism a witness is named by, every
+     * family-bound one of the path for the run as it happened.
      *
      * <p>Kept beside the path rather than inside it: where a read binds to
      * the paired producer's expression (R-READ) the arrival is a
      * CONSEQUENCE of that producer's roots, so pinning it would pin them --
-     * but it is still the pairing the run had, and that is the question
-     * MESSAGE_PAIRING_FLIPPED asks.  Every such attach of the path, not the
-     * anchor's alone: hdfs-17967 path B's proxy read its key map, whose
-     * entries were put from the ids its heartbeat answer delivered one
-     * occurrence further back, and pinned at the anchor only, the path
-     * still took another answer's ids.</p>
+     * but it is still the pairing the run had.</p>
      */
-    private List<String> arrivals(List<AttachRow> bound) {
+    private List<String> arrivals(List<AttachRow> attaches) {
         List<String> stated = new ArrayList<String>();
         Set<String> seen = new LinkedHashSet<String>();
-        for (AttachRow attach : bound) {
+        for (AttachRow attach : attaches) {
             if (!seen.add(attach.symbol())) continue;
             String literal = smtLiteral(JsonFields.firstNonBlank(
                     attach.answeredValue(), attach.arrival()));
