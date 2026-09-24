@@ -320,28 +320,30 @@ public final class Corpus implements Arms.Rows {
      * (four attaches instead of five), and addKeys writes the very map the
      * scan reads.</p>
      *
-     * <p><b>CONTROL and STRUCTURE only, never VALUES.</b> For the occurrence:
-     * whether it ran, and per site HOW MANY handoffs it received from WHICH
-     * producer occurrences and how many reads it made -- its own decisions
-     * are the arm's prefix and what the flip explores, not an input.  For
-     * every other factor member: the same, plus its ordered decisions
-     * {@code siteId#ordinal=outcome} and how many writes it made per
-     * site.</p>
+     * <p><b>WHAT ARRIVES, never what the region does with it.</b> At the
+     * occurrence and at every factor member: whether it ran, and per site
+     * how many handoffs it received from which producer occurrences.  At
+     * every other factor member, also how many writes it made per site --
+     * the state the occurrence reads is what its factor writes, and whether
+     * a write carries a delivered value or a constant is what the member
+     * received.  A region's own reads and decisions are its BEHAVIOUR, not
+     * its input: how often a loop reads a field is the path the prefix already
+     * names, and counting it split one world into as many keys as a
+     * replay's timing produced -- on hdfs-11741 round v38, 57 of 103
+     * (task, world) groups with more than one session, 84 of their 99
+     * differences in per-site read counts.</p>
      *
-     * <p>A delivered VALUE is deliberately not in it.  Values are carried
-     * symbolically by the families -- that is what a handoff's arm is for --
-     * and a clock-valued handoff is a different value in every run by
-     * nature, for reasons no flip caused.  Comparing them made hdfs-11741
-     * campaign #3's wave 2 read 196 of 208 (task, session) pairs as
-     * changed, 91 of them on an attach arrival alone.</p>
+     * <p>A delivered VALUE is not in it either.  Values are carried
+     * symbolically by the families -- that is what a handoff's arm is for
+     * -- and a clock-valued handoff is a different value in every run by
+     * nature, for reasons no flip caused.</p>
      *
      * <p>Keyed by the CAUSE -- the flips of the world that reach the task
      * over the corpus's causal graph -- one question was asked once per
      * combination of upstream flips that delivered the task the same
-     * structure: of hdfs-11741 round v37's 641 obligations, 561 were
-     * distinct (task, arm, prefix, delivered structure).  A world whose
-     * flips changed nothing the task received digests as the seed does, so
-     * the seed's recorded arms settle it.</p>
+     * structure, and one structure per combination was asked at all.  A
+     * world whose flips changed nothing the task received digests as the
+     * seed does, so the seed's recorded arms settle it.</p>
      */
     public String inputShape(String sessionId, OccurrenceAddress occurrence,
                              List<OccurrenceAddress> factor) {
@@ -350,33 +352,19 @@ public final class Corpus implements Arms.Rows {
             text.append(occurrence.id()).append(':')
                     .append(activation(sessionId, occurrence) != null)
                     .append(attachSites(sessionId, occurrence))
-                    .append(producers(sessionId, occurrence))
-                    .append(readSites(sessionId, occurrence));
+                    .append(producers(sessionId, occurrence));
         }
         if (factor != null) {
             for (OccurrenceAddress member : factor) {
                 if (member == null || member.equals(occurrence)) continue;
                 text.append('\n').append(member.id()).append(':')
                         .append(activation(sessionId, member) != null)
-                        .append(shape(sessionId, member))
                         .append(attachSites(sessionId, member))
                         .append(producers(sessionId, member))
-                        .append(readSites(sessionId, member))
                         .append(writeSites(sessionId, member));
             }
         }
         return ArtifactIO.digest(text.toString(), 16);
-    }
-
-    /** One session's local path at one occurrence, in recorded order. */
-    private List<String> shape(String sessionId,
-                               OccurrenceAddress occurrence) {
-        List<String> taken = new ArrayList<String>();
-        for (DecisionRow decision : decisionsOf(sessionId, occurrence)) {
-            taken.add(decision.siteId() + "#" + decision.ordinal() + "="
-                    + decision.outcome());
-        }
-        return taken;
     }
 
     /** HOW MANY handoffs arrived here, per site: the count, not the value. */
@@ -401,17 +389,6 @@ public final class Corpus implements Arms.Rows {
             from.add(at == null ? producer.id() : at.id());
         }
         return from;
-    }
-
-    /** HOW MANY reads it made, per site: the count, not the value. */
-    private List<String> readSites(String sessionId,
-                                   OccurrenceAddress occurrence) {
-        List<String> sites = new ArrayList<String>();
-        for (ReadRow read : readsOn(sessionId, occurrence)) {
-            sites.add(read.endpoint().site());
-        }
-        Collections.sort(sites);
-        return sites;
     }
 
     /** HOW MANY writes it made, per site: the count, not the value. */
