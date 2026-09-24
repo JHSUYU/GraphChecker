@@ -571,20 +571,27 @@ that `main` moves and the parked housekeeping is due.
    OCCURRENCE_ADDRESS_SHARED rows): a hop's scope root lasts as long as the hop (`5d729819a`
    -- a served message's root was set and never put back, so every later occurrence of that
    thread lost its start frame and sibling threads' k-th calls shared one address).
-1. **v32 on `p35` = `5d729819a`: 8/9 PASS** (17960, 17897, bug1, bug2, bug3, A, B, C -- bug2
-   MARKER_FLIPPED on the SPS's reply door, confirmed; every one in ONE wave, 7-12 minutes).
-   11741's `p35` run reached CLOCK_SKEW with polarity deciding, no blocking gap, and CONFIRM
-   `confirmed: true` (00:29) -- then EMIT died writing `result.json`: the home directory's
-   100 G quota was full (11 snapshots + 85 round directories). Rounds v21-v31 and snapshots
-   p25-p34 are deleted (the owner's post-goal directive, brought forward); 11741 reruns on
-   `p35` as **v33** (01:05). A clock witness never trips the witness stop, so 11741 explores
-   to the fixpoint (~70 min). Read it, then the cleanup of §12's directive and `main`. (snapshot `p33` = `f8a9ce3a6`, the eight trees at their restored sources:
-   11741 d334c85a268, bug1 763968f19c7, bug2 72842405587, bug3 fbac2aa93ef, 17897 97e7d39ad83,
-   A 5dfc98f14b7, B e421e92171c, C 8f50cc8446c), diagnose every FAIL by §11 before a fix, and
-   repeat until the nine pass the acceptance checks of §8 on one snapshot; then fast-forward
-   `main`. v25 on `p28` (daemon heartbeats switched off, so not final) had 7/9; bug2 has never
-   reached COMPOSE. The first question of every round: the seed replay's `Causynth schedule:
-   of an order` line (0 stalls) and its `TASK_UNANSWERED` count (v25's block-key seeds: 0-3).
+1. **DONE 2026-09-24 02:06 -- 9/9 on one snapshot, `p35` = `5d729819a`** (`~/gc-out/accept-v32-*`
+   for eight cases, `accept-v33-11741` for 11741, whose first `p35` run confirmed and then died
+   writing `result.json` on a full home quota -- rounds v21-v31 and snapshots p25-p34 are
+   deleted). Every case in ONE exploration wave except 11741 (four; a clock witness never trips
+   the witness stop):
+
+   | case | claim | mechanism | s |
+   | --- | --- | --- | --- |
+   | hdfs-17960 | SAT_CANDIDATE, confirmed | MARKER_FLIPPED `HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED=false` | 427 |
+   | hdfs-17897 | SAT_CANDIDATE, confirmed | MARKER_FLIPPED, IPC request door `REGION.763d087e` true, no clock | 545 |
+   | hdfs-17899-bug1 | SAT_CANDIDATE, confirmed | MARKER_FLIPPED, IPC request door true, no clock | 562 |
+   | hdfs-17899-bug2 | SAT_CANDIDATE, confirmed | MARKER_FLIPPED, the SPS's IPC reply door `REGION.9ffdee3d` true, no clock | 722 |
+   | hdfs-17899-bug3 | SAT_CANDIDATE, confirmed | MARKER_FLIPPED, IPC request door true, no clock | 558 |
+   | hdfs-17967-pathA | SAT_CANDIDATE, confirmed | MARKER_FLIPPED, IPC request door true, no clock | 605 |
+   | hdfs-17967-pathB | SAT_CANDIDATE, confirmed | MARKER_FLIPPED, IPC request door true, no clock | 551 |
+   | hdfs-17967-pathC | SAT_CANDIDATE, confirmed | MARKER_FLIPPED, IPC request door true, no clock | 669 |
+   | hdfs-11741 | SAT_CANDIDATE, confirmed | CLOCK_SKEW, the NameNode's rotation clocks moved, polarity deciding | 3666 |
+
+   Next, the owner's post-goal directive (2026-09-24): delete every intermediate product, delete
+   dead and redundant code and refactor (item 4), re-validate the nine on the refactored
+   snapshot, fast-forward `main`, and keep one Hadoop branch per case (`gc/<case>`).
 4. **The cleanup the read found (§14, R-items).** *Now, before the round* — each after `git
    grep` for readers, one commit per package: the dead members and second spellings (R1, R3,
    R8, R11, R12, R23, R25, R27–R29, R31, R35–R37, R40, R42, R43, R45, R47, R49, R50, R55–R57,
