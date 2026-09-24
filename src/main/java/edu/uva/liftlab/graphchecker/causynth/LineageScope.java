@@ -20,11 +20,13 @@ import java.util.stream.Stream;
  *
  * <p>They are application classes of the run, so the weave writes them, and
  * {@code CausynthPipeline.instrumentApplicationScope} gives them the
- * work-start, work-claim and queue-claim hooks and nothing else: no
- * calling-context level, so every occurrence of the analysis scope keeps its
- * index, and no timed-wait stand-in, so no daemon loop outside the analysis
- * scope changes how it waits.  Discovery never names the property, so no
- * static analysis sees them.</p>
+ * work-start, work-claim, queue-claim and timed-wait hooks and nothing else:
+ * no calling-context level, so every occurrence of the analysis scope keeps
+ * its index.  The timed waits are theirs because a daemon takes part in what
+ * a case is about, and a daemon's turn is paced by its waits: under the
+ * schedule they wake where the recording's woke, not where a slower replay's
+ * wall clock says.  Discovery never names the property, so no static
+ * analysis sees them.</p>
  */
 public final class LineageScope {
     /** The system property run_engine.sh sets on the two weave runs. */

@@ -410,6 +410,20 @@ public final class WorkStartSites {
         return null;
     }
 
+    /**
+     * Whether a call, read off bytecode, may be one of {@link #TIMED_WAITS}:
+     * its name alone, since a wait or a notify on an application object is
+     * owned by that object's class.  Wide for the reason {@link
+     * #mayHandOffWork} is; the weave asks {@link #timedWait}.
+     */
+    public static boolean mayWait(String calleeName) {
+        if (calleeName == null) return false;
+        for (TimedWait shape : TIMED_WAITS) {
+            if (shape.name.equals(calleeName)) return true;
+        }
+        return false;
+    }
+
     /** Every timed-wait shape, for the runtime ABI check. */
     public static List<TimedWait> timedWaits() {
         return TIMED_WAITS;

@@ -50,6 +50,13 @@ public class LineageScanTest {
         }
     }
 
+    /** The DataNode actor's pacing: a timed wait on its own monitor. */
+    static final class Waiter {
+        synchronized void pace(long millis) throws InterruptedException {
+            wait(millis);
+        }
+    }
+
     /** A list's add is a write, not a handoff. */
     static final class ListWriter {
         void write(List<Object> list, Object value) {
@@ -58,12 +65,14 @@ public class LineageScanTest {
     }
 
     @Test
-    public void everyHandoffShapeIsKeptAndAListWriteIsNot() throws IOException {
+    public void everyHandoffAndWaitIsKeptAndAListWriteIsNot()
+            throws IOException {
         assertTrue(kept(HeadOfDeque.class));
         assertTrue(kept(Taker.class));
         assertTrue(kept(Starter.class));
         assertTrue(kept(Submitter.class));
         assertTrue(kept(Work.class));
+        assertTrue(kept(Waiter.class));
         assertFalse(kept(ListWriter.class));
     }
 

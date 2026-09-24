@@ -1900,7 +1900,7 @@ public final class CausynthPipeline {
         for (SootClass type : new ArrayList<>(
                 Scene.v().getApplicationClasses())) {
             // A class the lineage scope alone brought in carries its work
-            // starts and claims and nothing else (LineageScope).
+            // starts, claims and timed waits and nothing else (LineageScope).
             boolean lineageOnly = LineageScope.lineageOnly(type.getName());
             if (lineageOnly) lineage++;
             for (SootMethod method : new ArrayList<>(type.getMethods())) {
@@ -1943,8 +1943,7 @@ public final class CausynthPipeline {
                     // claims it where it takes it -- the element may be a
                     // lambda no weave reaches, so its own entry cannot.
                     boolean claims = claimsFromQueue(stmt.getInvokeExpr());
-                    Unit last = lineageOnly ? null
-                            : replaceTimedWait(body, stmt, site);
+                    Unit last = replaceTimedWait(body, stmt, site);
                     if (last != null) waited++;
                     else last = stmt;
                     if (claims && last instanceof AssignStmt
