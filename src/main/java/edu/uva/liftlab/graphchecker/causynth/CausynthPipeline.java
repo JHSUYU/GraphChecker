@@ -2019,8 +2019,7 @@ public final class CausynthPipeline {
                     : assign.getRightOp());
             owner = access instanceof InstanceFieldRef
                     ? ((InstanceFieldRef) access).getBase()
-                    : ClassConstant.v(ref.declaringClass().getName()
-                            .replace('.', '/'));
+                    : ClassConstant.fromType(ref.declaringClass().getType());
             declaring = StringConstant.v(ref.declaringClass().getName());
             field = StringConstant.v(ref.name());
             descriptor = StringConstant.v(
