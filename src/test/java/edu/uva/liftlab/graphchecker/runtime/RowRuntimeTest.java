@@ -1373,6 +1373,12 @@ public class RowRuntimeTest {
         // nothing else.  No thread id, no address, no session counter.
         Identity.resetForTests();
         Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
+        // Both savers are started inside the ONE served request, as the
+        // checkpoint handler starts them: a start made by a thread under no
+        // root hop files no frame (AStartWithNoIdentityFilesNoFrameTest).
+        Object starter = new Object();
+        RuntimeTraceContext.registerSource(starter, NN);
+        long starting = RuntimeTraceContext.beginRequest(starter, "checkpoint");
         long saving = Identity.enterFrame("FSImage.saveFSImageInAllDirs()#u12", null);
         String first = startedWorkIndex("FSImage.saveFSImageInAllDirs()#u40");
         String second = startedWorkIndex("FSImage.saveFSImageInAllDirs()#u40");
@@ -1405,6 +1411,7 @@ public class RowRuntimeTest {
         // the open region's serial.  What the stray pop still moves is the
         // frame the site index is measured FROM, and that is why the region
         // depth is balance-checked exactly as the frames are.
+        RuntimeTraceContext.endRequest(starting);
         Identity.resetForTests();
         Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
         Identity.enterFrame("Loader.loadEditRecords()#u4", null);
@@ -1464,6 +1471,12 @@ public class RowRuntimeTest {
             }
         });
         Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
+        // The batch is submitted inside a request, as a pool's work is: a
+        // start made by a thread under no root hop files no frame
+        // (AStartWithNoIdentityFilesNoFrameTest).
+        Object submitter = new Object();
+        RuntimeTraceContext.registerSource(submitter, NN);
+        long submitting = RuntimeTraceContext.beginRequest(submitter, "submit");
         Identity.enterFrame("Pool.submitAll()#u5", null);
         Identity.startWork("Pool.submitAll()#u9", tasks[0]);
         Identity.startWork("Pool.submitAll()#u9", tasks[1]);
@@ -1473,6 +1486,7 @@ public class RowRuntimeTest {
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
         }
+        RuntimeTraceContext.endRequest(submitting);
         assertEquals("Pool.submitAll()#u9@0/Task.run()#u1@0", ran.get(0));
         assertEquals("Pool.submitAll()#u9@1/Task.run()#u1@0", ran.get(1));
 
@@ -1624,7 +1638,12 @@ public class RowRuntimeTest {
                 CausynthTraceRecorder.endDaemonTick(tick);
             }
         });
+        // Started inside the balancer's own request, as the KeyManager's
+        // updater is: a start made by a thread under no root hop files no
+        // frame (AStartWithNoIdentityFilesNoFrameTest).
+        long starting = RuntimeTraceContext.beginRequest(owner, "balance");
         Identity.startWork("KeyManager.startBlockKeyUpdater()#u5", updater);
+        RuntimeTraceContext.endRequest(starting);
         updater.start();
         try {
             updater.join();

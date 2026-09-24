@@ -609,6 +609,20 @@ public final class Identity {
     public static void startWork(String startSiteId, Object carrier) {
         String site = JvmNames.stable(Text.safe(startSiteId));
         if (site.isEmpty() || carrier == null) return;
+        // A START MADE BY A THREAD WITH NO IDENTITY FILES NO FRAME.  The k
+        // of a start is the k-th start of that site in the level that makes
+        // it, within one root hop; a thread under no root hop -- a
+        // DataNode's connection acceptor, created at start-up and never
+        // ticked -- has one level for its whole life, so its k is the count
+        // of connections it has accepted, an ordinal of arrivals nothing
+        // schedules.  hdfs-11741 v30: the balance-block's DataXceiver on dn1
+        // was Daemon.start#u5@1 in the recording and @0 in the replay, on
+        // which mover's connection the acceptor met first.  Its identity is
+        // its own turn (Root:DATA_XCEIVER#k) and the message its handshake
+        // serves, as it was before the acceptor's start was woven; the
+        // schedule refuses such an event a place for the same reason
+        // (ScheduleLog.pending).
+        if (contextHere().isLost()) return;
         State state = state();
         int iteration = state.nextSiteEvent(site);
         sweep();
