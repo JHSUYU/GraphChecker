@@ -383,6 +383,25 @@ public class ContractTest {
                 7L, "state_allKeys_7", BLOCK_KEY, null));
         assertInvariant(4, GapClass.DIAGNOSTIC, "site index missing",
                 collided);
+        // A target row that did not reach its anchor states no event, so
+        // two occurrences that both ran without reaching it are two rows;
+        // two rows at one reached event are still one event twice.
+        Rows unreached = clean();
+        OccurrenceAddress other = OccurrenceAddress.of(DN0, REGION,
+                CausalContext.of(Role.of("DATA_XCEIVER"), "", 2),
+                index(frame(RUN, 0)));
+        unreached.activations.add(ActivationRow.of("s-gate", other, "t",
+                false, true, "DataXceiver-8#42"));
+        unreached.targets.add(TargetRow.of("s-gate", 0L, unreached.anchor,
+                "Guard#u8", "", false, false));
+        unreached.targets.add(TargetRow.of("s-gate", 0L, other, "Guard#u8",
+                "", false, false));
+        assertTrue("an unreached anchor is one row per occurrence: "
+                + names(gate(unreached)), noViolation(gate(unreached), 4));
+        Rows reachedTwice = clean();
+        reachedTwice.targets.add(reachedTwice.targets.get(0));
+        assertInvariant(4, GapClass.BLOCKING, "field=seq/anchorSiteId",
+                reachedTwice);
         // 5: one name, one spelled sort, and a placeholder read's sort is the
         // one its own row declares.
         Rows mixed = clean();

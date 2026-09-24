@@ -2,11 +2,13 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import edu.uva.liftlab.graphchecker.plan.ConcolicScheduler;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
+import edu.uva.liftlab.graphchecker.plan.DeclaredSiteCapture;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
@@ -605,13 +607,34 @@ final class ConcolicTaskPlan {
      * what ran; the planned task stays open for its own address and is
      * reported unanswered if nothing reaches it.  One activation per
      * address: a second is not another occurrence.</p>
+     *
+     * <p>What the region declares, it declares at every occurrence -- its
+     * target, its configured sources, its exchange ports -- but a port is
+     * one occurrence's input, so each is the port that occurrence holds
+     * ({@link DeclaredSiteCapture#exposedPort}): minted at the exemplar's
+     * id, the exposed occurrence's fault marker was the planned one's root,
+     * and a world that planted it at the planned heartbeat was stated for
+     * the daemon's too (hdfs-17897 v42, invariant 6).</p>
      */
     private RuntimeTask derive(RuntimeTask exemplar,
                                OccurrenceAddress observed) {
         if (derived.containsKey(observed.id())) return null;
         JsonObject row = exemplar.plan.json().deepCopy();
-        row.addProperty("occurrenceId", observed.render());
+        String occurrenceId = observed.render();
+        row.addProperty("occurrenceId", occurrenceId);
         row.addProperty("taskId", DERIVED_TASK_PREFIX + observed.id());
+        Map<String, JsonObject> ports = new LinkedHashMap<>();
+        for (JsonElement action : exemplar.plan.inputActions().all()) {
+            JsonObject port = DeclaredSiteCapture.exposedPort(
+                    action.getAsJsonObject(), exemplar.regionId,
+                    occurrenceId);
+            if (port != null) {
+                ports.putIfAbsent(optionalString(port, "portId"), port);
+            }
+        }
+        JsonArray inputs = new JsonArray();
+        for (JsonObject port : ports.values()) inputs.add(port);
+        row.add(InputActionCatalog.FIELD, inputs);
         RuntimeTask task = new RuntimeTask(ExecutionTask.decode(row));
         derived.put(observed.id(), task);
         return task;

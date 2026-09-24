@@ -222,13 +222,53 @@ public final class DeclaredSiteCapture {
         return port;
     }
 
+    /**
+     * The same port at an occurrence a replay exposed, from the port a
+     * recorded occurrence of the region holds -- {@link #declaredPort}'s
+     * port, read off a plan row where the scope map is not at hand.
+     *
+     * <p>A port is one occurrence's input: its id is spelled from that
+     * occurrence, so an exposed occurrence that answered with the recorded
+     * one's id would mint the recorded occurrence's root, and a world that
+     * planted the one would be stated for both.  So the static half is kept,
+     * the id is spelled from the exposed occurrence with no ordinal, and
+     * every member the recording stated -- the ordinal, the value, the
+     * event, the call and the request it ran under -- is dropped.  Null for
+     * an accessor return, which needs a recorded receiver.</p>
+     */
+    public static JsonObject exposedPort(JsonObject recorded, String regionId,
+                                         String occurrenceId) {
+        if (StaticScopeMap.ACCESSOR_RETURN.equals(
+                optionalString(recorded, "sourceKind"))) {
+            return null;
+        }
+        JsonObject port = recorded.deepCopy();
+        for (String member : new String[] {"replayOccurrence",
+                PRIMITIVE_VALUE, EVENT_SEQ, CALL_ID, SOURCE_KEY, REQUEST_KEY,
+                REQUEST_API}) {
+            port.remove(member);
+        }
+        String portId = portId(regionId, occurrenceId + "\n"
+                + optionalString(recorded, SiteId.MEMBER));
+        port.addProperty("portId", portId);
+        port.addProperty("symbol", portId);
+        port.addProperty("occurrenceId", occurrenceId);
+        port.addProperty("observed", false);
+        return port;
+    }
+
+    /** One port's id: its region and the key that names it there. */
+    private static String portId(String regionId, String key) {
+        return regionId + ".in." + UUID.nameUUIDFromBytes(
+                (regionId + "\n" + key).getBytes(StandardCharsets.UTF_8));
+    }
+
     /** The members every declared port takes from the scope map alone. */
     private static JsonObject staticPort(RegionInstancePlan plan,
                                          StaticScopeMap.Site site,
                                          String key) {
         String regionId = plan.regionId();
-        String portId = regionId + ".in." + UUID.nameUUIDFromBytes(
-                (regionId + "\n" + key).getBytes(StandardCharsets.UTF_8));
+        String portId = portId(regionId, key);
         JsonObject port = new JsonObject();
         port.addProperty("portId", portId);
         port.addProperty("symbol", portId);

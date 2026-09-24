@@ -336,9 +336,14 @@ public final class RowInvariants {
                             + "|" + row.ordinal(),
                     row.siteId() + "#" + row.ordinal());
         }
+        // A target row that did not reach its anchor states no event -- its
+        // seq is 0, "no VM clock" -- only that one occurrence ran without
+        // reaching it, so it is one per occurrence and anchor.
         for (TargetRow row : session.targets()) {
             twice(session, gaps, seen, "targets", row.seq(),
-                    "seq/anchorSiteId", row.seq() + "|" + row.anchorSiteId(),
+                    "seq/anchorSiteId", (row.reachedAnchor()
+                            ? row.seq() + "" : row.occurrence().id())
+                            + "|" + row.anchorSiteId(),
                     row.anchorSiteId());
         }
         endpoints(session, gaps, "reads", endpointSeqs(session, "reads"));

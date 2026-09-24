@@ -2317,10 +2317,19 @@ run:
  * TODO: Refine this macro, it's too complex...
  */
 #ifdef ENABLE_CONCOLIC
+// A shared-state event names the bytecode that made it.  The site is read off
+// the frame (ThreadContext::current_code_site), and this interpreter keeps pc
+// in a register and writes it back only at calls: without this, a field or
+// array access was named by the last call before it -- and by itself on the
+// one execution that resolved its constant-pool entry through the VM -- so
+// one access had two names, and a hook woven before it named the hook.
+#define CONCOLIC_EVENT_PC() DECACHE_PC()
+
 // Carrier state for one array element load, split across the concrete load
 // exactly as the field read is: the shadow slot is addressed with the pre-load
 // stack shape, and the value the read returned is only known afterwards.
 #define CONCOLIC_ALOAD_CARRIER                                                 \
+  CONCOLIC_EVENT_PC();                                                         \
   SharedFieldVersions::Location aload_location;                                \
   int aload_anchor = 0;                                                        \
   int aload_slots = 0;                                                         \
@@ -2537,6 +2546,7 @@ run:
 // block so that the decision survives the concrete store and the version is
 // published only after it, exactly as putfield does.
 #define CONCOLIC_ASTORE_CARRIER                                                \
+  CONCOLIC_EVENT_PC();                                                         \
   SharedFieldVersions::Location astore_location;                               \
   Expression *astore_value = NULL;                                             \
   Expression *astore_guard = NULL;                                             \
@@ -3014,6 +3024,7 @@ run:
           int field_offset = cache->f2_as_index();
 
 #ifdef ENABLE_CONCOLIC
+          CONCOLIC_EVENT_PC();
           // Capture the selected location before the concrete load so its
           // guarded expression can replace the ordinary field shadow below.
           SharedFieldVersions::Location carrier_location;
@@ -3365,6 +3376,7 @@ run:
           int field_offset = cache->f2_as_index();
 
 #ifdef ENABLE_CONCOLIC
+          CONCOLIC_EVENT_PC();
           // A selected carrier's version is decided here, while the shadow
           // operand stack still holds the value being stored, and published
           // after the concrete store below.  Splitting it across the store is

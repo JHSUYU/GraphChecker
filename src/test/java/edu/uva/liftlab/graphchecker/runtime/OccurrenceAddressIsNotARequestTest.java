@@ -28,6 +28,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
 /**
  * An occurrence is (node, epoch, region, k-th activation) -- not a request.
@@ -221,6 +222,11 @@ public class OccurrenceAddressIsNotARequestTest {
      * planned address.  It is admitted as a task of its own, at the address
      * it ran at, while the planned task stays open for its own; and one
      * address is one occurrence, admitted once.</p>
+     *
+     * <p>Its inputs are its own: the planned occurrence's fault marker,
+     * recorded twice, is one port of the derived occurrence, spelled from
+     * that occurrence and stating nothing the recording read; the accessor
+     * return, which needs a recorded receiver, is not minted.</p>
      */
     @Test
     public void theOccurrenceThatRanIsAdmittedWhereThePlanNamedAnother()
@@ -234,10 +240,18 @@ public class OccurrenceAddressIsNotARequestTest {
                 SNAPSHOT_REGION, CausalContext.of(
                         Role.of("BP_SERVICE_ACTOR"), "", 1),
                 ExecutionIndex.empty()).render();
+        JsonObject row = encoded("TASK.planned", NN0 + "#epoch1",
+                SNAPSHOT_REGION, SNAPSHOT_ROOT, planned, 1,
+                "REGISTERED_SOURCE");
+        JsonArray inputs = new JsonArray();
+        inputs.add(marker(planned, 1));
+        inputs.add(marker(planned, 2));
+        inputs.add(json("{'portId':'P.accessor','symbol':'P.accessor',"
+                + "'sourceKind':'ACCESSOR_RETURN','mode':'SYMBOLIC',"
+                + "'siteId':'<a.B: long c()>#u3','observed':true}"));
+        row.add("inputActions", inputs);
         ConcolicTaskPlan.RuntimeTask task = new ConcolicTaskPlan.RuntimeTask(
-                ExecutionTask.decode(encoded("TASK.planned", NN0 + "#epoch1",
-                        SNAPSHOT_REGION, SNAPSHOT_ROOT, planned, 1,
-                        "REGISTERED_SOURCE")));
+                ExecutionTask.decode(row));
         ConcolicTaskPlan plan = plan(task);
 
         ConcolicTaskPlan.RuntimeTask ran = plan.select(task.rootHookGroupKey(),
@@ -255,6 +269,39 @@ public class OccurrenceAddressIsNotARequestTest {
         assertEquals("one address is one occurrence, admitted once", null,
                 plan.select(task.rootHookGroupKey(), SNAPSHOT_ROOT, node,
                         new Object[0]));
+        assertEquals("one port per site, and no accessor return", 1,
+                ran.symbolize.size());
+        SymbolizeAction port = ran.symbolize.get(0);
+        assertTrue("the derived occurrence's own root: " + port.symbol,
+                port.symbol.startsWith(SNAPSHOT_REGION + ".in.")
+                        && !port.symbol.equals("P.marker.1")
+                        && !port.symbol.equals("P.marker.2"));
+        assertEquals("answering every firing of its site", -1,
+                port.replayOccurrence);
+        assertEquals("and stating nothing the recording read", "",
+                port.recordedPrimitiveValue);
+        assertEquals(-1L, port.eventSeq);
+        assertEquals(ran.address.render(), optionalString(ran.plan
+                .inputActions().all().get(0).getAsJsonObject(),
+                "occurrenceId"));
+    }
+
+    /** One recorded fault-marker port of an occurrence, at one ordinal. */
+    private static JsonObject marker(String occurrenceId, int ordinal) {
+        return json("{'portId':'P.marker." + ordinal + "','symbol':'P.marker."
+                + ordinal + "','occurrenceId':'" + occurrenceId + "',"
+                + "'cell':'<Debug: boolean makeSymbolicBoolean(String)>.return',"
+                + "'javaType':'boolean','siteId':'<a.B: void send()>#u16',"
+                + "'staticAccessSiteId':'<a.B: void send()>#u16',"
+                + "'unitIndex':16,'observed':true,'replayOccurrence':"
+                + ordinal + ",'primitiveValue':'false','eventSeq':11175,"
+                + "'callId':11139,'sourceKind':'EXPLICIT_SYMBOLIC_FAULT',"
+                + "'rootKind':'CALL_RETURN','method':'<a.B: void send()>',"
+                + "'location':'CALL_RETURN','sourceKey':'s',"
+                + "'requestKey':'s/request/heartbeat#1',"
+                + "'requestApi':'heartbeat','bindingMode':'LOCAL_DEFINITION',"
+                + "'local':'$z1','mode':'SYMBOLIC',"
+                + "'declaredSymbolicRoot':true}");
     }
 
     /**

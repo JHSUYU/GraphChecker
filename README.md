@@ -310,6 +310,11 @@ INSTRUMENT reads the woven classes back and states the VM site of the access eac
 before (`causynth.AccessSiteTable` → `instrumented-classes/shared_access_sites.tsv`,
 `contract.AccessSites`). At its hook an access is named with the read-out's own function:
 that site, the occurrence the VM states for the thread's region, the frames of its journal.
+The VM names an access by its own bytecode on every execution: the Zero interpreter keeps pc in
+a register and wrote it back only at calls, so a field access used to be named by the last call
+before it (the hook, once woven) and by itself only on the execution that resolved its
+constant-pool entry; v41 held no read for that reason (`CONCOLIC_EVENT_PC`,
+`RegionEventSiteSmoke`).
 
 **The gate** (`runtime.Versions`, replay only). A held read waits until its writer's version
 is the live one; a write waits while the live version is owed to a held read that has not read
@@ -377,6 +382,15 @@ is the current design; this is its summary.
   re-runs the exposing obligation under the same world; the re-run session replaces the exposing
   one. Compose keys arms by world (§5). Epochs, the seed cache and every compat toggle are
   deleted. **Not yet exercised**: no run so far has exposed a region (to-do item 6).
+- **An occurrence the plan did not name (§3.3b, at run time).** A replay is held to no order,
+  so an activation of a planned region, on a node the plan planned it on, can run at an address
+  no task names: a daemon heartbeat takes the key update the recording's workload heartbeat
+  took. It is admitted as a task of its own (`ConcolicTaskPlan.derive`). What the region
+  declares holds at every occurrence (its target, its configured sources, its exchange ports),
+  but a port is one occurrence's input, so each is re-spelled from the new occurrence
+  (`DeclaredSiteCapture.exposedPort`: no ordinal, no recorded value, no accessor return). Its
+  fault marker is then its own root and not the planned heartbeat's; sharing it made a world
+  that planted the one state it for both (v42, invariant 6 on every IPC-fault case).
 - **CONFIRM (§5)** — see §5 above.
 
 ## 8. Preparing and running a case
