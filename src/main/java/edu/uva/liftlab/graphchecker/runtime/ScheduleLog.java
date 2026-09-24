@@ -86,6 +86,12 @@ public final class ScheduleLog {
     static final long DEFAULT_TIMEOUT_MS = 15000L;
     /** Give-ups past the cut before the rest is let go as a whole. */
     static final int REST_STALLS = 2;
+    /**
+     * Where a wait no slot holds waits while the prefix stands: at the cut,
+     * for all of it ({@link #turn}).
+     */
+    private static final int AT_THE_CUT = -1;
+
     /** A stall this many timeouts long is given up whatever the CPU does. */
     static final int CEILING = 8;
     /** How often the watchdog samples the CPU of the threads not waiting. */
@@ -250,11 +256,14 @@ public final class ScheduleLog {
     enum Turn {
         /** Its WAKE slot was due: taken and written. */
         ADMITTED,
-        /** An earlier slot is open: the wait asks again after a quantum. */
+        /**
+         * An earlier slot is open, or no slot is left for this WAKE while
+         * the prefix still stands: the wait asks again after a quantum.
+         */
         NOT_YET,
         /**
          * No slot holds this wait's timeout -- the order names no such WAKE
-         * still to come, or holds nothing any more -- and nothing was
+         * still to come -- and the prefix is settled, and nothing was
          * written: the rest of the wait is on the wall clock.
          */
         FREE,
@@ -276,9 +285,24 @@ public final class ScheduleLog {
                 Thread self = Thread.currentThread();
                 while (true) {
                     int slot = holds ? slotOf(wake.event) : -1;
-                    if (slot < 0) {
+                    if (slot < 0 && (!holds || firstOpen >= cut)) {
                         WAITERS.remove(self);
                         return Turn.FREE;
+                    }
+                    if (slot < 0) {
+                        // A WAKE THE RECORDING DID NOT MAKE IS SLEPT THROUGH
+                        // while the prefix stands: the recording's thread
+                        // slept past every event before the cut, and only a
+                        // slower replay's wall clock would end it sooner --
+                        // v28's seed replays had the DataNode actors heartbeat
+                        // ahead of the workload's own, which the recording's
+                        // window never saw.  So it waits AT THE CUT, as a
+                        // waiter the watchdog counts: a prefix nothing is
+                        // making is given up as any stall is, and then the
+                        // wait is the clock's.  A signal still ends it.
+                        WAITERS.put(self, AT_THE_CUT);
+                        if (!watchdogLocked()) return Turn.NOT_YET;
+                        continue;
                     }
                     if (dueLocked(slot)) {
                         WAITERS.remove(self);
@@ -652,10 +676,16 @@ public final class ScheduleLog {
         long idle = now - lastProgress;
         if (idle < timeout) return false;
         if (idle < CEILING * timeout && computingLocked(now)) return false;
+        // A wait no slot holds waits for the whole prefix: it bounds a
+        // give-up at the cut and is never a stall past it.
         int earliest = Integer.MAX_VALUE;
-        for (int slot : WAITERS.values()) earliest = Math.min(earliest, slot);
+        for (int slot : WAITERS.values()) {
+            earliest = Math.min(earliest, slot == AT_THE_CUT ? cut : slot);
+        }
+        boolean atTheCut = WAITERS.containsValue(AT_THE_CUT)
+                && earliest == cut;
         stalls++;
-        if (earliest >= cut && restStalls >= REST_STALLS) {
+        if (!atTheCut && earliest >= cut && restStalls >= REST_STALLS) {
             int open = 0;
             for (int index = firstOpen; index < state.length; index++) {
                 if (state[index] == OPEN) {
@@ -680,14 +710,18 @@ public final class ScheduleLog {
             count++;
         }
         if (count == 0) return false;
-        if (earliest >= cut) restStalls++;
+        if (!atTheCut && earliest >= cut) restStalls++;
         stateLocked((first < cut ? "schedule#" : "schedule-rest#") + first,
                 count + " slot(s) of the order from " + first + " on (the"
                         + " first " + order.get(first).render() + ") did not"
                         + " happen for " + idle + " ms with the run idle,"
-                        + " while " + order.get(earliest).render()
-                        + " waited at slot " + earliest + ": they are given"
-                        + " up, and each still takes its slot if it comes");
+                        + " while " + (atTheCut
+                                ? "a wait the order does not name waited at"
+                                + " the cut"
+                                : order.get(earliest).render()
+                                + " waited at slot " + earliest)
+                        + ": they are given up, and each still takes its"
+                        + " slot if it comes");
         settleLocked();
         return true;
     }

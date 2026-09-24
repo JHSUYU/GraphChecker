@@ -353,8 +353,8 @@ public class ScheduleLogTest {
         assertEquals(Collections.singletonList(site), sites());
     }
 
-    @Test
-    public void aWaitNoSlotHoldsRunsOnTheWallClockAndGivesNothingUp()
+    @Test(timeout = 20000L)
+    public void aWaitNoSlotHoldsWaitsAtTheCutAndAStuckPrefixIsGivenUp()
             throws Exception {
         System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "300");
         final String site = "<C: boolean waitForWork()>#u21";
@@ -364,12 +364,41 @@ public class ScheduleLogTest {
         synchronized (monitor) {
             TimedWaits.waitOn(monitor, 1500L, site);
         }
-        assertTrue("its own deadline ended it",
+        assertTrue("held, then its own deadline ended it",
                 TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
                         >= 1400L);
         assertEquals(Collections.singletonList(site), sites());
-        assertTrue("x still holds", ScheduleLog.enforcing());
-        assertTrue(ScheduleLog.progress(), ScheduleLog.progress().contains(" 0 given up"));
+        assertFalse("nothing made x and the run was idle: given up",
+                ScheduleLog.enforcing());
+        assertTrue(ScheduleLog.progress(),
+                ScheduleLog.progress().contains(" 1 given up"));
+    }
+
+    @Test
+    public void aWakeTheRecordingDidNotMakeSleepsThroughThePrefix()
+            throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        final String site = "<D: void offerService()>#u4";
+        ScheduleLog.enforceForTests(prefix("x"));
+        Thread daemon = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    TimedWaits.sleep(10L, site);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        });
+        daemon.start();
+        Thread.sleep(500L);
+        assertTrue("its 10 ms are long past on the wall clock, and the "
+                + "recording made no such WAKE before x", daemon.isAlive());
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+        daemon.join(5000L);
+        assertFalse("the prefix settled: the wait is the clock's again",
+                daemon.isAlive());
+        assertEquals(Arrays.asList("x", site), sites());
     }
 
     @Test
