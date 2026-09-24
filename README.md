@@ -573,9 +573,12 @@ that `main` moves and the parked housekeeping is due.
    thread lost its start frame and sibling threads' k-th calls shared one address).
 1. **v32 on `p35` = `5d729819a`: 8/9 PASS** (17960, 17897, bug1, bug2, bug3, A, B, C -- bug2
    MARKER_FLIPPED on the SPS's reply door, confirmed; every one in ONE wave, 7-12 minutes).
-   11741 is the last: its `p34` run is in wave 3 and its `p35` run started 23:20 (a clock
-   witness never trips the witness stop, so 11741 explores to the fixpoint). Read it, then
-   fast-forward `main`. (snapshot `p33` = `f8a9ce3a6`, the eight trees at their restored sources:
+   11741's `p35` run reached CLOCK_SKEW with polarity deciding, no blocking gap, and CONFIRM
+   `confirmed: true` (00:29) -- then EMIT died writing `result.json`: the home directory's
+   100 G quota was full (11 snapshots + 85 round directories). Rounds v21-v31 and snapshots
+   p25-p34 are deleted (the owner's post-goal directive, brought forward); 11741 reruns on
+   `p35` as **v33** (01:05). A clock witness never trips the witness stop, so 11741 explores
+   to the fixpoint (~70 min). Read it, then the cleanup of §12's directive and `main`. (snapshot `p33` = `f8a9ce3a6`, the eight trees at their restored sources:
    11741 d334c85a268, bug1 763968f19c7, bug2 72842405587, bug3 fbac2aa93ef, 17897 97e7d39ad83,
    A 5dfc98f14b7, B e421e92171c, C 8f50cc8446c), diagnose every FAIL by §11 before a fix, and
    repeat until the nine pass the acceptance checks of §8 on one snapshot; then fast-forward
