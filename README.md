@@ -546,10 +546,26 @@ that `main` moves and the parked housekeeping is due.
    heartbeat answer's ids. Re-composed offline with `p28`, pathB, bug1, bug3, 17897, A and C all
    give MARKER_FLIPPED on `FAULT:HADOOP_IPC:REQUEST` (`REGION.763d087e`), polarity deciding, no
    clock, no blocking gap. 11741 PASSED as v23 on `p26`; 17960 PASSED as v23b on `p27`.
-1. **Read v25** (`~/gc-out/accept-v25-*`, all nine on snapshot `p28`, launched 2026-09-23 19:34),
-   diagnose every FAIL by §11 before a fix, and repeat until the nine pass the acceptance checks
-   of §8 on one snapshot; then fast-forward `main`. Open: bug2's corpus has not yet reached
-   COMPOSE under the heartbeat rule; CONFIRM has not yet run on a fault witness.
+   *And since v25* (the owner voided the no-daemon rule: daemons take part, the engine handles
+   them), each general: the lineage scope (`15cf76787`, `4e30d2c47`; `plan.LineageScan`,
+   `causynth.LineageScope`) weaves every thread start, queue handoff (deque ends included),
+   work entry and timed wait of the whole tree beside the case's analysis scope, so a daemon's
+   thread has its context and its waits are the schedule's -- the hand-woven `carried()` is
+   gone from every tree; an event with no identity holds no place in the order (`1793aa337`);
+   exploration stops at a MARKER_FLIPPED witness with polarity deciding (`09b6bd8aa`); the
+   mechanism is named by the anchor's own arrivals while the run as it happened holds every
+   path's (`563fd1162`: 11741 v25 came out MESSAGE_PAIRING_FLIPPED, re-composed CLOCK_SKEW);
+   and a daemon's turn never comes sooner than recorded and is never waited for
+   (`a9ec1d250`, `f8a9ce3a6`: a slotless WAKE waits at the cut, an open WAKE slot stands in no
+   later event's way -- path B's actors heartbeat ahead of the workload's, 17960's restart held
+   the lock its daemon needed to reach its recorded slot).
+1. **Read v30+** (snapshot `p33` = `f8a9ce3a6`, the eight trees at their restored sources:
+   11741 d334c85a268, bug1 763968f19c7, bug2 72842405587, bug3 fbac2aa93ef, 17897 97e7d39ad83,
+   A 5dfc98f14b7, B e421e92171c, C 8f50cc8446c), diagnose every FAIL by §11 before a fix, and
+   repeat until the nine pass the acceptance checks of §8 on one snapshot; then fast-forward
+   `main`. v25 on `p28` (daemon heartbeats switched off, so not final) had 7/9; bug2 has never
+   reached COMPOSE. The first question of every round: the seed replay's `Causynth schedule:
+   of an order` line (0 stalls) and its `TASK_UNANSWERED` count (v25's block-key seeds: 0-3).
 4. **The cleanup the read found (§14, R-items).** *Now, before the round* — each after `git
    grep` for readers, one commit per package: the dead members and second spellings (R1, R3,
    R8, R11, R12, R23, R25, R27–R29, R31, R35–R37, R40, R42, R43, R45, R47, R49, R50, R55–R57,
