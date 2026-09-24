@@ -45,8 +45,6 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
 final class ActiveRegion {
-    /** The thread this activation ran on, as the recording names it. */
-    final String threadName = Thread.currentThread().getName();
     final long token;
     /** The one task whose region-local path this activation records. */
     final RuntimeTask activation;

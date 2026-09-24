@@ -796,14 +796,17 @@ public final class StaticScopeMap {
                     methods.put(regionId, Collections.unmodifiableSet(held));
                 }
             } catch (IOException | RuntimeException unreadable) {
-                // The map itself is what this stage needs; a skeleton file
-                // it cannot read leaves the join comparing region ids, which
-                // is where it stood before this relation was published at
-                // all.  Never a refusal out of a reader of a second file.
-                return Collections.emptyMap();
+                // PLAN writes the skeleton file beside the map in the one
+                // stage: a file that is there and cannot be read is a
+                // defect of that stage, refused by name -- never a join
+                // quietly comparing region ids instead.
+                throw new IllegalStateException(
+                        "REGION_SKELETONS_UNREADABLE: " + file, unreadable);
             }
             break;
         }
+        // No skeleton beside the map states nothing about any region's
+        // methods; the join then compares region ids (ClosurePlanner.holds).
         return methods;
     }
 

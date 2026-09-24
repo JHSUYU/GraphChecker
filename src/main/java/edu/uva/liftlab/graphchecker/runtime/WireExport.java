@@ -363,6 +363,12 @@ final class WireExport {
             // an attach that files nothing and an attach nobody planned
             // read identically from the corpus, and only one of them is a
             // coverage question.
+            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
+                            .DECLARATION_MISSING,
+                    edu.uva.liftlab.graphchecker.contract.GapClass
+                            .DIAGNOSTIC, Text.safe(portId),
+                    "a wire attach ran for a port no task of this campaign "
+                            + "declares, so it filed nothing");
             return;
         }
         if (carrier == null) {

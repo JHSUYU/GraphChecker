@@ -49,7 +49,6 @@ public final class StaticProgram {
     final Map<String, String> executionContextAuthorities =
             new LinkedHashMap<>();
     final List<Map<String, Object>> regions = new ArrayList<>();
-    final List<Map<String, Object>> regionEdges = new ArrayList<>();
     final Map<String, Object> targetResolved = new LinkedHashMap<>();
     /**
      * Static communication discovery: one row per target-selected

@@ -1327,19 +1327,15 @@ public final class ContainerSmtCodec {
          * Whether an externally evidenced container identity must survive
          * local select-over-store simplification.
          */
-        default boolean preserveContainerIdentity(JsonElement expression,
-                                                  Sort expected) {
-            return false;
-        }
+        boolean preserveContainerIdentity(JsonElement expression,
+                                                  Sort expected);
 
         /**
          * Returns an equivalent name for a pure term when the encoder keeps
          * a definitional DAG.  The identity default preserves hosts that
          * already bound large container terms at their operand boundary.
          */
-        default Term share(Term value) {
-            return value;
-        }
+        Term share(Term value);
 
         Term box(JsonElement expression);
 

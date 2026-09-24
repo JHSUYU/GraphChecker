@@ -309,7 +309,10 @@ public final class CausynthPipeline {
                 rewritten.add(signature);
             } catch (RuntimeException exception) {
                 if (namedRefusal(exception)) throw exception;
-                LOG.debug("Skipping instrumentation for {}", signature,
+                // Not a named refusal: a Soot rewrite failed on this body.
+                // Said at WARN with the exception, so a body the weave left
+                // alone is visible in the stage's log rather than silent.
+                LOG.warn("Skipping instrumentation for {}", signature,
                         exception);
             }
         }

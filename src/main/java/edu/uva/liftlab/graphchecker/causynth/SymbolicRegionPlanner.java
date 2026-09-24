@@ -111,7 +111,6 @@ final class SymbolicRegionPlanner {
         }
 
         program.regions.clear();
-        program.regionEdges.clear();
         List<String> roots = new ArrayList<>(regionAuthorities.keySet());
         Collections.sort(roots);
         for (String root : roots) {

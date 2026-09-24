@@ -334,20 +334,11 @@ public final class VmTermLowering {
      */
     public static Term parseIntTerm(Policy policy, JsonObject expression,
                              String origin) {
-        String name = "java/lang/Integer.parseInt";
-        JsonArray params = JsonFields.array(expression, "_param_list");
-        if (params.size() != 1 && params.size() != 2) {
-            return codecGap(policy, name, "ARITY", origin, Sort.INT);
-        }
-        if (params.size() == 2) {
-            Integer radix = VmExpressionIr.exactIntLiteral(params.get(1));
-            if (radix == null || radix != 10) {
-                return codecGap(policy, name, "RADIX_NOT_LITERAL_10", origin,
-                        Sort.INT);
-            }
-        }
-        return codecGap(policy, name,
-                "ROUNDTRIP_NOT_PROVED_NO_SPLIT_EVIDENCE", origin, Sort.INT);
+        // Not lowered at all: no round trip from the parsed int back to its
+        // digits is proved, whatever the arity or radix, so there is one
+        // refusal and not three spellings of it.
+        return codecGap(policy, "java/lang/Integer.parseInt",
+                "PARSE_INT_NOT_LOWERED", origin, Sort.INT);
     }
 
     /** The conjunction of these predicates, with the trivial ones and the
