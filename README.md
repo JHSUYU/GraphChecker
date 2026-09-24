@@ -454,9 +454,9 @@ assessor plus two skeptics per case on exactly those four checks.
 
 ## 9. Status (2026-09-24: 9/9 on `main`; the history below stands as written)
 
-**2026-09-24 11:30: nine of nine pass on one snapshot, `p39` = `e41f9e609` (round v37), each
-formula checked for the causality its witness names** (§10 item 1 has the table, the check and
-the evidence directory, `~/gc-out/accept-v37-*`). The paragraphs below are the history that led
+**2026-09-24 14:10: nine of nine pass on one snapshot, `p42` = `e7301d3a1` (round v40), each
+formula checked for the causality its witness names, the two engine defects of §10 item 10
+fixed** (§10 item 1 has the tables and the evidence directory, `~/gc-out/accept-v40-*`). The paragraphs below are the history that led
 there, kept as written on 2026-09-23.
 
 
@@ -645,6 +645,24 @@ that `main` moves and the parked housekeeping is due.
    the DataNode actor's `nextHeartbeatTime` after that actor's heartbeat instead of before and
    waited for the next one, which the order places after the workload's own request. A
    divergence of the order stays a diagnostic gap of the CONFIRM session.
+
+   **Round v40 on `p42` = `e7301d3a1` (2026-09-24 14:10, `~/gc-out/accept-v40-*`, the evidence
+   that stands; v35-v39 are deleted):** nine of nine PASS, every one confirmed, every moved root
+   in the selected path's cone, no unbound boundary variable. With the three fixes of item 10:
+
+   | case | confirmed by | s |
+   | --- | --- | --- |
+   | hdfs-17897 | the selected session itself | 323 |
+   | hdfs-17899-bug1 | the selected session itself | 340 |
+   | hdfs-17899-bug3 | the selected session itself | 358 |
+   | hdfs-17960 | the selected session itself | 388 |
+   | hdfs-17967-pathC | the selected session itself | 398 |
+   | hdfs-17967-pathA | the selected session itself | 467 |
+   | hdfs-17967-pathB | the selected session itself | 477 |
+   | hdfs-17899-bug2 | the selected session itself | 552 |
+   | hdfs-11741 | a replay: its 180 arms come from several sessions | 2276 |
+
+   11741 explored three waves and 385 obligations (v37: four waves, 641; 4405 s).
 4. **The cleanup the read found (§14, R-items) -- done 2026-09-24 in four batches on the
    branch** (`6ad752ef7`, `3e0768815`, `fbf3fb523`, `6e21b90e3`), each after `git grep` for
    readers in `src`, `run_engine.sh`, `experiments/hadoop` and `tools`, 156 tests green at each:
@@ -702,24 +720,42 @@ that `main` moves and the parked housekeeping is due.
    `run_engine.sh` split by stage. Deferred identity items: `Lost` should address to an empty
    index; carry lineage explicitly instead of `InheritableThreadLocal` (= R18); loop bodies get
    their own iteration frames.
-10. **Two engine defects found on 2026-09-24, not yet fixed** (neither affects a formula's
-    causality; both cost determinism or time):
-    - *An event's k counts across threads that share a context (G8).* The schedule keys an event
-      by `(kind, node|context, site, k)`, and threads started under one scope keep that scope's
-      context -- a start adds a frame to the execution index, not a hop to `c`. So their events
-      share one counter: bug2's `Root:CLIENT/satisfy-storage-policy#1` holds ~90 SENDs from
-      many occurrences, and the k-th SEND is whichever thread sends k-th (v36: the recording's
-      SEND#7 was occurrence `e7c2cec3`, CONFIRM's was `466d3827`). `ScheduleLog.pending`
-      already refuses a cross-thread counter for `Lost`; the general fix is the paper's causal
-      context -- `c` carries the thread handoffs (the start frames from the scope base).
-    - *Exploration's unit carries the world.* `ObligationFactory.obligationId` keys an obligation
-      by (task, arm, prefix digest, world digest), and `FlipQuery` pins every handoff but the
-      focused occurrence's to its recorded arrival, so a local behaviour of one occurrence is
-      re-asked in every world whose flips reach it: 11741 v37 asked 641 obligations over four
-      waves (v35: 627 for 69 distinct (arm, root-assignment) questions, one arm 42 times). The
-      paper's unit is the occurrence's local behaviour: boundary inputs free inside their
-      families, the answer planted at the attach, no world in the key.
-
+10. **Engine defects found and fixed on 2026-09-24** (each general, each a commit):
+    - *An event's k counted across threads that share a context (G8)* -- `6701bbc44`. A thread
+      started inside a scope kept the scope's context, so its events shared the scope's counter:
+      bug2's `Root:CLIENT/satisfy-storage-policy#1` held ~90 SENDs of many threads, and the k-th
+      was whichever thread sent k-th. The schedule context is now `node|c|handoffs`, the start
+      frames from the scope root (`Identity.handoffs`), the paper's causal context; a message's
+      work and a daemon turn keep their keys.
+    - *An arm's world was keyed by its CAUSE* -- `914aeb98d`, `e7301d3a1`. The world part of an
+      obligation id was the session's flips reaching the task (gated by `Corpus.affected`), so
+      the same delivered structure was asked once per flip combination and different structures
+      of one combination were asked once. It is now the EFFECT, `Corpus.inputShape`: what arrives
+      at the region -- per site the handoffs and their producers at the occurrence and its factor
+      members, the factor members' writes. Reads and decisions are the region's behaviour and a
+      replay's timing moves them (counting reads split 57 of 103 same-world groups on v38; what
+      arrives splits 4, all real). The world stays in the key: 11741's witness is the scan's
+      compare asked again over the map addKeys filled with four keys instead of five.
+    - *CONFIRM re-ran a run it already had* -- `fe3359160`. When every arm the model chose is the
+      selected session's own delivery, that session ran the moved roots at the model's values and
+      observed the fatal, it IS the run the claim needs (`ConfirmMain.realizedBy`,
+      `realized.json`); a replay of its world only tested whether a race the order does not hold
+      (bug2: the workload's `triggerHeartbeatForTests` against the DataNode actor's
+      `nextHeartbeatTime`) goes the same way twice. A model combining deliveries of several
+      sessions is replayed as before.
+11. **Proposed, not started (awaiting the owner): replay by the partial order of interactions.**
+    The schedule enforces a TOTAL order of SEND/RECV/START/CLAIM/WAKE/END, which also orders
+    events that do not conflict and so contradicts dependencies it does not record (plain-field
+    races, locks): bug2's trigger race, 17960's lock, and the watchdog and WAKE exceptions built
+    around them. What changes an outcome is the interactions: reads-from and the write order of
+    tracked locations (endpoint to endpoint, already in the WriteRow/ReadRow rows), with message
+    pairing and work claims holding by identity. Design: Soot weaves an access hook at the tracked
+    read/write sites; a read waits for the write it read from, a write for the accesses recorded
+    before it, a write the recording did not make waits until the location's constrained accesses
+    are done, and a first constrained access waits at its occurrence's entry (before its locks);
+    an obligation replay holds the causal past of its focused occurrence, a CONFIRM the union of
+    the causal pasts of the model's chosen behaviours (a cycle means no single run can realize
+    them); the total-order turnstile and the prefix files go.
 ## 11. Debugging a round
 
 Where to look, in order, for a FAIL line (a campaign that seems stalled first: `grep 'waits for
