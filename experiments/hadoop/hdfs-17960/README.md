@@ -30,8 +30,8 @@ flipped decision, which is what makes this case the worked example for the whole
 ## Build and run
 
 Hadoop checkout `/u/vnr3ne/hadoop-hdfs-17960`, a worktree of `~/hadoop` on branch
-`gc/hdfs-17960-current`, itself branched from `origin/gc/hdfs-17960-snapshot-replay-jdk8`,
-compiled with Java 8. (It was `/u/vnr3ne/hadoop-hdfs-17960` on the host this case was first
+`gc/hdfs-17960` (branched from `origin/gc/hdfs-17960-snapshot-replay-jdk8`), compiled with
+Java 8. (It was `/u/vnr3ne/hadoop-hdfs-17960` on the host this case was first
 prepared on; that host is gone. `case.sh` names the checkout, and `artifacts/` still records the old path
 because those are a frozen run's own provenance and are not rewritten.) From this directory:
 

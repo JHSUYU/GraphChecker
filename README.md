@@ -617,7 +617,7 @@ that `main` moves and the parked housekeeping is due.
    the two DESIGN4 §3.3b means (bug1's catch path is the intended case).
 7. **Housekeeping the owner asked for and then parked (2026-09-23 morning)** — do it only when
    asked again: delete old outputs (`~/gc-out/accept-v16..v21-*` once superseded) and snapshots
-   (`git worktree remove ~/gc-run/pNN`); rename the Hadoop branches `gc/<case>` → `gc/<case>`
+   (`git worktree remove ~/gc-run/pNN`); the Hadoop branches are `gc/<case>` (renamed 2026-09-24)
    ("there is no v1/v2, the current code is the code"), delete the stale remote branches, push
    both repositories; the GraphChecker code lives on `main` only.
 8. **Owner follow-ups noted at v14/v15, not blocking**: the composer's `clock_domain` is asserted
