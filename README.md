@@ -566,8 +566,13 @@ that `main` moves and the parked housekeeping is due.
    pool handler served them and the reader's queue count, and matched by luck until the daemons
    took part), and a start made by a thread with no identity files no frame (`4288081d9`;
    11741's DataXceiver carried the acceptor's connection count, `Daemon.start#u5@1` vs `@0`).
-1. **Read v31** (snapshot `p34` = `4288081d9`: 17960, 11741, bug2, the three that missed their
-   target in v30's seed), then the nine on one snapshot. (snapshot `p33` = `f8a9ce3a6`, the eight trees at their restored sources:
+   *And since v31* (7/9 on `p34`: 17960, 17897, bug1, bug3, A, B, C; bug2 reached the right
+   claim, MARKER_FLIPPED on the SPS's reply door, and PLAN withheld it with six
+   OCCURRENCE_ADDRESS_SHARED rows): a hop's scope root lasts as long as the hop (`5d729819a`
+   -- a served message's root was set and never put back, so every later occurrence of that
+   thread lost its start frame and sibling threads' k-th calls shared one address).
+1. **Read v32** (snapshot `p35` = `5d729819a`, all nine: bug2 first, the seven relaunched at
+   23:08, 11741 once its `p34` run is read), then fast-forward `main`. (snapshot `p33` = `f8a9ce3a6`, the eight trees at their restored sources:
    11741 d334c85a268, bug1 763968f19c7, bug2 72842405587, bug3 fbac2aa93ef, 17897 97e7d39ad83,
    A 5dfc98f14b7, B e421e92171c, C 8f50cc8446c), diagnose every FAIL by §11 before a fix, and
    repeat until the nine pass the acceptance checks of §8 on one snapshot; then fast-forward
