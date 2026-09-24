@@ -97,13 +97,6 @@ public final class ObligationFactory {
         public final Corpus.RecordedPath path;
         public final int index;
         public final DecisionRow decision;
-        /**
-         * The world this arm is owed in: {@code ""} unless the session's
-         * world changed what the region received
-         * ({@link Corpus#affected}), and then the flips of it that REACH
-         * this task ({@link #worldKey}).
-         */
-        public final String worldDigest;
 
         private Candidate(Corpus corpus, Task task,
                           Corpus.RecordedPath path, int index) {
@@ -111,11 +104,11 @@ public final class ObligationFactory {
             this.path = path;
             this.index = index;
             this.decision = path.decisions.get(index);
-            this.worldDigest = worldKey(corpus, task, path.sessionId);
             this.obligationId = obligationId(task.taskId(),
                     decision.siteId(), decision.ordinal(),
                     !decision.outcome(),
-                    prefixDigest(path.decisions, index), worldDigest);
+                    prefixDigest(path.decisions, index),
+                    worldKey(corpus, task, path.sessionId));
         }
 
         /**
@@ -266,71 +259,34 @@ public final class ObligationFactory {
      * <p>The flips -- its own and every one it inherited -- each written
      * {@code focusedOccurrenceId|siteId|ordinal|outcome} and sorted, so
      * the same set of flips digests the same however a focus row happened
-     * to order them.  The SEED's world is empty and digests to {@code ""},
-     * which is also what an arm no world reached is keyed by.</p>
-     *
-     * <p>This is the SPELLING of a world and not an arm's key: an arm is
-     * keyed by the part of the world that reaches it
-     * ({@link #worldDigest(Corpus.World, Set)}, {@link #worldKey}).</p>
+     * to order them.  The SEED's world is empty and digests to {@code ""}.
+     * This is the SPELLING of a world, which the slot table and the wave
+     * graph label rows with; an arm is keyed by what the world delivered to
+     * it ({@link #worldKey}).</p>
      */
     public static String worldDigest(Corpus.World world) {
-        return worldDigest(world, null);
-    }
-
-    /**
-     * ONE WORLD AS ONE ARM SEES IT: the flips of it that REACH the arm.
-     *
-     * <p>A flip belongs in an arm's key when the occurrence it was focused
-     * at is the arm's own occurrence, or is upstream of it in the corpus's
-     * own causal graph ({@link Corpus#upstreamOf}: a matched communication
-     * transfer, a candidate shared-state dependency, followed backwards).
-     * A flip anywhere else is not part of this task's world and keying by
-     * it asks one question once per combination of facts that have nothing
-     * to do with it: on the hdfs-11741 c6 corpus (2026-09-20) that was
-     * wave 2 asking dn1's {@code removeExpiredKeys#u15 -> false} 132
-     * times, because the digest was over EVERY flip of the world -- a
-     * balancer rotation among them, which reaches neither dn1's scan nor
-     * the {@code addKeys} beside it, the Balancer's export resting on its
-     * own key map.</p>
-     *
-     * <p>{@code reaching} is null for the unprojected spelling, and a
-     * world whose flips all fall outside it digests to {@code ""} -- the
-     * key of an arm no world reached, which is what such a world is for
-     * this arm.</p>
-     */
-    public static String worldDigest(Corpus.World world,
-                                     Set<String> reaching) {
         if (world == null || world.flips.isEmpty()) return "";
         List<String> held = new ArrayList<String>();
         for (Corpus.Flip flip : world.flips) {
-            if (reaching != null
-                    && !reaching.contains(flip.focusedOccurrenceId)) {
-                continue;
-            }
             held.add(flip.focusedOccurrenceId + "|" + flip.siteId + "|"
                     + flip.ordinal + "|" + flip.outcome);
         }
-        if (held.isEmpty()) return "";
         Collections.sort(held);
-        StringBuilder text = new StringBuilder();
-        for (String one : held) {
-            if (text.length() > 0) text.append('/');
-            text.append(one);
-        }
-        return ArtifactIO.digest(text.toString(), 16);
+        return ArtifactIO.digest(String.join("/", held), 16);
     }
 
     /**
-     * THE WORLD PART OF ONE ARM'S KEY: the gate, then the projection.
+     * THE WORLD PART OF ONE ARM'S KEY: what the session's world delivered
+     * to the task ({@link Corpus#inputShape}), never which flips did it.
      *
-     * <p>The gate is {@link Corpus#affected} and is unchanged -- a world
-     * that changed nothing this region received is not a world this region
-     * is asked about again, and it keys the arm by {@code ""} -- and what
-     * a gated world digests to is its flips ON THIS TASK'S UPSTREAM SET
-     * ({@link #worldDigest(Corpus.World, Set)}).  The two questions are
-     * different and both are needed: {@code affected} says WHETHER this
-     * world changed the region's own rows, the projection says WHICH flips
-     * of it could have.</p>
+     * <p>A world that changed nothing the task received digests as the seed
+     * does, and two worlds that delivered it the same structure are one
+     * world here: the question an arm asks is about the task's own inputs,
+     * and the replay that answers it inherits the world of the path it is
+     * cut from anyway ({@link #smallestWorldFirst}).  It used to be the
+     * world's flips on the task's upstream set, over the corpus's causal
+     * graph -- a key by CAUSE, which asked one question once per
+     * combination of upstream flips that delivered the same structure.</p>
      *
      * <p>The ONE answer for both readers of it: the candidate a wave cuts
      * ({@link Candidate}) and the ledger of what is owed
@@ -340,11 +296,7 @@ public final class ObligationFactory {
     public static String worldKey(Corpus corpus, Task task,
                                   String sessionId) {
         if (corpus == null || task == null) return "";
-        if (!corpus.affected(sessionId, task.focused(), task.factor())) {
-            return "";
-        }
-        return worldDigest(corpus.world(sessionId),
-                corpus.upstreamOf(task.focused(), task.factor()));
+        return corpus.inputShape(sessionId, task.focused(), task.factor());
     }
 
     /**
@@ -368,38 +320,28 @@ public final class ObligationFactory {
      * a known region is still work, and a wave that finds no NEW EDGE is
      * not the end of the exploration.</p>
      *
-     * <p>SO IS THE WORLD ({@link #worldDigest}), and only where that world
-     * reached the region ({@link Corpus#affected}): an unexplored local
-     * path of a known region is still work, and so is a known local path in
-     * a world that changed what the region received -- never the same path
-     * in a world that changed nothing for it.  HDFS-11741 is the case.
-     * dn1's expiry scan runs over the DataNode's own old map before the put
-     * loop, so its local prefix is letter for letter the same in the seed,
-     * in the session that flipped dn1 alone, and in the session where nn0's
-     * second rotation dropped the key; keyed by the prefix alone the first
-     * of those settles the arm for every world, and the witness's second
-     * flip -- that same compare, under nn0's skew -- is never proposed.
-     * Keyed by the world without the {@code affected} test it would be
-     * proposed once per world instead, which is every session of the epoch
-     * asking the same fact again.</p>
-     *
-     * <p>AND THE WORLD IS THE PART OF IT THAT REACHES THE TASK
-     * ({@link #worldKey}).  The gate says whether the world mattered here;
-     * it cannot say which of its flips did, and digesting all of them keys
-     * one arm by every combination of facts that never reached it.  On the
-     * c6 corpus (2026-09-20) wave 2 asked 774 obligations for 44 distinct
-     * (task, arm) pairs, dn1's {@code removeExpiredKeys#u15 -> false} 132
-     * times, once per world of a Balancer rotation the DataNode's scan
-     * cannot observe.</p>
+     * <p>SO IS WHAT THE WORLD DELIVERED TO THE TASK ({@link #worldKey}): an
+     * unexplored local path of a known region is still work, and so is a
+     * known local path under inputs of another structure -- never the same
+     * path under the same inputs.  HDFS-11741 is the case.  dn1's expiry
+     * scan runs over the DataNode's own old map before the put loop, so its
+     * local prefix is letter for letter the same in the seed, in the session
+     * that flipped dn1 alone, and in the session where nn0's second rotation
+     * dropped the key; keyed by the prefix alone the first of those settles
+     * the arm for every world, and the witness's second flip -- that same
+     * compare, over the map addKeys filled with four keys instead of five --
+     * is never proposed.  Keyed by every world's flips it would be proposed
+     * once per world instead, and keyed by the flips that reach the task,
+     * once per combination of them that delivered the same four keys.</p>
      */
     public static String obligationId(String taskId, String siteId,
                                       int ordinal, boolean flippedOutcome,
                                       String prefixDigest,
-                                      String worldDigest) {
+                                      String worldKey) {
         return ArtifactIO.digest(taskId + "|" + siteId + "|" + ordinal + "|"
                 + flippedOutcome + "|"
                 + (prefixDigest == null ? "" : prefixDigest) + "|"
-                + (worldDigest == null ? "" : worldDigest), 16);
+                + (worldKey == null ? "" : worldKey), 16);
     }
 
     /**
@@ -576,8 +518,9 @@ public final class ObligationFactory {
      * <p>Two paths that offer the same arm offer the same obligation, and
      * the first one in this order is the prefix the query is built over.
      * A candidate INHERITS the world of the path it is cut from -- every
-     * flip of it, whether or not that flip is part of the arm's key
-     * ({@link #worldKey}) -- and the replay is held to all of them, so the
+     * flip of it, though the arm's key names only what the world delivered
+     * to the task ({@link #worldKey}) -- and the replay is held to all of
+     * them, so the
      * representative is the path whose world holds the fewest: the same
      * question, asked with the fewest constraints on the run that answers
      * it.  Corpus order decides between worlds of one size, as it did

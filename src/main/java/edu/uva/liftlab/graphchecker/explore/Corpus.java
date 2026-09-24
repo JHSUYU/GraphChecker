@@ -302,88 +302,70 @@ public final class Corpus implements Arms.Rows {
     }
 
     /**
-     * Whether one session's WORLD changed anything this region received.
+     * WHAT ONE SESSION'S WORLD DELIVERED TO A TASK, as a digest: the world
+     * part of an arm's key ({@link ObligationFactory#worldKey}).
      *
-     * <p>A world is asked about an arm only where it reached the region.
-     * The occurrence itself is not the whole region: a factor member is
-     * state-connected to it -- the writers and readers of one location on
+     * <p>A world is asked about an arm again where it changed what the
+     * region received, and two worlds that changed it the same way ask it
+     * the same question -- so the key is the EFFECT at the task, never the
+     * cause.  The occurrence itself is not the whole region: a factor member
+     * is state-connected to it -- the writers and readers of one location on
      * one node, the {@code Task.factor()} list the planner computes with
      * {@code ClosurePlanner.stateConnected} -- and the two run as ONE
-     * symbolic unit, so what the member received is what the occurrence
-     * reads.  HDFS-11741 is the case: dn1's expiry scan runs over the
-     * DataNode's own old map BEFORE the put loop, so its own decisions are
-     * letter for letter the seed's whether or not nn0 skewed its clock;
+     * symbolic unit, so what the member received and wrote is what the
+     * occurrence reads.  HDFS-11741 is the case: dn1's expiry scan runs over
+     * the DataNode's own old map BEFORE the put loop, so its own decisions
+     * are letter for letter the seed's whether or not nn0 skewed its clock;
      * what nn0's flip changed is the {@code addKeys} occurrence beside it
      * (four attaches instead of five), and addKeys writes the very map the
-     * scan reads.  Asked of the scan alone the session looks untouched, the
-     * arm keys world-less, and the session that flipped dn1 alone settles
-     * it for every world -- which is exactly why the witness's second flip
-     * was never proposed.</p>
+     * scan reads.</p>
      *
-     * <p><b>CONTROL and STRUCTURE only, never VALUES.</b> Six differences,
-     * each measured against the SEED: the seed has no activation of the
-     * occurrence at all; the ordered decision sequence
-     * {@code siteId#ordinal=outcome} differs; the per-site COUNT of
-     * attaches differs; the set of paired producer OCCURRENCES of its
-     * attaches differs (a new or different producer is new topology); the
-     * per-site count of reads differs; the per-site count of writes
-     * differs.</p>
+     * <p><b>CONTROL and STRUCTURE only, never VALUES.</b> For the occurrence:
+     * whether it ran, and per site HOW MANY handoffs it received from WHICH
+     * producer occurrences and how many reads it made -- its own decisions
+     * are the arm's prefix and what the flip explores, not an input.  For
+     * every other factor member: the same, plus its ordered decisions
+     * {@code siteId#ordinal=outcome} and how many writes it made per
+     * site.</p>
      *
-     * <p>A delivered VALUE is deliberately not one of them.  Values are
-     * carried symbolically by the families -- that is what a handoff's arm
-     * is for -- and a clock-valued handoff is a different value in every
-     * run by nature, for reasons no flip caused.  Comparing them made
-     * hdfs-11741 campaign #3's wave 2 read 196 of 208 (task, session) pairs
-     * as affected, 91 of them on an attach arrival alone: at dn1's expiry
-     * scan the ONLY difference the four balancer-only replays had from the
-     * recording, anywhere in the group, was
-     * {@code XCH.....resp.block-key-expiry-date}, a wall clock that moves
-     * about 100 seconds between runs.  Every replay then counted as its own
-     * world and the wave asked 490 obligations where the corpus owes a
-     * handful.</p>
+     * <p>A delivered VALUE is deliberately not in it.  Values are carried
+     * symbolically by the families -- that is what a handoff's arm is for --
+     * and a clock-valued handoff is a different value in every run by
+     * nature, for reasons no flip caused.  Comparing them made hdfs-11741
+     * campaign #3's wave 2 read 196 of 208 (task, session) pairs as
+     * changed, 91 of them on an attach arrival alone.</p>
      *
-     * <p>The seed's own sessionId is never affected -- its world is the
-     * empty one -- and a corpus that states no single recording answers
-     * "affected", which costs a re-proposal and never a lost arm.</p>
+     * <p>Keyed by the CAUSE -- the flips of the world that reach the task
+     * over the corpus's causal graph -- one question was asked once per
+     * combination of upstream flips that delivered the task the same
+     * structure: of hdfs-11741 round v37's 641 obligations, 561 were
+     * distinct (task, arm, prefix, delivered structure).  A world whose
+     * flips changed nothing the task received digests as the seed does, so
+     * the seed's recorded arms settle it.</p>
      */
-    public boolean affected(String sessionId, OccurrenceAddress occurrence,
-                            List<OccurrenceAddress> factor) {
-        if (sessionId == null || sessionId.isEmpty()) return false;
-        String seed = seedSessionId();
-        if (seed.isEmpty()) return true;
-        if (seed.equals(sessionId)) return false;
-        if (occurrence != null && changed(sessionId, seed, occurrence)) {
-            return true;
+    public String inputShape(String sessionId, OccurrenceAddress occurrence,
+                             List<OccurrenceAddress> factor) {
+        StringBuilder text = new StringBuilder();
+        if (occurrence != null) {
+            text.append(occurrence.id()).append(':')
+                    .append(activation(sessionId, occurrence) != null)
+                    .append(attachSites(sessionId, occurrence))
+                    .append(producers(sessionId, occurrence))
+                    .append(readSites(sessionId, occurrence));
         }
-        if (factor == null) return false;
-        for (OccurrenceAddress member : factor) {
-            if (member == null || member.equals(occurrence)) continue;
-            if (changed(sessionId, seed, member)) return true;
+        if (factor != null) {
+            for (OccurrenceAddress member : factor) {
+                if (member == null || member.equals(occurrence)) continue;
+                text.append('\n').append(member.id()).append(':')
+                        .append(activation(sessionId, member) != null)
+                        .append(shape(sessionId, member))
+                        .append(attachSites(sessionId, member))
+                        .append(producers(sessionId, member))
+                        .append(readSites(sessionId, member))
+                        .append(writeSites(sessionId, member));
+            }
         }
-        return false;
-    }
-
-    /** Whether one session's rows at one occurrence differ from the seed's. */
-    private boolean changed(String sessionId, String seed,
-                            OccurrenceAddress occurrence) {
-        if (activation(seed, occurrence) == null) return true;
-        if (!shape(sessionId, occurrence).equals(shape(seed, occurrence))) {
-            return true;
-        }
-        if (!attachSites(sessionId, occurrence)
-                .equals(attachSites(seed, occurrence))) {
-            return true;
-        }
-        if (!producers(sessionId, occurrence)
-                .equals(producers(seed, occurrence))) {
-            return true;
-        }
-        if (!readSites(sessionId, occurrence)
-                .equals(readSites(seed, occurrence))) {
-            return true;
-        }
-        return !writeSites(sessionId, occurrence)
-                .equals(writeSites(seed, occurrence));
+        return ArtifactIO.digest(text.toString(), 16);
     }
 
     /** One session's local path at one occurrence, in recorded order. */
@@ -851,13 +833,10 @@ public final class Corpus implements Arms.Rows {
         return eligible;
     }
 
-    /** occurrence id -> every occurrence that reaches it, itself included. */
-    private final Map<String, Set<String>> upstream =
-            new LinkedHashMap<String, Set<String>>();
-
     /**
-     * EVERY OCCURRENCE THAT REACHES ONE, ITSELF INCLUDED, over the UNION of
-     * the sessions' edges.
+     * EVERY OCCURRENCE THAT REACHES ONE AND ITS FACTOR, itself included,
+     * INSIDE ONE SESSION's rows (DESIGN4 SS3.2): the per-world graph, from
+     * which the regions a world exposed are read.
      *
      * <p>The in-edges are the paper's (SS3.1): a MATCHED COMMUNICATION
      * TRANSFER -- an attach and the producer occurrence its own pairing
@@ -865,47 +844,8 @@ public final class Corpus implements Arms.Rows {
      * concrete location and the occurrences that wrote the versions it
      * could have observed, on the reader's own node ({@link #eligibleWrites},
      * {@link #observed}); a read stated only inside a published expression
-     * (E2, {@link #expressionStateReads}) is one of those reads.</p>
-     *
-     * <p>The union is what an ARM's key is about ({@link
-     * ObligationFactory#worldKey}): a flip that only some session's rows
-     * connect must not change an arm's identity depending on which session
-     * is asked.  Per-world truth -- what one session's own rows reach -- is
-     * {@link #upstreamOf(OccurrenceAddress, List, String)}.  Memoized per
-     * occurrence.</p>
-     */
-    public Set<String> upstreamOf(OccurrenceAddress occurrence) {
-        if (occurrence == null) return Collections.<String>emptySet();
-        Set<String> held = upstream.get(occurrence.id());
-        if (held != null) return held;
-        Set<String> answer = Collections.unmodifiableSet(
-                closure(occurrence, null));
-        upstream.put(occurrence.id(), answer);
-        return answer;
-    }
-
-    /**
-     * The same, for a task: its focused occurrence AND its factor, which
-     * run as ONE symbolic unit ({@code ClosurePlanner.stateConnected},
-     * {@link #affected}).
-     */
-    public Set<String> upstreamOf(OccurrenceAddress occurrence,
-                                  List<OccurrenceAddress> factor) {
-        Set<String> reached = new LinkedHashSet<String>(
-                upstreamOf(occurrence));
-        if (factor != null) {
-            for (OccurrenceAddress member : factor) {
-                reached.addAll(upstreamOf(member));
-            }
-        }
-        return Collections.unmodifiableSet(reached);
-    }
-
-    /**
-     * The backward closure of one occurrence and its factor INSIDE ONE
-     * SESSION's rows (DESIGN4 SS3.2): the per-world graph, from which the
-     * regions a world exposed are read.  Not memoized: asked once per
-     * admitted session per wave.
+     * (E2, {@link #expressionStateReads}) is one of those reads.  Not
+     * memoized: asked once per admitted session per wave.</p>
      */
     public Set<String> upstreamOf(OccurrenceAddress occurrence,
                                   List<OccurrenceAddress> factor,
@@ -919,7 +859,7 @@ public final class Corpus implements Arms.Rows {
         return reached;
     }
 
-    /** The walk behind both: over every session's edges, or over one's. */
+    /** The walk behind it, over one session's edges. */
     private Set<String> closure(OccurrenceAddress occurrence,
                                 String sessionId) {
         Set<String> reached = new LinkedHashSet<String>();
@@ -937,31 +877,21 @@ public final class Corpus implements Arms.Rows {
         return reached;
     }
 
-    /** occurrence id -> its union in-edges, which several walks ask for. */
-    private final Map<String, Set<String>> inEdges =
-            new LinkedHashMap<String, Set<String>>();
-
-    /**
-     * One occurrence's in-edges: who delivered to it, who wrote for it.
-     *
-     * @param sessionId the one session whose rows are asked, or null for
-     *                  every session's (memoized)
-     */
+    /** One occurrence's in-edges in one session: who delivered to it, who
+     *  wrote for it. */
     private Set<String> reaches(OccurrenceAddress occurrence,
                                 String sessionId) {
-        Set<String> held = sessionId == null ? inEdges.get(occurrence.id())
-                : null;
-        if (held != null) return held;
         Set<String> in = new LinkedHashSet<String>();
         for (AttachRow attach : attachesOn(occurrence)) {
-            if (attach.producer() == null || !own(sessionId, attach.sessionId())) {
+            if (attach.producer() == null
+                    || !sessionId.equals(attach.sessionId())) {
                 continue;
             }
             OccurrenceAddress producer = attach.producer().occurrence();
             if (producer != null) in.add(producer.id());
         }
         for (ReadRow read : readsOn(occurrence)) {
-            if (!own(sessionId, read.sessionId())) continue;
+            if (!sessionId.equals(read.sessionId())) continue;
             observed(read.sessionId(), SmtLowering.locationKey(read.location()),
                     read.observedVersion(), occurrence, in);
         }
@@ -969,24 +899,16 @@ public final class Corpus implements Arms.Rows {
         // which only its expression states.
         Set<String> walked = new LinkedHashSet<String>();
         for (ExportRow export : exportsOn(occurrence)) {
-            if (!own(sessionId, export.sessionId())) continue;
+            if (!sessionId.equals(export.sessionId())) continue;
             stated(export.sessionId(), export.expressionRef(), occurrence,
                     walked, in);
         }
         for (WriteRow write : writesOn(occurrence)) {
-            if (!own(sessionId, write.sessionId())) continue;
+            if (!sessionId.equals(write.sessionId())) continue;
             stated(write.sessionId(), write.expressionRef(), occurrence,
                     walked, in);
         }
-        if (sessionId != null) return in;
-        Set<String> answer = Collections.unmodifiableSet(in);
-        inEdges.put(occurrence.id(), answer);
-        return answer;
-    }
-
-    /** Whether a row of {@code rowSession} is asked for: all, or one's own. */
-    private static boolean own(String asked, String rowSession) {
-        return asked == null || asked.equals(rowSession);
+        return in;
     }
 
     /** The reads one published expression states, and who wrote them. */
