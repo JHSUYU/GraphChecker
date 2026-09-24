@@ -33,13 +33,11 @@ The Hadoop side of a case calls the GraphChecker Hadoop shim
 (`src/shim/java`, the `hadoop-shim` classifier jar): no tree carries its own
 facade.  A workload registers every node through
 `org.apache.hadoop.hdfs.server.datanode.CausynthCluster` before any traffic,
-and opens the recorded window with it.  Daemons are not suppressed, with
-one exception: a workload that sends a heartbeat itself sends every heartbeat
-of its window (`CausynthCluster.driveHeartbeats()` before the window;
-`refreshKeysFromNameNode` refuses a node whose daemon still beats), because
-the NameNode hands a key update to whichever heartbeat of a marked node
-arrives first -- hdfs-17967 path B's seed replay delivered the verifier's
-keys on its daemon heartbeat instead of the workload's RPC.  Otherwise the
+and opens the recorded window with it.  Daemons are not suppressed (owner
+ruling 2026-09-23: they take part in the coordination a case is about).  A
+daemon's work that crosses a queue carries its scope across it -- the IPC
+server's call queue, the DataNode actor's command processor -- so a key update
+a daemon heartbeat took is still a recorded delivery with its IPC doors.  The
 schedule reproduces daemons -- before a replay's cut event by event, and after
 it in their timeouts, so a daemon turn the recording took after the
 workload's own request is not taken before it just because the replay runs
@@ -90,9 +88,10 @@ the window, and the consumer presents that key:
    NameNode RPC inside the window — its heartbeat, whose answer carries the
    `KeyUpdateCommand` — through the IPC doors, whose fault points
    (`FAULT:HADOOP_IPC:REQUEST`, `FAULT:HADOOP_IPC:RESPONSE`) are the witness;
-   one heartbeat per node in the window, and no daemon heartbeat at all
-   (`driveHeartbeats`), so the workload's RPC is the delivery and a request
-   that never reached the NameNode is not redelivered before the transfer;
+   the workload marks each node for a key update and sends one heartbeat
+   per node; whichever heartbeat of the node reaches the NameNode first --
+   the workload's or the node's own daemon -- delivers the keys, and its
+   IPC doors are the witness;
 3. the consumer (Balancer, SPS, a source DataNode, the client) then takes the
    master's CURRENT key — over its own in-window RPC where it has one — and
    presents it in the transfer the annotated check verifies.

@@ -532,11 +532,13 @@ that `main` moves and the parked housekeeping is due.
      per-host ledger in the shared home, `tools/rounds/launch-round.sh` placing the nine heads
      and spreading every wave's obligations over lift11–lift15.
    *Since v22*, each general too: an event takes a slot of its own occurrence first (`b86ea7182`);
-   CONFIRM holds the run only to the joins the model chose (`be881f27d`, snapshot `p27`); a
-   workload that sends a heartbeat sends them all (`fb544cd06` and each tree's
-   `CausynthCluster.driveHeartbeats`) — v23's seeds of bug1/2/3, 17897, A, B and C took key
-   updates on DAEMON heartbeats (path B's verifier's among them, applied by the unrecorded
-   command-processor thread), so the closure had no workload RPC to fail; and a run is stopped
+   CONFIRM holds the run only to the joins the model chose (`be881f27d`, snapshot `p27`); v23's
+   seeds of bug1/2/3, 17897, A, B and C took key updates on DAEMON heartbeats, applied by the
+   actor's command-processor thread, which ran unattributed, so the closure had no delivery to
+   fail. First fixed by switching the daemon heartbeats off (`fb544cd06`, v24/v25); the owner
+   then ruled daemons take part (the no-daemon-in-window rule is void), so the trees now carry
+   the answer's scope across the command queue (`CommandProcessingThread#carried`) and the
+   switch is reverted -- the round after v25 is the first under it; and a run is stopped
    by its output directory (`tools/rounds/stop-run.sh`), never by the logged group id.
    *And since v24* (`4ae5016da`, snapshot `p28`): the run as it happened holds every path to its
    own pairing (DESIGN4 §1.5). v24's six block-key composes were refused
