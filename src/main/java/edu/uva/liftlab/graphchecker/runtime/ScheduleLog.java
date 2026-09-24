@@ -445,10 +445,16 @@ public final class ScheduleLog {
         }
     }
 
-    /** The event context: the attributed node, then the causal context. */
+    /**
+     * The event context: the attributed node, the causal context, and the
+     * thread handoffs inside it ({@link Identity#handoffs}) -- so the k of a
+     * key counts one thread's events, never two threads' interleaved.
+     */
     static String contextHere() {
         String node = Text.safe(RuntimeTraceContext.nodeHere());
-        return node + "|" + Identity.contextHere().render();
+        String handoffs = Identity.handoffs();
+        return node + "|" + Identity.contextHere().render()
+                + (handoffs.isEmpty() ? "" : "|" + handoffs);
     }
 
     /**

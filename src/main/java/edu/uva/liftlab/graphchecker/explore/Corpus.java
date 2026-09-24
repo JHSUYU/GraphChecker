@@ -518,12 +518,11 @@ public final class Corpus implements Arms.Rows {
                     && !event.endpoint().isEmpty()) {
                 senderByEndpoint.put(event.endpoint(), event.occurrence());
             } else if (event.kind() == ScheduleEvent.Kind.RECV) {
-                // "node|Anchor:<producer endpoint>@<site>": the anchor the
-                // message opened on the receiving thread.
-                String context = event.context();
-                int split = context.indexOf('|');
+                // "node|Anchor:<producer endpoint>@<site>[|handoffs]": the
+                // anchor the message opened on the receiving thread.
+                String[] parts = event.context().split("\\|", -1);
                 CausalContext anchor = CausalContext.parse(
-                        split < 0 ? context : context.substring(split + 1));
+                        parts.length < 2 ? parts[0] : parts[1]);
                 if (anchor instanceof CausalContext.Anchor) {
                     receiverByEndpoint.put(((CausalContext.Anchor) anchor)
                             .producerEndpointId(), event.occurrence());

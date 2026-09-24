@@ -132,6 +132,57 @@ public class ScheduleLogTest {
         assertEquals(1, events.get(2).k());
     }
 
+    /**
+     * Threads started inside one scope count their events apart: the start
+     * frame is part of an event's context, so the k-th send of each thread
+     * is its own whatever the other one did in between (G8).  A thread no
+     * woven start handed work to keeps the scope's context unchanged.
+     */
+    @Test
+    public void threadsStartedInOneScopeCountTheirOwnEvents() throws Exception {
+        written.clear();
+        final String site = "<A: void spawn()>#u2";
+        List<Thread> started = new ArrayList<Thread>();
+        for (int index = 0; index < 2; index++) {
+            Thread thread = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    ScheduleLog.observe(ScheduleEvent.Kind.SEND,
+                            "HADOOP_IPC#REQUEST");
+                    ScheduleLog.observe(ScheduleEvent.Kind.SEND,
+                            "HADOOP_IPC#REQUEST");
+                }
+            });
+            Identity.startWork(site, thread);
+            started.add(thread);
+        }
+        // The second thread runs first: its sends are still its own 0 and 1.
+        for (int index = started.size() - 1; index >= 0; index--) {
+            started.get(index).start();
+            started.get(index).join();
+        }
+        Thread plain = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                ScheduleLog.observe(ScheduleEvent.Kind.SEND,
+                        "HADOOP_IPC#REQUEST");
+            }
+        });
+        plain.start();
+        plain.join();
+        String scope = ScheduleLog.contextHere();
+        List<String> sends = new ArrayList<String>();
+        for (ScheduleEvent event : events()) {
+            if (event.kind() == ScheduleEvent.Kind.SEND) {
+                sends.add(event.context() + " k=" + event.k());
+            }
+        }
+        assertEquals(Arrays.asList(
+                scope + "|" + site + "@1 k=0", scope + "|" + site + "@1 k=1",
+                scope + "|" + site + "@0 k=0", scope + "|" + site + "@0 k=1",
+                scope + " k=0"), sends);
+    }
+
     @Test
     public void nothingIsRecordedBeforeTheWindowOpens() {
         RecordingWindow.reset();

@@ -1039,6 +1039,42 @@ public final class Identity {
     }
 
     /**
+     * The thread handoffs this thread's work stands on inside its scope:
+     * the start frames from the scope root, outermost first, rendered
+     * {@code site@k>site@k}, or {@code ""} on a thread that runs its scope's
+     * own work.
+     *
+     * <p>THE REST OF THE CAUSAL CONTEXT.  The paper's {@code c} records the
+     * cross-thread and RPC handoffs a region is reached through: a message
+     * opens a scope of its own ({@link #scopeStart}), and a task submission
+     * or thread start inside a scope hands the work on under a start frame
+     * ({@link #startWork}, {@link #claimStart}).  {@link #contextHere} names
+     * the scope; this names the starts inside it.  A schedule event keyed
+     * by the scope alone counts every thread started under it together --
+     * hdfs-17899 bug2's {@code Root:CLIENT/satisfy-storage-policy#1} holds
+     * ~90 sends from the workload thread and the storage-policy
+     * satisfier's, and its k-th send was whichever thread sent k-th -- a
+     * cross-thread counter, which an event's identity may never be
+     * ({@link ScheduleLog}).  A start frame is a level no call opened (its
+     * token is 0), and it is addressed by the window rule so a recording
+     * and its replays name the same thread the same way.</p>
+     */
+    public static String handoffs() {
+        State state = state();
+        StringBuilder chain = new StringBuilder();
+        for (int index = Math.max(0, state.scopeBase);
+             index < state.depth(); index++) {
+            Level level = state.levels.get(index + 1);
+            if (level.token != 0L || level.frame == null) continue;
+            Frame frame = state.addressedFrame(index);
+            if (chain.length() > 0) chain.append('>');
+            chain.append(frame.callSite()).append('@')
+                    .append(frame.iteration());
+        }
+        return chain.toString();
+    }
+
+    /**
      * The id of the occurrence running on this thread, or {@code ""}: where a
      * schedule event happened, which is what a task's prefix is cut at.
      */
