@@ -16,15 +16,22 @@ public enum GapKind {
     /** An arm from a run whose producer never stated a path condition. */
     UNATTESTED_ARM,
     /**
-     * A focused replay left the schedule prefix it was held to.
+     * A replay could not make a read observe the version its world chose.
      *
-     * <p>Stated by the replay's turnstile at the position where the run's
-     * next event was not the prefix's, with both events spelled out.  From
-     * there the replay runs free, exactly as a replay with no prefix did:
-     * DIAGNOSTIC, because what the prefix could not hold is an ordering fact,
-     * and every row the replay publishes after it still states what ran.</p>
+     * <p>A world names, for the reads its question rests on, the write each
+     * of them observes: the version z3 chose among the writers the read
+     * could have observed, or the one the recording observed.  The replay
+     * holds the read until that write is the live version, and holds any
+     * other write to the location until the reads still owed the version
+     * have read it ({@code runtime.SharedAccess}).  A choice that stays
+     * unmet for the timeout violates the program's own coordination -- a
+     * lock, a join, a message it waits for -- and is unreachable: the run
+     * goes on, the row names the read, the version it waited for and the one
+     * that was live, and the replay's verdict carries it (NOT_ADMITTED; for
+     * CONFIRM, not confirmed).  DIAGNOSTIC, because the verdict is what
+     * decides.</p>
      */
-    SCHEDULE_DIVERGED,
+    VERSION_UNREALIZED,
     /** A projection joined to no write version and pinned to no value. */
     UNSTATED_VALUE,
     /** An attach answered with a value no producer arm can produce. */
@@ -185,13 +192,12 @@ public enum GapKind {
      *
      * <p>DIAGNOSTIC on the confirmation session, and read by CONFIRM: a SAT
      * claim says the model satisfies the formula, and the one replay that
-     * plants the model's roots and holds the selected path's schedule says
-     * whether the program agrees.  Each row names one expected edge -- a
-     * message family's arm (consumer endpoint <- producer endpoint), a
-     * state join (reader <- writer version) -- and the edge the run took
-     * instead; any one of them downgrades the claim to SAT_UNCONFIRMED.
-     * The run itself is never steered by the expectation: it is scheduled
-     * by the session's schedule as every focused replay is.</p>
+     * plants the model's world says whether the program agrees.  Each row
+     * names one expected edge -- a message family's arm (consumer endpoint
+     * <- producer endpoint), a state join (reader <- writer version) -- and
+     * the edge the run took instead; any one of them downgrades the claim
+     * to SAT_UNCONFIRMED.  The state joins are also the versions the replay
+     * holds its reads to ({@link #VERSION_UNREALIZED}).</p>
      */
     CONFIRM_MISMATCH
 }

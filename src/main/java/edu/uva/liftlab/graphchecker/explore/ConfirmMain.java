@@ -195,8 +195,8 @@ public final class ConfirmMain {
         // chose is a delivery the selected session itself recorded, and
         // that session ran each moved root at the model's value and
         // observed the fatal, that session is the run: re-running its
-        // world tests only whether a race the order does not hold goes the
-        // same way twice (hdfs-17899 bug2, rounds v36 and v38).  A model
+        // world tests only whether its races go the same way twice
+        // (hdfs-17899 bug2, rounds v36 and v38).  A model
         // that combines deliveries of different sessions has no such run,
         // and the replay below is the one that makes it.
         String realized = realizedBy(decided, sessionId, arms, session,
@@ -259,15 +259,6 @@ public final class ConfirmMain {
                     armSession));
         }
 
-        // The schedule half: the selected session's order, cut at the
-        // anchor -- held event by event before it, in its timeouts after.
-        SchedulePrefix.Cut cut = SchedulePrefix.write(iteration, sessionId,
-                Collections.singletonList(anchor.id()), out);
-        if (cut == null) {
-            throw new Refused("the selected session " + sessionId
-                    + " states no schedule to hold the confirmation to");
-        }
-
         // The edges the model chose.
         List<JsonObject> edges = new ArrayList<JsonObject>();
         edges.addAll(wireEdges(arms, armSessions));
@@ -283,7 +274,7 @@ public final class ConfirmMain {
                         .Confirmation.FILE), edges);
 
         JsonObject focus = focusRow(anchor, seedSessionId, pathId,
-                assignments, clockDeltas, answers, mints, cut);
+                assignments, clockDeltas, answers, mints);
         // {@code flip: null} IS the row's statement, so the null is written
         // -- the codec's Gson drops nulls, and a row with no flip member is
         // no obligation at all to the replay.
@@ -300,7 +291,6 @@ public final class ConfirmMain {
         summary.addProperty("rootAssignments", assignments.size());
         summary.addProperty("clockDeltas", clockDeltas.size());
         summary.addProperty("expectedEdges", edges.size());
-        summary.add("schedulePrefix", cut.toJson());
         return summary;
     }
 
@@ -366,8 +356,7 @@ public final class ConfirmMain {
                                        Map<String, String> assignments,
                                        Map<String, String> clockDeltas,
                                        Map<String, String> answers,
-                                       Map<String, String> mints,
-                                       SchedulePrefix.Cut cut) {
+                                       Map<String, String> mints) {
         JsonObject task = new JsonObject();
         task.addProperty("schemaVersion", 1);
         task.addProperty("kind", "FOCUSED_TASK");
@@ -387,7 +376,6 @@ public final class ConfirmMain {
         task.add("answers", object(answers));
         task.add("rootMints", object(mints));
         task.add("unproducible", new JsonArray());
-        task.add("schedulePrefix", cut.toJson());
         return task;
     }
 

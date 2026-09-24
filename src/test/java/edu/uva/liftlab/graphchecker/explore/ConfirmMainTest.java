@@ -16,7 +16,6 @@ import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
-import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.contract.SessionManifest;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
@@ -38,8 +37,8 @@ import org.junit.rules.TemporaryFolder;
 
 /**
  * CONFIRM's inputs, off a claim, its manifest and the sessions the witness
- * rests on: the focus row that flips nothing, the schedule cut at the
- * anchor, and the edges the model chose.
+ * rests on: the focus row that flips nothing and the edges the model
+ * chose.
  */
 public class ConfirmMainTest {
     @Rule
@@ -112,16 +111,6 @@ public class ConfirmMainTest {
                 AttachRow.of("sel", 20L, consumer, "M_I_field_HOFF.1", "I",
                         "119979", false, null, producer, "ipc-25",
                         "HANDLE")), RowCodec::writeAttach);
-        List<JsonObject> schedule = new ArrayList<JsonObject>();
-        schedule.add(event(0, "a", ""));
-        schedule.add(event(1, "b", ""));
-        JsonObject mark = new JsonObject();
-        mark.addProperty("mark", anchor.id());
-        mark.addProperty("at", 2L);
-        schedule.add(mark);
-        schedule.add(event(2, "c", anchor.id()));
-        schedule.add(event(3, "d", ""));
-        RowCodec.writeJsonl(sel.schedule(), schedule);
         manifest(sel, SessionManifest.Role.FOCUSED);
         // The obligation whose replay published "sel": the world it ran.
         Path worker = Files.createDirectories(
@@ -156,12 +145,6 @@ public class ConfirmMainTest {
                 dir.sessionId(), role, role == SessionManifest.Role.SEED
                         ? Collections.<String>emptyList()
                         : Collections.singletonList("OBL.x")));
-    }
-
-    private static JsonObject event(long seq, String site,
-                                    String occurrence) {
-        return RowCodec.writeScheduleEvent(ScheduleEvent.of(seq,
-                ScheduleEvent.Kind.SEND, "node|Root:X", site, 0, occurrence));
     }
 
     private Path claim(String movedCell) throws Exception {
@@ -264,7 +247,7 @@ public class ConfirmMainTest {
     }
 
     @Test
-    public void theWorkerIsHandedTheModelTheScheduleAndTheEdges()
+    public void theWorkerIsHandedTheModelAndTheEdges()
             throws Exception {
         Path iteration = iteration();
         Path out = folder.newFolder("worker").toPath();
@@ -297,12 +280,6 @@ public class ConfirmMainTest {
         assertEquals(3, mints.size());
         assertEquals("where that session minted it", MINT,
                 mints.get("CLOCK.a").getAsString());
-        assertEquals("cut at the anchor's first event", 2,
-                row.getAsJsonObject("schedulePrefix").get("events").getAsInt());
-        assertEquals(2, SessionReader.readSchedule(
-                out.resolve(SchedulePrefix.FILE)).size());
-        assertEquals(2, SessionReader.readSchedule(
-                out.resolve(SchedulePrefix.REST_FILE)).size());
 
         Map<String, JsonObject> edges = new LinkedHashMap<String, JsonObject>();
         List<JsonObject> rows = RowCodec.readJsonl(

@@ -18,7 +18,7 @@ import java.util.stream.Stream;
 
 /**
  * THE LINEAGE SCOPE: every class of the application that hands work to
- * another thread, runs work handed to it, or waits or signals, whatever the
+ * another thread, runs work handed to it, or waits on a timer, whatever the
  * case analyses.
  *
  * <p>The analysis scope says which regions a case executes symbolically.
@@ -28,12 +28,10 @@ import java.util.stream.Stream;
  * KeyUpdateCommand on its command queue and the command processor ran
  * {@code addKeys} under {@code Lost:UNKNOWN}, because {@code BPServiceActor}
  * was outside the case's twelve analysed classes and neither its thread
- * start nor its queue handoff was woven.  And a daemon's turn is paced by
- * its waits: v27's seed replay met the DataNode actors' own heartbeats where
- * the recording had the workload's, because the actor's
- * {@code waitTillNextIBR} read the wall clock of a replay many times slower.
- * So the weave's work-start, work-claim, queue-claim and timed-wait hooks
- * cover this scope too, and nothing else of the weave does
+ * start nor its queue handoff was woven.  A daemon's turns are its timed
+ * waits ({@code runtime.TimedWaits}), and a turn is a root of the causal
+ * context.  So the weave's work-start, work-claim, queue-claim and
+ * timed-wait hooks cover this scope too, and nothing else of the weave does
  * ({@code CausynthPipeline.instrumentApplicationScope}).</p>
  *
  * <p>The scan reads bytecode with no class hierarchy, so it keeps a class on
@@ -74,7 +72,7 @@ public final class LineageScan {
             }
         }
         System.out.println("lineage scope: " + kept + " of " + scanned
-                + " class(es) start, hand off, run, wait or signal outside the "
+                + " class(es) start, hand off, run or wait outside the "
                 + "analysis scope");
     }
 
@@ -88,7 +86,7 @@ public final class LineageScan {
         return files;
     }
 
-    /** Whether one class file starts, hands off, runs, waits or signals. */
+    /** Whether one class file starts, hands off, runs or waits on a timer. */
     static boolean handsOffWork(Path file) throws IOException {
         try (InputStream in = Files.newInputStream(file)) {
             return handsOffWork(new ClassReader(in));

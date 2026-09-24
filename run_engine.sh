@@ -1882,13 +1882,6 @@ campaign_plan() {
   require_nonempty "runtime region plan" "${runtime_region_plan}"
   require_nonempty "runtime-refined data-flow graph" "${refined_graph}"
   cp -f "${runtime_region_plan}" "${frozen}"
-  # The recording's schedule is frozen with the plan it was recorded beside:
-  # the seed replay of this iteration is held to it (campaign_session_replay).
-  local recorded_schedule
-  recorded_schedule="$(dirname "${runtime_region_plan}")/schedule.jsonl"
-  if [[ -s "${recorded_schedule}" ]]; then
-    cp -f "${recorded_schedule}" "${iteration_dir}/recorded_schedule.jsonl"
-  fi
   schedule_output_dir="${iteration_dir}"
   do_schedule
   # Every later consumer reads this iteration's frozen copy, never the mutable
@@ -2046,7 +2039,6 @@ campaign_replay() {
     "CAUSYNTH_CONCOLIC_MAX_TASKS=${schedule_max_jobs}" \
     "CAUSYNTH_TRACE_TEST=${trace_test}" \
     "CAUSYNTH_TRACE_MODE=replay-context" \
-    "CAUSYNTH_SCHEDULE_PREFIX=${campaign_schedule_prefix:-}" \
     "CAUSYNTH_STATIC_SCOPE_MAP=${causynth_static_scope_map}" \
     "CAUSYNTH_LOCAL_SCRATCH=${campaign_local_scratch_root:+\
 ${campaign_local_scratch_root}/$(basename "${worker}")}" \
@@ -2140,14 +2132,7 @@ campaign_session_replay() {
   # own session directory (CONTRACT-SPEC SS2), which is what IMPORT reads.
   campaign_sessions_dir="${iteration_dir}/sessions"
   mkdir -p "${campaign_sessions_dir}"
-  # The seed replay is held to the RECORDING's schedule: the plan it runs
-  # was built from that execution, so its occurrences are the recording's
-  # in the recording's order.  A focused replay's prefix is its own task's,
-  # beside its focus row (runtime.ScheduleLog#PREFIX_FILE).
-  local recorded_schedule="${iteration_dir}/recorded_schedule.jsonl"
-  [[ -s "${recorded_schedule}" ]] || recorded_schedule=""
-  campaign_schedule_prefix="${recorded_schedule}" \
-    campaign_replay worker "${plan}" "${ids}" \
+  campaign_replay worker "${plan}" "${ids}" \
     "${iteration_dir}/instrumented-classes" "${results}" "${seed}/focused"
 }
 
@@ -2172,10 +2157,8 @@ campaign_import_session() {
     [[ -d "${session}" ]] || continue
     name=$(basename "${session}")
     count=$((count + 1))
-    # schedule is censused with the rows and read by IMPORT, but no row
-    # invariant is stated over it (contract.SessionDir#SCHEDULE).
     for kind in activations decisions exports attaches writes reads roots \
-        targets gaps schedule; do
+        targets gaps doors; do
       path="${session}${kind}.jsonl"
       if [[ ! -e "${path}" ]]; then
         missing="${missing} ${name}/${kind}.jsonl"
@@ -3358,15 +3341,14 @@ campaign_decide() {
 # session is that run -- every chosen arm its own delivery -- ConfirmMain
 # says so (realized.json) and nothing is replayed.  Otherwise
 # ConfirmMain writes what an obligation replay is handed -- a focus row that
-# plants the model's roots and flips nothing, the selected session's
-# schedule cut at the anchor, and the edges the model chose -- and the
-# replay runs through campaign_obligation_replay exactly as an obligation
-# does, into its own sessions directory under final/confirm.  The verdict is
-# read off the session it published: ADMITTED (the roots were planted and
-# the anchor was reached), no CONFIRM_MISMATCH, and a target row that reached
-# the anchor and observed the fatal.  The schedule is how the replay
-# reproduces the selected session, not what the claim says: a divergence of
-# the order stays a diagnostic gap of the session (DESIGN4 SS5).  Every other outcome -- a refused task, a replay that published
+# plants the model's roots, flips nothing and names the version each chosen
+# read observes, and the edges the model chose -- and the replay runs
+# through campaign_obligation_replay exactly as an obligation does, into
+# its own sessions directory under final/confirm.  The verdict is read off
+# the session it published: ADMITTED (the roots were planted, the anchor
+# was reached and every chosen version was realized), no CONFIRM_MISMATCH,
+# and a target row that reached the anchor and observed the fatal
+# (DESIGN4 SS5).  Every other outcome -- a refused task, a replay that published
 # no verdict -- is "unconfirmed, because ...": EMIT downgrades the claim,
 # the campaign does not fail.  Only a SAT_CANDIDATE is confirmed; any other
 # claim has nothing to confirm and the stage says so.

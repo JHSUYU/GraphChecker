@@ -11,6 +11,7 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
+import edu.uva.liftlab.graphchecker.contract.DoorRow;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
@@ -101,15 +102,23 @@ public final class RowRuntime {
                             == null ? sessions : sessions.getParent(),
                             sessionId));
         }
-        // The session's schedule goes where its rows go: the events this
-        // run made before the session opened are kept and written first.
-        final SessionPublisher opened = publisher;
-        ScheduleLog.install(new ScheduleLog.Sink() {
-            @Override
-            public void write(com.google.gson.JsonObject row) {
-                opened.schedule(row);
-            }
-        });
+    }
+
+    /**
+     * One message passing a door of this run ({@link DoorRow}): the
+     * occurrence the door stands in, keyed by the producer endpoint the
+     * message carries.  Only inside the recording window, and only under a
+     * context the identity names: a thread no scope attributes stands in no
+     * occurrence a served one could name as its cause.
+     */
+    static void door(DoorRow.Kind kind, String producerEndpointId) {
+        SessionPublisher session = publisher;
+        if (session == null || !RecordingWindow.opened()) return;
+        String endpoint = Text.safe(producerEndpointId);
+        if (endpoint.isEmpty() || Identity.contextHere().isLost()) return;
+        String occurrence = Identity.innermostRegionId();
+        if (occurrence.isEmpty()) return;
+        session.door(DoorRow.of(sessionId(), kind, endpoint, occurrence));
     }
 
     /** Whether a session is open to publish into. */

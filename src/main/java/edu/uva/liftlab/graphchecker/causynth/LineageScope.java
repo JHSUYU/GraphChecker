@@ -23,10 +23,9 @@ import java.util.stream.Stream;
  * work-start, work-claim, queue-claim and timed-wait hooks and nothing else:
  * no calling-context level, so every occurrence of the analysis scope keeps
  * its index.  The timed waits are theirs because a daemon takes part in what
- * a case is about, and a daemon's turn is paced by its waits: under the
- * schedule they wake where the recording's woke, not where a slower replay's
- * wall clock says.  Discovery never names the property, so no static
- * analysis sees them.</p>
+ * a case is about, and each of its turns is a root of the causal context
+ * ({@code runtime.TimedWaits}).  Discovery never names the property, so no
+ * static analysis sees them.</p>
  */
 public final class LineageScope {
     /** The system property run_engine.sh sets on the two weave runs. */

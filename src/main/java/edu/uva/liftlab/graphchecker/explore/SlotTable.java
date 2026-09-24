@@ -37,9 +37,10 @@ import java.util.Set;
  * no more.</p>
  *
  * <p>A REPLACEMENT is a WIRE consumer endpoint paired with a different
- * producer by another session IN THE SAME WORLD (DESIGN4 SS3.3c): two
- * pairings under the same flips mean the schedule did not hold, and that is
- * BLOCKING.  The same consumer paired differently in ANOTHER world is
+ * producer by another session IN THE SAME WORLD (DESIGN4 SS3.3c): a message
+ * is paired by the run that carries it, so two pairings of one consumer
+ * under the same flips mean the identity named two interactions one way,
+ * and that is BLOCKING.  The same consumer paired differently in ANOTHER world is
  * growth -- the new pairing is a new arm keyed by that world -- and opens a
  * slot of its own.  A STATE reader pairs with whichever writer delivered the
  * version it read, in any world: never a replacement.</p>

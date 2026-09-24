@@ -23,7 +23,6 @@ public class AttributionTest {
     public void reset() {
         RuntimeTraceContext.resetForTests();
         Identity.resetForTests();
-        ScheduleLog.resetForTests();
     }
 
     @Test

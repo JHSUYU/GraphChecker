@@ -694,8 +694,8 @@ done
 # the seed cache, and `causynth_process_dirs`, which no case ever set.
 # 46: `causynth_lineage_roots` joined it with the lineage scope: which class
 # roots the weave scanned for thread starts, handoffs and timed waits decides
-# which threads a run attributes and which waits the schedule holds, so two
-# runs that scanned different roots did not replay under the same rules.
+# which threads a run attributes and which loop turns it names, so two runs
+# that scanned different roots did not replay under the same rules.
 [[ "$(print_normalized_config | wc -l)" -eq 46 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
@@ -2321,17 +2321,12 @@ confirm_says true "the anchor observed the fatal" "a clean replay was not confir
 [[ -s "${campaign_final}/confirm/worker/focused_task.jsonl" \
     && -s "${campaign_final}/confirm/worker/expected_edges.jsonl" ]] \
   || fail "the confirmation replay was not handed the focus row and the edges"
-# The order is how the replay reproduces the session, not what the claim
-# says: a divergence before the anchor's cut (prefix of 10 events) or past it
-# stays the diagnostic it is, and the edges and the fatal decide.
-confirm_stub_gaps='{"sessionId":"CONFIRM-1","kind":"SCHEDULE_DIVERGED","cls":"DIAGNOSTIC","subject":"schedule#3","detail":"the run took RECV b, the prefix names SEND a"}'
+# A diagnostic of the session that names no expected edge is not what the
+# claim says: the edges and the fatal decide.
+confirm_stub_gaps='{"sessionId":"CONFIRM-1","kind":"LINEAGE_LOST","cls":"DIAGNOSTIC","subject":"e9","detail":"a thread no scope attributes"}'
 run_confirm SAT_CANDIDATE
 confirm_says true "every edge" \
-  "a divergence of the order was held against a claim whose edges and fatal held"
-confirm_stub_gaps='{"sessionId":"CONFIRM-1","kind":"SCHEDULE_DIVERGED","cls":"DIAGNOSTIC","subject":"schedule#12","detail":"past the cut"}
-{"sessionId":"CONFIRM-1","kind":"SCHEDULE_DIVERGED","cls":"DIAGNOSTIC","subject":"schedule-rest#2","detail":"the rest gave up"}'
-run_confirm SAT_CANDIDATE
-confirm_says true "every edge" "a divergence past the anchor's cut was held against the claim"
+  "a diagnostic of the session was held against a claim whose edges and fatal held"
 # (a) An edge the model chose that the run did not take.
 confirm_stub_gaps='{"sessionId":"CONFIRM-1","kind":"CONFIRM_MISMATCH","cls":"DIAGNOSTIC","subject":"WIRE e1","detail":"WIRE e1: the model chose producer p1, the run paired p2"}'
 run_confirm SAT_CANDIDATE

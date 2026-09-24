@@ -1981,8 +1981,8 @@ public final class CausynthPipeline {
     /**
      * Replaces one timed wait with its {@code TimedWaits} stand-in, in place.
      *
-     * <p>The WAKE of the schedule ({@link WorkStartSites.TimedWait}).  The
-     * statement keeps its identity -- the invoke expression is swapped inside
+     * <p>Where a service loop's next turn begins ({@link
+     * WorkStartSites.TimedWait}).  The statement keeps its identity -- the invoke expression is swapped inside
      * it -- so every branch and trap that names it still does.  The receiver,
      * when there is one, becomes the first argument and the call site the
      * last.  A stand-in that returns {@code Object} where the call returned a
@@ -3960,8 +3960,8 @@ public final class CausynthPipeline {
          * THE hooks both passes weave, declared once: the work start and its
          * claim, and the calling-context frame (which carries its receiver
          * for the attribution rule).  Each pass binds them to its own runtime
-         * class; the shapes, and so the index and the schedule both passes
-         * compute from them, are one declaration.  Scope capture rides on the
+         * class; the shapes, and so the index both passes compute from
+         * them, are one declaration.  Scope capture rides on the
          * start hook itself -- it used to ride on the recording's BEGIN_CALL
          * alone, which the replay never weaves.
          */
