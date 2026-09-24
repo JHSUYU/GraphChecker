@@ -206,9 +206,27 @@ public final class Identity {
             levels.add(new Level(frame, 0L, null, startedIn));
         }
 
-        /** The frame depth an endpoint inside the innermost region is from. */
+        /**
+         * The frame depth an endpoint's site index is measured from: the
+         * innermost region's, else the scope root's.
+         *
+         * <p>An occurrence with no region open -- a role occurrence, the
+         * transport's own send and receive -- used to measure from the
+         * thread base, so its endpoint ids carried the whole thread's
+         * history: which pool handler served the message ({@code
+         * Server.start#u31@k}) and how many calls the reader had queued
+         * before it ({@code CallQueueManager.put#u7@k}), ordinals of the
+         * thread and of the server, never of the message (IDENTITY-V3 §1).
+         * hdfs-17960's recordings carried them in every response id and
+         * matched by luck until the daemons took part; then a response's id
+         * differed from the recording's with the same causal context, and
+         * the client's every later message id cascaded after it.  The
+         * scope root is where the message's own work begins ({@link
+         * Identity#scopeStart}), and {@link Identity#atScope} already
+         * measures the occurrence's index from it.</p>
+         */
         private int regionBase() {
-            return regions.isEmpty() ? 0
+            return regions.isEmpty() ? scopeBase
                     : regions.get(regions.size() - 1).base;
         }
 
