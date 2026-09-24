@@ -91,8 +91,12 @@ public final class Versions {
             new HashMap<Long, String>();
     /** Held writers whose write is done (for an untracked location). */
     private static final Set<String> WROTE = new HashSet<String>();
-    /** How many held reads are still owed their version, in all. */
-    private static int owedReads;
+    /**
+     * How many held reads are still owed their version, in all.  Written
+     * under the lock, read without it: a write asks nothing of the VM while
+     * nothing is owed.
+     */
+    private static volatile int owedReads;
     /** Reader endpoint id -> why its version was not realized. */
     private static final Map<String, String> UNREALIZED =
             new LinkedHashMap<String, String>();
@@ -167,6 +171,11 @@ public final class Versions {
     private static void before(Access access) {
         String vmSite = sites.vmSite(access.site);
         if (vmSite == null) return;
+        // The sets are filled before the gate opens and never after, so
+        // they are read here without the lock.
+        boolean held = access.write ? WRITE_SITES.contains(vmSite)
+                : READ_SITES.contains(vmSite);
+        if (!held && !(access.write && owedReads > 0)) return;
         synchronized (LOCK) {
             if (access.write) {
                 yieldOwedVersion(access);
