@@ -571,8 +571,11 @@ that `main` moves and the parked housekeeping is due.
    OCCURRENCE_ADDRESS_SHARED rows): a hop's scope root lasts as long as the hop (`5d729819a`
    -- a served message's root was set and never put back, so every later occurrence of that
    thread lost its start frame and sibling threads' k-th calls shared one address).
-1. **Read v32** (snapshot `p35` = `5d729819a`, all nine: bug2 first, the seven relaunched at
-   23:08, 11741 once its `p34` run is read), then fast-forward `main`. (snapshot `p33` = `f8a9ce3a6`, the eight trees at their restored sources:
+1. **v32 on `p35` = `5d729819a`: 8/9 PASS** (17960, 17897, bug1, bug2, bug3, A, B, C -- bug2
+   MARKER_FLIPPED on the SPS's reply door, confirmed; every one in ONE wave, 7-12 minutes).
+   11741 is the last: its `p34` run is in wave 3 and its `p35` run started 23:20 (a clock
+   witness never trips the witness stop, so 11741 explores to the fixpoint). Read it, then
+   fast-forward `main`. (snapshot `p33` = `f8a9ce3a6`, the eight trees at their restored sources:
    11741 d334c85a268, bug1 763968f19c7, bug2 72842405587, bug3 fbac2aa93ef, 17897 97e7d39ad83,
    A 5dfc98f14b7, B e421e92171c, C 8f50cc8446c), diagnose every FAIL by §11 before a fix, and
    repeat until the nine pass the acceptance checks of §8 on one snapshot; then fast-forward
