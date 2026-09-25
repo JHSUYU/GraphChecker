@@ -6,7 +6,9 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -59,6 +61,15 @@ public final class JsonFields {
         JsonElement value = object == null ? null : object.get(field);
         return value != null && value.isJsonArray()
                 ? value.getAsJsonArray() : new JsonArray();
+    }
+
+    /** The strings of an array member, in order; none when it is absent. */
+    public static List<String> strings(JsonObject object, String field) {
+        List<String> values = new ArrayList<String>();
+        for (JsonElement element : array(object, field)) {
+            values.add(element.getAsString());
+        }
+        return values;
     }
 
     public static JsonObject object(JsonObject object, String field) {

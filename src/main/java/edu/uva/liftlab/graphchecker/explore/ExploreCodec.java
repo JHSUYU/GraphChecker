@@ -9,6 +9,7 @@ import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.Task;
+import edu.uva.liftlab.graphchecker.smt.JsonFields;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -69,7 +70,7 @@ public final class ExploreCodec {
                 optionalBool(json, "flippedOutcome", false),
                 map(object(json, "rootAssignments")),
                 map(object(json, "answers")),
-                list(array(json, "unproducible")));
+                JsonFields.strings(json, "unproducible"));
     }
 
 
@@ -212,12 +213,6 @@ public final class ExploreCodec {
         for (Map.Entry<String, JsonElement> entry : json.entrySet()) {
             values.put(entry.getKey(), entry.getValue().getAsString());
         }
-        return values;
-    }
-
-    private static List<String> list(JsonArray array) {
-        List<String> values = new ArrayList<String>();
-        for (JsonElement element : array) values.add(element.getAsString());
         return values;
     }
 }

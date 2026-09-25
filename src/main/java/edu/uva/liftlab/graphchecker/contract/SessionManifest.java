@@ -1,7 +1,6 @@
 package edu.uva.liftlab.graphchecker.contract;
 
 import com.google.gson.JsonArray;
-import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
@@ -90,12 +89,8 @@ public final class SessionManifest {
                     "manifest states no role this contract has: \"" + role
                             + "\"");
         }
-        List<String> obligations = new ArrayList<String>();
-        for (JsonElement each : JsonFields.array(json, "obligationIds")) {
-            obligations.add(each.getAsString());
-        }
         return of(JsonFields.optionalString(json, "sessionId"), parsed,
-                obligations);
+                JsonFields.strings(json, "obligationIds"));
     }
 
     @Override

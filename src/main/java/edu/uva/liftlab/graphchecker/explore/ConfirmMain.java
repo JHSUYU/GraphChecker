@@ -35,6 +35,7 @@ import java.util.Set;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.strings;
 
 /**
  * CONFIRM: one focused replay that asks the program whether it agrees with
@@ -425,10 +426,8 @@ public final class ConfirmMain {
             }
             Endpoint writer = writers.get(optionalString(arm, "groupId"));
             if (writer == null) continue;
-            Set<String> fills = new LinkedHashSet<String>();
-            for (JsonElement id : array(arm, "interactionIds")) {
-                fills.add(id.getAsString());
-            }
+            Set<String> fills = new LinkedHashSet<String>(
+                    strings(arm, "interactionIds"));
             for (ReadRow read : readers.values()) {
                 if (fills.contains(Interaction.of(InteractionKind.STATE,
                         writer, read.endpoint()).id())) {

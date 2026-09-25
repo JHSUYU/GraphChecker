@@ -23,6 +23,7 @@ import java.util.function.Predicate;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.strings;
 
 /**
  * What the static slice knows about the sites the target's demand can reach:
@@ -592,13 +593,7 @@ public final class StaticScopeMap {
         List<Site> sites = new ArrayList<Site>();
         for (JsonObject row : ArtifactIO.readJsonl(file)) {
             if (!SITE_KIND.equals(optionalString(row, "kind"))) continue;
-            List<String> guards = new ArrayList<String>();
-            JsonElement stated = row.get("guards");
-            if (stated != null && stated.isJsonArray()) {
-                for (JsonElement guard : stated.getAsJsonArray()) {
-                    guards.add(guard.getAsString());
-                }
-            }
+            List<String> guards = strings(row, "guards");
             List<Boolean> outcomes = new ArrayList<Boolean>();
             JsonElement statedOutcomes = row.get("guardOutcomes");
             if (statedOutcomes != null && statedOutcomes.isJsonArray()) {
@@ -641,14 +636,8 @@ public final class StaticScopeMap {
                 for (JsonObject row : ArtifactIO.readJsonl(file)) {
                     String regionId = optionalString(row, "regionId");
                     if (regionId.isEmpty()) continue;
-                    Set<String> held = new LinkedHashSet<String>();
-                    JsonElement stated = row.get("methods");
-                    if (stated != null && stated.isJsonArray()) {
-                        for (JsonElement method : stated.getAsJsonArray()) {
-                            held.add(method.getAsString());
-                        }
-                    }
-                    methods.put(regionId, Collections.unmodifiableSet(held));
+                    methods.put(regionId, Collections.unmodifiableSet(
+                            new LinkedHashSet<String>(strings(row, "methods"))));
                 }
             } catch (IOException | RuntimeException unreadable) {
                 // Present but unreadable is a PLAN defect, refused by name.

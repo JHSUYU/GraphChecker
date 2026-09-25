@@ -1439,7 +1439,7 @@ public final class ConcolicScheduler {
 
         /** A port declared by {@code communication-mappings.jsonl}: a handoff,
          *  not a mint. {@code
-         *  ConcolicRegionRuntime.declaredCommunicationCutPort} asks the same
+         *  RootMint.declaredCommunicationCutPort} asks the same
          *  {@code sourceKind} at replay. */
         private static boolean declaredCutPort(JsonObject action) {
             return RuntimeSelectedRegionFinalizer.COMMUNICATION_SITE_PORT

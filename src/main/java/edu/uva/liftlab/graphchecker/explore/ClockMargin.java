@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.explore;
 
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
+import edu.uva.liftlab.graphchecker.smt.SExpression;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -76,7 +77,7 @@ final class ClockMargin {
             return new Strengthened(asserted == null ? "" : asserted,
                     unreached);
         }
-        Node root = parse(asserted, new int[]{0});
+        SExpression root = SExpression.parse(asserted, 0);
         if (root == null) {
             return new Strengthened(asserted, unreached);
         }
@@ -119,42 +120,42 @@ final class ClockMargin {
 
         /** One subterm at the demanded polarity: TRUE (holds if it does), FALSE
          *  (holds if it does not), null (unknown). */
-        private void visit(Node node, Boolean polarity) {
-            if (node.children == null) return;
+        private void visit(SExpression node, Boolean polarity) {
+            if (node.atom()) return;
             String head = node.head();
-            if ("not".equals(head) && node.children.size() == 2) {
-                visit(node.children.get(1), polarity == null ? null
+            if ("not".equals(head) && node.children().size() == 2) {
+                visit(node.children().get(1), polarity == null ? null
                         : Boolean.valueOf(!polarity.booleanValue()));
                 return;
             }
             if (("and".equals(head) || "or".equals(head))
-                    && node.children.size() > 1) {
+                    && node.children().size() > 1) {
                 // Monotone connectives: a stronger conjunct strengthens the
                 // whole.
-                for (int index = 1; index < node.children.size(); index++) {
-                    visit(node.children.get(index), polarity);
+                for (int index = 1; index < node.children().size(); index++) {
+                    visit(node.children().get(index), polarity);
                 }
                 return;
             }
-            if (COMPARISONS.contains(head) && node.children.size() == 3) {
-                atom(node, head, node.children.get(1), node.children.get(2),
+            if (COMPARISONS.contains(head) && node.children().size() == 3) {
+                atom(node, head, node.children().get(1), node.children().get(2),
                         polarity);
                 return;
             }
             // Anything else decides no polarity below it.
-            for (int index = 1; index < node.children.size(); index++) {
-                visit(node.children.get(index), null);
+            for (int index = 1; index < node.children().size(); index++) {
+                visit(node.children().get(index), null);
             }
         }
 
         /** One comparison atom, read back through the JVM's compare. */
-        private void atom(Node node, String head, Node left, Node right,
-                          Boolean polarity) {
+        private void atom(SExpression node, String head, SExpression left,
+                          SExpression right, Boolean polarity) {
             String operator = head;
-            Node a = left;
-            Node b = right;
+            SExpression a = left;
+            SExpression b = right;
             boolean whole = false;
-            Node[] compared = integralCompare(left, right);
+            SExpression[] compared = integralCompare(left, right);
             if (compared == null) {
                 compared = integralCompare(right, left);
                 if (compared != null) {
@@ -186,7 +187,7 @@ final class ClockMargin {
             String padded = "(+ " + (left0 ? a.text() : b.text()) + " "
                     + epsilon + ")";
             if (!whole) {
-                Node side = left0 ? a : b;
+                SExpression side = left0 ? a : b;
                 edits.add(new Edit(side.start, side.end, padded));
                 return;
             }
@@ -218,38 +219,39 @@ final class ClockMargin {
 
     /** The two longs an {@code lcmp} term beside {@code 0} compares, or null;
      *  recognized only if rebuilding it yields the same text. */
-    private static Node[] integralCompare(Node compare, Node zero) {
-        if (compare.children == null || compare.children.size() != 4
+    private static SExpression[] integralCompare(SExpression compare,
+                                                 SExpression zero) {
+        if (compare.atom() || compare.children().size() != 4
                 || !"ite".equals(compare.head())
                 || !"0".equals(zero.text().trim())) {
             return null;
         }
-        Node less = compare.children.get(1);
-        if (less.children == null || less.children.size() != 3) return null;
-        Node a = less.children.get(1);
-        Node b = less.children.get(2);
+        SExpression less = compare.children().get(1);
+        if (less.atom() || less.children().size() != 3) return null;
+        SExpression a = less.children().get(1);
+        SExpression b = less.children().get(2);
         String stated = JavaPrimitiveSmtSemantics.integralCompareResult(
                 a.text(), b.text());
         if (!flat(stated).equals(flat(compare.text()))) return null;
-        return new Node[]{a, b};
+        return new SExpression[]{a, b};
     }
 
-    private static boolean names(Node node, Set<String> wanted) {
-        if (node.children == null) return wanted.contains(node.text());
-        for (Node child : node.children) {
+    private static boolean names(SExpression node, Set<String> wanted) {
+        if (node.atom()) return wanted.contains(node.text());
+        for (SExpression child : node.children()) {
             if (names(child, wanted)) return true;
         }
         return false;
     }
 
     /** Whether a margin can be added to this term (it must be arithmetic). */
-    private static boolean arithmetic(Node node) {
-        if (node.children == null) return true;
+    private static boolean arithmetic(SExpression node) {
+        if (node.atom()) return true;
         String head = node.head();
         if (NOT_ARITHMETIC.contains(head) || head.startsWith("fp.")) {
             return false;
         }
-        for (Node child : node.children) {
+        for (SExpression child : node.children()) {
             if (!arithmetic(child)) return false;
         }
         return true;
@@ -269,95 +271,5 @@ final class ClockMargin {
             out.append(one);
         }
         return out.toString();
-    }
-
-    // ---- the one reading of an s-expression --------------------------
-
-    private static final class Node {
-        private final String source;
-        private final int start;
-        private final int end;
-        /** Null for a token. */
-        private final List<Node> children;
-
-        private Node(String source, int start, int end, List<Node> children) {
-            this.source = source;
-            this.start = start;
-            this.end = end;
-            this.children = children;
-        }
-
-        private String text() {
-            return source.substring(start, end);
-        }
-
-        private String head() {
-            if (children == null || children.isEmpty()) return "";
-            Node first = children.get(0);
-            return first.children == null ? first.text() : "";
-        }
-    }
-
-    /** One term from {@code at[0]}; {@code at[0]} is left past it. */
-    private static Node parse(String text, int[] at) {
-        int index = skip(text, at[0]);
-        if (index >= text.length()) {
-            at[0] = index;
-            return null;
-        }
-        if (text.charAt(index) != '(') {
-            int end = token(text, index);
-            at[0] = end;
-            return new Node(text, index, end, null);
-        }
-        List<Node> children = new ArrayList<Node>();
-        int cursor = index + 1;
-        while (true) {
-            cursor = skip(text, cursor);
-            if (cursor >= text.length()) {
-                at[0] = cursor;
-                return new Node(text, index, cursor, children);
-            }
-            if (text.charAt(cursor) == ')') {
-                at[0] = cursor + 1;
-                return new Node(text, index, cursor + 1, children);
-            }
-            int[] inner = new int[]{cursor};
-            Node child = parse(text, inner);
-            if (child == null || inner[0] <= cursor) {
-                at[0] = text.length();
-                return new Node(text, index, text.length(), children);
-            }
-            children.add(child);
-            cursor = inner[0];
-        }
-    }
-
-    private static int skip(String text, int at) {
-        int index = at;
-        while (index < text.length()
-                && Character.isWhitespace(text.charAt(index))) {
-            index++;
-        }
-        return index;
-    }
-
-    /** Past one token; a quoted symbol or string stays whole. */
-    private static int token(String text, int at) {
-        char first = text.charAt(at);
-        if (first == '|' || first == '"') {
-            int index = at + 1;
-            while (index < text.length() && text.charAt(index) != first) {
-                index++;
-            }
-            return index >= text.length() ? text.length() : index + 1;
-        }
-        int index = at;
-        while (index < text.length()) {
-            char one = text.charAt(index);
-            if (Character.isWhitespace(one) || one == '(' || one == ')') break;
-            index++;
-        }
-        return index == at ? at + 1 : index;
     }
 }
