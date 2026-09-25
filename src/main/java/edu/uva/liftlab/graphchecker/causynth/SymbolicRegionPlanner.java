@@ -14,6 +14,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.function.Predicate;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.asMap;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
@@ -29,140 +30,153 @@ final class SymbolicRegionPlanner {
 
     static void planSelectedSkeleton(
             StaticProgram program, Collection<String> selectedMethods) {
-        Set<String> selected = new LinkedHashSet<>();
-        if (selectedMethods != null) {
-            selected.addAll(selectedMethods);
-        }
-        selected.remove("");
-        Map<String, Set<String>> outgoing = new LinkedHashMap<>();
-        Set<String> failureMethods = new LinkedHashSet<>();
-        // README Step 1.1: discovered from the slice, not declared.
-        Set<String> transportBoundaries = new LinkedHashSet<>(
-                program.communicationCallSiteCallees);
-        // Either capture of a wire value may own an occurrence.
-        Set<String> communicationAnchors = communicationEndpoints(program);
-        communicationAnchors.retainAll(selected);
-        Set<String> stateAnchors = new LinkedHashSet<>();
-        // Every declared symbolic-input method is an anchor and a root by
-        // declaration (see DeclaredSymbolicInputs).
-        Set<String> declaredAnchors = new LinkedHashSet<>(
-                DeclaredSymbolicInputs.configured());
-        Set<String> unsliced = new LinkedHashSet<>(declaredAnchors);
-        unsliced.removeAll(selected);
-        if (!unsliced.isEmpty()) {
-            // The analyzer seeds every declaration; refuse, never drop.
-            throw new IllegalStateException(
-                    "DECLARED_INPUT_OUTSIDE_STATIC_SLICE: declared symbolic "
-                            + "input methods are not in the static slice: "
-                            + unsliced);
-        }
-        Set<String> demandedState = failureRelevantState(program.edges);
-        for (String method : selected) {
-            outgoing.put(method, new LinkedHashSet<>());
-        }
-        for (Map<String, Object> edge : program.edges) {
-            String method = text(edge.get("method"));
-            String transfer = text(edge.get("transferKind"));
-            String target = text(edge.get("toCell"));
-            if (target.contains("#exception:") && selected.contains(method)) {
-                failureMethods.add(method);
-            }
-            if (("HEAP_READ".equals(transfer)
-                    || "HEAP_WRITE".equals(transfer))
-                    && selected.contains(method)
-                    && !CausynthStaticFacts.constructor(method)
-                    && demandedState.contains(stateDeclaration(edge,
-                    transfer))) {
-                stateAnchors.add(method);
-            }
-            String callee = StaticProgram.invocationTarget(edge);
-            if (!selected.contains(method) || !selected.contains(callee)
-                    || method.equals(callee)) {
-                continue;
-            }
-            outgoing.get(method).add(callee);
-        }
-        transportBoundaries.remove("");
-        String target = text(program.targetResolved.get("method"));
-        Map<String, String> regionAuthorities = new LinkedHashMap<>(
-                program.executionContextAuthorities);
-        for (Map<String, Object> edge : program.edges) {
-            String method = text(edge.get("method"));
-            if (selected.contains(method) && Boolean.TRUE.equals(
-                    edge.get("explicitSymbolicFault"))) {
-                regionAuthorities.put(method, EXPLICIT_FAULT_ENTRY);
-            }
-        }
-        if (!target.isEmpty()) {
-            regionAuthorities.putIfAbsent(target, "FAILURE_TARGET_ENTRY");
-        }
-
+        Anchors anchors = new Anchors(program, selectedMethods);
         program.regions.clear();
-        List<String> roots = new ArrayList<>(regionAuthorities.keySet());
-        Collections.sort(roots);
-        for (String root : roots) {
-            if (!selected.contains(root)
-                    || CausynthStaticFacts.constructor(root)) {
-                continue;
-            }
-            List<String> methods = forwardClosure(root, outgoing,
-                    regionAuthorities);
-            addSkeleton(program, root, regionAuthorities.get(root), methods,
-                    failureMethods,
-                    communicationAnchors, stateAnchors, declaredAnchors,
-                    outgoing, regionAuthorities, transportBoundaries);
-        }
-
-        List<String> communicationEntries = new ArrayList<>(
-                communicationEndpoints(program));
-        Collections.sort(communicationEntries);
-        for (String endpoint : communicationEntries) {
-            if (!selected.contains(endpoint)
-                    || CausynthStaticFacts.constructor(endpoint)
-                    || !program.regionsHolding(endpoint).isEmpty()) {
-                continue;
-            }
-            if (hasSkeletonRoot(program, endpoint)) continue;
-            addSkeleton(program, endpoint, "COMMUNICATION_ENTRY",
-                    forwardClosure(endpoint, outgoing, regionAuthorities),
-                    failureMethods, communicationAnchors, stateAnchors,
-                    declaredAnchors, outgoing, regionAuthorities,
-                    transportBoundaries);
-        }
-
-        List<String> stateEntries = new ArrayList<>(stateAnchors);
-        Collections.sort(stateEntries);
-        for (String entry : stateEntries) {
-            if (!selected.contains(entry)
-                    || CausynthStaticFacts.constructor(entry)
-                    || hasSkeletonRoot(program, entry)) {
-                continue;
-            }
-            addSkeleton(program, entry, STATE_WRITER_ENTRY,
-                    forwardClosure(entry, outgoing, regionAuthorities),
-                    failureMethods, communicationAnchors, stateAnchors,
-                    declaredAnchors, outgoing, regionAuthorities,
-                    transportBoundaries);
-        }
-
+        anchors.root(program, anchors.authorities.keySet(),
+                anchors.authorities::get, method -> false);
+        anchors.root(program, communicationEndpoints(program),
+                method -> "COMMUNICATION_ENTRY",
+                method -> !program.regionsHolding(method).isEmpty());
+        anchors.root(program, anchors.state, method -> STATE_WRITER_ENTRY,
+                method -> false);
         // Last: the region id is minted from (authority, root), so a
         // declaration must not rename a region another rule already roots.
-        List<String> declaredEntries = new ArrayList<>(declaredAnchors);
-        Collections.sort(declaredEntries);
-        for (String entry : declaredEntries) {
-            if (CausynthStaticFacts.constructor(entry)
-                    || hasSkeletonRoot(program, entry)) {
-                continue;
-            }
-            addSkeleton(program, entry, DeclaredSymbolicInputs.AUTHORITY,
-                    forwardClosure(entry, outgoing, regionAuthorities),
-                    failureMethods, communicationAnchors, stateAnchors,
-                    declaredAnchors, outgoing, regionAuthorities,
-                    transportBoundaries);
-        }
-
+        anchors.root(program, anchors.declared,
+                method -> DeclaredSymbolicInputs.AUTHORITY, method -> false);
         declareCommunicationPorts(program);
         declareRetainedLoops(program);
+    }
+
+    /** The slice's call graph and the anchor kinds a skeleton is kept for. */
+    private static final class Anchors {
+        private final Set<String> selected = new LinkedHashSet<>();
+        private final Map<String, Set<String>> outgoing =
+                new LinkedHashMap<>();
+        private final Map<String, String> authorities;
+        private final Set<String> failure = new LinkedHashSet<>();
+        /** Either capture of a wire value may own an occurrence. */
+        private final Set<String> communication;
+        private final Set<String> state = new LinkedHashSet<>();
+        /**
+         * Every declared symbolic-input method is an anchor and a root by
+         * declaration (see DeclaredSymbolicInputs).
+         */
+        private final Set<String> declared = new LinkedHashSet<>(
+                DeclaredSymbolicInputs.configured());
+
+        private Anchors(StaticProgram program,
+                        Collection<String> selectedMethods) {
+            if (selectedMethods != null) {
+                selected.addAll(selectedMethods);
+            }
+            selected.remove("");
+            communication = communicationEndpoints(program);
+            communication.retainAll(selected);
+            Set<String> unsliced = new LinkedHashSet<>(declared);
+            unsliced.removeAll(selected);
+            if (!unsliced.isEmpty()) {
+                // The analyzer seeds every declaration; refuse, never drop.
+                throw new IllegalStateException(
+                        "DECLARED_INPUT_OUTSIDE_STATIC_SLICE: declared "
+                                + "symbolic input methods are not in the "
+                                + "static slice: " + unsliced);
+            }
+            Set<String> demandedState = failureRelevantState(program.edges);
+            for (String method : selected) {
+                outgoing.put(method, new LinkedHashSet<>());
+            }
+            for (Map<String, Object> edge : program.edges) {
+                String method = text(edge.get("method"));
+                String transfer = text(edge.get("transferKind"));
+                if (text(edge.get("toCell")).contains("#exception:")
+                        && selected.contains(method)) {
+                    failure.add(method);
+                }
+                if (("HEAP_READ".equals(transfer)
+                        || "HEAP_WRITE".equals(transfer))
+                        && selected.contains(method)
+                        && !CausynthStaticFacts.constructor(method)
+                        && demandedState.contains(stateDeclaration(edge,
+                        transfer))) {
+                    state.add(method);
+                }
+                String callee = StaticProgram.invocationTarget(edge);
+                if (!selected.contains(method) || !selected.contains(callee)
+                        || method.equals(callee)) {
+                    continue;
+                }
+                outgoing.get(method).add(callee);
+            }
+            authorities = new LinkedHashMap<>(
+                    program.executionContextAuthorities);
+            for (Map<String, Object> edge : program.edges) {
+                String method = text(edge.get("method"));
+                if (selected.contains(method) && Boolean.TRUE.equals(
+                        edge.get("explicitSymbolicFault"))) {
+                    authorities.put(method, EXPLICIT_FAULT_ENTRY);
+                }
+            }
+            String target = text(program.targetResolved.get("method"));
+            if (!target.isEmpty()) {
+                authorities.putIfAbsent(target, "FAILURE_TARGET_ENTRY");
+            }
+        }
+
+        /**
+         * Roots a skeleton at each entry, in signature order, unless it is
+         * unselected, a constructor, already a root, or {@code skipped}.
+         */
+        private void root(StaticProgram program, Collection<String> entries,
+                          Function<String, String> authority,
+                          Predicate<String> skipped) {
+            List<String> ordered = new ArrayList<>(entries);
+            Collections.sort(ordered);
+            for (String entry : ordered) {
+                if (!selected.contains(entry)
+                        || CausynthStaticFacts.constructor(entry)
+                        || hasSkeletonRoot(program, entry)
+                        || skipped.test(entry)) {
+                    continue;
+                }
+                addSkeleton(program, entry, authority.apply(entry));
+            }
+        }
+
+        /** One skeleton over the root's closure, if it holds an anchor. */
+        private void addSkeleton(StaticProgram program, String root,
+                                 String authority) {
+            List<String> methods = forwardClosure(root, outgoing,
+                    authorities);
+            List<String> failed = intersections(methods, failure);
+            List<String> communicating = intersections(methods,
+                    communication);
+            List<String> stateful = intersections(methods, state);
+            // Last: anchorMethod is anchors.get(0), and another kind keeps it.
+            List<String> declaring = intersections(methods, declared);
+            boolean explicitFault = EXPLICIT_FAULT_ENTRY.equals(authority);
+            List<String> fault = explicitFault
+                    ? Collections.singletonList(root)
+                    : Collections.<String>emptyList();
+            List<String> anchors = union(fault, failed, communicating,
+                    stateful, declaring);
+            if (anchors.isEmpty()) {
+                return;
+            }
+            Map<String, Object> row = skeletonRow(root, authority);
+            if (declared.contains(root)) {
+                row.put(DeclaredSymbolicInputs.ROOT_FIELD, true);
+            }
+            row.put("anchorMethod", anchors.get(0));
+            row.put("anchorMethods", anchors);
+            row.put("methods", methods);
+            row.put("selection", explicitFault
+                    ? "EXPLICIT_FAULT_CONTEXT"
+                    : !failed.isEmpty()
+                    ? "EXCEPTION_CONTEXT"
+                    : !communicating.isEmpty()
+                    ? "COMMUNICATION_CONTEXT" : "STATE_CONTEXT");
+            program.regions.add(row);
+        }
     }
 
     /** Whether some skeleton is already rooted at {@code method}. */
@@ -281,46 +295,6 @@ final class SymbolicRegionPlanner {
                     text(flow.get(CommunicationCatalogContract.CALL_SITE_ID)),
                     portId));
         }
-    }
-
-    private static boolean addSkeleton(
-            StaticProgram program, String root, String authority,
-            List<String> methods, Set<String> failureMethods,
-            Set<String> communicationAnchors, Set<String> stateAnchors,
-            Set<String> declaredAnchors,
-            Map<String, Set<String>> outgoing,
-            Map<String, String> regionAuthorities,
-            Set<String> transportBoundaries) {
-        List<String> failure = intersections(methods, failureMethods);
-        List<String> communication = intersections(methods,
-                communicationAnchors);
-        List<String> state = intersections(methods, stateAnchors);
-        // Last: anchorMethod is anchors.get(0), and another kind keeps it.
-        List<String> declared = intersections(methods, declaredAnchors);
-        boolean explicitFault = EXPLICIT_FAULT_ENTRY.equals(authority);
-        List<String> fault = explicitFault
-                ? Collections.singletonList(root)
-                : Collections.<String>emptyList();
-        List<String> anchors = union(fault, failure, communication, state,
-                declared);
-        if (anchors.isEmpty()) {
-            return false;
-        }
-        Map<String, Object> row = skeletonRow(root, authority);
-        if (declaredAnchors.contains(root)) {
-            row.put(DeclaredSymbolicInputs.ROOT_FIELD, true);
-        }
-        row.put("anchorMethod", anchors.get(0));
-        row.put("anchorMethods", anchors);
-        row.put("methods", methods);
-        row.put("selection", explicitFault
-                ? "EXPLICIT_FAULT_CONTEXT"
-                : !failure.isEmpty()
-                ? "EXCEPTION_CONTEXT"
-                : !communication.isEmpty()
-                ? "COMMUNICATION_CONTEXT" : "STATE_CONTEXT");
-        program.regions.add(row);
-        return true;
     }
 
     /** The identity and root fields every skeleton row opens with. */

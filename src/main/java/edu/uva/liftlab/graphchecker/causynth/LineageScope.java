@@ -3,7 +3,6 @@ package edu.uva.liftlab.graphchecker.causynth;
 import java.io.File;
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -12,7 +11,6 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.regex.Pattern;
-import java.util.stream.Stream;
 
 /**
  * The classes a weave run holds for their lineage alone ({@code
@@ -30,14 +28,22 @@ public final class LineageScope {
     }
 
     public static List<String> dirs() {
-        String configured = System.getProperty(PROPERTY);
+        return dirs(PROPERTY, "lineage class directory");
+    }
+
+    /**
+     * The absolute directories a path-separated system property names; one
+     * that is not a directory is refused as {@code what} not found.
+     */
+    public static List<String> dirs(String property, String what) {
+        String configured = System.getProperty(property);
         List<String> dirs = new ArrayList<>();
         if (configured == null || configured.trim().isEmpty()) return dirs;
         for (String dir : configured.split(Pattern.quote(File.pathSeparator))) {
             File file = new File(dir.trim());
             if (!file.isDirectory()) {
                 throw new IllegalStateException(
-                        "lineage class directory not found: " + dir);
+                        what + " not found: " + dir);
             }
             dirs.add(file.getAbsolutePath());
         }
@@ -54,14 +60,10 @@ public final class LineageScope {
         Set<String> names = new LinkedHashSet<>();
         for (String dir : dirs()) {
             Path root = Paths.get(dir);
-            try (Stream<Path> walk = Files.walk(root)) {
-                walk.filter(path -> path.toString().endsWith(".class"))
-                        .forEach(path -> {
-                            String relative = root.relativize(path).toString();
-                            names.add(relative.substring(0,
-                                    relative.length() - ".class".length())
-                                    .replace(File.separatorChar, '.'));
-                        });
+            try {
+                for (Path file : VerifyWovenClasses.classFiles(root)) {
+                    names.add(VerifyWovenClasses.binaryName(root, file));
+                }
             } catch (IOException failure) {
                 throw new UncheckedIOException(failure);
             }

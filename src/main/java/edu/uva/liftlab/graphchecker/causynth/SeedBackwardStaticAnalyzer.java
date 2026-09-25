@@ -599,16 +599,21 @@ final class SeedBackwardStaticAnalyzer {
      * Adds the operands of every branch deciding whether {@code site} runs.
      * The whole of control dependence in the slice, published as the one
      * {@link #GUARD_KIND} row kind.
+     *
+     * @return whether any branch decides it
      */
-    private void demandControllingGuards(String method, Fact site,
-                                         Set<String> relevant,
-                                         Collection<String> guardedCells) {
+    private boolean demandControllingGuards(String method, Fact site,
+                                            Set<String> relevant,
+                                            Collection<String> guardedCells) {
+        boolean[] guarded = {false};
         forEachGuardOperand(method, site, true, (guardFact, guardNode) -> {
-            for (String guarded : guardedCells) {
-                addEdge(GUARD_KIND, guardNode, guarded, method, guardFact);
+            for (String cell : guardedCells) {
+                addEdge(GUARD_KIND, guardNode, cell, method, guardFact);
             }
             relevant.add(guardNode);
+            guarded[0] = true;
         });
+        return guarded[0];
     }
 
     private Set<String> localNames(Collection<String> values) {
@@ -682,9 +687,8 @@ final class SeedBackwardStaticAnalyzer {
             }
 
             boolean defExactHit = exactIntersects(relevant, defs);
-            boolean defHit = defExactHit;
             boolean useExactHit = exactIntersects(relevant, uses);
-            if (defHit) {
+            if (defExactHit) {
                 for (String def : defs) {
                     for (String use : uses) {
                         if (ignoreNode(def) || ignoreNode(use)) {
@@ -942,9 +946,10 @@ final class SeedBackwardStaticAnalyzer {
         if (thisRelevant || params.stream().anyMatch(
                 param -> method.equals(param.constructor))) {
             forEachCallsite(constructorCallersByCallee, method,
-                    (callsite, callsiteFact) ->
-                            expandConstructorReceiverFields(method, thisNode,
-                                    callsite, callsiteFact));
+                    (callsite, callsiteFact) -> expandCallerReceiver(
+                            "CONSTRUCTOR_CALLER_RECEIVER",
+                            "constructor_receiver", method, thisNode,
+                            callsite, callsiteFact));
         }
         for (ConstructorParam param : params) {
             if (!expandOnce("CONSTRUCTOR_PARAM", param.constructor,
@@ -985,46 +990,25 @@ final class SeedBackwardStaticAnalyzer {
         String thisNode = methodThisNode(method);
         boolean thisRelevant = thisNode != null
                 && calleeRelevant.contains(thisNode);
-        List<Integer> relevantParams = new ArrayList<>();
+        boolean paramRelevant = false;
         for (int i = 0; i < callee.params.size(); i++) {
-            String formal = formalParam(callee, i);
-            if (calleeRelevant.contains(formal)) {
-                relevantParams.add(i);
-            }
+            paramRelevant |= calleeRelevant.contains(formalParam(callee, i));
         }
-        if (relevantParams.isEmpty() && !thisRelevant) {
+        if (!paramRelevant && !thisRelevant) {
             return;
         }
 
         buildGlobalStaticIndex();
         forEachCallsite(methodCallersByCallee, method,
                 (callsite, callsiteFact) -> {
-            Set<String> callerRelevant = relevant(callsite.method);
-            for (int index : relevantParams) {
-                if (!expandOnce("METHOD_CALLER_PARAM", method, index,
-                        callsite.method, callsite.unitIndex)
-                        || index >= callsite.actuals.size()) {
-                    continue;
-                }
-                String actual = callsite.actuals.get(index);
-                if (ignoreNode(actual)) {
-                    if (addTypedLiteralCallerArgument(
-                            "method_caller_literal_argument", callee,
-                            index, callsite.method, callsiteFact)) {
-                        selectedMethods.add(callsite.method);
-                    }
-                    continue;
-                }
-                addEdge("caller_argument", actual,
-                        formalParam(callee, index), callsite.method,
-                        callsiteFact);
-                callerRelevant.add(actual);
-                selectedMethods.add(callsite.method);
-            }
+            expandCallerArguments("METHOD_CALLER_PARAM", "caller_argument",
+                    "method_caller_literal_argument", method, method, callee,
+                    callsite, callsiteFact);
             addReceiverFieldEffectPathGuards(method,
-                    callsite, callsiteFact, callerRelevant);
+                    callsite, callsiteFact, relevant(callsite.method));
             if (thisRelevant) {
-                expandCallerReceiver(false, method, thisNode, callsite,
+                expandCallerReceiver("METHOD_CALLER_RECEIVER",
+                        "method_receiver", method, thisNode, callsite,
                         callsiteFact);
             }
         });
@@ -1037,10 +1021,7 @@ final class SeedBackwardStaticAnalyzer {
                 callsite.unitIndex)) {
             return;
         }
-        SootMethod caller = concreteMethod(callerMethod);
-        if (caller != null) {
-            loadMethod(caller);
-        }
+        loadMethod(concreteMethod(callerMethod));
         String activation = targetMethod + ".activation";
         addEdge(kind, factNode(callsite), activation, callerMethod,
                 callsite);
@@ -1108,18 +1089,11 @@ final class SeedBackwardStaticAnalyzer {
             Set<String> callerRelevant) {
         Set<String> effectFields = relevantFieldEffectsByMethod.get(
                 calleeMethod);
-        if (effectFields == null || effectFields.isEmpty()) {
-            return;
-        }
-        forEachGuardOperand(callsite.method, callsiteFact, true,
-                (guardFact, guardNode) -> {
-            for (String effectField : effectFields) {
-                addEdge(GUARD_KIND, guardNode, effectField,
-                        callsite.method, guardFact);
-            }
-            callerRelevant.add(guardNode);
+        if (effectFields != null && !effectFields.isEmpty()
+                && demandControllingGuards(callsite.method, callsiteFact,
+                callerRelevant, effectFields)) {
             selectedMethods.add(callsite.method);
-        });
+        }
     }
 
     private ConstructorParam constructorParam(String node) {
@@ -1274,10 +1248,7 @@ final class SeedBackwardStaticAnalyzer {
     private Fact indexedFact(String method, int unitIndex) {
         List<Fact> facts = factsByMethod.get(method);
         if (facts == null) {
-            SootMethod sootMethod = concreteMethod(method);
-            if (sootMethod != null) {
-                loadMethod(sootMethod);
-            }
+            loadMethod(concreteMethod(method));
             facts = factsByMethod.get(method);
         }
         if (facts == null || unitIndex < 0 || unitIndex >= facts.size()) {
@@ -2090,14 +2061,14 @@ final class SeedBackwardStaticAnalyzer {
         for (String sourceMethod : sourceMethods) {
             forEachCallsite(methodCallersByCallee, sourceMethod,
                     (callsite, callsiteFact) -> {
-                Set<String> callerRelevant = relevant(callsite.method);
                 boolean relevantFlow = expandCallerArguments(
-                        "DISPATCH_CALLER_PARAM",
-                        "dispatch_caller_argument",
-                        targetMethod, sourceMethod, targetSig, targetRelevant,
-                        callsite, callsiteFact, callerRelevant);
+                        "DISPATCH_CALLER_PARAM", "dispatch_caller_argument",
+                        null, targetMethod, sourceMethod, targetSig,
+                        callsite, callsiteFact);
                 if (targetThisRelevant) {
-                    relevantFlow |= expandCallerReceiver(true, targetMethod,
+                    relevantFlow |= expandCallerReceiver(
+                            "DISPATCH_CALLER_RECEIVER",
+                            "dispatch_caller_receiver", targetMethod,
                             targetThis, callsite, callsiteFact);
                 }
                 if (relevantFlow) {
@@ -2128,24 +2099,35 @@ final class SeedBackwardStaticAnalyzer {
         }
     }
 
-    /** At one call site, demands each actual whose formal is relevant. */
+    /**
+     * At one call site, demands each actual whose formal is relevant.  A
+     * literal actual is a typed-literal row of {@code literalKind}, or
+     * nothing when that is null.
+     *
+     * @return whether an actual was demanded
+     */
     private boolean expandCallerArguments(
-            String demandKind, String edgeKind,
+            String demandKind, String edgeKind, String literalKind,
             String targetMethod, String demandScope, MethodSig target,
-            Set<String> targetRelevant, Callsite callsite,
-            Fact callsiteFact, Set<String> callerRelevant) {
+            Callsite callsite, Fact callsiteFact) {
+        Set<String> targetRelevant = relevant(targetMethod);
+        Set<String> callerRelevant = relevant(callsite.method);
         boolean expanded = false;
         int count = Math.min(callsite.actuals.size(), target.params.size());
         for (int index = 0; index < count; index++) {
             String formal = formalParam(target, index);
-            Object[] demand = new Object[]{targetMethod, demandScope, index,
-                    callsite.method, callsite.unitIndex};
             if (!targetRelevant.contains(formal)
-                    || !expandOnce(demandKind, demand)) {
+                    || !expandOnce(demandKind, targetMethod, demandScope,
+                    index, callsite.method, callsite.unitIndex)) {
                 continue;
             }
             String actual = callsite.actuals.get(index);
             if (ignoreNode(actual)) {
+                if (literalKind != null && addTypedLiteralCallerArgument(
+                        literalKind, target, index, callsite.method,
+                        callsiteFact)) {
+                    selectedMethods.add(callsite.method);
+                }
                 continue;
             }
             addEdge(edgeKind, actual, formal, callsite.method,
@@ -2157,21 +2139,17 @@ final class SeedBackwardStaticAnalyzer {
         return expanded;
     }
 
+    /** At one call site, demands the receiver of a relevant {@code this}. */
     private boolean expandCallerReceiver(
-            boolean dispatch, String targetMethod, String targetThis,
-            Callsite callsite, Fact callsiteFact) {
-        if (targetThis == null || callsite == null
-                || ignoreNode(callsite.receiver)) {
+            String demandKind, String edgeKind, String targetMethod,
+            String targetThis, Callsite callsite, Fact callsiteFact) {
+        if (targetThis == null || ignoreNode(callsite.receiver)) {
             return false;
         }
-        String demand = dispatch ? "DISPATCH_CALLER_RECEIVER"
-                : "METHOD_CALLER_RECEIVER";
-        String kind = dispatch ? "dispatch_caller_receiver"
-                : "method_receiver";
         if (relevant(targetMethod).contains(targetThis)
-                && expandOnce(demand, targetMethod,
+                && expandOnce(demandKind, targetMethod,
                 callsite.method, callsite.unitIndex)) {
-            addEdge(kind, callsite.receiver,
+            addEdge(edgeKind, callsite.receiver,
                     targetThis, callsite.method, callsiteFact);
             relevant(callsite.method).add(callsite.receiver);
             selectedMethods.add(callsite.method);
@@ -2496,24 +2474,6 @@ final class SeedBackwardStaticAnalyzer {
         return null;
     }
 
-    private void expandConstructorReceiverFields(String constructor,
-                                                 String constructorThis,
-                                                 Callsite callsite,
-                                                 Fact callsiteFact) {
-        if (constructorThis == null || ignoreNode(callsite.receiver)) {
-            return;
-        }
-        if (relevant(constructor).contains(constructorThis)
-                && expandOnce("CONSTRUCTOR_CALLER_RECEIVER", constructor,
-                callsite.method, callsite.unitIndex)) {
-            addEdge("constructor_receiver", callsite.receiver,
-                    constructorThis,
-                    callsite.method, callsiteFact);
-            relevant(callsite.method).add(callsite.receiver);
-            selectedMethods.add(callsite.method);
-        }
-    }
-
     private SootField resolveDeclaredField(String ownerType,
                                            String fieldName) {
         String owner = erasedTypeName(ownerType);
@@ -2816,10 +2776,8 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     private static String stableSiteId(String method, int unitIndex, String kind) {
-        if (unitIndex >= 0) {
-            return method + "#u" + unitIndex;
-        }
-        return method + "#synthetic:" + firstNonBlank(kind, "edge");
+        return unitIndex >= 0 ? SiteId.of(method, unitIndex)
+                : method + "#synthetic:" + firstNonBlank(kind, "edge");
     }
 
     private static Set<String> names(String... values) {

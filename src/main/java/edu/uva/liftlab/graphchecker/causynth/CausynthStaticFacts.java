@@ -52,6 +52,11 @@ public final class CausynthStaticFacts {
                 : field.getSignature();
     }
 
+    static String declaredFieldName(SootFieldRef reference) {
+        SootField field = declaredField(reference);
+        return field == null ? reference.name() : field.getName();
+    }
+
     static final class FieldWrite {
         final String method;
         final String field;

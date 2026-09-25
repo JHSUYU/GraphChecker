@@ -24,7 +24,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.Predicate;
+import java.util.function.Function;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.booleanValue;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.longNumber;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.number;
@@ -147,9 +147,8 @@ public final class RuntimeSelectedRegionFinalizer {
         // Addresses several activations share; classed after the closure
         // (see #stateSharedAddressClasses).
         List<Map<String, Object>> sharedAddresses = new ArrayList<>();
-        Map<String, String> occurrenceByRecordedRootCall =
-                readOccurrences(program, runtimeInstances, skeletonSource,
-                        sharedAddresses);
+        readOccurrences(program, runtimeInstances, skeletonSource,
+                sharedAddresses);
         // The fold rule lifted to the region row: branch policies are stated
         // per region row, and a folded region has none of its own.
         Map<String, List<String>> foldedIntoRegion = new LinkedHashMap<>();
@@ -170,7 +169,7 @@ public final class RuntimeSelectedRegionFinalizer {
                 continue;
             }
             Map<String, Object> region = new LinkedHashMap<>();
-            region.put("schemaVersion", 3);
+            region.put("schemaVersion", REGION_SCHEMA_VERSION);
             region.put("kind", "SYMBOLIC_REGION");
             region.put("graphKind", REFINED_KIND);
             region.put("regionId", regionId);
@@ -198,8 +197,8 @@ public final class RuntimeSelectedRegionFinalizer {
             // own region and of every region folded into it (as
             // ClosurePlanner#holds); every per-occurrence filter downstream
             // asks whether its region holds the site's method.
-            region.put("methods", declaredMethodUnion(program, skeleton,
-                    foldedHere));
+            region.put("methods", foldedUnion(program, skeleton, foldedHere,
+                    row -> row.methods));
             // Carried over by name.  Catalogs are unioned; the declared-root
             // flag is not, since it pairs with THIS row's rootMethod.
             Object declaredRoot = skeleton.json.get(
@@ -210,8 +209,9 @@ public final class RuntimeSelectedRegionFinalizer {
             for (String carried : new String[]{RETAINED_LOOPS,
                     StaticSymbolicSourceDeclaration.FIELD,
                     ConfiguredSourcePhaseContract.DECLARATION_FIELD}) {
-                List<Map<String, Object>> declared = declaredRowUnion(
-                        program, skeleton, foldedHere, carried);
+                List<Map<String, Object>> declared = foldedUnion(program,
+                        skeleton, foldedHere, row -> rows(row.json.get(
+                                carried)));
                 if (!declared.isEmpty()) region.put(carried, declared);
             }
 
@@ -219,9 +219,9 @@ public final class RuntimeSelectedRegionFinalizer {
             // ports minted at PLAN.  Both catalogs are always published.
             region.put("symbolicInputs", new ArrayList<Map<String, Object>>());
             region.put("outputs", new ArrayList<Map<String, Object>>());
-            region.put("branchPolicies", branches(program, regionId,
-                    foldedIntoRegion.getOrDefault(regionId,
-                            Collections.<String>emptyList())));
+            region.put("branchPolicies", branches(foldedUnion(program,
+                    skeleton, foldedHere,
+                    row -> program.regionGraph(row.regionId))));
             program.regions.add(region);
         }
         bindObservedFatalTargets(program.regions, runtimeInstances,
@@ -231,11 +231,9 @@ public final class RuntimeSelectedRegionFinalizer {
         Map<String, List<CutPort>> cutPorts = declaredCutPorts(program);
         declareCommunicationPorts(program, cutPorts, foldedIntoRegion);
         // One index shared by the fatal-prefix pass and the closure walk.
-        RegionDemandIndex demands = new RegionDemandIndex(program.regions,
-                program.activations, program.graph, program);
-        ClosureWalk closure = failureDirectedClosure(program, demands,
-                skeletonSource, scopeMap);
-        applyClosure(program, closure);
+        RegionDemandIndex demands = new RegionDemandIndex(program);
+        applyClosure(program, failureDirectedClosure(program, demands,
+                skeletonSource, scopeMap));
         // AFTER the closure: the class of a shared address is whether the
         // kept slice holds its region.
         stateSharedAddressClasses(program, sharedAddresses);
@@ -322,7 +320,8 @@ public final class RuntimeSelectedRegionFinalizer {
             String regionId = text(region.get("regionId"));
             List<CutPort> declared = new ArrayList<>();
             for (String performed : performedRegionIds(regionId,
-                    foldedIntoRegion)) {
+                    foldedIntoRegion.getOrDefault(regionId,
+                            Collections.<String>emptyList()))) {
                 List<CutPort> held = declaredByRegion.get(performed);
                 if (held != null) declared.addAll(held);
             }
@@ -392,30 +391,6 @@ public final class RuntimeSelectedRegionFinalizer {
         return "";
     }
 
-    /**
-     * The structural key of one planned occurrence, or {@code ""}.  Parsed and
-     * re-rendered rather than compared as a string, because an {@code #a<n>}
-     * suffix the address drops would silently merge two activations; a value
-     * that is not one planned address is refused.
-     */
-    static String occurrenceKey(Object encoded) {
-        String occurrenceId = text(encoded);
-        if (occurrenceId.isEmpty()) return "";
-        String rendered;
-        try {
-            rendered = OccurrenceAddress.parse(occurrenceId).render();
-        } catch (RuntimeException notAnAddress) {
-            throw new IllegalArgumentException("region graph occurrence id "
-                    + "is not one planned address: " + occurrenceId,
-                    notAnAddress);
-        }
-        if (!rendered.equals(occurrenceId)) {
-            throw new IllegalArgumentException("region graph occurrence id "
-                    + "is not one planned address: " + occurrenceId);
-        }
-        return rendered;
-    }
-
     /** Region-level port declarations, excluding occurrence-owned copies. */
     private static Set<String> declaredPortIds(
             List<Map<String, Object>> ports) {
@@ -435,8 +410,7 @@ public final class RuntimeSelectedRegionFinalizer {
     private static String activationSourceKey(Map<String, Object> instance) {
         return instance == null
                 ? OccurrenceBinding.UNREGISTERED_SOURCE_KEY
-                : edu.uva.liftlab.graphchecker.contract.OccurrenceAddress
-                        .parse(text(instance.get("occurrenceId")))
+                : OccurrenceAddress.parse(text(instance.get("occurrenceId")))
                         .node().render();
     }
 
@@ -454,15 +428,12 @@ public final class RuntimeSelectedRegionFinalizer {
      *
      * @param sharedAddresses collects one row per shared address: its
      *     {@code occurrenceId}, {@code regionId} and root calls
-     * @return every recorded root call, by the occurrence it belongs to
      */
-    private static Map<String, String> readOccurrences(
+    private static void readOccurrences(
             StaticProgram program,
             Collection<Map<String, Object>> runtimeInstances,
             String source,
             List<Map<String, Object>> sharedAddresses) throws IOException {
-        Map<String, String> occurrenceByRecordedRootCall =
-                new LinkedHashMap<>();
         Map<String, List<Long>> rootCallsByAddress = new LinkedHashMap<>();
         for (Map<String, Object> instance : canonicalRuntimeActivations(
                 runtimeInstances, source)) {
@@ -475,8 +446,6 @@ public final class RuntimeSelectedRegionFinalizer {
                         + "none for it: " + regionId + "\n" + rootCallId);
             }
             instance.put("occurrenceId", occurrenceId);
-            occurrenceByRecordedRootCall.put(
-                    recordedRootCallKey(regionId, rootCallId), occurrenceId);
             rootCallsByAddress.computeIfAbsent(occurrenceId,
                     ignored -> new ArrayList<>()).add(rootCallId);
             program.activations.putIfAbsent(occurrenceId, instance);
@@ -493,7 +462,6 @@ public final class RuntimeSelectedRegionFinalizer {
             shared.put(SHARED_ADDRESS_ROOT_CALLS, entry.getValue());
             sharedAddresses.add(shared);
         }
-        return occurrenceByRecordedRootCall;
     }
 
     /**
@@ -558,9 +526,8 @@ public final class RuntimeSelectedRegionFinalizer {
                 throw new IOException("runtime region activation requires "
                         + "regionId and rootCallId: " + source);
             }
-            String identity = recordedRootCallKey(regionId, rootCallId);
             Map<String, Object> previous = byRecordedActivation.putIfAbsent(
-                    identity, instance);
+                    regionId + "\n" + rootCallId, instance);
             if (previous != null && !previous.equals(instance)) {
                 throw new IOException("conflicting runtime region activation "
                         + "payload: " + regionId + "\n" + rootCallId);
@@ -725,37 +692,26 @@ public final class RuntimeSelectedRegionFinalizer {
 
     /**
      * The regions performed under one region: its own first, then those
-     * folded into its occurrences ({@code Identity#fold}).
+     * folded into it ({@code Identity#fold}), whose text ran there.  A list:
+     * plan order.
      */
     private static List<String> performedRegionIds(
-            String regionId, Map<String, List<String>> foldedIntoRegion) {
+            String own, Collection<String> folded) {
         List<String> performed = new ArrayList<>();
-        if (!regionId.isEmpty()) performed.add(regionId);
-        for (String folded : foldedIntoRegion.getOrDefault(regionId,
-                Collections.<String>emptyList())) {
-            if (!folded.isEmpty() && !performed.contains(folded)) {
-                performed.add(folded);
+        if (!own.isEmpty()) performed.add(own);
+        for (String regionId : folded) {
+            if (!regionId.isEmpty() && !performed.contains(regionId)) {
+                performed.add(regionId);
             }
         }
         return performed;
     }
 
-    /**
-     * The regions one occurrence PERFORMED: its own first, then every region
-     * folded into it, whose text ran here.  A list: plan order.
-     */
+    /** The regions one occurrence PERFORMED. */
     private static List<String> performedRegionIds(
             Map<String, Object> activation) {
-        List<String> performed = new ArrayList<>();
-        if (activation == null) return performed;
-        String own = text(activation.get("regionId"));
-        if (!own.isEmpty()) performed.add(own);
-        for (String folded : strings(activation.get(FOLDED_REGION_IDS))) {
-            if (!folded.isEmpty() && !performed.contains(folded)) {
-                performed.add(folded);
-            }
-        }
-        return performed;
+        return performedRegionIds(text(activation.get("regionId")),
+                strings(activation.get(FOLDED_REGION_IDS)));
     }
 
     /**
@@ -766,8 +722,10 @@ public final class RuntimeSelectedRegionFinalizer {
      * StaticScopeMap#writerRegionsByCell}, CLOSURE-V2 SS4).  Nothing is
      * discovered from recorded field accesses: an undeclared read mints no
      * symbol ({@code ConcolicScheduler.SymbolicInputSelection}).
+     *
+     * @return the occurrences the demand reached
      */
-    private static ClosureWalk failureDirectedClosure(
+    private static Set<String> failureDirectedClosure(
             StaticProgram program, RegionDemandIndex demands, String source,
             StaticScopeMap scopeMap)
             throws IOException {
@@ -889,12 +847,11 @@ public final class RuntimeSelectedRegionFinalizer {
             recordDemandDepth(demandDepths, occurrence, 1);
         }
 
-        ClosureWalk walk = walkFailureClosure(targets, instances, program,
-                demands, scopeMap, scopeMap.writeSitesByCell(),
-                declaredOccurrences, demandDepths);
+        Set<String> reached = walkFailureClosure(targets, program, demands,
+                scopeMap, declaredOccurrences, demandDepths);
         // Restated after the walk, so a writer the walk reached twice
         // publishes the shortest chain that reached it.
-        for (String occurrence : walk.reached) {
+        for (String occurrence : reached) {
             Map<String, Object> activation = instances.get(occurrence);
             if (activation == null || !SHARED_LOCATION_DEMAND_ADMISSION
                     .equals(text(activation.get(ADMISSION_BASIS)))) {
@@ -906,24 +863,24 @@ public final class RuntimeSelectedRegionFinalizer {
         // Stated after the walk, and only where no rule above has stated
         // one: a declared occurrence the location demand also reached keeps
         // that basis, which carries the demand depth the scheduler reads.
-        for (String occurrence : declaredInputOccurrences) {
+        stateAdmissionBasis(instances, declaredInputOccurrences,
+                DeclaredSymbolicInputs.ADMISSION);
+        stateAdmissionBasis(instances, declaredCaptureOccurrences,
+                DECLARED_COMMUNICATION_ADMISSION);
+        return reached;
+    }
+
+    /** States {@code basis} on each occurrence that states none yet. */
+    private static void stateAdmissionBasis(
+            Map<String, Map<String, Object>> instances,
+            Collection<String> occurrences, String basis) {
+        for (String occurrence : occurrences) {
             Map<String, Object> activation = instances.get(occurrence);
-            if (activation == null
-                    || !text(activation.get(ADMISSION_BASIS)).isEmpty()) {
-                continue;
+            if (activation != null
+                    && text(activation.get(ADMISSION_BASIS)).isEmpty()) {
+                activation.put(ADMISSION_BASIS, basis);
             }
-            activation.put(ADMISSION_BASIS, DeclaredSymbolicInputs.ADMISSION);
         }
-        for (String occurrence : declaredCaptureOccurrences) {
-            Map<String, Object> activation = instances.get(occurrence);
-            if (activation == null
-                    || !text(activation.get(ADMISSION_BASIS)).isEmpty()) {
-                continue;
-            }
-            activation.put(ADMISSION_BASIS,
-                    DECLARED_COMMUNICATION_ADMISSION);
-        }
-        return walk;
     }
 
     /**
@@ -956,16 +913,17 @@ public final class RuntimeSelectedRegionFinalizer {
      * guards still travel locally.  Which of them wrote the value is not
      * decided here: each is a replay arm, and the VM's GuardedRead chooses.
      */
-    private static ClosureWalk walkFailureClosure(
+    private static Set<String> walkFailureClosure(
             Collection<String> targets,
-            Map<String, Map<String, Object>> instances,
             StaticProgram program,
             RegionDemandIndex demands,
             StaticScopeMap scopeMap,
-            Map<String, List<StaticScopeMap.Site>> writeSites,
             Set<String> declaredOccurrences,
             Map<String, Integer> demandDepths)
             throws IOException {
+        Map<String, Map<String, Object>> instances = program.activations;
+        Map<String, List<StaticScopeMap.Site>> writeSites =
+                scopeMap.writeSitesByCell();
         Set<String> reached = new LinkedHashSet<>(targets);
         reached.addAll(declaredOccurrences);
         List<String> seeds = new ArrayList<>();
@@ -1032,7 +990,7 @@ public final class RuntimeSelectedRegionFinalizer {
             return next;
         });
         if (!refused.isEmpty()) throw refused.get(0);
-        return new ClosureWalk(reached);
+        return reached;
     }
 
     /**
@@ -1056,44 +1014,24 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * The methods this region's occurrences ran: its own and those of every
-     * folded region, which the enclosing skeleton does not name (the weave
-     * stops at a nested root).  The plan still intersects this with each
-     * occurrence's observed methods.
+     * One catalog of this region unioned with its folded regions', own first
+     * and deduplicated whole: a folded region's text ran in this region's
+     * occurrences, and the enclosing skeleton does not name it (the weave
+     * stops at a nested root).
      */
-    private static List<String> declaredMethodUnion(
+    private static <T> List<T> foldedUnion(
             StaticProgram program, StaticProgram.RegionRow skeleton,
-            List<String> foldedRegionIds) {
-        List<String> methods = new ArrayList<>(skeleton.methods);
+            List<String> foldedRegionIds,
+            Function<StaticProgram.RegionRow, Collection<T>> catalog) {
+        List<T> union = new ArrayList<>(catalog.apply(skeleton));
         for (String folded : foldedRegionIds) {
             StaticProgram.RegionRow row = program.skeletons.get(folded);
             if (row == null) continue;
-            for (String method : row.methods) {
-                if (!methods.contains(method)) methods.add(method);
+            for (T item : catalog.apply(row)) {
+                if (!union.contains(item)) union.add(item);
             }
         }
-        return methods;
-    }
-
-    /**
-     * One declaration catalog of this region unioned with its folded
-     * regions', own first; rows deduplicated whole.
-     */
-    private static List<Map<String, Object>> declaredRowUnion(
-            StaticProgram program, StaticProgram.RegionRow skeleton,
-            List<String> foldedRegionIds, String field) {
-        List<Map<String, Object>> declared = new ArrayList<>(
-                rows(skeleton.json.get(field)));
-        for (String folded : foldedRegionIds) {
-            StaticProgram.RegionRow row = program.skeletons.get(folded);
-            if (row == null) continue;
-            for (Map<String, Object> declaration : rows(row.json.get(field))) {
-                if (!declared.contains(declaration)) {
-                    declared.add(declaration);
-                }
-            }
-        }
-        return declared;
+        return union;
     }
 
     /**
@@ -1198,9 +1136,9 @@ public final class RuntimeSelectedRegionFinalizer {
      * activations.  Port catalogs are cleared here and re-declared after.
      */
     private static void applyClosure(StaticProgram program,
-                                     ClosureWalk walk) {
+                                     Set<String> reached) {
         Set<String> retainedRegions = new LinkedHashSet<>();
-        for (String key : walk.reached) {
+        for (String key : reached) {
             retainedRegions.add(text(program.activations.get(key).get(
                     "regionId")));
         }
@@ -1209,7 +1147,7 @@ public final class RuntimeSelectedRegionFinalizer {
         for (Map<String, Object> region : program.regions) {
             String regionId = text(region.get("regionId"));
             Set<String> occurrences = new LinkedHashSet<>();
-            for (String key : walk.reached) {
+            for (String key : reached) {
                 Map<String, Object> instance = program.activations.get(key);
                 if (!regionId.equals(text(instance.get("regionId")))) {
                     continue;
@@ -1222,15 +1160,6 @@ public final class RuntimeSelectedRegionFinalizer {
             region.put("symbolicInputs", new ArrayList<Map<String, Object>>());
             region.put("outputs", new ArrayList<Map<String, Object>>());
         }
-    }
-
-    /**
-     * Key of one recorded root call: the one place a raw trace endpoint is
-     * resolved to an occurrence.
-     */
-    private static String recordedRootCallKey(String regionId,
-                                              long rootCallId) {
-        return regionId + "\n" + rootCallId;
     }
 
     /** Caller locals assigned by one declared application call return. */
@@ -1266,17 +1195,8 @@ public final class RuntimeSelectedRegionFinalizer {
      * static_scope_map}'s ({@link SiteControlDependence}).
      */
     private static List<Map<String, Object>> branches(
-            StaticProgram program, String regionId,
-            List<String> foldedRegionIds) {
-        List<Map<String, Object>> edges = new ArrayList<>(
-                program.regionGraph(regionId));
-        for (String folded : foldedRegionIds) {
-            for (Map<String, Object> edge : program.regionGraph(folded)) {
-                if (!edges.contains(edge)) edges.add(edge);
-            }
-        }
-        Map<String, List<Map<String, Object>>> bySite = guardsBySite(
-                edges, edge -> true);
+            List<Map<String, Object>> edges) {
+        Map<String, List<Map<String, Object>>> bySite = guardsBySite(edges);
         List<Map<String, Object>> result = new ArrayList<>();
         for (Map.Entry<String, List<Map<String, Object>>> entry
                 : bySite.entrySet()) {
@@ -1314,17 +1234,15 @@ public final class RuntimeSelectedRegionFinalizer {
 
     /** Guard rows by the site they decide, in first-seen order. */
     private static Map<String, List<Map<String, Object>>> guardsBySite(
-            Collection<Map<String, Object>> edges,
-            Predicate<Map<String, Object>> retained) {
+            Collection<Map<String, Object>> edges) {
         Map<String, List<Map<String, Object>>> bySite = new LinkedHashMap<>();
         for (Map<String, Object> edge : edges) {
             if (!"GUARD".equals(text(edge.get("transferKind")))) continue;
             String site = firstNonEmpty(text(edge.get("guardSiteId")),
                     text(edge.get("siteId")));
             if (site.isEmpty()) continue;
-            List<Map<String, Object>> guards = bySite.computeIfAbsent(site,
-                    ignored -> new ArrayList<>());
-            if (retained.test(edge)) guards.add(edge);
+            bySite.computeIfAbsent(site, ignored -> new ArrayList<>())
+                    .add(edge);
         }
         return bySite;
     }
@@ -1348,11 +1266,9 @@ public final class RuntimeSelectedRegionFinalizer {
     /**
      * Records one finalizer gap once per (kind, subject), stating its own
      * class like a {@link edu.uva.liftlab.graphchecker.contract.GapRow}.
-     * {@code gaps} may be null outside a finalize pass.
      */
     private static void planGap(List<Map<String, Object>> gaps, GapKind kind,
                                 GapClass cls, String subject, String detail) {
-        if (gaps == null) return;
         for (Map<String, Object> existing : gaps) {
             if (kind.name().equals(text(existing.get("kind")))
                     && subject.equals(text(existing.get("subject")))) {
@@ -1394,19 +1310,16 @@ public final class RuntimeSelectedRegionFinalizer {
         private final Map<String, List<String>> fatalSeeds =
                 new LinkedHashMap<>();
 
-        private RegionDemandIndex(
-                List<Map<String, Object>> regions,
-                Map<String, Map<String, Object>> activations,
-                List<Map<String, Object>> graph, StaticProgram program) {
+        private RegionDemandIndex(StaticProgram program) {
             // Every observed activation, not only port holders: the walk
             // needs each occurrence's text.
             for (Map.Entry<String, Map<String, Object>> entry
-                    : activations.entrySet()) {
+                    : program.activations.entrySet()) {
                 regionsByOccurrence.put(entry.getKey(),
                         performedRegionIds(entry.getValue()));
             }
             Set<String> selectedRegions = new LinkedHashSet<>();
-            for (Map<String, Object> region : regions) {
+            for (Map<String, Object> region : program.regions) {
                 String regionId = text(region.get("regionId"));
                 selectedRegions.add(regionId);
                 for (Map<String, Object> branch
@@ -1427,7 +1340,7 @@ public final class RuntimeSelectedRegionFinalizer {
                     }
                 }
             }
-            for (Map<String, Object> edge : graph) {
+            for (Map<String, Object> edge : program.graph) {
                 String from = text(edge.get("fromCell"));
                 String to = text(edge.get("toCell"));
                 if (from.isEmpty() || to.isEmpty()) continue;
@@ -1609,15 +1522,6 @@ public final class RuntimeSelectedRegionFinalizer {
             List<String> values = target.computeIfAbsent(key,
                     ignored -> new ArrayList<>());
             if (!values.contains(value)) values.add(value);
-        }
-    }
-
-    /** The occurrences one finalization's demand reached. */
-    private static final class ClosureWalk {
-        private final Set<String> reached;
-
-        private ClosureWalk(Set<String> reached) {
-            this.reached = reached;
         }
     }
 

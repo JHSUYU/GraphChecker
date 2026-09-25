@@ -105,7 +105,7 @@ public final class VerifyWovenClasses {
     }
 
     /** Every class file under {@code root}, in a stable order. */
-    private static List<Path> classFiles(Path root) throws IOException {
+    static List<Path> classFiles(Path root) throws IOException {
         List<Path> files = new ArrayList<>();
         Files.walkFileTree(root, new SimpleFileVisitor<Path>() {
             @Override
@@ -134,7 +134,7 @@ public final class VerifyWovenClasses {
                 VerifyWovenClasses.class.getClassLoader());
     }
 
-    private static String binaryName(Path root, Path file) {
+    static String binaryName(Path root, Path file) {
         String relative = root.relativize(file).toString();
         return relative.substring(0, relative.length() - ".class".length())
                 .replace(File.separatorChar, '.');

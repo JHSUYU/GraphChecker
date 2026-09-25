@@ -443,9 +443,9 @@ public final class ConcolicInstrumentationSelections {
                     && !"HEAP_OBJECT_FIELD".equals(location)) {
                 return;
             }
-            FieldTarget target = concolicFieldTarget(action);
-            if (target != null) {
-                fields.put(target.owner + "|" + target.name, target);
+            if (fieldTarget != null) {
+                fields.put(fieldTarget.owner + "|" + fieldTarget.name,
+                        fieldTarget);
             }
         }
 
@@ -468,15 +468,19 @@ public final class ConcolicInstrumentationSelections {
                         || !siteId.equals(SiteId.of(method, unitIndex))) {
                     throw unsupported(site);
                 }
-                ObservedWriteTarget target = new ObservedWriteTarget(method,
-                        unitIndex, siteId, callee, cell);
-                ObservedWriteTarget held =
-                        observedWritesBySite.put(siteId, target);
-                if (held != null && !held.sameObservation(target)) {
+                if (conflicts(new ObservedWriteTarget(method, unitIndex,
+                        siteId, callee, cell))) {
                     throw new IOException(
                             "OBSERVED_WRITE_SITE_CONFLICT: " + siteId);
                 }
             }
+        }
+
+        /** Records {@code target}; true when a different one holds its site. */
+        private boolean conflicts(ObservedWriteTarget target) {
+            ObservedWriteTarget held = observedWritesBySite.putIfAbsent(
+                    target.siteId, target);
+            return held != null && !held.sameObservation(target);
         }
 
         Collection<ObservedWriteTarget> observedWrites() {
@@ -578,28 +582,30 @@ public final class ConcolicInstrumentationSelections {
                     && (sites.isEmpty() || sites.contains(unitIndex));
         }
 
-        boolean matches(String method, int unitIndex, SootFieldRef field) {
+        boolean matches(SootFieldRef field) {
             if (field == null) {
                 return false;
             }
-            SootField declared = CausynthStaticFacts.declaredField(field);
+            boolean namedTarget = namedFieldTarget(field,
+                    CausynthStaticFacts.declaredField(field));
+            // A getstatic has no receiver: only a primitive static read is
+            // materializable (on its consuming local).
+            return namedTarget && (!field.isStatic()
+                    || field.type() instanceof PrimType);
+        }
+
+        /**
+         * Whether a plan action named this field, by the class declaring it,
+         * ignoring its shape.
+         */
+        private boolean namedFieldTarget(SootFieldRef field,
+                                         SootField declared) {
             SootClass declaringClass = declared == null
                     ? field.declaringClass() : declared.getDeclaringClass();
             String owner = declaringClass == null ? ""
                     : stringValue(declaringClass.getName());
             String fieldName = stringValue(declared == null
                     ? field.name() : declared.getName());
-            boolean namedTarget = namedFieldTarget(owner, fieldName);
-            if (field.isStatic()) {
-                // A getstatic has no receiver: only a primitive static read
-                // is materializable (on its consuming local).
-                return field.type() instanceof PrimType && namedTarget;
-            }
-            return namedTarget;
-        }
-
-        /** Whether a plan action named this field, ignoring its shape. */
-        private boolean namedFieldTarget(String owner, String fieldName) {
             for (FieldTarget target : fields.values()) {
                 if (target.name.equals(fieldName)
                         && (target.owner.isEmpty()
@@ -615,20 +621,13 @@ public final class ConcolicInstrumentationSelections {
          * {@code ""}: {@link #STATIC_CONSTANT} (final: no evidence lost) is
          * reported apart from {@link #STATIC_FIELD_UNSUPPORTED} (a real gap).
          */
-        String staticMaterializationRefusal(
-                String method, int unitIndex, SootFieldRef field) {
+        String staticMaterializationRefusal(SootFieldRef field) {
             if (field == null || !field.isStatic()
                     || field.type() instanceof PrimType) {
                 return "";
             }
             SootField declared = CausynthStaticFacts.declaredField(field);
-            SootClass declaringClass = declared == null
-                    ? field.declaringClass() : declared.getDeclaringClass();
-            String owner = declaringClass == null ? ""
-                    : stringValue(declaringClass.getName());
-            String fieldName = stringValue(declared == null
-                    ? field.name() : declared.getName());
-            if (!namedFieldTarget(owner, fieldName)) {
+            if (!namedFieldTarget(field, declared)) {
                 return "";
             }
             return declared != null && declared.isFinal()
@@ -645,9 +644,7 @@ public final class ConcolicInstrumentationSelections {
             fields.putAll(other.fields);
             for (ObservedWriteTarget target
                     : other.observedWritesBySite.values()) {
-                ObservedWriteTarget held =
-                        observedWritesBySite.put(target.siteId, target);
-                if (held != null && !held.sameObservation(target)) {
+                if (conflicts(target)) {
                     throw new IllegalStateException(
                             "OBSERVED_WRITE_SITE_CAMPAIGN_CONFLICT: "
                                     + target.siteId);

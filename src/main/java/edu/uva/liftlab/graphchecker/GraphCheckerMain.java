@@ -38,7 +38,6 @@ public class GraphCheckerMain {
     private final GraphCheckerOptions options;
     private final List<String> productionProcessDirs = new ArrayList<>();
     private final Set<String> testClassOutputDirs = new LinkedHashSet<>();
-    private boolean concolicInstrumentation;
 
     public GraphCheckerMain(GraphCheckerOptions options) {
         this.options = options;
@@ -122,7 +121,7 @@ public class GraphCheckerMain {
         Options.v().set_soot_classpath(classPath);
         Options.v().set_keep_line_number(true);
         Options.v().set_whole_program(true);
-        concolicInstrumentation = ConcolicInstrumentationSelections
+        boolean concolicInstrumentation = ConcolicInstrumentationSelections
                 .instrumentationRequested();
         if (!configuredTestDirs.isEmpty()) {
             LOG.info("Static discovery keeps {} test output(s) on the "
@@ -263,19 +262,8 @@ public class GraphCheckerMain {
         for (String inputDir : inputDirs) {
             dirs.add(new File(inputDir).getAbsolutePath());
         }
-        String configured = System.getProperty("causynth.process.dirs");
-        if (configured != null && !configured.trim().isEmpty()) {
-            for (String dir : configured.split(
-                    Pattern.quote(File.pathSeparator))) {
-                File file = new File(dir.trim());
-                if (!file.isDirectory()) {
-                    throw new IllegalStateException(
-                            "Configured Soot process directory not found: "
-                                    + dir);
-                }
-                dirs.add(file.getAbsolutePath());
-            }
-        }
+        dirs.addAll(LineageScope.dirs("causynth.process.dirs",
+                "Configured Soot process directory"));
         dirs.addAll(LineageScope.dirs());
         if (dirs.size() > inputDirs.size()) {
             LOG.info("Expanded Soot process dirs to {}", dirs);

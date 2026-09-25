@@ -39,15 +39,10 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
 
 /**
- * The region graph joins on an address, and refuses anything else.
- *
- * <p>String equality on {@code occurrenceId} merges two activations the
- * moment one carries an {@code #a<n>} suffix, and that merge is invisible.
- * The graph only scopes: it never decides what matters, picks an arm, or
- * names a writer.</p>
+ * The region graph joins on an address.  It only scopes: it never decides
+ * what matters, picks an arm, or names a writer.
  */
 public class RegionGraphOccurrenceKeyTest {
     /** One planned occurrence, as identity v3 addresses it. */
@@ -66,34 +61,17 @@ public class RegionGraphOccurrenceKeyTest {
     }
 
     /**
-     * A planned address keys as itself: the migration is byte-neutral.  An
-     * absent id is still absent, so the callers' early returns stand.  A
-     * per-activation id, and anything that does not spell an address at all,
-     * is refused rather than merged onto the address it resembles.
-     *
-     * <p>And an address two activations landed on STATES ITS CLASS, which is
+     * An address two activations landed on STATES ITS CLASS, which is
      * whether the kept closure holds its region: inside it a task addresses
      * the occurrence and the ambiguity withholds, outside it no plan row, no
      * task and no session row names the occurrence and the row is telemetry.
      * All three rows of the reviewed hdfs-17960 run were the second case --
      * {@code FSDirectory$InitQuotaTask} ForkJoin siblings, whose regions the
      * closure drops -- and they were published with no class at all, which
-     * the campaign reads as blocking.</p>
+     * the campaign reads as blocking.
      */
     @Test
-    public void aPlannedAddressKeysAsItselfAndAnythingElseIsRefused()
-            throws Exception {
-        assertEquals(PLANNED,
-                RuntimeSelectedRegionFinalizer.occurrenceKey(PLANNED));
-        assertEquals("", RuntimeSelectedRegionFinalizer.occurrenceKey(null));
-        assertEquals("", RuntimeSelectedRegionFinalizer.occurrenceKey(""));
-        for (String unreadable : new String[] {
-                PLANNED + "#a1",
-                "REGION.9492ec77",
-                "hdfs-17960/nn0#epoch1/region/REGION.1",
-                "hdfs-17960/nn0#epoch1/region/REGION.1#0"}) {
-            refuses(unreadable);
-        }
+    public void aSharedAddressStatesItsClass() throws Exception {
         assertEquals("BLOCKING", sharedAddressClass("REGION.kept"));
         assertEquals("DIAGNOSTIC", sharedAddressClass("REGION.dropped"));
     }
@@ -125,15 +103,6 @@ public class RegionGraphOccurrenceKeyTest {
                 String.valueOf(row.get("detail"))
                         .contains(row.get("cls") + ": " + regionId));
         return String.valueOf(row.get("cls"));
-    }
-
-    private static void refuses(String occurrenceId) {
-        try {
-            RuntimeSelectedRegionFinalizer.occurrenceKey(occurrenceId);
-            fail("expected a refusal for " + occurrenceId);
-        } catch (IllegalArgumentException refused) {
-            assertEquals(true, refused.getMessage().contains(occurrenceId));
-        }
     }
 
     /**

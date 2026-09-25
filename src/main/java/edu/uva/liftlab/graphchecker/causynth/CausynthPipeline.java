@@ -32,7 +32,6 @@ import soot.RefType;
 import soot.Scene;
 import soot.ShortType;
 import soot.SootClass;
-import soot.SootField;
 import soot.SootFieldRef;
 import soot.SootMethod;
 import soot.SootMethodRef;
@@ -553,17 +552,9 @@ public final class CausynthPipeline {
                 StringConstant.v(regionId),
                 StringConstant.v(method.getSignature()), receiver);
         insertBeforeOrAppendNoRedirect(body, insertionPoint, entry);
-        for (int index = instrumentableFrom(originalUnits, lowerBound);
-                index >= 0 && index < originalUnits.size(); index++) {
-            Unit unit = originalUnits.get(index);
-            if (!(unit instanceof ReturnStmt)
-                    && !(unit instanceof ReturnVoidStmt)) {
-                continue;
-            }
-            List<Unit> exit = new ArrayList<>();
-            refs.bracket(exit, Hook.EXIT_REGION_ENTRY, entryToken);
-            insertBeforeSequence(body, unit, exit);
-        }
+        bracketReturns(body, originalUnits,
+                instrumentableFrom(originalUnits, lowerBound), refs,
+                Hook.EXIT_REGION_ENTRY, entryToken);
         // The handler reads the token: the trap opens after its store.
         addThrowHandler(body, afterWovenPrologue(body, entry), refs,
                 Hook.THROW_REGION_ENTRY, "$causynthRegionEntryThrown",
@@ -611,76 +602,41 @@ public final class CausynthPipeline {
             Local token = newTraceLocal(body, LongType.v(),
                     "$causynthRegionToken");
             List<Unit> entry = new ArrayList<>();
-            Unit tokenInitialization = Jimple.v().newAssignStmt(token,
-                    LongConstant.v(0L));
-            entry.add(tokenInitialization);
-            List<Unit> activation = entry;
-            ArrayType objectArrayType = ArrayType.v(
-                    RefType.v("java.lang.Object"), 1);
-            Local rootArguments = newTraceLocal(body, objectArrayType,
-                    "$causynthRootArguments");
+            entry.add(Jimple.v().newAssignStmt(token, LongConstant.v(0L)));
             // A loop body binds no parameters: empty argument array.
             int rootArgumentCount = rootLoop == null
                     ? method.getParameterCount() : 0;
-            activation.add(Jimple.v().newAssignStmt(rootArguments,
-                    Jimple.v().newNewArrayExpr(
-                            RefType.v("java.lang.Object"),
-                            IntConstant.v(rootArgumentCount))));
-            for (int index = 0; index < rootArgumentCount; index++) {
-                Type parameterType = method.getParameterType(index);
-                if (!(parameterType instanceof RefType)
-                        && !(parameterType instanceof ArrayType)) {
-                    continue;
-                }
-                Value parameter = parameterLocal(body, index);
-                if (parameter == null) continue;
-                activation.add(Jimple.v().newAssignStmt(
-                        Jimple.v().newArrayRef(rootArguments,
-                                IntConstant.v(index)),
-                        objectArg(body, parameter, activation)));
-            }
+            Local rootArguments = rootArguments(body, method,
+                    rootArgumentCount, "$causynthRootArguments", entry);
             // Admission compares workload objects: not observed.
-            emit(activation, refs.ref(Hook.PAUSE_OBSERVATION));
-            Unit enterRegion = invokeTo(token,
+            emit(entry, refs.ref(Hook.PAUSE_OBSERVATION));
+            Unit regionStart = invokeTo(token,
                     refs.ref(Hook.ENTER_REGION_FRAME),
                     StringConstant.v(plan.instrumentationSelector()),
                     StringConstant.v(signature), receiver, rootArguments);
-            activation.add(enterRegion);
-            emit(activation, refs.ref(Hook.RESUME_OBSERVATION));
-            Unit regionStart = enterRegion;
+            entry.add(regionStart);
+            emit(entry, refs.ref(Hook.RESUME_OBSERVATION));
             for (int index = 0; index < rootArgumentCount; index++) {
                 Value parameter = parameterLocal(body, index);
                 if (parameter == null) continue;
-                materializeParameter(body, parameter, index, activation,
+                materializeParameter(body, parameter, index, entry,
                         token, "$causynthArgument",
                         Hook.MATERIALIZE_ARGUMENT, Hook.SYMBOLIZE_ARGUMENT,
                         refs);
             }
             if (rootLoop == null) {
                 insertBeforeOrAppendNoRedirect(body, insertionPoint, entry);
+                bracketReturns(body, originalUnits, 0, refs,
+                        Hook.EXIT_REGION_FRAME,
+                        StringConstant.v(plan.instrumentationSelector()),
+                        StringConstant.v(signature));
             } else {
                 insertLoopBodyEntry(body, method,
                         rootLoop, loopBodyEntryEdge, entry,
                         rootLoop.identity(method));
-            }
-
-            if (rootLoop != null) {
                 // One iteration is one activation; backedges close it too.
                 insertLoopBodyRegionExits(body, method, rootLoop, plan,
                         signature, refs);
-            } else {
-                for (Unit unit : originalUnits) {
-                    if (!(unit instanceof Stmt)) {
-                        continue;
-                    }
-                    Stmt stmt = (Stmt) unit;
-                    if (stmt instanceof ReturnStmt
-                            || stmt instanceof ReturnVoidStmt) {
-                        insertRegionExit(body, stmt,
-                                plan.instrumentationSelector(), signature,
-                                refs);
-                    }
-                }
             }
             addThrowHandler(body, regionStart, refs,
                     Hook.THROW_REGION_FRAME, "$causynthRegionThrown",
@@ -724,29 +680,12 @@ public final class CausynthPipeline {
         List<Unit> originalUnits = snapshotUnits(body);
         Local contextToken = newTraceLocal(body, LongType.v(),
                 "$causynthLoopRootContext");
-        ArrayType objectArrayType = ArrayType.v(
-                RefType.v("java.lang.Object"), 1);
-        Local rootArguments = newTraceLocal(body, objectArrayType,
-                "$causynthLoopRootArguments");
         List<Unit> entry = new ArrayList<>();
         entry.add(Jimple.v().newAssignStmt(contextToken,
                 LongConstant.v(0L)));
-        entry.add(Jimple.v().newAssignStmt(rootArguments,
-                Jimple.v().newNewArrayExpr(RefType.v("java.lang.Object"),
-                        IntConstant.v(method.getParameterCount()))));
-        for (int index = 0; index < method.getParameterCount(); index++) {
-            Type parameterType = method.getParameterType(index);
-            if (!(parameterType instanceof RefType)
-                    && !(parameterType instanceof ArrayType)) {
-                continue;
-            }
-            Value parameter = parameterLocal(body, index);
-            if (parameter == null) continue;
-            entry.add(Jimple.v().newAssignStmt(
-                    Jimple.v().newArrayRef(rootArguments,
-                            IntConstant.v(index)),
-                    objectArg(body, parameter, entry)));
-        }
+        Local rootArguments = rootArguments(body, method,
+                method.getParameterCount(), "$causynthLoopRootArguments",
+                entry);
         Value receiver = receiverOrNull(body, method);
         emit(entry, refs.ref(Hook.PAUSE_OBSERVATION));
         Unit enter = invokeTo(contextToken,
@@ -756,17 +695,8 @@ public final class CausynthPipeline {
         entry.add(enter);
         emit(entry, refs.ref(Hook.RESUME_OBSERVATION));
         insertBeforeOrAppendNoRedirect(body, insertionPoint, entry);
-
-        for (Unit unit : originalUnits) {
-            if (!(unit instanceof ReturnStmt)
-                    && !(unit instanceof ReturnVoidStmt)) {
-                continue;
-            }
-            List<Unit> exit = new ArrayList<>();
-            refs.bracket(exit, Hook.EXIT_LOOP_ROOT_INVOCATION_FRAME,
-                    contextToken);
-            insertBeforeSequence(body, unit, exit);
-        }
+        bracketReturns(body, originalUnits, 0, refs,
+                Hook.EXIT_LOOP_ROOT_INVOCATION_FRAME, contextToken);
         addThrowHandler(body, enter, refs,
                 Hook.THROW_LOOP_ROOT_INVOCATION_FRAME,
                 "$causynthLoopRootThrown", contextToken);
@@ -1202,6 +1132,53 @@ public final class CausynthPipeline {
                 bridge, "Could not close loop-body region on ", loopId);
     }
 
+    /**
+     * A new {@code Object[count]} holding the first {@code count} parameters
+     * that are references: the argument array a frame hook takes.
+     */
+    private static Local rootArguments(Body body, SootMethod method,
+                                       int count, String localName,
+                                       List<Unit> units) {
+        Local arguments = newTraceLocal(body,
+                ArrayType.v(RefType.v("java.lang.Object"), 1), localName);
+        units.add(Jimple.v().newAssignStmt(arguments,
+                Jimple.v().newNewArrayExpr(RefType.v("java.lang.Object"),
+                        IntConstant.v(count))));
+        for (int index = 0; index < count; index++) {
+            Type parameterType = method.getParameterType(index);
+            if (!(parameterType instanceof RefType)
+                    && !(parameterType instanceof ArrayType)) {
+                continue;
+            }
+            Value parameter = parameterLocal(body, index);
+            if (parameter == null) continue;
+            units.add(Jimple.v().newAssignStmt(
+                    Jimple.v().newArrayRef(arguments, IntConstant.v(index)),
+                    objectArg(body, parameter, units)));
+        }
+        return arguments;
+    }
+
+    /**
+     * Inserts {@code hook(args)}, bracketed, before every return among the
+     * original units from index {@code from} on (none when it is -1).
+     */
+    private static void bracketReturns(Body body, List<Unit> originalUnits,
+                                       int from, HookCatalog refs,
+                                       Hook hook, Value... args) {
+        for (int index = from; index >= 0 && index < originalUnits.size();
+                index++) {
+            Unit unit = originalUnits.get(index);
+            if (!(unit instanceof ReturnStmt)
+                    && !(unit instanceof ReturnVoidStmt)) {
+                continue;
+            }
+            List<Unit> exit = new ArrayList<>();
+            refs.bracket(exit, hook, args);
+            insertBeforeSequence(body, unit, exit);
+        }
+    }
+
     /** Materializes and symbolizes one parameter local where it is bound. */
     private static void materializeParameter(
             Body body, Value parameter, int index, List<Unit> units,
@@ -1272,10 +1249,9 @@ public final class CausynthPipeline {
     private void instrumentCommunicationFrame(String frameMethod,
                                               boolean outgoing,
                                               HookCatalog refs) {
-        SootMethod method = concreteSelected(frameMethod,
-                "COMMUNICATION_FRAME_METHOD_UNAVAILABLE: " + frameMethod,
-                "COMMUNICATION_FRAME_METHOD_NOT_CONCRETE: " + frameMethod);
-        Body body = method.retrieveActiveBody();
+        Body body = selectedBody(frameMethod, "COMMUNICATION_FRAME_METHOD",
+                frameMethod);
+        SootMethod method = body.getMethod();
         Unit insertionPoint = safeInstrumentationEntry(body, method);
         if (insertionPoint == null) {
             throw new IllegalStateException(
@@ -1318,10 +1294,9 @@ public final class CausynthPipeline {
 
     private void instrumentCommunicationHandoff(
             CommunicationHandoffSpec site, HookCatalog refs) {
-        SootMethod method = concreteSelected(site.method(),
-                "COMMUNICATION_HANDOFF_METHOD_UNAVAILABLE: " + site.portId(),
-                "COMMUNICATION_HANDOFF_METHOD_NOT_CONCRETE: " + site.portId());
-        Body body = method.retrieveActiveBody();
+        Body body = selectedBody(site.method(),
+                "COMMUNICATION_HANDOFF_METHOD", site.portId());
+        SootMethod method = body.getMethod();
         String capture = site.captureKind();
         if (CommunicationCatalogContract.CAPTURE_METHOD_PARAMETER.equals(
                 capture)) {
@@ -1509,30 +1484,13 @@ public final class CausynthPipeline {
             Collection<ConfiguredSourcePhaseContract.Occurrence> phases,
             HookCatalog refs) {
         for (ConfiguredSourcePhaseContract.Occurrence phase : phases) {
-            SootMethod method = concreteSelected(phase.declarationMethod(),
-                    "CONFIGURED_SOURCE_PHASE_METHOD_UNAVAILABLE: "
-                            + phase.siteId(),
-                    "CONFIGURED_SOURCE_PHASE_METHOD_NOT_CONCRETE: "
-                            + phase.siteId());
-            Body body = method.retrieveActiveBody();
-            Stmt selected = uniqueOriginalStmt(body,
-                    phase.declarationUnitIndex(),
-                    "CONFIGURED_SOURCE_PHASE_SITE_NOT_UNIQUE: "
-                            + phase.siteId());
-            if (selected == null || !selected.containsInvokeExpr()) {
-                throw new IllegalStateException(
-                        "CONFIGURED_SOURCE_PHASE_CALL_NOT_FOUND: "
-                                + phase.siteId());
-            }
-            InvokeExpr invocation = selected.getInvokeExpr();
-            if (!phase.runtimeDeclaredCallee().equals(
-                    invocation.getMethodRef().getSignature())) {
-                throw new IllegalStateException(
-                        "CONFIGURED_SOURCE_PHASE_CALLEE_MISMATCH: "
-                                + phase.siteId() + " expected "
-                                + phase.runtimeDeclaredCallee() + " but found "
-                                + invocation.getMethodRef().getSignature());
-            }
+            Body body = selectedBody(phase.declarationMethod(),
+                    "CONFIGURED_SOURCE_PHASE_METHOD", phase.siteId());
+            Stmt selected = originalCall(body, phase.declarationUnitIndex(),
+                    phase.siteId(), "CONFIGURED_SOURCE_PHASE_SITE_NOT_UNIQUE",
+                    "CONFIGURED_SOURCE_PHASE_CALL_NOT_FOUND");
+            requireCallee(selected, phase.runtimeDeclaredCallee(),
+                    "CONFIGURED_SOURCE_PHASE_CALLEE_MISMATCH", phase.siteId());
 
             Local invocationId = newTraceLocal(body, LongType.v(),
                     "$causynthSourcePhaseInvocation");
@@ -1549,36 +1507,48 @@ public final class CausynthPipeline {
 
             List<Unit> after = new ArrayList<>();
             Value returnValue = runtimeCallSiteReturnValue(
-                    selected, invocation);
+                    selected, selected.getInvokeExpr());
             Value returnObject = objectArg(body, returnValue, after);
             Value primitiveReturn = primitiveValueString(
                     body, returnValue, after);
             Unit normalExit = invoke(refs.ref(Hook.EXIT_CONFIGURED_SOURCE_PHASE_SITE),
                     invocationId, returnObject, primitiveReturn);
             after.add(normalExit);
-            Unit normalResume = invoke(refs.ref(Hook.RESUME_OBSERVATION));
-            after.add(normalResume);
-            Unit continuation = Jimple.v().newNopStmt();
-            after.add(Jimple.v().newGotoStmt(continuation));
-            Local caught = newTraceLocal(body,
-                    RefType.v("java.lang.Throwable"),
-                    "$causynthSourcePhaseThrown");
-            Unit handler = Jimple.v().newIdentityStmt(caught,
-                    Jimple.v().newCaughtExceptionRef());
-            after.add(handler);
-            emit(after, refs.ref(Hook.THROW_CONFIGURED_SOURCE_PHASE_SITE),
-                    invocationId);
             emit(after, refs.ref(Hook.RESUME_OBSERVATION));
-            after.add(Jimple.v().newThrowStmt(caught));
-            after.add(continuation);
-            insertAfterSequence(body, selected, after);
+            List<Unit> thrown = new ArrayList<>();
+            emit(thrown, refs.ref(Hook.THROW_CONFIGURED_SOURCE_PHASE_SITE),
+                    invocationId);
+            emit(thrown, refs.ref(Hook.RESUME_OBSERVATION));
             // The source declaration is bookkeeping: its helper branches must
             // not enter the workload path condition.
-            SootClass throwable = Scene.v().getSootClass(
-                    "java.lang.Throwable");
-            body.getTraps().addFirst(Jimple.v().newTrap(throwable, selected,
-                    normalExit, handler));
+            guardCall(body, selected, after, normalExit, thrown,
+                    "$causynthSourcePhaseThrown");
         }
+    }
+
+    /**
+     * Wraps {@code call} in a catch-all: {@code normal} follows it, and a
+     * throw runs {@code exceptional} then rethrows.  The trap covers the call
+     * and the normal units before {@code end}.
+     */
+    private static void guardCall(Body body, Stmt call, List<Unit> normal,
+                                  Unit end, List<Unit> exceptional,
+                                  String caughtName) {
+        Local caught = newTraceLocal(body, RefType.v("java.lang.Throwable"),
+                caughtName);
+        Unit handler = Jimple.v().newIdentityStmt(caught,
+                Jimple.v().newCaughtExceptionRef());
+        Unit continuation = Jimple.v().newNopStmt();
+        List<Unit> after = new ArrayList<>(normal);
+        after.add(Jimple.v().newGotoStmt(continuation));
+        after.add(handler);
+        after.addAll(exceptional);
+        after.add(Jimple.v().newThrowStmt(caught));
+        after.add(continuation);
+        insertAfterSequence(body, call, after);
+        body.getTraps().addFirst(Jimple.v().newTrap(
+                Scene.v().getSootClass("java.lang.Throwable"), call, end,
+                handler));
     }
 
     /**
@@ -1764,17 +1734,8 @@ public final class CausynthPipeline {
                 method.isConstructor() ? NullConstant.v()
                         : receiverOrNull(body, method));
         insertBeforeOrAppendNoRedirect(body, entry, opening);
-        for (int index = instrumentableFrom(originalUnits, null);
-                index >= 0 && index < originalUnits.size(); index++) {
-            Unit unit = originalUnits.get(index);
-            if (!(unit instanceof ReturnStmt)
-                    && !(unit instanceof ReturnVoidStmt)) {
-                continue;
-            }
-            List<Unit> closing = new ArrayList<>();
-            refs.bracket(closing, Hook.EXIT_METHOD_FRAME, token);
-            insertBeforeSequence(body, unit, closing);
-        }
+        bracketReturns(body, originalUnits, 0, refs, Hook.EXIT_METHOD_FRAME,
+                token);
         // The handler reads the token: the trap opens after its store.
         addThrowHandler(body, afterWovenPrologue(body, opening), refs,
                 Hook.THROW_METHOD_FRAME, "$causynthFrameThrown", token);
@@ -1880,29 +1841,12 @@ public final class CausynthPipeline {
             ConcolicMaterializationSelection selection,
             HookCatalog refs) {
         for (AccessorCallTarget target : selection.accessorCalls()) {
-            SootMethod method;
-            Body body;
-            try {
-                method = Scene.v().getMethod(target.callerMethod);
-                if (method == null || !method.isConcrete()) {
-                    throw new IllegalStateException(
-                            "ACCESSOR_CALLSITE_CALLER_NOT_CONCRETE: "
-                                    + target.callSiteId);
-                }
-                body = method.retrieveActiveBody();
-            } catch (RuntimeException failure) {
-                throw new IllegalStateException(
-                        "ACCESSOR_CALLSITE_CALLER_UNAVAILABLE: "
-                                + target.callSiteId, failure);
-            }
-            tagOriginalUnits(snapshotUnits(body));
-            Stmt selected = uniqueOriginalStmt(body, target.callUnitIndex,
-                    "ACCESSOR_CALLSITE_NOT_UNIQUE: " + target.callSiteId);
-            if (selected == null || !selected.containsInvokeExpr()) {
-                throw new IllegalStateException(
-                        "ACCESSOR_CALLSITE_INVOKE_NOT_FOUND: "
-                                + target.callSiteId);
-            }
+            Body body = selectedBody(target.callerMethod,
+                    "ACCESSOR_CALLSITE_CALLER", target.callSiteId);
+            SootMethod method = body.getMethod();
+            Stmt selected = originalCall(body, target.callUnitIndex,
+                    target.callSiteId, "ACCESSOR_CALLSITE_NOT_UNIQUE",
+                    "ACCESSOR_CALLSITE_INVOKE_NOT_FOUND");
             Unit safeEntry = safeInstrumentationEntry(body, method);
             if (method.isConstructor()
                     && (safeEntry == null
@@ -1911,15 +1855,10 @@ public final class CausynthPipeline {
                         "ACCESSOR_CALLSITE_BEFORE_CONSTRUCTOR_INITIALIZATION: "
                                 + target.callSiteId);
             }
+            requireCallee(selected, target.declaredCallee,
+                    "ACCESSOR_CALLSITE_DECLARED_CALLEE_MISMATCH",
+                    target.callSiteId);
             InvokeExpr invocation = selected.getInvokeExpr();
-            if (!target.declaredCallee.equals(
-                    invocation.getMethodRef().getSignature())) {
-                throw new IllegalStateException(
-                        "ACCESSOR_CALLSITE_DECLARED_CALLEE_MISMATCH: "
-                                + target.callSiteId + " expected "
-                                + target.declaredCallee + " but found "
-                                + invocation.getMethodRef().getSignature());
-            }
             if (!(invocation instanceof InstanceInvokeExpr)
                     || "<init>".equals(invocation.getMethodRef().name())) {
                 throw new IllegalStateException(
@@ -1951,30 +1890,13 @@ public final class CausynthPipeline {
             emit(before, refs.ref(Hook.RESUME_OBSERVATION));
             insertBeforeSequence(body, selected, before);
 
-            Unit normalPause = invoke(refs.ref(Hook.PAUSE_OBSERVATION));
-            Unit normalExit = invoke(refs.ref(Hook.EXIT_ACCESSOR_CALL_CONTEXT),
+            List<Unit> exit = new ArrayList<>();
+            refs.bracket(exit, Hook.EXIT_ACCESSOR_CALL_CONTEXT, contextToken);
+            List<Unit> thrown = new ArrayList<>();
+            refs.bracket(thrown, Hook.EXIT_ACCESSOR_CALL_CONTEXT,
                     contextToken);
-            Unit normalResume = invoke(refs.ref(Hook.RESUME_OBSERVATION));
-            Unit continuation = Jimple.v().newNopStmt();
-            Unit skipHandler = Jimple.v().newGotoStmt(continuation);
-            Local caught = newTraceLocal(body,
-                    RefType.v("java.lang.Throwable"),
+            guardCall(body, selected, exit, exit.get(0), thrown,
                     "$causynthAccessorThrown");
-            Unit handler = Jimple.v().newIdentityStmt(caught,
-                    Jimple.v().newCaughtExceptionRef());
-            Unit exceptionalPause = invoke(refs.ref(Hook.PAUSE_OBSERVATION));
-            Unit exceptionalExit = invoke(refs.ref(Hook.EXIT_ACCESSOR_CALL_CONTEXT),
-                    contextToken);
-            Unit exceptionalResume = invoke(refs.ref(Hook.RESUME_OBSERVATION));
-            Unit rethrow = Jimple.v().newThrowStmt(caught);
-            insertAfterSequence(body, selected, Arrays.asList(normalPause,
-                    normalExit, normalResume, skipHandler, handler,
-                    exceptionalPause, exceptionalExit, exceptionalResume,
-                    rethrow, continuation));
-            SootClass throwable = Scene.v().getSootClass(
-                    "java.lang.Throwable");
-            body.getTraps().addFirst(Jimple.v().newTrap(throwable, selected,
-                    normalPause, handler));
         }
     }
 
@@ -1986,38 +1908,15 @@ public final class CausynthPipeline {
     private void instrumentConcolicObservedWriteSites(
             ConcolicMaterializationSelection selection, HookCatalog refs) {
         for (ObservedWriteTarget target : selection.observedWrites()) {
-            SootMethod method;
-            Body body;
-            try {
-                method = Scene.v().getMethod(target.method);
-                if (method == null || !method.isConcrete()) {
-                    throw new IllegalStateException(
-                            "OBSERVED_WRITE_SITE_METHOD_NOT_CONCRETE: "
-                                    + target.siteId);
-                }
-                body = method.retrieveActiveBody();
-            } catch (RuntimeException failure) {
-                throw new IllegalStateException(
-                        "OBSERVED_WRITE_SITE_METHOD_UNAVAILABLE: "
-                                + target.siteId, failure);
-            }
-            tagOriginalUnits(snapshotUnits(body));
-            Stmt selected = uniqueOriginalStmt(body, target.unitIndex,
-                    "OBSERVED_WRITE_SITE_NOT_UNIQUE: " + target.siteId);
-            if (selected == null || !selected.containsInvokeExpr()) {
-                throw new IllegalStateException(
-                        "OBSERVED_WRITE_SITE_INVOKE_NOT_FOUND: "
-                                + target.siteId);
-            }
+            Body body = selectedBody(target.method,
+                    "OBSERVED_WRITE_SITE_METHOD", target.siteId);
+            Stmt selected = originalCall(body, target.unitIndex,
+                    target.siteId, "OBSERVED_WRITE_SITE_NOT_UNIQUE",
+                    "OBSERVED_WRITE_SITE_INVOKE_NOT_FOUND");
+            requireCallee(selected, target.declaredCallee,
+                    "OBSERVED_WRITE_SITE_DECLARED_CALLEE_MISMATCH",
+                    target.siteId);
             InvokeExpr invocation = selected.getInvokeExpr();
-            if (!target.declaredCallee.equals(
-                    invocation.getMethodRef().getSignature())) {
-                throw new IllegalStateException(
-                        "OBSERVED_WRITE_SITE_DECLARED_CALLEE_MISMATCH: "
-                                + target.siteId + " expected "
-                                + target.declaredCallee + " but found "
-                                + invocation.getMethodRef().getSignature());
-            }
             if (!(invocation instanceof InstanceInvokeExpr)) {
                 throw new IllegalStateException(
                         "OBSERVED_WRITE_SITE_REQUIRES_INSTANCE_RECEIVER: "
@@ -2066,22 +1965,16 @@ public final class CausynthPipeline {
                 }
                 for (FieldRef field : fields) {
                     SootFieldRef fieldRef = field.getFieldRef();
-                    SootField declared =
-                            CausynthStaticFacts.declaredField(fieldRef);
                     String declaredSignature =
                             CausynthStaticFacts.declaredFieldSignature(
                                     fieldRef);
-                    String declaredName = declared == null
-                            ? fieldRef.name() : declared.getName();
-                    String staticRefusal =
-                            selection.staticMaterializationRefusal(
-                                    method.getSignature(), unitIndex,
-                                    fieldRef);
+                    String declaredName =
+                            CausynthStaticFacts.declaredFieldName(fieldRef);
                     // An unhookable shape stays concrete under its named
                     // verdict; throwing would kill the whole campaign.
-                    if (!staticRefusal.isEmpty()) continue;
-                    if (!selection.matches(method.getSignature(),
-                            unitIndex, fieldRef)) {
+                    if (!selection.staticMaterializationRefusal(fieldRef)
+                            .isEmpty()
+                            || !selection.matches(fieldRef)) {
                         continue;
                     }
                     if (field instanceof StaticFieldRef) {
@@ -2194,10 +2087,8 @@ public final class CausynthPipeline {
         String declaredSignature =
                 CausynthStaticFacts.declaredFieldSignature(
                         field.getFieldRef());
-        SootField declared =
-                CausynthStaticFacts.declaredField(field.getFieldRef());
-        String declaredName = declared == null
-                ? field.getFieldRef().name() : declared.getName();
+        String declaredName =
+                CausynthStaticFacts.declaredFieldName(field.getFieldRef());
         if (!(stmt instanceof AssignStmt)
                 || ((AssignStmt) stmt).getRightOp() != field
                 || !(((AssignStmt) stmt).getLeftOp() instanceof Local)) {
@@ -2330,8 +2221,8 @@ public final class CausynthPipeline {
                     body.getUnits().insertAfter(invoke(openInvocation,
                             StringConstant.v(loopId)), authority);
                 }
-                boolean resourceLoop = fixedCount;
-                int loopBodyBound = resourceLoop
+                // A fixed-count loop is a resource loop: charged per body.
+                int loopBodyBound = fixedCount
                         ? policy.maxBackedgeTraversals()
                         : naturalLoopBodyBound(
                                 method, loop, continuations, policy);
@@ -2348,21 +2239,24 @@ public final class CausynthPipeline {
                             backedge.source, backedge.target);
                     // A resource loop is charged once per body entered; any
                     // other latch executes after one complete body.
-                    if (resourceLoop && !entersBody) continue;
-                    splitCfgEdge(body, method, backedge.source,
-                            backedge.target, loopId, loopBodyBound,
-                            resourceLoop ? replayBody : checkBackedge);
-                }
-                for (CfgLoopControl.Edge continuation : continuations) {
-                    if (!resourceLoop) continue;
-                    splitCfgEdge(body, method, continuation.source,
-                            continuation.target, loopId, loopBodyBound,
-                            replayBody);
+                    if (fixedCount && !entersBody) continue;
+                    splitLoopEdge(body, method, backedge.source,
+                            backedge.target, loopId, "edge", invoke(
+                                    fixedCount ? replayBody : checkBackedge,
+                                    StringConstant.v(loopId),
+                                    IntConstant.v(loopBodyBound)));
                 }
                 if (fixedCount) {
+                    for (CfgLoopControl.Edge continuation : continuations) {
+                        splitLoopEdge(body, method, continuation.source,
+                                continuation.target, loopId, "edge",
+                                invoke(replayBody, StringConstant.v(loopId),
+                                        IntConstant.v(loopBodyBound)));
+                    }
                     for (CfgLoopControl.Edge exit : loopExits) {
-                        splitStringHookEdge(body, method, exit.source,
-                                exit.target, loopId, closeInvocation);
+                        splitLoopEdge(body, method, exit.source, exit.target,
+                                loopId, "exit", invoke(closeInvocation,
+                                        StringConstant.v(loopId)));
                     }
                     for (Unit terminal : loopTerminals) {
                         body.getUnits().insertBefore(invoke(closeInvocation,
@@ -2539,24 +2433,13 @@ public final class CausynthPipeline {
         return removed;
     }
 
-    /** Splits one loop edge with the bounded-traversal hook it is charged on. */
-    private static void splitCfgEdge(
+    /** Splits one loop {@code edge} (or exit) with one hook call. */
+    private static void splitLoopEdge(
             Body body, SootMethod method, Unit source, Unit target,
-            String loopId, int maxTraversals, SootMethodRef hookRef) {
+            String loopId, String edge, Unit hook) {
         redirectEdge(body, method, source, target,
-                Collections.<Unit>singletonList(invoke(hookRef,
-                        StringConstant.v(loopId),
-                        IntConstant.v(maxTraversals))),
-                "Could not split CFG loop edge ", loopId);
-    }
-
-    /** Splits one normal edge with a single-string, non-throwing hook. */
-    private static void splitStringHookEdge(
-            Body body, SootMethod method, Unit source, Unit target,
-            String loopId, SootMethodRef hookRef) {
-        redirectEdge(body, method, source, target,
-                Collections.<Unit>singletonList(invoke(hookRef, StringConstant.v(loopId))),
-                "Could not split CFG loop exit ", loopId);
+                Collections.singletonList(hook),
+                "Could not split CFG loop " + edge + " ", loopId);
     }
 
     /** Routes one edge through {@code bridge}, or names the failure. */
@@ -2595,9 +2478,8 @@ public final class CausynthPipeline {
      * Weaves the decision marker at EVERY original conditional branch of
      * every instrumented method (LEAN section 1: the plan picks methods, not
      * branches).
-     * @return the number of branch sites woven
      */
-    private int instrumentConcolicBranches(
+    private void instrumentConcolicBranches(
             Collection<String> methods, HookCatalog refs) {
         int[] woven = new int[1];
         instrumentMethods(methods, "",
@@ -2629,7 +2511,6 @@ public final class CausynthPipeline {
         LOG.info("Wove the decision marker at {} conditional branch site(s) "
                 + "across {} instrumented method(s)", woven[0],
                 methods.size());
-        return woven[0];
     }
 
     private void instrumentConcolicBranch(Body body, SootMethod method,
@@ -2785,17 +2666,6 @@ public final class CausynthPipeline {
                 ? current.get(requestedIndex) : null;
     }
 
-    private void insertRegionExit(Body body, Stmt returnUnit,
-                                  String taskId, String rootMethod,
-                                  HookCatalog refs) {
-        List<Unit> units = new ArrayList<>();
-        emit(units, refs.ref(Hook.PAUSE_OBSERVATION));
-        emit(units, refs.ref(Hook.EXIT_REGION_FRAME),
-                StringConstant.v(taskId), StringConstant.v(rootMethod));
-        emit(units, refs.ref(Hook.RESUME_OBSERVATION));
-        insertBeforeSequence(body, returnUnit, units);
-    }
-
     private static List<Unit> snapshotUnits(Body body) {
         List<Unit> units = new ArrayList<>();
         for (Unit unit : body.getUnits()) {
@@ -2820,32 +2690,60 @@ public final class CausynthPipeline {
         }
     }
 
-    /** The scene's concrete method for a selection, or the failure it is. */
-    private static SootMethod concreteSelected(String signature,
-                                               String unavailable,
-                                               String notConcrete) {
+    /**
+     * The active body of the method a selection names, or the refusal
+     * {@code code_UNAVAILABLE} / {@code code_NOT_CONCRETE} naming
+     * {@code subject}.
+     */
+    private static Body selectedBody(String signature, String code,
+                                     String subject) {
         SootMethod method = CausynthStaticFacts.method(signature);
         if (method == null) {
-            throw new IllegalStateException(unavailable);
+            throw new IllegalStateException(code + "_UNAVAILABLE: "
+                    + subject);
         }
         if (!method.isConcrete()) {
-            throw new IllegalStateException(notConcrete);
+            throw new IllegalStateException(code + "_NOT_CONCRETE: "
+                    + subject);
         }
-        return method;
+        try {
+            return method.retrieveActiveBody();
+        } catch (RuntimeException failure) {
+            throw new IllegalStateException(code + "_UNAVAILABLE: "
+                    + subject, failure);
+        }
     }
 
-    /** The one original unit at {@code unitIndex}, or {@code null}. */
-    private static Stmt uniqueOriginalStmt(Body body, int unitIndex,
-                                           String notUnique) {
+    /**
+     * The one original unit at {@code unitIndex}, a call: refused as
+     * {@code notUnique} when it is not one statement, {@code notFound} when
+     * it is absent or calls nothing.
+     */
+    private static Stmt originalCall(Body body, int unitIndex, String site,
+                                     String notUnique, String notFound) {
+        tagOriginalUnits(snapshotUnits(body));
         Stmt selected = null;
         for (Unit unit : snapshotUnits(body)) {
             if (originalUnitIndex(unit) != unitIndex) continue;
             if (selected != null || !(unit instanceof Stmt)) {
-                throw new IllegalStateException(notUnique);
+                throw new IllegalStateException(notUnique + ": " + site);
             }
             selected = (Stmt) unit;
         }
+        if (selected == null || !selected.containsInvokeExpr()) {
+            throw new IllegalStateException(notFound + ": " + site);
+        }
         return selected;
+    }
+
+    /** Refuses a call whose callee is not the declared one. */
+    private static void requireCallee(Stmt call, String declared,
+                                      String mismatch, String site) {
+        String found = call.getInvokeExpr().getMethodRef().getSignature();
+        if (!declared.equals(found)) {
+            throw new IllegalStateException(mismatch + ": " + site
+                    + " expected " + declared + " but found " + found);
+        }
     }
 
     /** The parameter local bound at {@code index}, or {@code null}. */
