@@ -251,11 +251,6 @@ JVM_GetSharedElementVersions(JNIEnv *env, jclass ignored, jobject array,
 JNIEXPORT jstring JNICALL
 JVM_GetSharedMapVersions(JNIEnv *env, jclass ignored, jobject map);
 
-JNIEXPORT jlong JNICALL
-JVM_GetLiveSharedVersion(JNIEnv *env, jclass ignored, jobject owner,
-                         jstring declaring_class, jstring field_name,
-                         jstring descriptor, jint index);
-
 JNIEXPORT jstring JNICALL
 JVM_GetConcolicRegionSummary(JNIEnv *env, jclass ignored);
 

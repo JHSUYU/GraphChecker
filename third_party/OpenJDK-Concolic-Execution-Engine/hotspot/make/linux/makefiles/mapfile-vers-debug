@@ -283,7 +283,6 @@ SUNWprivate_1.1 {
                 JVM_GetTrackedLocationVersions;
                 JVM_GetSharedElementVersions;
                 JVM_GetSharedMapVersions;
-                JVM_GetLiveSharedVersion;
                 JVM_GetConcolicRegionSummary;
                 JVM_FinishConcolicRegion;
 

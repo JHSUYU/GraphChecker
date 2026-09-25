@@ -48,8 +48,7 @@ public final class RowInvariants {
     /** A plain decimal, as an INTEGRAL or CLOCK reading is spelled. */
     private static final Pattern DECIMAL = Pattern.compile("^-?[0-9]+$");
     /** The site spelling a placeholder read carries. */
-    private static final String PLACEHOLDER = "#" + Endpoint.PLACEHOLDER
-            + "#";
+    public static final String PLACEHOLDER = "#PLACEHOLDER#";
 
     private RowInvariants() {
     }

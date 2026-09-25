@@ -78,19 +78,18 @@ public final class Endpoint {
                 write ? "WRITE" : "READ");
     }
 
-    /**
-     * The method part of a PLACEHOLDER read's site: the mint of a declared
-     * cell, which stands on the cell and not at a bytecode.
-     */
-    public static final String PLACEHOLDER = "PLACEHOLDER";
-    /** The method part of a site the VM's log did not state. */
-    public static final String UNSTATED_SITE = "UNSTATED_SITE";
+    /** The one spelling of an allocation site (IDENTITY-V3 sec 5). */
+    public static String allocationSite(String className, String method,
+                                        int bci, boolean array) {
+        return site(className, method, "", bci,
+                array ? "NEWARRAY" : "NEW");
+    }
 
     public OccurrenceAddress occurrence() {
         return occurrence;
     }
 
-    /** The declared port id (WIRE), or the read/write site (STATE). */
+    /** The declared port id (WIRE), the read/write site, or the allocation. */
     public String site() {
         return site;
     }

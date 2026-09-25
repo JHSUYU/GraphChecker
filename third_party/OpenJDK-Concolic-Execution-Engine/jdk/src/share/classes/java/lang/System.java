@@ -716,19 +716,6 @@ public final class System {
     public static native String getSharedMapVersions(Object map);
 
     /**
-     * The id of the version live right now at one shared location, or
-     * {@code 0} when the location holds none.  The location is named as
-     * {@link #getSharedFieldVersions} names a field -- a static one through
-     * its {@code Class} -- or, with a null {@code declaringClass}, as an
-     * array element when {@code index} is not negative, else as a
-     * container's whole state, a view naming the container it views.
-     * Nothing is selected or recorded by asking.
-     */
-    public static native long getLiveSharedVersion(
-            Object owner, String declaringClass, String fieldName,
-            String descriptor, int index);
-
-    /**
      * Returns the active region metadata and path condition without ending
      * concolic execution.
      */

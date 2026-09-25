@@ -507,8 +507,7 @@ final class RowPlaceholderMint {
         // a row is already a stated failure (invariant 7).
         RowRuntime.read(occurrence,
                 mintVersion < 0L ? event : mintVersion,
-                Endpoint.stateSite(locationKey, Endpoint.PLACEHOLDER, 0,
-                        false),
+                Endpoint.stateSite(locationKey, "PLACEHOLDER", 0, false),
                 location, observed, symbol,
                 declared, literal(value),
                 optionalString(row, "siteIndex"), mintVersion);

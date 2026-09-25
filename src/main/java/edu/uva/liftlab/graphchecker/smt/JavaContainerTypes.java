@@ -141,26 +141,6 @@ public final class JavaContainerTypes {
                 && SET_MUTATORS.contains(method.subsignature);
     }
 
-    /** What one call does to the whole state of the container it is on. */
-    public enum StateAccess {
-        NONE, READ, WRITE
-    }
-
-    /**
-     * Whether a call reads or changes its receiver's modeled state: a
-     * mutation of the container algebra, a removal through an iterator (a
-     * view's mutation of the container it views), or any other result the
-     * algebra models.
-     */
-    public static StateAccess stateAccess(String signature) {
-        if (modeledContainerMutator(signature)
-                || "<java.util.Iterator: void remove()>".equals(signature)) {
-            return StateAccess.WRITE;
-        }
-        return symbolicResultOperation(signature) ? StateAccess.READ
-                : StateAccess.NONE;
-    }
-
     private static final class MethodSignature {
         private final String owner;
         private final String subsignature;

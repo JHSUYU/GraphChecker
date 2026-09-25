@@ -132,19 +132,13 @@ final class FlipQuery {
          * it reads.</p>
          */
         final Map<String, String> clockVariables;
-        /**
-         * The versions the query let z3 choose: one choice per reader
-         * occurrence and location (R-I7.1), with the reads it binds.  What
-         * the model chose becomes the world's {@code versions}.
-         */
-        final List<StateChoice> stateChoices;
         final List<GapRow> gaps;
 
         private Built(String smt2, List<String> modelSymbols, String refusal,
                       DecisionRow flipped,
                       List<Control> controls, Map<String, String> rootVariables,
                       Map<String, String> clockVariables,
-                      List<StateChoice> stateChoices, List<GapRow> gaps) {
+                      List<GapRow> gaps) {
             this.smt2 = smt2;
             this.modelSymbols =
                     Collections.unmodifiableList(modelSymbols);
@@ -155,7 +149,6 @@ final class FlipQuery {
                     Collections.unmodifiableMap(rootVariables);
             this.clockVariables =
                     Collections.unmodifiableMap(clockVariables);
-            this.stateChoices = Collections.unmodifiableList(stateChoices);
             this.gaps = Collections.unmodifiableList(gaps);
         }
 
@@ -164,6 +157,14 @@ final class FlipQuery {
         }
     }
 
+    /**
+     * Whether one decision is worth an obligation: its predicate has to
+     * mention something exploration can move.
+     *
+     * <p>A decision over constants is closed by the recording -- negating it
+     * asks for a world the execution does not have -- and one over a value
+     * nothing declares cannot be asked for either.</p>
+     */
     /**
      * Whether one recorded decision is a flip candidate at all.
      *
@@ -247,36 +248,6 @@ final class FlipQuery {
         }
     }
 
-    /**
-     * One reader occurrence's choice of writer for one location, and the
-     * reads of that location it binds (R-I7.1: a writer occurrence's writes
-     * move as a block relative to the reader, so every read of the location
-     * inside the reader takes the same choice).
-     */
-    static final class StateChoice {
-        private final List<Choice> choices;
-        final List<ReadRow> readers = new ArrayList<ReadRow>();
-
-        private StateChoice(List<Choice> choices) {
-            this.choices = choices;
-        }
-
-        /** How many writers the read could have observed. */
-        int alternatives() {
-            return choices.size();
-        }
-
-        /** The writer a model's selectors chose, or null. */
-        Arms.Arm chosen(Map<String, String> model) {
-            for (Choice choice : choices) {
-                if ("true".equals(model.get(choice.selector))) {
-                    return choice.alternative;
-                }
-            }
-            return null;
-        }
-    }
-
     private static final class Builder
             implements FlipQueryText.Scope {
         private final Corpus corpus;
@@ -343,8 +314,8 @@ final class FlipQuery {
         private final Map<String, Control> controls =
                 new LinkedHashMap<String, Control>();
         /** reader occurrence + location -> its one choice of writer. */
-        private final Map<String, StateChoice> stateChoices =
-                new LinkedHashMap<String, StateChoice>();
+        private final Map<String, List<Choice>> choicesByReader =
+                new LinkedHashMap<String, List<Choice>>();
         private final Map<String, String> rootVariables =
                 new LinkedHashMap<String, String>();
         private final Map<String, String> clockVariables =
@@ -490,8 +461,7 @@ final class FlipQuery {
                 return new Built("", Collections.<String>emptyList(),
                         refusal, flipped,
                         new ArrayList<Control>(controls.values()),
-                        rootVariables, clockVariables,
-                        Collections.<StateChoice>emptyList(), gaps);
+                        rootVariables, clockVariables, gaps);
             }
             String free = unbound();
             if (!free.isEmpty()) {
@@ -549,8 +519,7 @@ final class FlipQuery {
                     new ArrayList<String>(sorts.keySet()), "", flipped,
                     new ArrayList<Control>(controls.values()),
                     reached(rootVariables, reached),
-                    reached(clockVariables, reached),
-                    new ArrayList<StateChoice>(stateChoices.values()), gaps);
+                    reached(clockVariables, reached), gaps);
         }
 
         /**
@@ -1250,9 +1219,9 @@ final class FlipQuery {
             // occurrence, shared by those reads, is what says so.
             String choiceKey = row.endpoint().occurrence().id() + "|"
                     + SmtLowering.locationKey(row.location());
-            StateChoice state = stateChoices.get(choiceKey);
-            if (state == null) {
-                List<Choice> choices = new ArrayList<Choice>();
+            List<Choice> choices = choicesByReader.get(choiceKey);
+            if (choices == null) {
+                choices = new ArrayList<Choice>();
                 int ordinal = 0;
                 for (Arms.Arm alternative : eligible) {
                     String selector = names.name("choice|" + choiceKey + "|"
@@ -1264,13 +1233,11 @@ final class FlipQuery {
                             + alternative.slotId());
                     choices.add(new Choice(selector, alternative));
                 }
-                state = new StateChoice(choices);
-                stateChoices.put(choiceKey, state);
+                choicesByReader.put(choiceKey, choices);
                 assertions.add(exactlyOne(choices));
             }
-            state.readers.add(row);
             List<String> bindings = new ArrayList<String>();
-            for (Choice choice : state.choices) {
+            for (Choice choice : choices) {
                 String value = delivered(choice.alternative);
                 if (value.isEmpty()) continue;
                 bindings.add("(=> " + choice.selector + " (= " + variable
@@ -1580,8 +1547,7 @@ final class FlipQuery {
             return new Built("", Collections.<String>emptyList(),
                     kind.name() + ":" + subject, flipped,
                     new ArrayList<Control>(controls.values()), rootVariables,
-                    clockVariables, Collections.<StateChoice>emptyList(),
-                    gaps);
+                    clockVariables, gaps);
         }
 
         /**

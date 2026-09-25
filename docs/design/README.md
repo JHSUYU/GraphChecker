@@ -14,6 +14,6 @@ Where the README and one of them disagree, the rows decide.
 | `CONTRACT-SPEC.md` | the row and gap contract (its package names predate the current tree; the row semantics stand) | `contract`, `RowInvariants` |
 
 Paths inside these files may refer to a decommissioned host; read them as descriptions of what
-an artifact was. The partial-order replay (the versions a world chose, the gate that holds a
-read to its version), the three-rule attribution resolver and the case-preparation rules are
-recorded in the README §6 and in `experiments/hadoop/lib/README.md`.
+an artifact was. The schedule/attribution design (deterministic prefix, rest clock, the
+three-rule resolver) and the case-preparation rules are recorded in the README §6 and in
+`experiments/hadoop/lib/README.md`.

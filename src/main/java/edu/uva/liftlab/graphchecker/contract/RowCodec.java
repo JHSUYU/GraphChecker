@@ -407,33 +407,38 @@ public final class RowCodec {
                 string(json, SESSION_ID), string(json, "detail"));
     }
 
-    public static JsonObject writeReadsFrom(ReadsFrom row) {
+    /**
+     * One scheduling event.  No session id: a schedule is one run's order and
+     * travels between sessions -- a task carries the prefix of the session it
+     * was cut from -- so a row names what the event is and nothing else.
+     */
+    public static JsonObject writeScheduleEvent(ScheduleEvent event) {
         JsonObject json = new JsonObject();
-        json.addProperty("reader", row.reader());
-        json.addProperty("readerSite", row.readerSite());
-        json.addProperty("writer", row.writer());
-        json.addProperty("writerSite", row.writerSite());
+        json.addProperty(SEQ, event.seq());
+        json.addProperty("kind", event.kind().name());
+        json.addProperty(CONTEXT, event.context());
+        json.addProperty("site", event.site());
+        json.addProperty("k", event.k());
+        if (!event.occurrence().isEmpty()) {
+            json.addProperty(OCCURRENCE, event.occurrence());
+        }
+        if (!event.endpoint().isEmpty()) {
+            json.addProperty("endpoint", event.endpoint());
+        }
         return json;
     }
 
-    public static ReadsFrom readReadsFrom(JsonObject json) {
-        return ReadsFrom.of(string(json, "reader"),
-                string(json, "readerSite"), string(json, "writer"),
-                string(json, "writerSite"));
-    }
-
-    public static JsonObject writeDoor(DoorRow row) {
-        JsonObject json = row(row.sessionId());
-        json.addProperty("kind", row.kind().name());
-        json.addProperty("endpoint", row.endpoint());
-        json.addProperty(OCCURRENCE, row.occurrence());
-        return json;
-    }
-
-    public static DoorRow readDoor(JsonObject json) {
-        return DoorRow.of(string(json, SESSION_ID),
-                DoorRow.Kind.valueOf(string(json, "kind")),
-                string(json, "endpoint"), string(json, OCCURRENCE));
+    public static ScheduleEvent readScheduleEvent(JsonObject json) {
+        JsonElement occurrence = json.get(OCCURRENCE);
+        JsonElement endpoint = json.get("endpoint");
+        return ScheduleEvent.of(json.get(SEQ).getAsLong(),
+                ScheduleEvent.Kind.valueOf(string(json, "kind")),
+                json.has(CONTEXT) ? json.get(CONTEXT).getAsString() : "",
+                string(json, "site"), json.get("k").getAsInt(),
+                occurrence == null || occurrence.isJsonNull() ? ""
+                        : occurrence.getAsString(),
+                endpoint == null || endpoint.isJsonNull() ? ""
+                        : endpoint.getAsString());
     }
 
     // ---- files ---------------------------------------------------------

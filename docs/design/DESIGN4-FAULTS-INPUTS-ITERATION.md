@@ -154,8 +154,8 @@ inputs.
 
 Nodes = occurrences (r, c, i) with their node and the world (flip set) they were
 observed in. Edges = wire slots (producer endpoint → consumer endpoint), state
-edges (writer → reader, by version). All of it is already in the rows
-(activations, exports/attaches, writes/reads, doors);
+edges (writer → reader, by version), thread edges (START → CLAIM). All of it is
+already in the rows (activations, exports/attaches, writes/reads, schedule);
 `graph.jsonl` per wave replaces `slots.jsonl`, world-labelled.
 
 ### 3.2 Diff per world
@@ -180,9 +180,9 @@ and diff against `G_k`. New relevant nodes and edges enter `G_{k+1}` labelled `w
   decisions and exports.
 - (c) **A new producer for a known consumer under world `w`.** Today a
   replacement, BLOCKING. New: a new arm keyed by `w` — the paper's selector `s`
-  IS the world's flip. Replacement stays BLOCKING only within one world: a
-  message is paired by the run that carries it, so two pairings under the
-  same flips mean the identity named two interactions one way.
+  IS the world's flip. Replacement stays BLOCKING only within one world: two
+  pairings under the same flips mean the schedule did not hold, and
+  SCHEDULE_DIVERGED already says so.
 
 ### 3.4 Compose over `G_k`
 
@@ -247,9 +247,8 @@ One focused replay after DECIDE, only for a `SAT_CANDIDATE`: re-run the
 world the selected path's own session ran -- the root values, clock skews
 and answers its obligation's focus row planted, MARKERs included, proven in
 an execution -- with no flip forced and none inherited (the values drive the
-decisions), hold the reads the selected path rests on to the versions the
-model chose (the partial order of README §6: a held read waits for its
-writer's version; one that cannot get it is unreachable), and run once. The
+decisions), hold that session's schedule exactly as an obligation replay
+does (strict prefix to the anchor, timeouts after), and run once. The
 model's own instants are the published witness, not what the run is held
 to: a solver sits on the boundary of its constraints and a run's timeline
 moves by more than that (bug1: the anchor reached, the fatal not observed,
@@ -261,30 +260,30 @@ When every arm the model chose is a delivery the selected session itself
 recorded, and that session minted each moved root at the model's value and
 observed the fatal, the selected session IS that run: it is the confirmation
 (`ConfirmMain.realizedBy`, `realized.json`) and nothing is replayed -- a
-replay of its world would test only whether its races go the same way twice
-(hdfs-17899 bug2, v38: the replay stalled at the DataNode actor's heartbeat
-and one chosen consumer never attached, while the selected session had
-taken both chosen edges and the fatal). A
+replay of its world would test only whether a race the order does not hold
+goes the same way twice (hdfs-17899 bug2, v38: the replay's schedule stalled
+at the DataNode actor's heartbeat and one chosen consumer never attached,
+while the selected session had taken both chosen edges and the fatal). A
 model that combines deliveries of different sessions has no such run, and
 the replay makes one.
 The replay's claim is confirmed iff (a) every edge the model chose
 is the edge the run took -- per message family the selected arm (consumer
-endpoint <- producer endpoint), per held state join the version the model
-chose (the writer a selected `writer_arm__` names, or the recorded writer of
-a join across threads; a join on the reader's own thread is program order's,
-and rule (b) checks where it leads), per placeholder join the writer the
-placeholder observed, per marker its planted polarity -- and (b) the
-anchor's target row states `observedFatal` and `reachedAnchor`. The message
-edges and the placeholders are checked (`expected_edges.jsonl`,
-`CONFIRM_MISMATCH` gaps); the state joins are held as the focus row's
-`versions` and a version the run could not realize un-admits the replay
-(`VERSION_UNREALIZED`). The total order the replay used to be held to held
-communication and thread events and never a field access, so a race between
-threads moved events the model's explanation did not depend on (round v36's
-hdfs-17899-bug2: `triggerHeartbeatForTests` read the DataNode actor's
-`nextHeartbeatTime` after that actor's heartbeat instead of before, and the
-watchdog gave the order up); the partial order holds exactly the reads the
-model rests on.
+endpoint ← producer endpoint), per state join the model chose among alternative writers the writer the read
+observed (a join with one candidate is the recording's, and rule (b) checks where it leads), per marker its planted polarity -- and (b) the anchor's target
+row states `observedFatal` and `reachedAnchor`. The edges and the fatal are
+the evidence; the schedule is how the replay reproduces the selected
+session, and a divergence of it stays a diagnostic gap (2026-09-24): the
+order holds communication and thread events, not plain field accesses, so a
+race between threads can move events the model's explanation does not
+depend on. Round v36's hdfs-17899-bug2 CONFIRM took every edge the model
+chose and observed the fatal at the anchor, and was refused on the order
+alone: the workload's `triggerHeartbeatForTests` read the DataNode actor's
+`nextHeartbeatTime` after that actor's heartbeat instead of before, waited
+for the next one, which the order places after the workload's own request,
+and the watchdog gave the slots up. Checking, never enforcing:
+the existing hooks (the attach, the read and write rows, the target row)
+compare against `expected_edges.jsonl` and file `CONFIRM_MISMATCH`
+(DIAGNOSTIC) gaps; the run is scheduled by the session's schedule as today.
 Failing either downgrades the claim to `SAT_UNCONFIRMED` with the
 first mismatch named (`final/confirm.json`, copied into `result.json`); the
 acceptance harness passes a case only on `confirmed=true`.

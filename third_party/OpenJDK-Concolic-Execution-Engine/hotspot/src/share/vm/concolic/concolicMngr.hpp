@@ -279,18 +279,6 @@ public:
   static std::string getSharedElementVersions(Handle array, jint index);
   /** getSharedFieldVersions for one selected container's whole state. */
   static std::string getSharedMapVersions(Handle map);
-  /**
-   * The id of the version live at one location right now, or 0 when the
-   * location holds none (never tracked, or its owner has no shadow).  The
-   * location is named as the three calls above name it: a field (instance,
-   * or static through its Class), else an array element when {@code index}
-   * is not negative, else a container's whole state -- a view resolving to
-   * the container it views.  Resolved, never allocated, and nothing is
-   * recorded: asking must not change what is asked about.
-   */
-  static jlong getLiveSharedVersion(Handle owner, const char *declaring_class,
-                                    const char *field_name,
-                                    const char *descriptor, jint index);
 
   static bool trackContainerExpression(Handle container,
                                        const char *prefix);

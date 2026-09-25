@@ -6,7 +6,6 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
-import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
@@ -81,6 +80,9 @@ public final class CausynthTraceRecorder {
     public static void startRecording() {
         initialize();
         RecordingWindow.open();
+        // A replay held to a prefix: every timed wait already running
+        // converts to the prefix's virtual time where it stands.
+        if (ScheduleLog.enforcing()) TimedWaits.windowOpened();
     }
 
     /**
@@ -694,12 +696,13 @@ public final class CausynthTraceRecorder {
         Endpoint producer = Identity.messageSent(
                 RuntimeTraceContext.ownedSource(localOwner).key(),
                 transport, correlationId, half);
-        // The door this message left by: which occurrence sent the producer
-        // endpoint its receivers will state as their anchor.
-        if (producer != null) {
-            RowRuntime.door(edu.uva.liftlab.graphchecker.contract.DoorRow.Kind
-                    .SEND, producer.id());
-        }
+        // The SEND of the schedule, stating the producer it minted: a replay
+        // held to a prefix lets this message leave when it is its turn, and
+        // the rows then pair the receiver's anchor with this sender.
+        ScheduleLog.observe(
+                edu.uva.liftlab.graphchecker.contract.ScheduleEvent.Kind.SEND,
+                MapFields.safe(transport) + "#" + MapFields.safe(half),
+                producer == null ? "" : producer.id());
         // Off unless asked: the one place a replay states a message's
         // producer endpoint in full, which is what telling two passes' anchor
         // digests apart needs (the recording states it on its trace row).
@@ -776,14 +779,11 @@ public final class CausynthTraceRecorder {
                     + MapFields.safe(half), refused.getMessage());
             return 0L;
         }
-        // The door this message came in by, under the scope it opened: the
-        // anchor of that scope is the producer endpoint, WHICH message.
-        CausalContext opened = Identity.contextHere();
-        if (opened instanceof CausalContext.Anchor) {
-            RowRuntime.door(edu.uva.liftlab.graphchecker.contract.DoorRow.Kind
-                    .RECV, ((CausalContext.Anchor) opened)
-                    .producerEndpointId());
-        }
+        // The RECV of the schedule, under the scope the message opened: its
+        // context names the producer endpoint, which is WHICH message.
+        ScheduleLog.observe(
+                edu.uva.liftlab.graphchecker.contract.ScheduleEvent.Kind.RECV,
+                MapFields.safe(transport) + "#" + MapFields.safe(half));
         // recordExchange's own refusal is not this rule: it names the
         // engine's argument contract, which every caller satisfies with
         // constants, so it stays an exception rather than a row.
@@ -1255,6 +1255,9 @@ public final class CausynthTraceRecorder {
                 outputDir = configuredOutputDir;
                 traceWriter = configuredWriter;
                 contextOnlyConcolicReplay = false;
+                // The recording's schedule stands beside its trace, in the
+                // same shape a replay session publishes it.
+                ScheduleLog.installFile(configuredOutputDir);
                 INITIALIZED.set(true);
             } catch (IOException | RuntimeException failure) {
                 closeQuietly(configuredWriter);

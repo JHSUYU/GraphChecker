@@ -292,12 +292,17 @@ public final class WorkStartSites {
      * One timed-wait shape: the call a service loop waits with, and the
      * method of {@code runtime.TimedWaits} that stands in for it.
      *
-     * <p>A timed wait that returns hands its thread the loop's next turn,
-     * which is a root scope of its own ({@code runtime.TimedWaits}).  The
-     * weave replaces the call -- the receiver, when there is one, becomes
-     * the first argument and the call site the last -- and the stand-in
-     * makes the call itself, closing the turn before it and opening the next
-     * one after it.</p>
+     * <p>The WAKE of the schedule: a timed wait that returns hands its thread
+     * the loop's next turn.  The weave replaces the call -- the receiver, when
+     * there is one, becomes the first argument and the call site the last --
+     * because under a schedule prefix the wait must not read the wall clock
+     * at all, and a hook placed around the call could not stop it doing
+     * so.</p>
+     *
+     * <p>The same list names the notifiers of those primitives and their
+     * untimed waits, replaced the same way: a held wait leaves the wait set
+     * between two asks for its turn, so a signal must be state the wait can
+     * read afterwards, which only a replaced notifier can write.</p>
      */
     public static final class TimedWait {
         /** The type the callee is declared on, or that the receiver is. */
@@ -362,7 +367,23 @@ public final class WorkStartSites {
             new TimedWait(CONDITION_TYPE, "await", false, "boolean", "await",
                     "long", "java.util.concurrent.TimeUnit"),
             new TimedWait(QUEUE_TYPE, "poll", false, "java.lang.Object",
-                    "poll", "long", "java.util.concurrent.TimeUnit"));
+                    "poll", "long", "java.util.concurrent.TimeUnit"),
+            // A signal is state (TimedWaits): the notifiers of the same
+            // primitives, and their untimed waits, so a held wait -- out of
+            // the wait set between two asks for its turn -- still reads a
+            // signal sent in that gap.  None of these is an event.
+            new TimedWait("java.lang.Object", "wait", false, "void",
+                    "waitOn"),
+            new TimedWait("java.lang.Object", "notify", false, "void",
+                    "notifyOn"),
+            new TimedWait("java.lang.Object", "notifyAll", false, "void",
+                    "notifyAllOn"),
+            new TimedWait(CONDITION_TYPE, "await", false, "void", "await"),
+            new TimedWait(CONDITION_TYPE, "awaitUninterruptibly", false,
+                    "void", "awaitUninterruptibly"),
+            new TimedWait(CONDITION_TYPE, "signal", false, "void", "signal"),
+            new TimedWait(CONDITION_TYPE, "signalAll", false, "void",
+                    "signalAll"));
 
     /**
      * The timed-wait shape this call is, or null.
@@ -391,8 +412,8 @@ public final class WorkStartSites {
 
     /**
      * Whether a call, read off bytecode, may be one of {@link #TIMED_WAITS}:
-     * its name alone, since a wait on an application object is owned by that
-     * object's class.  Wide for the reason {@link
+     * its name alone, since a wait or a notify on an application object is
+     * owned by that object's class.  Wide for the reason {@link
      * #mayHandOffWork} is; the weave asks {@link #timedWait}.
      */
     public static boolean mayWait(String calleeName) {

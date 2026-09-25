@@ -4,7 +4,6 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
-import edu.uva.liftlab.graphchecker.contract.DoorRow;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
 import edu.uva.liftlab.graphchecker.contract.ExpressionTable;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
@@ -98,7 +97,7 @@ public final class SessionPublisher {
                         layout.decisions(), layout.exports(),
                         layout.attaches(), layout.writes(), layout.reads(),
                         layout.roots(), layout.targets(), layout.gaps(),
-                        layout.doors()}) {
+                        layout.schedule()}) {
                     if (!Files.exists(file)) Files.createFile(file);
                 }
                 RowCodec.writeManifest(layout.manifest(),
@@ -161,9 +160,9 @@ public final class SessionPublisher {
         if (row != null) append(layout.gaps(), RowCodec.writeGap(row));
     }
 
-    /** Which occurrence one message left or entered by. */
-    public void door(DoorRow row) {
-        if (row != null) append(layout.doors(), RowCodec.writeDoor(row));
+    /** One scheduling event, in the order the run made it. */
+    public void schedule(JsonObject event) {
+        if (event != null) append(layout.schedule(), event);
     }
 
     /** What one obligation's focused replay settled. */

@@ -37,12 +37,13 @@ and opens the recorded window with it.  Daemons are not suppressed (owner
 ruling 2026-09-23: they take part in the coordination a case is about).  A
 daemon's work that crosses a queue carries its scope across it -- the IPC
 server's call queue, the DataNode actor's command processor -- so a key update
-a daemon heartbeat took is still a recorded delivery with its IPC doors.  A
-replay is held to no order of daemon turns: it holds the reads its question
-rests on to the versions its world chose (README §6), so a daemon turn that
-writes what such a read observes is waited for, and every other turn runs on
-the wall clock of a replay many times slower than the recording.  More rules
-keep the world the window starts from the same in every run:
+a daemon heartbeat took is still a recorded delivery with its IPC doors.  The
+schedule reproduces daemons -- before a replay's cut event by event, and after
+it in their timeouts, so a daemon turn the recording took after the
+workload's own request is not taken before it just because the replay runs
+many times slower than the recording did.  More rules keep the world the
+window starts from the same in every run, because the schedule orders only
+the window itself:
 
 - the cluster's configuration goes through `CausynthCluster.configure`, so
   nothing set up before the window expires on the wall clock (the recording
@@ -61,10 +62,9 @@ keep the world the window starts from the same in every run:
   different started node play each role in every run.  A case whose roles
   come from an erasure-coded group names its nodes by block index instead;
 - every wait the workload makes inside its window for its own results is
-  bounded by `CausynthCluster.WINDOW_WAIT_MS` (60 s), no shorter than the
-  version gate's timeout: a held read that cannot get its version stalls its
-  thread that long before it goes on unrealized, and a workload that gives up
-  first fails for the engine's reason.
+  bounded by `CausynthCluster.WINDOW_WAIT_MS` (60 s): a replay that cannot
+  hold its prefix stalls every thread for the watchdog's 15 s before it runs
+  free, and a workload that gives up first fails for the engine's reason.
 - a check inside the window of what a witness exists to change -- a key a
   node must still retain, the rotation gap, a cached key id -- is
   `CausynthCluster.recordingPrecondition(() -> ..., message)`: asserted in

@@ -10,7 +10,7 @@ import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
-import edu.uva.liftlab.graphchecker.contract.Endpoint;
+import edu.uva.liftlab.graphchecker.contract.RowInvariants;
 import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
@@ -156,8 +156,8 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
                 MINT_VERSION, placeholder.observedVersion());
         assertTrue("published as a placeholder of that location",
                 placeholder.endpoint().site().startsWith(CLOCK_CELL)
-                        && placeholder.endpoint().site().contains(
-                        "#" + Endpoint.PLACEHOLDER + "#"));
+                        && placeholder.endpoint().site()
+                        .contains(RowInvariants.PLACEHOLDER));
         assertEquals("on the location the VM numbered", "217",
                 placeholder.location().owner());
         assertNull("and it states no value: the root row states that, and a"

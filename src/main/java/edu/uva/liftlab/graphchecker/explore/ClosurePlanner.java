@@ -328,8 +328,8 @@ public final class ClosurePlanner {
      * SS1.2, SS1.4).  The sender's door fails the request before it leaves;
      * the receiver's door loses the reply after the server applied it.  The
      * pairing is the served occurrence's ANCHOR, which is the producer
-     * endpoint: the doors state which occurrence sent it and which took it
-     * in ({@code contract.DoorRow}).
+     * endpoint: the schedule's SEND event states which occurrence minted
+     * it, and its RECV event which occurrence took it in.
      */
     private static void controlProducer(Corpus corpus, Demand demand,
                                         List<Demand> next) {

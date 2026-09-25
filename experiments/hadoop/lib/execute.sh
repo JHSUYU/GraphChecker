@@ -18,7 +18,6 @@ if [[ -n ${CAUSYNTH_CONCOLIC_TASK_PLAN:-} ]]; then
     "-Dcausynth.concolic.task.id=${CAUSYNTH_CONCOLIC_TASK_ID}"
     "-Dcausynth.concolic.results=${results}"
     "-Dcausynth.concolic.campaign.max.tasks=${CAUSYNTH_CONCOLIC_MAX_TASKS}"
-    "-Dcausynth.concolic.classes=${classes}"
   )
   [[ ${CAUSYNTH_CONCOLIC_ROLE} != worker ]] || properties+=(
     -Dcausynth.concolic.halt.after.selected.result=true)

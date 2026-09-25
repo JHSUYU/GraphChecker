@@ -1,29 +1,27 @@
 package edu.uva.liftlab.graphchecker.explore;
 
+import java.util.ArrayList;
+import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
-import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.contract.AccessSites;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.ExpressionTable;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
-import edu.uva.liftlab.graphchecker.contract.ObligationDir;
-import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
-import edu.uva.liftlab.graphchecker.contract.ReadsFrom;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
+import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.contract.SessionManifest;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
-import edu.uva.liftlab.graphchecker.contract.Verdict;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.runtime.Confirmation;
 import java.nio.charset.StandardCharsets;
@@ -40,8 +38,8 @@ import org.junit.rules.TemporaryFolder;
 
 /**
  * CONFIRM's inputs, off a claim, its manifest and the sessions the witness
- * rests on: the focus row that flips nothing and the edges the model
- * chose.
+ * rests on: the focus row that flips nothing, the schedule cut at the
+ * anchor, and the edges the model chose.
  */
 public class ConfirmMainTest {
     @Rule
@@ -114,14 +112,24 @@ public class ConfirmMainTest {
                 AttachRow.of("sel", 20L, consumer, "M_I_field_HOFF.1", "I",
                         "119979", false, null, producer, "ipc-25",
                         "HANDLE")), RowCodec::writeAttach);
+        List<JsonObject> schedule = new ArrayList<JsonObject>();
+        schedule.add(event(0, "a", ""));
+        schedule.add(event(1, "b", ""));
+        JsonObject mark = new JsonObject();
+        mark.addProperty("mark", anchor.id());
+        mark.addProperty("at", 2L);
+        schedule.add(mark);
+        schedule.add(event(2, "c", anchor.id()));
+        schedule.add(event(3, "d", ""));
+        RowCodec.writeJsonl(sel.schedule(), schedule);
         manifest(sel, SessionManifest.Role.FOCUSED);
         // The obligation whose replay published "sel": the world it ran.
         Path worker = Files.createDirectories(
                 iteration.resolve("obligations-0000").resolve("w1"));
+        JsonObject result = new JsonObject();
+        result.addProperty("sessionId", "sel");
         RowCodec.writeJsonl(worker.resolve(ObligationDir.RESULT),
-                Collections.singletonList(RowCodec.writeObligationResult(
-                        ObligationResult.of("OBL.x", Verdict.ADMITTED, "sel",
-                                "the replay ran the world"))));
+                Collections.singletonList(result));
         JsonObject world = new JsonObject();
         JsonObject assignments = new JsonObject();
         assignments.addProperty("HDFS.SERIAL", "119980");
@@ -138,14 +146,6 @@ public class ConfirmMainTest {
         world.add("rootMints", mints);
         RowCodec.writeJsonl(worker.resolve(ObligationDir.FOCUSED_TASK),
                 Collections.singletonList(world));
-        // The woven access sites: a hook stands before the handler's read
-        // and before the manager's write, so the join can be held.
-        Path classes = Files.createDirectories(
-                iteration.resolve(AccessSites.CLASSES));
-        Map<String, String> sites = new LinkedHashMap<String, String>();
-        sites.put("<a.Handler: void h()>#u3", reader.site());
-        sites.put("<a.Manager: void tick()>#u9", writer.site());
-        AccessSites.write(classes, sites);
         return iteration;
     }
 
@@ -156,6 +156,12 @@ public class ConfirmMainTest {
                 dir.sessionId(), role, role == SessionManifest.Role.SEED
                         ? Collections.<String>emptyList()
                         : Collections.singletonList("OBL.x")));
+    }
+
+    private static JsonObject event(long seq, String site,
+                                    String occurrence) {
+        return RowCodec.writeScheduleEvent(ScheduleEvent.of(seq,
+                ScheduleEvent.Kind.SEND, "node|Root:X", site, 0, occurrence));
     }
 
     private Path claim(String movedCell) throws Exception {
@@ -258,7 +264,7 @@ public class ConfirmMainTest {
     }
 
     @Test
-    public void theWorkerIsHandedTheModelAndTheEdges()
+    public void theWorkerIsHandedTheModelTheScheduleAndTheEdges()
             throws Exception {
         Path iteration = iteration();
         Path out = folder.newFolder("worker").toPath();
@@ -291,6 +297,12 @@ public class ConfirmMainTest {
         assertEquals(3, mints.size());
         assertEquals("where that session minted it", MINT,
                 mints.get("CLOCK.a").getAsString());
+        assertEquals("cut at the anchor's first event", 2,
+                row.getAsJsonObject("schedulePrefix").get("events").getAsInt());
+        assertEquals(2, SessionReader.readSchedule(
+                out.resolve(SchedulePrefix.FILE)).size());
+        assertEquals(2, SessionReader.readSchedule(
+                out.resolve(SchedulePrefix.REST_FILE)).size());
 
         Map<String, JsonObject> edges = new LinkedHashMap<String, JsonObject>();
         List<JsonObject> rows = RowCodec.readJsonl(
@@ -307,15 +319,9 @@ public class ConfirmMainTest {
                 edges.get("WIRE").get("producer").getAsString());
         assertEquals(consumer.id(),
                 edges.get("WIRE").get("consumer").getAsString());
-        assertTrue("a state join is a version the replay holds, not an"
-                + " edge it checks: " + edges, !edges.containsKey("STATE"));
-        JsonArray versions = row.getAsJsonArray("versions");
-        assertEquals("the join the selected path rests on, its writer on"
-                + " another thread than its reader: " + versions, 1,
-                versions.size());
-        ReadsFrom held = RowCodec.readReadsFrom(
-                versions.get(0).getAsJsonObject());
-        assertEquals(ReadsFrom.of(reader, writer), held);
+        assertTrue("a read's recorded join is the recording's, not a choice"
+                + " of the model: " + reader.id() + " <- " + writer.id(),
+                !edges.containsKey("STATE"));
         assertEquals("FAULT:IPC", edges.get("MARKER").get("root").getAsString());
         assertTrue(edges.get("MARKER").get("value").getAsBoolean());
         assertEquals(anchor.id(),

@@ -1156,37 +1156,4 @@ std::string ConcolicMngr::getSharedElementVersions(Handle array, jint index) {
   return SharedFieldVersions::describe(location);
 }
 
-jlong ConcolicMngr::getLiveSharedVersion(Handle owner,
-                                         const char *declaring_class,
-                                         const char *field_name,
-                                         const char *descriptor,
-                                         jint index) {
-  if (!has_active_context() || owner.is_null()) return 0;
-  SharedFieldVersions::Location location;
-  if (declaring_class != NULL) {
-    if (field_name == NULL || descriptor == NULL) return 0;
-    ResourceMark rm;
-    fieldDescriptor field;
-    oop carrier_owner = NULL;
-    jlong status = 0;
-    if (!resolve_field_location(owner(), declaring_class, field_name,
-                                descriptor, &location, &field,
-                                &carrier_owner, &status)) {
-      return 0;
-    }
-    SymInstance *shadow = ctx->find_sym_inst(carrier_owner);
-    if (shadow == NULL) return 0;
-    location.owner = shadow->get_sym_rid();
-  } else if (index >= 0) {
-    if (!owner()->is_array()) return 0;
-    SymArr *shadow = ctx->find_sym_array(arrayOop(owner()));
-    if (shadow == NULL) return 0;
-    location = SharedFieldVersions::Location(
-        shadow->get_sym_rid(), index, SharedFieldVersions::LOC_ARRAY_ELEMENT);
-  } else {
-    location = ContainerSupport::state_location(owner());
-  }
-  return SharedFieldVersions::live_version(location, NULL);
-}
-
 #endif // ENABLE_CONCOLIC

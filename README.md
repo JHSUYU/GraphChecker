@@ -55,9 +55,9 @@ counter — and both passes feed that function the same inputs (§4), so samenes
 
 **The replay unit is one decision flip on one occurrence, in one world.** A focused replay
 makes one occurrence symbolic (or one state-connected factor), plants the world it is asked
-about (root values, clock skews, answered handoffs, inherited flips), holds the reads its
-question rests on to the versions its world chose (§6), then asks that occurrence to take the
-other arm of one decision at one site and ordinal. Such a replay *collects an arm the recording lacks*; it
+about (root values, clock skews, answered handoffs, inherited flips) and holds the schedule
+prefix of the session it was cut from (§6), then asks that occurrence to take the other arm of
+one decision at one site and ordinal. Such a replay *collects an arm the recording lacks*; it
 confirms nothing by itself.
 
 **Edges are joined in the SMT, not by execution.** No replay realizes a cross-node chain end
@@ -100,15 +100,15 @@ immutable directory, `<out>/schedule/iteration-0000/`, with `final/` beside it.
 | Stage | Consumes | Produces | Gate |
 | --- | --- | --- | --- |
 | `PREFLIGHT`, `FREEZE_TOOL`, `SETUP`, `FREEZE` | workflow config, jar, workload tree | frozen inputs (`frozen-inputs/`, digested) | an unknown config key, or a frozen input changed after freezing, is refused by name |
-| `SEED` | workload command, stock JDK 8 | the static slice (`static_scope_map.jsonl`, candidate graph, region skeletons) and **two recording passes**: lite (activation envelopes over every candidate region → `skeleton-pass/region_skeletons.jsonl`) then rich (`concolic_region_plan.jsonl`, `runtime_trace.jsonl`) | recording opens only after the workload registers its node sources; the trace states the window only |
+| `SEED` | workload command, stock JDK 8 | the static slice (`static_scope_map.jsonl`, candidate graph, region skeletons) and **two recording passes**: lite (activation envelopes over every candidate region → `skeleton-pass/region_skeletons.jsonl`) then rich (`concolic_region_plan.jsonl`, `runtime_trace.jsonl`, `recorded_schedule.jsonl`) | recording opens only after the workload registers its node sources; the trace states the window only |
 | `PLAN` | both passes, the scope map, the declarations | `execution_task_plan.jsonl`: one row per planned occurrence, the declared target resolved to a full address, the symbolize actions (declared inputs, clocks, `EXPLICIT_SYMBOLIC_FAULT` markers) | two activations sharing one address inside the closure is `OCCURRENCE_ADDRESS_SHARED` BLOCKING; a loop without a declared bound is refused |
 | `INSTRUMENT` | selected skeletons, scope map | woven classes (`instrumented-classes/`) | every woven body validated, then JVM-verified fail-closed |
-| `REPLAY` (seed) | woven classes (and their `shared_access_sites.tsv`), the custom VM | the seed **session**: one file per row kind, its expression table | the seed must publish a target row that reached the anchor |
+| `REPLAY` (seed) | woven classes, the custom VM | the seed **session**: one file per row kind, `schedule.jsonl`, its expression table | the seed must publish a target row that reached the anchor |
 | `IMPORT` | the seed, then every wave's sessions | gap rows | the row contract (§5), checked here and nowhere else |
 | `EXPLORE` | every session so far, scope map, root domains | per wave `obligations-NNNN/`: `obligations.jsonl`, one worker dir per obligation (`obligation.jsonl`, `focused_task.jsonl`, `obligation_query.smt2`, `obligation_result.jsonl`), the session it ran, `graph.jsonl`/`growth.jsonl` (§7), and `GROW` when a world exposed a region | a solver error is `NOT_ADMITTED`, never unsat; a flip a session already recorded is not re-asked; nesting is bounded by `region_path_max_world_depth` (3) |
 | `COMPOSE` | the corpus, families, root domains | `candidate.smt2`, `candidate_composition_manifest.json` | a read that joins no version and pins no value is `UNSTATED_VALUE`; a replay whose mint and obligation state a root twice and differently is refused |
 | `SOLVE`, `DECIDE` | the composed query | a z3 answer per valuation, `claim.json` | satisfiable at the recorded valuation on a healthy recording is a blocking alarm |
-| `CONFIRM` | the claim, the manifest, the selected session's obligation | `confirm/` (a focused replay with no flip forced), `final/confirm.json` | anchor reached, fatal observed, no `CONFIRM_MISMATCH` on an expected edge, every held read's version realized; otherwise the claim is `SAT_UNCONFIRMED` |
+| `CONFIRM` | the claim, the manifest, the selected session's obligation | `confirm/` (a focused replay with no flip forced), `final/confirm.json` | anchor reached, fatal observed, no `CONFIRM_MISMATCH` on an expected edge, no `SCHEDULE_DIVERGED` before the cut; otherwise the claim is `SAT_UNCONFIRMED` |
 | `EMIT` | all of the above | `result.json`, `gaps.json`, `run-manifest.json` | acceptance is the claim **and** the named gaps **and** the confirmation together |
 
 `EXPLORE` runs in waves: one JVM plans the wave (`explore/ExploreMain`) — reading every session
@@ -126,11 +126,11 @@ The Java side is organized by those notions:
 
 | Package | Holds |
 | --- | --- |
-| `contract` | the row kinds, the identity types (`OccurrenceAddress`, `CausalContext`, `ExecutionIndex`, `LocationId`, `Endpoint`), `DoorRow`, `GapKind`/`GapClass`, `ObligationDir`, `SessionReader`, `ReadsFrom`, `AccessSites`, and the `IMPORT` gate (`RowInvariants`) |
+| `contract` | the row kinds, the identity types (`OccurrenceAddress`, `CausalContext`, `ExecutionIndex`, `LocationId`, `Endpoint`), `ScheduleEvent`, `GapKind`/`GapClass`, `ObligationDir`, `SessionReader`, and the `IMPORT` gate (`RowInvariants`) |
 | `causynth` | the Soot pass: static slice, weaving and its verification, failure-directed region scoping (`RuntimeSelectedRegionFinalizer`), the wire-flow catalog, the aggregation of both recording passes |
 | `plan` | `StaticScopeMap`, `ExecutionTask`, `ConcolicScheduler`, declared inputs (`DeclaredSiteCapture`, `SymbolicInputSelection`), loop-bound policy, `ExposedRegionPlanMain` |
-| `runtime` | the recording and replay hooks (`CausynthTraceRecorder`, `ConcolicRegionRuntime`, `RowRuntime`), identity (`Identity`, `Lineage`, `Attribution`, `RecordingWindow`), the version gate (`Versions`), service-loop turns (`TimedWaits`), mints (`RootMint`, `RowPlaceholderMint`, `HandoffMint`), `FocusedReplay`, `Confirmation`, the VM broker |
-| `explore` | `Corpus`, `ClosurePlanner`, `Frontier`, `FlipQuery`/`FlipQueryText`, `ObligationFactory`, `SlotTable`, `WaveGraph`, `ExploreMain`, `ConfirmMain` |
+| `runtime` | the recording and replay hooks (`CausynthTraceRecorder`, `ConcolicRegionRuntime`, `RowRuntime`), identity (`Identity`, `Lineage`, `Attribution`, `RecordingWindow`), the schedule (`ScheduleLog`, `TimedWaits`, `WakeScopes`), mints (`RootMint`, `RowPlaceholderMint`, `HandoffMint`), `FocusedReplay`, `Confirmation`, the VM broker |
+| `explore` | `Corpus`, `ClosurePlanner`, `Frontier`, `FlipQuery`/`FlipQueryText`, `ObligationFactory`, `SchedulePrefix`, `SlotTable`, `WaveGraph`, `ExploreMain`, `ConfirmMain` |
 | `compose` | `Composer`, `ComposedFamilies`, `SmtLowering`/`VmLoweringCore`, the container model (`ContainerSmtCodec`), `ClaimPolicy`, `ComposeMain` |
 | `smt` | the expression IR, `Arms` (path conditions, arms, families), canonical JSON, the z3 driver (`Z3`) |
 | `annotation` | `@CausynthExceptionTarget`, and `Debug.makeSymbolicBoolean` for a fault marker |
@@ -204,7 +204,7 @@ ran; every reference resolves in its own table.
 | `ReadRow` / `WriteRow` | a read joined to the version it observed or the placeholder it minted; a write with its version and expression |
 | `ExportRow` / `AttachRow` | a message leaf left / arrived: endpoint, expression or minted `v_H`, the paired producer, the correlation id |
 | `TargetRow` | the annotated site: the fatal predicate in the fatal polarity, whether that arm was observed, whether the anchor was reached |
-| `DoorRow` (`doors.jsonl`) | which occurrence a message left and entered by, keyed by its producer endpoint (§6) |
+| `ScheduleEvent` (`schedule.jsonl`) | the run's event order (§6); read by IMPORT as a session file, not a row |
 | `GapRow` | a refusal or a diagnostic: kind, class, subject, detail |
 
 `IMPORT` checks the invariants over the sessions handed to it and nowhere else: a session
@@ -256,7 +256,7 @@ clocks it bounds. A term the lowering cannot state is refused by name — a pref
 dropped with a gap, an arm is dropped with a gap, the flipped predicate itself refuses the
 query — never wrapped into `(not )`. The model becomes the obligation's world
 (`ObligationFactory`: `rootAssignments`, `clockDeltas` = model − the reading, `answers`,
-`inheritedFlips`, `versions`); a model that hands every root back its recorded value and
+`inheritedFlips`, `schedulePrefix`); a model that hands every root back its recorded value and
 answers nothing is refused before a replay is spent.
 
 `DECIDE` asks each composed path, alone and with every root free, whether it is satisfiable at
@@ -276,67 +276,53 @@ valuation pin. The claim policy names the narrowest mechanism the evidence suppo
 agrees. `explore/ConfirmMain` writes one focus row with `flip: null`: the world of the
 obligation whose replay is the selected session (its `focused_task.jsonl` — root values, clock
 skews, answers, mints — a world proven in an execution; the recording's own session planted
-nothing and gets nothing), the versions of the selected path's state joins (§6), and
-`expected_edges.jsonl` (the WIRE arm per selected message, the placeholder joins, the MARKER
-polarity per planted marker, the ANCHOR). The replay's hooks compare and file `CONFIRM_MISMATCH`,
-`runtime/Versions` holds and checks the versions, `runtime/Confirmation` decides; `accept/report.py` passes a case only with `confirmation.confirmed`. The model's own
+nothing and gets nothing), that session's schedule cut at the anchor, and `expected_edges.jsonl`
+(the WIRE arm per selected message, the STATE join per read, the MARKER polarity per planted
+marker, the ANCHOR). The replay's hooks compare and file `CONFIRM_MISMATCH`; `runtime/Confirmation`
+decides; `accept/report.py` passes a case only with `confirmation.confirmed`. The model's own
 re-solved instants are the published witness, not what the run is held to: a solver sits on the
 boundary of its constraints and a run's timeline moves by more than that.
 
-## 6. The partial order: the versions a world chose
+## 6. The schedule: a deterministic prefix, then the rest
 
-The owner's design (2026-09-24): a replay is held to the partial order of the interactions its
-question rests on, never to a total order. A shared location holds many versions; z3 chooses
-the version a read observes; the replay checks whether the real run can observe it. A choice
-the program's own coordination forbids (a lock, a join, a message the reader's thread must send
-first) times out and is unreachable. The total order it replaces (`ScheduleLog`, the prefix and
-suffix files, virtual time for timed waits) held START/CLAIM/SEND/RECV/WAKE/END and never a
-field access, and round v40 gave it up 143 times across the nine cases.
+The owner's design (2026-09-22): a focused replay's prefix must agree with the execution that
+produced its task, so that `(r, c, i)` is stable, and attribution must not depend on hand-placed
+probes in the workload. Non-goals: modelling shared-memory interleavings; changing the symbolic
+semantics of compose; executing a witness to confirm it (CONFIRM was added later, in §5, and
+re-runs a world a replay already ran).
 
-**What a world names** (`contract.ReadsFrom`, the focus row's `versions`): reader endpoint ←
-writer endpoint. An obligation takes them from the flip query's model: the query already lets
-z3 choose, per reader occurrence and location, among the writers the read could have observed
-(`FlipQuery` `wchoice_*` selectors over `Arms.stateArms`). CONFIRM takes them from the selected
-path's state joins (the recorded writer, or the one a selected `writer_arm__` names). One rule
-decides which reads are held (`ObligationFactory.held`): z3 had writers to choose among, or the
-writer ran on another thread than the reader (program order decides the rest), and a woven hook
-stands before both accesses.
+**One new abstraction: `Event = (kind, c, site, k)`**, kind ∈ {START, CLAIM, SEND, RECV, WAKE,
+END}: a task started / began running / a message left / arrived / a timed wait returned /
+a daemon turn ended; `c` the causal context, `site` the static site, `k` the count of that
+(c, site). No thread ids, no time. A run's schedule is the total order of its events,
+`schedule.jsonl` per session (`recorded_schedule.jsonl` for the recording). SEND events also
+state the producer endpoint the message carried, which is how `Corpus.senderOf` pairs a served
+message with the occurrence that sent it (the control producer of §3).
 
-**The hooks and their names.** The replay weave puts `sharedRead`/`sharedWrite` before and
-`sharedDone` after every field load or store and every container-state access of the replayed
-classes (`CausynthPipeline.instrumentSharedAccess`; the recording weaves none). A row names an
-access by the bytecode the VM logged it at, which exists only once the class is written, so
-INSTRUMENT reads the woven classes back and states the VM site of the access each hook stands
-before (`causynth.AccessSiteTable` → `instrumented-classes/shared_access_sites.tsv`,
-`contract.AccessSites`). At its hook an access is named with the read-out's own function:
-that site, the occurrence the VM states for the thread's region, the frames of its journal.
-The VM names an access by its own bytecode on every execution: the Zero interpreter keeps pc in
-a register and wrote it back only at calls, so a field access used to be named by the last call
-before it (the hook, once woven) and by itself only on the execution that resolved its
-constant-pool entry; v41 held no read for that reason (`CONCOLIC_EVENT_PC`,
-`RegionEventSiteSmoke`).
+**Recorder** (`runtime/ScheduleLog`, both passes): fed by the existing hooks — `Identity.startWork`
+→ START, claims → CLAIM, the message doors → SEND/RECV, `beginTick`/`endTick` → WAKE/END — and by
+the woven timed-wait stand-ins (`runtime/TimedWaits`: sleep, wait(long), parkNanos, await/poll
+with timeout, plus notify/signal so that a signal is *state*: a woven signal marks the
+longest-standing wait, an unmarked wait waits on).
 
-**The gate** (`runtime.Versions`, replay only). A held read waits until its writer's version
-is the live one; a write waits while the live version is owed to a held read that has not read
-it; everything else runs free. Which version is live the VM answers
-(`System.getLiveSharedVersion`, which resolves a view or an iterator to the container it views),
-and a held writer's version is mapped to its endpoint when its write is done. A read that waits
-out `causynth.versions.timeout.ms` (60 s) goes on as `VERSION_UNREALIZED`; a write that waits it
-out goes on and releases the reads it waited for. The published rows are the last word: a held
-read whose row names another writer is unrealized too. Either un-admits the replay
-(`FocusedReplay.results`: NOT_ADMITTED; for CONFIRM, not confirmed).
+**Enforcer** (replay only): the same class holds the task's `schedule_prefix.jsonl` and a cursor.
+An event equal to the expected next one is admitted; otherwise the thread blocks until its turn;
+nothing admitted for 15 s (`SCHEDULE_DIVERGED`) gives up the event that was waited for and
+releases the waiters. Under a prefix, a timed wait uses virtual time (it returns at its turn), a
+signalled return is the notifier's doing, an interrupt writes its WAKE where it stands. The
+prefix is cut at the **target** of the task (path occurrence, focus, factor) — `explore/SchedulePrefix`.
 
-**What is not held.** Messages pair by the run that carries them, and the served occurrence's
-identity already names its producer (`Anchor`). The doors a message left and entered by are
-facts, not order: `doors.jsonl` (`contract.DoorRow`) states the sending and the receiving
-occurrence per producer endpoint, which is all the control producers of §3 read
-(`Corpus.senderOf`/`receiverOf`). A service-loop turn is still one root scope: the timed-wait
-stand-ins (`runtime.TimedWaits`) close the turn before a timed wait and open the next one when it
-returns, on the wall clock.
+**Past the prefix, the clock still holds** (rule 26): the concolic VM is many times slower than
+the recording, so on the wall clock every daemon timer has expired at the cut and each tick fires
+at once. `SchedulePrefix` therefore also writes `schedule_suffix.jsonl` (the rest of the order);
+past the prefix `ScheduleLog` holds only the timeout WAKEs the rest names until every rest event
+before them has happened or been given up; everything else runs free; a watchdog gives up the
+open events before the earliest waiting WAKE; a turn's END settles its span; after two give-ups
+(`REST_STALLS`) the rest is released. A run gone free leaves its waits to their own clocks.
 
-**World inheritance**: an obligation's task carries the planted values and inherited flips of the
-session it was cut from; its versions are its own query's, and a child re-binds the reads of an
-inherited flip in its own query. A child of a NOT_ADMITTED session is never cut.
+**World inheritance**: an obligation's task carries the schedule of the session it was cut from
+plus that session's planted values and inherited flips; a child of a NOT_ADMITTED session is
+never cut (its path is a prefix nothing ran).
 
 **Attribution** (`runtime/Attribution`, one lazy resolver, three rules in order): an explicit
 scope (request / carried / inbound owner / tick owner); else the innermost application frame
@@ -350,12 +336,11 @@ reported as `LINEAGE_LOST`.
 scope; in-window per-node loops walk `CausynthCluster.dataNodes()` (sorted by registered name);
 the block a case reads its roles off is pinned to a named node; each DataNode gets its own IPC
 connections; nothing set up before the window may expire on the wall clock (idle-connection and
-socket-cache timeouts set to 6 h); workload waits inside the window are 60 s
-(`WINDOW_WAIT_MS`); scenario assertions before the anchor are `recordingPrecondition`s
+socket-cache timeouts set to 6 h); workload waits inside the window outlast the watchdog
+(`WINDOW_WAIT_MS` = 60 s); scenario assertions before the anchor are `recordingPrecondition`s
 (asserted only when not replaying); key rotations that must not close by daemon are explicit.
-Known residue: a daemon turn's *count* and *content* are clock driven (a replay many times
-slower than the recording runs more turns per workload step); a held read pins the turn content
-its question rests on, and nothing pins the rest.
+Known residue (a design non-goal): a daemon turn's *content* is clock/shared-state driven (a
+held tick can carry heartbeat + IBR where the recording had one RPC).
 
 ## 7. Fault points, symbolic inputs, iteration (DESIGN 4)
 
@@ -382,15 +367,6 @@ is the current design; this is its summary.
   re-runs the exposing obligation under the same world; the re-run session replaces the exposing
   one. Compose keys arms by world (§5). Epochs, the seed cache and every compat toggle are
   deleted. **Not yet exercised**: no run so far has exposed a region (to-do item 6).
-- **An occurrence the plan did not name (§3.3b, at run time).** A replay is held to no order,
-  so an activation of a planned region, on a node the plan planned it on, can run at an address
-  no task names: a daemon heartbeat takes the key update the recording's workload heartbeat
-  took. It is admitted as a task of its own (`ConcolicTaskPlan.derive`). What the region
-  declares holds at every occurrence (its target, its configured sources, its exchange ports),
-  but a port is one occurrence's input, so each is re-spelled from the new occurrence
-  (`DeclaredSiteCapture.exposedPort`: no ordinal, no recorded value, no accessor return). Its
-  fault marker is then its own root and not the planned heartbeat's; sharing it made a world
-  that planted the one state it for both (v42, invariant 6 on every IPC-fault case).
 - **CONFIRM (§5)** — see §5 above.
 
 ## 8. Preparing and running a case
@@ -482,6 +458,20 @@ assessor plus two skeptics per case on exactly those four checks.
 formula checked for the causality its witness names, the two engine defects of §10 item 10
 fixed** (§10 item 1 has the tables and the evidence directory, `~/gc-out/accept-v40-*`). The paragraphs below are the history that led
 there, kept as written on 2026-09-23.
+
+**2026-09-24 evening: the partial-order replay was tried and withdrawn.** Commits `f3ab709fc`
+to `0ab24a1a9` deleted the total order and held each read to the version the model chose
+(a `sharedRead`/`sharedWrite` weave, an access-site table, a VM native for the live version).
+Rounds v41 to v43 passed 4, 1 and 1 of nine. The cause was one: the Zero replay runs far
+slower than the recording while daemon timers keep wall-clock time, so a replay held to no
+order runs more daemon turns between the same messages (bug3: one DataNode heartbeat turn in
+the recording's window, six in the seed replay), the key update rides a different heartbeat
+every run, and every occurrence downstream of it changes identity. The owner ruled that every
+replay keeps the total order. Two fixes from that work stand: the VM names a field or array
+access by its own bytecode on every execution (`CONCOLIC_EVENT_PC`, `RegionEventSiteSmoke`;
+before, it named the last call before the access, and the access itself only on the execution
+that resolved its constant-pool entry), and invariant 4 keys a target row that did not reach
+its anchor by its occurrence.
 
 
 **Superseded acceptance: 9/9 on `main` = `497dc8beb` (round v15, 2026-09-23 02:00)** — its
@@ -806,8 +796,8 @@ host is the gate doing its job, not a hang):
    reproduced and …" is an admitted flip. The same obligation id is stable across runs of the
    same recording, so a v15 directory is a direct baseline.
 4. `sessions/<id>/` — `targets.jsonl` (`observedFatal`, `reachedAnchor`), `decisions.jsonl`,
-   `roots.jsonl` (what each mint ran at), `gaps.jsonl` (`VERSION_UNREALIZED` names the held read,
-   the writer it waited for and the version the location held), `doors.jsonl`.
+   `roots.jsonl` (what each mint ran at), `schedule.jsonl` vs `recorded_schedule.jsonl` (print
+   both around a divergence position: kind, site, context, k, endpoint).
 5. `final/claim.json` (`valuations[]` with status, unsat core, selected path/session,
    `fatalObserved`), `candidate_composition_manifest.json` (paths and which observed the fatal),
    `compose.log`, `confirm.json`.
@@ -818,14 +808,19 @@ file.smt2`) after editing — that is how the nearest-world objective was valida
 producer endpoint in a replay, and the recording's is on its `EXCHANGE_SEND` row in
 `runtime/runtime_trace.jsonl` — diff the two when anchors drift; `UNATTESTED_ARM` → the attach's
 producer → `tasks.jsonl` → the plan → the trace's `METHOD_ENTER` for the missing occurrence →
-the finalizer's admission.
+the finalizer's admission; a schedule with `WAKE …waitForWork` or `RpcRequestSender.run` right
+after a divergence or a short prefix means released waits, not real timeouts.
 
-An unrealized version is read off the held read: the focus row's `versions` names reader and
-writer endpoints, the session's `reads.jsonl`/`writes.jsonl` say what the reader observed and
-whether the writer wrote at all, and `shared_access_sites.tsv` beside the woven classes says
-which hook stands before each site. A writer that never wrote is an identity that moved (the
-writer's occurrence ran under another address) or a path the replay did not take; a writer that
-wrote after the timeout is coordination the choice ran against.
+A schedule divergence is read by ALIGNING, not by the one line the turnstile prints: load
+`recorded_schedule.jsonl` (or the worker's `schedule_prefix.jsonl`) and the session's
+`schedule.jsonl`, keep the rows with a `kind`, compare `(kind, context, site)` position by
+position to the first mismatch, then for the expected event count how many events of its key the
+replay made at all (0 = an event the replay never makes: D3a; the same number as the recording =
+it came late: D3b); the `mark` rows (`{"mark": occurrence, "at": position}`) of both files say
+which occurrences opened where, so a missing SEND's occurrence can be followed to its region;
+`occurrence`/`endpoint` on the SEND rows join to the recording's `EXCHANGE_SEND` trace rows
+(`correlationId` is Hadoop's call id). This is how §14 D3 was found in an hour after four rounds
+of reading the printed line.
 
 Traps: zsh is the login shell here — `echo ====` fails (`=` is path expansion), unmatched globs
 abort the whole command, `set -- $spec` does not split, `PIPESTATUS` is `pipestatus`; write

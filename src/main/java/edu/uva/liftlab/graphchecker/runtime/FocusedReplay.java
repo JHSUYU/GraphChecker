@@ -6,7 +6,6 @@ import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
-import edu.uva.liftlab.graphchecker.contract.ReadsFrom;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
@@ -43,9 +42,6 @@ public final class FocusedReplay {
     private static final Map<String, String> REFUSALS =
             new LinkedHashMap<String, String>();
     private static final Set<String> FLIPPED = new LinkedHashSet<String>();
-    /** The versions the focus rows' world chose ({@link Versions}). */
-    private static final List<ReadsFrom> VERSIONS =
-            new ArrayList<ReadsFrom>();
     /** The tasks this replay focuses, as the wave's plan rows name them. */
     private static final Set<String> FOCUSED_TASKS =
             new LinkedHashSet<String>();
@@ -520,11 +516,8 @@ public final class FocusedReplay {
                     // flip was contradicted, or never reached at all, ran
                     // in a world other than the one its path was cut from,
                     // so the path it recorded is not the path the next wave
-                    // would cut from it; and one whose held reads did not
-                    // observe the versions its world chose ran another
-                    // interleaving than the one it was asked about.
+                    // would cut from it.
                     if (unstated.isEmpty()) unstated = inherited();
-                    if (unstated.isEmpty()) unstated = Versions.unrealized();
                     results.add(unstated.isEmpty()
                             ? ObligationResult.of(id, Verdict.ADMITTED,
                                     sessionId, obligation.flips()
@@ -706,13 +699,6 @@ public final class FocusedReplay {
                 FOCUS.put(obligationId,
                         string(row, "focusedOccurrenceId"));
                 CLOCK_DELTAS.putAll(strings(row, "clockDeltas"));
-                if (row.has("versions") && row.get("versions").isJsonArray()) {
-                    for (JsonElement version
-                            : row.getAsJsonArray("versions")) {
-                        VERSIONS.add(RowCodec.readReadsFrom(
-                                version.getAsJsonObject()));
-                    }
-                }
                 // The mint of every assigned root is focused too, by
                 // ADDRESS: the row states where the recording minted it,
                 // and the assignment is planted there.
@@ -985,14 +971,6 @@ public final class FocusedReplay {
     }
 
     /** Reads the focus row this replay was handed, once. */
-    /** The versions the world of this replay chose, in the rows' order. */
-    static List<ReadsFrom> versions() {
-        load();
-        synchronized (LOCK) {
-            return new ArrayList<ReadsFrom>(VERSIONS);
-        }
-    }
-
     private static void load() {
         synchronized (LOCK) {
             if (loaded) return;
@@ -1048,7 +1026,6 @@ public final class FocusedReplay {
             task = null;
             OBLIGATIONS.clear();
             CLOCK_DELTAS.clear();
-            VERSIONS.clear();
             FOCUS.clear();
             REFUSALS.clear();
             FLIPPED.clear();

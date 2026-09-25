@@ -34,7 +34,6 @@ public final class SessionReader {
     private final List<TargetRow> targets;
     private final List<GapRow> gaps;
     private final List<ObligationResult> obligations;
-    private final List<DoorRow> doors;
     private final ExpressionTable expressions;
     private final SessionManifest manifest;
     private final String incomplete;
@@ -47,7 +46,7 @@ public final class SessionReader {
                           List<RootMintRow> roots, List<TargetRow> targets,
                           List<GapRow> gaps,
                           List<ObligationResult> obligations,
-                          List<DoorRow> doors, ExpressionTable expressions,
+                          ExpressionTable expressions,
                           SessionManifest manifest, String incomplete) {
         this.manifest = manifest;
         this.incomplete = incomplete;
@@ -62,7 +61,6 @@ public final class SessionReader {
         this.targets = Collections.unmodifiableList(targets);
         this.gaps = Collections.unmodifiableList(gaps);
         this.obligations = Collections.unmodifiableList(obligations);
-        this.doors = Collections.unmodifiableList(doors);
         this.expressions = expressions;
     }
 
@@ -104,7 +102,6 @@ public final class SessionReader {
         List<GapRow> gaps = partial.rows(dir.gaps(), RowCodec::readGap);
         List<ObligationResult> obligations = partial.rows(dir.obligations(),
                 RowCodec::readObligationResult);
-        List<DoorRow> doors = partial.rows(dir.doors(), RowCodec::readDoor);
         ExpressionTable expressions;
         try {
             expressions = RowCodec.readExpressions(dir.expressions());
@@ -121,7 +118,7 @@ public final class SessionReader {
         }
         return new SessionReader(dir, activations, decisions, exports,
                 attaches, writes, reads, roots, targets, gaps, obligations,
-                doors, expressions, manifest, partial.reason);
+                expressions, manifest, partial.reason);
     }
 
     /** One session's read, and the first file of it that would not read. */
@@ -144,6 +141,75 @@ public final class SessionReader {
             reason = (name == null ? file.toString() : name.toString())
                     + " could not be read: " + unreadable.getMessage();
         }
+    }
+
+    /**
+     * The session's schedule, in the order its run made the events.
+     *
+     * <p>Read on demand and never into the session's rows: no row invariant
+     * is stated over it and a corpus that holds every session must not hold
+     * every schedule too.  A line the codec refuses ends the read there --
+     * a schedule is an ORDER, and the events after a hole are not a prefix
+     * of anything -- and a session that published no file has none.</p>
+     */
+    public static List<ScheduleEvent> readSchedule(SessionDir dir)
+            throws IOException {
+        return readSchedule(dir.schedule());
+    }
+
+    /** This session's schedule, read on demand. */
+    public List<ScheduleEvent> schedule() throws IOException {
+        return readSchedule(directory);
+    }
+
+    /** The same read, of a schedule file wherever it stands. */
+    public static List<ScheduleEvent> readSchedule(Path file)
+            throws IOException {
+        List<ScheduleEvent> events = new ArrayList<ScheduleEvent>();
+        if (file == null || !java.nio.file.Files.isRegularFile(file)) {
+            return events;
+        }
+        for (String line : java.nio.file.Files.readAllLines(file,
+                java.nio.charset.StandardCharsets.UTF_8)) {
+            if (line.trim().isEmpty()) continue;
+            try {
+                JsonObject row = RowCodec.fromLine(line);
+                if (row.has("mark")) continue;
+                events.add(RowCodec.readScheduleEvent(row));
+            } catch (RuntimeException unreadable) {
+                break;
+            }
+        }
+        return events;
+    }
+
+    /**
+     * Where each occurrence of a schedule opened: occurrence id to the
+     * position of the first event after it, the cut a prefix that focuses
+     * it is taken at.  Read with the same tolerance as the events.
+     */
+    public static java.util.Map<String, Long> readScheduleMarks(Path file)
+            throws IOException {
+        java.util.Map<String, Long> marks =
+                new java.util.LinkedHashMap<String, Long>();
+        if (file == null || !java.nio.file.Files.isRegularFile(file)) {
+            return marks;
+        }
+        for (String line : java.nio.file.Files.readAllLines(file,
+                java.nio.charset.StandardCharsets.UTF_8)) {
+            if (line.trim().isEmpty()) continue;
+            try {
+                JsonObject row = RowCodec.fromLine(line);
+                if (!row.has("mark")) continue;
+                String id = row.get("mark").getAsString();
+                if (!marks.containsKey(id)) {
+                    marks.put(id, row.get("at").getAsLong());
+                }
+            } catch (RuntimeException unreadable) {
+                break;
+            }
+        }
+        return marks;
     }
 
     /** Every session of one iteration, in the layout's own order. */
@@ -202,11 +268,6 @@ public final class SessionReader {
      */
     public List<ObligationResult> obligations() {
         return obligations;
-    }
-
-    /** Which occurrence each message of this run left and entered by. */
-    public List<DoorRow> doors() {
-        return doors;
     }
 
     /**

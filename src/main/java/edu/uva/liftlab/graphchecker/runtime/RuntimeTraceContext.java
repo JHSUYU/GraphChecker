@@ -472,7 +472,7 @@ final class RuntimeTraceContext {
         scope.lineageToken = Lineage.pushRoot(
                 source == null ? "" : source.key(), Role.of(roleName), "");
         state.scopes.push(scope);
-        // A tick is the special case of a service-loop turn (TimedWaits):
+        // A tick is the special case of a service-loop turn (WakeScopes):
         // what it sends is a request of its node's, so it carries a request
         // flow the way a turn does, and a heartbeat sent inside it reaches
         // its server anchored rather than Lost.  Put back when it closes.
@@ -485,16 +485,50 @@ final class RuntimeTraceContext {
                     + Lineage.rootWindowIndex();
             state.requestApi = api;
         }
+        // A tick is a WAKE: the turn a daemon's loop hands its thread.
+        String site = "tick." + MapFields.safe(roleName);
+        // Only a turn whose WAKE was written states its END: one begun before
+        // the window is the set-up's, whichever side of the opening its work
+        // fell -- decided by the one write, so a window opening between two
+        // reads cannot leave an END with no WAKE.
+        if (ScheduleLog.observe(
+                edu.uva.liftlab.graphchecker.contract.ScheduleEvent.Kind.WAKE,
+                site)) {
+            scope.tickSite = site;
+        }
         return token;
     }
 
-    /** Closes the tick {@link #beginTick} opened. */
+    /**
+     * Closes the tick {@link #beginTick} opened, and states its END: the
+     * turn's writes are in the world from here, which is what orders them
+     * before the events that read them ({@code ScheduleEvent.Kind.END}).
+     */
     static void endTick(long token) {
+        State state = CURRENT.get();
+        ScopeFrame tick = null;
+        for (ScopeFrame open : state.scopes) {
+            if (open.token == token) {
+                tick = open;
+                break;
+            }
+        }
+        if (tick != null && tick.tickSite != null) {
+            // What was opened inside the turn closes first, so the END
+            // stands in the turn's own context.
+            while (state.scopes.peek() != null
+                    && state.scopes.peek() != tick) {
+                restoreOne(state, state.scopes.peek());
+            }
+            ScheduleLog.observe(
+                    edu.uva.liftlab.graphchecker.contract.ScheduleEvent.Kind
+                            .END, tick.tickSite);
+        }
         restoreScope(token);
     }
 
     /**
-     * Opens one turn of a service loop as a root scope ({@code TimedWaits}).
+     * Opens one turn of a service loop as a root scope ({@code WakeScopes}).
      *
      * <p>A root, like a tick: started by no message, descending from nothing
      * ({@link Lineage#pushRoot}), its k the k-th turn of this loop on this node
@@ -1345,6 +1379,11 @@ final class RuntimeTraceContext {
         private SourceRef opened;
         /** Whether this scope is a service-loop turn ({@link #beginWake}). */
         private boolean turn;
+        /**
+         * The site of the daemon tick this scope is, when the window saw it
+         * begin; null otherwise.  Its END is stated under it.
+         */
+        private String tickSite;
         private final SourceRef source;
         private final Frame activeFrame;
         private final SourceRef frameSource;
