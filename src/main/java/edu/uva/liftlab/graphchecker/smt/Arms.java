@@ -1,6 +1,5 @@
 package edu.uva.liftlab.graphchecker.smt;
 
-import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
@@ -657,22 +656,14 @@ public final class Arms {
         }
         if (!expression.isJsonObject()) return;
         JsonObject node = expression.getAsJsonObject();
-        if ("SymbolExpression".equals(JsonFields.optionalString(node,
-                "_type"))) {
+        if (VmExpressionIr.SYMBOL_TYPE.equals(VmExpressionIr.typeOf(node))) {
             String raw = JsonFields.optionalString(node, "_exp");
             if (!raw.isEmpty()) into.add(raw);
         }
-        for (String member : node.keySet()) {
-            JsonElement child = node.get(member);
-            if (child == null || child.isJsonPrimitive()) continue;
-            if (child.isJsonArray()) {
-                JsonArray array = child.getAsJsonArray();
-                for (JsonElement item : array) {
-                    symbolsIn(item, into, depth + 1);
-                }
-                continue;
-            }
-            symbolsIn(child, into, depth + 1);
+        for (JsonElement child : node.asMap().values()) {
+            if (child.isJsonPrimitive()) continue;
+            // An array's items sit one level below its owner, as members do.
+            symbolsIn(child, into, child.isJsonArray() ? depth : depth + 1);
         }
     }
 

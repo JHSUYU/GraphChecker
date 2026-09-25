@@ -9,7 +9,6 @@ import java.util.Deque;
 import java.util.IdentityHashMap;
 import java.util.Set;
 
-import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
 /**
@@ -53,17 +52,6 @@ public final class VmRows {
         } catch (NumberFormatException notAnObject) {
             return -1L;
         }
-    }
-
-    /** One VM location node as {@code kind/owner#slot}, or "". */
-    public static String sessionLocation(JsonObject location) {
-        if (location == null || location.size() == 0) return "";
-        String kind = optionalString(location, "locationKind");
-        if (kind.isEmpty() || !location.has("slot")) return "";
-        long owner = optionalLongInteger(location, "ownerSymRid", 0L);
-        if (owner == 0L) return "";
-        return kind + "/" + owner + "#"
-                + optionalLongInteger(location, "slot", 0L);
     }
 
     /**

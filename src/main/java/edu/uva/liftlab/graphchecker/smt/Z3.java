@@ -147,38 +147,25 @@ public final class Z3 {
      */
     public Answer ask(String query, List<String> modelSymbols,
                       boolean wantCore, long budgetMillis) {
-        long held = askBudgetMillis;
-        askBudgetMillis = budgetMillis > 0L ? budgetMillis : 0L;
-        try {
-            return asked(query, modelSymbols, wantCore);
-        } finally {
-            askBudgetMillis = held;
-        }
-    }
-
-    /** The budget the ask in flight states, or 0 for this solver's own. */
-    private long askBudgetMillis;
-
-    private Answer asked(String query, List<String> modelSymbols,
-                         boolean wantCore) {
+        long budget = budgetMillis > 0L ? budgetMillis : timeoutMillis;
         String text = query == null ? "" : query;
-        String output = run(text + "(check-sat)\n");
-        String status = firstLine(output);
+        String status = firstLine(run(text + "(check-sat)\n", budget));
         Map<String, String> values = Collections.emptyMap();
         if ("sat".equals(status) && modelSymbols != null
                 && !modelSymbols.isEmpty()) {
-            values = parseValues(run(modelQuery(text, modelSymbols)));
+            values = parseValues(run(modelQuery(text, modelSymbols), budget));
         }
         List<String> core = Collections.emptyList();
         if (wantCore && "unsat".equals(status)) {
-            core = parseCore(run(text + "(check-sat)\n(get-unsat-core)\n"));
+            core = parseCore(run(text + "(check-sat)\n(get-unsat-core)\n",
+                    budget));
         }
         // Not after a timeout: it would spend the budget again for "".
         String reason = "";
         if (!"sat".equals(status) && !"unsat".equals(status)
                 && !TIMEOUT.equals(status)) {
             reason = parseReason(run(text
-                    + "(check-sat)\n(get-info :reason-unknown)\n"));
+                    + "(check-sat)\n(get-info :reason-unknown)\n", budget));
         }
         return new Answer(status, values, core, reason);
     }
@@ -206,10 +193,9 @@ public final class Z3 {
      * One z3 process.  Each pipe direction has its own thread (else large
      * queries deadlock), and the timeout is enforced here, not by z3.
      */
-    private String run(String input) {
+    private String run(String input, long budgetMillis) {
         runs++;
-        long budget = TimeUnit.MILLISECONDS.toNanos(
-                askBudgetMillis > 0L ? askBudgetMillis : timeoutMillis);
+        long budget = TimeUnit.MILLISECONDS.toNanos(budgetMillis);
         Process process;
         try {
             ProcessBuilder builder = new ProcessBuilder(z3.toString(),
@@ -220,35 +206,22 @@ public final class Z3 {
             // z3 never ran: undecided, not a z3 "(error ...)".
             return "error " + notLaunched.getMessage();
         }
-        final Process running = process;
-        final byte[] bytes = input.getBytes(StandardCharsets.UTF_8);
-        final AtomicReference<String> read = new AtomicReference<String>("");
-        Thread writer = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                OutputStream stream = running.getOutputStream();
-                try {
-                    stream.write(bytes);
-                    stream.flush();
-                } catch (IOException closed) {
-                    // z3 closed its input after answering.
-                } finally {
-                    try {
-                        stream.close();
-                    } catch (IOException ignored) {
-                        // Nothing further to say about a closed pipe.
-                    }
-                }
+        Process running = process;
+        byte[] bytes = input.getBytes(StandardCharsets.UTF_8);
+        AtomicReference<String> read = new AtomicReference<String>("");
+        Thread writer = new Thread(() -> {
+            try (OutputStream stream = running.getOutputStream()) {
+                stream.write(bytes);
+                stream.flush();
+            } catch (IOException closed) {
+                // z3 closed its input after answering.
             }
         }, "graphchecker-z3-writer");
-        Thread reader = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    read.set(readAll(running.getInputStream()));
-                } catch (IOException truncated) {
-                    read.set(read.get());
-                }
+        Thread reader = new Thread(() -> {
+            try {
+                read.set(readAll(running.getInputStream()));
+            } catch (IOException truncated) {
+                // A broken pipe answers nothing: "" is undecided.
             }
         }, "graphchecker-z3-reader");
         writer.setDaemon(true);
@@ -308,22 +281,15 @@ public final class Z3 {
     /** The {@code ((sym val) ...)} block a sat answer carries. */
     static Map<String, String> parseValues(String output) {
         Map<String, String> values = new LinkedHashMap<String, String>();
-        if (output == null) return values;
-        int start = output.indexOf('\n');
-        if (start < 0) return values;
-        String body = output.substring(start + 1).trim();
-        if (!body.startsWith("(")) return values;
-        for (String item : items(body.substring(1,
-                Math.max(1, matching(body, 0))))) {
-            String pair = item.trim();
-            if (!pair.startsWith("(")) continue;
-            String inner = pair.substring(1,
-                    Math.max(1, matching(pair, 0))).trim();
-            int split = inner.indexOf(' ');
-            if (split < 0) continue;
+        SExpression block = answerBlock(output, false);
+        if (block == null || block.atom()) return values;
+        for (SExpression pair : block.children()) {
+            List<SExpression> parts = pair.children();
+            if (parts.size() < 2) continue;
             // Strip SMT-LIB |bars| from the name.
-            values.put(unquoted(inner.substring(0, split).trim()),
-                    normalize(inner.substring(split + 1).trim()));
+            values.put(unquoted(parts.get(0).text()), normalize(output
+                    .substring(parts.get(1).start,
+                            parts.get(parts.size() - 1).end)));
         }
         return values;
     }
@@ -360,59 +326,20 @@ public final class Z3 {
     /** The names an unsat core lists, in the order z3 printed them. */
     static List<String> parseCore(String output) {
         List<String> names = new ArrayList<String>();
-        if (output == null) return names;
-        int start = output.indexOf('\n');
-        if (start < 0) return names;
-        String body = output.substring(start + 1).trim();
-        int open = body.indexOf('(');
-        if (open < 0) return names;
-        int close = matching(body, open);
-        if (close < 0) return names;
-        for (String name : body.substring(open + 1, close).trim()
-                .split("\\s+")) {
-            if (!name.isEmpty()) names.add(name);
-        }
+        SExpression block = answerBlock(output, true);
+        if (block == null) return names;
+        for (SExpression name : block.children()) names.add(name.text());
         return names;
     }
 
-    /** The top-level items of one parenthesised body. */
-    private static List<String> items(String body) {
-        List<String> parts = new ArrayList<String>();
-        int depth = 0;
-        int start = -1;
-        boolean quoted = false;
-        for (int index = 0; index < body.length(); index++) {
-            char value = body.charAt(index);
-            if (value == '"') quoted = !quoted;
-            if (quoted) continue;
-            if (value == '(') {
-                if (depth == 0) start = index;
-                depth++;
-            } else if (value == ')') {
-                depth--;
-                if (depth == 0 && start >= 0) {
-                    parts.add(body.substring(start, index + 1));
-                    start = -1;
-                }
-            }
-        }
-        return parts;
-    }
-
-    /** The index of the parenthesis closing the one at {@code open}. */
-    private static int matching(String text, int open) {
-        int depth = 0;
-        boolean quoted = false;
-        for (int index = open; index < text.length(); index++) {
-            char value = text.charAt(index);
-            if (value == '"') quoted = !quoted;
-            if (quoted) continue;
-            if (value == '(') depth++;
-            else if (value == ')') {
-                depth--;
-                if (depth == 0) return index;
-            }
-        }
-        return -1;
+    /**
+     * The list z3 printed after its verdict line: the first term there, or
+     * ({@code firstList}) the first parenthesised one; null when none.
+     */
+    private static SExpression answerBlock(String output, boolean firstList) {
+        int verdictEnd = output == null ? -1 : output.indexOf('\n');
+        if (verdictEnd < 0) return null;
+        int at = firstList ? output.indexOf('(', verdictEnd) : verdictEnd + 1;
+        return at < 0 ? null : SExpression.parse(output, at);
     }
 }

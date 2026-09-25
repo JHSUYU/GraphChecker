@@ -18,11 +18,12 @@ public final class VmExpressionIr {
     /** The VM's spelling of a symbolic null reference. */
     public static final String SYMBOLIC_NULL = "N";
     /** Transparent VM marker installed at a consumer-side value boundary. */
-    public static final String CONSUMER_BOUNDARY_TYPE =
+    private static final String CONSUMER_BOUNDARY_TYPE =
             "ConsumerBoundaryExpression";
     /** Persisted reference to one replay-independent boundary family. */
-    public static final String CONSUMER_BOUNDARY_REFERENCE_TYPE =
+    private static final String CONSUMER_BOUNDARY_REFERENCE_TYPE =
             "ConsumerBoundaryReference";
+    /** The member a wrapper (boundary, observed version) holds its value in. */
     public static final String EXPRESSION = "expression";
 
     /** Runtime-evidence identity assigned to one propagated map state. */
@@ -30,9 +31,15 @@ public final class VmExpressionIr {
             Pattern.compile("^MAP_STATE\\.v1\\.[0-9a-f]{64}$");
 
     /** One exact VM value root: the symbol the VM minted for one site. */
-    private static final String SYMBOL_TYPE = "SymbolExpression";
+    public static final String SYMBOL_TYPE = "SymbolExpression";
 
     private VmExpressionIr() {
+    }
+
+    /** One node's {@code _type}, or "" for anything but an object. */
+    public static String typeOf(JsonElement expression) {
+        return expression != null && expression.isJsonObject()
+                ? optionalString(expression.getAsJsonObject(), "_type") : "";
     }
 
     /**
@@ -41,29 +48,9 @@ public final class VmExpressionIr {
      * A plain constant fold may be minted afresh.
      */
     public static boolean carriesPropagatedValue(JsonElement expression) {
-        if (expression == null || expression.isJsonNull()) return false;
-        if (expression.isJsonArray()) {
-            for (JsonElement child : expression.getAsJsonArray()) {
-                if (carriesPropagatedValue(child)) return true;
-            }
-            return false;
-        }
-        if (!expression.isJsonObject()) return false;
-        JsonObject node = expression.getAsJsonObject();
-        String type = optionalString(node, "_type");
-        if (SYMBOL_TYPE.equals(type)
+        return carries(expression, type -> SYMBOL_TYPE.equals(type)
                 || CONSUMER_BOUNDARY_TYPE.equals(type)
-                || VmRows.GUARDED_READ_TYPE.equals(type)) {
-            return true;
-        }
-        for (java.util.Map.Entry<String, JsonElement> member
-                : node.entrySet()) {
-            if (!"_type".equals(member.getKey())
-                    && carriesPropagatedValue(member.getValue())) {
-                return true;
-            }
-        }
-        return false;
+                || VmRows.GUARDED_READ_TYPE.equals(type));
     }
 
     /**
@@ -73,20 +60,26 @@ public final class VmExpressionIr {
      * constant-written field arrives wrapped and would never get a root.
      */
     public static boolean carriesSymbolicValue(JsonElement expression) {
+        return carries(expression, SYMBOL_TYPE::equals);
+    }
+
+    /** Whether any node of the tree has a {@code _type} {@code wanted} names. */
+    private static boolean carries(JsonElement expression,
+                                   Predicate<String> wanted) {
         if (expression == null || expression.isJsonNull()) return false;
         if (expression.isJsonArray()) {
             for (JsonElement child : expression.getAsJsonArray()) {
-                if (carriesSymbolicValue(child)) return true;
+                if (carries(child, wanted)) return true;
             }
             return false;
         }
         if (!expression.isJsonObject()) return false;
         JsonObject node = expression.getAsJsonObject();
-        if (SYMBOL_TYPE.equals(optionalString(node, "_type"))) return true;
+        if (wanted.test(optionalString(node, "_type"))) return true;
         for (java.util.Map.Entry<String, JsonElement> member
                 : node.entrySet()) {
             if (!"_type".equals(member.getKey())
-                    && carriesSymbolicValue(member.getValue())) {
+                    && carries(member.getValue(), wanted)) {
                 return true;
             }
         }
@@ -95,25 +88,21 @@ public final class VmExpressionIr {
 
     /** The expression, only when the VM stated one exact, complete root. */
     public static JsonObject exactSymbolRoot(JsonElement expression) {
-        if (expression == null || !expression.isJsonObject()) return null;
+        if (!SYMBOL_TYPE.equals(typeOf(expression))) return null;
         JsonObject root = expression.getAsJsonObject();
-        return SYMBOL_TYPE.equals(optionalString(root, "_type"))
-                && !optionalString(root, "_exp").isEmpty()
+        return !optionalString(root, "_exp").isEmpty()
                 && !optionalString(root, "_java_type").isEmpty()
-                && !VmRows.truncated(
-                root) ? root : null;
+                && !VmRows.truncated(root) ? root : null;
     }
 
-    public static boolean isConsumerBoundary(JsonElement expression) {
-        return expression != null && expression.isJsonObject()
-                && CONSUMER_BOUNDARY_TYPE.equals(optionalString(
-                expression.getAsJsonObject(), "_type"));
-    }
-
-    public static boolean isConsumerBoundaryReference(JsonElement expression) {
-        return expression != null && expression.isJsonObject()
-                && CONSUMER_BOUNDARY_REFERENCE_TYPE.equals(optionalString(
-                expression.getAsJsonObject(), "_type"));
+    /**
+     * Whether this node is a consumer boundary, inline or by reference:
+     * either way it stands for the value in its {@link #EXPRESSION}.
+     */
+    public static boolean consumerBoundary(JsonElement expression) {
+        String type = typeOf(expression);
+        return CONSUMER_BOUNDARY_TYPE.equals(type)
+                || CONSUMER_BOUNDARY_REFERENCE_TYPE.equals(type);
     }
 
     /** Whether runtime carrier evidence gave this state a replay-stable id. */

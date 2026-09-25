@@ -192,8 +192,7 @@ public final class ContainerSmtCodec {
         JsonObject node = expression.getAsJsonObject();
         if (VmRows.GUARDED_READ_TYPE.equals(
                 optionalString(node, "_type"))
-                || VmExpressionIr.isConsumerBoundary(node)
-                || VmExpressionIr.isConsumerBoundaryReference(node)
+                || VmExpressionIr.consumerBoundary(node)
                 || VmExpressionIr.isCanonicalMapStateReference(
                 optionalString(node, "_exp"))) {
             return true;
@@ -233,8 +232,7 @@ public final class ContainerSmtCodec {
             JsonElement receiver, int wanted, String selectedJavaType,
             IdentityHashMap<JsonElement, JsonElement> memo) {
         JsonObject root = receiver.getAsJsonObject();
-        if (VmExpressionIr.isConsumerBoundary(root)
-                || VmExpressionIr.isConsumerBoundaryReference(root)) {
+        if (VmExpressionIr.consumerBoundary(root)) {
             JsonElement selected = storedIndexedWrite(
                     root.get(VmExpressionIr.EXPRESSION), wanted,
                     selectedJavaType, memo);
@@ -1024,8 +1022,7 @@ public final class ContainerSmtCodec {
     private static String selectedReadViewKind(JsonElement expression) {
         if (expression == null || !expression.isJsonObject()) return "";
         JsonObject object = expression.getAsJsonObject();
-        if (VmExpressionIr.isConsumerBoundary(object)
-                || VmExpressionIr.isConsumerBoundaryReference(object)) {
+        if (VmExpressionIr.consumerBoundary(object)) {
             JsonElement payload = object.get(VmExpressionIr.EXPRESSION);
             return payload == null || !payload.isJsonObject() ? ""
                     : selectedReadViewKind(payload);
@@ -1072,8 +1069,7 @@ public final class ContainerSmtCodec {
             return memo.get(expression);
         }
         JsonObject object = expression.getAsJsonObject();
-        if (VmExpressionIr.isConsumerBoundary(object)
-                || VmExpressionIr.isConsumerBoundaryReference(object)) {
+        if (VmExpressionIr.consumerBoundary(object)) {
             JsonElement payload = selectedViewState(
                     object.get(VmExpressionIr.EXPRESSION), kind, memo);
             if (payload == null) return null;

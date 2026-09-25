@@ -728,9 +728,7 @@ public final class SmtLowering {
             Term pinned = dispatch(concrete, expected, origin + ":pinned");
             if (pinned != null) return pinned;
         }
-        return unstated("Read:" + (key.isEmpty()
-                        ? VmRows.sessionLocation(location)
-                        : key) + "@" + version,
+        return unstated("Read:" + key + "@" + version,
                 "no write of this location at this version in this session, "
                         + "and the recording states no value it returned",
                 expected);
@@ -817,8 +815,7 @@ public final class SmtLowering {
                 return dependent(unboxed, value);
             }
         }
-        return unstated("ContainerElement:" + (key.isEmpty()
-                        ? VmRows.sessionLocation(location) : key)
+        return unstated("ContainerElement:" + key
                         + "@" + version + ":" + value.sort + "!=" + cell,
                 "the write this read joined to states the whole container "
                         + "at that version, and this location does not say "
@@ -1585,9 +1582,7 @@ public final class SmtLowering {
         if (VmRows.GUARDED_READ_TYPE.equals(type)) {
             return guardedReadTerm(object, expected, origin);
         }
-        if (VmExpressionIr.CONSUMER_BOUNDARY_TYPE.equals(type)
-                || VmExpressionIr.CONSUMER_BOUNDARY_REFERENCE_TYPE
-                .equals(type)) {
+        if (VmExpressionIr.consumerBoundary(object)) {
             // Outside final composition an anchor is the value the VM
             // propagated.
             return dispatch(object.get(VmExpressionIr.EXPRESSION), expected,

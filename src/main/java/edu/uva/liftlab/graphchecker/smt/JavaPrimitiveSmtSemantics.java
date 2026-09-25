@@ -47,7 +47,7 @@ public final class JavaPrimitiveSmtSemantics {
     }
 
     /** {@code Long.MAX_VALUE}, as an SMT-LIB numeral. */
-    public static final String JAVA_LONG_MAX = "9223372036854775807";
+    private static final String JAVA_LONG_MAX = "9223372036854775807";
 
     /**
      * A CLOCK cell's domain {@code [floor, ceiling]} in ms, the one spelling
