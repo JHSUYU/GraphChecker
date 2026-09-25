@@ -964,8 +964,10 @@ names.
   `materializeSymbolicBoolean` (always false; the marker's value is the plant at
   LOCAL_DEFINITION): check readers, rename or delete.
 - R8 `ActiveRegion`: empty javadoc fragments; `threadName` and `vmContextId` readers?
-- R9/R18 three thread-context stacks for one thread (`Identity.CURRENT`,
-  `RuntimeTraceContext.CURRENT`, `Lineage.STACK`, two of them `InheritableThreadLocal`) carry
+- R9/R18 (step 1 of 5 done 2026-09-24: dead lineage members) three thread-context stacks for one
+  thread (`Identity.CURRENT`, `RuntimeTraceContext.CURRENT`, `Lineage.STACK`, all three
+  `InheritableThreadLocal`, and inheritance does yield addresses, so "carry lineage explicitly"
+  is a behaviour change to validate, not a refactor) carry
   overlapping facts (scope, source, lineage): the largest structural redundancy in runtime and
   the README's deferred "carry lineage explicitly" item.
 - R10 `Obligation.unproducible` invents only an UNPAIRED arrival (by design; keep).

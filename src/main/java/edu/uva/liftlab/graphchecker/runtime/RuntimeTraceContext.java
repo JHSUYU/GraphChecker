@@ -197,8 +197,7 @@ final class RuntimeTraceContext {
         // its own starter is what the work's reference already states
         // (Attribution, rule 3), and made explicit here it would outrank the
         // work's own frames.
-        String nodeKey = view.source == null ? "" : view.source.key();
-        Object lineage = Lineage.capture(nodeKey);
+        Object lineage = Lineage.capture();
         synchronized (LOCK) {
             ASYNC_SEEDS.put(carrier, new Seed(
                     explicitSource(), view.requestKey, view.requestApi,
@@ -347,7 +346,6 @@ final class RuntimeTraceContext {
         Frame frame = state.frames.peek();
         if (frame == null || frame.spanId != spanId) return;
         state.frames.pop();
-        if (frame.lineageToken > 0L) Lineage.release(frame.lineageToken);
         state.source = frame.previousSource;
         state.requestKey = frame.previousRequestKey;
         state.requestApi = frame.previousRequestApi;
@@ -381,9 +379,8 @@ final class RuntimeTraceContext {
      */
     static Object captureScope() {
         View view = CURRENT.get().view();
-        String nodeKey = view.source == null ? "" : view.source.key();
         return new RequestScope(view.source, view.requestKey,
-                view.requestApi, Lineage.capture(nodeKey));
+                view.requestApi, Lineage.capture());
     }
 
     /**
@@ -1301,7 +1298,6 @@ final class RuntimeTraceContext {
     private static final class Frame {
         private final long spanId;
         /** The lineage hop this root opened, or 0 when it opened none. */
-        private long lineageToken;
         private long remoteParentSpanId;
         private final SourceRef previousSource;
         private SourceRef source;

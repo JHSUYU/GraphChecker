@@ -1035,7 +1035,7 @@ public final class Identity {
      * {@code c}.
      */
     public static CausalContext contextHere() {
-        return here(Lineage.named() ? Lineage.role() : Role.UNKNOWN);
+        return here(Lineage.role());
     }
 
     /**
@@ -1232,7 +1232,7 @@ public final class Identity {
             if (occurrence != null) return occurrence;
         }
         return roleOccurrence(nodeKey,
-                Lineage.named() ? Lineage.role() : Role.UNKNOWN);
+                Lineage.role());
     }
 
     /**

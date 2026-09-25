@@ -93,20 +93,14 @@ public final class Lineage {
     /** One captured lineage, carried with the work that was created in it. */
     public static final class Carried {
         private final List<Frame> frames;
-        private final String nodeKey;
 
-        private Carried(List<Frame> frames, String nodeKey) {
+        private Carried(List<Frame> frames) {
             this.frames = frames;
-            this.nodeKey = nodeKey;
         }
 
         /** Whether this carries a lineage at all. */
         public boolean names() {
             return !frames.isEmpty();
-        }
-
-        public String nodeKey() {
-            return nodeKey;
         }
     }
 
@@ -174,9 +168,8 @@ public final class Lineage {
     }
 
     /** The frames this thread stands in, as a value the work carries. */
-    public static Carried capture(String nodeKey) {
-        return new Carried(new ArrayList<Frame>(STACK.get()),
-                Text.safe(nodeKey));
+    public static Carried capture() {
+        return new Carried(new ArrayList<Frame>(STACK.get()));
     }
 
     /**
@@ -191,17 +184,13 @@ public final class Lineage {
                                String api) {
         List<Frame> stack = STACK.get();
         final List<Frame> restored = new ArrayList<Frame>(stack);
-        long token;
         if (carried instanceof Carried && ((Carried) carried).names()) {
-            Carried scope = (Carried) carried;
+            // Inside a carried lineage the hop is no root, so its node is
+            // counted nowhere: the carried frames name where the work began.
             stack.clear();
-            stack.addAll(scope.frames);
-            String node = Text.safe(nodeKey).isEmpty()
-                    ? scope.nodeKey() : Text.safe(nodeKey);
-            token = push(node, role, api);
-        } else {
-            token = push(nodeKey, role, api);
+            stack.addAll(((Carried) carried).frames);
         }
+        long token = push(nodeKey, role, api);
         RESTORED.get().put(token, restored);
         return token;
     }
