@@ -120,14 +120,8 @@ public final class CausynthTraceRecorder {
                 aggregateSkeletonTrace(directory, candidateSkeletons,
                         test, planOutputDirectory);
             } else {
-                String configuredRefined = params.get("refined-graph");
-                File refinedGraph = configuredRefined == null
-                        || configuredRefined.trim().isEmpty()
-                        ? new File(planOutputDirectory,
-                        "refined_dataflow_edges.jsonl.gz")
-                        : new File(configuredRefined.trim());
                 aggregateStateTrace(directory, graph, candidateSkeletons,
-                        refinedGraph, test, planOutputDirectory,
+                        test, planOutputDirectory,
                         new File(requiredArg(params, "recording-gaps")),
                         new File(requiredArg(params, "static-scope-map")));
             }
@@ -1326,7 +1320,7 @@ public final class CausynthTraceRecorder {
 
     private static void aggregateStateTrace(
             File directory, File candidateGraph, File selectedSkeletons,
-            File refinedGraph, String test, File planOutputDirectory,
+            String test, File planOutputDirectory,
             File recordingGaps, File staticScopeMap)
             throws IOException {
         synchronized (LOCK) {
@@ -1365,28 +1359,20 @@ public final class CausynthTraceRecorder {
                             skeletons, trace.methods,
                             trace.execution, trace.protocol,
                             declaredSites(scopeMap));
-            RuntimeRefinedGraphBuilder.Result refinement =
-                    RuntimeRefinedGraphBuilder.refine(candidateGraph,
-                            skeletons,
-                            activationGraph.runtimeInstances,
-                            trace.methods, trace.execution,
-                            trace.fields,
-                            refinedGraph.toPath());
-            // The refined rows returned by the builder are normalized to the
-            // exact JSONL round-trip domain, so the finalizer sees precisely
-            // what re-reading the artifact would produce, without parsing
-            // the multi-hundred-MB file twice more.
+            // The finalizer reads the candidate graph itself: every field it
+            // takes off an edge is the static analysis's, and the region an
+            // edge's method belongs to it looks up in the skeletons
+            // (StaticProgram#skeletonRegionsHolding).
+            List<Map<String, Object>> candidateRows =
+                    MapFields.readRows(candidateGraph);
             RuntimeSelectedRegionFinalizer.Result closure =
                     RuntimeSelectedRegionFinalizer.finalizeRegions(
-                    refinement.rows, skeletons,
+                    candidateRows, skeletons,
                     String.valueOf(selectedSkeletons),
                     observedMethods, activationGraph.runtimeInstances,
                     activationGraph.regionFolds,
                     runtimeObservations(trace.execution, trace.methods),
                     scopeMap);
-            for (Map<String, Object> row : closure.regions) {
-                RuntimeRefinedGraphBuilder.normalizeNumbersInPlace(row);
-            }
             // The plan's gaps are this pass's own plus the ones the
             // RECORDING stated: the recording has no session to hold a gap
             // row, and a gap it cannot state is one nobody hears about.

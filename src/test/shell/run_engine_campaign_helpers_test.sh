@@ -696,13 +696,15 @@ done
 # roots the weave scanned for thread starts, handoffs and timed waits decides
 # which threads a run attributes and which waits the schedule holds, so two
 # runs that scanned different roots did not replay under the same rules.
-[[ "$(print_normalized_config | wc -l)" -eq 46 ]] \
+# 45: `refined_graph` left with RuntimeRefinedGraphBuilder (R14/R48): the
+# finalizer reads the candidate graph and the skeletons, and nothing else.
+[[ "$(print_normalized_config | wc -l)" -eq 45 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 # CONFIG-4: the discovery artifacts are derived from causynth_output_dir and
 # nothing else -- not loadable, not overridable -- so every stage of a run
 # and every peer of a wave reads the same file.  `config` still prints them.
-for derived_key in candidate_graph refined_graph runtime_region_plan \
+for derived_key in candidate_graph runtime_region_plan \
     schedule_output_dir analysis_classes_dir causynth_static_scope_map \
     causynth_region_skeletons; do
   [[ " ${config_table_keys[*]} " == *" ${derived_key} "* ]] \

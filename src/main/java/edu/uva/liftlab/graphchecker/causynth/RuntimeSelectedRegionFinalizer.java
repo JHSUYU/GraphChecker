@@ -186,7 +186,7 @@ public final class RuntimeSelectedRegionFinalizer {
                 runtimeRegionFolds);
 
         StaticProgram program = new StaticProgram();
-        program.refinedGraph = graph;
+        program.graph = graph;
         for (StaticProgram.RegionRow skeleton : selectedSkeletons) {
             program.skeletons.put(skeleton.regionId, skeleton);
         }
@@ -309,7 +309,7 @@ public final class RuntimeSelectedRegionFinalizer {
         // One index over the region catalog, so the fatal-prefix pass and
         // the closure walk read the same declaration table.
         RegionDemandIndex demands = new RegionDemandIndex(program.regions,
-                program.activations, program.refinedGraph);
+                program.activations, program.graph, program);
         ClosureWalk closure = failureDirectedClosure(program, demands,
                 skeletonSource, scopeMap);
         applyClosure(program, closure);
@@ -1757,7 +1757,7 @@ public final class RuntimeSelectedRegionFinalizer {
         private RegionDemandIndex(
                 List<Map<String, Object>> regions,
                 Map<String, Map<String, Object>> activations,
-                List<Map<String, Object>> graph) {
+                List<Map<String, Object>> graph, StaticProgram program) {
             // The region scope of EVERY observed activation, not only of the
             // ones that hold a port: the demand walk moves on the candidate
             // graph inside an occurrence, and an occurrence whose region it
@@ -1793,7 +1793,8 @@ public final class RuntimeSelectedRegionFinalizer {
                 String from = text(edge.get("fromCell"));
                 String to = text(edge.get("toCell"));
                 if (from.isEmpty() || to.isEmpty()) continue;
-                for (String regionId : strings(edge.get("regionIds"))) {
+                for (String regionId : program.skeletonRegionsHolding(
+                        text(edge.get("method")))) {
                     if (!selectedRegions.contains(regionId)) continue;
                     addUnique(localIncoming, contextKey(regionId, to),
                             from);

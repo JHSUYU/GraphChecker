@@ -188,7 +188,7 @@ public class ServiceLoopIsNotAMessageFrameTest {
                 Collections.singletonList(region),
                 RuntimeSelectedRegionFinalizer.SKELETON_KIND,
                 "test").get(0));
-        program.refinedGraph = graph;
+        program.graph = graph;
         program.activations.put("ACT.1", activation());
         return new Case(program, branchObservations(String.valueOf(
                 loop.get(LoopBoundPolicy.LOOP_SITE_ID))));

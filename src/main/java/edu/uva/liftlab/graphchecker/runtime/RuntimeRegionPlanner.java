@@ -1428,7 +1428,19 @@ public final class RuntimeRegionPlanner {
             }
             return result;
         }
-        return RuntimeRefinedGraphBuilder.normalizeScalar(value);
+        return normalizeScalar(value);
+    }
+
+    /** The JSONL round-trip domain of one scalar: whole numbers as long. */
+    private static Object normalizeScalar(Object value) {
+        if (value instanceof Integer || value instanceof Short
+                || value instanceof Byte) {
+            return ((Number) value).longValue();
+        }
+        if (value instanceof Float) {
+            return ((Number) value).doubleValue();
+        }
+        return value;
     }
 
     /** Structural replacement for {@code GSON.toJsonTree} over the plain

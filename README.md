@@ -975,13 +975,7 @@ names.
 - R12 `RuntimeRegionPlanner.putRecordedTraceIds` keeps laneId only; `MethodEvent.reattribute`
   (called?); the `ANCHOR_*` kinds are validated in `RootContextSelector.from` and never read.
 - R13 `CausynthTraceRecorder` pass 1 (`enterMethodLite`/`exitActiveMethodLite`) — delete after
-  diffing the occurrence-address sets of the nine recordings (§10 item 9); R14/R48 the field
-  trace feeds `RuntimeRefinedGraphBuilder`, which IS read: `RuntimeSelectedRegionFinalizer.
-  finalizeRegions(refinement.rows …)` → `StaticProgram.edgesByRegion` and `RegionDemandIndex`
-  read `method`, `kind`, `toCell`/`fromCell`, `transferKind`, `guardSiteId`, `regionIds`; the
-  refiner stamps `regionIds`, `runtimeFieldBindings`, `fieldPath`, `runtimeObserved`, `graphKind`
-  and the binding rows. Before deleting it, show that the candidate graph + skeleton lookup gives
-  the finalizer the same rows (the `regionIds` annotation is already recomputed there).
+  diffing the occurrence-address sets of the nine recordings (§10 item 9); R14/R48 DONE (2026-09-24): `RuntimeRefinedGraphBuilder` is deleted -- the finalizer reads the candidate graph and looks an edge's regions up in the skeletons; the region plans of all nine v44 recordings re-plan byte-identical.
 - R15 switch support is real on both halves (`instrumentConcolicSwitch`, `RESOLVE/RECORD_SWITCH_
   BRANCH`); unexercised by the nine cases; keep.
 - R16 `SymbolizeAction.symbolicName`/`rootKind`/`replayOccurrence` readers?;

@@ -80,7 +80,7 @@ public final class StaticProgram {
     // ------------------------------------------------------------------
 
     /** The runtime-refined dataflow rows this finalization reads. */
-    List<Map<String, Object>> refinedGraph = Collections.emptyList();
+    List<Map<String, Object>> graph = Collections.emptyList();
     /** The selected region skeletons, decoded once, by region id. */
     final Map<String, RegionRow> skeletons = new LinkedHashMap<>();
     /** Minted region activations, by occurrence id. */
@@ -119,7 +119,7 @@ public final class StaticProgram {
     Map<String, List<Map<String, Object>>> edgesByRegion() {
         if (graphEdgesByRegion == null) {
             graphEdgesByRegion = new LinkedHashMap<>();
-            for (Map<String, Object> edge : refinedGraph) {
+            for (Map<String, Object> edge : graph) {
                 for (String regionId
                         : skeletonRegionsHolding(text(edge.get("method")))) {
                     graphEdgesByRegion.computeIfAbsent(regionId,

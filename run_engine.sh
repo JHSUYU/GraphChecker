@@ -137,7 +137,6 @@ workflow_config_keys=(
   # (guard sites) and by PLAN and EXPLORE (flip sites); the region skeletons
   # by both weaves, so a replay stands on the recording's frame stack.
   "candidate_graph - rp -"
-  "refined_graph - rp -"
   "runtime_region_plan - rp -"
   "causynth_static_scope_map - rp -"
   "causynth_region_skeletons - rp -"
@@ -382,7 +381,6 @@ initialize_config() {
   candidate_graph="${causynth_output_dir}/candidate_dataflow_edges.jsonl.gz"
   causynth_static_scope_map="${causynth_output_dir}/static_scope_map.jsonl"
   runtime_region_plan="${causynth_output_dir}/runtime/concolic_region_plan.jsonl"
-  refined_graph="${causynth_output_dir}/runtime/refined_dataflow_edges.jsonl.gz"
   causynth_region_skeletons="${causynth_output_dir}/runtime/skeleton-pass/region_skeletons.jsonl"
   analysis_classes_dir="${causynth_output_dir}/instrumented-classes"
   schedule_output_dir="${causynth_output_dir}/schedule"
@@ -789,7 +787,6 @@ do_workload() {
       --candidate-graph "${candidate_graph}" \
       --region-skeletons "${causynth_region_skeletons}" \
       --static-scope-map "${causynth_static_scope_map}" \
-      --refined-graph "${refined_graph}" \
       --recording-gaps "${trace_dir}/skeleton-pass/recording_gaps.jsonl" \
       --test "${trace_test}"
   )
@@ -1736,7 +1733,7 @@ campaign_freeze() {
 # libraries, config, target spec, communication mappings, per-loop bounds,
 # symbolic input selection, the production/test class trees, and the workload
 # classpath
-# string. The SEED additions (static catalog, region plan, refined graph) are
+# string. The SEED additions (static catalog, region plan) are
 # this campaign's own outputs rather than its inputs, and the INSTRUMENT stage
 # legitimately rewrites the analysis root they sit in; re-hashing them here
 # would report the run's own work as drift. The two checkout states are left
@@ -1820,15 +1817,13 @@ campaign_verify_frozen_inputs() {
 # stage owns. Its outputs are the campaign's static catalog and target closure.
 campaign_seed() {
   local marker="${campaign_root}/.seed-started"
-  local catalog_sha plan_sha refined_sha
+  local catalog_sha plan_sha
   : >"${marker}"
   do_analyze
   do_workload
   require_fresh "static candidate data-flow graph" "${candidate_graph}" \
     "${marker}"
   require_fresh "runtime region plan" "${runtime_region_plan}" "${marker}"
-  require_fresh "runtime-refined data-flow graph" "${refined_graph}" \
-    "${marker}"
   # Snapshot both seed skeleton views inside this immutable campaign.  The
   # configured analysis and runtime roots are already generation-local; the
   # snapshot keeps the exact static/runtime pair beside the final provenance.
@@ -1845,20 +1840,14 @@ campaign_seed() {
   if ! plan_sha=$(campaign_digest "${runtime_region_plan}"); then
     campaign_fail SEED CAMPAIGN "${runtime_region_plan}" "digest failed"
   fi
-  if ! refined_sha=$(campaign_digest "${refined_graph}"); then
-    campaign_fail SEED CAMPAIGN "${refined_graph}" "digest failed"
-  fi
   if ! campaign_provenance=$(jq -n \
     --argjson frozen "${campaign_provenance}" \
     --arg catalog "${candidate_graph}" \
     --arg catalogSha "${catalog_sha}" \
     --arg plan "${runtime_region_plan}" \
     --arg planSha "${plan_sha}" \
-    --arg refined "${refined_graph}" \
-    --arg refinedSha "${refined_sha}" \
     '$frozen + {staticCatalog: {path: $catalog, sha256: $catalogSha},
-                regionPlan: {path: $plan, sha256: $planSha},
-                refinedGraph: {path: $refined, sha256: $refinedSha}}'); then
+                regionPlan: {path: $plan, sha256: $planSha}}'); then
     campaign_fail SEED CAMPAIGN "${campaign_root}" \
       "failed to extend immutable seed provenance"
   fi
@@ -1880,7 +1869,6 @@ campaign_plan() {
   local region_hash region_size
 
   require_nonempty "runtime region plan" "${runtime_region_plan}"
-  require_nonempty "runtime-refined data-flow graph" "${refined_graph}"
   cp -f "${runtime_region_plan}" "${frozen}"
   # The recording's schedule is frozen with the plan it was recorded beside:
   # the seed replay of this iteration is held to it (campaign_session_replay).
