@@ -133,9 +133,9 @@ public final class SmtLowering {
      * contradicts itself; callers refuse it by name).
      */
     public static String mintedReadSymbol(SessionJoin join, long version) {
-        Set<String> symbols = join == null || version < 0L
-                ? null : join.mintedReadSymbols(version);
-        if (symbols == null || symbols.isEmpty()) return "";
+        if (version < 0L) return "";
+        Set<String> symbols = join.mintedReadSymbols(version);
+        if (symbols.isEmpty()) return "";
         if (symbols.size() > 1) return null;
         return symbols.iterator().next();
     }
@@ -446,21 +446,20 @@ public final class SmtLowering {
                 openTable));
         this.openSideConditions = new ArrayList<String>();
         this.openRefusals = new ArrayList<String>();
-        this.scope = sessionId == null ? "" : sessionId;
-        this.join = sessionJoin == null ? NO_JOIN : sessionJoin;
+        this.scope = sessionId;
+        this.join = sessionJoin;
         this.openTable = expressions;
     }
 
     /** Closes it, answering the side conditions its lowering raised. */
     public List<String> end() {
-        List<String> conditions = openSideConditions == null
-                ? Collections.<String>emptyList() : openSideConditions;
-        Frame previous = frames.isEmpty() ? null : frames.pop();
-        openSideConditions = previous == null ? null : previous.conditions;
-        openRefusals = previous == null ? null : previous.refusals;
-        scope = previous == null ? "" : previous.scope;
-        join = previous == null ? NO_JOIN : previous.join;
-        openTable = previous == null ? null : previous.table;
+        List<String> conditions = openSideConditions;
+        Frame previous = frames.pop();
+        openSideConditions = previous.conditions;
+        openRefusals = previous.refusals;
+        scope = previous.scope;
+        join = previous.join;
+        openTable = previous.table;
         return conditions;
     }
 

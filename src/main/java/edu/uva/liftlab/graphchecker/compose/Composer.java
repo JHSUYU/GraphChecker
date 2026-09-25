@@ -164,38 +164,35 @@ public final class Composer {
         private final Map<String, ComposedFamilies.ArmChoice> armChoices;
         private final String seedSessionId;
 
-        private Composition(OccurrenceAddress anchor, String body,
+        /** The composer's state once every path is composed. */
+        private Composition(Composer composed, String body,
                             List<Disjunct> disjuncts, List<PathEntry> paths,
-                            List<Family> families, List<RootDomain> roots,
-                            List<Valuation> valuations, List<GapRow> gaps,
+                            List<Valuation> valuations,
                             List<String> clockCells,
-                            Map<String, Long> clockReadings,
-                            Map<String, Set<String>> unattestedRoots,
-                            Map<String, List<String>> observedReads,
-                            Map<String, List<String>> observedArrivals,
-                            Map<String, List<String>> heldArrivals,
-                            Map<String, ComposedFamilies.ArmChoice> armChoices,
-                            String seedSessionId) {
-            this.anchor = anchor;
+                            Map<String, Long> clockReadings) {
+            this.anchor = composed.anchor;
             this.body = body;
             this.disjuncts = Collections.unmodifiableList(disjuncts);
             this.paths = Collections.unmodifiableList(paths);
-            this.families = Collections.unmodifiableList(families);
-            this.roots = Collections.unmodifiableList(roots);
+            this.families = Collections.unmodifiableList(
+                    new ArrayList<Family>(composed.families.values()));
+            this.roots = Collections.unmodifiableList(
+                    new ArrayList<RootDomain>(composed.roots.values()));
             this.valuations = Collections.unmodifiableList(valuations);
-            this.gaps = Collections.unmodifiableList(gaps);
+            this.gaps = Collections.unmodifiableList(composed.gaps);
             this.clockCells = Collections.unmodifiableList(clockCells);
             this.clockReadings =
                     Collections.unmodifiableMap(clockReadings);
             this.unattestedRoots =
-                    Collections.unmodifiableMap(unattestedRoots);
+                    Collections.unmodifiableMap(composed.unattestedRoots);
             this.observedReads =
-                    Collections.unmodifiableMap(observedReads);
+                    Collections.unmodifiableMap(composed.observedReads);
             this.observedArrivals =
-                    Collections.unmodifiableMap(observedArrivals);
-            this.heldArrivals = Collections.unmodifiableMap(heldArrivals);
-            this.armChoices = Collections.unmodifiableMap(armChoices);
-            this.seedSessionId = seedSessionId;
+                    Collections.unmodifiableMap(composed.observedArrivals);
+            this.heldArrivals =
+                    Collections.unmodifiableMap(composed.heldArrivals);
+            this.armChoices = composed.composedFamilies.armChoices();
+            this.seedSessionId = composed.seed();
         }
 
         public OccurrenceAddress anchor() {
@@ -551,12 +548,8 @@ public final class Composer {
         for (Valuation valuation : valuations) {
             pins.addAll(valuation.assertions());
         }
-        return new Composition(anchor, lowering.body(pins), disjuncts, entries,
-                new ArrayList<Family>(families.values()),
-                new ArrayList<RootDomain>(roots.values()), valuations,
-                gaps, clockCells, clockReadings, unattestedRoots,
-                observedReads, observedArrivals, heldArrivals,
-                composedFamilies.armChoices(), seed());
+        return new Composition(this, lowering.body(pins), disjuncts, entries,
+                valuations, clockCells, clockReadings);
     }
 
     // ------------------------------------------------------------------
