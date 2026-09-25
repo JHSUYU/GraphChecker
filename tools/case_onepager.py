@@ -58,7 +58,6 @@ def page(case):
     # SOLVE publishes into the manifest it solved: one occurrence, one file.
     reach = manifest.get("solver", {})
     gaps = read_json(os.path.join(final, "gaps.json"), [])
-    ledger = read_json(os.path.join(final, "target_occurrences.json"), {})
 
     print("=" * 78)
     print("CASE  " + os.path.basename(case.rstrip("/")))
@@ -148,15 +147,6 @@ def page(case):
                     print("  %-52s %s" % (short(parts[0], 52), parts[1]))
     except OSError:
         print("  no stage metrics")
-
-    occurrences = ledger.get("occurrences", [])
-    if occurrences:
-        rule("TARGET OCCURRENCES")
-        for row in occurrences:
-            print("  %-58s %-10s %s" % (
-                short(row.get("occurrenceId", ""), 58),
-                row.get("status", ""),
-                "CHOSEN" if row.get("chosen") else row.get("support", "")))
     print()
 
 

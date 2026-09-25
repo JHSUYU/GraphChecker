@@ -309,7 +309,6 @@ polarity = {
     "source": source or ("SINGLE_MARKER_ENUMERATION" if every_value_stated
                          else "UNSTATED_RECORDED_VALUE"),
     "sourceDetail": detail,
-    "acceptedWitnessKind": "",
     "acceptedValuationOrdinal": ordinal,
     "terms": terms,
     "identities": identities,

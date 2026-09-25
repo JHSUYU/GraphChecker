@@ -437,10 +437,7 @@ if polarity.get("terms"):
 
     out += ["## What each polarity asserted", "",
             "* buggy: %s" % buggy_spelling(),
-            "    * source **%s**%s" % (
-                polarity.get("source", "-"),
-                " — `%s`" % polarity["acceptedWitnessKind"]
-                if polarity.get("acceptedWitnessKind") else ""),
+            "    * source **%s**" % polarity.get("source", "-"),
             "    * %s" % polarity.get("sourceDetail", "-")]
     if polarity.get("acceptedFindingKind"):
         # The mechanism the claim rests on, by name. A witness that names

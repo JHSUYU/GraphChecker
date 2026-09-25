@@ -11,7 +11,7 @@
 set -uo pipefail
 
 if [[ $# -ne 2 ]]; then
-  sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
   exit 2
 fi
 
