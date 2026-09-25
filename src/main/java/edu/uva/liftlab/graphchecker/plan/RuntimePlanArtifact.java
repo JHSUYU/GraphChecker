@@ -46,16 +46,15 @@ public final class RuntimePlanArtifact {
                                 Collection<JsonObject> encodedRegions,
                                 Collection<JsonObject> encodedGaps) {
         StringBuilder output = new StringBuilder();
-        output.append(encodeCatalog(copies(encodedRegions),
-                copies(encodedGaps)));
+        output.append(encodeCatalog(encodedRegions, encodedGaps));
         for (JsonObject source : encodedPlans) {
             output.append(CanonicalJson.render(source)).append('\n');
         }
         return output.toString();
     }
 
-    private static String encodeCatalog(List<JsonObject> encodedRegions,
-                                        List<JsonObject> encodedGaps) {
+    private static String encodeCatalog(Collection<JsonObject> encodedRegions,
+                                        Collection<JsonObject> encodedGaps) {
         JsonObject catalog = new JsonObject();
         catalog.addProperty("schemaVersion", SCHEMA_VERSION);
         catalog.addProperty("kind", CATALOG_KIND);
@@ -141,13 +140,9 @@ public final class RuntimePlanArtifact {
         return result;
     }
 
-    private static List<JsonObject> copies(
-            Collection<JsonObject> values) {
+    private static List<JsonObject> copies(Collection<JsonObject> values) {
         List<JsonObject> result = new ArrayList<>();
-        if (values != null) {
-            for (JsonObject value : values) result.add(value.deepCopy());
-        }
+        for (JsonObject value : values) result.add(value.deepCopy());
         return result;
     }
-
 }

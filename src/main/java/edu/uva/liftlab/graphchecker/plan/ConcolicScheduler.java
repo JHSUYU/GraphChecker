@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.TreeSet;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
@@ -92,7 +93,7 @@ public final class ConcolicScheduler {
                 symbolicInputs);
     }
 
-    private static Result scheduleLoaded(
+    private static List<ExecutionTask> scheduleLoaded(
             Arguments arguments, LoadedInputs loaded)
             throws IOException {
         // Resolve declared names over Soot's exact-copy edges before any region
@@ -105,9 +106,9 @@ public final class ConcolicScheduler {
 
         LoopBoundPolicy loopBound = declaredLoopBounds(
                 LoopBoundPolicy.declaredDefault(), loaded.regionPlans);
-        Result result = new Result();
+        List<ExecutionTask> result = new ArrayList<>();
         for (Candidate candidate : candidates) {
-            if (result.executionTasks.size() >= arguments.maxJobs) {
+            if (result.size() >= arguments.maxJobs) {
                 throw overMaxJobs(candidates.size(), arguments.maxJobs,
                         loaded.regionPlans);
             }
@@ -130,15 +131,15 @@ public final class ConcolicScheduler {
                 executionTask.add("targetBranch", target);
             }
 
-            result.executionTasks.add(scheduled);
+            result.add(scheduled);
         }
         // Stores of declared input cells the replay must observe:
         // campaign-wide, on every task, since whichever occurrence writes first
         // starts the log.
         JsonArray writeSites = loaded.staticScopeMap.writeSitesOf(
-                declaredInputCells(result.executionTasks));
+                declaredInputCells(result));
         if (writeSites.size() > 0) {
-            for (ExecutionTask task : result.executionTasks) {
+            for (ExecutionTask task : result) {
                 task.json().add(ExecutionTask.OBSERVED_WRITE_SITES,
                         writeSites.deepCopy());
             }
@@ -207,20 +208,15 @@ public final class ConcolicScheduler {
     /** Drops local SYMBOLIC actions for ports this occurrence attaches
      *  (declared IN handoffs): the VM handoff supplies that value, and a local
      *  action would mint a second root before attach. */
-    static JsonArray removeInboundProtocolHandoffInputs(
+    private static JsonArray removeInboundProtocolHandoffInputs(
             JsonArray actions,
-            Iterable<CommunicationHandoffSpec> declaredHandoffs) {
+            List<CommunicationHandoffSpec> declaredHandoffs) {
         Set<String> suppliedPorts = new LinkedHashSet<>();
-        if (declaredHandoffs != null) {
-            for (CommunicationHandoffSpec handoff : declaredHandoffs) {
-                if (handoff != null && !handoff.outgoing()) {
-                    suppliedPorts.add(handoff.portId());
-                }
-            }
+        for (CommunicationHandoffSpec handoff : declaredHandoffs) {
+            if (!handoff.outgoing()) suppliedPorts.add(handoff.portId());
         }
         JsonArray retained = new JsonArray();
-        for (JsonElement element : actions == null
-                ? new JsonArray() : actions) {
+        for (JsonElement element : actions) {
             if (!element.isJsonObject()) {
                 retained.add(element.deepCopy());
                 continue;
@@ -239,9 +235,8 @@ public final class ConcolicScheduler {
     /** Methods whose branches the weave covers (INSTRUMENT weaves every branch
      *  of a method). */
     private static JsonArray branchMethods(JsonArray branches) {
-        java.util.TreeSet<String> methods = new java.util.TreeSet<>();
-        for (JsonElement element : branches == null
-                ? new JsonArray() : branches) {
+        TreeSet<String> methods = new TreeSet<>();
+        for (JsonElement element : branches) {
             if (!element.isJsonObject()) continue;
             JsonObject branch = element.getAsJsonObject();
             String method = firstNonBlank(
@@ -272,7 +267,7 @@ public final class ConcolicScheduler {
         return found;
     }
 
-    static Result scheduleTargetFirst(Arguments arguments)
+    private static void scheduleTargetFirst(Arguments arguments)
             throws IOException {
         LoadedInputs loaded = loadInputs(arguments);
         RuntimeWorkflowDiscovery.Workflow workflow =
@@ -283,38 +278,36 @@ public final class ConcolicScheduler {
                     arguments.maxJobs, loaded.regionPlans);
         }
 
-        List<Result> scheduled = scheduleSelections(arguments, loaded,
-                workflow);
+        List<List<ExecutionTask>> scheduled = scheduleSelections(arguments,
+                loaded, workflow);
 
         Map<String, ExecutionTask> tasks = new LinkedHashMap<>();
         for (int index = 0; index < scheduled.size(); index++) {
             RuntimeWorkflowDiscovery.Selection selection =
                     workflow.selections().get(index);
-            Result selected = scheduled.get(index);
-            if (selected.executionTasks.size() != 1) {
+            List<ExecutionTask> selected = scheduled.get(index);
+            if (selected.size() != 1) {
                 throw new IOException("target-first selection emitted "
-                        + selected.executionTasks.size()
-                        + " execution tasks; campaign="
+                        + selected.size() + " execution tasks; campaign="
                         + selection.campaignId);
             }
-            ExecutionTask task = selected.executionTasks.get(0);
+            ExecutionTask task = selected.get(0);
             ExecutionTask prior = tasks.putIfAbsent(task.taskId(), task);
             if (prior != null && !prior.json().equals(task.json())) {
                 throw new IOException("conflicting scheduled taskId: "
                         + task.taskId());
             }
         }
-        Result result = new Result();
-        result.executionTasks.addAll(sortedValues(tasks));
+        List<ExecutionTask> result = sortedValues(tasks);
         Path taskPlan = arguments.outputDirectory.resolve(
                 "execution_task_plan.jsonl");
         List<JsonObject> taskRows = new ArrayList<>();
-        for (ExecutionTask task : result.executionTasks) {
+        for (ExecutionTask task : result) {
             taskRows.add(task.json());
         }
         ArtifactIO.replaceJsonl(taskPlan, withSeedReplayGroup(taskRows));
         JsonObject taskPlanIdentity = artifactIdentity(taskPlan);
-        JsonObject index = workflow.scheduleIndex(result.executionTasks,
+        JsonObject index = workflow.scheduleIndex(result,
                 loaded.regionPlanIdentity, taskPlanIdentity);
         requireArtifactIdentity(arguments.regionPlan,
                 loaded.regionPlanIdentity,
@@ -333,18 +326,17 @@ public final class ConcolicScheduler {
         ArtifactIO.replace(arguments.outputDirectory.resolve(
                         "runtime_workflow_schedule_index.json"),
                 CanonicalJson.render(index) + "\n");
-        if (result.executionTasks.isEmpty()) {
+        if (result.isEmpty()) {
             throw new IllegalStateException(noCandidateDiagnostic(
                     arguments, loaded.regionPlans));
         }
-        return result;
     }
 
-    private static List<Result> scheduleSelections(
+    private static List<List<ExecutionTask>> scheduleSelections(
             Arguments arguments, LoadedInputs loaded,
             RuntimeWorkflowDiscovery.Workflow workflow)
             throws IOException {
-        List<Result> result = new ArrayList<>();
+        List<List<ExecutionTask>> result = new ArrayList<>();
         for (RuntimeWorkflowDiscovery.Selection selection
                 : workflow.selections()) {
             try {
@@ -489,7 +481,7 @@ public final class ConcolicScheduler {
         JsonObject fatal = fatalBranch(branches, scopeMap);
         result.add(new Candidate(goal, branches,
                 optionalString(fatal, "siteId"),
-                Math.max(1, optionalInteger(fatal, "selectedOccurrence", 1)),
+                optionalInteger(fatal, "selectedOccurrence", 1),
                 fatalArm(scopeMap, optionalString(fatal, "siteId"))
                         .booleanValue(),
                 inputActions));
@@ -679,9 +671,9 @@ public final class ConcolicScheduler {
     }
 
     /** The VM can present no symbol for this location, however declared. */
-    static final String NO_BINDING_MODE = "NO_SYMBOLIC_BINDING_MODE";
+    private static final String NO_BINDING_MODE = "NO_SYMBOLIC_BINDING_MODE";
     /** The SMT layer has no term for a value of this type. */
-    static final String UNSUPPORTED_LEAF_TYPE =
+    private static final String UNSUPPORTED_LEAF_TYPE =
             "UNSUPPORTED_SYMBOLIC_LEAF_TYPE";
 
     /** Whether the SMT layer has a term for this value: primitive, String, or
@@ -704,7 +696,7 @@ public final class ConcolicScheduler {
                 && "ZBCSIJFD".indexOf(descriptor.charAt(component)) >= 0;
     }
 
-    static JsonArray exactCallReturnSite(
+    private static JsonArray exactCallReturnSite(
             JsonObject action, JsonArray sites) {
         String sourceKind = optionalString(action, "sourceKind");
         if (!RuntimeSelectedRegionFinalizer.EXPLICIT_SYMBOLIC_FAULT.equals(
@@ -737,7 +729,7 @@ public final class ConcolicScheduler {
     }
 
     /** The only way an input leaves {@link #materializationPlan} concrete. */
-    static void addConcreteInputAction(
+    private static void addConcreteInputAction(
             JsonArray result, Set<String> represented,
             JsonObject binding, String reason) {
         binding.addProperty("symbolicDemand", reason);
@@ -866,9 +858,9 @@ public final class ConcolicScheduler {
 
         /** Sorted definition methods and explored branch sites. */
         private String regionContentHash() {
-            java.util.TreeSet<String> methods = new java.util.TreeSet<>(
+            TreeSet<String> methods = new TreeSet<>(
                     goal.runtimeDefinitionMethods());
-            java.util.TreeSet<String> sites = new java.util.TreeSet<>();
+            TreeSet<String> sites = new TreeSet<>();
             for (JsonElement element : branches) {
                 if (!element.isJsonObject()) continue;
                 String site = optionalString(element.getAsJsonObject(), "siteId");
@@ -880,7 +872,7 @@ public final class ConcolicScheduler {
 
         /** Ordinal-free descriptors of the local symbolic roots. */
         private String portSetHash(JsonArray taskInputActions) {
-            java.util.TreeSet<String> descriptors = new java.util.TreeSet<>();
+            TreeSet<String> descriptors = new TreeSet<>();
             for (JsonElement element : taskInputActions) {
                 if (!element.isJsonObject()) continue;
                 descriptors.add("IN\n" + semanticPortDescriptor(
@@ -915,7 +907,7 @@ public final class ConcolicScheduler {
 
     /** How an over-sized closure's rows were admitted (by basis, depth, top
      *  anchors), for the cap refusal. */
-    static String closureAdmissionSummary(List<RegionInstancePlan> rows) {
+    private static String closureAdmissionSummary(List<RegionInstancePlan> rows) {
         Map<String, Integer> byBasis = new TreeMap<>();
         Map<String, Integer> byDepth = new TreeMap<>();
         Map<String, Integer> byAnchor = new LinkedHashMap<>();
@@ -950,7 +942,7 @@ public final class ConcolicScheduler {
 
     /** Describes the existing selection/admission decision without adding one.
      */
-    static String noCandidateDiagnostic(
+    private static String noCandidateDiagnostic(
             Arguments arguments, List<RegionInstancePlan> rows) {
         RegionInstancePlan selected = null;
         Goal selectedGoal = null;
@@ -1014,15 +1006,11 @@ public final class ConcolicScheduler {
                 : path.toAbsolutePath().normalize().toString();
     }
 
-    public static final class Result {
-        public final List<ExecutionTask> executionTasks = new ArrayList<>();
-    }
-
     /** Every dataflow cell one proposed action names: its own cell plus {@code
      *  dependencyCells} (the local it lands in), since an accessor's library
      *  field (e.g. {@code AtomicInteger#value}) meets its receiver's field only
      *  at that local. */
-    static Set<String> actionCells(JsonObject action) {
+    private static Set<String> actionCells(JsonObject action) {
         Set<String> cells = new LinkedHashSet<>();
         for (String member : new String[]{"cell", "declaredFieldSignature",
                 "accessFieldSignature", "leafFieldSignature"}) {
@@ -1254,7 +1242,7 @@ public final class ConcolicScheduler {
 
         /** Whether a {@code <workload>/<node>#epoch<n>} source key is in the
          *  declared scope; unset = any. */
-        static boolean scopeAdmits(String sourceKey, String node,
+        private static boolean scopeAdmits(String sourceKey, String node,
                                    String epoch) {
             if (node.isEmpty() && epoch.isEmpty()) return true;
             String key = nonNull(sourceKey);
@@ -1517,9 +1505,6 @@ public final class ConcolicScheduler {
          */
         void resolveDeclaredNames(List<JsonObject> candidateGraph) {
             if (admitted.isEmpty()) return;
-            // Clock names are renamed too: the flag travels with the
-            // declaration.
-
             Map<String, Set<String>> copies = new LinkedHashMap<>();
             for (JsonObject edge : candidateGraph == null
                     ? Collections.<JsonObject>emptyList() : candidateGraph) {
@@ -1534,6 +1519,8 @@ public final class ConcolicScheduler {
                         ignored -> new LinkedHashSet<>()).add(from);
             }
             if (copies.isEmpty()) return;
+            // Clock names are renamed too: the flag travels with the
+            // declaration.
             for (Map<String, Set<String>> declared
                     : Arrays.asList(admitted, clocks)) {
                 for (Set<String> names : declared.values()) {
@@ -1573,7 +1560,6 @@ public final class ConcolicScheduler {
         private final SymbolicInputSelection symbolicInputs;
 
         private LoadedInputs(List<RegionInstancePlan> regionPlans,
-
                              Set<String> regionIndex,
                              List<JsonObject> candidateGraph,
                              StaticScopeMap staticScopeMap,
@@ -1673,6 +1659,5 @@ public final class ConcolicScheduler {
                     selection.goalId, 1,
                     symbolicInputs, targetOccurrence);
         }
-
     }
 }

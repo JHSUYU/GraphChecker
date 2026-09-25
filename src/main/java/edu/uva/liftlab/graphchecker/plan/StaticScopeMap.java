@@ -19,6 +19,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Predicate;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
@@ -395,12 +396,7 @@ public final class StaticScopeMap {
                 text(edge.get("toCell")));
         if (!local.matches() || !local.group(1).equals(method)) return;
         String siteId = SiteId.of(method, unitIndex);
-        // One row per innermost holding region (never choose between siblings);
-        // a method no region holds is published once with region "".
-        List<String> owners = new ArrayList<String>(
-                holders(retained, method));
-        if (owners.isEmpty()) owners.add("");
-        for (String regionId : owners) {
+        for (String regionId : owners(retained, method)) {
             if (!seen.add(ROOT_SITE + "|" + regionId + "|" + siteId + "|"
                     + source + "|" + local.group(2))) {
                 continue;
@@ -449,10 +445,7 @@ public final class StaticScopeMap {
         String declaredKind = "accessor_field_return".equals(kind)
                 ? ACCESSOR_RETURN : CALL_RETURN;
         String siteId = SiteId.of(method, unitIndex);
-        List<String> owners = new ArrayList<String>(
-                holders(retained, method));
-        if (owners.isEmpty()) owners.add("");
-        for (String regionId : owners) {
+        for (String regionId : owners(retained, method)) {
             if (!seen.add(DECLARED_SITE + "|" + regionId + "|" + siteId
                     + "|" + cell + "|" + callee + "|" + dependencyCell)) {
                 continue;
@@ -555,6 +548,15 @@ public final class StaticScopeMap {
             regions.add(new Region(regionId, methods, ports));
         }
         return regions;
+    }
+
+    /** One row per innermost holding region (never choose between
+     *  siblings); a method no region holds is published once with region "".
+     */
+    private static List<String> owners(List<Region> retained, String method) {
+        List<String> owners = holders(retained, method);
+        if (owners.isEmpty()) owners.add("");
+        return owners;
     }
 
     /** The INNERMOST retained regions holding one method. The recording
@@ -673,32 +675,27 @@ public final class StaticScopeMap {
      */
     public Set<String> carriersAt(String recordedSite, String javaType) {
         Set<String> carriers = new LinkedHashSet<String>();
-        String site = recordedSite == null ? "" : recordedSite;
-        for (Site named : sites) {
-            if (!WRITE_SITE.equals(named.role) || named.carrier.isEmpty()) {
-                continue;
+        for (Site named : sitesAt(recordedSite)) {
+            if (!named.carrier.isEmpty() && sameType(
+                    descriptorOfCellType(named.cell), javaType)) {
+                carriers.add(named.carrier);
             }
-            if (named.vmSite.isEmpty()
-                    || !site.startsWith(named.vmSite + "#")) {
-                continue;
-            }
-            if (!sameType(descriptorOfCellType(named.cell), javaType)) {
-                continue;
-            }
-            carriers.add(named.carrier);
         }
         return carriers;
     }
 
     /** Every write site in the METHOD of one recorded site (not the bci). */
     public List<Site> sitesAt(String recordedSite) {
-        List<Site> found = new ArrayList<Site>();
         String site = recordedSite == null ? "" : recordedSite;
-        for (Site named : sites) {
-            if (WRITE_SITE.equals(named.role) && !named.vmSite.isEmpty()
-                    && site.startsWith(named.vmSite + "#")) {
-                found.add(named);
-            }
+        return ofRole(WRITE_SITE, named -> !named.vmSite.isEmpty()
+                && site.startsWith(named.vmSite + "#"));
+    }
+
+    /** The sites of one role {@code test} holds for, in publication order. */
+    private List<Site> ofRole(String role, Predicate<Site> test) {
+        List<Site> found = new ArrayList<Site>();
+        for (Site site : sites) {
+            if (role.equals(site.role) && test.test(site)) found.add(site);
         }
         return found;
     }
@@ -710,19 +707,13 @@ public final class StaticScopeMap {
      *  nothing). */
     public Map<String, List<Site>> writeSitesByCell() {
         Map<String, List<Site>> byCell =
-                new java.util.LinkedHashMap<String, List<Site>>();
-        for (Site site : sites) {
-            if (!WRITE_SITE.equals(site.role) || site.regionId.isEmpty()) {
-                continue;
-            }
+                new LinkedHashMap<String, List<Site>>();
+        for (Site site : ofRole(WRITE_SITE,
+                named -> !named.regionId.isEmpty())) {
             for (String location : new String[]{site.cell, site.carrier}) {
                 if (location.isEmpty()) continue;
-                List<Site> found = byCell.get(location);
-                if (found == null) {
-                    found = new ArrayList<Site>();
-                    byCell.put(location, found);
-                }
-                found.add(site);
+                byCell.computeIfAbsent(location,
+                        key -> new ArrayList<Site>()).add(site);
             }
         }
         return byCell;
@@ -730,25 +721,12 @@ public final class StaticScopeMap {
 
     /** Every static write site of one carrier, whatever region runs it. */
     public List<Site> writersOf(String carrier) {
-        List<Site> found = new ArrayList<Site>();
-        for (Site site : sites) {
-            if (WRITE_SITE.equals(site.role)
-                    && site.carrier.equals(carrier)) {
-                found.add(site);
-            }
-        }
-        return found;
+        return ofRole(WRITE_SITE, site -> site.carrier.equals(carrier));
     }
 
     /** Every static export site feeding one declared port. */
     public List<Site> exportsOf(String portId) {
-        List<Site> found = new ArrayList<Site>();
-        for (Site site : sites) {
-            if (EXPORT_SITE.equals(site.role) && site.portId.equals(portId)) {
-                found.add(site);
-            }
-        }
-        return found;
+        return ofRole(EXPORT_SITE, site -> site.portId.equals(portId));
     }
 
     /** Stores into declared cells the replay must observe (REPORT-P2N). */
@@ -803,13 +781,7 @@ public final class StaticScopeMap {
     /** Every DECLARED_SITE, in publication order. Whether any mints is {@link
      *  ConcolicScheduler.SymbolicInputSelection}'s decision. */
     public List<Site> declaredSites() {
-        List<Site> found = new ArrayList<Site>();
-        for (Site site : sites) {
-            if (DECLARED_SITE.equals(site.role) && site.declared != null) {
-                found.add(site);
-            }
-        }
-        return found;
+        return ofRole(DECLARED_SITE, site -> site.declared != null);
     }
 
     /** The declarations at one site and callee, deduped by candidate edge (a
@@ -817,35 +789,21 @@ public final class StaticScopeMap {
      *  owns the read is the recording's answer. */
     public List<Site> declaredSitesAt(String siteId,
                                       String declaredCallee) {
-        List<Site> found = new ArrayList<Site>();
-        Set<String> seen = new LinkedHashSet<String>();
         String named = siteId == null ? "" : siteId;
         String callee = declaredCallee == null ? "" : declaredCallee;
-        for (Site site : sites) {
-            if (!DECLARED_SITE.equals(site.role) || site.declared == null
-                    || !named.equals(site.siteId)
-                    || !callee.equals(site.declaredCallee)) {
-                continue;
-            }
-            if (!seen.add(site.declared.kind + "|" + site.declared.edgeId
-                    + "|" + site.cell + "|"
-                    + site.declared.dependencyCell)) {
-                continue;
-            }
-            found.add(site);
-        }
-        return found;
+        Set<String> seen = new LinkedHashSet<String>();
+        return ofRole(DECLARED_SITE, site -> site.declared != null
+                && named.equals(site.siteId)
+                && callee.equals(site.declaredCallee)
+                && seen.add(site.declared.kind + "|" + site.declared.edgeId
+                        + "|" + site.cell + "|"
+                        + site.declared.dependencyCell));
     }
 
     /** The annotated target sites this map states. */
     public List<Site> targetSites() {
-        List<Site> found = new ArrayList<Site>();
-        for (Site site : sites) {
-            if (TARGET_SITE.equals(site.role)) found.add(site);
-        }
-        return found;
+        return ofRole(TARGET_SITE, site -> true);
     }
-
 
     /** A site's method as the VM spells it, {@code
      *  class#name(paramDescriptors)returnDescriptor}: the whole join between a

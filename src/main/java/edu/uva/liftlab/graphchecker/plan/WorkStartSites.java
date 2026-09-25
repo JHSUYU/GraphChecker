@@ -1,30 +1,25 @@
 package edu.uva.liftlab.graphchecker.plan;
 
 import java.util.Arrays;
-import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ForkJoinTask;
 
 /**
  * THE list of call shapes that start work, hand it off, or wait.
  *
- * <p>Read by both the INSTRUMENT weave (IDENTITY-V3 SS1, {@code
- * CausynthPipeline.instrumentWorkStarts}) and the recorder's hooks ({@code
- * RuntimeTraceContext.captureAsync}); a shape only one of them recognizes is a
- * lineage hole. Each evaluates it with the {@link Types} it can see (Soot
- * hierarchy or the live object) and adds none of its own.</p>
+ * <p>Read by the INSTRUMENT weave (IDENTITY-V3 SS1, {@code
+ * CausynthPipeline.instrumentWorkStarts}) over the Soot hierarchy, and by
+ * {@link LineageScan} off bytecode alone, deliberately wider: a shape the scan
+ * misses is a lineage hole, so neither adds one of its own.</p>
  */
 public final class WorkStartSites {
     private WorkStartSites() {
     }
 
-    /** Whether a type is, or inherits, the named one (Soot hierarchy or {@code
-     *  isInstance}). */
+    /** Whether a type is, or inherits, the named one. */
     public interface Types {
         boolean is(String typeName);
     }
@@ -54,19 +49,6 @@ public final class WorkStartSites {
             "java.util.concurrent.Callable",
             "java.util.concurrent.ForkJoinTask",
             "java.util.Collection");
-
-    private static final Map<String, Class<?>> RUNTIME_TYPES = runtimeTypes();
-
-    private static Map<String, Class<?>> runtimeTypes() {
-        Map<String, Class<?>> types = new LinkedHashMap<>();
-        types.put("java.lang.Thread", Thread.class);
-        types.put("java.util.concurrent.ForkJoinTask", ForkJoinTask.class);
-        types.put("java.lang.Runnable", Runnable.class);
-        types.put("java.util.concurrent.Callable", Callable.class);
-        types.put("java.util.Collection", Collection.class);
-        types.put(QUEUE_TYPE, java.util.concurrent.BlockingQueue.class);
-        return types;
-    }
 
     private static Set<String> names(String... values) {
         return new LinkedHashSet<>(Arrays.asList(values));
@@ -140,7 +122,6 @@ public final class WorkStartSites {
                 declaringType);
     }
 
-
     private static final String QUEUE_TYPE =
             "java.util.concurrent.BlockingQueue";
 
@@ -169,7 +150,6 @@ public final class WorkStartSites {
                 && receiverType.is(QUEUE_TYPE);
     }
 
-
     /** Whether a call, read off bytecode without a hierarchy, may be a start or
      *  queue handoff. Deliberately wide: a kept class only goes to the weave,
      *  which asks the exact shapes; a dropped class is a lineage hole ({@code
@@ -197,7 +177,6 @@ public final class WorkStartSites {
         return argumentCount == 0 && methodName != null
                 && named(WORK_ENTRIES, methodName);
     }
-
 
     /**
      * One wait shape and the {@code runtime.TimedWaits} method that replaces
@@ -314,17 +293,6 @@ public final class WorkStartSites {
 
     public static List<TimedWait> timedWaits() {
         return TIMED_WAITS;
-    }
-
-    /** The runtime projection of {@link Types}: the value's own class. */
-    public static Types typesOf(final Object value) {
-        return new Types() {
-            @Override
-            public boolean is(String typeName) {
-                Class<?> type = RUNTIME_TYPES.get(typeName);
-                return type != null && type.isInstance(value);
-            }
-        };
     }
 
     /** The callee's name in a Soot method signature, or {@code ""}. */

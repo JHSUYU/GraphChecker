@@ -68,7 +68,7 @@ public final class SharedExpressionTable {
     private static JsonObject expandArtifact(JsonObject artifact,
                                              Resolver resolver) {
         JsonElement expanded = resolver.expand(artifact,
-                new HashSet<String>());
+                new HashSet<String>(), true);
         if (!expanded.isJsonObject()) {
             throw new IllegalArgumentException("artifact root must be object");
         }
@@ -394,14 +394,10 @@ public final class SharedExpressionTable {
             }
             if (!expression(source)) return result;
             String anchor = anchorFor(result);
-            put(anchor, result);
+            definitions.putIfAbsent(anchor, result);
             compactedExpressions.put(source, anchor);
             references.add(anchor);
             return reference(anchor);
-        }
-
-        private void put(String anchor, JsonObject definition) {
-            definitions.putIfAbsent(anchor, definition);
         }
 
         private void validateReferences() {
@@ -565,10 +561,6 @@ public final class SharedExpressionTable {
             active.remove(value);
             memo.put(value, result);
             return result;
-        }
-
-        private JsonElement expand(JsonElement value, Set<String> active) {
-            return expand(value, active, true);
         }
 
         private JsonElement expand(JsonElement value, Set<String> active,

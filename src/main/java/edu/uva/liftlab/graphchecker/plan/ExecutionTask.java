@@ -1,6 +1,5 @@
 package edu.uva.liftlab.graphchecker.plan;
 
-
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -274,5 +273,4 @@ public final class ExecutionTask extends PlanRow {
     public JsonArray observedWriteSites() {
         return array(encoded, OBSERVED_WRITE_SITES).deepCopy();
     }
-
 }

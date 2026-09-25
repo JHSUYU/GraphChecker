@@ -1,7 +1,5 @@
 package edu.uva.liftlab.graphchecker.plan;
 
-
-
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
@@ -12,10 +10,10 @@ import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-
 /** The single polarity algebra for binary concolic branch predicates. */
 public final class BranchPredicateAlgebra {
     private static final Map<String, String> COMPLEMENTS = complements();
+
     private BranchPredicateAlgebra() {
     }
 

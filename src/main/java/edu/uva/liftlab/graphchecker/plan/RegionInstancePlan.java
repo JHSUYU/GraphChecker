@@ -1,6 +1,5 @@
 package edu.uva.liftlab.graphchecker.plan;
 
-
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -91,13 +90,7 @@ public final class RegionInstancePlan extends PlanRow {
             this.plan = plan;
             this.encoded = source.deepCopy();
             plan.require(goalId(), "goalId");
-            try {
-                kind = ClosureGoalKind.fromGoal(encoded);
-            } catch (RuntimeException invalid) {
-                throw new IllegalArgumentException("goal kind must be one of "
-                        + java.util.Arrays.toString(
-                        ClosureGoalKind.values()), invalid);
-            }
+            kind = ClosureGoalKind.fromGoal(encoded);
             runtimeDefinitionMethods = decodeRuntimeDefinitionMethods();
         }
 
