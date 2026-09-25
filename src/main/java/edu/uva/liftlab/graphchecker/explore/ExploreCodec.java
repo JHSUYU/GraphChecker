@@ -11,6 +11,7 @@ import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.Task;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -200,13 +201,13 @@ public final class ExploreCodec {
         return json;
     }
 
-    private static JsonArray list(List<String> values) {
+    static JsonArray list(Collection<String> values) {
         JsonArray json = new JsonArray();
         for (String value : values) json.add(value);
         return json;
     }
 
-    /** A string-valued object member as a map; absent is empty. */
+    /** A string-valued object as a map. */
     static Map<String, String> map(JsonObject json) {
         Map<String, String> values = new LinkedHashMap<String, String>();
         for (Map.Entry<String, JsonElement> entry : json.entrySet()) {

@@ -1,6 +1,5 @@
 package edu.uva.liftlab.graphchecker.explore;
 
-import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
@@ -141,12 +140,14 @@ final class WaveGraph {
         int newNodes = 0;
         int newEdges = 0;
         for (Map.Entry<String, JsonObject> node : nodes.entrySet()) {
-            node.getValue().add("worlds", strings(nodeWorlds.get(node.getKey())));
+            node.getValue().add("worlds",
+                    ExploreCodec.list(nodeWorlds.get(node.getKey())));
             rows.add(node.getValue());
             if (!before.contains(node.getKey())) newNodes++;
         }
         for (Map.Entry<String, JsonObject> edge : edges.entrySet()) {
-            edge.getValue().add("worlds", strings(edgeWorlds.get(edge.getKey())));
+            edge.getValue().add("worlds",
+                    ExploreCodec.list(edgeWorlds.get(edge.getKey())));
             rows.add(edge.getValue());
             if (!before.contains(edge.getKey())) newEdges++;
         }
@@ -207,11 +208,5 @@ final class WaveGraph {
         }
         RowCodec.writeJsonl(waveDir.resolve(GROWTH), rows);
         return rows.size();
-    }
-
-    private static JsonArray strings(Set<String> values) {
-        JsonArray array = new JsonArray();
-        for (String value : values) array.add(value);
-        return array;
     }
 }

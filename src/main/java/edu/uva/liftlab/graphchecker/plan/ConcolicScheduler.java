@@ -1330,7 +1330,7 @@ public final class ConcolicScheduler {
         JsonArray declaredPorts(RegionInstancePlan plan,
                                 StaticScopeMap scopeMap,
                                 Set<String> regionMethods) {
-            Map<String, JsonObject> ports = new LinkedHashMap<>();
+            List<JsonObject> ports = new ArrayList<>();
             for (DeclaredSiteCapture capture
                     : DeclaredSiteCapture.decode(plan.json())) {
                 // The region's own text must hold the site.
@@ -1341,14 +1341,10 @@ public final class ConcolicScheduler {
                 for (StaticScopeMap.Site site : accessorFirst(
                         scopeMap.declaredSitesAt(capture.siteId(),
                                 capture.declaredCallee()))) {
-                    JsonObject port = capture.port(plan, site);
-                    if (!declares(plan.regionId(), port)) continue;
-                    ports.putIfAbsent(optionalString(port, "portId"), port);
+                    ports.add(capture.port(plan, site));
                 }
             }
-            JsonArray minted = new JsonArray();
-            for (JsonObject port : ports.values()) minted.add(port);
-            return minted;
+            return admittedPorts(plan.regionId(), ports);
         }
 
         /** The same rule for an exposed occurrence (DESIGN4 section 3.3b): one
@@ -1357,19 +1353,28 @@ public final class ConcolicScheduler {
         JsonArray declaredSitePorts(RegionInstancePlan plan,
                                     StaticScopeMap scopeMap,
                                     Set<String> regionMethods) {
-            Map<String, JsonObject> ports = new LinkedHashMap<>();
+            List<JsonObject> ports = new ArrayList<>();
             for (StaticScopeMap.Site site : scopeMap.declaredSites()) {
-                if (!regionMethods.contains(SiteId.methodOf(site.siteId))
-                        || !StaticScopeMap.CALL_RETURN.equals(
+                if (regionMethods.contains(SiteId.methodOf(site.siteId))
+                        && StaticScopeMap.CALL_RETURN.equals(
                         site.declared.kind)) {
-                    continue;
+                    ports.add(DeclaredSiteCapture.declaredPort(plan, site));
                 }
-                JsonObject port = DeclaredSiteCapture.declaredPort(plan, site);
-                if (!declares(plan.regionId(), port)) continue;
-                ports.putIfAbsent(optionalString(port, "portId"), port);
+            }
+            return admittedPorts(plan.regionId(), ports);
+        }
+
+        /** The ports this rule declares, first of each port id. */
+        private JsonArray admittedPorts(String regionId,
+                                        List<JsonObject> ports) {
+            Map<String, JsonObject> byId = new LinkedHashMap<>();
+            for (JsonObject port : ports) {
+                if (declares(regionId, port)) {
+                    byId.putIfAbsent(optionalString(port, "portId"), port);
+                }
             }
             JsonArray minted = new JsonArray();
-            for (JsonObject port : ports.values()) minted.add(port);
+            for (JsonObject port : byId.values()) minted.add(port);
             return minted;
         }
 

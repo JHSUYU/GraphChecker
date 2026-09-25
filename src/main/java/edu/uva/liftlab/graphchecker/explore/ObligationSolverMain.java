@@ -90,32 +90,35 @@ public final class ObligationSolverMain {
         if (candidate == null) {
             // The path is gone from the corpus: this obligation's own admission
             // gap.
-            return publish(out, null, proposal,
+            return publish(out, proposal,
                     ObligationResult.of(obligationId,
                             Verdict.NOT_ADMITTED, "",
                             "no session of this corpus still states path "
                                     + proposal.pathId() + " of task "
                                     + proposal.taskId()), "",
-                    Collections.<String, String>emptyMap(),
-                    Collections.<String, String>emptyMap(),
-                    Collections.<Corpus.Flip>emptyList(),
-                    Collections.singletonList(GapRow.of(ExploreCodec.EXPLORATION,
-                            GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
-                            obligationId, "the obligation names a path the "
-                                    + "corpus does not hold")), null);
+                    Collections.singletonList(GapRow.of(
+                            ExploreCodec.EXPLORATION, GapKind.ADMISSION_GAP,
+                            GapClass.DIAGNOSTIC, obligationId,
+                            "the obligation names a path the corpus does "
+                                    + "not hold")), null);
         }
         ObligationFactory.Outcome outcome = ObligationFactory.solve(corpus,
                 candidate, z3, timeoutMillis);
-        // The schedule half of the world (SchedulePrefix).
-        SchedulePrefix.Cut cut = null;
-        if (outcome.result.verdict() == Verdict.SAT_MODEL_READY) {
-            cut = SchedulePrefix.write(iteration, candidate.path.sessionId,
-                    targetOccurrences(candidate), out);
+        if (!outcome.issued()) {
+            return publish(out, proposal, outcome.result, outcome.smt2,
+                    outcome.gaps, null);
         }
-        return publish(out, candidate.task,
-                outcome.issued() ? outcome.obligation : proposal,
-                outcome.result, outcome.smt2, outcome.clockDeltas,
-                outcome.rootMints, outcome.inheritedFlips, outcome.gaps, cut);
+        // The schedule half of the world (SchedulePrefix). Mints are listed,
+        // not derived: one whole-workload run can focus several occurrences
+        // so each root is planted where it is minted.
+        SchedulePrefix.Cut cut = SchedulePrefix.write(iteration,
+                candidate.path.sessionId, targetOccurrences(candidate), out);
+        Task task = candidate.task;
+        return publish(out, outcome.obligation, outcome.result, outcome.smt2,
+                outcome.gaps, ExploreCodec.writeFocusRow(task.focused(),
+                        task.seedSessionId(), task.factor(),
+                        outcome.obligation, outcome.inheritedFlips,
+                        outcome.clockDeltas, outcome.rootMints, cut));
     }
 
     /** Where the prefix is cut: the TARGET (flip occurrence, focus, factor),
@@ -133,18 +136,13 @@ public final class ObligationSolverMain {
         return ids;
     }
 
-    /** Writes the verdict row, the completed obligation, the query (always)
-     *  and, when satisfiable, the focus row. The focus row is {@code
+    /** Writes the verdict row, the obligation, the query (always) and the
+     *  focus row ({@code focus} null: an empty file). The focus row is {@code
      *  focused_task.jsonl}, never {@code execution_task_plan.jsonl}: that name
      *  is decoded as a PLAN {@code ExecutionTask} by the session opener. */
-    private static JsonObject publish(Path out, Task task,
-                                      Obligation obligation,
+    private static JsonObject publish(Path out, Obligation obligation,
                                       ObligationResult result, String smt2,
-                                      Map<String, String> clockDeltas,
-                                      Map<String, String> rootMints,
-                                      List<Corpus.Flip> inheritedFlips,
-                                      List<GapRow> gaps,
-                                      SchedulePrefix.Cut cut)
+                                      List<GapRow> gaps, JsonObject focus)
             throws IOException {
         JsonObject row = RowCodec.writeObligationResult(result);
         row.addProperty("schemaVersion", 1);
@@ -163,15 +161,9 @@ public final class ObligationSolverMain {
                         ? "; no query was encoded: " + result.verdict() + " "
                         + result.detail() + System.lineSeparator()
                         : smt2).getBytes(StandardCharsets.UTF_8));
-        List<JsonObject> focus = new ArrayList<JsonObject>();
-        if (result.verdict() == Verdict.SAT_MODEL_READY) {
-            // Mints are listed, not derived: one whole-workload run can focus
-            // several occurrences so each root is planted where it is minted.
-            focus.add(ExploreCodec.writeFocusRow(task.focused(),
-                    task.seedSessionId(), task.factor(), obligation,
-                    inheritedFlips, clockDeltas, rootMints, cut));
-        }
-        RowCodec.writeJsonl(out.resolve(ObligationDir.FOCUSED_TASK), focus);
+        RowCodec.writeJsonl(out.resolve(ObligationDir.FOCUSED_TASK),
+                focus == null ? Collections.<JsonObject>emptyList()
+                        : Collections.singletonList(focus));
         return row;
     }
 }

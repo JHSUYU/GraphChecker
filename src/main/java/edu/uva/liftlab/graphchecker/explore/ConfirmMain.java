@@ -8,6 +8,7 @@ import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
 import edu.uva.liftlab.graphchecker.contract.InteractionKind;
+import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
@@ -360,9 +361,8 @@ public final class ConfirmMain {
         Map<String, List<WriteRow>> byLocation =
                 new LinkedHashMap<String, List<WriteRow>>();
         for (WriteRow write : session.writes()) {
-            String location = location(write.location().kind().name(),
-                    write.location().owner(), write.location().slot());
-            writes.put(location + "@" + write.version(), write);
+            String location = location(write.location());
+            writes.put(version(write.location(), write.version()), write);
             List<WriteRow> under = byLocation.get(location);
             if (under == null) {
                 under = new ArrayList<WriteRow>();
@@ -400,11 +400,8 @@ public final class ConfirmMain {
                 for (ReadRow read : on) {
                     if (!whole && read.seq() >= cut) continue;
                     if (read.observedVersion() < 0L) continue;
-                    WriteRow write = writes.get(location(
-                            read.location().kind().name(),
-                            read.location().owner(),
-                            read.location().slot()) + "@"
-                            + read.observedVersion());
+                    WriteRow write = writes.get(version(read.location(),
+                            read.observedVersion()));
                     if (write == null) continue;
                     joined.put(read.endpoint().id(), write);
                     readers.put(read.endpoint().id(), read);
@@ -413,9 +410,7 @@ public final class ConfirmMain {
             }
             if (versions.isEmpty()) continue;
             WriteRow write = versions.remove(0);
-            String location = location(write.location().kind().name(),
-                    write.location().owner(), write.location().slot());
-            for (WriteRow under : byLocation.get(location)) {
+            for (WriteRow under : byLocation.get(location(write.location()))) {
                 if (under.version() >= write.version()) continue;
                 reach(under, anchor, reached, pending, versions, handled);
             }
@@ -460,10 +455,8 @@ public final class ConfirmMain {
             String writer = chosen.get(join.getKey());
             edge.addProperty("writer", writer);
             edge.addProperty("version", join.getValue().version());
-            edge.addProperty("location", location(
-                    join.getValue().location().kind().name(),
-                    join.getValue().location().owner(),
-                    join.getValue().location().slot()));
+            edge.addProperty("location",
+                    location(join.getValue().location()));
             edges.add(edge);
         }
         return edges;
@@ -476,9 +469,7 @@ public final class ConfirmMain {
         String writer = write.endpoint().occurrence().id();
         // Never the anchor: its cutoff is the target observation.
         if (anchor.id().equals(writer)) return;
-        if (handled.add(location(write.location().kind().name(),
-                write.location().owner(), write.location().slot()) + "@"
-                + write.version())) {
+        if (handled.add(version(write.location(), write.version()))) {
             versions.add(write);
         }
         Long held = reached.get(writer);
@@ -487,8 +478,14 @@ public final class ConfirmMain {
         pending.add(writer);
     }
 
-    private static String location(String kind, String owner, String slot) {
-        return kind + "/" + owner + "#" + slot;
+    private static String location(LocationId location) {
+        return location.kind().name() + "/" + location.owner() + "#"
+                + location.slot();
+    }
+
+    /** One version of one location. */
+    private static String version(LocationId location, long version) {
+        return location(location) + "@" + version;
     }
 
     /** The path ordinal a composer selector carries: {@code kind__N__hash}. */
