@@ -193,7 +193,7 @@ public final class Corpus implements Arms.Rows {
     /** Root symbol -> every root id declared under it. */
     private final Map<String, Set<String>> rootIdsBySymbol =
             new LinkedHashMap<String, Set<String>>();
-    /** session|occurrence -> that session's activation of it. */
+    /** session|occurrence -> that session's first activation of it. */
     private final Map<String, ActivationRow> activationByOccurrence =
             new LinkedHashMap<String, ActivationRow>();
     /** endpoint id -> the endpoint, so an anchor's producer can be found. */
@@ -405,7 +405,7 @@ public final class Corpus implements Arms.Rows {
         loweringById.put(session.sessionId(),
                 SmtLowering.forSession(session, join));
         for (ActivationRow row : session.activations()) {
-            activationByOccurrence.put(session.sessionId() + "|"
+            activationByOccurrence.putIfAbsent(session.sessionId() + "|"
                     + row.occurrence().id(), row);
             remember(occurrenceById, row.occurrence());
             add(activations, row.occurrence().id(), row);
@@ -580,12 +580,7 @@ public final class Corpus implements Arms.Rows {
 
     public ActivationRow activation(String sessionId,
                                     OccurrenceAddress occurrence) {
-        List<ActivationRow> rows = activations.get(occurrence.id());
-        if (rows == null) return null;
-        for (ActivationRow row : rows) {
-            if (row.sessionId().equals(sessionId)) return row;
-        }
-        return null;
+        return activationOf(sessionId, occurrence.id());
     }
 
     public List<DecisionRow> decisionsOf(String sessionId,
