@@ -41,10 +41,12 @@ final class RowPublication {
         if (active == null || !RowRuntime.open()) return;
         OccurrenceAddress occurrence = active.d3Address;
         if (occurrence == null) return;
-        publishKind("decisions", active, occurrence);
-        publishKind("roots", active, occurrence);
-        publishKind("state", active, occurrence);
-        publishKind("target", active, occurrence);
+        publishKind("decisions", occurrence,
+                () -> decisions(active, occurrence));
+        publishKind("roots", occurrence,
+                () -> RowPlaceholderMint.roots(active, occurrence));
+        publishKind("state", occurrence, () -> writes(active));
+        publishKind("target", occurrence, () -> target(active, occurrence));
     }
 
     /**
@@ -58,27 +60,18 @@ final class RowPublication {
         if (active == null || !RowRuntime.open()) return;
         OccurrenceAddress occurrence = active.d3Address;
         if (occurrence == null) return;
-        publishKind("mints", active, occurrence);
+        publishKind("mints", occurrence,
+                () -> RowPlaceholderMint.mints(active, occurrence));
     }
 
     /**
      * One kind, and its own refusal: a kind that cannot be built is that
      * kind's gap only, so a failed read never suppresses the anchor row.
      */
-    private static void publishKind(String kind, ActiveRegion active,
-                                    OccurrenceAddress occurrence) {
+    private static void publishKind(String kind, OccurrenceAddress occurrence,
+                                    Runnable publish) {
         try {
-            if ("decisions".equals(kind)) {
-                decisions(active, occurrence);
-            } else if ("roots".equals(kind)) {
-                RowPlaceholderMint.roots(active, occurrence);
-            } else if ("mints".equals(kind)) {
-                RowPlaceholderMint.mints(active, occurrence);
-            } else if ("state".equals(kind)) {
-                writes(active);
-            } else {
-                target(active, occurrence);
-            }
+            publish.run();
         } catch (RuntimeException failure) {
             // A failed translation must not end the run; the gap tells
             // "published no writes" apart from "made none".
@@ -339,7 +332,7 @@ final class RowPublication {
                                     String locationKey, LocationId location,
                                     long observed, long event, String symbol,
                                     String value) {
-        if (!RowRuntime.claimRead(identity)) return;
+        if (!RowRuntime.claimEvent("read", identity)) return;
         OccurrenceAddress performer = LoggedEventSites.performer(
                 node, locationKey, event, false);
         if (performer == null) return;

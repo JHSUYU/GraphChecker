@@ -744,13 +744,8 @@ public final class RowRuntime {
                     new IdentityHashMap<JsonObject, String>());
 
     /** Events already stated (every kind), so one event is one occurrence's. */
-    private static final Map<String, Boolean> CLAIMED_READS =
+    private static final Map<String, Boolean> CLAIMED_EVENTS =
             new ConcurrentHashMap<String, Boolean>();
-
-    /** Claims one read event for the activation publishing it now. */
-    public static boolean claimRead(String identity) {
-        return claimEvent("read", identity);
-    }
 
     /**
      * One event, one occurrence: the first publisher wins.
@@ -761,7 +756,7 @@ public final class RowRuntime {
      * R-I7.1).</p>
      */
     public static boolean claimEvent(String kind, String identity) {
-        return CLAIMED_READS.put(Text.safe(kind) + "\n"
+        return CLAIMED_EVENTS.put(Text.safe(kind) + "\n"
                 + Text.safe(identity), Boolean.TRUE) == null;
     }
 
@@ -871,7 +866,7 @@ public final class RowRuntime {
     public static void resetForTests() {
         synchronized (LOCK) {
             AMBIENT.clear();
-            CLAIMED_READS.clear();
+            CLAIMED_EVENTS.clear();
             MINT_LABELS.clear();
             REFS.clear();
             Identity.resetForTests();

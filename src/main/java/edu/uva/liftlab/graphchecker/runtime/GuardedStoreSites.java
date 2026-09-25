@@ -31,7 +31,7 @@ import java.util.Set;
  * ever evidence, so it is refused by name.</p>
  */
 final class GuardedStoreSites {
-    static final String PATH_ENVIRONMENT = "CAUSYNTH_STATIC_SCOPE_MAP";
+    private static final String PATH_ENVIRONMENT = "CAUSYNTH_STATIC_SCOPE_MAP";
 
     /** VM25: {@code line ::= methodKey ( '\t' guardSite )*}. */
     private static final char LINE = '\n';
@@ -49,7 +49,7 @@ final class GuardedStoreSites {
      * @return "" once installed, else the diagnostic the session fails with
      */
     static String install(ConcolicVmBroker api) {
-        String declared = declaredPath();
+        String declared = value(System.getenv(PATH_ENVIRONMENT));
         if (declared.isEmpty()) {
             return "GUARDED_STORE_SITES_UNDECLARED: $" + PATH_ENVIRONMENT
                     + " does not name this epoch's " + StaticScopeMap.FILE;
@@ -82,10 +82,6 @@ final class GuardedStoreSites {
         log("GUARDED_STORE_SITES|installed=" + installed + "|guardSites="
                 + table.guardSites() + "|map=" + artifact);
         return "";
-    }
-
-    static String declaredPath() {
-        return value(System.getenv(PATH_ENVIRONMENT));
     }
 
     static GuardedStoreSites of(List<JsonObject> rows) {
@@ -144,7 +140,7 @@ final class GuardedStoreSites {
     }
 
     /** One store method as the VM asks for it: owner in internal form. */
-    static String internalMethod(String vmSite, String siteId) {
+    private static String internalMethod(String vmSite, String siteId) {
         String stated = value(vmSite);
         int owner = stated.indexOf('#');
         if (owner <= 0 || owner == stated.length() - 1) {

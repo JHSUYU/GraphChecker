@@ -1011,22 +1011,8 @@ public final class RuntimeRegionPlanner {
             if (allowedMethods.contains(root.method)) {
                 occurrenceMethods.add(root.method);
             }
-            Map<String, Object> goal = new LinkedHashMap<>();
-            goal.put("goalId", (target ? "GOAL.TARGET_REACH."
-                    : "GOAL.REGION_PATH.")
-                    + UUID.nameUUIDFromBytes(occurrenceId.getBytes(
-                    StandardCharsets.UTF_8)));
-            goal.put("kind", target ? "TARGET_REACH_CLOSURE"
-                    : "REGION_PATH_CLOSURE");
-            goal.put("runtimeDefinitionMethods",
-                    new ArrayList<>(occurrenceMethods));
-            // Always READY: which reads/branches matter is EXPLORE's call.
-            goal.put("admission", object("state", "READY",
-                    "mode", "RUNTIME_FAILURE_CLOSURE",
-                    "blockers", Collections.emptyList()));
-            goal.put("symbolize", symbolize(region.symbolicInputs,
-                    occurrenceId));
-            goal.put("branches", branches);
+            Map<String, Object> goal = closureGoal(region, occurrenceId,
+                    target, occurrenceMethods, branches);
             Map<String, Object> plan = new LinkedHashMap<>();
             plan.put("schemaVersion", 3);
             plan.put("kind", "CONCOLIC_REGION_PLAN");
@@ -1127,29 +1113,60 @@ public final class RuntimeRegionPlanner {
         retainInnermost(result.regionPlans, goals, "branches",
                 branch -> exactBranchEventIdentity(branch, trace), false);
         retainInnermostCommunicationConsumers(result.regionPlans);
-        // Catalog: regions, their static symbolic sources and declared
-        // roots.  Ports, methods and branches stay in the refined graph.
         for (StaticProgram.RegionRow region : regionById.values()) {
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("schemaVersion", 3);
-            row.put("kind", "SYMBOLIC_REGION");
-            row.put("regionId", region.regionId);
-            // Lets the scheduler tell an unseen declaration from a site the
-            // recording never entered.
-            if (region.declaredInputRoot) {
-                row.put("rootMethod", region.rootMethod);
-                row.put(DeclaredSymbolicInputs.ROOT_FIELD, true);
-            }
-            // Copied, not aliased: later passes normalize graph rows in place.
-            Object declaredSources = region.json.get(
-                    StaticSymbolicSourceDeclaration.FIELD);
-            if (declaredSources != null) {
-                row.put(StaticSymbolicSourceDeclaration.FIELD,
-                        deepCopyValue(declaredSources));
-            }
-            result.regionCatalog.add(row);
+            result.regionCatalog.add(catalogRow(region));
         }
         return result;
+    }
+
+    /** The one closure goal of one planned occurrence. */
+    private static Map<String, Object> closureGoal(
+            StaticProgram.RegionRow region, String occurrenceId,
+            boolean target, Set<String> occurrenceMethods,
+            List<Map<String, Object>> branches) {
+        Map<String, Object> goal = new LinkedHashMap<>();
+        goal.put("goalId", (target ? "GOAL.TARGET_REACH."
+                : "GOAL.REGION_PATH.")
+                + UUID.nameUUIDFromBytes(occurrenceId.getBytes(
+                StandardCharsets.UTF_8)));
+        goal.put("kind", target ? "TARGET_REACH_CLOSURE"
+                : "REGION_PATH_CLOSURE");
+        goal.put("runtimeDefinitionMethods",
+                new ArrayList<>(occurrenceMethods));
+        // Always READY: which reads/branches matter is EXPLORE's call.
+        goal.put("admission", object("state", "READY",
+                "mode", "RUNTIME_FAILURE_CLOSURE",
+                "blockers", Collections.emptyList()));
+        goal.put("symbolize", symbolize(region.symbolicInputs,
+                occurrenceId));
+        goal.put("branches", branches);
+        return goal;
+    }
+
+    /**
+     * One region's catalog row: the region, its static symbolic sources and
+     * declared root.  Ports, methods and branches stay in the refined graph.
+     */
+    private static Map<String, Object> catalogRow(
+            StaticProgram.RegionRow region) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("schemaVersion", 3);
+        row.put("kind", "SYMBOLIC_REGION");
+        row.put("regionId", region.regionId);
+        // Lets the scheduler tell an unseen declaration from a site the
+        // recording never entered.
+        if (region.declaredInputRoot) {
+            row.put("rootMethod", region.rootMethod);
+            row.put(DeclaredSymbolicInputs.ROOT_FIELD, true);
+        }
+        // Copied, not aliased: later passes normalize graph rows in place.
+        Object declaredSources = region.json.get(
+                StaticSymbolicSourceDeclaration.FIELD);
+        if (declaredSources != null) {
+            row.put(StaticSymbolicSourceDeclaration.FIELD,
+                    deepCopyValue(declaredSources));
+        }
+        return row;
     }
 
     /** Structural copy in the JSONL round-trip domain: null map entries

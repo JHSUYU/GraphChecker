@@ -194,8 +194,7 @@ public final class ConcolicRegionRuntime {
             }
             long contextToken = ACCESSOR_CONTEXT_TOKEN_COUNTER
                     .incrementAndGet();
-            String occurrenceKey = safe(caller) + "\n" + safe(site) + "\n"
-                    + safe(callee);
+            String occurrenceKey = caller + "\n" + site + "\n" + callee;
             int occurrence = active.accessorCallOccurrences.getOrDefault(
                     occurrenceKey, 0) + 1;
             active.accessorCallOccurrences.put(occurrenceKey, occurrence);
@@ -1506,16 +1505,16 @@ public final class ConcolicRegionRuntime {
         return "";
     }
 
-    static final class AccessorCallContext {
+    private static final class AccessorCallContext {
         private final long contextToken;
-        final long regionToken;
-        final Thread thread;
+        private final long regionToken;
+        private final Thread thread;
         private final String callerMethod;
         private final int callUnitIndex;
-        final String callSiteId;
+        private final String callSiteId;
         private final String declaredCallee;
-        final Object receiver;
-        final int occurrence;
+        private final Object receiver;
+        private final int occurrence;
         private final AccessorCallContext previous;
 
         private AccessorCallContext(

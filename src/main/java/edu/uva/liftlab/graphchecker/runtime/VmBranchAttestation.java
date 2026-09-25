@@ -37,6 +37,9 @@ final class VmBranchAttestation {
 
     private static final Pattern BRANCH_OPERATOR = Pattern.compile(
             "(?:^|\\s)(==|!=|<=|>=|<|>)(?:\\s|$)");
+    /** The VM's spelling of an int constant, {@code Y_I_<value>}. */
+    private static final Pattern INT_CONSTANT =
+            Pattern.compile("^Y_I_(-?(?:0|[1-9][0-9]*))$");
 
     /**
      * Names one VM branch event this replay could not attest: its decision
@@ -266,8 +269,8 @@ final class VmBranchAttestation {
         }
         JsonObject constant = right.getAsJsonObject();
         if (!"ConstExpr".equals(optionalString(constant, "_type"))) return "";
-        Matcher encoded = Pattern.compile("^Y_I_(-?(?:0|[1-9][0-9]*))$")
-                .matcher(optionalString(constant, "_exp"));
+        Matcher encoded = INT_CONSTANT.matcher(
+                optionalString(constant, "_exp"));
         if (!encoded.matches()) return "";
         final int key;
         try {
@@ -291,23 +294,30 @@ final class VmBranchAttestation {
             return requiredValue != null && representedValue != null
                     && requiredValue.equals(representedValue);
         }
+        String expected = armOperator(expression, outcome);
+        if (expected == null) return false;
+        boolean nullComparison = nullComparison(expression);
+        if (!observedOperatorImpliesBranch(expected,
+                optionalString(object, "_op"), nullComparison)) {
+            return false;
+        }
+        return !nullComparison || symbolicNull(object.get("_left"))
+                || symbolicNull(object.get("_right"));
+    }
+
+    /**
+     * The operator the taken arm asserts: the Jimple one, complemented on
+     * the fall-through; null when the expression states none.
+     */
+    private static String armOperator(String expression, boolean outcome) {
         Matcher matcher = BRANCH_OPERATOR.matcher(safe(expression));
-        if (!matcher.find()) {
-            return false;
-        }
-        String declared = matcher.group(1);
-        String expected = outcome ? declared
-                : BranchPredicateAlgebra.complementOperator(declared);
-        String observed = optionalString(object, "_op");
-        if (!observedOperatorImpliesBranch(expected, observed,
-                safe(expression).matches(".*\\bnull\\b.*"))) {
-            return false;
-        }
-        if (safe(expression).matches(".*\\bnull\\b.*")) {
-            return symbolicNull(object.get("_left"))
-                    || symbolicNull(object.get("_right"));
-        }
-        return true;
+        if (!matcher.find()) return null;
+        return outcome ? matcher.group(1)
+                : BranchPredicateAlgebra.complementOperator(matcher.group(1));
+    }
+
+    private static boolean nullComparison(String expression) {
+        return safe(expression).matches(".*\\bnull\\b.*");
     }
 
     /** Resolves the Java boolean value selected by a Jimple zero test. */
@@ -387,17 +397,11 @@ final class VmBranchAttestation {
         if (!"BinaryExpression".equals(optionalString(original, "_type"))) {
             return condition;
         }
-        Matcher matcher = BRANCH_OPERATOR.matcher(safe(expression));
-        if (!matcher.find()) {
-            return condition;
-        }
-        String expected = outcome ? matcher.group(1)
-                : BranchPredicateAlgebra.complementOperator(
-                matcher.group(1));
+        String expected = armOperator(expression, outcome);
+        if (expected == null) return condition;
         String observed = optionalString(original, "_op");
-        if (!observedOperatorImpliesBranch(expected, observed,
-                safe(expression).matches(".*\\bnull\\b.*"))
-                || expected.equals(observed)) {
+        if (expected.equals(observed) || !observedOperatorImpliesBranch(
+                expected, observed, nullComparison(expression))) {
             return condition;
         }
         JsonObject normalized = shallowCopy(original);
