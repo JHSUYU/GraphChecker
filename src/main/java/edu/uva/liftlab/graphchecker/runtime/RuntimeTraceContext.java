@@ -500,8 +500,7 @@ final class RuntimeTraceContext {
      * carried scope wins when it names one, else the thread's answers.
      */
     static String outboundHeader(Object localOwner, Object carriedScope) {
-        State state = CURRENT.get();
-        View view = scoped(owned(state.view(), localOwner), carriedScope);
+        View view = leg(localOwner, carriedScope);
         if (view.source == null || view.requestKey.isEmpty()
                 || view.requestApi.isEmpty()) {
             // Name what was missing, carried scope and thread separately:
@@ -511,7 +510,7 @@ final class RuntimeTraceContext {
                     "outbound message requires source and request flow;"
                             + " the call carried " + describe(carriedScope)
                             + " and the thread it is sent on carries no"
-                            + missing(owned(state.view(), localOwner)));
+                            + missing(owned(current(), localOwner)));
         }
         return header(view.source, view.requestKey, view.requestApi,
                 view.spanId);
@@ -596,15 +595,26 @@ final class RuntimeTraceContext {
         restoreScope(token);
     }
 
-    /**
-     * The exchange leg's view, under the carried scope when it names one, so
-     * row and wire header agree whatever thread writes.
-     */
+    /** The exchange leg's view ({@link #leg}), handed to the occurrence. */
     static View exchange(Object localOwner, Object carriedScope) {
-        State state = CURRENT.get();
-        View view = scoped(owned(state.view(), localOwner), carriedScope);
+        View view = leg(localOwner, carriedScope);
         publishCausalSource(view);
         return view;
+    }
+
+    /**
+     * The view of one exchange leg: under the carried scope when it names
+     * one, so row and wire header agree whatever thread writes.
+     */
+    private static View leg(Object localOwner, Object carriedScope) {
+        View view = owned(current(), localOwner);
+        if (!(carriedScope instanceof RequestScope)
+                || !((RequestScope) carriedScope).names()) {
+            return view;
+        }
+        RequestScope scope = (RequestScope) carriedScope;
+        return view.withScope(scope.source, scope.requestKey,
+                scope.requestApi);
     }
 
     /** Which of the three a view is missing, as " a b c" or "thing". */
@@ -636,14 +646,6 @@ final class RuntimeTraceContext {
         }
         return held.length() == 0 ? "an empty scope"
                 : "a partial scope holding only" + held;
-    }
-
-    private static View scoped(View view, Object carriedScope) {
-        RequestScope scope = carriedScope instanceof RequestScope
-                ? (RequestScope) carriedScope : null;
-        if (scope == null || !scope.names()) return view;
-        return view.withScope(scope.source, scope.requestKey,
-                scope.requestApi);
     }
 
     /**

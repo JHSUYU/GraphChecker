@@ -578,10 +578,6 @@ public final class Identity {
      * request's address.
      */
     public static int scopeStart(Hop hop) {
-        if (hop == null) {
-            throw new IllegalArgumentException(
-                    "a scope start states which hop opens it");
-        }
         State state = state();
         int before = state.scopeBase;
         state.scopeBase = hop == Hop.STARTED_ROOT && state.startDepth >= 0
