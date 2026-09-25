@@ -1113,16 +1113,19 @@ the round (report PASS + `accept/cone.py`).
 |---|---|---|---|
 | 1: dead members, lowering indirection, comments cut to their points (18880 -> 9547 lines) | `34cf6bae9`, `d13f83f10` | v48 | 9/9 |
 | 2: one rule per place in plan/explore, causynth, runtime, compose/smt | `30e1346c1`..`bb40bcd4d` | v49 | 9/9 |
-| 3: identity (below), then every area again | `b334534de`..`6cb51bf37` | v50 | pending |
+| 3: identity (below), then every area again | `b334534de`..`1716ea427` | v51 | pending |
 
 **Identity (iteration 3, after the DEI paper, Meiklejohn et al. 2022).** DEI names a point by
 signature + call stack + a count per (signature, stack) + the enclosing RPC path. Ours already
 had all four for Java-side events (site, frames, `Identity.State#nextSiteEvent`, the Anchor
 chain). A VM-logged read or write had only its frames, so one loop's reads at one bytecode
-shared an endpoint id (~90 of ~200 rows per 17897 session; `Confirmation` keyed them as one
-reader). Now its index ends in `(site, k)`, k its rank by VM event id among the activation's
-logged events at that site on the same frames (`LoggedEventSites#siteIndex`), counted over every
-logged event so a flip that changes which reads are symbolic moves no k. Not adopted: DEI's
+shared an endpoint id (17897: 1376 such rows over 17 sessions in v49; `Confirmation` keyed
+them as one reader). Now its index ends in `(site, k)`, k its rank by VM event id among its
+occurrence's logged events at that site on the same frames (`LoggedEventSites#siteIndex`),
+counted over every logged event so a flip that changes which reads are symbolic moves no k.
+Trap: group by the performing occurrence, never the activation -- a loop's stores after a folded
+callee region returns are stated under that callee's activation, a new one each turn (v50: 136
+left; v50c after `1716ea427`: 0). Not adopted: DEI's
 payload component (our flips change values, so an id must not contain them) and loop-turn
 frames (a turn count persists past its loop and would carry a polling loop's timing into later
 ids).
