@@ -38,11 +38,11 @@ public final class DecisionRow {
                                  int ordinal, boolean outcome, String term,
                                  Map<String, Long> clockReadings) {
         return new DecisionRow(Fields.text(sessionId, "sessionId"),
-                Fields.sequence(seq, "seq"),
+                Fields.nonNegative(seq, "seq"),
                 Fields.required(occurrence, "occurrence"),
                 Fields.text(siteId, "siteId"),
                 Fields.ordinal(ordinal, "ordinal"), outcome,
-                Fields.stated(term, "term"), Fields.copy(clockReadings));
+                Fields.required(term, "term"), Fields.copy(clockReadings));
     }
 
     public String sessionId() {

@@ -40,7 +40,7 @@ public final class RootDomain {
                                 String recordedValue, String min, String max) {
         return new RootDomain(Fields.text(rootId, "rootId"),
                 Fields.required(kind, "kind"),
-                Fields.stated(recordedValue, "recordedValue"),
+                Fields.required(recordedValue, "recordedValue"),
                 Fields.optional(min), Fields.optional(max));
     }
 

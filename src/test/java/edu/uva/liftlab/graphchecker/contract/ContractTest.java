@@ -280,6 +280,13 @@ public class ContractTest {
                 reline(RowCodec.writeWrite(written))));
         assertEquals(read, RowCodec.readRead(
                 reline(RowCodec.writeRead(read))));
+        // A placeholder's mint version is part of the row it round-trips as.
+        ReadRow placeholder = ReadRow.of("s-17897-1", 14L, read.endpoint(),
+                keys, 7L, "state_allKeys_7", BLOCK_KEY, null, 9L);
+        assertEquals(placeholder, RowCodec.readRead(
+                reline(RowCodec.writeRead(placeholder))));
+        assertFalse("a stated mint version is not the unknown one",
+                placeholder.equals(read));
         assertEquals(minted, RowCodec.readRootMint(
                 reline(RowCodec.writeRootMint(minted))));
         assertEquals(target, RowCodec.readTarget(

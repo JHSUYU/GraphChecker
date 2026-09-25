@@ -1,7 +1,9 @@
 package edu.uva.liftlab.graphchecker.contract;
 
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -29,11 +31,8 @@ public final class ExpressionTable {
 
     /** Reads the file's object form: one member per reference. */
     public static ExpressionTable fromJson(JsonObject json) {
-        if (json == null) return empty();
-        java.util.Map<String, JsonObject> expressions =
-                new java.util.LinkedHashMap<>();
-        for (Map.Entry<String, com.google.gson.JsonElement> member
-                : json.entrySet()) {
+        Map<String, JsonObject> expressions = new LinkedHashMap<>();
+        for (Map.Entry<String, JsonElement> member : json.entrySet()) {
             if (!member.getValue().isJsonObject()) {
                 throw new IllegalArgumentException(
                         "expression " + member.getKey() + " is not an object");

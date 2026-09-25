@@ -33,10 +33,10 @@ public final class TargetRow {
                                String anchorSiteId, String phiTerm,
                                boolean observedFatal, boolean reachedAnchor) {
         return new TargetRow(Fields.text(sessionId, "sessionId"),
-                Fields.sequence(seq, "seq"),
+                Fields.nonNegative(seq, "seq"),
                 Fields.required(occurrence, "occurrence"),
                 Fields.text(anchorSiteId, "anchorSiteId"),
-                Fields.stated(phiTerm, "phiTerm"), observedFatal,
+                Fields.required(phiTerm, "phiTerm"), observedFatal,
                 reachedAnchor);
     }
 

@@ -4,6 +4,8 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import edu.uva.liftlab.graphchecker.smt.JsonFields;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -79,30 +81,21 @@ public final class SessionManifest {
 
     /** Reads one manifest; an absent or unknown role is refused, never SEED. */
     public static SessionManifest fromJson(JsonObject json) {
-        if (json == null) {
-            throw new IllegalArgumentException("manifest states no role");
-        }
-        JsonElement stated = json.get("role");
-        String role = stated == null || stated.isJsonNull() ? ""
-                : stated.getAsString();
+        String role = JsonFields.optionalString(json, "role");
         Role parsed;
         try {
             parsed = Role.valueOf(role);
-        } catch (IllegalArgumentException | NullPointerException unstated) {
+        } catch (IllegalArgumentException unstated) {
             throw new IllegalArgumentException(
                     "manifest states no role this contract has: \"" + role
                             + "\"");
         }
-        JsonElement id = json.get("sessionId");
         List<String> obligations = new ArrayList<String>();
-        JsonElement ids = json.get("obligationIds");
-        if (ids != null && ids.isJsonArray()) {
-            for (JsonElement each : ids.getAsJsonArray()) {
-                obligations.add(each.getAsString());
-            }
+        for (JsonElement each : JsonFields.array(json, "obligationIds")) {
+            obligations.add(each.getAsString());
         }
-        return of(id == null || id.isJsonNull() ? "" : id.getAsString(),
-                parsed, obligations);
+        return of(JsonFields.optionalString(json, "sessionId"), parsed,
+                obligations);
     }
 
     @Override

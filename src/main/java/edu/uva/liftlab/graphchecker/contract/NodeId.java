@@ -20,7 +20,7 @@ public final class NodeId {
 
     public static NodeId of(String node, int epoch) {
         return new NodeId(Fields.text(node, "node"),
-                Fields.count(epoch, "epoch"));
+                Fields.nonNegative(epoch, "epoch"));
     }
 
     /** Reads {@code <node>#epoch<N>}; refuses, never half-parses, the rest. */

@@ -3,11 +3,8 @@ package edu.uva.liftlab.graphchecker.contract;
 import com.google.gson.JsonObject;
 
 import java.io.IOException;
-import java.nio.file.DirectoryStream;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 
 /**
@@ -39,27 +36,8 @@ public final class ObligationDir {
     public static List<ObligationDir> workersIn(Path iteration)
             throws IOException {
         List<ObligationDir> workers = new ArrayList<ObligationDir>();
-        if (iteration == null || !Files.isDirectory(iteration)) {
-            return workers;
-        }
-        List<Path> waves = new ArrayList<Path>();
-        try (DirectoryStream<Path> entries =
-                     Files.newDirectoryStream(iteration, WAVES)) {
-            for (Path wave : entries) {
-                if (Files.isDirectory(wave)) waves.add(wave);
-            }
-        }
-        Collections.sort(waves);
-        for (Path wave : waves) {
-            List<Path> dirs = new ArrayList<Path>();
-            try (DirectoryStream<Path> entries =
-                         Files.newDirectoryStream(wave)) {
-                for (Path worker : entries) {
-                    if (Files.isDirectory(worker)) dirs.add(worker);
-                }
-            }
-            Collections.sort(dirs);
-            for (Path worker : dirs) {
+        for (Path wave : SessionDir.directories(iteration, WAVES)) {
+            for (Path worker : SessionDir.directories(wave, "*")) {
                 String session = sessionOf(worker);
                 if (session.isEmpty()) continue;
                 workers.add(new ObligationDir(worker, session));
@@ -70,16 +48,14 @@ public final class ObligationDir {
 
     /** The session this worker's replay published, off its result row. */
     private static String sessionOf(Path worker) throws IOException {
-        Path result = worker.resolve(RESULT);
-        if (!Files.isRegularFile(result)) return "";
         String session = "";
-        for (JsonObject row : RowCodec.readJsonl(result)) {
+        for (JsonObject row : RowCodec.readJsonl(worker.resolve(RESULT))) {
             if (row.has("sessionId")
                     && row.get("sessionId").isJsonPrimitive()) {
                 session = row.get("sessionId").getAsString();
             }
         }
-        return session == null ? "" : session;
+        return session;
     }
 
     public Path dir() {
@@ -89,11 +65,6 @@ public final class ObligationDir {
     /** The session this worker's replay published; never empty. */
     public String sessionId() {
         return sessionId;
-    }
-
-    /** The ask: the flip and the root values the wave solved for. */
-    public Path obligation() {
-        return dir.resolve(OBLIGATION);
     }
 
     /** The answer the worker published. */

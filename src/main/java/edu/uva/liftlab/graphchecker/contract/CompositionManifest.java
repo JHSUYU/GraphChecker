@@ -1,12 +1,12 @@
 package edu.uva.liftlab.graphchecker.contract;
 
 import java.util.List;
-import java.util.Objects;
 
 /**
  * CONTRACT-SPEC 4: everything one anchor's composition stands on, including
  * the {@code .smt2} that with z3's verdict is the deliverable; without it the
- * claim cannot be re-checked.
+ * claim cannot be re-checked.  Written by Gson (ComposeMain), field by
+ * field: the fields are the manifest's shape.
  */
 public final class CompositionManifest {
     private final OccurrenceAddress anchor;
@@ -38,31 +38,8 @@ public final class CompositionManifest {
                                          String smt2Path) {
         return new CompositionManifest(Fields.required(anchor, "anchor"),
                 Fields.copy(paths), Fields.copy(families), Fields.copy(roots),
-                Fields.count(valuations, "valuations"),
+                Fields.nonNegative(valuations, "valuations"),
                 Fields.required(claim, "claim"),
                 Fields.text(smt2Path, "smt2Path"));
-    }
-
-    @Override
-    public boolean equals(Object value) {
-        if (this == value) return true;
-        if (!(value instanceof CompositionManifest)) return false;
-        CompositionManifest other = (CompositionManifest) value;
-        return valuations == other.valuations && anchor.equals(other.anchor)
-                && paths.equals(other.paths) && families.equals(other.families)
-                && roots.equals(other.roots) && claim.equals(other.claim)
-                && smt2Path.equals(other.smt2Path);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(anchor, paths, families, roots, valuations, claim,
-                smt2Path);
-    }
-
-    @Override
-    public String toString() {
-        return "CompositionManifest{" + anchor + " " + paths.size()
-                + " paths " + families.size() + " families " + claim + "}";
     }
 }

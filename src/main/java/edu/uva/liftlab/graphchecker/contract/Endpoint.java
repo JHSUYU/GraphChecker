@@ -9,9 +9,8 @@ import java.util.Objects;
  * site) replaces an ordinal, which moves when an unrelated event is inserted.
  *
  * <p>Site: the declared port id (WIRE), or {@code <class>#<method>#<bci>:KIND}
- * spelled only by {@link #stateSite} / {@link #allocationSite}, so writer and
- * joiner cannot drift.  One endpoint does not identify an
- * {@link Interaction}.</p>
+ * spelled only by {@link #stateSite}, so writer and joiner cannot drift.
+ * One endpoint does not identify an {@link Interaction}.</p>
  */
 public final class Endpoint {
     private final OccurrenceAddress occurrence;
@@ -34,7 +33,7 @@ public final class Endpoint {
         return new Endpoint(Fields.required(occurrence, "occurrence"),
                 Fields.text(site, "site"),
                 Fields.required(siteIndex, "siteIndex"),
-                Fields.count(attempt, "attempt"));
+                Fields.nonNegative(attempt, "attempt"));
     }
 
     /** The one spelling of a STATE endpoint's site, no descriptor stated. */
@@ -44,20 +43,19 @@ public final class Endpoint {
     }
 
     /**
-     * The one spelling of a STATE endpoint's site.  {@code descriptor} (e.g.
-     * {@code ()I}) keeps overloads apart; {@code ""} means none was stated.
+     * The one spelling of a STATE endpoint's site,
+     * {@code <class>#<method><descriptor>#<bci>:<KIND>}.  {@code descriptor}
+     * (e.g. {@code ()I}) keeps overloads apart; {@code ""} means none was
+     * stated.  Normalizes nothing (the VM-log reader puts the class in source
+     * form once).
      */
     public static String stateSite(String className, String method,
                                    String descriptor, int bci, boolean write) {
-        return site(className, method, descriptor, bci,
-                write ? "WRITE" : "READ");
-    }
-
-    /** The one spelling of an allocation site (IDENTITY-V3 sec 5). */
-    public static String allocationSite(String className, String method,
-                                        int bci, boolean array) {
-        return site(className, method, "", bci,
-                array ? "NEWARRAY" : "NEW");
+        String stated = descriptor == null ? "" : descriptor.trim();
+        return Fields.text(className, "className") + "#"
+                + Fields.text(method, "method") + stated + "#"
+                + Fields.nonNegative(bci, "bci") + ":"
+                + (write ? "WRITE" : "READ");
     }
 
     public OccurrenceAddress occurrence() {
@@ -119,17 +117,5 @@ public final class Endpoint {
     @Override
     public String toString() {
         return render();
-    }
-
-    /**
-     * {@code <class>#<method><descriptor>#<bci>:<KIND>}; normalizes nothing
-     * (the VM-log reader puts the class in source form once).
-     */
-    private static String site(String className, String method,
-                               String descriptor, int bci, String kind) {
-        String stated = descriptor == null ? "" : descriptor.trim();
-        return Fields.text(className, "className") + "#"
-                + Fields.text(method, "method") + stated + "#"
-                + Fields.count(bci, "bci") + ":" + kind;
     }
 }

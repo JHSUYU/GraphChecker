@@ -16,7 +16,8 @@ final class Fields {
     private Fields() {
     }
 
-    /** {@code value}, or a refusal naming {@code field}. */
+    /** {@code value}, or a refusal naming {@code field}; an empty string is
+     *  a statement. */
     static <T> T required(T value, String field) {
         if (value == null) {
             throw new IllegalArgumentException(field + " is required");
@@ -31,11 +32,6 @@ final class Fields {
             throw new IllegalArgumentException(field + " is required");
         }
         return stated;
-    }
-
-    /** {@code value}, refusing null only: an empty statement is a statement. */
-    static String stated(String value, String field) {
-        return required(value, field);
     }
 
     /** {@code value} or null; a blank optional is no statement at all. */
@@ -54,7 +50,7 @@ final class Fields {
     }
 
     /** {@code value}, refusing anything below 0, naming {@code field}. */
-    static int count(int value, String field) {
+    static long nonNegative(long value, String field) {
         if (value < 0) {
             throw new IllegalArgumentException(
                     field + " cannot be negative; got " + value);
@@ -62,12 +58,9 @@ final class Fields {
         return value;
     }
 
-    /** {@code value}, refusing anything below 0, naming {@code field}. */
-    static long sequence(long value, String field) {
-        if (value < 0) {
-            throw new IllegalArgumentException(
-                    field + " cannot be negative; got " + value);
-        }
+    /** The same check, for an int. */
+    static int nonNegative(int value, String field) {
+        nonNegative((long) value, field);
         return value;
     }
 

@@ -6,7 +6,10 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 /**
@@ -24,7 +27,6 @@ public final class SessionReader {
     private final List<ReadRow> reads;
     private final List<RootMintRow> roots;
     private final List<TargetRow> targets;
-    private final List<GapRow> gaps;
     private final List<ObligationResult> obligations;
     private final ExpressionTable expressions;
     private final SessionManifest manifest;
@@ -36,7 +38,6 @@ public final class SessionReader {
                           List<ExportRow> exports, List<AttachRow> attaches,
                           List<WriteRow> writes, List<ReadRow> reads,
                           List<RootMintRow> roots, List<TargetRow> targets,
-                          List<GapRow> gaps,
                           List<ObligationResult> obligations,
                           ExpressionTable expressions,
                           SessionManifest manifest, String incomplete) {
@@ -51,7 +52,6 @@ public final class SessionReader {
         this.reads = Collections.unmodifiableList(reads);
         this.roots = Collections.unmodifiableList(roots);
         this.targets = Collections.unmodifiableList(targets);
-        this.gaps = Collections.unmodifiableList(gaps);
         this.obligations = Collections.unmodifiableList(obligations);
         this.expressions = expressions;
     }
@@ -84,7 +84,8 @@ public final class SessionReader {
                 RowCodec::readRootMint);
         List<TargetRow> targets = partial.rows(dir.targets(),
                 RowCodec::readTarget);
-        List<GapRow> gaps = partial.rows(dir.gaps(), RowCodec::readGap);
+        // Held by no one; read so an unreadable file still marks the session.
+        partial.rows(dir.gaps(), RowCodec::readGap);
         List<ObligationResult> obligations = partial.rows(dir.obligations(),
                 RowCodec::readObligationResult);
         ExpressionTable expressions;
@@ -102,7 +103,7 @@ public final class SessionReader {
             manifest = null;
         }
         return new SessionReader(dir, activations, decisions, exports,
-                attaches, writes, reads, roots, targets, gaps, obligations,
+                attaches, writes, reads, roots, targets, obligations,
                 expressions, manifest, partial.reason);
     }
 
@@ -147,20 +148,9 @@ public final class SessionReader {
     public static List<ScheduleEvent> readSchedule(Path file)
             throws IOException {
         List<ScheduleEvent> events = new ArrayList<ScheduleEvent>();
-        if (file == null || !java.nio.file.Files.isRegularFile(file)) {
-            return events;
-        }
-        for (String line : java.nio.file.Files.readAllLines(file,
-                java.nio.charset.StandardCharsets.UTF_8)) {
-            if (line.trim().isEmpty()) continue;
-            try {
-                JsonObject row = RowCodec.fromLine(line);
-                if (row.has("mark")) continue;
-                events.add(RowCodec.readScheduleEvent(row));
-            } catch (RuntimeException unreadable) {
-                break;
-            }
-        }
+        schedulePrefix(file, row -> {
+            if (!row.has("mark")) events.add(RowCodec.readScheduleEvent(row));
+        });
         return events;
     }
 
@@ -168,28 +158,30 @@ public final class SessionReader {
      * Occurrence id to the position of the first schedule event after it
      * opened (the prefix cut); same tolerance as the events.
      */
-    public static java.util.Map<String, Long> readScheduleMarks(Path file)
+    public static Map<String, Long> readScheduleMarks(Path file)
             throws IOException {
-        java.util.Map<String, Long> marks =
-                new java.util.LinkedHashMap<String, Long>();
-        if (file == null || !java.nio.file.Files.isRegularFile(file)) {
-            return marks;
-        }
-        for (String line : java.nio.file.Files.readAllLines(file,
-                java.nio.charset.StandardCharsets.UTF_8)) {
-            if (line.trim().isEmpty()) continue;
-            try {
-                JsonObject row = RowCodec.fromLine(line);
-                if (!row.has("mark")) continue;
-                String id = row.get("mark").getAsString();
-                if (!marks.containsKey(id)) {
-                    marks.put(id, row.get("at").getAsLong());
-                }
-            } catch (RuntimeException unreadable) {
-                break;
+        Map<String, Long> marks = new LinkedHashMap<String, Long>();
+        schedulePrefix(file, row -> {
+            if (!row.has("mark")) return;
+            String id = row.get("mark").getAsString();
+            if (!marks.containsKey(id)) {
+                marks.put(id, row.get("at").getAsLong());
             }
-        }
+        });
         return marks;
+    }
+
+    /** Each row of a schedule file, up to the first one that will not read. */
+    private static void schedulePrefix(Path file, Consumer<JsonObject> each)
+            throws IOException {
+        RowCodec.eachLine(file, line -> {
+            try {
+                each.accept(RowCodec.fromLine(line));
+                return true;
+            } catch (RuntimeException unreadable) {
+                return false;
+            }
+        });
     }
 
     /** Every session of one iteration, in the layout's own order. */

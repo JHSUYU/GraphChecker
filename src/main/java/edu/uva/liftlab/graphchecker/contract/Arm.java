@@ -30,8 +30,8 @@ public final class Arm {
                          String expressionRef, Set<String> guardRoots,
                          boolean attested) {
         return new Arm(Fields.text(producerPathId, "producerPathId"),
-                Fields.stated(piRef, "piRef"),
-                Fields.stated(expressionRef, "expressionRef"),
+                Fields.required(piRef, "piRef"),
+                Fields.required(expressionRef, "expressionRef"),
                 Fields.copy(guardRoots), attested);
     }
 

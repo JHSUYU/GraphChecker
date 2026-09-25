@@ -52,23 +52,29 @@ public final class SessionDir {
     /** The sessions an iteration directory holds, in name order. */
     public static List<SessionDir> sessionsIn(Path iteration)
             throws IOException {
-        Path sessions = Fields.required(iteration, "iteration")
-                .resolve(SESSIONS);
         List<SessionDir> found = new ArrayList<>();
-        if (!Files.isDirectory(sessions)) return found;
-        List<String> names = new ArrayList<>();
+        for (Path session : directories(Fields.required(iteration,
+                "iteration").resolve(SESSIONS), "*")) {
+            found.add(of(iteration, session.getFileName().toString()));
+        }
+        return found;
+    }
+
+    /**
+     * The directories in {@code parent} whose names match {@code glob}, in
+     * name order; none when {@code parent} is not there.
+     */
+    static List<Path> directories(Path parent, String glob)
+            throws IOException {
+        List<Path> found = new ArrayList<>();
+        if (parent == null || !Files.isDirectory(parent)) return found;
         try (DirectoryStream<Path> entries =
-                     Files.newDirectoryStream(sessions)) {
+                     Files.newDirectoryStream(parent, glob)) {
             for (Path entry : entries) {
-                if (Files.isDirectory(entry)) {
-                    names.add(entry.getFileName().toString());
-                }
+                if (Files.isDirectory(entry)) found.add(entry);
             }
         }
-        Collections.sort(names);
-        for (String name : names) {
-            found.add(of(iteration, name));
-        }
+        Collections.sort(found);
         return found;
     }
 

@@ -38,7 +38,7 @@ public final class ActivationRow {
                                    String threadKey) {
         return new ActivationRow(Fields.text(sessionId, "sessionId"),
                 Fields.required(occurrence, "occurrence"),
-                Fields.stated(taskId, "taskId"), focused, instrumented,
+                Fields.required(taskId, "taskId"), focused, instrumented,
                 Fields.text(threadKey, "threadKey"));
     }
 

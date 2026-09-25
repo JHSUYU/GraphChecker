@@ -42,11 +42,11 @@ public final class RootMintRow {
                                  String recordedValue, String domainMin,
                                  String domainMax, boolean declared) {
         return new RootMintRow(Fields.text(sessionId, "sessionId"),
-                Fields.sequence(seq, "seq"),
+                Fields.nonNegative(seq, "seq"),
                 Fields.required(occurrence, "occurrence"),
                 Fields.text(rootId, "rootId"), Fields.text(symbol, "symbol"),
                 Fields.required(kind, "kind"),
-                Fields.stated(recordedValue, "recordedValue"),
+                Fields.required(recordedValue, "recordedValue"),
                 Fields.optional(domainMin), Fields.optional(domainMax),
                 declared);
     }

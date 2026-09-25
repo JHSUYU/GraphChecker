@@ -32,10 +32,10 @@ public final class WriteRow {
                               LocationId location, long version,
                               String expressionRef, String javaType) {
         return new WriteRow(Fields.text(sessionId, "sessionId"),
-                Fields.sequence(seq, "seq"),
+                Fields.nonNegative(seq, "seq"),
                 Fields.required(endpoint, "endpoint"),
                 Fields.required(location, "location"), version,
-                Fields.stated(expressionRef, "expressionRef"),
+                Fields.required(expressionRef, "expressionRef"),
                 Fields.text(javaType, "javaType"));
     }
 

@@ -33,11 +33,11 @@ public final class ExportRow {
                                String expressionRef, String javaType,
                                long handle, String recordedValue) {
         return new ExportRow(Fields.text(sessionId, "sessionId"),
-                Fields.sequence(seq, "seq"),
+                Fields.nonNegative(seq, "seq"),
                 Fields.required(endpoint, "endpoint"),
-                Fields.stated(expressionRef, "expressionRef"),
+                Fields.required(expressionRef, "expressionRef"),
                 Fields.text(javaType, "javaType"), handle,
-                Fields.stated(recordedValue, "recordedValue"));
+                Fields.required(recordedValue, "recordedValue"));
     }
 
     public String sessionId() {

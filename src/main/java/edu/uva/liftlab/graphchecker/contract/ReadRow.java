@@ -49,7 +49,7 @@ public final class ReadRow {
                              String symbol, String javaType,
                              String concreteValue, long mintVersion) {
         return new ReadRow(Fields.text(sessionId, "sessionId"),
-                Fields.sequence(seq, "seq"),
+                Fields.nonNegative(seq, "seq"),
                 Fields.required(endpoint, "endpoint"),
                 Fields.required(location, "location"), observedVersion,
                 Fields.text(symbol, "symbol"),
@@ -110,6 +110,7 @@ public final class ReadRow {
         ReadRow other = (ReadRow) value;
         return seq == other.seq
                 && observedVersion == other.observedVersion
+                && mintVersion == other.mintVersion
                 && sessionId.equals(other.sessionId)
                 && endpoint.equals(other.endpoint)
                 && location.equals(other.location)
@@ -121,7 +122,7 @@ public final class ReadRow {
     @Override
     public int hashCode() {
         return Objects.hash(sessionId, seq, endpoint, location, observedVersion,
-                symbol, javaType, concreteValue);
+                symbol, javaType, concreteValue, mintVersion);
     }
 
     @Override

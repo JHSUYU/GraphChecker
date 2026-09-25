@@ -1,5 +1,10 @@
 package edu.uva.liftlab.graphchecker.contract;
 
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.primitiveString;
+
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
@@ -12,6 +17,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
+import java.util.function.ToLongFunction;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -50,12 +57,11 @@ public final class RowInvariants {
     public static List<GapRow> check(List<SessionReader> sessions,
                                      Map<String, JsonObject> asks) {
         List<GapRow> gaps = new ArrayList<GapRow>();
-        if (sessions == null || sessions.isEmpty()) return gaps;
+        if (sessions.isEmpty()) return gaps;
         sessionSet(sessions, gaps);
         for (SessionReader session : sessions) {
             complete(session, gaps);
-            check(session, asks == null ? null
-                    : asks.get(session.sessionId()), gaps);
+            check(session, asks.get(session.sessionId()), gaps);
         }
         attributed(sessions, gaps);
         return gaps;
@@ -171,8 +177,7 @@ public final class RowInvariants {
                                      List<GapRow> gaps) {
         for (ReadRow row : session.reads()) {
             if (row.observedVersion() >= 0) continue;
-            String value = row.concreteValue();
-            if (value != null && !value.trim().isEmpty()) continue;
+            if (row.concreteValue() != null) continue;
             gaps.add(violation(session, GapKind.UNSTATED_VALUE,
                     GapClass.BLOCKING, "reads", row.seq(),
                     "observedVersion/concreteValue",
@@ -235,7 +240,6 @@ public final class RowInvariants {
                               ExpressionTable table, Set<String> said,
                               String kind, long seq, String field,
                               String text) {
-        if (text == null || text.isEmpty()) return;
         Matcher like = REFERENCE_LIKE.matcher(text);
         while (like.find()) {
             String ref = like.group();
@@ -291,11 +295,14 @@ public final class RowInvariants {
                             + "|" + row.anchorSiteId(),
                     row.anchorSiteId());
         }
-        endpoints(session, gaps, "reads", endpointSeqs(session, "reads"));
-        endpoints(session, gaps, "writes", endpointSeqs(session, "writes"));
-        endpoints(session, gaps, "attaches",
-                endpointSeqs(session, "attaches"));
-        endpoints(session, gaps, "exports", endpointSeqs(session, "exports"));
+        endpoints(session, gaps, "reads", session.reads(), ReadRow::endpoint,
+                ReadRow::seq);
+        endpoints(session, gaps, "writes", session.writes(),
+                WriteRow::endpoint, WriteRow::seq);
+        endpoints(session, gaps, "attaches", session.attaches(),
+                AttachRow::endpoint, AttachRow::seq);
+        endpoints(session, gaps, "exports", session.exports(),
+                ExportRow::endpoint, ExportRow::seq);
     }
 
     private static void twice(SessionReader session, List<GapRow> gaps,
@@ -308,51 +315,23 @@ public final class RowInvariants {
                         + "second row of this kind states the same event"));
     }
 
-    /** endpoint id -> the seqs and the endpoint, for one row kind. */
-    private static Map<String, Object[]> endpointSeqs(SessionReader session,
-                                                      String kind) {
-        Map<String, Object[]> byEndpoint = new LinkedHashMap<String, Object[]>();
-        List<Object[]> rows = new ArrayList<Object[]>();
-        if ("reads".equals(kind)) {
-            for (ReadRow row : session.reads()) {
-                rows.add(new Object[] {row.endpoint(), row.seq()});
-            }
-        } else if ("writes".equals(kind)) {
-            for (WriteRow row : session.writes()) {
-                rows.add(new Object[] {row.endpoint(), row.seq()});
-            }
-        } else if ("attaches".equals(kind)) {
-            for (AttachRow row : session.attaches()) {
-                rows.add(new Object[] {row.endpoint(), row.seq()});
-            }
-        } else {
-            for (ExportRow row : session.exports()) {
-                rows.add(new Object[] {row.endpoint(), row.seq()});
-            }
+    /** Events of one row kind that share one endpoint id (DIAGNOSTIC). */
+    private static <T> void endpoints(SessionReader session,
+                                      List<GapRow> gaps, String kind,
+                                      List<T> rows,
+                                      Function<T, Endpoint> endpointOf,
+                                      ToLongFunction<T> seqOf) {
+        Map<String, Endpoint> endpoints = new LinkedHashMap<String, Endpoint>();
+        Map<String, Set<Long>> seqsOf = new LinkedHashMap<String, Set<Long>>();
+        for (T row : rows) {
+            Endpoint endpoint = endpointOf.apply(row);
+            endpoints.putIfAbsent(endpoint.id(), endpoint);
+            seqsOf.computeIfAbsent(endpoint.id(), id -> new LinkedHashSet<Long>())
+                    .add(seqOf.applyAsLong(row));
         }
-        for (Object[] row : rows) {
-            Endpoint endpoint = (Endpoint) row[0];
-            Object[] held = byEndpoint.get(endpoint.id());
-            if (held == null) {
-                byEndpoint.put(endpoint.id(), new Object[] {endpoint,
-                        new LinkedHashSet<Long>(Collections.singleton(
-                                (Long) row[1]))});
-                continue;
-            }
-            @SuppressWarnings("unchecked")
-            Set<Long> seqs = (Set<Long>) held[1];
-            seqs.add((Long) row[1]);
-        }
-        return byEndpoint;
-    }
-
-    private static void endpoints(SessionReader session, List<GapRow> gaps,
-                                  String kind,
-                                  Map<String, Object[]> byEndpoint) {
-        for (Map.Entry<String, Object[]> entry : byEndpoint.entrySet()) {
-            Endpoint endpoint = (Endpoint) entry.getValue()[0];
-            @SuppressWarnings("unchecked")
-            Set<Long> seqs = (Set<Long>) entry.getValue()[1];
+        for (Map.Entry<String, Set<Long>> entry : seqsOf.entrySet()) {
+            Endpoint endpoint = endpoints.get(entry.getKey());
+            Set<Long> seqs = entry.getValue();
             if (seqs.size() < 2) continue;
             // Absent index or equal frames: the identity's defect to fix
             // (IDENTITY-V3 SS1.2), never cured here by an ordinal or counter.
@@ -385,12 +364,10 @@ public final class RowInvariants {
         }
         for (ReadRow row : session.reads()) {
             sort(session, gaps, sortOfName, "reads", row.seq(), row.symbol());
-            Matcher minted = MINTED.matcher(row.symbol() == null ? ""
-                    : row.symbol());
+            Matcher minted = MINTED.matcher(row.symbol());
             if (!minted.matches()) continue;
             String spelled = minted.group(1).substring(0, 1);
-            String declared = row.javaType() == null || row.javaType().isEmpty()
-                    ? "" : row.javaType().substring(0, 1);
+            String declared = row.javaType().substring(0, 1);
             if (spelled.equals(declared)) continue;
             gaps.add(violation(session, GapKind.UNSTATED_VALUE,
                     GapClass.BLOCKING, "reads", row.seq(), "symbol/javaType",
@@ -405,7 +382,7 @@ public final class RowInvariants {
     private static void sort(SessionReader session, List<GapRow> gaps,
                              Map<String, String[]> sortOfName, String kind,
                              long seq, String symbol) {
-        Matcher minted = MINTED.matcher(symbol == null ? "" : symbol);
+        Matcher minted = MINTED.matcher(symbol);
         if (!minted.matches()) return;
         String spelled = minted.group(1);
         String name = minted.group(2);
@@ -436,7 +413,7 @@ public final class RowInvariants {
                                   List<GapRow> gaps) {
         if (executed == null || executed.isEmpty()) return;
         for (DecisionRow row : session.decisions()) {
-            if (row.term() == null || row.term().trim().isEmpty()) continue;
+            if (row.term().trim().isEmpty()) continue;
             Boolean held = truth(session, row.term(), executed);
             if (held == null || held.booleanValue() == row.outcome()) continue;
             gaps.add(violation(session, GapKind.UNSTATED_VALUE,
@@ -489,11 +466,10 @@ public final class RowInvariants {
     /** One mint's executed value; {@code ""} (unjudgeable) if unstatable. */
     private static String ran(RootMintRow row, Map<String, String> assigned,
                               Map<String, String> skews) {
-        String recorded = row.recordedValue() == null ? ""
-                : row.recordedValue().trim();
+        String recorded = row.recordedValue().trim();
         if (assigned == null) return recorded;
         if (row.kind() == RootKind.CLOCK) {
-            String delta = skews == null ? null : skews.get(row.rootId());
+            String delta = skews.get(row.rootId());
             if (delta == null || delta.trim().isEmpty()) return recorded;
             Object read = literal(recorded);
             Object skew = literal(delta.trim());
@@ -527,13 +503,13 @@ public final class RowInvariants {
     private static Object value(ExpressionTable table, JsonObject node,
                                 Map<String, String> declared, int depth) {
         if (node == null || depth > 64) return null;
-        String type = text(node, "_type");
+        String type = primitiveString(node, "_type");
         if ("SymbolExpression".equals(type)) {
-            String recorded = declared.get(text(node, "_exp"));
+            String recorded = declared.get(primitiveString(node, "_exp"));
             return recorded == null ? null : literal(recorded);
         }
         if ("ConstExpr".equals(type)) {
-            Matcher value = LITERAL.matcher(text(node, "_exp"));
+            Matcher value = LITERAL.matcher(primitiveString(node, "_exp"));
             if (!value.matches()) return null;
             return "Z".equals(value.group(1))
                     ? (Object) Boolean.valueOf(!"0".equals(value.group(2)))
@@ -545,17 +521,15 @@ public final class RowInvariants {
         }
         if ("ReadFromExpression".equals(type)) {
             // What the read returned is what the write it observed stated.
-            JsonObject observed = object(node, "observedVersion");
-            return observed == null ? null
-                    : value(table, object(observed, "expression"), declared,
-                            depth + 1);
+            return value(table, object(object(node, "observedVersion"),
+                    "expression"), declared, depth + 1);
         }
         if (!"BinaryExpression".equals(type)) return null;
         Object left = value(table, object(node, "_left"), declared, depth + 1);
         Object right = value(table, object(node, "_right"), declared,
                 depth + 1);
         if (left == null || right == null) return null;
-        return apply(text(node, "_op"), left, right);
+        return apply(primitiveString(node, "_op"), left, right);
     }
 
     private static Object apply(String op, Object left, Object right) {
@@ -589,7 +563,7 @@ public final class RowInvariants {
 
     /** A recorded reading, as the row spells one. */
     private static Object literal(String recorded) {
-        String value = recorded == null ? "" : recorded.trim();
+        String value = recorded.trim();
         if ("true".equals(value)) return Boolean.TRUE;
         if ("false".equals(value)) return Boolean.FALSE;
         if (!DECIMAL.matcher(value).matches()) return null;
@@ -680,8 +654,7 @@ public final class RowInvariants {
                         "invariant 8 (HANDOVER SS1.3: a RootMintRow is "
                                 + "published only for a DECLARED root)"));
             }
-            String value = row.recordedValue() == null ? ""
-                    : row.recordedValue().trim();
+            String value = row.recordedValue().trim();
             boolean ok = row.kind() == RootKind.MARKER
                     ? "true".equals(value) || "false".equals(value)
                     : DECIMAL.matcher(value).matches();
@@ -721,8 +694,7 @@ public final class RowInvariants {
         Map<String, String> declared = executed == null
                 ? Collections.<String, String>emptyMap() : executed;
         for (TargetRow row : session.targets()) {
-            boolean empty = row.phiTerm() == null
-                    || row.phiTerm().trim().isEmpty();
+            boolean empty = row.phiTerm().trim().isEmpty();
             if (empty && row.reachedAnchor()) {
                 gaps.add(violation(session, GapKind.UNSTATED_VALUE,
                         row.observedFatal() ? GapClass.BLOCKING
@@ -761,15 +733,11 @@ public final class RowInvariants {
     public static List<GapRow> flipped(JsonObject flip,
                                        SessionReader session) {
         List<GapRow> gaps = new ArrayList<GapRow>();
-        if (flip == null || session == null) return gaps;
         JsonObject named = object(flip, "flip");
-        if (named == null) return gaps;
-        String site = text(named, "siteId");
+        String site = primitiveString(named, "siteId");
         if (site.isEmpty()) return gaps;
-        int ordinal = named.has("ordinal")
-                ? named.get("ordinal").getAsInt() : 1;
-        boolean outcome = named.has("outcome")
-                && named.get("outcome").getAsBoolean();
+        int ordinal = optionalInteger(named, "ordinal", 1);
+        boolean outcome = optionalBool(named, "outcome", false);
         for (DecisionRow row : session.decisions()) {
             if (!site.equals(row.siteId()) || row.ordinal() != ordinal) {
                 continue;
@@ -801,10 +769,7 @@ public final class RowInvariants {
         Map<String, String> roots = new LinkedHashMap<String, String>();
         for (SessionReader session : sessions) {
             for (RootMintRow row : session.roots()) {
-                String rootId = row.rootId() == null ? "" : row.rootId();
-                String symbol = row.symbol() == null ? "" : row.symbol();
-                if (rootId.isEmpty() || symbol.isEmpty()) continue;
-                if (!roots.containsKey(rootId)) roots.put(rootId, symbol);
+                roots.putIfAbsent(row.rootId(), row.symbol());
             }
         }
         if (roots.isEmpty()) return;
@@ -812,7 +777,7 @@ public final class RowInvariants {
             Map<String, String> named = named(session);
             Set<String> stated = new LinkedHashSet<String>();
             for (RootMintRow row : session.roots()) {
-                stated.add(row.rootId() == null ? "" : row.rootId());
+                stated.add(row.rootId());
             }
             for (Map.Entry<String, String> root : roots.entrySet()) {
                 if (stated.contains(root.getKey())) continue;
@@ -860,7 +825,7 @@ public final class RowInvariants {
     /** The symbols one published term names, cited at the row that holds it. */
     private static void cite(SessionReader session, String term,
                              Map<String, String> where, String place) {
-        String text = term == null ? "" : term.trim();
+        String text = term.trim();
         while (text.startsWith("(not ") && text.endsWith(")")) {
             text = text.substring(5, text.length() - 1).trim();
         }
@@ -897,25 +862,12 @@ public final class RowInvariants {
                         + subject, detail);
     }
 
-    private static String text(JsonObject node, String member) {
-        if (node == null || !node.has(member)) return "";
-        JsonElement value = node.get(member);
-        return value.isJsonPrimitive() ? value.getAsString() : "";
-    }
-
-    private static JsonObject object(JsonObject node, String member) {
-        if (node == null || !node.has(member)) return null;
-        JsonElement value = node.get(member);
-        return value.isJsonObject() ? value.getAsJsonObject() : null;
-    }
-
     /** One string-to-string member of a row, or an empty map. */
     private static Map<String, String> strings(JsonObject node,
                                                String member) {
         Map<String, String> read = new LinkedHashMap<String, String>();
-        JsonObject stated = object(node, member);
-        if (stated == null) return read;
-        for (Map.Entry<String, JsonElement> entry : stated.entrySet()) {
+        for (Map.Entry<String, JsonElement> entry
+                : object(node, member).entrySet()) {
             if (!entry.getValue().isJsonPrimitive()) continue;
             read.put(entry.getKey(), entry.getValue().getAsString());
         }

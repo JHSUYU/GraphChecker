@@ -17,6 +17,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
+import java.util.function.Predicate;
 
 /**
  * CONTRACT-SPEC 2: the one codec for the row kinds, one method pair per kind.
@@ -67,7 +68,7 @@ public final class RowCodec {
     }
 
     /** A causal context as {@code {form, ...}}: one shape per form. */
-    public static JsonObject writeContext(CausalContext context) {
+    private static JsonObject writeContext(CausalContext context) {
         JsonObject json = new JsonObject();
         json.addProperty(FORM, context.form().name());
         switch (context.form()) {
@@ -94,7 +95,7 @@ public final class RowCodec {
         return json;
     }
 
-    public static CausalContext readContext(JsonObject json) {
+    private static CausalContext readContext(JsonObject json) {
         CausalContext.Form form =
                 CausalContext.Form.valueOf(string(json, FORM));
         switch (form) {
@@ -111,7 +112,7 @@ public final class RowCodec {
     }
 
     /** An execution index as its frames, outermost first. */
-    public static JsonArray writeIndex(ExecutionIndex index) {
+    private static JsonArray writeIndex(ExecutionIndex index) {
         JsonArray frames = new JsonArray();
         for (Frame frame : index.frames()) {
             JsonObject json = new JsonObject();
@@ -122,7 +123,7 @@ public final class RowCodec {
         return frames;
     }
 
-    public static ExecutionIndex readIndex(JsonArray frames) {
+    private static ExecutionIndex readIndex(JsonArray frames) {
         List<Frame> read = new ArrayList<>();
         for (JsonElement frame : frames) {
             JsonObject json = frame.getAsJsonObject();
@@ -147,7 +148,7 @@ public final class RowCodec {
                 integer(json, "attempt"));
     }
 
-    public static JsonObject writeLocation(LocationId location) {
+    private static JsonObject writeLocation(LocationId location) {
         JsonObject json = new JsonObject();
         json.addProperty("kind", location.kind().name());
         json.addProperty("owner", location.owner());
@@ -155,7 +156,7 @@ public final class RowCodec {
         return json;
     }
 
-    public static LocationId readLocation(JsonObject json) {
+    private static LocationId readLocation(JsonObject json) {
         return LocationId.of(
                 LocationKind.valueOf(string(json, "kind")),
                 string(json, "owner"), string(json, "slot"));
@@ -390,22 +391,18 @@ public final class RowCodec {
             json.addProperty(OCCURRENCE, event.occurrence());
         }
         if (!event.endpoint().isEmpty()) {
-            json.addProperty("endpoint", event.endpoint());
+            json.addProperty(ENDPOINT, event.endpoint());
         }
         return json;
     }
 
     public static ScheduleEvent readScheduleEvent(JsonObject json) {
-        JsonElement occurrence = json.get(OCCURRENCE);
-        JsonElement endpoint = json.get("endpoint");
-        return ScheduleEvent.of(json.get(SEQ).getAsLong(),
+        return ScheduleEvent.of(number(json, SEQ),
                 ScheduleEvent.Kind.valueOf(string(json, "kind")),
-                json.has(CONTEXT) ? json.get(CONTEXT).getAsString() : "",
-                string(json, "site"), json.get("k").getAsInt(),
-                occurrence == null || occurrence.isJsonNull() ? ""
-                        : occurrence.getAsString(),
-                endpoint == null || endpoint.isJsonNull() ? ""
-                        : endpoint.getAsString());
+                json.has(CONTEXT) ? string(json, CONTEXT) : "",
+                string(json, "site"), integer(json, "k"),
+                optionalString(json, OCCURRENCE),
+                optionalString(json, ENDPOINT));
     }
 
     // ---- files ---------------------------------------------------------
@@ -447,24 +444,31 @@ public final class RowCodec {
 
     public static List<JsonObject> readJsonl(Path file) throws IOException {
         List<JsonObject> rows = new ArrayList<>();
-        if (file == null || !Files.isRegularFile(file)) return rows;
+        eachLine(file, line -> rows.add(fromLine(line)));
+        return rows;
+    }
+
+    /**
+     * Hands each non-blank line of a JSONL file to {@code each} in order,
+     * until it returns false; a file that is not there has no lines.
+     */
+    static void eachLine(Path file, Predicate<String> each)
+            throws IOException {
+        if (file == null || !Files.isRegularFile(file)) return;
         try (BufferedReader in = Files.newBufferedReader(file,
                 StandardCharsets.UTF_8)) {
             String line;
             while ((line = in.readLine()) != null) {
                 if (line.trim().isEmpty()) continue;
-                rows.add(fromLine(line));
+                if (!each.test(line)) return;
             }
         }
-        return rows;
     }
 
     /** The session's shared expressions, written as one JSON object. */
     public static void writeExpressions(Path file, ExpressionTable table)
             throws IOException {
-        Files.createDirectories(file.toAbsolutePath().getParent());
-        Files.write(file, GSON.toJson(table.toJson())
-                .getBytes(StandardCharsets.UTF_8));
+        writeObject(file, table.toJson());
     }
 
     /** The session's shared expressions; a missing file is the empty table. */
@@ -473,17 +477,13 @@ public final class RowCodec {
         if (file == null || !Files.isRegularFile(file)) {
             return ExpressionTable.empty();
         }
-        String text = new String(Files.readAllBytes(file),
-                StandardCharsets.UTF_8);
-        return ExpressionTable.fromJson(parse(text, file.toString()));
+        return ExpressionTable.fromJson(readObject(file));
     }
 
     /** The role this session states, as one JSON object. */
     public static void writeManifest(Path file, SessionManifest manifest)
             throws IOException {
-        Files.createDirectories(file.toAbsolutePath().getParent());
-        Files.write(file, GSON.toJson(manifest.toJson())
-                .getBytes(StandardCharsets.UTF_8));
+        writeObject(file, manifest.toJson());
     }
 
     /** The role this session states; none is refused, never defaulted. */
@@ -492,9 +492,18 @@ public final class RowCodec {
             throw new IllegalArgumentException(
                     "the session states no role: no " + SessionDir.MANIFEST);
         }
-        String text = new String(Files.readAllBytes(file),
-                StandardCharsets.UTF_8);
-        return SessionManifest.fromJson(parse(text, file.toString()));
+        return SessionManifest.fromJson(readObject(file));
+    }
+
+    private static void writeObject(Path file, JsonObject json)
+            throws IOException {
+        Files.createDirectories(file.toAbsolutePath().getParent());
+        Files.write(file, GSON.toJson(json).getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static JsonObject readObject(Path file) throws IOException {
+        return parse(new String(Files.readAllBytes(file),
+                StandardCharsets.UTF_8), file.toString());
     }
 
     /** One row as one line: compact, and never containing a newline. */

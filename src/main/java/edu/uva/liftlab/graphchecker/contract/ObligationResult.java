@@ -23,8 +23,8 @@ public final class ObligationResult {
                                       String sessionId, String detail) {
         return new ObligationResult(Fields.text(obligationId, "obligationId"),
                 Fields.required(verdict, "verdict"),
-                Fields.stated(sessionId, "sessionId"),
-                Fields.stated(detail, "detail"));
+                Fields.required(sessionId, "sessionId"),
+                Fields.required(detail, "detail"));
     }
 
     public String obligationId() {

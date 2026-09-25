@@ -47,13 +47,13 @@ public final class AttachRow {
                                Endpoint producer, String correlationId,
                                String pairedBy) {
         return new AttachRow(Fields.text(sessionId, "sessionId"),
-                Fields.sequence(seq, "seq"),
+                Fields.nonNegative(seq, "seq"),
                 Fields.required(endpoint, "endpoint"),
                 Fields.text(symbol, "symbol"),
                 Fields.text(javaType, "javaType"),
-                Fields.stated(arrival, "arrival"), answered,
+                Fields.required(arrival, "arrival"), answered,
                 Fields.optional(answeredValue), producer,
-                Fields.stated(correlationId, "correlationId"),
+                Fields.required(correlationId, "correlationId"),
                 Fields.optional(pairedBy));
     }
 

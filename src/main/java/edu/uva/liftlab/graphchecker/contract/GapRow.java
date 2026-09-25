@@ -27,7 +27,7 @@ public final class GapRow {
         return new GapRow(Fields.text(sessionId, "sessionId"),
                 Fields.required(kind, "kind"), Fields.required(cls, "cls"),
                 Fields.text(subject, "subject"),
-                Fields.stated(detail, "detail"));
+                Fields.required(detail, "detail"));
     }
 
     public String sessionId() {

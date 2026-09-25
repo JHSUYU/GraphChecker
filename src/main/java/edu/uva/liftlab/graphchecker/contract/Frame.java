@@ -23,7 +23,7 @@ public final class Frame {
             throw new IllegalArgumentException(
                     "a call site carries no '/' or '@': " + callSite);
         }
-        return new Frame(site, Fields.count(iteration, "iteration"));
+        return new Frame(site, Fields.nonNegative(iteration, "iteration"));
     }
 
     /** Reads {@code <callSite>@<iteration>}. */

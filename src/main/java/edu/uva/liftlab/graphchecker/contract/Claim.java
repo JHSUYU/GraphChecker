@@ -31,7 +31,7 @@ public final class Claim {
                            Map<String, String> movedRoots,
                            boolean polarityDecides, List<GapRow> gaps) {
         return new Claim(Fields.required(kind, "kind"),
-                Fields.count(valuationOrdinal, "valuationOrdinal"),
+                Fields.nonNegative(valuationOrdinal, "valuationOrdinal"),
                 Fields.copy(movedRoots), polarityDecides, Fields.copy(gaps));
     }
 
