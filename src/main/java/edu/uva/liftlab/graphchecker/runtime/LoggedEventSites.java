@@ -13,9 +13,9 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.NavigableSet;
+import java.util.NavigableMap;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentSkipListSet;
+import java.util.concurrent.ConcurrentSkipListMap;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
@@ -56,11 +56,23 @@ final class LoggedEventSites {
         if (id < 0L) return;
         Logged logged = new Logged(node);
         LOGGED.putIfAbsent(Long.valueOf(id), logged);
+        OccurrenceAddress performer = RowRuntime.occurrenceAt(
+                activationOf(node, id));
         // Every record that states the site files the event, not only the
         // first to name its id: that one may be a record with no site.
-        if (!logged.states()) return;
-        AT_SITE.computeIfAbsent(logged.activation + "|" + logged.site(write),
-                key -> new ConcurrentSkipListSet<Long>()).add(id);
+        if (performer == null || !logged.states()) return;
+        AT_SITE.computeIfAbsent(group(performer, logged.site(write)),
+                key -> new ConcurrentSkipListMap<Long, Long>())
+                .putIfAbsent(id, activationOf(node, id));
+    }
+
+    /**
+     * An endpoint without its k: the occurrence that performed the event and
+     * its site.  Never the activation: a loop's stores after a folded callee
+     * region returns are stated under that callee's activation, one per turn.
+     */
+    private static String group(OccurrenceAddress performer, String site) {
+        return performer.id() + "|" + site;
     }
 
     /**
@@ -108,9 +120,9 @@ final class LoggedEventSites {
     private static final Map<Long, Logged> LOGGED =
             new ConcurrentHashMap<Long, Logged>();
 
-    /** The logged events of one activation at one site, by event id. */
-    private static final Map<String, NavigableSet<Long>> AT_SITE =
-            new ConcurrentHashMap<String, NavigableSet<Long>>();
+    /** One occurrence's logged events at one site: event id -> activation. */
+    private static final Map<String, NavigableMap<Long, Long>> AT_SITE =
+            new ConcurrentHashMap<String, NavigableMap<Long, Long>>();
 
     /** One {@link #AT_SITE} group ranked: each event's frames and k. */
     private static final class Ranked {
@@ -118,11 +130,12 @@ final class LoggedEventSites {
         private final Map<Long, String> frames = new HashMap<Long, String>();
         private final Map<Long, Integer> ranks = new HashMap<Long, Integer>();
 
-        private Ranked(long activation, NavigableSet<Long> group) {
+        private Ranked(NavigableMap<Long, Long> group) {
             Map<String, Integer> made = new HashMap<String, Integer>();
             int counted = 0;
-            for (Long event : group) {
-                String stood = framesOf(activation, event);
+            for (Map.Entry<Long, Long> logged : group.entrySet()) {
+                Long event = logged.getKey();
+                String stood = framesOf(logged.getValue(), event);
                 String key = stood == null ? "" : stood;
                 Integer k = made.get(key);
                 made.put(key, k == null ? 1 : k + 1);
@@ -203,8 +216,8 @@ final class LoggedEventSites {
 
     /**
      * The site index of one logged event: the frames it stood on, then the
-     * event itself as {@code (site, k)}, k its rank by event id among this
-     * activation's logged events at {@code site} on the same frames -- DEI's
+     * event itself as {@code (site, k)}, k its rank by event id among its
+     * occurrence's logged events at {@code site} on the same frames -- DEI's
      * count per (site, stack).  Counted over every logged event, published
      * or not, so a flip that changes which reads are symbolic moves no k;
      * without it one loop's reads at one bytecode share one endpoint id.
@@ -213,13 +226,14 @@ final class LoggedEventSites {
     static String siteIndex(JsonObject node, String locationKey,
                             long eventId, String site, boolean write) {
         long activation = activationOf(node, eventId);
-        String group = activation + "|" + site;
-        NavigableSet<Long> atSite = AT_SITE.get(group);
+        OccurrenceAddress performer = RowRuntime.occurrenceAt(activation);
+        String group = performer == null ? "" : group(performer, site);
+        NavigableMap<Long, Long> atSite = AT_SITE.get(group);
         Ranked ranked = null;
-        if (atSite != null && atSite.contains(eventId)) {
+        if (atSite != null && atSite.containsKey(eventId)) {
             ranked = RANKED.get(group);
             if (ranked == null || ranked.size != atSite.size()) {
-                ranked = new Ranked(activation, atSite);
+                ranked = new Ranked(atSite);
                 RANKED.put(group, ranked);
             }
         }
