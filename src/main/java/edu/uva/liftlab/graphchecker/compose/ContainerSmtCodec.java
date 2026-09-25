@@ -308,6 +308,7 @@ public final class ContainerSmtCodec {
         }
     }
 
+    /** One {@code ContainerRelation} node, or null once refused by name. */
     public static Term term(JsonObject expression, Host host) {
         // The view states whose bijection this call already stated.
         Set<JsonElement> views = Collections.newSetFromMap(
@@ -325,9 +326,7 @@ public final class ContainerSmtCodec {
                 return state;
             }
             if (arguments.size() != 1) {
-                host.unsupported("ContainerRelation:INDEXED:STATE:arity="
-                        + arguments.size());
-                return null;
+                return unmodeled("INDEXED", operation, arguments, host);
             }
             Term size = host.operand(arguments.get(0), Sort.INT);
             return size == null ? null : new Term(
@@ -350,9 +349,7 @@ public final class ContainerSmtCodec {
         if ("INDEXED".equals(shape) && "NEXT".equals(operation)) {
             JsonArray positions = array(expression, "arguments");
             if (positions.size() != 1) {
-                host.unsupported("ContainerRelation:INDEXED:NEXT:arity="
-                        + positions.size());
-                return null;
+                return unmodeled(shape, operation, positions, host);
             }
             // The element a traversal reads: an indexed ITERATOR is the
             // identity on its state.
@@ -424,9 +421,7 @@ public final class ContainerSmtCodec {
         JsonArray arguments = array(expression, "arguments");
         if (emptiesState(operation)) {
             if (arguments.size() != 0) {
-                host.unsupported("ContainerRelation:" + shape + ":"
-                        + operation + ":arity=" + arguments.size());
-                return null;
+                return unmodeled(shape, operation, arguments, host);
             }
             if ("INDEXED".equals(shape)) {
                 return new Term("(mkIndexedState 0"
@@ -446,139 +441,162 @@ public final class ContainerSmtCodec {
             }
         }
         if ("INDEXED".equals(shape)) {
-            JsonElement receiverIr = expression.get("receiver");
-            boolean preserveReceiver = evidencedContainerIdentity(receiverIr);
-            if ("READ".equals(operation) && arguments.size() == 1
-                    && !preserveReceiver) {
-                JsonElement stored = storedIndexedWrite(receiverIr,
-                        arguments.get(0), javaType);
-                if (stored != null) {
-                    return host.unbox(host.box(stored), javaType);
-                }
-            }
-            if ("SIZE".equals(operation) && !preserveReceiver) {
-                receiverIr = sizePreservingIndexedReceiver(receiverIr);
-            }
-            Term receiver = host.operand(receiverIr, Sort.INDEXED);
-            if (receiver == null) return null;
-            receiver = shared(receiver, host);
-            if (receiver == null) return null;
-            if ("ITERATOR".equals(operation)) return receiver;
-            if ("SIZE".equals(operation)) {
-                return indexedSize(receiverIr, receiver, host);
-            }
-            if ("READ".equals(operation) && arguments.size() == 1) {
-                Term index = host.operand(arguments.get(0), Sort.INT);
-                if (index != null) {
-                    requireIndexedMember(receiver, index, host);
-                }
-                return index == null ? null
-                        : host.unbox(new Term("(indexed_read "
-                        + receiver.text + " " + index.text + ")",
-                        Sort.VALUE), javaType);
-            }
-            if ("WRITE".equals(operation) && arguments.size() == 2) {
-                Term index = host.operand(arguments.get(0), Sort.INT);
-                Term value = host.box(arguments.get(1));
-                return index == null || value == null ? null
-                        : new Term("(indexed_write " + receiver.text + " "
-                        + index.text + " " + value.text + ")",
-                        Sort.INDEXED);
-            }
-            if ("APPEND".equals(operation) && arguments.size() == 1) {
-                Term value = host.box(arguments.get(0));
-                return value == null ? null
-                        : new Term("(indexed_append " + receiver.text + " "
-                        + value.text + ")", Sort.INDEXED,
-                        IntegralWidth.NONE, grown(receiver, 1L));
-            }
-            if ("INSERT".equals(operation) && arguments.size() == 2) {
-                Term index = host.operand(arguments.get(0), Sort.INT);
-                Term value = host.box(arguments.get(1));
-                if (index == null || value == null) return null;
-                return shift(receiver, index, value, host);
-            }
-            if ("REMOVE".equals(operation) && arguments.size() == 1) {
-                Term index = host.operand(arguments.get(0), Sort.INT);
-                if (index == null) return null;
-                return shift(receiver, index, null, host);
-            }
-            // CONTAINS over an indexed container is REFUSED by name: its
-            // only spelling is a quantifier over the element array, outside
-            // the fragment z3 decides ("incomplete quantifiers").
-            if ("IS_EMPTY".equals(operation) && arguments.size() == 0) {
-                return new Term("(= (indexed_size " + receiver.text + ") 0)",
-                        Sort.BOOL);
-            }
-        } else if ("ASSOCIATIVE".equals(shape)) {
-            JsonElement receiverIr = associativeStateExpression(
-                    expression.get("receiver"));
-            Term receiver = associativeState(expression.get("receiver"),
-                    host);
-            if (receiver == null) return null;
-            if ("SIZE".equals(operation)) {
-                return associativeSize(receiver, host);
-            }
-            if ("CONTAINS".equals(operation) && arguments.size() == 1) {
-                Term key = host.box(arguments.get(0));
-                return key == null ? null
-                        : associativeHas(receiver, key, host);
-            }
-            if ("READ".equals(operation) && arguments.size() == 1) {
-                Term key = host.box(arguments.get(0));
-                if (key == null) return null;
-                requireStatedContainerBase(receiverIr, key, host);
-                return host.unbox(associativeRead(receiver, key, host),
-                        javaType);
-            }
-            if ("IS_EMPTY".equals(operation) && arguments.size() == 0) {
-                return new Term("(= " + associativeSize(receiver, host).text
-                        + " 0)", Sort.BOOL);
-            }
-            if ("ITERATOR".equals(operation)
-                    || "ENTRY_VIEW".equals(operation)
-                    || "KEY_VIEW".equals(operation)
-                    || "VALUE_VIEW".equals(operation)) return receiver;
-            if ("PUT".equals(operation) && arguments.size() == 2) {
-                Term key = host.box(arguments.get(0));
-                Term value = host.box(arguments.get(1));
-                return key == null || value == null ? null
-                        : new Term("(assoc_put " + receiver.text + " "
-                        + key.text + " " + value.text + ")",
-                        Sort.ASSOCIATIVE);
-            }
-            if ("REMOVE_AT".equals(operation)
-                    && arguments.size() == 1) {
-                Term index = host.operand(arguments.get(0), Sort.INT);
-                if (index == null) return null;
-                // Removing AT a position is a walk of the same view: which
-                // key the position names is the bijection's to say.
-                if (!requireAssociativeViewBijection(receiverIr, receiver,
-                        host, views)) {
-                    return null;
-                }
-                requireAssociativeMember(receiver, index, host);
-                return new Term("(let ((s " + receiver.text
-                        + ")) (assoc_remove s (assoc_key_at s "
-                        + index.text + ")))", Sort.ASSOCIATIVE);
-            }
-            if ("REMOVE".equals(operation) && arguments.size() == 1) {
-                Term key = host.box(arguments.get(0));
-                return key == null ? null
-                        : new Term("(assoc_remove " + receiver.text + " "
-                        + key.text + ")", Sort.ASSOCIATIVE);
-            }
-            if ("REMOVE_IF".equals(operation) && arguments.size() == 1) {
-                // Drops the key when the guard holds; read/has short-circuit
-                // this via the mutation walk, this handles a nested receiver.
-                Term key = host.box(arguments.get(0));
-                Term guard = host.operand(expression.get("guard"), Sort.BOOL);
-                return key == null || guard == null ? null
-                        : new Term("(let ((s " + receiver.text + ")) (ite "
-                        + guard.text + " (assoc_remove s " + key.text
-                        + ") s))", Sort.ASSOCIATIVE);
+            return indexed(expression, operation, arguments, javaType, host);
+        }
+        if ("ASSOCIATIVE".equals(shape)) {
+            return associative(expression, operation, arguments, javaType,
+                    host, views);
+        }
+        return unmodeled(shape, operation, arguments, host);
+    }
+
+    /** One operation on a list, array or queue state. */
+    private static Term indexed(JsonObject expression, String operation,
+                                JsonArray arguments, String javaType,
+                                Host host) {
+        JsonElement receiverIr = expression.get("receiver");
+        boolean preserveReceiver = evidencedContainerIdentity(receiverIr);
+        if ("READ".equals(operation) && arguments.size() == 1
+                && !preserveReceiver) {
+            JsonElement stored = storedIndexedWrite(receiverIr,
+                    arguments.get(0), javaType);
+            if (stored != null) {
+                return host.unbox(host.box(stored), javaType);
             }
         }
+        if ("SIZE".equals(operation) && !preserveReceiver) {
+            receiverIr = sizePreservingIndexedReceiver(receiverIr);
+        }
+        Term receiver = shared(host.operand(receiverIr, Sort.INDEXED),
+                host);
+        if (receiver == null) return null;
+        if ("ITERATOR".equals(operation)) return receiver;
+        if ("SIZE".equals(operation)) {
+            return indexedSize(receiverIr, receiver, host);
+        }
+        if ("READ".equals(operation) && arguments.size() == 1) {
+            Term index = host.operand(arguments.get(0), Sort.INT);
+            if (index != null) {
+                requireIndexedMember(receiver, index, host);
+            }
+            return index == null ? null
+                    : host.unbox(new Term("(indexed_read "
+                    + receiver.text + " " + index.text + ")",
+                    Sort.VALUE), javaType);
+        }
+        if ("WRITE".equals(operation) && arguments.size() == 2) {
+            Term index = host.operand(arguments.get(0), Sort.INT);
+            Term value = host.box(arguments.get(1));
+            return index == null || value == null ? null
+                    : new Term("(indexed_write " + receiver.text + " "
+                    + index.text + " " + value.text + ")",
+                    Sort.INDEXED);
+        }
+        if ("APPEND".equals(operation) && arguments.size() == 1) {
+            Term value = host.box(arguments.get(0));
+            return value == null ? null
+                    : new Term("(indexed_append " + receiver.text + " "
+                    + value.text + ")", Sort.INDEXED,
+                    IntegralWidth.NONE, grown(receiver, 1L));
+        }
+        if ("INSERT".equals(operation) && arguments.size() == 2) {
+            Term index = host.operand(arguments.get(0), Sort.INT);
+            Term value = host.box(arguments.get(1));
+            if (index == null || value == null) return null;
+            return shift(receiver, index, value, host);
+        }
+        if ("REMOVE".equals(operation) && arguments.size() == 1) {
+            Term index = host.operand(arguments.get(0), Sort.INT);
+            if (index == null) return null;
+            return shift(receiver, index, null, host);
+        }
+        // CONTAINS over an indexed container is REFUSED by name: its
+        // only spelling is a quantifier over the element array, outside
+        // the fragment z3 decides ("incomplete quantifiers").
+        if ("IS_EMPTY".equals(operation) && arguments.size() == 0) {
+            return new Term("(= (indexed_size " + receiver.text + ") 0)",
+                    Sort.BOOL);
+        }
+        return unmodeled("INDEXED", operation, arguments, host);
+    }
+
+    /** One operation on a map or set state. */
+    private static Term associative(JsonObject expression, String operation,
+                                    JsonArray arguments, String javaType,
+                                    Host host, Set<JsonElement> views) {
+        JsonElement receiverIr = associativeStateExpression(
+                expression.get("receiver"));
+        Term receiver = associativeState(expression.get("receiver"),
+                host);
+        if (receiver == null) return null;
+        if ("SIZE".equals(operation)) {
+            return associativeSize(receiver, host);
+        }
+        if ("CONTAINS".equals(operation) && arguments.size() == 1) {
+            Term key = host.box(arguments.get(0));
+            return key == null ? null
+                    : associativeHas(receiver, key, host);
+        }
+        if ("READ".equals(operation) && arguments.size() == 1) {
+            Term key = host.box(arguments.get(0));
+            if (key == null) return null;
+            requireStatedContainerBase(receiverIr, key, host);
+            return host.unbox(associativeRead(receiver, key, host),
+                    javaType);
+        }
+        if ("IS_EMPTY".equals(operation) && arguments.size() == 0) {
+            return new Term("(= " + associativeSize(receiver, host).text
+                    + " 0)", Sort.BOOL);
+        }
+        if ("ITERATOR".equals(operation)
+                || "ENTRY_VIEW".equals(operation)
+                || "KEY_VIEW".equals(operation)
+                || "VALUE_VIEW".equals(operation)) return receiver;
+        if ("PUT".equals(operation) && arguments.size() == 2) {
+            Term key = host.box(arguments.get(0));
+            Term value = host.box(arguments.get(1));
+            return key == null || value == null ? null
+                    : new Term("(assoc_put " + receiver.text + " "
+                    + key.text + " " + value.text + ")",
+                    Sort.ASSOCIATIVE);
+        }
+        if ("REMOVE_AT".equals(operation)
+                && arguments.size() == 1) {
+            Term index = host.operand(arguments.get(0), Sort.INT);
+            if (index == null) return null;
+            // Removing AT a position is a walk of the same view: which
+            // key the position names is the bijection's to say.
+            if (!requireAssociativeViewBijection(receiverIr, receiver,
+                    host, views)) {
+                return null;
+            }
+            requireAssociativeMember(receiver, index, host);
+            return new Term("(let ((s " + receiver.text
+                    + ")) (assoc_remove s (assoc_key_at s "
+                    + index.text + ")))", Sort.ASSOCIATIVE);
+        }
+        if ("REMOVE".equals(operation) && arguments.size() == 1) {
+            Term key = host.box(arguments.get(0));
+            return key == null ? null
+                    : new Term("(assoc_remove " + receiver.text + " "
+                    + key.text + ")", Sort.ASSOCIATIVE);
+        }
+        if ("REMOVE_IF".equals(operation) && arguments.size() == 1) {
+            // Drops the key when the guard holds; read/has short-circuit
+            // this via the mutation walk, this handles a nested receiver.
+            Term key = host.box(arguments.get(0));
+            Term guard = host.operand(expression.get("guard"), Sort.BOOL);
+            return key == null || guard == null ? null
+                    : new Term("(let ((s " + receiver.text + ")) (ite "
+                    + guard.text + " (assoc_remove s " + key.text
+                    + ") s))", Sort.ASSOCIATIVE);
+        }
+        return unmodeled("ASSOCIATIVE", operation, arguments, host);
+    }
+
+    /** An operation this codec has no relation for, refused by name. */
+    private static Term unmodeled(String shape, String operation,
+                                  JsonArray arguments, Host host) {
         host.unsupported("ContainerRelation:" + shape + ":"
                 + operation + ":arity=" + arguments.size());
         return null;
