@@ -55,7 +55,6 @@ public final class ArtifactIO {
                 try {
                     parsed = JsonParser.parseString(line);
                 } catch (RuntimeException malformed) {
-                    if (malformedFormat == null) throw malformed;
                     throw new IOException(format(malformedFormat, path,
                             number), malformed);
                 }
@@ -143,7 +142,7 @@ public final class ArtifactIO {
     public static String sha256(Path path) throws IOException {
         MessageDigest digest = digest();
         byte[] buffer = new byte[8192];
-        try (java.io.InputStream input = Files.newInputStream(path)) {
+        try (InputStream input = Files.newInputStream(path)) {
             int read;
             while ((read = input.read(buffer)) >= 0) {
                 if (read > 0) digest.update(buffer, 0, read);
@@ -153,11 +152,8 @@ public final class ArtifactIO {
     }
 
     public static String sha256(String value) {
-        return sha256(utf8(value == null ? "" : value));
-    }
-
-    public static String sha256(byte[] value) {
-        return hex(digest().digest(value == null ? new byte[0] : value));
+        return hex(digest().digest((value == null ? "" : value)
+                .getBytes(StandardCharsets.UTF_8)));
     }
 
     /**
@@ -174,10 +170,6 @@ public final class ArtifactIO {
     public static Path sibling(Path path, String name) {
         Path parent = path.toAbsolutePath().getParent();
         return parent == null ? Paths.get(name) : parent.resolve(name);
-    }
-
-    private static byte[] utf8(String value) {
-        return value.getBytes(StandardCharsets.UTF_8);
     }
 
     private static MessageDigest digest() {

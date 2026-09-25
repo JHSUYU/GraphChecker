@@ -7,7 +7,6 @@ import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Term;
 import edu.uva.liftlab.graphchecker.contract.Arm;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
-import edu.uva.liftlab.graphchecker.contract.ExportRow;
 import edu.uva.liftlab.graphchecker.contract.Family;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
@@ -293,12 +292,7 @@ final class ComposedFamilies {
 
     /** One message's identity: the leaves it was received at. */
     private static String groupId(List<AttachRow> leaves) {
-        List<String> ids = new ArrayList<String>();
-        for (AttachRow attach : leaves) {
-            if (!ids.contains(attach.endpoint().id())) {
-                ids.add(attach.endpoint().id());
-            }
-        }
+        List<String> ids = endpointIds(leaves);
         Collections.sort(ids);
         return String.join("|", ids);
     }
@@ -542,8 +536,7 @@ final class ComposedFamilies {
                                 List<String> nestedStated,
                                 Set<String> closedProducers, int depth) {
         List<GapRow> local = new ArrayList<GapRow>();
-        SmtLowering.SessionJoin rows =
-                SmtLowering.joinOf(corpus.session(session));
+        SmtLowering.SessionJoin rows = composer.join(session);
         lowering.begin(session, rows, corpus.expressions(session));
         List<String> conjuncts = new ArrayList<String>();
         boolean stated = true;
@@ -938,13 +931,9 @@ final class ComposedFamilies {
     }
 
     /**
-     * One export's expression, lowered in its OWN session's scope: its
+     * One row's expression, lowered in its OWN session's scope: its
      * identities and reads belong to that execution, not the consumer's.
      */
-    Term lower(String session, ExportRow export, String origin) {
-        return lower(session, export.expressionRef(), origin);
-    }
-
     Term lower(String session, String expressionRef, String origin) {
         SessionReader reader = corpus.session(session);
         if (reader == null) return null;
@@ -957,8 +946,8 @@ final class ComposedFamilies {
                             + "its session's table does not hold");
             return null;
         }
-        lowering.begin(session,
-                SmtLowering.joinOf(corpus.session(session)));
+        lowering.begin(session, composer.join(session),
+                reader.expressions());
         Term value = lowering.dispatch(expression, null, origin);
         List<String> refused = new ArrayList<String>(
                 lowering.openRefusals());

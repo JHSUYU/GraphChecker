@@ -6,7 +6,6 @@ import com.google.gson.JsonObject;
 import java.util.function.Predicate;
 import java.util.regex.Pattern;
 
-import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
@@ -24,33 +23,14 @@ public final class VmExpressionIr {
     /** Persisted reference to one replay-independent boundary family. */
     public static final String CONSUMER_BOUNDARY_REFERENCE_TYPE =
             "ConsumerBoundaryReference";
-    static final String RPC_ATTACH = "RPC_ATTACH";
-    static final String FIELD_READ = "FIELD_READ";
-    static final String BOUNDARY_KIND = "boundaryKind";
-    static final String EVENT_ID = "eventId";
-    static final String TOPOLOGY_EPOCH = "topologyEpoch";
     public static final String EXPRESSION = "expression";
 
-    /**
-     * Exact serialization of {@code InstanceSymbolExp} (allocated oop plus
-     * its positive rid).  Field roots {@code M_L_field_*} must not match.
-     */
-    private static final Pattern ALLOCATED_INSTANCE_REFERENCE =
-            Pattern.compile("^M_L'[^']+'_([1-9][0-9]*)$");
-
-    /**
-     * Exact serialization of {@code ArraySymbolExp}; the final number is the
-     * array-state version, not an identity.
-     */
-    private static final Pattern ALLOCATED_ARRAY_REFERENCE =
-            Pattern.compile("^A(?:[ZBCSIJFDL]|\\[)_([1-9][0-9]*)-([0-9]+)$");
     /** Runtime-evidence identity assigned to one propagated map state. */
     private static final Pattern CANONICAL_MAP_STATE_REFERENCE =
             Pattern.compile("^MAP_STATE\\.v1\\.[0-9a-f]{64}$");
 
     /** One exact VM value root: the symbol the VM minted for one site. */
     private static final String SYMBOL_TYPE = "SymbolExpression";
-    /** A VM read that named the write it read from. */
 
     private VmExpressionIr() {
     }

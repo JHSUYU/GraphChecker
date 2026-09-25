@@ -5,7 +5,6 @@ import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import java.util.ArrayList;
 import java.util.ArrayDeque;
 import java.util.Arrays;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.LinkedHashMap;
@@ -13,6 +12,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.function.Predicate;
 
 /**
@@ -38,22 +38,6 @@ public final class SmtNames {
             if (!hex) return false;
         }
         return true;
-    }
-
-    /** Whether one symbol occurs in a term as a symbol, not a substring. */
-    public static boolean mentions(String term, String symbol) {
-        if (term == null || symbol == null || symbol.isEmpty()) return false;
-        int at = term.indexOf(symbol);
-        while (at >= 0) {
-            boolean before = at == 0
-                    || !symbolCharacter(term.charAt(at - 1));
-            int end = at + symbol.length();
-            boolean after = end >= term.length()
-                    || !symbolCharacter(term.charAt(end));
-            if (before && after) return true;
-            at = term.indexOf(symbol, at + 1);
-        }
-        return false;
     }
 
     /**
@@ -169,7 +153,9 @@ public final class SmtNames {
      */
     public static List<String> names(String text) {
         List<String> names = new ArrayList<String>();
-        pass(text, Collections.<String, String>emptyMap(), names);
+        for (String token : tokens(text)) {
+            if (name(token)) names.add(token);
+        }
         return names;
     }
 
@@ -188,25 +174,22 @@ public final class SmtNames {
             // (let  ((name term) (name term))  body
             //       ^ the binding list opens here
             int index = at + 1;
-            if (index >= tokens.size() || !"(".equals(tokens.get(index))) {
+            if (index >= tokens.size() || !OPEN.equals(tokens.get(index))) {
                 continue;
             }
             int depth = 0;
             for (; index < tokens.size(); index++) {
                 String token = tokens.get(index);
-                if ("(".equals(token)) {
+                if (OPEN.equals(token)) {
                     depth++;
                     // Depth 2 is a binding pair, and its next token names it.
-                    if (depth == 2 && index + 1 < tokens.size()) {
-                        String name = tokens.get(index + 1);
-                        if (name(name) && !"(".equals(name)
-                                && !")".equals(name)) {
-                            bound.add(name);
-                        }
+                    if (depth == 2 && index + 1 < tokens.size()
+                            && name(tokens.get(index + 1))) {
+                        bound.add(tokens.get(index + 1));
                     }
                     continue;
                 }
-                if (")".equals(token)) {
+                if (CLOSE.equals(token)) {
                     depth--;
                     if (depth <= 0) break;
                 }
@@ -215,43 +198,19 @@ public final class SmtNames {
         return bound;
     }
 
-    /** The text as parentheses and names, in order. */
+    /** The text's tokens and parentheses, in order. */
     private static List<String> tokens(String text) {
         List<String> tokens = new ArrayList<String>();
-        int index = 0;
-        while (index < text.length()) {
-            char value = text.charAt(index);
-            if (value == '"' || value == '|') {
-                int end = pastLiteral(text, index, value);
-                tokens.add(text.substring(index, end));
-                index = end;
-                continue;
-            }
-            if (value == ';') {
-                int end = text.indexOf('\n', index);
-                index = end < 0 ? text.length() : end;
-                continue;
-            }
-            if (value == '(' || value == ')') {
-                tokens.add(String.valueOf(value));
-                index++;
-                continue;
-            }
-            if (Character.isWhitespace(value)) {
-                index++;
-                continue;
-            }
-            int start = index;
-            while (index < text.length()
-                    && !Character.isWhitespace(text.charAt(index))
-                    && text.charAt(index) != '(' && text.charAt(index) != ')'
-                    && text.charAt(index) != '"' && text.charAt(index) != ';') {
-                index++;
-            }
-            tokens.add(text.substring(start, index));
-        }
+        pass(text, KEEP, tokens, Spelling.AS_WRITTEN);
         return tokens;
     }
+
+    /**
+     * How {@link #tokens} spells a parenthesis: no token contains a bar, so
+     * neither equals a token, and {@link #name} reads neither as a name.
+     */
+    private static final String OPEN = "|(";
+    private static final String CLOSE = "|)";
 
     /** The free names of a term: {@link #names} minus {@link #BUILTIN}. */
     public static Set<String> symbols(String text, Set<String> into) {
@@ -270,17 +229,29 @@ public final class SmtNames {
     public static String rename(String text, Map<String, String> renames,
                                 Predicate<String> stated,
                                 Set<String> unknown) {
-        Set<String> named = new LinkedHashSet<String>();
-        String out = pass(text, renames, named);
+        List<String> kept = new ArrayList<String>();
+        String out = pass(text, renames::get, kept, Spelling.AS_WRITTEN);
         if (text != null && !text.contains("(let ")) {
-            for (String name : named) {
-                if (BUILTIN.contains(name)) continue;
+            for (String name : kept) {
+                if (!name(name) || BUILTIN.contains(name)) continue;
                 if (stated != null && stated.test(name)) continue;
                 unknown.add(name);
             }
         }
         return out.trim();
     }
+
+    /**
+     * The text with each name {@code renames} answers for replaced (null
+     * keeps it), asked once per occurrence in text order.
+     */
+    public static String substitute(String text,
+                                    Function<String, String> renames) {
+        return pass(text, renames, null, Spelling.AS_WRITTEN);
+    }
+
+    /** Renames nothing. */
+    private static final Function<String, String> KEEP = token -> null;
 
     /** How the one tokenizer spells the names it copies through. */
     private enum Spelling {
@@ -290,13 +261,14 @@ public final class SmtNames {
         LEGAL
     }
 
-    private static String pass(String text, Map<String, String> renames,
-                               Collection<String> named) {
-        return pass(text, renames, named, Spelling.AS_WRITTEN);
-    }
-
-    private static String pass(String text, Map<String, String> renames,
-                               Collection<String> named, Spelling spelling) {
+    /**
+     * THE tokenizer: the text copied with each name {@code renames} answers
+     * for replaced.  {@code kept}, if not null, gets every token not
+     * replaced and every parenthesis, in order.  String literals and
+     * comments are copied whole.
+     */
+    private static String pass(String text, Function<String, String> renames,
+                               List<String> kept, Spelling spelling) {
         StringBuilder out = new StringBuilder();
         if (text == null) return "";
         int index = 0;
@@ -319,11 +291,13 @@ public final class SmtNames {
                 int end = pastLiteral(text, index, '|');
                 String token = text.substring(index + 1,
                         Math.max(index + 1, end - 1));
-                index = emit(out, text, index, end, token, renames, named,
+                index = emit(out, text, index, end, token, renames, kept,
                         Spelling.AS_WRITTEN);
                 continue;
             }
             if (!symbolCharacter(value)) {
+                if (kept != null && value == '(') kept.add(OPEN);
+                if (kept != null && value == ')') kept.add(CLOSE);
                 out.append(value);
                 index++;
                 continue;
@@ -334,7 +308,7 @@ public final class SmtNames {
                 end++;
             }
             index = emit(out, text, index, end, text.substring(index, end),
-                    renames, named, spelling);
+                    renames, kept, spelling);
         }
         return out.toString();
     }
@@ -346,19 +320,15 @@ public final class SmtNames {
      */
     private static int emit(StringBuilder out, String text, int start,
                             int end, String token,
-                            Map<String, String> renames,
-                            Collection<String> named, Spelling spelling) {
-        if (!name(token)) {
-            append(out, text, start, end, token, spelling);
-            return end;
-        }
-        String renamed = renames.get(token);
+                            Function<String, String> renames,
+                            List<String> kept, Spelling spelling) {
+        String renamed = name(token) ? renames.apply(token) : null;
         if (renamed != null) {
             out.append(renamed);
             return end;
         }
         append(out, text, start, end, token, spelling);
-        named.add(token);
+        if (kept != null) kept.add(token);
         return end;
     }
 
@@ -383,13 +353,14 @@ public final class SmtNames {
     /**
      * Whether one token is a NAME, not a value: numerals and
      * {@code #x}/{@code #b} literals are values, though
-     * {@link #symbolCharacter} admits {@code #}.
+     * {@link #symbolCharacter} admits {@code #}.  No token starts with a
+     * bar, so {@link #OPEN} and {@link #CLOSE} are not names.
      */
     private static boolean name(String token) {
         if (token.isEmpty()) return false;
         char first = token.charAt(0);
         return !Character.isDigit(first) && first != '-' && first != '.'
-                && first != '#';
+                && first != '#' && first != '|';
     }
 
     /**
@@ -450,8 +421,7 @@ public final class SmtNames {
      */
     public static String legalSymbols(String query) {
         if (query == null || query.isEmpty()) return query;
-        return pass(query, Collections.<String, String>emptyMap(),
-                new ArrayList<String>(), Spelling.LEGAL);
+        return pass(query, KEEP, null, Spelling.LEGAL);
     }
 
     /** Whether SMT-LIB already spells this token the way it is written. */

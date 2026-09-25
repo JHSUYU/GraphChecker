@@ -53,33 +53,11 @@ public final class ComposeMain {
     }
 
     public static void main(String[] argv) throws IOException {
-        Arguments arguments = Arguments.parse(argv);
-        Result result = run(arguments);
-        System.out.println(result.summary);
+        System.out.println(run(Arguments.parse(argv)));
     }
 
-    /** What one run wrote, for a caller inside the JVM. */
-    public static final class Result {
-        public final Path smt2;
-        public final Path manifest;
-        public final Path claim;
-        public final CompositionManifest composed;
-        public final ClaimPolicy.Decision decision;
-        public final String summary;
-
-        Result(Path smt2, Path manifest, Path claim,
-               CompositionManifest composed, ClaimPolicy.Decision decision,
-               String summary) {
-            this.smt2 = smt2;
-            this.manifest = manifest;
-            this.claim = claim;
-            this.composed = composed;
-            this.decision = decision;
-            this.summary = summary;
-        }
-    }
-
-    public static Result run(Arguments arguments) throws IOException {
+    /** Writes the query, the manifest and the claim; answers one summary line. */
+    static String run(Arguments arguments) throws IOException {
         // Root domains are read once, here, and handed to the composer only.
         Corpus corpus = Corpus.read(arguments.iteration, null);
         OccurrenceAddress anchor = anchorOf(arguments.anchor, corpus);
@@ -98,11 +76,9 @@ public final class ComposeMain {
                 decision.claim(), arguments.output.toString());
         write(arguments.manifest,
                 manifest(composed, composition, decision, solver));
-        Path claimPath = arguments.manifest.resolveSibling("claim.json");
-        write(claimPath, claim(composition, decision, solver));
-        return new Result(arguments.output, arguments.manifest, claimPath,
-                composed, decision,
-                summary(anchor, composition, decision, solver));
+        write(arguments.manifest.resolveSibling("claim.json"),
+                claim(composition, decision, solver));
+        return summary(anchor, composition, decision, solver);
     }
 
     /**
@@ -196,12 +172,11 @@ public final class ComposeMain {
                 ? "FINAL_READY" : "FINAL_REFUSED");
         row.add("finalStatusRefusals", refusals(decision.claim()));
         row.add("gaps", gaps(composition.gaps()));
-        row.add("solver", solverRows(composition, decision, solver));
+        row.add("solver", solverRows(decision, solver));
         return row;
     }
 
-    private static JsonObject solverRows(Composer.Composition composition,
-                                         ClaimPolicy.Decision decision,
+    private static JsonObject solverRows(ClaimPolicy.Decision decision,
                                          Z3 solver) {
         boolean decided = true;
         boolean anySat = false;
@@ -439,11 +414,10 @@ public final class ComposeMain {
             arguments.iteration = sessions == null ? null
                     : sessions.getParent() == null ? sessions
                     : sessions.getParent();
-            arguments.anchor = text(values, "anchor", "");
+            arguments.anchor = values.getOrDefault("anchor", "");
             arguments.rootDomains = path(values.get("root-domains"));
-            arguments.z3 = values.containsKey("z3")
-                    && !values.get("z3").isEmpty()
-                    ? Paths.get(values.get("z3")) : Paths.get("z3");
+            Path z3 = path(values.get("z3"));
+            if (z3 != null) arguments.z3 = z3;
             arguments.maxValuations = integer(values.get("max-valuations"),
                     64);
             arguments.timeoutMillis = integer(
@@ -464,12 +438,6 @@ public final class ComposeMain {
                         "--output and --manifest are required");
             }
             return arguments;
-        }
-
-        private static String text(Map<String, String> values, String key,
-                                   String absent) {
-            String value = values.get(key);
-            return value == null || value.isEmpty() ? absent : value;
         }
 
         private static Path path(String value) {

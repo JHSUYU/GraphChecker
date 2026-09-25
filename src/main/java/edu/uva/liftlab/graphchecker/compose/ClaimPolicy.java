@@ -83,7 +83,6 @@ public final class ClaimPolicy {
         }
 
         /**
-        /**
          * Arm selector -> the delivery this model rested on; only families
          * the selected path opened have an entry (exactly-one per family).
          */
@@ -255,17 +254,7 @@ public final class ClaimPolicy {
                 if (!asked.answer().sat() || asked.selected() == null) {
                     continue;
                 }
-                Set<String> refused = unattested(composition, asked);
-                if (!refused.isEmpty()) {
-                    gaps.add(GapRow.of(asked.selected().path().sessionId,
-                            GapKind.UNATTESTED_ARM, GapClass.BLOCKING,
-                            refused.toString(),
-                            "this witness moves a root that occurs inside an "
-                                    + "arm no producer path condition "
-                                    + "attests, so it is not a supported "
-                                    + "witness"));
-                    continue;
-                }
+                if (unattested(composition, asked, gaps)) continue;
                 outcomes.set(index, asked);
                 outcomes.set(0, asRecorded);
                 return new Decision(Claim.of(mechanism(composition, solver,
@@ -285,17 +274,7 @@ public final class ClaimPolicy {
                 Outcome outcome = leastClocks(composition, solver, found,
                         cells);
                 outcomes.set(outcomes.indexOf(found), outcome);
-                Set<String> refused = unattested(composition, outcome);
-                if (!refused.isEmpty()) {
-                    gaps.add(GapRow.of(outcome.selected().path().sessionId,
-                            GapKind.UNATTESTED_ARM, GapClass.BLOCKING,
-                            refused.toString(),
-                            "this witness moves a root that occurs inside an "
-                                    + "arm no producer path condition "
-                                    + "attests, so it is not a supported "
-                                    + "witness"));
-                    continue;
-                }
+                if (unattested(composition, outcome, gaps)) continue;
                 // A moved root: #mechanism answers MARKER_FLIPPED or a
                 // narrower replaced slot, never NO_SUPPORTED_WITNESS.
                 ClaimKind moved = mechanism(composition, solver, outcome,
@@ -470,7 +449,7 @@ public final class ClaimPolicy {
             }
         }
         gaps.add(GapRow.of(recorded == null || recorded.selected() == null
-                        ? "composition"
+                        ? Composer.COMPOSITION
                         : recorded.selected().path().sessionId,
                 GapKind.FORMULA_SAT_AT_RECORDED_VALUATION,
                 GapClass.BLOCKING, kind.name(),
@@ -595,11 +574,12 @@ public final class ClaimPolicy {
     }
 
     /**
-     * Moved roots inside an arm whose producer ran concretely: the recording
-     * says nothing of what it would deliver had the root moved.
+     * Whether this witness moves a root inside an arm whose producer ran
+     * concretely (the recording says nothing of what it would deliver had
+     * the root moved); if so it is refused by name.
      */
-    private static Set<String> unattested(Composer.Composition composition,
-                                          Outcome outcome) {
+    private static boolean unattested(Composer.Composition composition,
+                                      Outcome outcome, List<GapRow> gaps) {
         Set<String> refused = new LinkedHashSet<String>();
         for (String interactionId
                 : outcome.selected().interactionIds()) {
@@ -610,7 +590,13 @@ public final class ClaimPolicy {
                 if (roots.contains(moved)) refused.add(moved);
             }
         }
-        return refused;
+        if (refused.isEmpty()) return false;
+        gaps.add(GapRow.of(outcome.selected().path().sessionId,
+                GapKind.UNATTESTED_ARM, GapClass.BLOCKING, refused.toString(),
+                "this witness moves a root that occurs inside an arm no "
+                        + "producer path condition attests, so it is not a "
+                        + "supported witness"));
+        return true;
     }
 
     /**

@@ -45,16 +45,14 @@ public final class Z3 {
         private final String status;
         private final Map<String, String> values;
         private final List<String> core;
-        private final String output;
         private final String reason;
 
         private Answer(String status, Map<String, String> values,
-                       List<String> core, String output, String reason) {
+                       List<String> core, String reason) {
             this.status = status;
             this.values = Collections.unmodifiableMap(values);
             this.core = Collections.unmodifiableList(core);
-            this.output = output;
-            this.reason = reason == null ? "" : reason;
+            this.reason = reason;
         }
 
         /** The first line z3 printed: sat, unsat, unknown, or neither. */
@@ -96,11 +94,6 @@ public final class Z3 {
         /** The names of the conjuncts one unsat answer closed on. */
         public List<String> core() {
             return core;
-        }
-
-        /** Everything z3 printed, for a reader of the run. */
-        public String output() {
-            return output;
         }
 
         @Override
@@ -187,7 +180,7 @@ public final class Z3 {
             reason = parseReason(run(text
                     + "(check-sat)\n(get-info :reason-unknown)\n"));
         }
-        return new Answer(status, values, core, output, reason);
+        return new Answer(status, values, core, reason);
     }
 
     /**

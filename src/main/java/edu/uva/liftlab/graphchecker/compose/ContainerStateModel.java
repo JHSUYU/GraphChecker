@@ -72,15 +72,11 @@ public final class ContainerStateModel {
         return "VRef".equals(kind) ? "" : kind;
     }
 
-    public static String valueKind(String javaType) {
+    /** The {@code Value} constructor a cell of this Java type is boxed by. */
+    private static String valueKind(String javaType) {
         String integral = integralValuePart(javaType, true);
         if (!integral.isEmpty()) return integral;
-        String descriptor = JavaPrimitiveBoxing
-                .primitiveDescriptor(javaType);
-        if (descriptor.isEmpty()) {
-            descriptor = JavaPrimitiveSmtSemantics
-                    .javaTypeDescriptor(javaType);
-        }
+        String descriptor = cellDescriptor(javaType);
         if ("Z".equals(descriptor)) return "VBool";
         if ("F".equals(descriptor)) return "VFloat";
         if ("D".equals(descriptor)) return "VDouble";
@@ -92,14 +88,18 @@ public final class ContainerStateModel {
         return "";
     }
 
-    private static String integralValuePart(
-            String javaType, boolean constructor) {
+    /** A wrapper as the primitive it boxes, anything else as itself. */
+    private static String cellDescriptor(String javaType) {
         String descriptor = JavaPrimitiveBoxing
                 .primitiveDescriptor(javaType);
-        if (descriptor.isEmpty()) {
-            descriptor = JavaPrimitiveSmtSemantics
-                    .javaTypeDescriptor(javaType);
-        }
+        return descriptor.isEmpty()
+                ? JavaPrimitiveSmtSemantics.javaTypeDescriptor(javaType)
+                : descriptor;
+    }
+
+    private static String integralValuePart(
+            String javaType, boolean constructor) {
+        String descriptor = cellDescriptor(javaType);
         String name = "B".equals(descriptor) ? "Byte"
                 : "C".equals(descriptor) ? "Char"
                 : "S".equals(descriptor) ? "Short"
@@ -154,14 +154,8 @@ public final class ContainerStateModel {
                         + " (store (assoc_order s) (assoc_size s) k))"
                         + " (ite (assoc_has s k) (assoc_position s)"
                         + " (store (assoc_position s) k"
-                        + " (assoc_size s)))))"
-                ,
-                associativeRemoveDefinition()
-        ));
-    }
-
-    private static String associativeRemoveDefinition() {
-        return "(define-fun assoc_remove ((s AssocState) (k Value))"
+                        + " (assoc_size s)))))",
+                "(define-fun assoc_remove ((s AssocState) (k Value))"
                 + " AssocState"
                 + " (ite (assoc_has s k)"
                 + " (let ((p (select (assoc_position s) k)))"
@@ -180,7 +174,7 @@ public final class ContainerStateModel {
                 + " (> (select (assoc_position s) q) p))"
                 + " (- (select (assoc_position s) q) 1)"
                 + " (select (assoc_position s) q))))))"
-                + " s))";
+                + " s))"));
     }
 
     public static Term unboxValue(Term value, String javaType, Sort cellSort,

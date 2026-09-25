@@ -145,38 +145,12 @@ public final class JavaPrimitiveSmtSemantics {
         return descriptor.length() == 1 && "ZBCSIJFD".contains(descriptor);
     }
 
-    /** {@code {min, max}} of one integral type, or null (boolean too). */
-    public static BigInteger[] integralRange(String javaType) {
-        String descriptor = javaTypeDescriptor(javaType);
-        if ("B".equals(descriptor)) {
-            return range(Byte.MIN_VALUE, Byte.MAX_VALUE);
-        }
-        if ("C".equals(descriptor)) {
-            return range(0, Character.MAX_VALUE);
-        }
-        if ("S".equals(descriptor)) {
-            return range(Short.MIN_VALUE, Short.MAX_VALUE);
-        }
-        if ("I".equals(descriptor)) {
-            return range(Integer.MIN_VALUE, Integer.MAX_VALUE);
-        }
-        if ("J".equals(descriptor)) {
-            return range(Long.MIN_VALUE, Long.MAX_VALUE);
-        }
-        return null;
-    }
-
-    private static BigInteger[] range(long minimum, long maximum) {
-        return new BigInteger[] {BigInteger.valueOf(minimum),
-                BigInteger.valueOf(maximum)};
-    }
-
     public static IntegralWidth widthOfJavaType(String javaType) {
         IntegralDomain domain = domainOfJavaType(javaType);
         return domain == null ? IntegralWidth.NONE : domain.width;
     }
 
-    static FloatingKind floatingKindOfJavaType(String javaType) {
+    private static FloatingKind floatingKindOfJavaType(String javaType) {
         String type = normalize(javaType);
         if ("F".equals(type) || "java.lang.Float".equals(type)) {
             return FloatingKind.JAVA_FLOAT;
@@ -196,7 +170,7 @@ public final class JavaPrimitiveSmtSemantics {
         // An absurdly long run is no value any execution produced.
         if (text.isEmpty() || text.length() > 1024) return "";
         try {
-            java.math.BigInteger number = new java.math.BigInteger(text);
+            BigInteger number = new BigInteger(text);
             return number.signum() < 0
                     ? "(- " + number.negate() + ")" : number.toString();
         } catch (NumberFormatException notAnInteger) {

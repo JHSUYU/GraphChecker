@@ -21,14 +21,7 @@ public final class SmtSymbolTable {
 
     /** {@code prefix} followed by the first {@code length} digest digits. */
     public String mint(String prefix, String identity, int length) {
-        return mintFromDigest(prefix, ArtifactIO.sha256(identity),
-                identity, length);
-    }
-
-    /** The same name, for a caller that already holds the full digest. */
-    public String mintFromDigest(String prefix, String digest, String identity,
-                          int length) {
-        String name = prefix + digest.substring(0, length);
+        String name = prefix + ArtifactIO.digest(identity, length);
         String held = minted.putIfAbsent(name, identity);
         if (held != null && !held.equals(identity)) {
             collisions.put(name, held + " and " + identity);

@@ -1,7 +1,5 @@
 package edu.uva.liftlab.graphchecker.compose;
 
-import edu.uva.liftlab.graphchecker.smt.CanonicalJson;
-
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
@@ -27,30 +25,34 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 /** The single SMT lowering for VM container operations. */
 public final class ContainerSmtCodec {
     public static final String EXPRESSION_TYPE = "ContainerRelation";
-    /** Member holding one arm's or candidate's value. */
-    private static final String EXPRESSION_MEMBER = "expression";
     private ContainerSmtCodec() {
     }
 
     /**
-     * The version a read node observed, as a one-element list: a read inside
-     * one replay has one answer.
+     * The version a read node observed (a read inside one replay has one
+     * answer), or null when it states none.
      */
-    private static JsonArray readVersions(JsonObject read) {
+    private static JsonObject observedVersion(JsonObject read) {
         JsonObject observed = JsonFields.object(read,
                 VmRows.OBSERVED_VERSION);
-        JsonArray versions = new JsonArray();
-        if (observed.size() > 0) versions.add(observed);
-        return versions;
+        return observed.size() == 0 ? null : observed;
     }
 
-    /** Writes the projected version back as the read's observedVersion. */
-    private static void putVersions(JsonObject projected,
-                                    JsonArray versions) {
-        projected.add(VmRows.OBSERVED_VERSION,
-                versions.get(0));
+    /**
+     * The read with its observed version's expression replaced and its Java
+     * type restated; the rest is shared, never cloned (nobody writes it).
+     */
+    private static JsonObject projectedRead(JsonObject read,
+                                            JsonObject observed,
+                                            JsonElement expression,
+                                            String javaType) {
+        JsonObject version = JsonFields.shallowCopy(observed);
+        version.add(VmExpressionIr.EXPRESSION, expression);
+        JsonObject projected = JsonFields.shallowCopy(read);
+        projected.addProperty("_java_type", javaType);
+        projected.add(VmRows.OBSERVED_VERSION, version);
+        return projected;
     }
-
 
     public static boolean handles(JsonElement expression) {
         return expression != null && expression.isJsonObject()
@@ -183,9 +185,9 @@ public final class ContainerSmtCodec {
      * Whether a container receiver's identity is evidenced at runtime, not
      * built by this encoder.  Select-over-store and the size receiver skip
      * are exact in value but would drop the published version chain (and its
-     * read-from arms) out of the formula, so a host keeps such a carrier.
+     * read-from arms) out of the formula, so such a carrier is kept.
      */
-    public static boolean evidencedContainerIdentity(JsonElement expression) {
+    private static boolean evidencedContainerIdentity(JsonElement expression) {
         if (expression == null || !expression.isJsonObject()) return false;
         JsonObject node = expression.getAsJsonObject();
         if (VmRows.GUARDED_READ_TYPE.equals(
@@ -237,36 +239,20 @@ public final class ContainerSmtCodec {
                     root.get(VmExpressionIr.EXPRESSION), wanted,
                     selectedJavaType, memo);
             if (selected == null) return null;
-            JsonObject projected = copyWithout(root,
-                    VmExpressionIr.EXPRESSION);
+            JsonObject projected = JsonFields.shallowCopy(root);
             projected.addProperty("_java_type", selectedJavaType);
             projected.add(VmExpressionIr.EXPRESSION, selected);
             return projected;
         }
-        String type = optionalString(root, "_type");
-        boolean read = VmRows.GUARDED_READ_TYPE.equals(type);
-        if (read) {
-            JsonArray arms = readVersions(root);
-            if (arms.size() == 0) return null;
-            JsonObject projected = copyWithout(root, VmRows.OBSERVED_VERSION);
-            projected.addProperty("_java_type", selectedJavaType);
-            JsonArray projectedArms = new JsonArray();
-            for (JsonElement element : arms) {
-                if (!element.isJsonObject()) return null;
-                JsonObject arm = element.getAsJsonObject();
-                if (arm.get("expression") == null) {
-                    return null;
-                }
-                JsonElement selected = storedIndexedWrite(
-                        arm.get("expression"), wanted, selectedJavaType,
-                        memo);
-                if (selected == null) return null;
-                JsonObject projectedArm = copyWithout(arm, "expression");
-                projectedArm.add("expression", selected);
-                projectedArms.add(projectedArm);
-            }
-            putVersions(projected, projectedArms);
-            return projected;
+        if (VmRows.GUARDED_READ_TYPE.equals(optionalString(root, "_type"))) {
+            JsonObject observed = observedVersion(root);
+            JsonElement written = observed == null ? null
+                    : observed.get(VmExpressionIr.EXPRESSION);
+            if (written == null) return null;
+            JsonElement selected = storedIndexedWrite(written, wanted,
+                    selectedJavaType, memo);
+            return selected == null ? null : projectedRead(root, observed,
+                    selected, selectedJavaType);
         }
         JsonElement cursor = receiver;
         while (cursor != null && cursor.isJsonObject()) {
@@ -289,21 +275,6 @@ public final class ContainerSmtCodec {
         // A local WRITE prefix may itself rest on a propagated array family.
         return cursor == receiver ? null
                 : storedIndexedWrite(cursor, wanted, selectedJavaType, memo);
-    }
-
-    /**
-     * A fresh wrapper over one node's members minus the one being replaced.
-     * The kept members are shared, never cloned: nobody writes through them.
-     */
-    private static JsonObject copyWithout(JsonObject source, String omitted) {
-        JsonObject result = new JsonObject();
-        for (java.util.Map.Entry<String, JsonElement> entry
-                : source.entrySet()) {
-            if (!omitted.equals(entry.getKey())) {
-                result.add(entry.getKey(), entry.getValue());
-            }
-        }
-        return result;
     }
 
     /** Skips the writes a size query cannot observe. */
@@ -485,8 +456,7 @@ public final class ContainerSmtCodec {
         }
         if ("INDEXED".equals(shape)) {
             JsonElement receiverIr = expression.get("receiver");
-            boolean preserveReceiver = host.preserveContainerIdentity(
-                    receiverIr, Sort.INDEXED);
+            boolean preserveReceiver = evidencedContainerIdentity(receiverIr);
             if ("READ".equals(operation) && arguments.size() == 1
                     && !preserveReceiver) {
                 JsonElement stored = storedIndexedWrite(receiverIr,
@@ -712,14 +682,9 @@ public final class ContainerSmtCodec {
 
     private static void requireAssociativeMember(
             Term state, Term index, Host host) {
-        host.require(associativeMemberRequirement(state, index));
-    }
-
-    private static String associativeMemberRequirement(
-            Term state, Term index) {
-        return "(let ((s " + state.text + ") (i " + index.text
+        host.require("(let ((s " + state.text + ") (i " + index.text
                 + ")) (and (<= 0 i) (< i (assoc_size s))"
-                + " (assoc_has s (assoc_key_at s i))))";
+                + " (assoc_has s (assoc_key_at s i))))");
     }
 
     /** Refusal subject for a view whose map size nothing bounds. */
@@ -846,8 +811,8 @@ public final class ContainerSmtCodec {
         Term size = shared(new Term(text, Sort.INT,
                 IntegralWidth.JAVA_INT), host);
         if (size == null) return null;
-        host.require("(and (<= 0 " + size.text + ") (<= " + size.text + " "
-                + domain.upper + "))");
+        host.require(VmTermLowering.integralRange("0", size.text,
+                domain.upper));
         return size;
     }
 
@@ -1075,26 +1040,14 @@ public final class ContainerSmtCodec {
             return "ITERATOR".equals(operation)
                     ? selectedReadViewKind(object.get("receiver")) : "";
         }
-        String type = optionalString(object, "_type");
-        if (!"ReadFromExpression".equals(type)) return "";
-        JsonArray arms = readVersions(object);
-        if (arms.size() == 0) return "";
-        String selected = "";
-        for (JsonElement element : arms) {
-            if (!element.isJsonObject()) return "";
-            JsonObject arm = element.getAsJsonObject();
-            JsonElement armExpression = arm.get("expression");
-            if (armExpression == null || !armExpression.isJsonObject()) {
-                return "";
-            }
-            String candidate = selectedReadViewKind(armExpression);
-            if (candidate.isEmpty()) return "";
-            if (!selected.isEmpty() && !selected.equals(candidate)) {
-                return "";
-            }
-            selected = candidate;
+        if (!VmRows.GUARDED_READ_TYPE.equals(optionalString(object, "_type"))) {
+            return "";
         }
-        return selected;
+        JsonObject observed = observedVersion(object);
+        JsonElement written = observed == null ? null
+                : observed.get(VmExpressionIr.EXPRESSION);
+        return written == null || !written.isJsonObject() ? ""
+                : selectedReadViewKind(written);
     }
 
     /**
@@ -1144,25 +1097,17 @@ public final class ContainerSmtCodec {
             if (result != null) memo.put(expression, result);
             return result;
         }
-        String type = optionalString(object, "_type");
-        if (!"ReadFromExpression".equals(type)) return null;
-        JsonArray arms = readVersions(object);
-        if (arms.size() == 0) return null;
-        JsonObject normalized = JsonFields.shallowCopy(object);
-        normalized.addProperty("_java_type", "java/util/Map");
-        JsonArray normalizedArms = new JsonArray();
-        for (JsonElement element : arms) {
-            if (!element.isJsonObject()) return null;
-            JsonObject arm = element.getAsJsonObject();
-            if (arm.get("expression") == null) return null;
-            JsonElement projectedArm = selectedViewState(
-                    arm.get("expression"), kind, memo);
-            if (projectedArm == null) return null;
-            JsonObject normalizedArm = JsonFields.shallowCopy(arm);
-            normalizedArm.add("expression", projectedArm);
-            normalizedArms.add(normalizedArm);
+        if (!VmRows.GUARDED_READ_TYPE.equals(optionalString(object, "_type"))) {
+            return null;
         }
-        putVersions(normalized, normalizedArms);
+        JsonObject observed = observedVersion(object);
+        JsonElement written = observed == null ? null
+                : observed.get(VmExpressionIr.EXPRESSION);
+        if (written == null) return null;
+        JsonElement state = selectedViewState(written, kind, memo);
+        if (state == null) return null;
+        JsonObject normalized = projectedRead(object, observed, state,
+                "java/util/Map");
         memo.put(expression, normalized);
         return normalized;
     }
@@ -1176,10 +1121,6 @@ public final class ContainerSmtCodec {
         Term state(JsonElement identity, Sort shape);
 
         Term operand(JsonElement expression, Sort expected);
-
-        /** Whether an evidenced identity must survive select-over-store. */
-        boolean preserveContainerIdentity(JsonElement expression,
-                                                  Sort expected);
 
         /** An equivalent name for a pure term, if the encoder shares a DAG. */
         Term share(Term value);

@@ -409,6 +409,16 @@ public final class Composer {
         return slots;
     }
 
+    /** Session -> its state join, indexed once per composition. */
+    private final Map<String, SmtLowering.SessionJoin> joins =
+            new LinkedHashMap<String, SmtLowering.SessionJoin>();
+
+    /** One session's state join, for every conjunction lowered in it. */
+    SmtLowering.SessionJoin join(String session) {
+        return joins.computeIfAbsent(session,
+                id -> SmtLowering.joinOf(corpus.session(id)));
+    }
+
     /** Composes the declared occurrence; a missing one is a claim, not a
      *  crash. */
     public static Composition compose(Corpus corpus,
@@ -661,8 +671,7 @@ public final class Composer {
         String selector = "path_selector__" + ordinal + "__"
                 + ArtifactIO.digest(path.pathId, 10);
         lowering.declare(selector, Sort.BOOL);
-        SmtLowering.SessionJoin rows =
-                SmtLowering.joinOf(corpus.session(session));
+        SmtLowering.SessionJoin rows = join(session);
         lowering.begin(session, rows, corpus.expressions(session));
 
         List<String> terms = new ArrayList<String>();
@@ -706,25 +715,11 @@ public final class Composer {
         stateJoins(session, reached.keySet(), rows, refusals, joined,
                 observed, joins, answered);
 
-        // (4) pi_p: decisions STRICTLY BEFORE the target's seq, polarity
-        //     applied by {@link Arms#pathCondition}.  The anchor decision
-        //     shares the target's seq; including it would contradict phi on
-        //     every healthy path.  Same rule as {@link Arms#wireArms}.
-        List<String> pi = Arms.pathCondition(path.decisions, target.seq());
-        List<DecisionRow> inPi = new ArrayList<DecisionRow>();
-        for (DecisionRow decision : path.decisions) {
-            if (decision.seq() < target.seq()) inPi.add(decision);
-        }
-        for (int index = 0; index < pi.size(); index++) {
-            DecisionRow decision = inPi.get(index);
-            String subject = "decision " + decision.siteId() + "#"
-                    + decision.ordinal();
-            String conjunct = lowering.statedTerm(pi.get(index),
-                    "pi:" + subject);
-            if (!Arms.predicate(conjunct)) continue;
-            if (unknown(conjunct, refusals, subject)) continue;
-            terms.add(conjunct);
-        }
+        // (4) pi_p: decisions STRICTLY BEFORE the target's seq.  The anchor
+        //     decision shares the target's seq; including it would
+        //     contradict phi on every healthy path.
+        terms.addAll(prefix(path.decisions, target.seq(), "decision ",
+                refusals));
 
         // (4b) P3: the prefix of every OTHER occurrence the joins reach,
         //      strictly before the write that reached it: a joined value
@@ -1125,7 +1120,7 @@ public final class Composer {
         if (producer == null) return false;
         for (ExportRow export : arms.attestedExports(producer)) {
             Term delivered = composedFamilies.lower(export.sessionId(),
-                    export, "paired-arm");
+                    export.expressionRef(), "paired-arm");
             if (delivered == null) continue;
             lowering.declareStated(attach.symbol(), delivered.sort);
             return true;
@@ -1251,30 +1246,37 @@ public final class Composer {
      * by the same rule as the anchor's pi; undeclared names are refused.
      */
     List<String> closureConditions(String session,
-                                           Map<String, Long> reached,
-                                           List<GapRow> refusals) {
+                                   Map<String, Long> reached,
+                                   List<GapRow> refusals) {
         List<String> conditions = new ArrayList<String>();
         for (Map.Entry<String, Long> entry : reached.entrySet()) {
             if (anchor.id().equals(entry.getKey())) continue;
             OccurrenceAddress at = corpus.occurrence(entry.getKey());
             if (at == null) continue;
-            long before = entry.getValue().longValue();
-            List<DecisionRow> decisions = corpus.decisionsOf(session, at);
-            List<DecisionRow> inPi = new ArrayList<DecisionRow>();
-            for (DecisionRow decision : decisions) {
-                if (decision.seq() < before) inPi.add(decision);
-            }
-            List<String> pi = Arms.pathCondition(decisions, before);
-            for (int index = 0; index < pi.size(); index++) {
-                DecisionRow decision = inPi.get(index);
-                String subject = "join-pi " + decision.siteId() + "#"
-                        + decision.ordinal();
-                String conjunct = lowering.statedTerm(pi.get(index),
-                        "pi:" + subject);
-                if (!Arms.predicate(conjunct)) continue;
-                if (unknown(conjunct, refusals, subject)) continue;
-                conditions.add(conjunct);
-            }
+            conditions.addAll(prefix(corpus.decisionsOf(session, at),
+                    entry.getValue().longValue(), "join-pi ", refusals));
+        }
+        return conditions;
+    }
+
+    /**
+     * The decisions strictly before {@code before}, polarity applied by
+     * {@link Arms#pathCondition} (the rule {@link Arms#wireArms} uses too),
+     * lowered in the open scope; a term naming an undeclared symbol is
+     * refused by name.
+     */
+    private List<String> prefix(List<DecisionRow> decisions, long before,
+                                String kind, List<GapRow> refusals) {
+        List<String> conditions = new ArrayList<String>();
+        for (DecisionRow decision : decisions) {
+            if (decision.seq() >= before) continue;
+            String subject = kind + decision.siteId() + "#"
+                    + decision.ordinal();
+            String conjunct = lowering.statedTerm(Arms.conjunct(decision),
+                    "pi:" + subject);
+            if (!Arms.predicate(conjunct)) continue;
+            if (unknown(conjunct, refusals, subject)) continue;
+            conditions.add(conjunct);
         }
         return conditions;
     }
@@ -1310,8 +1312,7 @@ public final class Composer {
                 : read.concreteValue().trim();
         if (text.isEmpty()) return false;
         answered.add(read.symbol());
-        Term value = lowering.statedValue(text, read.javaType(),
-                "read-pin:" + read.symbol());
+        Term value = lowering.statedValue(text, read.javaType());
         if (value == null) {
             refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
                     GapClass.DIAGNOSTIC, read.symbol(),
@@ -1853,7 +1854,7 @@ public final class Composer {
      * path is refused by the missing names (a free constant would answer a
      * question the execution never asked).
      */
-    boolean unknown(String term, List<GapRow> refusals,
+    private boolean unknown(String term, List<GapRow> refusals,
                             String subject) {
         List<String> free = new ArrayList<String>();
         // let-bound names are not free.
@@ -1867,11 +1868,9 @@ public final class Composer {
             free.add(token);
         }
         if (free.isEmpty()) return false;
-        if (refusals != null) {
-            refusals.add(GapRow.of(COMPOSITION, GapKind.UNSTATED_VALUE,
-                    GapClass.DIAGNOSTIC, subject,
-                    "this term names symbols nothing declares: " + free));
-        }
+        refusals.add(GapRow.of(COMPOSITION, GapKind.UNSTATED_VALUE,
+                GapClass.DIAGNOSTIC, subject,
+                "this term names symbols nothing declares: " + free));
         return true;
     }
 

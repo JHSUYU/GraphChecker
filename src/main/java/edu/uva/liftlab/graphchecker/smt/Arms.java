@@ -253,7 +253,20 @@ public final class Arms {
      * @param symbol the consumer's own variable for this slot
      */
     public List<Arm> armsAt(Interaction slot, String symbol) {
-        return armsOf(slot, symbol);
+        List<Arm> arms = new ArrayList<Arm>();
+        for (AttachRow paired : rows.attachesOf(slot)) {
+            // R-I2 selection: only a run whose OWN pairing named this
+            // consumer; R-GUARD and R-I5 are the arm's own.
+            String session = paired.sessionId();
+            for (ExportRow export : rows.exportsOf(slot.producer())) {
+                if (!export.sessionId().equals(session)) continue;
+                Arm arm = arm(slot.id(), symbol, session,
+                        slot.producer().occurrence(), export.expressionRef(),
+                        export.seq());
+                if (arm != null) arms.add(arm);
+            }
+        }
+        return arms;
     }
 
     /**
@@ -285,23 +298,6 @@ public final class Arms {
                     slots.put(nested, source.interaction());
                     queue.add(nested);
                 }
-            }
-        }
-        return arms;
-    }
-
-    /** The arms of one slot: R-I2 selection, R-GUARD guard, R-I5 flag. */
-    private List<Arm> armsOf(Interaction slot, String symbol) {
-        List<Arm> arms = new ArrayList<Arm>();
-        for (AttachRow paired : rows.attachesOf(slot)) {
-            // R-I2: only a run whose OWN pairing named this consumer.
-            String session = paired.sessionId();
-            for (ExportRow export : rows.exportsOf(slot.producer())) {
-                if (!export.sessionId().equals(session)) continue;
-                Arm arm = arm(slot.id(), symbol, session,
-                        slot.producer().occurrence(), export.expressionRef(),
-                        export.seq());
-                if (arm != null) arms.add(arm);
             }
         }
         return arms;

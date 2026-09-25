@@ -182,9 +182,6 @@ public final class VmTermLowering {
         }
     }
 
-
-
-
     /** The Java type one VM expression states it evaluates to. */
     public static String expressionJavaType(JsonElement expression) {
         if (expression == null || !expression.isJsonObject()) return "";
@@ -216,8 +213,6 @@ public final class VmTermLowering {
         lines.addAll(ContainerStateModel.preamble());
         return lines;
     }
-
-
 
     /** The conjunction of these predicates, with the trivial ones and the
      *  outer parentheses of a one-element conjunction removed. */
@@ -252,12 +247,6 @@ public final class VmTermLowering {
     public static String integralRange(String lower, String value, String upper) {
         return "(and (<= " + lower + " " + value + ") (<= " + value + " "
                 + upper + "))";
-    }
-
-    /** Java's decimal Integer.toString of one lowered integer. */
-    public static Term javaIntString(Term integer) {
-        return Term.nonNullString("(java_int_to_string " + integer.text + ")",
-                integer.precondition);
     }
 
     /** One lowered VM expression: its SMT text plus its Java-level facts. */
@@ -308,14 +297,10 @@ public final class VmTermLowering {
                     precondition);
         }
 
-        public static Term vm(String text, Sort sort, IntegralWidth integralWidth) {
-            return vm(text, sort, integralWidth, "", "");
-        }
-
-        public static Term vm(String text, Sort sort, IntegralWidth integralWidth,
-                       String stringNullness, String stringReferenceOrigin) {
-            return new Term(text, sort, integralWidth, stringNullness,
-                    stringReferenceOrigin, "true");
+        /** A container codec's value: a String's nullness stays unknown. */
+        public static Term vm(String text, Sort sort,
+                              IntegralWidth integralWidth) {
+            return new Term(text, sort, integralWidth, "", "", "true");
         }
 
         public static Term nonNullString(String text, String precondition) {
