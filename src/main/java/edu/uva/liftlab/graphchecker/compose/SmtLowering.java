@@ -326,10 +326,7 @@ public final class SmtLowering {
         Term value = dispatch(expression, null, "lower:" + expressionRef);
         List<String> refused = new ArrayList<String>(unsupported);
         refused.removeAll(refusalsBefore);
-        if (value == null || !refused.isEmpty()) {
-            return Lowered.refused(refused.isEmpty()
-                    ? "ABSENT_EXPRESSION:" + expressionRef : refused.get(0));
-        }
+        if (!refused.isEmpty()) return Lowered.refused(refused.get(0));
         return new Lowered(value.text, value.sort.smt, "");
     }
 
@@ -377,8 +374,7 @@ public final class SmtLowering {
     /** One reference, lowered in the open session's scope, or "". */
     private String loweredReference(String reference, String origin) {
         ExpressionTable expressions = openTable == null ? table : openTable;
-        JsonObject expression = expressions == null ? null
-                : expressions.expression(reference);
+        JsonObject expression = expressions.expression(reference);
         if (expression == null) {
             refuse(UNSTATED + ":" + reference,
                     "a published term names this expression reference and "
@@ -387,11 +383,6 @@ public final class SmtLowering {
             return "";
         }
         Term value = dispatch(expression, null, origin + ":" + reference);
-        if (value == null) {
-            refuse(UNSTATED + ":" + reference,
-                    "this expression reference lowers to nothing");
-            return "";
-        }
         // The JVM evaluated the term, so its definedness is this
         // conjunction's own fact.
         sideCondition(value.precondition);
@@ -512,9 +503,7 @@ public final class SmtLowering {
     private static Term dependent(Term result, Term... inputs) {
         List<String> values = new ArrayList<String>();
         values.add(result.precondition);
-        for (Term input : inputs) {
-            if (input != null) values.add(input.precondition);
-        }
+        for (Term input : inputs) values.add(input.precondition);
         return result.withPrecondition(and(values));
     }
 
@@ -555,7 +544,7 @@ public final class SmtLowering {
                                             List<Term> evaluated) {
         List<String> values = new ArrayList<String>();
         for (Term value : dereferenced) {
-            if (value == null || value.sort != Sort.STRING) {
+            if (value.sort != Sort.STRING) {
                 values.add("false");
                 continue;
             }
@@ -566,7 +555,7 @@ public final class SmtLowering {
                     : "(not " + nullness + ")");
         }
         for (Term value : evaluated) {
-            values.add(value == null ? "false" : value.precondition);
+            values.add(value.precondition);
         }
         return and(values);
     }
@@ -589,10 +578,9 @@ public final class SmtLowering {
      */
     private void recordedReading(Term value, JsonElement observed,
                                  String origin) {
-        if (value == null) return;
         Term recorded = dispatch(observed, value.sort,
                 origin + ":recorded-reading");
-        if (recorded == null || recorded.sort != value.sort) {
+        if (recorded.sort != value.sort) {
             refuse("RECORDED_READING_SORT:" + origin,
                     "the value this read observed does not lower to the "
                             + "sort the read itself has");
@@ -725,8 +713,7 @@ public final class SmtLowering {
         }
         JsonElement concrete = expression.get("concreteValue");
         if (concrete != null && !concrete.isJsonNull()) {
-            Term pinned = dispatch(concrete, expected, origin + ":pinned");
-            if (pinned != null) return pinned;
+            return dispatch(concrete, expected, origin + ":pinned");
         }
         return unstated("Read:" + key + "@" + version,
                 "no write of this location at this version in this session, "
@@ -740,7 +727,6 @@ public final class SmtLowering {
      * body never names the cell).  A subterm two reads produce carries both.
      */
     private Term observing(Term value, String key, long version) {
-        if (value == null) return value;
         SharedTerm shared = sharedByName.get(value.text);
         if (shared != null) {
             shared.states.addAll(join.readSymbols(key, version));
@@ -795,7 +781,7 @@ public final class SmtLowering {
     private Term element(Term value, JsonObject expression,
                          JsonObject location, String key, long version,
                          Sort expected) {
-        if (value == null || !value.sort.containerState()) return value;
+        if (!value.sort.containerState()) return value;
         String javaType = primitiveString(expression, "_java_type");
         Sort cell = JavaSmtSorts.sortOfJava(javaType);
         // The read IS of the container: the value is what it read.
@@ -903,7 +889,7 @@ public final class SmtLowering {
                         ? Sort.ARRAY_VALUE : Sort.MAP;
                 Term reference = dispatch(identity, Sort.REF,
                         origin + ":container-state");
-                if (reference == null || reference.sort != Sort.REF) {
+                if (reference.sort != Sort.REF) {
                     if (identity != null && identity.isJsonObject()) {
                         String raw = primitiveString(
                                 identity.getAsJsonObject(), "_exp");
@@ -947,8 +933,7 @@ public final class SmtLowering {
                         origin + ":container-operand");
                 // Keep the Java width: shift and bitwise operators are typed
                 // (ISHR is not LSHR) and are ambiguous without it.
-                return value == null ? null : new ContainerSmtCodec.Term(
-                        value.text,
+                return new ContainerSmtCodec.Term(value.text,
                         VmTermLowering.containerSortOf(value.sort),
                         value.integralWidth);
             }
@@ -957,7 +942,6 @@ public final class SmtLowering {
             public ContainerSmtCodec.Term box(JsonElement expression) {
                 Term value = dispatch(expression, null,
                         origin + ":container-value");
-                if (value == null) return null;
                 String javaType =
                         VmTermLowering.expressionJavaType(expression);
                 String boxed = boxed(value, javaType);
@@ -1529,12 +1513,14 @@ public final class SmtLowering {
     // Dispatch.
     // ------------------------------------------------------------------
 
-    /** Lowers one recorded VM expression of any kind. */
+    /**
+     * Lowers one recorded VM expression of any kind.  Never null: a refused
+     * construct is a fresh value of its sort, named in the open refusals.
+     */
     public Term dispatch(JsonElement expression, Sort expected,
                         String origin) {
         Term value = lowered(expression, expected, origin);
-        if (value != null && expression != null
-                && expression.isJsonObject()) {
+        if (expression != null && expression.isJsonObject()) {
             JsonElement observed = expression.getAsJsonObject()
                     .get(VmRows.RECORDED_READING);
             if (observed != null && !observed.isJsonNull()) {
@@ -1568,7 +1554,7 @@ public final class SmtLowering {
         if ("NotExpression".equals(type)) {
             Term operand = dispatch(object.get("_operand"), Sort.BOOL,
                     origin + ":not");
-            if (operand == null || operand.sort != Sort.BOOL) {
+            if (operand.sort != Sort.BOOL) {
                 return refuse(Reason.MALFORMED_NOT, origin, "", Sort.BOOL);
             }
             return result("(not " + operand.text + ")", Sort.BOOL, operand);
@@ -1620,7 +1606,7 @@ public final class SmtLowering {
         Term result = dispatch(expression.get("_res_exp"), null, origin);
         return refuse(Reason.MODEL_SEMANTICS_MISSING, origin,
                 "MethodExpression:" + firstNonBlank(method, "unknown"),
-                result == null ? Sort.VALUE : result.sort);
+                result.sort);
     }
 
     // ------------------------------------------------------------------
@@ -1636,9 +1622,8 @@ public final class SmtLowering {
             return unary(expression, operator, origin);
         }
         Term left = dispatch(leftExpression, null, origin + ":left");
-        Term right = dispatch(expression.get("_right"),
-                left == null ? null : left.sort, origin + ":right");
-        if (left == null || right == null) return null;
+        Term right = dispatch(expression.get("_right"), left.sort,
+                origin + ":right");
         // A JVM reference comparison against the integer 0 is a null test.
         if (left.sort != right.sort && right.isZero()
                 && left.sort == Sort.REF) {
@@ -1693,7 +1678,6 @@ public final class SmtLowering {
                     origin + ":left");
             right = floatingPromotion(right, promoted,
                     origin + ":right");
-            if (left == null || right == null) return null;
         }
         boolean equality = "==".equals(operator) || "!=".equals(operator);
         if (equality && (left.sort == Sort.STRING && right.isNullReference()
@@ -1794,9 +1778,8 @@ public final class SmtLowering {
                        String origin) {
         Term operand = dispatch(expression.get("_right"), null,
                 origin + ":operand");
-        Sort operandSort = operand == null ? Sort.UNKNOWN : operand.sort;
-        if ("-".equals(operator) && operand != null
-                && numeric(operandSort)) {
+        Sort operandSort = operand.sort;
+        if ("-".equals(operator) && numeric(operandSort)) {
             if (operandSort.floating()) {
                 return result(JavaPrimitiveSmtSemantics.floatingNegate(
                         operand.text), operandSort, operand);
@@ -1809,8 +1792,7 @@ public final class SmtLowering {
             return refuse(Reason.AMBIGUOUS_JAVA_INTEGRAL_UNARY_WIDTH, origin,
                     firstNonBlank(operator, "MISSING"), Sort.INT);
         }
-        if ("~".equals(operator) && operand != null
-                && operandSort == Sort.INT
+        if ("~".equals(operator) && operandSort == Sort.INT
                 && operand.integralWidth != IntegralWidth.NONE) {
             return result(JavaPrimitiveSmtSemantics.complement(operand.text,
                     operand.integralWidth), Sort.INT, operand.integralWidth,
@@ -2066,7 +2048,7 @@ public final class SmtLowering {
             }
             Term integer = dispatch(params.get(0), Sort.INT,
                     origin + ":toString");
-            if (integer == null || integer.sort != Sort.INT) {
+            if (integer.sort != Sort.INT) {
                 return codecGap(operation, "NON_INT_TERM", origin,
                         Sort.STRING);
             }
@@ -2090,7 +2072,6 @@ public final class SmtLowering {
                 origin + ":equals:parameter0");
         Term argument = dispatch(params.get(1), null,
                 origin + ":equals:parameter1");
-        if (receiver == null || argument == null) return null;
         if (receiver.sort != Sort.STRING) {
             return codecGap("equals", "NON_STRING_PARAMETER", origin,
                     Sort.BOOL);
@@ -2131,7 +2112,6 @@ public final class SmtLowering {
             // leaf as String.  Check the derived sort instead.
             Term value = dispatch(params.get(index), null,
                     origin + ":" + operation + ":parameter" + index);
-            if (value == null) return new StringParameters(null, null);
             if (value.sort != Sort.STRING) {
                 return new StringParameters(null, codecGap(operation,
                         "NON_STRING_PARAMETER", origin, resultSort));
@@ -2185,7 +2165,7 @@ public final class SmtLowering {
 
     /** Unboxes one container cell by the element's declared Java type. */
     private static Term fromValue(Term value, String javaType) {
-        if (value == null || value.sort != Sort.VALUE) return value;
+        if (value.sort != Sort.VALUE) return value;
         String kind = ContainerStateModel.unboxableCellKind(javaType);
         if (kind.isEmpty()) return value;
         String defined = and(Arrays.asList(value.precondition,

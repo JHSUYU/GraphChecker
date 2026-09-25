@@ -952,7 +952,7 @@ final class ComposedFamilies {
         List<String> refused = new ArrayList<String>(
                 lowering.openRefusals());
         lowering.end();
-        if (value == null || !refused.isEmpty()) {
+        if (!refused.isEmpty()) {
             for (String refusal : refused) {
                 composer.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, refusal,
                         "an arm of this corpus rests on a value the "

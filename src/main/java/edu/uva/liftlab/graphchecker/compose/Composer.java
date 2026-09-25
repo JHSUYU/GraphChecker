@@ -1376,8 +1376,7 @@ public final class Composer {
                 int refusedBefore = lowering.openRefusals().size();
                 Term value = lowering.dispatch(expression, null,
                         "state-join:" + key + "@" + read.observedVersion());
-                if (value != null
-                        && lowering.openRefusals().size() == refusedBefore) {
+                if (lowering.openRefusals().size() == refusedBefore) {
                     lowering.declareStated(read.symbol(), value.sort);
                     joins.put(read.symbol(), "(= " + read.symbol() + " "
                             + value.text + ")");

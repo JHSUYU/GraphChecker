@@ -535,13 +535,12 @@ public final class ContainerSmtCodec {
                 Term key = host.box(arguments.get(0));
                 if (key == null) return null;
                 requireStatedContainerBase(receiverIr, key, host);
-                Term read = associativeRead(receiver, key, host);
-                return read == null ? null : host.unbox(read, javaType);
+                return host.unbox(associativeRead(receiver, key, host),
+                        javaType);
             }
             if ("IS_EMPTY".equals(operation) && arguments.size() == 0) {
-                Term size = associativeSize(receiver, host);
-                return size == null ? null
-                        : new Term("(= " + size.text + " 0)", Sort.BOOL);
+                return new Term("(= " + associativeSize(receiver, host).text
+                        + " 0)", Sort.BOOL);
             }
             if ("ITERATOR".equals(operation)
                     || "ENTRY_VIEW".equals(operation)
@@ -722,20 +721,14 @@ public final class ContainerSmtCodec {
             return false;
         }
         Term size = associativeSize(state, host);
-        if (size == null) return false;
         int bound = put.size();
         Term[] at = new Term[bound];
         for (int position = 0; position < bound; position++) {
             Term key = shared(new Term("(assoc_key_at " + state.text + " "
                     + position + ")", Sort.VALUE), host);
-            Term present = key == null ? null
-                    : associativeHas(state, key, host);
-            Term where = key == null ? null : shared(new Term(
-                    "(select (assoc_position " + state.text + ") "
-                            + key.text + ")", Sort.INT), host);
-            if (key == null || present == null || where == null) {
-                return false;
-            }
+            Term present = associativeHas(state, key, host);
+            Term where = shared(new Term("(select (assoc_position "
+                    + state.text + ") " + key.text + ")", Sort.INT), host);
             at[position] = key;
             host.require("(=> (< " + position + " " + size.text
                     + ") (and " + present.text + " (= " + where.text + " "
@@ -750,9 +743,8 @@ public final class ContainerSmtCodec {
         }
         for (JsonElement each : put) {
             Term key = host.box(each);
-            Term present = key == null ? null
-                    : associativeHas(state, key, host);
-            if (present == null) return false;
+            if (key == null) return false;
+            Term present = associativeHas(state, key, host);
             StringBuilder somewhere = new StringBuilder("(or");
             for (int position = 0; position < bound; position++) {
                 somewhere.append(" (and (< ").append(position).append(' ')
@@ -808,7 +800,6 @@ public final class ContainerSmtCodec {
                 JavaPrimitiveSmtSemantics.domainOfJavaType("I");
         Term size = shared(new Term(text, Sort.INT,
                 IntegralWidth.JAVA_INT), host);
-        if (size == null) return null;
         host.require(VmTermLowering.integralRange("0", size.text,
                 domain.upper));
         return size;
@@ -1010,13 +1001,7 @@ public final class ContainerSmtCodec {
 
     /** Names a pure subterm when the host supports DAG sharing. */
     private static Term shared(Term value, Host host) {
-        if (value == null) return null;
-        Term result = host.share(value);
-        if (result == null || result.sort != value.sort) {
-            host.unsupported("ContainerRelation:shared-term-sort");
-            return null;
-        }
-        return result;
+        return value == null ? null : host.share(value);
     }
 
     private static String selectedReadViewKind(JsonElement expression) {
@@ -1118,7 +1103,7 @@ public final class ContainerSmtCodec {
 
         Term operand(JsonElement expression, Sort expected);
 
-        /** An equivalent name for a pure term, if the encoder shares a DAG. */
+        /** The pure term, or an equivalent name of the same sort for it. */
         Term share(Term value);
 
         Term box(JsonElement expression);
