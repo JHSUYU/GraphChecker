@@ -464,8 +464,7 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
 
     private static String phaseId() {
         return ConfiguredSourcePhaseContract.phaseId(SOURCE_ID,
-                SiteId.of(SOURCE_METHOD, UNIT),
-                ConfiguredSourcePhaseContract.Phase.PUBLISH);
+                SiteId.of(SOURCE_METHOD, UNIT));
     }
 
     /** One executable task row, as the plan carries it. */
@@ -506,8 +505,7 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
         JsonObject encoded = task();
         JsonArray declarations = new JsonArray();
         declarations.add(ConfiguredSourcePhaseContract.declaration(
-                ConfiguredSourcePhaseContract.Phase.PUBLISH, SOURCE_ID,
-                SOURCE_FIELD, SOURCE_METHOD, UNIT));
+                SOURCE_ID, SOURCE_FIELD, SOURCE_METHOD, UNIT));
         JsonArray phases = new JsonArray();
         phases.add(ConfiguredSourcePhaseContract.occurrence(
                 ConfiguredSourcePhaseContract.declarationsOf(declarations)

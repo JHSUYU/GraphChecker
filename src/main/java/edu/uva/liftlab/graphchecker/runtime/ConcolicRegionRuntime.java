@@ -1018,9 +1018,7 @@ public final class ConcolicRegionRuntime {
                 }
                 for (ConfiguredSourcePhaseContract.Occurrence phase
                         : region.activation.configuredSourcePhases) {
-                    if (phase.phase() == ConfiguredSourcePhaseContract
-                            .Phase.PUBLISH
-                            && safe(phase.sourceId()).equals(rootId)) {
+                    if (safe(phase.sourceId()).equals(rootId)) {
                         return true;
                     }
                 }

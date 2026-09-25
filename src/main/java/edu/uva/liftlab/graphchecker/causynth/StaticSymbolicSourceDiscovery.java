@@ -96,7 +96,6 @@ final class StaticSymbolicSourceDiscovery {
                     JsonObject phase;
                     try {
                         phase = ConfiguredSourcePhaseContract.declaration(
-                                ConfiguredSourcePhaseContract.Phase.PUBLISH,
                                 sourceId,
                                 text(declaration.get("fieldSignature")),
                                 signature, unitIndex);

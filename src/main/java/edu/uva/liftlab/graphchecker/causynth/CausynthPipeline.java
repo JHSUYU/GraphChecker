@@ -364,7 +364,6 @@ public final class CausynthPipeline {
                             phase.declarationMethod())
                             || prior.declarationUnitIndex()
                             != phase.declarationUnitIndex()
-                            || prior.phase() != phase.phase()
                             || !prior.sourceId().equals(phase.sourceId())
                             || !prior.fieldSignature().equals(
                             phase.fieldSignature())

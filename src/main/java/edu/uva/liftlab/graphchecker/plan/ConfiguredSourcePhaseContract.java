@@ -51,20 +51,18 @@ public final class ConfiguredSourcePhaseContract {
     private ConfiguredSourcePhaseContract() {
     }
 
-    /** Every phase is a mint site: one fresh symbol for one declared field. */
-    public enum Phase {
-        PUBLISH
-    }
+    /** The one phase: a mint site, one fresh symbol for one declared field. */
+    public static final String PUBLISH = "PUBLISH";
 
     public static JsonObject declaration(
-            Phase phase, String sourceId, String fieldSignature,
+            String sourceId, String fieldSignature,
             String method, int unitIndex) {
         String exactMethod = required(method, "declarationMethod");
         JsonObject row = new JsonObject();
         row.addProperty("schemaVersion", SCHEMA_VERSION);
         row.addProperty("kind", DECLARATION_KIND);
         row.addProperty("authority", DECLARATION_AUTHORITY);
-        row.addProperty("phase", requiredPhase(phase).name());
+        row.addProperty("phase", PUBLISH);
         row.addProperty("sourceId", required(sourceId, "sourceId"));
         row.addProperty("fieldSignature", trimmed(fieldSignature));
         row.addProperty("declarationMethod", exactMethod);
@@ -144,7 +142,7 @@ public final class ConfiguredSourcePhaseContract {
         row.addProperty("schemaVersion", SCHEMA_VERSION);
         row.addProperty("kind", PLAN_KIND);
         row.addProperty("authority", PLAN_AUTHORITY);
-        row.addProperty("phase", declaration.phase().name());
+        row.addProperty("phase", PUBLISH);
         row.addProperty("sourceId", declaration.sourceId());
         row.addProperty("fieldSignature", declaration.fieldSignature());
         row.addProperty("declarationMethod", declaration.method());
@@ -152,7 +150,7 @@ public final class ConfiguredSourcePhaseContract {
                 declaration.declarationUnitIndex());
         row.addProperty("siteId", declaration.siteId());
         row.addProperty("phaseId", phaseId(declaration.sourceId(),
-                declaration.siteId(), declaration.phase()));
+                declaration.siteId()));
         row.addProperty("sourceOccurrenceId", occurrence);
         row.addProperty("eventSeq", runtimeEventSeq);
         row.addProperty("invocationId", runtimeInvocationId);
@@ -177,11 +175,9 @@ public final class ConfiguredSourcePhaseContract {
      * variables, and a flip moves only one of them (hdfs-17960 lost its bug
      * this way).</p>
      */
-    public static String phaseId(String sourceId, String siteId,
-                                 Phase phase) {
+    public static String phaseId(String sourceId, String siteId) {
         String identity = required(sourceId, "sourceId") + "\n"
-                + required(siteId, "siteId") + "\n"
-                + requiredPhase(phase).name();
+                + required(siteId, "siteId") + "\n" + PUBLISH;
         return "SOURCE_PHASE." + UUID.nameUUIDFromBytes(
                 identity.getBytes(StandardCharsets.UTF_8));
     }
@@ -220,12 +216,8 @@ public final class ConfiguredSourcePhaseContract {
 
     /** The hook-site half shared by declaration and occurrence rows. */
     private static Declaration validateHookSite(JsonObject row, String field) {
-        Phase phase;
-        try {
-            phase = Phase.valueOf(required(text(row, "phase"), "phase"));
-        } catch (RuntimeException invalid) {
-            throw new IllegalArgumentException(
-                    field + " has an invalid phase", invalid);
+        if (!PUBLISH.equals(text(row, "phase"))) {
+            throw new IllegalArgumentException(field + " has an invalid phase");
         }
         String sourceId = required(text(row, "sourceId"), "sourceId");
         String signature = text(row, "fieldSignature");
@@ -237,7 +229,7 @@ public final class ConfiguredSourcePhaseContract {
             throw new IllegalArgumentException(
                     field + " has an invalid exact hook site");
         }
-        return new Declaration(phase, sourceId, signature, method, unit);
+        return new Declaration(sourceId, signature, method, unit);
     }
 
     private static Occurrence validateOccurrence(JsonObject row) {
@@ -256,7 +248,7 @@ public final class ConfiguredSourcePhaseContract {
         String phaseId = required(text(row, "phaseId"), "phaseId");
         if (eventSeq <= 0L || invocationId <= 0L
                 || !phaseId.equals(phaseId(declared.sourceId(),
-                declared.siteId(), declared.phase()))) {
+                declared.siteId()))) {
             throw new IllegalArgumentException(
                     PLAN_FIELD + " has an invalid runtime identity");
         }
@@ -298,38 +290,26 @@ public final class ConfiguredSourcePhaseContract {
         return value == (int) value ? (int) value : -1;
     }
 
-    private static Phase requiredPhase(Phase phase) {
-        if (phase == null) {
-            throw new IllegalArgumentException("phase is required");
-        }
-        return phase;
-    }
-
     private static Set<String> names(String... values) {
         return Collections.unmodifiableSet(
                 new LinkedHashSet<>(Arrays.asList(values)));
     }
 
     public static final class Declaration {
-        private final Phase phase;
         private final String sourceId;
         private final String fieldSignature;
         private final String method;
         private final int unitIndex;
         private final String siteId;
 
-        private Declaration(Phase phase, String sourceId,
-                            String fieldSignature, String method,
-                            int unitIndex) {
-            this.phase = phase;
+        private Declaration(String sourceId, String fieldSignature,
+                            String method, int unitIndex) {
             this.sourceId = sourceId;
             this.fieldSignature = fieldSignature;
             this.method = method;
             this.unitIndex = unitIndex;
             this.siteId = SiteId.of(method, unitIndex);
         }
-
-        public Phase phase() { return phase; }
 
         public String sourceId() { return sourceId; }
 
@@ -361,8 +341,6 @@ public final class ConfiguredSourcePhaseContract {
             this.runtimeInvocationId = runtimeInvocationId;
             this.runtimeDeclaredCallee = runtimeDeclaredCallee;
         }
-
-        public Phase phase() { return declared.phase(); }
 
         public String phaseId() { return phaseId; }
 

@@ -305,9 +305,7 @@ final class ActiveRegion {
         String site = context == null ? "" : context.siteId();
         for (ConfiguredSourcePhaseContract.Occurrence candidate
                 : activation.configuredSourcePhases) {
-            if (candidate.phase()
-                    == ConfiguredSourcePhaseContract.Phase.PUBLISH
-                    && candidate.sourceId().equals(safe(sourceId))
+            if (candidate.sourceId().equals(safe(sourceId))
                     && (site.isEmpty()
                     || candidate.siteId().equals(site))) {
                 declaration.add(candidate);

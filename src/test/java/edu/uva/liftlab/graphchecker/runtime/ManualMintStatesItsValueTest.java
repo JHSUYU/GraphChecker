@@ -1076,8 +1076,7 @@ public class ManualMintStatesItsValueTest {
 
     private static String phaseId(String occurrenceId) {
         return ConfiguredSourcePhaseContract.phaseId(SOURCE_ID,
-                SiteId.of(PHASE_METHOD, UNIT),
-                ConfiguredSourcePhaseContract.Phase.PUBLISH);
+                SiteId.of(PHASE_METHOD, UNIT));
     }
 
     /** One executable task row, as the plan carries it. */
@@ -1126,8 +1125,7 @@ public class ManualMintStatesItsValueTest {
         JsonObject encoded = task(REGION, sourceKey, occurrence);
         JsonArray declarations = new JsonArray();
         declarations.add(ConfiguredSourcePhaseContract.declaration(
-                ConfiguredSourcePhaseContract.Phase.PUBLISH, SOURCE_ID,
-                FIELD, PHASE_METHOD, UNIT));
+                SOURCE_ID, FIELD, PHASE_METHOD, UNIT));
         JsonArray phases = new JsonArray();
         phases.add(ConfiguredSourcePhaseContract.occurrence(
                 ConfiguredSourcePhaseContract.declarationsOf(declarations)
