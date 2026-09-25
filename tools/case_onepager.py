@@ -27,22 +27,6 @@ def read_json(path, default=None):
         return default
 
 
-def read_jsonl(path):
-    rows = []
-    try:
-        with open(path, encoding="utf-8") as handle:
-            for line in handle:
-                line = line.strip()
-                if line:
-                    try:
-                        rows.append(json.loads(line))
-                    except ValueError:
-                        pass
-    except OSError:
-        pass
-    return rows
-
-
 def cases(root):
     """Every case directory under `root`, or `root` itself when it is one."""
     if os.path.isdir(os.path.join(root, "schedule")):

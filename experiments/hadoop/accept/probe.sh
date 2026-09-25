@@ -12,9 +12,8 @@
 #
 # "The buggy polarity" is THE ASSIGNMENT THE CLAIM LAYER ACCEPTED, whether or
 # not it moves anything. That is the whole of the rule, and it is not a
-# synonym for "some root flipped". Since fix/root-polarity-labels the claim
-# layer publishes three kinds of accepted witness and two of them move no root
-# at all:
+# synonym for "some root flipped". The claim layer publishes three kinds of
+# accepted witness and two of them move no root at all:
 #
 #   FLIPPED_PLANTED_MARKER          a planted Debug.makeSymbolicBoolean marker
 #                                   moved off what it recorded (17899)
@@ -28,12 +27,11 @@
 #                                   reaches the target)
 #   UNPLANTED_ROOT_MOVED            a root that is not a planted marker moved
 #
-# A probe that hard-wired "buggy = something flipped" read 17960 exactly
-# backwards once the runtime began capturing the configured source's recorded
-# value: it flipped ordered to true, got unsat, and failed a run the claim
-# layer had accepted -- while the formula was right all along (false sat, true
-# unsat). So the accepted assignment is read from result.json and asserted as
-# it stands, and a run that accepted NO witness falls back to
+# A probe that hard-wired "buggy = something flipped" would read 17960 exactly
+# backwards: it would flip ordered to true, get unsat, and fail a run the claim
+# layer accepted while the formula is right (false sat, true unsat). So the
+# accepted assignment is read from result.json and asserted as it stands, and
+# a run that accepted NO witness falls back to
 #
 #   (b) each single-marker flip in turn, which is the question "is this marker
 #       the mechanism" asked once per marker. An experiment may plant more than
@@ -44,12 +42,10 @@
 #
 # A flip is a move off a recorded value, so that fallback needs one: where the
 # manifest states no recorded value for a declared root the probe writes
-# source UNSTATED_RECORDED_VALUE and asks nothing. It used to read an unstated
-# value as true, the same default ClaimPolicy carried, and enumerate flips
-# against it. There was also a step (a) -- a per-case declared polarity, one
-# row, hdfs-17960 = false -- and it is gone with the case table above it: a
-# run whose claim layer accepted nothing is a run the policy refused, and
-# asserting a hard-coded polarity there can only manufacture a PASS.
+# source UNSTATED_RECORDED_VALUE and asks nothing. There is no per-case
+# declared polarity either: a run whose claim layer accepted nothing is a run
+# the policy refused, and asserting a hard-coded polarity there can only
+# manufacture a PASS.
 #
 # The other polarity is the complement of the buggy assignment where the case
 # has a single Boolean root (17960: ordered=true), and the all-recorded
@@ -80,16 +76,6 @@ set -uo pipefail
 ACCEPT_Z3=${Z3_BIN:-z3}
 ACCEPT_Z3_TIMEOUT=${Z3_TIMEOUT_SECONDS:-600}
 
-# The declared-polarity table that used to sit beside this one is gone.  It
-# held one row -- hdfs-17960 = false, from that case's README.md -- as the last
-# resort for a run whose claim layer accepted no witness.  The recorded value
-# is now an observation the manifest carries (roots[].recordedValue), so "what
-# did this root hold" is answered by the recording rather than by a table; and
-# a run whose claim layer accepted nothing is a run the policy refused, where
-# asserting a hard-coded polarity and reporting sat can only manufacture a PASS
-# the evidence did not earn.  A probe that cannot read the recorded value says
-# so (source UNSTATED_RECORDED_VALUE) instead of assuming one.
-
 case_id=${1:?case}; dir=${2:?case dir}; work=${3:?work dir}
 final="$dir/schedule/final"
 C="$final/candidate.smt2"; M="$final/candidate_composition_manifest.json"
@@ -100,9 +86,8 @@ mkdir -p "$work/probe"
 # UNPINNED, which is what the header above says this probe is.  The composer
 # writes the valuation it was asked about into the file it publishes --
 # `(assert (! (= <root> true) :named valuation__<root>))` -- so a probe that
-# kept those pins was asking about ONE valuation and not about the formula:
-# 17960's candidate.smt2 carries ordered=true, which is why `plain` came back
-# unsat, and asserting the other polarity on top of it is unsat whatever the
+# kept those pins would ask about ONE valuation and not about the formula, and
+# asserting the other polarity on top of it would be unsat whatever the
 # formula says.  Each polarity below asserts its own.
 grep -av '^(check-sat' "$C" | grep -av '^(get-value' \
   | grep -av ':named valuation__' >"$work/probe/body.smt2"
@@ -126,24 +111,15 @@ run plain ""
 # Read the accepted assignment out of the claim layer's own output and
 # spell it as asserts.
 #
-# THREE sources of Boolean roots are deleted here, not repaired.  Two were
-# already gone: z3-result.json's roots.booleanInputs (design 3's SOLVE
-# stage writes no such file) and a regex for one case's variable spelling
-# in candidate.smt2.  The third is manifest.booleanRoots, which this probe
-# read until now and which no stage has published since design 3 -- so the
-# probe reported `buggy NO_ROOT / other NO_ROOT` on every run, including
-# the accepted 17960 one.
-#
-# What replaces it is the field the composer DOES publish: manifest.roots,
+# The declared roots are the field the composer publishes: manifest.roots,
 # one {rootId, kind, recordedValue} row per declared root.  recordedValue
-# is the recording's own observation, so recordedRootValues and the
-# configured-source materialization row go with booleanRoots.
+# is the recording's own observation.
 #
-# The question the deleted sources served -- does the recorded valuation
-# refute the recording -- is still ClaimPolicy.polarityDecides, computed by
-# the composer that holds the formula, the domains and the arms.  This
-# probe is a reported signal; it does not gate, and it does not re-derive
-# the composer's answer from its artifacts.
+# Whether the recorded valuation refutes the recording is
+# ClaimPolicy.polarityDecides, computed by the composer that holds the
+# formula, the domains and the arms.  This probe is a reported signal; it
+# does not gate, and it does not re-derive the composer's answer from its
+# artifacts.
 python3 - "$final/result.json" "$M" "$C" "$work/probe" "$case_id" \
          <<'PY'
 import json, os, re, sys
@@ -178,10 +154,7 @@ def assignment_of(ordinal):
 
 # ---- the declared roots, as the manifest PUBLISHES them -------------------
 # One published shape: manifest.roots, one RootDomain row per declared root
-# -- {rootId, kind, recordedValue}.  booleanRoots is what this probe read
-# until now and no stage has published it since design 3; recordedRootValues
-# and configuredSourceMaterializations went with it.  None of the three is
-# replaced by a second source: the kind on the row says which roots are
+# -- {rootId, kind, recordedValue}.  The kind on the row says which roots are
 # Boolean and the row states what the recording read.
 roots = [row for row in (manifest.get("roots") or [])
          if row.get("kind") == "MARKER"]
@@ -199,8 +172,7 @@ for row in roots:
 # them.  The join is CHECKED and not assumed -- each pin's value must be the
 # value valuation 0 states for the root at its own position -- so a probe
 # that cannot line the two up refuses by name instead of asserting over a
-# term it guessed.  (The old regex for one case's variable spelling is not
-# coming back either.)
+# term it guessed.
 PIN = re.compile(r"^\(assert \(! \(= (.+?) (true|false)\) :named valuation__")
 pins = []
 try:

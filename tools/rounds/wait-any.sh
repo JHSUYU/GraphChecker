@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# (moved from ~/gc-out on 2026-09-24; the per-round watcher the launcher pairs with)
+# The per-round watcher the launcher pairs with.
 # wait-any.sh <max-seconds> <seen-file> <round>...: exit on the first new finish/error in any given round
 max=$1; seen=$2; shift 2; touch "$seen"; t=0
 while (( t < max )); do

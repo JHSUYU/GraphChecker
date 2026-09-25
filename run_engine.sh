@@ -56,8 +56,8 @@ trim() {
 # them.  A row is `key  environment-override  flags  default`, where `-` is an
 # absent field and the flags are the three things a key can be: `k` a known
 # workflow key a config file may set, `r` reset at the start of every run, `p`
-# printed by `config`.  Four lists used to state this separately, so a new key
-# could be loadable but never reset, or overridable but never printed.
+# printed by `config`.  One table, so a key cannot be loadable but never
+# reset, or overridable but never printed.
 workflow_config_keys=(
   "campaign_setup_command CAUSYNTH_CAMPAIGN_SETUP_COMMAND krp -"
   "concolic_replay_command CAUSYNTH_CONCOLIC_REPLAY_COMMAND krp -"
@@ -71,9 +71,9 @@ workflow_config_keys=(
   # pool is hosts x workers wide; the wave barrier (collect, gate, plan the
   # next wave) stays on the head.
   #
-  # EMPTY -- the default -- is exactly what this shell did before the key
-  # existed: every worker local, no ssh anywhere.  A host spelled `localhost`
-  # or spelled as this machine's own hostname runs locally too.
+  # EMPTY -- the default -- runs every worker locally, no ssh anywhere.  A
+  # host spelled `localhost` or as this machine's own hostname runs locally
+  # too.
   "campaign_worker_hosts CAUSYNTH_CAMPAIGN_WORKER_HOSTS krp -"
   # The memory, in MB, one obligation takes on the host that runs it: its
   # solver JVM (which loads the session corpus) and its replay JVM together.
@@ -112,10 +112,8 @@ workflow_config_keys=(
   "causynth_communication_mappings CAUSYNTH_COMMUNICATION_MAPPINGS krp -"
   "causynth_loop_bounds CAUSYNTH_LOOP_BOUNDS krp -"
   # The backedge ceiling a retained loop the case did not narrow runs under.
-  # It used to be a constant in LoopBoundPolicy, applied silently to 54 of
-  # hdfs-17960's retained loops, which README LOOP-1 forbids a retained
-  # condition loop doing.  The case states it; every inherited application is
-  # still published as the catalog's DIAGNOSTIC gap row (INHERITED_K_L_<n>).
+  # The case states it (README LOOP-1); every inherited application is
+  # published as the catalog's DIAGNOSTIC gap row (INHERITED_K_L_<n>).
   # No default here: a campaign that states none is refused by name.
   "causynth_loop_default_bound CAUSYNTH_LOOP_DEFAULT_BOUND krp -"
   "causynth_symbolic_inputs CAUSYNTH_SYMBOLIC_INPUTS krp -"
@@ -146,15 +144,12 @@ workflow_config_keys=(
   # Per solver run, in milliseconds.  The composer runs z3 once per
   # valuation while it composes, so this is the budget of one of those runs.
   "solver_timeout_ms CAUSYNTH_SOLVER_TIMEOUT_MS krp -"
-  # The wall clock ONE focused replay may take, in seconds.  The solver had a
-  # budget and the replay had none: on 11741 campaign #4 one replay JVM
-  # deadlocked on two class monitors (Interactions/InteractionRefusals) and
-  # its worker never returned, so campaign_wait_workers held wave 1 open
-  # until accept.sh's own `timeout 21600` killed the campaign six hours
-  # later, discarding every verdict the wave had already reached.  A replay
-  # that exceeds this is that obligation's own NOT_ADMITTED row, not the
-  # wave's death.  Defaulted rather than required: every shipped config
-  # predates the key, and an absent bound is exactly the unbounded wait this
+  # The wall clock ONE focused replay may take, in seconds.  Without it a
+  # replay JVM that deadlocks never returns, campaign_wait_workers holds its
+  # wave open until an outer timeout kills the campaign, and every verdict
+  # the wave already reached is lost.  A replay that exceeds this is that
+  # obligation's own NOT_ADMITTED row, not the wave's death.  Defaulted
+  # rather than required: an absent bound is exactly the unbounded wait this
   # exists to end.
   "replay_timeout_s CAUSYNTH_REPLAY_TIMEOUT_S krp 2400"
   # How many root valuations the composer enumerates around the recorded one.
@@ -210,11 +205,9 @@ load_config_file() {
     [[ "${raw}" == *=* ]] || continue
     key=$(trim "${raw%%=*}")
     value=$(trim "${raw#*=}")
-    # A key this table does not carry is a refusal, not a comment.  It used to
-    # be skipped, so a misspelling -- or a key a stage deletion retired --
-    # stayed in a shipped config and read as a setting that did nothing:
-    # `reach_max_inputs`, `reach_max_valuations` and `causynth_analysis_scope`
-    # all shipped that way in all four case configs.
+    # A key this table does not carry is a refusal, not a comment: skipped, a
+    # misspelling -- or a retired key -- would stay in a shipped config and
+    # read as a setting that did nothing.
     known_config_key "${key}" \
       || die "unknown workflow config key in ${path}: ${key}"
     if [[ ${#value} -ge 2 ]]; then
@@ -582,9 +575,7 @@ do_analyze() {
   # environment happened to reach the JVM: a campaign whose declarations
   # silently failed to arrive would model an 8-body prefix and report nothing
   # about it. The requirement is unconditional, like the target specification
-  # above it -- an unset key used to skip the check entirely, which is exactly
-  # the run this comment claimed to refuse. A configured file that does not
-  # exist is a die, not a fallback.
+  # above it. A configured file that does not exist is a die, not a fallback.
   require_file "loop body bound declarations" "${causynth_loop_bounds}"
   system_properties+=(
     "-Dcausynth.loop.bounds=${causynth_loop_bounds}"
@@ -672,9 +663,7 @@ do_schedule() {
   )
   # PLAN reads the STATIC candidate graph, for one thing: the exact-copy
   # relation a declaration is renamed over, which Soot proved and stamped on
-  # those rows.  It used to read the runtime-refined graph; the other three
-  # things it took from there are static facts of the candidate graph or of
-  # the static scope map, and are read from the map now.
+  # those rows.
   require_file "candidate data-flow graph" "${candidate_graph}"
   args+=(--candidate-graph "${candidate_graph}")
   # The one guard authority's publication: the scheduler reads the fatal arm
@@ -788,11 +777,6 @@ campaign_provenance=""
 # stages is five chances to disagree about one frozen file that is written
 # once and never rewritten.
 campaign_member_rows=""
-# One row per observed occurrence of the annotated target: what COMPOSE
-# composed for it, what SOLVE concluded from that, and what DECIDE elected.
-# COMPOSE writes the rows, SOLVE rewrites them with its own artifact, DECIDE
-# turns them into the published ledger and EMIT copies that ledger into the
-# result.
 
 campaign_log() {
   printf '[campaign] %s\n' "$*"
@@ -814,13 +798,11 @@ campaign_fail() {
 # A count a campaign DECIDES on, read back from an artifact.
 #
 # `[[ "${n}" -eq 0 ]]` is true for an empty string: bash evaluates the word as
-# an arithmetic expression and an empty one is zero.  So every gate of the
-# shape "no blocking gaps, carry on" passed whenever the count could not be
-# read at all -- a jq that printed nothing because the key was absent, a
-# summary file the stage wrote no JSON into, a jq that failed -- and the gate
-# that exists to stop the campaign let it through with the artifact it was
-# reading unreadable.  A count is a decision: an unreadable one is a refusal
-# naming the artifact, never a zero.
+# an arithmetic expression and an empty one is zero.  So a gate of the shape
+# "no blocking gaps, carry on" would pass whenever the count could not be read
+# at all -- an absent key, a summary with no JSON, a jq that failed.  A count
+# is a decision: an unreadable one is a refusal naming the artifact, never a
+# zero.
 #
 # `-eq` is also happy with `1+1`, `x` and `9 -o 1` (bash arithmetic evaluates
 # the word and an unset name is 0), so the test is the spelling of a count and
@@ -838,9 +820,9 @@ campaign_count() {
   esac
 }
 
-# The failure this tree has paid for more than once: a stage exits 0 after
-# writing nothing, and the next stage reports a different, later problem. Every
-# required output is checked for content and the check names the path.
+# A stage can exit 0 after writing nothing, and the next stage then reports a
+# different, later problem. Every required output is checked for content and
+# the check names the path.
 require_nonempty() {
   [[ -s "$2" ]] || die "$1 is missing or empty: $2"
 }
@@ -872,8 +854,8 @@ campaign_require_json() {
 }
 
 # The claim belongs to ClaimPolicy, so a manifest whose solver block carries
-# none is a manifest this stage may not publish a result from: falling back to
-# a shell verdict here is exactly the second gate this change removed.
+# none is a manifest this stage may not publish a result from: a shell verdict
+# here would be a second gate.
 campaign_require_claim() {
   local path=$1
   jq -e '.solver as $r
@@ -974,12 +956,8 @@ campaign_checkout_state() {
             # A CLEAN TREE STATES NO ENTRY, and an empty one is not the
             # repository root.  `printf '%s\n' ""` emits one empty line, awk
             # prints an empty field for it, and `${repo}/` then exists -- so
-            # a clean checkout hashed the WHOLE tree, agent git worktrees and
-            # all.  hdfs-11741 campaign #6: FREEZE ran 15 s while the tree
-            # carried one untracked directory and was still walking several
-            # GB of vendored OpenJDK sources seven minutes after the tree
-            # went clean.  The digest it computed was meaningless too, being
-            # taken over files no commit of this repository contains.
+            # without this skip a clean checkout would hash the WHOLE tree,
+            # vendored sources and agent worktrees included.
             [[ -n "${entry}" ]] || continue
             [[ -e "${repo}/${entry}" ]] || continue
             find "${repo}/${entry}" -type f -print0 | LC_ALL=C sort -z \
@@ -994,9 +972,9 @@ campaign_checkout_state() {
 }
 
 # A stage is a plain command, never the condition of an `if`: a stage wrapped
-# in a condition suppresses errexit for everything it calls, which is how a
-# failed `mvn package` once left a stale fat jar in place while the run
-# continued against binaries that were not the tree's.
+# in a condition suppresses errexit for everything it calls, so a failed
+# `mvn package` inside it would leave a stale fat jar in place and the run
+# would continue against binaries that are not the tree's.
 campaign_stage() {
   local name=$1
   shift
@@ -1049,9 +1027,7 @@ campaign_decode_index_members() {
         and all(.members[]; select(.role == "TARGET") | .targetReachGoal))
     then
       # targetReachGoal is VALIDATED above -- the elected TARGET must have
-      # it -- and not emitted: no consumer of these rows reads it, and the
-      # column leaked into the global scope through two `read -r` lists that
-      # never declared it.
+      # it -- and not emitted: no consumer of these rows reads it.
       .members[]
       | [.role, .campaignId, .regionId, .occurrenceId, .goalId, .taskId]
       | @tsv
@@ -1142,8 +1118,7 @@ require_command_available() {
 #
 # One variable, read in one place (campaign_run_adapter), set by the one
 # caller that has a bound to impose: campaign_obligation_worker, around the
-# focused replay.  SETUP and the SEED replay leave it empty, which is what
-# they had before.
+# focused replay.  SETUP and the SEED replay leave it empty.
 campaign_adapter_timeout_s=""
 
 # What an adapter that outlived its bound exits with.  124 is `timeout`'s own
@@ -1160,10 +1135,10 @@ campaign_adapter_kill_grace_s=30
 # `timeout` is not given --foreground, so it puts itself and the command in a
 # NEW process group and signals that whole group on expiry: the adapter's
 # login shell, the workload's launcher and the replay JVM it forked all
-# receive it, which is the point -- the hung replay of 11741 campaign #4 was
-# a JVM three processes below the worker, and signalling only the shell would
-# have left it running.  Verified on coreutils 8.32: a grandchild of the
-# bounded command is gone when it returns 124.
+# receive it, which is the point -- a hung replay is a JVM several processes
+# below the worker, and signalling only the shell would leave it running.
+# Verified on coreutils 8.32: a grandchild of the bounded command is gone
+# when it returns 124.
 run_under_wall_clock_bound() {
   local seconds=$1
   shift
@@ -1175,19 +1150,16 @@ run_under_wall_clock_bound() {
 #
 # A focused replay stands up a MiniDFSCluster, and the cluster's name
 # directories, edit logs and block files go wherever `test.build.data` and
-# `java.io.tmpdir` point.  Those defaulted to the worker directory, which is
-# on the shared home: with eight concurrent replays that is eight fsync-heavy
-# little filesystems on one NFS mount, and with forty it is forty.
+# `java.io.tmpdir` point.  In the worker directory, on the shared home, every
+# concurrent replay would be one more fsync-heavy little filesystem on one
+# NFS mount.
 #
 # None of those bytes is READ or PUBLISHED by anything downstream.  The
 # evidence a replay produces is its session under ${sessions}/<sessionId>/,
 # its ${worker}/obligation_result.jsonl, its region results and its
 # replay.log -- every one of them written straight to the shared home and
-# none of them under temp/ or data/.  (Checked against 11741 campaign #5b's
-# finished corpus: every replayed worker's temp/ and data/ hold zero files at
-# the end of the run, only the empty directory skeleton MiniDFSCluster left.)
-# So only genuinely temporary bytes move; everything a later stage opens
-# stays exactly where it was.
+# none of them under temp/ or data/.  So only genuinely temporary bytes move;
+# everything a later stage opens stays exactly where it was.
 #
 # The root is per USER and per RUN, because two campaigns may share a
 # cluster, and the per-obligation leaf below makes it per OBLIGATION as well.
@@ -1233,9 +1205,8 @@ campaign_ssh_options=(
 # THE ssh of a campaign: one connection, retried while sshd REFUSES it.
 #
 # A round opens hundreds of connections at once and sshd's MaxStartups
-# closes some during key exchange (v22: "kex_exchange_identification:
-# Connection closed by remote host" on five of nine campaigns, each of which
-# then failed its wave).  A refused connection ran nothing on the far side,
+# closes some during key exchange ("kex_exchange_identification: Connection
+# closed by remote host").  A refused connection ran nothing on the far side,
 # so it is retried with a jittered pause, for campaign_ssh_patience_s; a
 # connection that was made and then failed -- or a command that failed -- is
 # ssh's answer and is returned as it is, never re-run.  Every call site that
@@ -1325,20 +1296,18 @@ campaign_remote_env_assignments() {
 #
 # KILL SAFETY.  A remote JVM must not outlive the campaign, and sshd does not
 # arrange that: with no pty, a remote command whose ssh client dies is simply
-# reparented and keeps running.  Measured on lift12 -- an ssh client killed
-# under a `sleep 500` three processes down left every one of them alive.  Two
-# things are therefore built in here.
+# reparented and keeps running, every process below it included.  Two things
+# are therefore built in here.
 #
 #   1. The payload runs under `timeout`, which (not being given --foreground)
 #      calls setpgid(0,0), so its own pid IS the new process group's id and
 #      one `kill -<pgid>` reaches the replay JVM below it.
 #   2. A watchdog polls this shell's parent.  That parent is the sshd session
 #      process; when the connection drops, sshd goes and this shell is
-#      reparented -- measured at ppid 869025 -> 1 within one second of the
-#      client dying.  A parent that is no longer the one we started with means
-#      the head is gone, and the watchdog kills the payload's whole process
-#      group: TERM, then KILL after the same grace the local bound uses.
-#      Verified end to end: nothing survived on the peer.
+#      reparented within about a second.  A parent that is no longer the one
+#      we started with means the head is gone, and the watchdog kills the
+#      payload's whole process group: TERM, then KILL after the same grace the
+#      local bound uses.
 #
 # Comparing against the STARTING parent rather than against 1 on purpose: a
 # user-level subreaper would adopt the orphan and pid 1 would never arrive.
@@ -1516,8 +1485,8 @@ campaign_run_adapter() {
     "GRAPHCHECKER_JAR=${graphchecker_jar}"
     "$@"
   )
-  # The bound, as a command prefix: an empty one is the unbounded call this
-  # was before, with no `timeout` in the picture at all.
+  # The bound, as a command prefix: an empty one is the unbounded call, with
+  # no `timeout` in the picture at all.
   local -a bound=()
   if [[ -n "${campaign_adapter_timeout_s}" ]]; then
     bound=(run_under_wall_clock_bound "${campaign_adapter_timeout_s}")
@@ -1567,12 +1536,6 @@ campaign_freeze_graphchecker_jar() {
   graphchecker_jar="${frozen_jar}"
 }
 
-# The one frozen generation, and the campaign's only provenance authority.
-# Everything the run manifest has to bind is digested here, before any stage
-# can write: jar, VM, config, target, adapter, per-loop bounds, the production
-# classes the analysis rewrites, the runtime workload-test class/classpath, and
-# both source checkouts. Nothing re-derives a second stamp from an artifact
-# afterwards -- two provenance authorities disagree exactly when it matters.
 # Stamps one frozen input into the named variable, failing the campaign when
 # its digest cannot be taken.  The fourth argument names the input in that
 # failure when the input is not a path.
@@ -1584,6 +1547,12 @@ campaign_freeze_digest() {
   printf -v "${name}" '%s' "${value}"
 }
 
+# The one frozen generation, and the campaign's only provenance authority.
+# Everything the run manifest has to bind is digested here, before any stage
+# can write: jar, VM, config, target, adapter, per-loop bounds, the production
+# classes the analysis rewrites, the runtime workload-test class/classpath, and
+# both source checkouts. Nothing re-derives a second stamp from an artifact
+# afterwards -- two provenance authorities disagree exactly when it matters.
 campaign_freeze() {
   require_file "GraphChecker jar" "${graphchecker_jar}"
   local vm="${custom_jdk_home}/bin/java"
@@ -1692,8 +1661,7 @@ campaign_freeze() {
 # Scope is the FREEZE stage's inputs and only those: jar, VM and its three
 # libraries, config, target spec, communication mappings, per-loop bounds,
 # symbolic input selection, the production/test class trees, and the workload
-# classpath
-# string. The SEED additions (static catalog, region plan) are
+# classpath string. The SEED additions (static catalog, region plan) are
 # this campaign's own outputs rather than its inputs, and the INSTRUMENT stage
 # legitimately rewrites the analysis root they sit in; re-hashing them here
 # would report the run's own work as drift. The two checkout states are left
@@ -1876,9 +1844,8 @@ campaign_plan() {
     "${index}" "the region-path schedule index names no target member"
   # Member directories own path-closure artifacts, while every member points
   # at the same immutable linked replay plan.  Link it rather than copy it:
-  # a copy per member restated one plan once per member, which is most of
-  # what a campaign writes (measured: 49 members x 10.2 MB = 498 MB of the
-  # 545 MB of task plans in one recorded iteration).  Every writer here
+  # a copy per member would restate one plan once per member, most of what
+  # a campaign writes.  Every writer here
   # publishes through a temporary file and an atomic rename, so a later
   # rewrite replaces a member's entry instead of editing the shared one.
   while IFS=$'\t' read -r role campaign_id region occurrence goal task; do
@@ -1924,9 +1891,8 @@ campaign_instrument() {
 # The JVM verifier is the authority on whether woven bytecode is executable,
 # and INSTRUMENT is the stage that asks it.  Asked for the first time inside a
 # replay instead, its answer arrives as a VerifyError hours into the campaign
-# at a method the campaign never mentions: 9d2761c17's seed replay died on
-# woven FSNamesystem.allowSnapshot @142 "Local index 2 is invalid" before any
-# region ran, and REPLAY reported a failed workload method.  The class loader
+# at a method the campaign never mentions, and REPLAY reports a failed
+# workload method.  The class loader
 # is the replay's own layout -- execute.sh composes ${classes}:${jar}:${cp} --
 # so a class that links here links there.
 campaign_verify_woven_classes() {
@@ -1944,6 +1910,11 @@ campaign_verify_woven_classes() {
   campaign_log "$(head -n 1 "${report}")"
 }
 
+# Whether the last campaign_replay was killed on its wall-clock bound.  Read
+# by the caller that set the bound; every other caller leaves the bound empty
+# and this false.
+campaign_replay_timed_out=false
+
 # One fresh workload instance, through the configured adapter. The adapter owns
 # how the workload starts; the campaign owns which immutable plan it replays
 # and where its evidence lands.
@@ -1958,11 +1929,6 @@ campaign_verify_woven_classes() {
 # model the workload never realized, and campaign_obligation_worker already records
 # that as REPLAY_NOT_ADMITTED, so it passes "tolerated" and keeps that
 # recorded outcome instead of ending the campaign.
-# Whether the last campaign_replay was killed on its wall-clock bound.  Read
-# by the caller that set the bound; every other caller leaves the bound empty
-# and this false.
-campaign_replay_timed_out=false
-
 campaign_replay() {
   local role=$1 plan=$2 ids=$3 classes=$4 results=$5 worker=$6
   local region_results=${7:-required}
@@ -2043,8 +2009,7 @@ truncated run and its log is in ${worker}/replay.log"
     local declared_target reached=""
     local -a target_rows=()
     # The annotated target's method, off the TARGET_SITE row of the static
-    # scope map: the map already states that site, and target_resolved.json
-    # restated it for this one reader.
+    # scope map, which already states that site.
     declared_target=$(jq -r -s '
       [.[] | select(.role == "TARGET_SITE") | .siteId
              | sub("#u[0-9]+$"; "")] | first // ""' \
@@ -2076,7 +2041,7 @@ campaign_session_replay() {
   local iteration_dir=$1
   local seed="${iteration_dir}/seed-result"
   local plan="${iteration_dir}/seed-replay/execution_task_plan.jsonl"
-  # CAUSYNTH_CONCOLIC_RESULTS names this replay, it is not a file any more:
+  # CAUSYNTH_CONCOLIC_RESULTS names this replay, it is not a file:
   # RowRuntime derives the session id from the directory holding it, and the
   # rows themselves go to ${iteration_dir}/sessions/<sessionId>/.
   local results="${seed}/concolic_region_results.jsonl"
@@ -2104,11 +2069,10 @@ campaign_session_replay() {
 #
 # A replay session writes one JSONL file per row kind under
 # <iteration>/sessions/<sessionId>/ (CONTRACT-SPEC SS2).  There is nothing to
-# fold here any more: a reader of exports never parses attaches, the kinds are
-# joined by Endpoint and Interaction id rather than by the activation envelope
-# they used to share, and no stage has to re-parse a whole result to read one
-# of them.  This stage checks that each session published every kind its
-# readers open, and publishes the census.
+# fold here: a reader of exports never parses attaches, the kinds are joined
+# by Endpoint and Interaction id, and no stage has to re-parse a whole result
+# to read one of them.  This stage checks that each session published every
+# kind its readers open, and publishes the census.
 campaign_import_session() {
   local iteration_dir=$1 iteration_id=$2
   local sessions="${iteration_dir}/sessions"
@@ -2150,12 +2114,10 @@ campaign_import_session() {
 
 # The row contract, checked once, where every row passes through.
 #
-# A defect in a row is not one stage's problem.  17960 lost two campaigns to
-# rows that EXPLORE and COMPOSE each read as valid -- a decision whose
-# `outcome` was the complement of its term's truth value, and a focused
-# session that published rows with an empty expression table -- and each stage
-# that met one reported something later and elsewhere.  contract.
-# RowInvariants states the contract's own sentences, and the gate runs them
+# A defect in a row is not one stage's problem: a row EXPLORE and COMPOSE
+# each read as valid can still break the contract, and each stage that meets
+# one reports something later and elsewhere.  contract.RowInvariants states
+# the contract's own sentences, and the gate runs them
 # here: a BLOCKING violation stops the campaign at IMPORT, naming the row, and
 # a DIAGNOSTIC one is recorded and the campaign goes on.
 #
@@ -2190,12 +2152,8 @@ ${blocking} blocking"
 
 # The same gate, over one wave's own replays.
 #
-# It used to run once, on the seed session alone, so every FOCUSED session a
-# wave published entered EXPLORE and COMPOSE unchecked: an invariant-8
-# violation there (a root mint whose recordedValue is empty) was read as a
-# valid row by both stages and reported, if at all, later and elsewhere.  A
-# wave is where a focused session is produced, so it is where the contract is
-# checked -- a BLOCKING violation fails the campaign at that wave, by name.
+# A wave is where a focused session is produced, so it is where the contract
+# is checked -- a BLOCKING violation fails the campaign at that wave, by name.
 #
 # ImportGateMain reads the session set of an ITERATION directory
 # ({@code <iteration>/sessions}) and invariant 10 needs that directory's
@@ -2205,19 +2163,14 @@ ${blocking} blocking"
 # written.
 #
 # Every wave, not just this one: a focus row is what says a FOCUSED session
-# ran in a world, and invariant 6 asks that of each session in the set.  The
-# gate used to link this wave alone, as obligations-0000, so the rows of every
-# EARLIER wave's focused session were not in the directory at all and each of
-# them read as "no focus row this iteration".  hdfs-11741 campaign #3 is where
-# that first fired: wave 1 was the first wave of any campaign to publish a
-# session, and the wave-1 gate then refused with 13 BLOCKING invariant-6 rows,
-# one per session WAVE 0 had focused.
+# ran in a world, and invariant 6 asks that of each session in the set.
+# Linking this wave alone would leave every EARLIER wave's focused session
+# reading as "no focus row this iteration".
 #
 # The whole roster, not the wave's own new sessions: invariant 1 is a
 # SET-level rule -- exactly one session of the set states role SEED -- and a
-# set built from the wave alone never holds the seed, so every wave of every
-# case refused "0 of N sessions state role SEED".  The wave's own sessions
-# decide only WHETHER this gate runs, not what it reads.
+# set built from the wave alone never holds the seed.  The wave's own
+# sessions decide only WHETHER this gate runs, not what it reads.
 #
 # The gate directory sits OUTSIDE the waves it links, at
 # ${iteration_dir}/import-gates/<wave>.  Built inside the wave it would hold
@@ -2441,8 +2394,6 @@ session"
   esac
 }
 
-# Region-path obligations are coordinated in closure-wide waves below.
-
 
 # ---------------------------------------------------------------------------
 # THE WAVE'S WORK POOL
@@ -2453,15 +2404,9 @@ session"
 # Nothing is merged until COMPOSE, so the only coordination a wave needs is
 # "who takes the next one" and "has everybody finished".
 #
-# It used to be a BATCH BARRIER: fill an array of ${concolic_worker_count}
-# background pids, wait for ALL of them, then start the next array.  One slow
-# obligation idled every other slot for its whole duration -- on 11741
-# campaign #5b's wave 1 the batch of eight was paced by its slowest member
-# every time, so a wave of 114 obligations cost fourteen slowest-of-eight
-# replays rather than 114/8 average ones.
-#
-# A POOL instead: one long-lived runner per slot, each pulling the next
-# unclaimed obligation the moment its previous one returns.  A slot that
+# A POOL, not a batch barrier (which lets one slow obligation idle every
+# other slot of its batch): one long-lived runner per slot, each pulling the
+# next unclaimed obligation the moment its previous one returns.  A slot that
 # frees takes the next obligation immediately; no slot waits on another.
 #
 # The claim is a `mkdir` on a per-index directory, which is the one atomic
@@ -2500,10 +2445,10 @@ campaign_claim_next_obligation() {
 
 # Which host runs each slot, one per line.
 #
-# `campaign_worker_hosts` empty is exactly what this shell did before there
-# was a key: one host, ${concolic_worker_count} slots, every worker local and
-# no ssh anywhere.  A stated list gives ${concolic_worker_count} slots PER
-# HOST, so the pool is as wide as hosts x workers.
+# `campaign_worker_hosts` empty is one host, ${concolic_worker_count} slots,
+# every worker local and no ssh anywhere.  A stated list gives
+# ${concolic_worker_count} slots PER HOST, so the pool is as wide as hosts x
+# workers.
 #
 # The hosts are interleaved rather than blocked, so the wave's opening fill
 # -- which is every slot claiming at once -- lands round-robin across the
@@ -2540,8 +2485,7 @@ $(hostname -s 2>/dev/null) "
 #
 # Every lift has 30 GB and every campaign's pool spans every lift, so what
 # decides whether one more obligation fits on a host is the host, not the
-# campaign: one 11741 wave of eight workers filled lift11 to 26 GB with 9 GB
-# swapped while two other lifts idled.  So a slot asks the HOST before it
+# campaign.  So a slot asks the HOST before it
 # starts an obligation there, through a ledger every campaign shares -- the
 # home directory is the same on every lift -- one directory per host:
 #
@@ -2564,7 +2508,7 @@ $(hostname -s 2>/dev/null) "
 
 campaign_host_gate_root="${HOME}/gc-out/hosts"
 # How long a start is charged in full: the time a solver JVM takes to load
-# its corpus (11741 wave 2: about half a minute to 5 GB RSS).
+# its corpus (about half a minute to 5 GB RSS).
 campaign_host_ramp_s=60
 # What every host keeps free whatever the campaigns ask: the page cache the
 # JVMs read their jars and corpora through, and the owner's own sessions.
@@ -2702,12 +2646,9 @@ ${host}: ${campaign_host_wait_reason}"
   done
 }
 
-# One obligation, on the host its slot belongs to.
-#
-# The local branch is character-for-character what campaign_explore's inner
-# loop was: a subshell under `set -euo pipefail`, its stdout and stderr in
-# the worker directory, so the worker sees exactly the environment and the
-# log files it saw before any of this existed.
+# One obligation, on the host its slot belongs to.  The local branch is a
+# subshell under `set -euo pipefail`, its stdout and stderr in the worker
+# directory.
 campaign_run_obligation_on_host() {
   local host=$1 obligation_id=$2 obligations=$3 classes=$4 worker=$5
   local sessions=$6 seed_plan=$7
@@ -2725,11 +2666,9 @@ campaign_run_obligation_on_host() {
 
 # One slot: claim, run, claim again, until the wave is empty.
 #
-# A failed obligation does not stop the slot.  That is the batch barrier's
-# behaviour kept exactly: the remaining obligations of the wave still ran
-# after one of them failed, and the WAVE failed at the end.  The slot carries
-# the failure out in its own exit status, which campaign_wait_workers reads
-# the same way it read a batch's.
+# A failed obligation does not stop the slot: the remaining obligations of
+# the wave still run, and the WAVE fails at the end.  The slot carries the
+# failure out in its own exit status, which campaign_wait_workers reads.
 campaign_wave_slot() {
   local host=$1 queue_dir=$2 count=$3 jobs_file=$4 wave_dir=$5
   local obligations=$6 classes=$7 sessions=$8 seed_plan=$9
@@ -2757,9 +2696,9 @@ campaign_wave_slot() {
 
 # The whole wave, through the pool.
 #
-# Results are still collected by the caller once the wave has SETTLED -- this
+# Results are collected by the caller once the wave has SETTLED -- this
 # returns only when every slot has returned -- so the frontier the next wave
-# plans against is a complete one, exactly as before.
+# plans against is a complete one.
 campaign_dispatch_wave() {
   local wave_dir=$1 obligations=$2 classes=$3 sessions=$4 seed_plan=$5
   shift 5
@@ -3126,20 +3065,12 @@ verdict=$(jq -r '.verdict // "?"' "${worker}/obligation_result.jsonl")"
 
 # Gap rows this iteration's stages wrote outside a session live in one file,
 # ${iteration_dir}/campaign_gaps.jsonl, appended by whoever raises them and
-# read once by EMIT.  There is no collector any more and nothing truncates it.
-#
-# There was one, and it discarded every row it was supposed to gather: its
-# find excluded the only path that could match its own -name, so the merge
-# list was always empty and the function's whole effect was a truncation of
-# the very file it was named for.  It ran one line after EXPLORE -- deleting
-# the wave-budget and no-progress GAP_ROWs campaign_explore had just appended
-# -- and again at the end of campaign_publish_pending_refinement, deleting
-# that function's own TOPOLOGY_DIVERGENCE row.  EMIT then read an empty file
-# into gaps.json, so both kinds were silently absent from every gap report.
+# read once by EMIT.  Nothing collects or truncates it.
 #
 # Session gap rows stay where the replay wrote them: EMIT reads them straight
 # out of the session directories, because a GapRow states its own class and
 # nothing between the runtime and the report is in a position to change it.
+
 campaign_publish_iteration_manifest() {
   local iteration_dir=$1 iteration=$2
   local index="${iteration_dir}/runtime_workflow_schedule_index.json"
@@ -3282,10 +3213,10 @@ valuations=$(jq -r '(.solver.valuations // []) | length' "${report}")"
 
 # DECIDE: the claim the composition reached, checked and printed.
 #
-# There is one anchor and therefore one claim.  Ranking observed occurrences
-# into a campaign verdict is gone with the election: which execution of the
-# annotated site the campaign is about is the case's declaration, and the
-# claim about it is whatever its own formula decided.
+# There is one anchor and therefore one claim, and no ranking of observed
+# occurrences: which execution of the annotated site the campaign is about
+# is the case's declaration, and the claim about it is whatever its own
+# formula decided.
 campaign_decide() {
   require_nonempty "candidate SMT" "${composed_smt}"
   require_nonempty "candidate composition manifest" "${composition_manifest}"
@@ -3314,8 +3245,9 @@ campaign_decide() {
 # the anchor was reached), no CONFIRM_MISMATCH, and a target row that reached
 # the anchor and observed the fatal.  The schedule is how the replay
 # reproduces the selected session, not what the claim says: a divergence of
-# the order stays a diagnostic gap of the session (DESIGN4 SS5).  Every other outcome -- a refused task, a replay that published
-# no verdict -- is "unconfirmed, because ...": EMIT downgrades the claim,
+# the order stays a diagnostic gap of the session (DESIGN4 SS5).  Every other
+# outcome -- a refused task, a replay that published no verdict -- is
+# "unconfirmed, because ...": EMIT downgrades the claim,
 # the campaign does not fail.  Only a SAT_CANDIDATE is confirmed; any other
 # claim has nothing to confirm and the stage says so.
 campaign_confirm() {
@@ -3450,9 +3382,7 @@ campaign_artifact_digests() {
   printf '%s\n' "${rows[@]}" | jq -c -s .
 }
 
-# The static catalog's own gaps, as a JSON array.  A campaign that restored
-# its seed from cache still has this artifact, because it is one of the
-# cached ones.
+# The static catalog's own gaps, as a JSON array.
 campaign_static_gaps_json() {
   local gzipped="${causynth_output_dir}/communication_gaps.jsonl.gz"
   require_nonempty "static communication gaps" "${gzipped}"
@@ -3469,11 +3399,9 @@ campaign_plan_gaps_json() {
 #
 # A command-line argument is capped at 128 KiB on Linux -- MAX_ARG_STRLEN,
 # 32 pages, a per-argument limit that no ARG_MAX headroom relaxes -- and the
-# documents below are proportional to the corpus.  lane11741j died at EMIT
-# with "Argument list too long" on a generated document of 134,436 bytes
-# reaching DECIDE with SAT_CANDIDATE and 0 blockers: a whole campaign's
-# verdict lost to an argv limit.  Every generated document is written to a
-# file and slurped; none is passed with --argjson.
+# documents below are proportional to the corpus, so passing one as an
+# argument can fail EMIT with "Argument list too long".  Every generated
+# document is written to a file and slurped; none is passed with --argjson.
 campaign_json_file() {
   local destination=$1 content=$2
   printf '%s\n' "${content}" >"${destination}" || return 1
@@ -3485,19 +3413,12 @@ campaign_json_file() {
 #
 # A GapRow states its own kind and class (CONTRACT-SPEC SS2): the stage that
 # raised it knows what it could not do, and no later stage is in a position to
-# overrule that.  So this is a partition, not a classification -- the 190
-# lines of jq that used to decide a row's class against the replay slice, the
-# composed ports and the flip wave are gone with the questions they asked, and
-# so is the second registry that classed PLAN rows by code.  A row that states
-# no class is BLOCKING.
+# overrule that.  So this is a partition, not a classification.  A row that
+# states no class is BLOCKING.
 #
 # This function and the `accepted` conjunction it feeds are the ONE reader of
 # a gap's class in the campaign: every other stage states classes and reads
-# none but its own.  classReason says which of the two rules answered, and it
-# used to answer "no stated class: blocking by default" for every row that
-# stated BLOCKING -- all three OCCURRENCE_ADDRESS_SHARED rows of the reviewed
-# hdfs-17960 run, whose producer had stated the class the reader then
-# disowned.
+# none but its own.  classReason says which of the two rules answered.
 campaign_write_gaps() {
   local composition=$1 iteration_dir=$2 output=$3
   local scratch status=0
@@ -3764,10 +3685,9 @@ campaign_emit() {
     campaign_fail EMIT CAMPAIGN "${campaign_root}" \
       "iteration manifests are absent or malformed"
   fi
-  # Same rule as campaign_write_gaps: these three grow with the
-  # corpus -- one iteration manifest is already 72 KB on hdfs-11741 -- so
-  # they travel as files.  The
-  # provenance and the two counts are bounded and stay arguments.
+  # Same rule as campaign_write_gaps: these three grow with the corpus, so
+  # they travel as files.  The provenance and the two counts are bounded and
+  # stay arguments.
   local manifest_scratch manifest_status=0
   manifest_scratch=$(mktemp -d \
     "${TMPDIR:-/tmp}/graphchecker-manifestargs.XXXXXX") || campaign_fail \
@@ -3855,9 +3775,8 @@ campaign_emit() {
 #   graphchecker_jar, because FREEZE_TOOL rebinds it to the campaign's
 #     private read-only copy.  Re-derived here it would be whatever is in
 #     target/ at this instant, and on a shared home that is a different build
-#     the moment anybody runs `mvn package` -- measured on this cluster: a
-#     finished campaign's frozen jar is 49e990ce while the live target jar is
-#     af34ab24.  Taken as GIVEN, and then CHECKED: the digest the campaign
+#     the moment anybody runs `mvn package`.  Taken as GIVEN, and then
+#     CHECKED: the digest the campaign
 #     froze is the digest of the file about to be loaded, or this worker
 #     refuses before it starts.
 #

@@ -123,12 +123,6 @@ acc_await_disk() {
 # ---------------------------------------------------------------------------
 # One case, out of the experiment's own machinery
 # ---------------------------------------------------------------------------
-# The case directory owns how it is run: experiments/hadoop/<exp>/run.sh sets
-# CAUSYNTH_WORKLOAD_COMMAND and CAUSYNTH_CONCOLIC_REPLAY_COMMAND to its own
-# execute.sh, its CAUSYNTH_CLASSPATH to its own classpath.sh, and execs
-# ../../../run_engine.sh with its workflow.properties.  This function starts
-# that and states the two things a harness run must not inherit -- a fresh
-# output directory and the VM image -- and nothing else.
 acc_build_jar() {
   [[ "$SKIP_BUILD" == 1 ]] && { acc_log "SKIP_BUILD=1: using $JAR"; return 0; }
   acc_log "building $ACCEPT_JAR_NAME in $REPO"
@@ -139,6 +133,11 @@ acc_build_jar() {
   return $rc
 }
 
+# The case directory holds declarations; experiments/hadoop/lib/run.sh turns
+# them into the campaign's environment and runs run_engine.sh with the case's
+# workflow.properties.  This function starts that and states the two things a
+# harness run must not inherit -- a fresh output directory and the VM image --
+# and nothing else.
 acc_run_case() {  # acc_run_case <case-id>
   local case_id=$1
   local exp; exp=$(acc_experiment_of "$case_id")

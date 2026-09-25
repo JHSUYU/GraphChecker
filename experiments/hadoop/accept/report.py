@@ -22,18 +22,13 @@ moved off the value the recording had -- except for CLOCK_SKEW, where ordinal 0
 is legitimate because a clock has a floor and no window, so the witness sits at
 the recorded valuation and the clock cells the model moved are its movedRoots.
 
-The last two conditions are why that table exists.  Before them the gate asked
-only whether the composer had concluded *something* it could name, so
-hdfs-17960 passed with findingKind MESSAGE_PAIRING_FLIPPED at valuation 0, "no
-root moved off its recorded value", on a case that has no wire rows at all --
-a PASS that said nothing about snapshotDeletionOrdered, the one root the bug
-turns on.  A finding at valuation 0 that moves nothing is the recording
-restated: it names no difference between the run that failed and a run that
-did not, whatever kind it is labelled with.
+The last two conditions are why that table exists: without them the gate
+asks only whether the composer concluded *something* it could name.  A
+finding at valuation 0 that moves nothing is the recording restated: it names
+no difference between the run that failed and a run that did not, whatever
+kind it is labelled with.
 
-That last condition used to be re-derived here, by running z3 twice over
-candidate.smt2 under each polarity of the declared Boolean roots.  It is not
-re-derived any more.  ClaimPolicy computes exactly the same assertion
+The polarity condition is not re-derived here.  ClaimPolicy computes it
 (polarityDecides = the ordinal-0 outcome is unsat) inside the composer, which
 holds the formula, the domains and the arms; and it is already a CONDITION
 there, not a note beside the claim -- MARKER_FLIPPED and CLOCK_SKEW are
@@ -48,7 +43,7 @@ ClaimPolicy constructs that kind with polarityDecides=false by definition: the
 seed run itself observed the fatal arm, so there is no other polarity to
 refute.  NO_SUPPORTED_WITNESS fails, naming the claimReason the policy gave.
 
-The probe's plain/buggy/other columns are still printed when probe.tsv exists,
+The probe's plain/buggy/other columns are printed when probe.tsv exists,
 as a reported signal.  Nothing gates on them.
 """
 import glob, json, os, re, sys
@@ -67,12 +62,11 @@ import glob, json, os, re, sys
 #   clocks -- False: no clock cell may move.  The witness is the fault alone,
 #             with every clock where the recording read it.
 #
-# The owner's ruling (2026-09-23), and DESIGN4 V3/V5 as corrected by it: every
-# tree of the block-key family carries 11741's expiry check, so a key goes
-# stale there ONLY through a failed RPC -- the request that never reached the
-# NameNode, or the NameNode's reply to a DataNode or to an application that
-# was lost after the NameNode applied it.  A clock witness for them moved one
-# node's clock hours past another's inside one JVM, which no run of the
+# Every tree of the block-key family carries 11741's expiry check, so a key
+# goes stale there ONLY through a failed RPC -- the request that never reached
+# the NameNode, or the NameNode's reply to a DataNode or to an application
+# that was lost after the NameNode applied it.  A clock witness for them moves
+# one node's clock hours past another's inside one JVM, which no run of the
 # cluster does: it is not a pass.  11741 is the bug that check fixes, so a
 # branch flip reaches its fatal with no fault; 17960's mechanism is its
 # configured Boolean.
@@ -83,7 +77,7 @@ EXPECTED_MECHANISM = {
                         "root": "HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED",
                         "value": "false"},
     # 11741 has no expiry check: a flipped branch with no fault already
-    # reaches its fatal, and an RPC fault may too ("也是有解的").
+    # reaches its fatal, and an RPC fault may too.
     "hdfs-11741":      {"kinds": ("CLOCK_SKEW", "MARKER_FLIPPED")},
     "hdfs-17899-bug1": RPC_FAILURE,
     "hdfs-17899-bug2": RPC_FAILURE,
@@ -181,14 +175,9 @@ polarity = polarity_doc()
 probes = probe_rows()
 claim = result.get("claim", "MISSING")
 final_status = result.get("finalStatus", "MISSING")
-# A blocker row is the gap that refused the claim, published by
-# ComposeMain.refusals() as {kind, subject, detail, sessionId} -- "kind", not
-# "code": reading the wrong key named every refusal "?" and left the harness
-# unable to say why a case failed.
 # THE criterion's gap half is gaps.json, the one document every stage's gaps
 # land in with the class their producer stated: a PLAN or REPLAY blocker is
-# not in result.json's composer blockers, and reading only those printed PASS
-# over runs the campaign itself withheld.
+# not in result.json's composer blockers.
 gaps_doc = load("gaps.json")
 blocking = [g for g in (gaps_doc.get("gaps") or [])
             if g.get("class", "BLOCKING") == "BLOCKING"]
@@ -355,7 +344,7 @@ reason = "; ".join(reasons) if reasons else "-"
 # The finding column: the mechanism the composition concluded, the valuation
 # that carried it, and the roots that had to move -- in the composer's own
 # words, read off result.json.  It is deliberately not assembled from the
-# probe's two polarities any more: the probe reports, the composer decides.
+# probe's two polarities: the probe reports, the composer decides.
 note = "%s at valuation %s" % (finding_kind, valuation_ordinal)
 if moved_roots:
     note += " moving %s" % ", ".join(
@@ -367,8 +356,7 @@ note += (" | the recorded valuation refutes the recording"
          else " | the recorded valuation does not refute the recording")
 if claim != "SAT_CANDIDATE" and result.get("claimReason"):
     note += " | %s" % result["claimReason"]
-# The probe stays a reported signal, never a gate: an older corpus, or a probe
-# taught the new names, still shows up here.
+# The probe stays a reported signal, never a gate.
 if buggy != "-" or other != "-":
     note += " | probe buggy=%s other=%s" % (buggy, other)
 # One TSV cell, so one line and a bounded one. The whole narrative, with every
@@ -526,10 +514,7 @@ if cone:
 
 
 # The valuations the composer enumerated and what z3 answered for each.
-# Read off result.json, which EMIT copies from the composition manifest: the
-# separate z3-result.json the old solver stage wrote no longer exists, and
-# with it went the fault-marker and mechanism-necessity tables that only that
-# document carried.  Nothing reconstructs them here.
+# Read off result.json, which EMIT copies from the composition manifest.
 valuations = result.get("valuations") or []
 if valuations:
     out += ["## Valuations", ""]
