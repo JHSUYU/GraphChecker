@@ -133,8 +133,7 @@ final class RuntimeTraceContext {
         scope.opened = source;
         state.scopes.push(scope);
         state.source = source;
-        state.requestKey = requestKey;
-        state.requestApi = normalizedApi;
+        state.flow = state.flow.withRequest(requestKey, normalizedApi);
         if (activeFrame != null) {
             activeFrame.source = source;
         }
@@ -200,9 +199,7 @@ final class RuntimeTraceContext {
         Object lineage = Lineage.capture();
         synchronized (LOCK) {
             ASYNC_SEEDS.put(carrier, new Seed(
-                    explicitSource(), view.requestKey, view.requestApi,
-                    view.exchangeTransport, view.exchangeCorrelationId,
-                    view.exchangeAttemptId, view.exchangeHalf, lineage));
+                    explicitSource(), view.flow(), lineage));
         }
     }
 
@@ -223,7 +220,8 @@ final class RuntimeTraceContext {
     static void claimCarried(Object carrier) {
         Seed seed = takeSeed(carrier);
         if (seed == null) return;
-        boolean flow = !seed.requestKey.isEmpty() && !seed.requestApi.isEmpty();
+        boolean flow = !seed.flow.requestKey.isEmpty()
+                && !seed.flow.requestApi.isEmpty();
         boolean lineage = seed.lineage instanceof Lineage.Carried
                 && ((Lineage.Carried) seed.lineage).names();
         if (seed.source == null && !flow && !lineage) return;
@@ -238,12 +236,7 @@ final class RuntimeTraceContext {
                 Role.EXECUTOR_TASK, "");
         state.scopes.push(scope);
         if (seed.source != null) state.source = seed.source;
-        state.requestKey = seed.requestKey;
-        state.requestApi = seed.requestApi;
-        state.exchangeTransport = seed.exchangeTransport;
-        state.exchangeCorrelationId = seed.exchangeCorrelationId;
-        state.exchangeAttemptId = seed.exchangeAttemptId;
-        state.exchangeHalf = seed.exchangeHalf;
+        state.flow = seed.flow;
         CARRIED.set(token);
         publishCausalSource(state);
     }
@@ -331,10 +324,7 @@ final class RuntimeTraceContext {
         // replaces it.
         long remoteParentSpanId = state.pendingRemoteParentSpanId;
         Frame frame = new Frame(spanId, remoteParentSpanId,
-                state.source, source, receiverAttributed,
-                state.requestKey, state.requestApi,
-                state.exchangeTransport, state.exchangeCorrelationId,
-                state.exchangeAttemptId, state.exchangeHalf);
+                state.source, source, receiverAttributed, state.flow);
         state.source = source;
         state.frames.push(frame);
         publishCausalSource(state);
@@ -347,12 +337,7 @@ final class RuntimeTraceContext {
         if (frame == null || frame.spanId != spanId) return;
         state.frames.pop();
         state.source = frame.previousSource;
-        state.requestKey = frame.previousRequestKey;
-        state.requestApi = frame.previousRequestApi;
-        state.exchangeTransport = frame.previousExchangeTransport;
-        state.exchangeCorrelationId = frame.previousExchangeCorrelationId;
-        state.exchangeAttemptId = frame.previousExchangeAttemptId;
-        state.exchangeHalf = frame.previousExchangeHalf;
+        state.flow = frame.previousFlow;
     }
 
     static View current() {
@@ -411,8 +396,8 @@ final class RuntimeTraceContext {
         frame.opened = scope.source;
         state.scopes.push(frame);
         state.source = scope.source;
-        state.requestKey = scope.requestKey;
-        state.requestApi = scope.requestApi;
+        state.flow = state.flow.withRequest(scope.requestKey,
+                scope.requestApi);
         if (activeFrame != null) activeFrame.source = scope.source;
         String api = MapFields.safe(apiName).isEmpty()
                 ? scope.requestApi : MapFields.safe(apiName);
@@ -478,9 +463,8 @@ final class RuntimeTraceContext {
             String api = MapFields.safe(roleName).trim();
             if (api.isEmpty()) api = "tick";
             state.source = source;
-            state.requestKey = source.key() + "/tick/" + api + "#"
-                    + Lineage.rootWindowIndex();
-            state.requestApi = api;
+            state.flow = state.flow.withRequest(source.key() + "/tick/"
+                    + api + "#" + Lineage.rootWindowIndex(), api);
         }
         // A tick is a WAKE: the turn a daemon's loop hands its thread.
         String site = "tick." + MapFields.safe(roleName);
@@ -566,9 +550,9 @@ final class RuntimeTraceContext {
                 edu.uva.liftlab.graphchecker.runtime.Identity.Hop.SCOPE_ROOT);
         state.scopes.push(scope);
         state.source = source;
-        state.requestKey = source.key() + "/wake/" + normalizedApi + "#"
-                + Lineage.rootWindowIndex();
-        state.requestApi = normalizedApi;
+        state.flow = state.flow.withRequest(source.key() + "/wake/"
+                + normalizedApi + "#" + Lineage.rootWindowIndex(),
+                normalizedApi);
         if (activeFrame != null) activeFrame.source = source;
         publishCausalSource(state);
         return token;
@@ -710,13 +694,9 @@ final class RuntimeTraceContext {
         if (localSource != null) {
             state.source = localSource;
         }
-        state.requestKey = remote.requestKey;
-        state.requestApi = remote.requestApi;
         state.pendingRemoteParentSpanId = remote.parentSpanId;
-        state.exchangeTransport = normalizedUpper(transport);
-        state.exchangeCorrelationId = normalized(correlationId);
-        state.exchangeAttemptId = normalized(attemptId);
-        state.exchangeHalf = normalizedUpper(half);
+        state.flow = new Flow(remote.requestKey, remote.requestApi,
+                transport, correlationId, attemptId, half);
         if (activeFrame != null) {
             activeFrame.source = state.source;
             activeFrame.remoteParentSpanId = remote.parentSpanId;
@@ -734,7 +714,7 @@ final class RuntimeTraceContext {
         // not list.
         scope.lineageToken = Lineage.push(
                 state.source == null ? "" : state.source.key(),
-                Role.of(state.exchangeTransport),
+                Role.of(state.flow.exchangeTransport),
                 inboundFamily(remote.requestKey, remote.requestApi));
         // An anchored request: the index of what serves it begins at the
         // inbound scope, and the frames above it -- the pooled handler's
@@ -746,9 +726,9 @@ final class RuntimeTraceContext {
         // The message that opened this scope names its producer; that
         // endpoint IS this occurrence's causal context (IDENTITY-V3).
         Lineage.anchor(edu.uva.liftlab.graphchecker.runtime.Interactions
-                        .sender(state.exchangeTransport,
-                                state.exchangeCorrelationId,
-                                state.exchangeHalf),
+                        .sender(state.flow.exchangeTransport,
+                                state.flow.exchangeCorrelationId,
+                                state.flow.exchangeHalf),
                 // The api is the LAST path segment, which is how a case's
                 // selector is matched against it (ComposeMain.apiOf).
                 normalizedUpper(transport) + "/"
@@ -892,13 +872,8 @@ final class RuntimeTraceContext {
                     scope.scopeBaseBefore);
         }
         state.source = scope.source;
-        state.requestKey = scope.requestKey;
-        state.requestApi = scope.requestApi;
+        state.flow = scope.flow;
         state.pendingRemoteParentSpanId = scope.remoteParentSpanId;
-        state.exchangeTransport = scope.exchangeTransport;
-        state.exchangeCorrelationId = scope.exchangeCorrelationId;
-        state.exchangeAttemptId = scope.exchangeAttemptId;
-        state.exchangeHalf = scope.exchangeHalf;
         if (scope.activeFrame != null
                 && state.frames.peek() == scope.activeFrame) {
             scope.activeFrame.source = scope.frameSource;
@@ -1188,12 +1163,7 @@ final class RuntimeTraceContext {
                 : parent.inheritedSource;
         View inherited = parent.rawView();
         child.source = inherited.source;
-        child.requestKey = inherited.requestKey;
-        child.requestApi = inherited.requestApi;
-        child.exchangeTransport = inherited.exchangeTransport;
-        child.exchangeCorrelationId = inherited.exchangeCorrelationId;
-        child.exchangeAttemptId = inherited.exchangeAttemptId;
-        child.exchangeHalf = inherited.exchangeHalf;
+        child.flow = inherited.flow();
         return child;
     }
 
@@ -1220,29 +1190,32 @@ final class RuntimeTraceContext {
         private View(long laneId, long spanId,
                      long remoteParentSpanId,
                      SourceRef source, boolean receiverAttributed,
-                     String requestKey, String requestApi,
-                     String exchangeTransport, String exchangeCorrelationId,
-                     String exchangeAttemptId, String exchangeHalf) {
+                     Flow flow) {
             this.laneId = laneId;
             this.spanId = spanId;
             this.remoteParentSpanId = remoteParentSpanId;
             this.source = source;
             this.receiverAttributed = receiverAttributed;
-            this.requestKey = MapFields.safe(requestKey);
-            this.requestApi = MapFields.safe(requestApi);
-            this.exchangeTransport = normalizedUpper(exchangeTransport);
-            this.exchangeCorrelationId = normalized(exchangeCorrelationId);
-            this.exchangeAttemptId = normalized(exchangeAttemptId);
-            this.exchangeHalf = normalizedUpper(exchangeHalf);
+            this.requestKey = flow.requestKey;
+            this.requestApi = flow.requestApi;
+            this.exchangeTransport = flow.exchangeTransport;
+            this.exchangeCorrelationId = flow.exchangeCorrelationId;
+            this.exchangeAttemptId = flow.exchangeAttemptId;
+            this.exchangeHalf = flow.exchangeHalf;
+        }
+
+        /** The request flow this view states. */
+        private Flow flow() {
+            return new Flow(requestKey, requestApi, exchangeTransport,
+                    exchangeCorrelationId, exchangeAttemptId, exchangeHalf);
         }
 
         /** The same view speaking for a carried request scope. */
         private View withScope(SourceRef scopeSource, String scopeKey,
                                String scopeApi) {
             return new View(laneId, spanId, remoteParentSpanId,
-                    scopeSource, receiverAttributed, scopeKey, scopeApi,
-                    exchangeTransport, exchangeCorrelationId,
-                    exchangeAttemptId, exchangeHalf);
+                    scopeSource, receiverAttributed,
+                    flow().withRequest(scopeKey, scopeApi));
         }
     }
 
@@ -1250,12 +1223,7 @@ final class RuntimeTraceContext {
         private long laneId;
         private SourceRef source;
         private long pendingRemoteParentSpanId;
-        private String requestKey = "";
-        private String requestApi = "";
-        private String exchangeTransport = "";
-        private String exchangeCorrelationId = "";
-        private String exchangeAttemptId = "";
-        private String exchangeHalf = "";
+        private Flow flow = Flow.NONE;
         private final Deque<Frame> frames = new ArrayDeque<>();
         private final Deque<ScopeFrame> scopes = new ArrayDeque<>();
         /** The explicit node this thread's creator stood in, or null. */
@@ -1276,9 +1244,7 @@ final class RuntimeTraceContext {
                     frame == null ? pendingRemoteParentSpanId
                             : frame.remoteParentSpanId,
                     Attribution.resolve(null),
-                    frame != null && frame.receiverAttributed,
-                    requestKey, requestApi, exchangeTransport,
-                    exchangeCorrelationId, exchangeAttemptId, exchangeHalf);
+                    frame != null && frame.receiverAttributed, flow);
         }
 
         /** The same view with no resolution: for a thread's construction. */
@@ -1289,9 +1255,7 @@ final class RuntimeTraceContext {
                     frame == null ? pendingRemoteParentSpanId
                             : frame.remoteParentSpanId,
                     frame == null ? source : frame.source,
-                    frame != null && frame.receiverAttributed,
-                    requestKey, requestApi, exchangeTransport,
-                    exchangeCorrelationId, exchangeAttemptId, exchangeHalf);
+                    frame != null && frame.receiverAttributed, flow);
         }
     }
 
@@ -1302,62 +1266,64 @@ final class RuntimeTraceContext {
         private final SourceRef previousSource;
         private SourceRef source;
         private final boolean receiverAttributed;
-        private final String previousRequestKey;
-        private final String previousRequestApi;
-        private final String previousExchangeTransport;
-        private final String previousExchangeCorrelationId;
-        private final String previousExchangeAttemptId;
-        private final String previousExchangeHalf;
+        private final Flow previousFlow;
 
         private Frame(long spanId,
                       long remoteParentSpanId, SourceRef previousSource,
                       SourceRef source, boolean receiverAttributed,
-                      String previousRequestKey, String previousRequestApi,
-                      String previousExchangeTransport,
-                      String previousExchangeCorrelationId,
-                      String previousExchangeAttemptId,
-                      String previousExchangeHalf) {
+                      Flow previousFlow) {
             this.spanId = spanId;
             this.remoteParentSpanId = remoteParentSpanId;
             this.previousSource = previousSource;
             this.source = source;
             this.receiverAttributed = receiverAttributed;
-            this.previousRequestKey = MapFields.safe(previousRequestKey);
-            this.previousRequestApi = MapFields.safe(previousRequestApi);
-            this.previousExchangeTransport = normalizedUpper(
-                    previousExchangeTransport);
-            this.previousExchangeCorrelationId = normalized(
-                    previousExchangeCorrelationId);
-            this.previousExchangeAttemptId = normalized(
-                    previousExchangeAttemptId);
-            this.previousExchangeHalf = normalizedUpper(previousExchangeHalf);
+            this.previousFlow = previousFlow;
         }
     }
 
     private static final class Seed {
         private final SourceRef source;
+        private final Flow flow;
+        /** The lineage the submitting thread was inside, as a value. */
+        private final Object lineage;
+
+        private Seed(SourceRef source, Flow flow, Object lineage) {
+            this.lineage = lineage;
+            this.source = source;
+            this.flow = flow;
+        }
+    }
+
+    /**
+     * The request flow a thread carries: the request key and api the wire
+     * header states, and the exchange a served message came in by.  One
+     * value, normalized once, so a scope, a root, a seed and a thread's
+     * construction save and restore the same six fields the same way.
+     */
+    private static final class Flow {
+        static final Flow NONE = new Flow("", "", "", "", "", "");
         private final String requestKey;
         private final String requestApi;
         private final String exchangeTransport;
         private final String exchangeCorrelationId;
         private final String exchangeAttemptId;
         private final String exchangeHalf;
-        /** The lineage the submitting thread was inside, as a value. */
-        private final Object lineage;
 
-        private Seed(SourceRef source,
-                     String requestKey, String requestApi,
+        private Flow(String requestKey, String requestApi,
                      String exchangeTransport, String exchangeCorrelationId,
-                     String exchangeAttemptId, String exchangeHalf,
-                     Object lineage) {
-            this.lineage = lineage;
-            this.source = source;
+                     String exchangeAttemptId, String exchangeHalf) {
             this.requestKey = MapFields.safe(requestKey);
             this.requestApi = MapFields.safe(requestApi);
             this.exchangeTransport = normalizedUpper(exchangeTransport);
             this.exchangeCorrelationId = normalized(exchangeCorrelationId);
             this.exchangeAttemptId = normalized(exchangeAttemptId);
             this.exchangeHalf = normalizedUpper(exchangeHalf);
+        }
+
+        /** The same exchange under another request. */
+        private Flow withRequest(String key, String api) {
+            return new Flow(key, api, exchangeTransport,
+                    exchangeCorrelationId, exchangeAttemptId, exchangeHalf);
         }
     }
 
@@ -1385,12 +1351,8 @@ final class RuntimeTraceContext {
         private final SourceRef frameSource;
         private final long frameRemoteParentSpanId;
         private final long remoteParentSpanId;
-        private final String requestKey;
-        private final String requestApi;
-        private final String exchangeTransport;
-        private final String exchangeCorrelationId;
-        private final String exchangeAttemptId;
-        private final String exchangeHalf;
+        /** The request flow this scope replaced, put back when it ends. */
+        private final Flow flow;
 
         private ScopeFrame(long token, State state, Frame activeFrame) {
             this.token = token;
@@ -1400,12 +1362,7 @@ final class RuntimeTraceContext {
             this.frameRemoteParentSpanId = activeFrame == null ? 0L
                     : activeFrame.remoteParentSpanId;
             this.remoteParentSpanId = state.pendingRemoteParentSpanId;
-            this.requestKey = state.requestKey;
-            this.requestApi = state.requestApi;
-            this.exchangeTransport = state.exchangeTransport;
-            this.exchangeCorrelationId = state.exchangeCorrelationId;
-            this.exchangeAttemptId = state.exchangeAttemptId;
-            this.exchangeHalf = state.exchangeHalf;
+            this.flow = state.flow;
         }
     }
 
