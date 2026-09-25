@@ -87,10 +87,9 @@ final class SymbolizeAction {
                 "replayOccurrence", -1);
         this.bindingMode = optionalString(json, "bindingMode");
         this.javaType = optionalString(json, "javaType");
-        JsonObject definition = json;
-        this.method = optionalString(definition, "method");
-        this.local = optionalString(definition, "local");
-        int unitIndex = optionalInteger(definition, "unitIndex", -1);
+        this.method = optionalString(json, "method");
+        this.local = optionalString(json, "local");
+        int unitIndex = optionalInteger(json, "unitIndex", -1);
         if (unitIndex >= 0) definitionUnitIndices.add(unitIndex);
         for (JsonElement element : array(json, "definitionSites")) {
             if (element.isJsonObject()) {
@@ -185,6 +184,12 @@ final class SymbolizeAction {
         return javaTypeDescriptor(javaType).startsWith("[");
     }
 
+    /** A root-argument action, whole or by field path, at this index. */
+    boolean atArgument(int argumentIndex) {
+        return index == argumentIndex && ("ARGUMENT".equals(location)
+                || "ARGUMENT_FIELD_PATH".equals(location));
+    }
+
     boolean matchesLocal(String actualMethod,
                                  int actualUnitIndex,
                                  String actualLocal) {
@@ -208,11 +213,15 @@ final class SymbolizeAction {
     }
 
     boolean acceptsDirectFieldOccurrence(int actualOccurrence) {
-        boolean accessorConstrained = !accessorCallerMethod.isEmpty()
+        return accessorConstrained() || acceptsOccurrence(actualOccurrence);
+    }
+
+    /** The action names an accessor call: its reads are that call's. */
+    private boolean accessorConstrained() {
+        return !accessorCallerMethod.isEmpty()
                 || accessorCallUnitIndex >= 0
                 || !accessorDeclaredCallee.isEmpty()
                 || !accessorImplementationMethod.isEmpty();
-        return accessorConstrained || acceptsOccurrence(actualOccurrence);
     }
 
     boolean repeatedPrimitiveAccessor() {
@@ -289,10 +298,7 @@ final class SymbolizeAction {
                 || "HEAP_OBJECT_FIELD".equals(location))) {
             return false;
         }
-        boolean accessorConstrained = !accessorCallerMethod.isEmpty()
-                || accessorCallUnitIndex >= 0
-                || !accessorDeclaredCallee.isEmpty()
-                || !accessorImplementationMethod.isEmpty();
+        boolean accessorConstrained = accessorConstrained();
         String accessorSiteId = accessorCallerMethod.isEmpty()
                 || accessorCallUnitIndex < 0 ? ""
                 : SiteId.render(accessorCallerMethod,

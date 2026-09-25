@@ -39,10 +39,8 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.RootHookGroup;
 
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ROOT_ARGUMENT_PREDICATE_KIND;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.enclosingLoopRootAdmits;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.registerRunTotalsHook;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.sameHookIdentity;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.taskUnanswered;
 
 /** The bounded campaign this JVM executes. */
@@ -227,13 +225,9 @@ final class ConcolicTaskPlan {
      */
     synchronized RootHookGroup rootHookGroup(
             String instrumentationSelector, String rootMethod) {
-        String hook = safe(instrumentationSelector) + "\n" + safe(rootMethod);
-        RootHookGroup known = rootHookGroups.get(hook);
-        if (known != null) return known;
-        RootHookGroup resolved = resolveRootHookGroup(instrumentationSelector,
-                rootMethod);
-        rootHookGroups.put(hook, resolved);
-        return resolved;
+        return rootHookGroups.computeIfAbsent(safe(instrumentationSelector)
+                + "\n" + safe(rootMethod), hook -> resolveRootHookGroup(
+                        instrumentationSelector, rootMethod));
     }
 
     private RootHookGroup resolveRootHookGroup(
@@ -242,7 +236,7 @@ final class ConcolicTaskPlan {
         for (RuntimeTask task : tasks) {
             if (!task.instrumentationSelector.equals(
                     safe(instrumentationSelector))
-                    || !sameHookIdentity(task.rootMethod, rootMethod)) {
+                    || !Objects.equals(task.rootMethod, rootMethod)) {
                 continue;
             }
             if (selected != null && !selected.rootHookGroupKey().equals(
@@ -270,13 +264,10 @@ final class ConcolicTaskPlan {
     /** Resolves one lightweight outer hook shared by loop-body tasks. */
     synchronized RootHookGroup loopRootHookGroup(
             String instrumentationSelector, String rootMethod) {
-        String hook = safe(instrumentationSelector) + "\n" + safe(rootMethod);
-        RootHookGroup known = loopRootHookGroups.get(hook);
-        if (known != null) return known;
-        RootHookGroup resolved = resolveLoopRootHookGroup(
-                instrumentationSelector, rootMethod);
-        loopRootHookGroups.put(hook, resolved);
-        return resolved;
+        return loopRootHookGroups.computeIfAbsent(
+                safe(instrumentationSelector) + "\n" + safe(rootMethod),
+                hook -> resolveLoopRootHookGroup(instrumentationSelector,
+                        rootMethod));
     }
 
     private RootHookGroup resolveLoopRootHookGroup(
@@ -286,7 +277,7 @@ final class ConcolicTaskPlan {
             if (!task.loopBodyRoot
                     || !task.instrumentationSelector.equals(
                     safe(instrumentationSelector))
-                    || !sameHookIdentity(task.rootMethod, rootMethod)) {
+                    || !Objects.equals(task.rootMethod, rootMethod)) {
                 continue;
             }
             selected = task;
@@ -336,40 +327,16 @@ final class ConcolicTaskPlan {
                 continue;
             }
             // From here this task's own hook ran, so every refusal is stated;
-            // a silent one is later misreported as ROOT_NEVER_EXECUTED.
-            if (!compatibleRoot(task.rootMethod, rootMethod,
-                    task.rootContextSelector,
-                    task.enclosingRootArgumentSelector,
-                    receiver, rootArguments)) {
-                task.noteUnaddressedCandidate(RefusedCandidate.stated(
-                        "an enclosing invocation of " + safe(rootMethod)
-                                + " ran, and this task's enclosing root"
-                                + " selector does not fit it: receiver "
-                                + describe(receiver) + ", "
-                                + (rootArguments == null ? 0
-                                : rootArguments.length) + " argument(s)",
-                        activationSource));
-                continue;
-            }
-            String enclosingSourceMismatch = sourceMismatch(task,
-                    registeredReceiverSource, context);
-            if (!enclosingSourceMismatch.isEmpty()) {
-                task.noteUnaddressedCandidate(RefusedCandidate.stated(
-                        "an enclosing invocation of " + safe(rootMethod)
-                                + " ran and this run attributed it"
-                                + " elsewhere: " + enclosingSourceMismatch,
-                        activationSource));
-                continue;
-            }
-            OccurrenceAddress observed = observedAddresses.of(task,
-                    activationSource);
-            // The whole address, nothing standing in for it: an enclosing
-            // loop root decides which occurrence a whole sequence of bodies
+            // a silent one is later misreported as ROOT_NEVER_EXECUTED.  The
+            // whole address, nothing standing in for it: an enclosing loop
+            // root decides which occurrence a whole sequence of bodies
             // belongs to.
-            if (!task.acceptsRootInvocation(observed)) {
-                task.noteUnaddressedCandidate(RefusedCandidate.onAddress(
-                        "matching enclosing root", observed,
-                        activationSource));
+            RefusedCandidate refused = refusal(task, true, rootMethod,
+                    task.enclosingRootArgumentSelector, receiver,
+                    rootArguments, registeredReceiverSource, context,
+                    activationSource, observedAddresses);
+            if (refused != null) {
+                task.noteUnaddressedCandidate(refused);
                 continue;
             }
             // One occurrence, one enclosing activation: a later invocation
@@ -410,7 +377,7 @@ final class ConcolicTaskPlan {
                     safe(rootHookGroupKey))) continue;
             if (task.blocksAdmissionAfterCompletedGoal()) continue;
             if (task.loopBodyRoot) {
-                if (!enclosingLoopRootAdmits(task)) {
+                if (LoopAccounting.enclosingLoopRoot(task) == null) {
                     // Stated, or the run end reports ROOT_NEVER_EXECUTED.
                     task.noteUnaddressedCandidate(RefusedCandidate.stated(
                             "a body of this loop ran under no enclosing"
@@ -426,33 +393,13 @@ final class ConcolicTaskPlan {
                 candidateLive[index] = true;
                 return task;
             }
-            if (!compatibleRoot(task.rootMethod, rootMethod,
-                    task.rootContextSelector, task.rootArgumentSelector,
-                    receiver, rootArguments)) {
-                task.noteUnaddressedCandidate(RefusedCandidate.stated(
-                        "an invocation of " + safe(rootMethod) + " ran, and"
-                                + " this task's root selector does not fit"
-                                + " it: receiver " + describe(receiver)
-                                + ", " + (rootArguments == null ? 0
-                                : rootArguments.length) + " argument(s)",
-                        activationSource));
-                continue;
-            }
-            String rootSourceMismatch = sourceMismatch(task,
-                    registeredReceiverSource, context);
-            if (!rootSourceMismatch.isEmpty()) {
-                task.noteUnaddressedCandidate(RefusedCandidate.stated(
-                        "a matching root ran and this run attributed it"
-                                + " elsewhere: " + rootSourceMismatch,
-                        activationSource));
-                continue;
-            }
-            OccurrenceAddress observed = observedAddresses.of(task,
-                    activationSource);
-            if (!task.acceptsRootInvocation(observed)) {
-                // Stated, or the run end reports ROOT_NEVER_EXECUTED.
-                task.noteUnaddressedCandidate(RefusedCandidate.onAddress(
-                        "matching root", observed, activationSource));
+            // Stated, or the run end reports ROOT_NEVER_EXECUTED.
+            RefusedCandidate refused = refusal(task, false, rootMethod,
+                    task.rootArgumentSelector, receiver, rootArguments,
+                    registeredReceiverSource, context, activationSource,
+                    observedAddresses);
+            if (refused != null) {
+                task.noteUnaddressedCandidate(refused);
                 continue;
             }
             if (candidateLive[index]) continue;
@@ -460,6 +407,48 @@ final class ConcolicTaskPlan {
             return task;
         }
         return null;
+    }
+
+    /**
+     * Why this root entry is not {@code task}'s occurrence, or null when it
+     * is: the root selector, then the source this run attributed it to,
+     * then the whole address.  {@code enclosing}: asked at the enclosing
+     * invocation of a loop-body task.
+     */
+    private static RefusedCandidate refusal(
+            RuntimeTask task, boolean enclosing, String rootMethod,
+            RootArgumentSelector arguments, Object receiver,
+            Object[] rootArguments, SourceRef registeredReceiverSource,
+            RuntimeTraceContext.View context, SourceRef activationSource,
+            ObservedAddresses observedAddresses) {
+        if (!compatibleRoot(task.rootMethod, rootMethod,
+                task.rootContextSelector, arguments, receiver,
+                rootArguments)) {
+            return RefusedCandidate.stated((enclosing
+                    ? "an enclosing invocation of " + safe(rootMethod)
+                    + " ran, and this task's enclosing root selector"
+                    : "an invocation of " + safe(rootMethod) + " ran, and"
+                    + " this task's root selector")
+                    + " does not fit it: receiver " + describe(receiver)
+                    + ", " + (rootArguments == null ? 0
+                    : rootArguments.length) + " argument(s)",
+                    activationSource);
+        }
+        String mismatch = sourceMismatch(task, registeredReceiverSource,
+                context);
+        if (!mismatch.isEmpty()) {
+            return RefusedCandidate.stated((enclosing
+                    ? "an enclosing invocation of " + safe(rootMethod)
+                    + " ran and this run attributed it elsewhere: "
+                    : "a matching root ran and this run attributed it"
+                    + " elsewhere: ") + mismatch, activationSource);
+        }
+        OccurrenceAddress observed = observedAddresses.of(task,
+                activationSource);
+        return task.acceptsRootInvocation(observed) ? null
+                : RefusedCandidate.onAddress(enclosing
+                        ? "matching enclosing root" : "matching root",
+                        observed, activationSource);
     }
 
     /**
@@ -1070,11 +1059,6 @@ final class ConcolicTaskPlan {
                     + " was never registered in this run" : "");
         }
 
-        /** Body entries this loop may run before the replay is cut. */
-        int maxLoopBodies(String loopId) {
-            return LoopBoundPolicy.MAX_REPLAY_PATH_LOOP_BODIES;
-        }
-
         /**
          * Counts one activation against the loop-body occurrence budget; not
          * an identity (IDENTITY-V3: an occurrence IS its execution index).
@@ -1328,7 +1312,7 @@ final class ConcolicTaskPlan {
          * Closes admission for a non-loop address after its first terminal
          * result; loop-body roots are governed by K_L alone.
          */
-        void reserveCompletedEvidence(boolean targetReached) {
+        void reserveCompletedEvidence() {
             if (!loopBodyRoot) {
                 completedGoalReserved = true;
             }

@@ -24,6 +24,7 @@ import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -447,8 +448,7 @@ public final class ConcolicRegionRuntime {
             ACTIVE.put(active.token, active);
             pushActiveRegion(active);
             javaRegionPushed = true;
-            active.vmContextId = api.currentContextId();
-            if (active.vmContextId <= 0L) {
+            if (api.currentContextId() <= 0L) {
                 throw new IllegalStateException(
                         "custom concolic engine returned no context id");
             }
@@ -474,7 +474,8 @@ public final class ConcolicRegionRuntime {
                     admitted.sourceKey, context.source.key())) {
                 observeCausalSource(context.source.key());
             }
-            prepare(active);
+            // The declared entry setup.
+            RootMint.symbolizeReceiverFields(active, admitted, api);
             api.resumePathCondition();
             pathConditionPaused = false;
             return active;
@@ -506,13 +507,6 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    /** Performs the declared entry setup for one selected occurrence. */
-    private static void prepare(ActiveRegion active) {
-        if (active.prepared) return;
-        active.prepared = true;
-        RuntimeTask task = active.activation;
-        RootMint.symbolizeReceiverFields(active, task, engine());
-    }
     /**
      * Takes the execution-index frame filed for the work running here.
      * Woven at the entry of every functional method a start hands to a
@@ -795,16 +789,6 @@ public final class ConcolicRegionRuntime {
         LoopAccounting.exitLoopRoot(token);
     }
 
-    /** Whether the nearest matching outer call owns this loop task. */
-    static boolean enclosingLoopRootAdmits(RuntimeTask task) {
-        return LoopAccounting.enclosingLoopRoot(task) != null;
-    }
-
-    /** Null-safe equality for either string naming one root hook. */
-    static boolean sameHookIdentity(String left, String right) {
-        return left == null ? right == null : left.equals(right);
-    }
-
     /**
      * A fault marker's ({@code Debug.makeSymbolicBoolean}) recorded
      * polarity: always {@code false}.  The wave's polarity is planted by the
@@ -854,8 +838,7 @@ public final class ConcolicRegionRuntime {
      */
     public static void symbolizeArgument(long token, int argumentIndex,
                                          Object value, String primitiveValue) {
-        RootMint.symbolizeArgument(token, argumentIndex, value,
-                primitiveValue);
+        RootMint.symbolizeArgument(token, argumentIndex, value);
     }
 
     /** Symbolizes one scheduler-selected helper-method argument in-region. */
@@ -863,8 +846,7 @@ public final class ConcolicRegionRuntime {
                                                int argumentIndex,
                                                Object value,
                                                String primitiveValue) {
-        RootMint.symbolizeMethodArgument(method, argumentIndex, value,
-                primitiveValue);
+        RootMint.symbolizeMethodArgument(method, argumentIndex, value);
     }
 
     /** Mints the declared root argument before Java control flow consumes it. */
@@ -872,7 +854,7 @@ public final class ConcolicRegionRuntime {
                                              Object boxedOrReference,
                                              String primitiveValue) {
         return RootMint.materializeArgument(token, argumentIndex,
-                boxedOrReference, primitiveValue);
+                boxedOrReference);
     }
 
     /** Mints a declared live-in at an exact in-region helper parameter. */
@@ -881,7 +863,7 @@ public final class ConcolicRegionRuntime {
                                                    Object boxedOrReference,
                                                    String primitiveValue) {
         return RootMint.materializeMethodArgument(method, argumentIndex,
-                boxedOrReference, primitiveValue);
+                boxedOrReference);
     }
 
     /** Materializes a reference-valued live-in at its defining Jimple local. */
@@ -962,10 +944,8 @@ public final class ConcolicRegionRuntime {
     static JsonElement engineExpression(String serialized) {
         ActiveRegion active = activeRegion();
         try {
-            VmExpressionTable.Store store = active == null
-                    ? workloadExpressionStore
-                    : active.expressionStore;
-            return store.importField(serialized, "expression");
+            return expressionStore(active).importField(serialized,
+                    "expression");
         } catch (RuntimeException malformed) {
             String detail = PROPAGATED_EXPRESSION_IMPORT_FAILED
                     + ": producer=" + describeImportPayload(serialized)
@@ -987,10 +967,14 @@ public final class ConcolicRegionRuntime {
     /** Resolves a native session DAG while retaining content sharing here. */
     static JsonObject decodeVmEnvelope(JsonObject envelope,
                                                ActiveRegion active) {
-        VmExpressionTable.Store store = active == null
-                ? workloadExpressionStore
+        return expressionStore(active).importEnvelope(envelope);
+    }
+
+    /** The store an activation's expressions import into. */
+    private static VmExpressionTable.Store expressionStore(
+            ActiveRegion active) {
+        return active == null ? workloadExpressionStore
                 : active.expressionStore;
-        return store.importEnvelope(envelope);
     }
 
     /**
@@ -1195,9 +1179,9 @@ public final class ConcolicRegionRuntime {
             SILENCED.remove();
             return null;
         }
-        boolean matches = sameHookIdentity(frame.instrumentationSelector,
+        boolean matches = Objects.equals(frame.instrumentationSelector,
                 instrumentationSelector)
-                && sameHookIdentity(frame.rootMethod, rootMethod);
+                && Objects.equals(frame.rootMethod, rootMethod);
         if (!matches) {
             // Never guess ownership, never close an outer frame.
             return null;
@@ -1303,14 +1287,9 @@ public final class ConcolicRegionRuntime {
     static void finish(long token, String exitKind,
                                String exceptionType, Throwable throwable) {
         ActiveRegion active = ownerRegion(token);
-        if (active == null) return;
-        finishOccurrence(active, exitKind, exceptionType, throwable);
-    }
-
-    private static void finishOccurrence(ActiveRegion active, String exitKind,
-                                         String exceptionType,
-                                         Throwable throwable) {
-        if (!active.finished.compareAndSet(false, true)) return;
+        if (active == null || !active.finished.compareAndSet(false, true)) {
+            return;
+        }
         beginSelectedResultPublication();
         boolean publicationDeferred = false;
         // Judgement and publication are bookkeeping: muted until VM close.
@@ -1459,7 +1438,7 @@ public final class ConcolicRegionRuntime {
             RowPublication.publishMints(active);
             configuration().releaseCandidate(active.activation);
             if (active.terminalGap && !active.activation.loopBodyRoot) {
-                active.activation.reserveCompletedEvidence(false);
+                active.activation.reserveCompletedEvidence();
             }
             return false;
         }
@@ -1569,9 +1548,7 @@ public final class ConcolicRegionRuntime {
             String declaredCallee, Object fieldOwner) {
         AccessorCallContext context = CURRENT_ACCESSOR_CALL_CONTEXT.get();
         if (context == null) return null;
-        ActiveRegion active = activeRegion();
-        if (active == null || context.regionToken != active.token
-                || context.thread != Thread.currentThread()) {
+        if (!context.live()) {
             CURRENT_ACCESSOR_CALL_CONTEXT.remove();
             return Boolean.FALSE;
         }
@@ -1581,13 +1558,7 @@ public final class ConcolicRegionRuntime {
 
     static int lightweightAccessorContextOccurrence() {
         AccessorCallContext context = CURRENT_ACCESSOR_CALL_CONTEXT.get();
-        ActiveRegion active = activeRegion();
-        if (context == null || active == null
-                || context.regionToken != active.token
-                || context.thread != Thread.currentThread()) {
-            return -1;
-        }
-        return context.occurrence;
+        return context == null || !context.live() ? -1 : context.occurrence;
     }
 
     static ActiveRegion ownerRegion(long token) {
@@ -1595,8 +1566,6 @@ public final class ConcolicRegionRuntime {
         return active != null && active.thread == Thread.currentThread()
                 ? active : null;
     }
-
-    @SuppressWarnings("deprecation")
 
     /**
      * Opens the Java-side branch-observation gate when the first selected
@@ -1606,10 +1575,6 @@ public final class ConcolicRegionRuntime {
         if (active.pathRecordingStarted) return;
         active.pathRecordingStarted = true;
     }
-
-
-
-
 
     static JsonElement parseJson(String value) {
         if (value == null || value.trim().isEmpty()) {
@@ -1630,8 +1595,6 @@ public final class ConcolicRegionRuntime {
         }
         return current == null ? "unknown" : current.toString();
     }
-
-
 
     /**
      * A configured source's recorded value, spelled as the ledger spells a
@@ -1678,6 +1641,13 @@ public final class ConcolicRegionRuntime {
             this.previous = previous;
         }
 
+        /** Opened by the live activation, on this thread. */
+        private boolean live() {
+            ActiveRegion active = activeRegion();
+            return active != null && regionToken == active.token
+                    && thread == Thread.currentThread();
+        }
+
         private boolean matches(
                 String actualCallerMethod, int actualCallUnitIndex,
                 String actualCallSiteId, String actualDeclaredCallee,
@@ -1705,13 +1675,15 @@ public final class ConcolicRegionRuntime {
         }
 
         int methodArgument(String method, int argumentIndex) {
-            return observe("ARGUMENT\u0000" + safe(method) + "#arg"
-                    + argumentIndex);
+            return observe(argumentKey(method, argumentIndex));
         }
 
         int observedMethodArgument(String method, int argumentIndex) {
-            return observed("ARGUMENT\u0000" + safe(method) + "#arg"
-                    + argumentIndex);
+            return observed(argumentKey(method, argumentIndex));
+        }
+
+        private static String argumentKey(String method, int argumentIndex) {
+            return "ARGUMENT\u0000" + safe(method) + "#arg" + argumentIndex;
         }
 
         /**

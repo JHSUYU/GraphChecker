@@ -36,6 +36,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.UUID;
+import java.util.function.Function;
 import java.util.function.ToLongFunction;
 
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.longNumber;
@@ -64,8 +65,8 @@ public final class RuntimeRegionPlanner {
                                     List<RuntimeEvent> runtimeEvents,
                                     List<ProtocolEvent> protocolEvents,
                                     Set<String> declaredSites) {
-        TraceIndex trace = new TraceIndex(methods, runtimeEvents == null
-                ? Collections.<RuntimeEvent>emptyList() : runtimeEvents,
+        if (protocolEvents == null) protocolEvents = Collections.emptyList();
+        TraceIndex trace = new TraceIndex(methods, runtimeEvents,
                 Collections.emptyList(), protocolEvents);
         Result result = new Result();
         result.staticRegionCount = skeletons.size();
@@ -223,8 +224,7 @@ public final class RuntimeRegionPlanner {
         }
         Map<Long, List<ProtocolEvent>> protocolByActivationRoot =
                 new LinkedHashMap<>();
-        for (ProtocolEvent event : protocolEvents == null
-                ? Collections.<ProtocolEvent>emptyList() : protocolEvents) {
+        for (ProtocolEvent event : protocolEvents) {
             for (Long call : trace.enclosingCalls(event.callId)) {
                 if (activationRoots.contains(call)) {
                     protocolByActivationRoot.computeIfAbsent(call,
@@ -237,7 +237,9 @@ public final class RuntimeRegionPlanner {
                 protocolEvents, protocolByActivationRoot);
         bindObservedCommunicationCaptures(result.runtimeInstances,
                 protocolByActivationRoot, protocolEvents);
-        retainInnermostCommunicationCaptureOwners(result.runtimeInstances);
+        retainInnermost(result.runtimeInstances, Collections::singletonList,
+                RuntimeSelectedRegionFinalizer.OBSERVED_COMMUNICATION_CAPTURES,
+                RuntimeRegionPlanner::communicationCaptureIdentity, false);
     }
 
     /** Retained loops whose enclosing method this occurrence holds. */
@@ -309,36 +311,25 @@ public final class RuntimeRegionPlanner {
             List<Map<String, Object>> activations, TraceIndex trace,
             List<ProtocolEvent> protocolEvents,
             Map<Long, List<ProtocolEvent>> protocolByActivationRoot) {
-        Map<String, List<ProtocolEvent>> requestReceives =
+        // (direction, half) -> transaction -> its events.
+        Map<String, Map<String, List<ProtocolEvent>>> legs =
                 new LinkedHashMap<>();
-        Map<String, List<ProtocolEvent>> responseSends =
-                new LinkedHashMap<>();
-        Map<String, List<ProtocolEvent>> requestSends =
-                new LinkedHashMap<>();
-        Map<String, List<ProtocolEvent>> responseReceives =
-                new LinkedHashMap<>();
-        for (ProtocolEvent event : protocolEvents == null
-                ? Collections.<ProtocolEvent>emptyList() : protocolEvents) {
+        for (ProtocolEvent event : protocolEvents) {
             if (event.correlationId.isEmpty()) continue;
-            String transaction = protocolTransactionKey(event);
-            if ("RECEIVE".equals(event.direction)
-                    && "REQUEST".equals(event.half)) {
-                requestReceives.computeIfAbsent(transaction,
-                        ignored -> new ArrayList<>()).add(event);
-            } else if ("SEND".equals(event.direction)
-                    && "REQUEST".equals(event.half)) {
-                requestSends.computeIfAbsent(transaction,
-                        ignored -> new ArrayList<>()).add(event);
-            } else if ("SEND".equals(event.direction)
-                    && "RESPONSE".equals(event.half)) {
-                responseSends.computeIfAbsent(transaction,
-                        ignored -> new ArrayList<>()).add(event);
-            } else if ("RECEIVE".equals(event.direction)
-                    && "RESPONSE".equals(event.half)) {
-                responseReceives.computeIfAbsent(transaction,
-                        ignored -> new ArrayList<>()).add(event);
-            }
+            legs.computeIfAbsent(event.direction + "\n" + event.half,
+                    ignored -> new LinkedHashMap<>())
+                    .computeIfAbsent(protocolTransactionKey(event),
+                            ignored -> new ArrayList<>()).add(event);
         }
+        Map<String, List<ProtocolEvent>> none = Collections.emptyMap();
+        Map<String, List<ProtocolEvent>> requestReceives =
+                legs.getOrDefault("RECEIVE\nREQUEST", none);
+        Map<String, List<ProtocolEvent>> responseSends =
+                legs.getOrDefault("SEND\nRESPONSE", none);
+        Map<String, List<ProtocolEvent>> requestSends =
+                legs.getOrDefault("SEND\nREQUEST", none);
+        Map<String, List<ProtocolEvent>> responseReceives =
+                legs.getOrDefault("RECEIVE\nRESPONSE", none);
         // A synchronous transport commonly receives the response after the
         // deep transport invocation that emitted the request has returned.
         for (Map.Entry<String, List<ProtocolEvent>> transaction
@@ -498,7 +489,9 @@ public final class RuntimeRegionPlanner {
         activation.put("occurrenceAddress", root.occurrenceAddress);
         putTraceContext(activation, root,
                 activationSource(root, stampedSources(calls, trace)));
-        putRecordedTraceIds(activation, root);
+        // The recorded lane, for #bindObservedCommunicationCaptures only:
+        // per-recording, so never in the frozen plan.
+        if (root.laneId > 0L) activation.put("laneId", root.laneId);
         activation.put("callIds", new ArrayList<>(calls));
         activation.put("observedMethods", new ArrayList<>(observed));
         activation.put(
@@ -604,9 +597,7 @@ public final class RuntimeRegionPlanner {
                     protocolByActivationRoot.getOrDefault(rootCallId,
                             Collections.<ProtocolEvent>emptyList()));
             long laneId = longNumber(activation.get("laneId"), -1L);
-            for (ProtocolEvent event : protocolEvents == null
-                    ? Collections.<ProtocolEvent>emptyList()
-                    : protocolEvents) {
+            for (ProtocolEvent event : protocolEvents) {
                 if (laneId > 0L && event.laneId == laneId
                         && !protocol.contains(event)) {
                     protocol.add(event);
@@ -670,59 +661,66 @@ public final class RuntimeRegionPlanner {
     }
 
     /**
-     * A capture belongs to the smallest activation containing its event; an
-     * enclosing second owner would give one receive two producers.
+     * One row, one owner: a row keyed alike in an activation and in one it
+     * encloses stays with the smaller only, or one event would have two
+     * owners (one receive two producers, one read two symbols).  A row whose
+     * key is {@code ""} is never shadowed.
      */
-    private static void retainInnermostCommunicationCaptureOwners(
-            Collection<Map<String, Object>> activations) {
-        Map<String, List<Map<String, Object>>> ownersByCapture =
-                new LinkedHashMap<>();
-        for (Map<String, Object> activation : activations) {
-            for (Map<String, Object> capture : rows(activation.get(
-                    RuntimeSelectedRegionFinalizer
-                            .OBSERVED_COMMUNICATION_CAPTURES))) {
-                String key = communicationCaptureIdentity(capture);
-                if (!key.isEmpty()) {
-                    ownersByCapture.computeIfAbsent(key,
-                            ignored -> new ArrayList<>()).add(activation);
-                }
-            }
-        }
-        Map<String, Set<String>> shadowedByCapture = new LinkedHashMap<>();
-        for (Map.Entry<String, List<Map<String, Object>>> entry
-                : ownersByCapture.entrySet()) {
-            Set<String> candidateIds = new LinkedHashSet<>();
-            for (Map<String, Object> activation : entry.getValue()) {
-                candidateIds.add(stringValue(activation.get("activationId")));
-            }
-            Set<String> shadowed = new LinkedHashSet<>();
-            for (Map<String, Object> activation : entry.getValue()) {
-                for (String enclosing : strings(
-                        activation.get("enclosingActivationIds"))) {
-                    if (candidateIds.contains(enclosing)) {
-                        shadowed.add(enclosing);
+    private static void retainInnermost(
+            Collection<Map<String, Object>> owners,
+            Function<Map<String, Object>, List<Map<String, Object>>> holders,
+            String field, Function<Map<String, Object>, String> key,
+            boolean dropEmpty) {
+        Map<String, Set<String>> ownersByKey = new LinkedHashMap<>();
+        for (Map<String, Object> owner : owners) {
+            String id = stringValue(owner.get("activationId"));
+            if (id.isEmpty()) continue;
+            for (Map<String, Object> holder : holders.apply(owner)) {
+                for (Map<String, Object> row : rows(holder.get(field))) {
+                    String identity = key.apply(row);
+                    if (!identity.isEmpty()) {
+                        ownersByKey.computeIfAbsent(identity,
+                                ignored -> new LinkedHashSet<>()).add(id);
                     }
                 }
             }
-            if (!shadowed.isEmpty()) {
-                shadowedByCapture.put(entry.getKey(), shadowed);
-            }
         }
-        if (shadowedByCapture.isEmpty()) return;
-        for (Map<String, Object> activation : activations) {
-            String activationId = stringValue(activation.get("activationId"));
-            List<Map<String, Object>> retained = new ArrayList<>();
-            for (Map<String, Object> capture : rows(activation.get(
-                    RuntimeSelectedRegionFinalizer
-                            .OBSERVED_COMMUNICATION_CAPTURES))) {
-                Set<String> shadowed = shadowedByCapture.get(
-                        communicationCaptureIdentity(capture));
-                if (shadowed == null || !shadowed.contains(activationId)) {
-                    retained.add(capture);
+        // "ancestor id\nkey": ids carry no newline.
+        Set<String> shadowed = new LinkedHashSet<>();
+        for (Map<String, Object> child : owners) {
+            String childId = stringValue(child.get("activationId"));
+            List<String> enclosing = strings(child.get(
+                    "enclosingActivationIds"));
+            if (childId.isEmpty() || enclosing.isEmpty()) continue;
+            for (Map<String, Object> holder : holders.apply(child)) {
+                for (Map<String, Object> row : rows(holder.get(field))) {
+                    String identity = key.apply(row);
+                    Set<String> held = ownersByKey.get(identity);
+                    if (held == null || !held.contains(childId)) continue;
+                    for (String ancestor : enclosing) {
+                        if (held.contains(ancestor)) {
+                            shadowed.add(ancestor + "\n" + identity);
+                        }
+                    }
                 }
             }
-            activation.put(RuntimeSelectedRegionFinalizer
-                    .OBSERVED_COMMUNICATION_CAPTURES, retained);
+        }
+        if (shadowed.isEmpty()) return;
+        for (Map<String, Object> owner : owners) {
+            String id = stringValue(owner.get("activationId"));
+            for (Map<String, Object> holder : holders.apply(owner)) {
+                List<Map<String, Object>> retained = new ArrayList<>();
+                for (Map<String, Object> row : rows(holder.get(field))) {
+                    if (!shadowed.contains(id + "\n" + key.apply(row))) {
+                        retained.add(row);
+                    }
+                }
+                if (dropEmpty && retained.isEmpty()) {
+                    holder.remove(field);
+                } else {
+                    holder.put(field, retained);
+                }
+            }
         }
     }
 
@@ -791,18 +789,6 @@ public final class RuntimeRegionPlanner {
                 ? stringValue(((Map<?, ?>) selector).get("method")) : "";
     }
 
-    /**
-     * Gives each exact runtime event to the smallest planned activation
-     * containing it, so a child and its encloser never both own it.
-     */
-    private static void retainInnermostExactGoalEventOwners(
-            List<Map<String, Object>> plans, TraceIndex trace) {
-        retainInnermostExactGoalEventOwners(plans, trace,
-                "symbolize", false);
-        retainInnermostExactGoalEventOwners(plans, trace,
-                "branches", true);
-    }
-
     /** Re-spells {@code enclosingActivationIds} in the published namespace;
      * unretained enclosers have no name and are dropped. */
     private static void republishEnclosingActivationIds(
@@ -822,75 +808,6 @@ public final class RuntimeRegionPlanner {
                 plan.remove("enclosingActivationIds");
             } else {
                 plan.put("enclosingActivationIds", published);
-            }
-        }
-    }
-
-    private static void retainInnermostExactGoalEventOwners(
-            List<Map<String, Object>> plans, TraceIndex trace,
-            String goalField, boolean branch) {
-        Map<String, Set<String>> ownersByEvent = new LinkedHashMap<>();
-        for (Map<String, Object> plan : plans) {
-            String activationId = stringValue(plan.get("activationId"));
-            if (activationId.isEmpty()) continue;
-            for (Map<String, Object> goal : rows(plan.get("closureGoals"))) {
-                for (Map<String, Object> row : rows(goal.get(goalField))) {
-                    String identity = branch
-                            ? exactBranchEventIdentity(row, trace)
-                            : exactMaterializationEventIdentity(row, trace);
-                    if (!identity.isEmpty()) {
-                        ownersByEvent.computeIfAbsent(identity,
-                                ignored -> new LinkedHashSet<>())
-                                .add(activationId);
-                    }
-                }
-            }
-        }
-
-        Map<String, Set<String>> shadowedByEvent = new LinkedHashMap<>();
-        for (Map<String, Object> child : plans) {
-            String childId = stringValue(child.get("activationId"));
-            List<String> enclosing = strings(child.get(
-                    "enclosingActivationIds"));
-            if (childId.isEmpty() || enclosing.isEmpty()) continue;
-            for (Map<String, Object> goal : rows(child.get("closureGoals"))) {
-                for (Map<String, Object> row : rows(goal.get(goalField))) {
-                    String identity = branch
-                            ? exactBranchEventIdentity(row, trace)
-                            : exactMaterializationEventIdentity(row, trace);
-                    Set<String> owners = ownersByEvent.get(identity);
-                    if (identity.isEmpty() || owners == null
-                            || owners.size() < 2
-                            || !owners.contains(childId)) {
-                        continue;
-                    }
-                    for (String ancestorId : enclosing) {
-                        if (owners.contains(ancestorId)) {
-                            shadowedByEvent.computeIfAbsent(identity,
-                                    ignored -> new LinkedHashSet<>())
-                                    .add(ancestorId);
-                        }
-                    }
-                }
-            }
-        }
-        if (shadowedByEvent.isEmpty()) return;
-
-        for (Map<String, Object> plan : plans) {
-            String activationId = stringValue(plan.get("activationId"));
-            for (Map<String, Object> goal : rows(plan.get("closureGoals"))) {
-                List<Map<String, Object>> retained = new ArrayList<>();
-                for (Map<String, Object> row : rows(goal.get(goalField))) {
-                    String identity = branch
-                            ? exactBranchEventIdentity(row, trace)
-                            : exactMaterializationEventIdentity(row, trace);
-                    Set<String> shadowed = shadowedByEvent.get(identity);
-                    if (shadowed == null
-                            || !shadowed.contains(activationId)) {
-                        retained.add(row);
-                    }
-                }
-                goal.put(goalField, retained);
             }
         }
     }
@@ -1095,22 +1012,18 @@ public final class RuntimeRegionPlanner {
             if (!retainedOccurrences.contains(occurrenceId)) continue;
             OccurrenceBinding.bindOccurrence(region.json, rootCallId,
                     occurrenceId);
-            List<Map<String, Object>> occurrenceSymbolize = symbolize(
-                    region.symbolicInputs, occurrenceId);
-            List<Map<String, Object>> occurrenceBranches = branches;
             // The concrete activation picks the methods worth slicing.
             Set<String> occurrenceMethods =
                     new LinkedHashSet<>(observedMethods);
             if (allowedMethods.contains(root.method)) {
                 occurrenceMethods.add(root.method);
             }
-            boolean occurrenceTarget = target;
             Map<String, Object> goal = new LinkedHashMap<>();
-            goal.put("goalId", (occurrenceTarget ? "GOAL.TARGET_REACH."
+            goal.put("goalId", (target ? "GOAL.TARGET_REACH."
                     : "GOAL.REGION_PATH.")
                     + UUID.nameUUIDFromBytes(occurrenceId.getBytes(
                     StandardCharsets.UTF_8)));
-            goal.put("kind", occurrenceTarget ? "TARGET_REACH_CLOSURE"
+            goal.put("kind", target ? "TARGET_REACH_CLOSURE"
                     : "REGION_PATH_CLOSURE");
             goal.put("runtimeDefinitionMethods",
                     new ArrayList<>(occurrenceMethods));
@@ -1118,8 +1031,9 @@ public final class RuntimeRegionPlanner {
             goal.put("admission", object("state", "READY",
                     "mode", "RUNTIME_FAILURE_CLOSURE",
                     "blockers", Collections.emptyList()));
-            goal.put("symbolize", occurrenceSymbolize);
-            goal.put("branches", occurrenceBranches);
+            goal.put("symbolize", symbolize(region.symbolicInputs,
+                    occurrenceId));
+            goal.put("branches", branches);
             Map<String, Object> plan = new LinkedHashMap<>();
             plan.put("schemaVersion", 3);
             plan.put("kind", "CONCOLIC_REGION_PLAN");
@@ -1164,7 +1078,7 @@ public final class RuntimeRegionPlanner {
             List<Map<String, Object>> retainedLoops =
                     retainedLoops(region, occurrenceMethods);
             if (!retainedLoops.isEmpty()) {
-                plan.put(RETAINED_LOOPS_FIELD, retainedLoops);
+                plan.put(LoopBoundPolicy.PLAN_FIELD, retainedLoops);
             }
             List<JsonObject> sourcePhases = configuredSourcePhases(
                     region, occurrenceId, rootCallId, trace);
@@ -1192,10 +1106,12 @@ public final class RuntimeRegionPlanner {
             }
             // Non-target admission basis and demand depth, from the seed;
             // not derivable from the retained edges.
-            if (seed.containsKey(ADMISSION_BASIS)) {
-                plan.put(ADMISSION_BASIS, seed.get(ADMISSION_BASIS));
-                if (seed.containsKey(DEMAND_DEPTH)) {
-                    plan.put(DEMAND_DEPTH, seed.get(DEMAND_DEPTH));
+            String basis = RuntimeSelectedRegionFinalizer.ADMISSION_BASIS;
+            String depth = RuntimeSelectedRegionFinalizer.DEMAND_DEPTH;
+            if (seed.containsKey(basis)) {
+                plan.put(basis, seed.get(basis));
+                if (seed.containsKey(depth)) {
+                    plan.put(depth, seed.get(depth));
                 }
             }
             plan.put("closureGoals", Collections.singletonList(goal));
@@ -1204,8 +1120,19 @@ public final class RuntimeRegionPlanner {
         }
         republishEnclosingActivationIds(result.regionPlans,
                 publishedActivationIds);
-        retainInnermostDeclaredSiteCaptures(result.regionPlans);
-        retainInnermostExactGoalEventOwners(result.regionPlans, trace);
+        // One recorded event, one owner (#retainInnermost), on evidence and
+        // on each goal's reads and branches.
+        retainInnermost(result.regionPlans, Collections::singletonList,
+                DeclaredSiteCapture.PLAN_FIELD,
+                capture -> String.valueOf(longNumber(capture.get(
+                        DeclaredSiteCapture.INVOCATION_ID), -1L)), true);
+        Function<Map<String, Object>, List<Map<String, Object>>> goals =
+                plan -> rows(plan.get("closureGoals"));
+        retainInnermost(result.regionPlans, goals, "symbolize",
+                action -> exactMaterializationEventIdentity(action, trace),
+                false);
+        retainInnermost(result.regionPlans, goals, "branches",
+                branch -> exactBranchEventIdentity(branch, trace), false);
         retainInnermostCommunicationConsumers(result.regionPlans);
         // Catalog: regions, their static symbolic sources and declared
         // roots.  Ports, methods and branches stay in the refined graph.
@@ -1409,67 +1336,6 @@ public final class RuntimeRegionPlanner {
         }
     }
 
-    /** The recorded lane, for {@link #bindObservedCommunicationCaptures};
-     * per-recording, so never in the frozen plan. */
-    private static void putRecordedTraceIds(Map<String, Object> target,
-                                            MethodEvent event) {
-        // Only the lane: span correlation happens over the trace rows.
-        if (event.laneId > 0L) target.put("laneId", event.laneId);
-    }
-
-    /** One recorded invocation is the innermost activation's read only (the
-     * {@link #retainInnermostExactGoalEventOwners} rule, on evidence). */
-    private static void retainInnermostDeclaredSiteCaptures(
-            List<Map<String, Object>> plans) {
-        Map<Long, Set<String>> ownersByInvocation = new LinkedHashMap<>();
-        for (Map<String, Object> plan : plans) {
-            String activationId = stringValue(plan.get("activationId"));
-            if (activationId.isEmpty()) continue;
-            for (Map<String, Object> capture
-                    : rows(plan.get(DeclaredSiteCapture.PLAN_FIELD))) {
-                ownersByInvocation.computeIfAbsent(longNumber(capture.get(
-                        DeclaredSiteCapture.INVOCATION_ID), -1L),
-                        ignored -> new LinkedHashSet<>()).add(activationId);
-            }
-        }
-        Set<String> shadowed = new LinkedHashSet<>();
-        for (Map<String, Object> child : plans) {
-            List<String> enclosing = strings(child.get(
-                    "enclosingActivationIds"));
-            if (enclosing.isEmpty()) continue;
-            for (Map<String, Object> capture
-                    : rows(child.get(DeclaredSiteCapture.PLAN_FIELD))) {
-                long invocation = longNumber(capture.get(
-                        DeclaredSiteCapture.INVOCATION_ID), -1L);
-                Set<String> owners = ownersByInvocation.get(invocation);
-                if (owners == null || owners.size() < 2) continue;
-                for (String ancestor : enclosing) {
-                    if (owners.contains(ancestor)) {
-                        shadowed.add(ancestor + "\n" + invocation);
-                    }
-                }
-            }
-        }
-        if (shadowed.isEmpty()) return;
-        for (Map<String, Object> plan : plans) {
-            String activationId = stringValue(plan.get("activationId"));
-            List<Map<String, Object>> retained = new ArrayList<>();
-            for (Map<String, Object> capture
-                    : rows(plan.get(DeclaredSiteCapture.PLAN_FIELD))) {
-                if (!shadowed.contains(activationId + "\n" + longNumber(
-                        capture.get(DeclaredSiteCapture.INVOCATION_ID),
-                        -1L))) {
-                    retained.add(capture);
-                }
-            }
-            if (retained.isEmpty()) {
-                plan.remove(DeclaredSiteCapture.PLAN_FIELD);
-            } else {
-                plan.put(DeclaredSiteCapture.PLAN_FIELD, retained);
-            }
-        }
-    }
-
     /**
      * One row per completed call at a DECLARED_SITE in ONE occurrence.  The
      * ordinal (the replay address) counts every completed call at that
@@ -1582,13 +1448,8 @@ public final class RuntimeRegionPlanner {
         String definitionMethod = stringValue(port.get(
                 CommunicationCatalogContract.PORT_DEFINITION_METHOD));
         String javaType = stringValue(port.get("javaType"));
-        if (capture.isEmpty()) {
-            return null;
-        }
-        if (javaType.isEmpty()) {
-            return null;
-        }
-        if (definitionMethod.isEmpty()) {
+        if (capture.isEmpty() || javaType.isEmpty()
+                || definitionMethod.isEmpty()) {
             return null;
         }
         Map<String, Object> action = new LinkedHashMap<>(port);
@@ -1815,16 +1676,6 @@ public final class RuntimeRegionPlanner {
         return source.id() + "/relation/" + regionId;
     }
 
-    /** Admission basis and demand depth; spelled by the finalizer. */
-    static final String ADMISSION_BASIS =
-            RuntimeSelectedRegionFinalizer.ADMISSION_BASIS;
-    static final String DEMAND_DEPTH =
-            RuntimeSelectedRegionFinalizer.DEMAND_DEPTH;
-
-    /** Task member carrying the retained loops of one occurrence. */
-    static final String RETAINED_LOOPS_FIELD =
-            edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy.PLAN_FIELD;
-
     /** Per-recording correlation key of a seed, never published (see
      * {@link #activationId(String, Map)}). */
     static String recordedActivationKey(MethodEvent root) {
@@ -1877,8 +1728,6 @@ public final class RuntimeRegionPlanner {
             text.append(value);
         }
     }
-
-    @SuppressWarnings("unchecked")
 
     private static List<String> strings(Object value) {
         List<String> result = new ArrayList<>();
@@ -1963,31 +1812,6 @@ public final class RuntimeRegionPlanner {
         /** FOLDED into its thread's occurrence (F1); not the same as an
          * empty {@link #occurrenceAddress}, which is a refused hole. */
         final boolean regionFolded;
-        MethodEvent(long seq, String test, String threadName,
-                    long tid, String method, int objectId, String receiverType,
-                    long callId, long parentCallId, long parentSiteId,
-                    long laneId, long spanId, long remoteParentSpanId,
-                    SourceRef source, boolean receiverAttributed,
-                    String requestKey, String requestApi) {
-            this(seq, test, threadName, tid, method, objectId, receiverType,
-                    callId, parentCallId, parentSiteId, laneId, spanId,
-                    remoteParentSpanId, source,
-                    receiverAttributed, requestKey, requestApi, "");
-        }
-
-        MethodEvent(long seq, String test, String threadName,
-                    long tid, String method, int objectId, String receiverType,
-                    long callId, long parentCallId, long parentSiteId,
-                    long laneId, long spanId, long remoteParentSpanId,
-                    SourceRef source, boolean receiverAttributed,
-                    String requestKey, String requestApi,
-                    String occurrenceAddress) {
-            this(seq, test, threadName, tid, method, objectId, receiverType,
-                    callId, parentCallId, parentSiteId, laneId, spanId,
-                    remoteParentSpanId, source, receiverAttributed,
-                    requestKey, requestApi, occurrenceAddress, false);
-        }
-
         MethodEvent(long seq, String test, String threadName,
                     long tid, String method, int objectId, String receiverType,
                     long callId, long parentCallId, long parentSiteId,
@@ -2244,7 +2068,6 @@ public final class RuntimeRegionPlanner {
     }
 
     private static final class TraceIndex {
-        private final List<MethodEvent> methods;
         private final Map<Long, MethodEvent> methodByCall =
                 new LinkedHashMap<>();
         private final Map<String, List<MethodEvent>> methodsByName =
@@ -2259,8 +2082,8 @@ public final class RuntimeRegionPlanner {
                            Collection<RuntimeEvent> runtimeEvents,
                            Collection<FieldAccessEvent> fieldEvents,
                            Collection<ProtocolEvent> protocolEvents) {
-            methods = sorted(methodEvents, value -> value.seq);
-            for (MethodEvent event : methods) {
+            for (MethodEvent event : sorted(methodEvents,
+                    value -> value.seq)) {
                 methodByCall.put(event.callId, event);
                 methodsByName.computeIfAbsent(event.method,
                         ignored -> new ArrayList<>()).add(event);
@@ -2324,20 +2147,6 @@ public final class RuntimeRegionPlanner {
                 current = methodByCall.get(current.parentCallId);
             }
             return result;
-        }
-
-        /** The static site of one recorded call-site invocation inside one
-         * frame, or {@code ""} when this run recorded none. */
-        private String callSiteId(long callId, long invocationId) {
-            if (invocationId <= 0L) return "";
-            for (RuntimeEvent event : runtimeByCall.getOrDefault(callId,
-                    Collections.<RuntimeEvent>emptyList())) {
-                if (event.invocationId == invocationId
-                        && "CALL_SITE_ENTER".equals(event.kind)) {
-                    return event.siteId;
-                }
-            }
-            return "";
         }
 
         private List<RuntimeEvent> runtime(Set<Long> calls) {

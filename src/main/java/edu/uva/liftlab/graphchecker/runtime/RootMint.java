@@ -52,17 +52,13 @@ final class RootMint {
 
     /** Called once per Java argument right after region entry. */
     static void symbolizeArgument(long token, int argumentIndex,
-                                         Object value, String primitiveValue) {
+                                  Object value) {
         ActiveRegion active = ConcolicRegionRuntime.ownerRegion(token);
         if (active == null) {
             return;
         }
         for (SymbolizeAction action : active.activation.symbolize) {
-            if (!("ARGUMENT".equals(action.location)
-                    || "ARGUMENT_FIELD_PATH".equals(action.location))
-                    || action.index != argumentIndex) {
-                continue;
-            }
+            if (!action.atArgument(argumentIndex)) continue;
             if (value == null) {
                 if ("ARGUMENT".equals(action.location)
                         && action.declaresArrayInput(
@@ -72,9 +68,6 @@ final class RootMint {
                 continue;
             }
             if ("ARGUMENT_FIELD_PATH".equals(action.location)) {
-                if (action.fieldPaths.isEmpty()) {
-                    continue;
-                }
                 for (List<String> path : action.fieldPaths) {
                     symbolizeFieldPath(active, action, value, path, engine());
                 }
@@ -85,10 +78,8 @@ final class RootMint {
     }
 
     /** Symbolizes one scheduler-selected helper-method argument in-region. */
-    static void symbolizeMethodArgument(String method,
-                                               int argumentIndex,
-                                               Object value,
-                                               String primitiveValue) {
+    static void symbolizeMethodArgument(String method, int argumentIndex,
+                                        Object value) {
         ActiveRegion active = ConcolicRegionRuntime.activeRegion();
         if (active == null) return;
         int occurrence = active.materializationOccurrences
@@ -113,16 +104,11 @@ final class RootMint {
      * becomes a symbol; everything else passes through.
      */
     static Object materializeArgument(long token, int argumentIndex,
-                                             Object boxedOrReference,
-                                             String primitiveValue) {
+                                      Object boxedOrReference) {
         ActiveRegion active = ConcolicRegionRuntime.ownerRegion(token);
         if (active == null) return boxedOrReference;
         for (SymbolizeAction action : active.activation.symbolize) {
-            if (action.index != argumentIndex
-                    || !("ARGUMENT".equals(action.location)
-                    || "ARGUMENT_FIELD_PATH".equals(action.location))) {
-                continue;
-            }
+            if (!action.atArgument(argumentIndex)) continue;
             if (boxedOrReference != null
                     && isPrimitiveBox(boxedOrReference)) {
                 return materializePrimitiveValue(active, action,
@@ -133,10 +119,8 @@ final class RootMint {
     }
 
     /** Mints a declared live-in at an exact in-region helper parameter. */
-    static Object materializeMethodArgument(String method,
-                                                   int argumentIndex,
-                                                   Object boxedOrReference,
-                                                   String primitiveValue) {
+    static Object materializeMethodArgument(String method, int argumentIndex,
+                                            Object boxedOrReference) {
         ActiveRegion active = ConcolicRegionRuntime.activeRegion();
         if (active == null) return boxedOrReference;
         int occurrence = active.materializationOccurrences.methodArgument(
@@ -163,7 +147,7 @@ final class RootMint {
         if (active == null) {
             return value;
         }
-        int occurrence = active.nextLocalMaterializationOccurrence(
+        int occurrence = active.materializationOccurrences.local(
                 method, unitIndex, local);
         for (SymbolizeAction action : active.activation.symbolize) {
             if (!action.matchesLocal(method, unitIndex, local)
@@ -196,7 +180,7 @@ final class RootMint {
         if (active == null || boxedValue == null) {
             return boxedValue;
         }
-        int occurrence = active.nextLocalMaterializationOccurrence(
+        int occurrence = active.materializationOccurrences.local(
                 method, unitIndex, local);
         for (SymbolizeAction action : active.activation.symbolize) {
             if (!action.matchesLocal(method, unitIndex, local)
@@ -250,8 +234,7 @@ final class RootMint {
         if (active == null || owner == null) return;
         int occurrence = active.materializationOccurrences.field(
                 method, unitIndex);
-        List<SymbolizeAction> claimed = active.activation.symbolize;
-        for (SymbolizeAction action : claimed) {
+        for (SymbolizeAction action : active.activation.symbolize) {
             if (!action.matchesField(method, unitIndex, owner, fieldSignature,
                     fieldName)
                     || !action.acceptsDirectFieldOccurrence(occurrence)) {
@@ -273,12 +256,11 @@ final class RootMint {
                 Object value = exactField.get(leafOwner);
                 JsonElement carried;
                 try {
-                    carried = containerValue(value)
-                            ? ConcolicRegionRuntime.engineExpression(api.expression(value))
-                            : ConcolicRegionRuntime.engineExpression(api.fieldExpression(leafOwner,
+                    carried = cellExpression(api, leafOwner,
                             exactField.getDeclaringClass().getName(),
                             exactField.getName(), javaTypeDescriptor(
-                            exactField.getType().getTypeName()), value));
+                                    exactField.getType().getTypeName()),
+                            value);
                 } catch (ConcolicRegionRuntime.PropagatedExpressionImportFailure unreadable) {
                     continue;
                 } catch (Throwable unsymbolized) {
@@ -347,15 +329,12 @@ final class RootMint {
      * only through the {@link edu.uva.liftlab.graphchecker.contract
      * .RootMintRow} its activation publishes, so a mint is symbolized AND
      * rowed, or refused by name.  Resolved at the region that OWNS the root
-     * ({@link ConcolicRegionRuntime#declaringRegion}), the same walk as
-     * {@link #focusedRootValue} and {@code ActiveRegion#mintOccurrence}.
-     * No {@code d3Address} means not admitted.</p>
+     * ({@link ActiveRegion#rootOwner}).  No {@code d3Address} means not
+     * admitted.</p>
      */
     static ActiveRegion mintOwner(ActiveRegion active, String rootId) {
         if (active == null || !RowRuntime.open()) return null;
-        ActiveRegion owner = ConcolicRegionRuntime.declaringRegion(
-                new ConcolicRegionRuntime.Declares.Root(safe(rootId)));
-        if (owner == null) owner = active;
+        ActiveRegion owner = active.rootOwner(rootId);
         return owner.d3Address == null ? null : owner;
     }
 
@@ -499,9 +478,7 @@ final class RootMint {
                 rootId);
         if (active == null) return "";
         // At the region that OWNS the mint, as the recording resolved it.
-        ActiveRegion owner = ConcolicRegionRuntime.declaringRegion(
-                new ConcolicRegionRuntime.Declares.Root(safe(rootId)));
-        if (owner == null) owner = active;
+        ActiveRegion owner = active.rootOwner(rootId);
         if (owner.d3Address == null) return "";
         if (!edu.uva.liftlab.graphchecker.runtime.FocusedReplay
                 .focused(owner.d3Address)) {
@@ -599,11 +576,8 @@ final class RootMint {
             if (field == null) {
                 return;
             }
-            JsonElement carried = containerValue(value)
-                    ? ConcolicRegionRuntime.engineExpression(api.expression(value))
-                    : ConcolicRegionRuntime.engineExpression(api.fieldExpression(owner,
-                    field.owner(), field.name(),
-                    javaTypeDescriptor(field.type()), value));
+            JsonElement carried = cellExpression(api, owner, field.owner(),
+                    field.name(), javaTypeDescriptor(field.type()), value);
             if (retainPropagatedInput(active, action, value, carried, symbol,
                     exactFieldPath, leafFieldSignature)) {
                 return;
@@ -702,10 +676,7 @@ final class RootMint {
             return;
         }
         Object leafOwner = resolveFieldPathLeafOwner(root, path);
-        if (leafOwner == MissingValue.INSTANCE) {
-            return;
-        }
-        if (leafOwner == null) {
+        if (leafOwner == null || leafOwner == MissingValue.INSTANCE) {
             return;
         }
         symbolizeField(active, action, leafOwner, label, path, api);
@@ -842,7 +813,7 @@ final class RootMint {
                     : ConcolicRegionRuntime.engineExpression(api.expression(value));
             active.recordManualSymbolization(action, action.symbol,
                     Collections.<String>emptyList(), "", expression,
-                    true, false);
+                    true, false, "");
         } catch (Throwable throwable) {
             RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.UNSTATED_VALUE,
                     edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
@@ -884,6 +855,20 @@ final class RootMint {
         if (!declaredCommunicationCutPort(action)) return false;
         ConcolicRegionRuntime.ensurePathRecordingStarted(active);
         return true;
+    }
+
+    /**
+     * What the VM carries in one cell: a container's own expression, else
+     * the field's.
+     */
+    static JsonElement cellExpression(ConcolicVmBroker api, Object owner,
+                                      String declaringClass, String fieldName,
+                                      String descriptor, Object value)
+            throws Exception {
+        return ConcolicRegionRuntime.engineExpression(containerValue(value)
+                ? api.expression(value)
+                : api.fieldExpression(owner, declaringClass, fieldName,
+                        descriptor, value));
     }
 
     static boolean containerValue(Object value) {

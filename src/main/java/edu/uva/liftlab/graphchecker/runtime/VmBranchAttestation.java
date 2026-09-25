@@ -51,31 +51,18 @@ final class VmBranchAttestation {
     }
 
     /**
-     * @param readEvents the caller's read of the event stream, or
-     *                   {@code null} to read it here; reuse it so both
-     *                   answers come from one (costly) observation.
+     * @param parsed the caller's read of the event stream: both answers come
+     *               from one (costly) observation.
      */
     static Attestation attest(
-            ConcolicVmBroker api, ActiveRegion active, String siteId,
+            ActiveRegion active, String siteId,
             String expression, boolean observedOutcome, long eventId,
             int occurrence, PathConditionWindow conditions, int baseline,
             BranchObservation.SwitchExpectation switchExpectation,
-            JsonElement readEvents) {
+            JsonElement parsed) {
         if (eventId <= 0L) {
             return Attestation.invalid(
                     "marker returned a non-positive event id");
-        }
-        final JsonElement parsed;
-        if (readEvents != null) {
-            parsed = readEvents;
-        } else {
-            try {
-                parsed = ConcolicRegionRuntime.parseJson(api.branchEvents());
-            } catch (Throwable throwable) {
-                return Attestation.invalid(
-                        "event stream is not readable: "
-                                + ConcolicRegionRuntime.rootCause(throwable));
-            }
         }
         if (!parsed.isJsonObject()) {
             return Attestation.invalid(
@@ -109,21 +96,14 @@ final class VmBranchAttestation {
                     "event stream region/task does not match owner");
         }
 
-        JsonObject selected = null;
-        int matches = 0;
-        for (JsonElement candidate : array(envelope, "events")) {
-            if (!candidate.isJsonObject()) continue;
-            JsonObject event = candidate.getAsJsonObject();
-            if (optionalLongInteger(event, "eventId", -1L) == eventId) {
-                selected = event;
-                matches++;
-            }
-        }
-        if (matches != 1 || selected == null) {
+        List<JsonObject> numbered = PathConditionWindow.eventsNumbered(
+                envelope, eventId);
+        if (numbered.size() != 1) {
             return Attestation.invalid(
-                    "event id " + eventId + " matched " + matches
+                    "event id " + eventId + " matched " + numbered.size()
                             + " records");
         }
+        JsonObject selected = numbered.get(0);
         String authority = optionalString(selected, "authority");
         if (!"VM_THREAD_CONTEXT_EXACT_BRANCH_EVENT_V1".equals(authority)) {
             return Attestation.invalid(

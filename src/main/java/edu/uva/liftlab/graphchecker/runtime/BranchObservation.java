@@ -169,6 +169,56 @@ final class BranchObservation {
     }
 
     /**
+     * One decision's VM event read against its window, and whether the VM
+     * attests it (a refusal is already named).  {@code baseline} is the raw
+     * path-condition size before this decision.
+     */
+    private static final class Capture {
+        private final int baseline;
+        /** The event names one contiguous condition range. */
+        private final boolean exactRange;
+        private final PathConditionWindow conditions;
+        private final VmBranchAttestation.Attestation attestation;
+
+        private Capture(int baseline, boolean exactRange,
+                        PathConditionWindow conditions,
+                        VmBranchAttestation.Attestation attestation) {
+            this.baseline = baseline;
+            this.exactRange = exactRange;
+            this.conditions = conditions;
+            this.attestation = attestation;
+        }
+    }
+
+    /** Reads and attests one decision's VM event, binary or multiway. */
+    private static Capture capture(
+            ActiveRegion active, ConcolicVmBroker api, String siteId,
+            String expression, boolean outcome, int occurrence,
+            SwitchExpectation expected, long vmEventId) throws Exception {
+        int baseline = active.lastPathConditionSize;
+        // One read of the event stream, used by both questions asked of it.
+        JsonElement events = ConcolicRegionRuntime.parseJson(
+                api.branchEvents());
+        List<Integer> eventConditionIndices =
+                vmEventConditionIndices(events, vmEventId);
+        boolean noVmCondition = eventConditionIndices != null
+                && eventConditionIndices.isEmpty();
+        PathConditionWindow conditions = PathConditionWindow.forEvent(
+                active.expressionStore, api, eventConditionIndices);
+        VmBranchAttestation.Attestation attestation =
+                VmBranchAttestation.attest(active, siteId, expression,
+                        outcome, vmEventId, occurrence, conditions,
+                        noVmCondition ? 0 : baseline, expected, events);
+        if (!attestation.valid) {
+            VmBranchAttestation.noteRefused(siteId, occurrence, attestation,
+                    windowOutcome(eventConditionIndices, conditions));
+        }
+        return new Capture(baseline,
+                contiguousConditionIndices(eventConditionIndices),
+                conditions, attestation);
+    }
+
+    /**
      * Captures one exact binary decision; false only where the VM emitted no
      * branch event, so no row exists beside which a target reach could be
      * stated.  Not "attested enough to reach": a concrete decision at the
@@ -182,34 +232,16 @@ final class BranchObservation {
             // The VM emitted no symbolic branch event.
             return false;
         }
-        String siteId = SiteId.render(method, unitIndex);
-        int baseline = active.lastPathConditionSize;
-        // One read of the event stream, used by both questions asked of it.
-        JsonElement events = ConcolicRegionRuntime.parseJson(api.branchEvents());
-        List<Integer> eventConditionIndices =
-                vmEventConditionIndices(events, vmEventId);
-        boolean noVmCondition = eventConditionIndices != null
-                && eventConditionIndices.isEmpty();
+        Capture read = capture(active, api, SiteId.render(method, unitIndex),
+                expression, observedOutcome, occurrence, null, vmEventId);
+        PathConditionWindow conditions = read.conditions;
+        VmBranchAttestation.Attestation vmAttestation = read.attestation;
+        int baseline = read.baseline;
         // An exact conditionless event contributes no branch guard, and a
         // non-contiguous one names no exact range: both leave the window
         // empty and the raw size at the baseline.
-        boolean exactRange = !noVmCondition
-                && contiguousConditionIndices(eventConditionIndices);
-        PathConditionWindow.Read read = PathConditionWindow.forEvent(
-                active.expressionStore, api, eventConditionIndices);
-        PathConditionWindow conditions = read.conditions;
-        String windowOutcome = windowOutcome(eventConditionIndices,
-                conditions);
-        int rawPathConditionSize = exactRange ? conditions.size() : baseline;
-        int attestationBaseline = noVmCondition ? 0 : baseline;
-        VmBranchAttestation.Attestation vmAttestation =
-                VmBranchAttestation.attest(api, active, siteId, expression,
-                        observedOutcome, vmEventId, occurrence, conditions,
-                        attestationBaseline, null, events);
-        if (!vmAttestation.valid) {
-            VmBranchAttestation.noteRefused(siteId, occurrence,
-                    vmAttestation, windowOutcome);
-        }
+        int rawPathConditionSize = read.exactRange ? conditions.size()
+                : baseline;
         int conditionIndex = vmAttestation.valid
                 && vmAttestation.conditionIndices.size() == 1
                 ? vmAttestation.conditionIndices.get(0) : -1;
@@ -231,20 +263,18 @@ final class BranchObservation {
             JsonElement semanticCondition =
                     VmBranchAttestation.semanticCondition(
                             expression, observedOutcome, condition);
-            if (vmAttestation.valid) {
-                mapping.add("witness", BranchWitness.immutablePredicate(
-                        semanticCondition).toImmutableJsonView());
-                // The term is the predicate under which the JUMP is taken,
-                // fixed across replays and arms (CONTRACT v2.3 sec 1.3: a
-                // consumer forms `outcome ? term : (not term)`).  The VM
-                // states the SATISFIED form, which moves the arm into the
-                // term and hides a flip; so the fallen-through arm's term is
-                // the negation of the VM's constraint -- a respelling only.
-                JsonElement written = observedOutcome ? condition
-                        : VmBranchAttestation.negated(condition);
-                if (written != null && written.isJsonObject()) {
-                    mapping.add("siteCondition", written);
-                }
+            mapping.add("witness", BranchWitness.immutablePredicate(
+                    semanticCondition).toImmutableJsonView());
+            // The term is the predicate under which the JUMP is taken,
+            // fixed across replays and arms (CONTRACT v2.3 sec 1.3: a
+            // consumer forms `outcome ? term : (not term)`).  The VM
+            // states the SATISFIED form, which moves the arm into the
+            // term and hides a flip; so the fallen-through arm's term is
+            // the negation of the VM's constraint -- a respelling only.
+            JsonElement written = observedOutcome ? condition
+                    : VmBranchAttestation.negated(condition);
+            if (written != null && written.isJsonObject()) {
+                mapping.add("siteCondition", written);
             }
         }
         active.lastPathConditionSize = rawPathConditionSize;
@@ -258,24 +288,12 @@ final class BranchObservation {
             ActiveRegion active, ConcolicVmBroker api, String method, int unitIndex,
             String expression, int occurrence, SwitchExpectation expected,
             long vmEventId) throws Exception {
-        String siteId = SiteId.render(method, unitIndex);
-        int baseline = active.lastPathConditionSize;
-        JsonElement events = ConcolicRegionRuntime.parseJson(api.branchEvents());
-        List<Integer> eventConditionIndices =
-                vmEventConditionIndices(events, vmEventId);
-        boolean noVmCondition = eventConditionIndices != null
-                && eventConditionIndices.isEmpty();
-        PathConditionWindow.Read read = PathConditionWindow.forEvent(
-                active.expressionStore, api, eventConditionIndices);
-        PathConditionWindow conditions = read.conditions;
-        String windowOutcome = windowOutcome(eventConditionIndices,
-                conditions);
-        VmBranchAttestation.Attestation attestation =
-                VmBranchAttestation.attest(api, active, siteId, expression,
-                        expected.caseArm(), vmEventId, occurrence, conditions,
-                        noVmCondition ? 0 : baseline, expected, events);
-        List<Integer> conditionIndices = attestation.valid
-                ? attestation.conditionIndices
+        Capture read = capture(active, api, SiteId.render(method, unitIndex),
+                expression, expected.caseArm(), occurrence, expected,
+                vmEventId);
+        int baseline = read.baseline;
+        List<Integer> conditionIndices = read.attestation.valid
+                ? read.attestation.conditionIndices
                 : Collections.<Integer>emptyList();
         int mappingBaseline = conditionIndices.isEmpty()
                 ? baseline : conditionIndices.get(0);
@@ -287,28 +305,22 @@ final class BranchObservation {
         mapping.addProperty("outcome", expected.caseArm());
         mapping.addProperty("rawPathConditionSize", mappingLimit);
         mapping.addProperty("rawPathConditionBaseline", mappingBaseline);
-        if (!attestation.valid) {
-            VmBranchAttestation.noteRefused(siteId, occurrence, attestation,
-                    windowOutcome);
-        }
         active.branchMappings.add(mapping);
-        if (attestation.valid) {
-            for (Integer conditionIndex : conditionIndices) {
-                JsonObject predicate = branchMapping(method, unitIndex,
-                        occurrence, vmEventId);
-                predicate.addProperty("rawPathConditionSize", mappingLimit);
-                predicate.addProperty("rawPathConditionBaseline",
-                        mappingBaseline);
-                predicate.add("witness",
-                        BranchWitness.immutablePredicate(
-                                conditions.get(conditionIndex))
-                                .toImmutableJsonView());
-                active.branchMappings.add(predicate);
-            }
+        for (Integer conditionIndex : conditionIndices) {
+            JsonObject predicate = branchMapping(method, unitIndex,
+                    occurrence, vmEventId);
+            predicate.addProperty("rawPathConditionSize", mappingLimit);
+            predicate.addProperty("rawPathConditionBaseline",
+                    mappingBaseline);
+            predicate.add("witness",
+                    BranchWitness.immutablePredicate(
+                            read.conditions.get(conditionIndex))
+                            .toImmutableJsonView());
+            active.branchMappings.add(predicate);
         }
         active.lastPathConditionSize = Math.max(
                 active.lastPathConditionSize, mappingLimit);
-        return attestation.valid;
+        return read.attestation.valid;
     }
 
     /**

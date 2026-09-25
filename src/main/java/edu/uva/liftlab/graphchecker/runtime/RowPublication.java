@@ -7,7 +7,7 @@ import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
-import edu.uva.liftlab.graphchecker.runtime.RowRuntime;
+import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
@@ -275,15 +275,8 @@ final class RowPublication {
                             + " observed nor the value it returned");
             return;
         }
-        if (!RowRuntime.claimRead(identity)) return;
-        OccurrenceAddress performer = LoggedEventSites.performer(
-                node, locationKey, event, false);
-        if (performer == null) return;
-        RowRuntime.read(performer, event >= 0L ? event : Math.max(0L, observed),
-                LoggedEventSites.site(node, locationKey, event, false),
-                location, observed, symbol,
-                optionalString(node, "_java_type"), value,
-                LoggedEventSites.frames(node, locationKey, event, false));
+        publishRead(node, identity, locationKey, location, observed, event,
+                symbol, value);
     }
 
     /**
@@ -332,15 +325,28 @@ final class RowPublication {
             projected = locationKey + (observed >= 0L ? "@v" + observed
                     : "@e" + event);
         }
+        publishRead(node, identity, locationKey, location, observed, event,
+                projected, stated);
+    }
+
+    /**
+     * One read row, claimed once, at the occurrence that performed it; a
+     * read the write log names is no placeholder, so it has no mint version.
+     */
+    private static void publishRead(JsonObject node, String identity,
+                                    String locationKey, LocationId location,
+                                    long observed, long event, String symbol,
+                                    String value) {
         if (!RowRuntime.claimRead(identity)) return;
         OccurrenceAddress performer = LoggedEventSites.performer(
                 node, locationKey, event, false);
         if (performer == null) return;
         RowRuntime.read(performer, event >= 0L ? event : Math.max(0L, observed),
                 LoggedEventSites.site(node, locationKey, event, false),
-                location, observed, projected,
-                optionalString(node, "_java_type"), stated,
-                LoggedEventSites.frames(node, locationKey, event, false));
+                location, observed, symbol,
+                optionalString(node, "_java_type"), value,
+                LoggedEventSites.frames(node, locationKey, event, false),
+                ReadRow.UNKNOWN_VERSION);
     }
 
     /**

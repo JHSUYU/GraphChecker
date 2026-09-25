@@ -209,8 +209,7 @@ final class ConcolicResultPublisher {
         // Reserve loop evidence BEFORE reopening admission, so a later turn
         // cannot claim the same anchor.  Fail-closed: a failure terminates
         // the task, never rolls back a reservation another turn relies on.
-        active.activation.reserveCompletedEvidence(
-                targetReachedByActivation(active));
+        active.activation.reserveCompletedEvidence();
         configuration().releaseCandidate(active.activation);
         try {
             RESULT_PUBLICATION_EXECUTOR.execute(new Runnable() {

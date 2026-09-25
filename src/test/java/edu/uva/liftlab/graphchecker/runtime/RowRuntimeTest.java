@@ -416,7 +416,7 @@ public class RowRuntimeTest {
         RowRuntime.read(occurrence, 14L,
                 Endpoint.stateSite("java.util.concurrent.atomic.AtomicInteger",
                         "get", "()I", 2, false),
-                location, 125L, "s", "J", "9", "");
+                location, 125L, "s", "J", "9", "", ReadRow.UNKNOWN_VERSION);
         RowRuntime.rootMint(occurrence, 11L, "HDFS.BLOCK_KEY.SERIAL_NO",
                 "M_I_1", RootKind.INTEGRAL, "3", "3", "6", true);
         RowRuntime.rootMint(occurrence, 13L,

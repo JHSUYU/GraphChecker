@@ -13,6 +13,7 @@ import edu.uva.liftlab.graphchecker.plan.VmExpressionTable;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 
 import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
+import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
 
 import edu.uva.liftlab.graphchecker.runtime.RowRuntime;
 
@@ -53,14 +54,11 @@ final class ActiveRegion {
     edu.uva.liftlab.graphchecker.contract.OccurrenceAddress d3Address;
     /** Whether this activation counts against its address's set. */
     private boolean activationClaimed;
-    /** VM context whose writes belong to this materialized activation. */
-    long vmContextId;
     /** Exact event-ledger entry of this native region frame. */
     long vmRegionEnterEventId;
     final Object receiver;
     final Thread thread;
     final AtomicBoolean finished = new AtomicBoolean();
-    boolean prepared;
     /** The declared target branch event this occurrence decided, or null. */
     JsonObject targetReach;
     /** Terminal outcome, frozen when the occurrence stops running. */
@@ -92,7 +90,7 @@ final class ActiveRegion {
     /** The write log this activation read out, and its gaps. */
     final Map<String, JsonObject> sharedStateRecords =
             new LinkedHashMap<>();
-    /** Read-out batch every record of this activation is stamped with. */
+    /** Symbols this activation already minted at a one-shot hook. */
     final Set<String> materialized = new LinkedHashSet<>();
     final ConcolicRegionRuntime.OccurrenceCounter
             materializationOccurrences =
@@ -156,7 +154,8 @@ final class ActiveRegion {
      */
     synchronized ReplayLoopResourceCut chargeLoopBody(
             String loopId) {
-        int maxBodies = activation.maxLoopBodies(loopId);
+        // Body entries a loop may run before the replay is cut.
+        int maxBodies = LoopBoundPolicy.MAX_REPLAY_PATH_LOOP_BODIES;
         chargedLoopBodies++;
         // The ceiling is per dynamic invocation: keyed by the static loop
         // id alone, repeated walks of one loop would share one budget.
@@ -259,12 +258,6 @@ final class ActiveRegion {
         return d3Address != null
                 && edu.uva.liftlab.graphchecker.runtime.FocusedReplay
                         .contradicted(d3Address);
-    }
-
-    int nextLocalMaterializationOccurrence(
-            String method, int unitIndex, String local) {
-        return materializationOccurrences.local(method, unitIndex,
-                local);
     }
 
     PreparedBranch prepareBranch(
@@ -440,28 +433,25 @@ final class ActiveRegion {
      * replay agree.  Captured now, while the region stack is live.
      */
     private String mintOccurrence(String rootId) {
+        return rootOwner(rootId).address();
+    }
+
+    /**
+     * The live activation whose plan owns root {@code rootId}, else this
+     * one: every mint asks it ({@code RootMint#mintOwner},
+     * {@code RootMint#focusedRootValue}).
+     */
+    ActiveRegion rootOwner(String rootId) {
         ActiveRegion owner = ConcolicRegionRuntime.declaringRegion(
-                new ConcolicRegionRuntime.Declares.Root(rootId));
-        if (owner == null) owner = this;
-        return owner.address();
+                new ConcolicRegionRuntime.Declares.Root(safe(rootId)));
+        return owner == null ? this : owner;
     }
 
     /**
      * Records what one frozen {@code SYMBOLIC} action observed after its hook
-     * minted or retained a value.  The VM label is descriptive only;
-     * authority comes from the exact expression.
-     */
-    synchronized void recordManualSymbolization(
-            SymbolizeAction action, String requestedSymbol,
-            List<String> fieldPath, String fieldSignature,
-            JsonElement expression, boolean minted, boolean reused) {
-        recordManualSymbolization(action, requestedSymbol, fieldPath,
-                fieldSignature, expression, minted, reused, "");
-    }
-
-    /**
-     * The same row, with the concrete value the mint read -- the same shape
-     * as a configured-source mint.
+     * minted or retained a value, with the concrete value the mint read (""
+     * when none) -- the same shape as a configured-source mint.  The VM
+     * label is descriptive only; authority comes from the exact expression.
      *
      * <p>Stated even when the replay planted here: the value is read before
      * the plant, so it is the recording's; the plant is the focus row's

@@ -14,6 +14,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
+
 /**
  * The edges a CONFIRM run is expected to take, and whether it took them.
  *
@@ -171,16 +173,20 @@ public final class Confirmation {
             if (file == null) return;
             try {
                 for (JsonObject row : RowCodec.readJsonl(file)) {
-                    String kind = text(row, "kind");
+                    String kind = optionalString(row, "kind");
                     if ("WIRE".equals(kind)) {
-                        WIRE.put(text(row, "consumer"), text(row, "producer"));
+                        WIRE.put(optionalString(row, "consumer"),
+                                optionalString(row, "producer"));
                     } else if ("STATE".equals(kind)
                             && row.has("mint") && !row.get("mint").isJsonNull()
                             && row.get("mint").getAsBoolean()) {
-                        MINT.put(text(row, "writer"), text(row, "version"));
+                        MINT.put(optionalString(row, "writer"),
+                                optionalString(row, "version"));
                     } else if ("STATE".equals(kind)) {
-                        STATE.put(text(row, "reader"), text(row, "writer"));
-                        VERSION.put(text(row, "reader"), text(row, "version"));
+                        STATE.put(optionalString(row, "reader"),
+                                optionalString(row, "writer"));
+                        VERSION.put(optionalString(row, "reader"),
+                                optionalString(row, "version"));
                     }
                     // MARKER and ANCHOR are checked elsewhere.
                 }
@@ -195,11 +201,6 @@ public final class Confirmation {
                 MINT.clear();
             }
         }
-    }
-
-    private static String text(JsonObject row, String member) {
-        return row.has(member) && !row.get(member).isJsonNull()
-                ? row.get(member).getAsString() : "";
     }
 
     public static void resetForTests() {

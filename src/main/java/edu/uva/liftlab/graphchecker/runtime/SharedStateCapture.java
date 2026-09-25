@@ -33,32 +33,6 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
  * {@code (kind, ownerSymRid, slot)} -- the same key the read nodes carry.</p>
  */
 final class SharedStateCapture {
-    /** Outcome of one recorded shared-state evidence call. */
-    static final class SharedStateResult {
-        private final String stage;
-        private final int status;
-        private final String locationKey;
-        private final JsonObject record;
-
-        private SharedStateResult(String stage, int status,
-                                  String locationKey, JsonObject record) {
-            this.stage = stage;
-            this.status = status;
-            this.locationKey = safe(locationKey);
-            this.record = record;
-        }
-
-        boolean ok() {
-            return status == OK;
-        }
-
-        @Override
-        public String toString() {
-            return stage + "/" + status
-                    + (locationKey.isEmpty() ? "" : " " + locationKey);
-        }
-    }
-
     private SharedStateCapture() {
     }
 
@@ -123,17 +97,13 @@ final class SharedStateCapture {
             ActiveRegion active, RawSharedStateReadOut raw) {
         if (raw == null) return;
         if (!raw.fault.isEmpty()) {
-            fileShared(failedShared(STAGE_VERSIONS,
-                    MALFORMED_ENVELOPE, "", raw.fault),
-                    active);
+            refuse(MALFORMED_ENVELOPE, "", raw.fault);
         }
         for (String serialized : raw.pages) {
             try {
                 decodeTrackedLocations(serialized, active);
             } catch (Throwable throwable) {
-                fileShared(failedShared(STAGE_VERSIONS,
-                        MALFORMED_ENVELOPE, "",
-                        rootCause(throwable)), active);
+                refuse(MALFORMED_ENVELOPE, "", rootCause(throwable));
             }
         }
     }
@@ -146,63 +116,58 @@ final class SharedStateCapture {
                                                ActiveRegion active) {
         JsonElement parsed = parseJson(serialized);
         if (!parsed.isJsonObject()) {
-            fileShared(failedShared(STAGE_VERSIONS,
-                    MALFORMED_ENVELOPE, "",
-                    "tracked-location read-out returned no JSON object"),
-                    active);
+            refuse(MALFORMED_ENVELOPE, "",
+                    "tracked-location read-out returned no JSON object");
             return;
         }
         JsonObject document = decodeVmEnvelope(parsed.getAsJsonObject(),
                 active);
         if (!TRACKED_LOCATIONS_KIND.equals(optionalString(document, "kind"))) {
-            fileShared(failedShared(STAGE_VERSIONS,
-                    MALFORMED_ENVELOPE, "",
-                    "unsupported tracked-location read-out schema"), active);
+            refuse(MALFORMED_ENVELOPE, "",
+                    "unsupported tracked-location read-out schema");
             return;
         }
         JsonArray locations = array(document, "locations");
         int stated = optionalInteger(document, "locationCount", -1);
         if (stated >= 0 && stated != locations.size()) {
-            fileShared(failedShared(STAGE_VERSIONS,
-                    MALFORMED_ENVELOPE, "",
+            refuse(MALFORMED_ENVELOPE, "",
                     "tracked-location read-out states " + stated
-                            + " locations and carries " + locations.size()),
-                    active);
+                            + " locations and carries " + locations.size());
             return;
         }
         for (JsonElement element : locations) {
             if (!element.isJsonObject()) {
-                fileShared(failedShared(STAGE_VERSIONS,
-                        MALFORMED_ENVELOPE, "",
-                        "tracked location is not an object"), active);
+                refuse(MALFORMED_ENVELOPE, "",
+                        "tracked location is not an object");
                 continue;
             }
-            fileShared(decodeVersionsEnvelope(element.getAsJsonObject()),
-                    active);
+            fileVersionsEnvelope(element.getAsJsonObject(), active);
         }
     }
 
     static final String TRACKED_LOCATIONS_KIND = "SHARED_TRACKED_LOCATIONS";
 
-    /** One tracked location's write log, or the fault that replaced it. */
-    static SharedStateResult decodeVersionsEnvelope(JsonObject envelope) {
+    /**
+     * Files one tracked location's write log with the active region, or
+     * names the fault that replaced it (and files nothing).
+     */
+    private static void fileVersionsEnvelope(JsonObject envelope,
+                                             ActiveRegion active) {
         String fault = versionsFault(envelope);
+        String locationKey = locationKey(envelope);
         if (!fault.isEmpty()) {
-            return failedShared(STAGE_VERSIONS,
-                    expressionSerializationTruncationFault(
-                            fault)
+            refuse(expressionSerializationTruncationFault(fault)
                             ? EXPRESSION_SERIALIZATION_TRUNCATED
-                            : containerBaseUnstatedFault(
-                            fault)
+                            : containerBaseUnstatedFault(fault)
                             ? CONTAINER_BASE_UNSTATED
                             : MALFORMED_ENVELOPE,
-                    locationKey(envelope), fault);
+                    locationKey, fault);
+            return;
         }
-        String locationKey = locationKey(envelope);
-        return new SharedStateResult(STAGE_VERSIONS,
-                OK, locationKey,
-                writeLogRecord(versionsRecord(
-                        locationKey, envelope)));
+        if (active != null && !locationKey.isEmpty()) {
+            active.sharedStateRecords.put(locationKey,
+                    writeLogRecord(versionsRecord(locationKey, envelope)));
+        }
     }
 
     /**
@@ -276,30 +241,16 @@ final class SharedStateCapture {
      * diagnostic gap, since every read of it reaches the formula with no
      * read-from arm.
      */
-    private static SharedStateResult failedShared(String stage, int status,
-                                                  String locationKey,
-                                                  String detail) {
+    private static void refuse(int status, String locationKey,
+                               String detail) {
         RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
                         .UNSTATED_VALUE,
                 edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
                 // A blank subject would refuse inside Fields.text.
                 edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank(
-                        safe(locationKey), safe(stage),
+                        safe(locationKey), STAGE_VERSIONS,
                         RowRuntime.sessionId()),
                 reason(status) + ": " + safe(detail));
-        return new SharedStateResult(stage, status, safe(locationKey), null);
-    }
-
-    /**
-     * Files one admitted write log with the active region; a refusal already
-     * filed its gap and publishes no record.
-     */
-    private static void fileShared(SharedStateResult result,
-                                   ActiveRegion active) {
-        if (active == null || !result.ok()) return;
-        if (!result.locationKey.isEmpty()) {
-            active.sharedStateRecords.put(result.locationKey, result.record);
-        }
     }
 
     /** Raw read-out pages frozen before one VM region is finished. */
@@ -672,7 +623,7 @@ final class SharedStateCapture {
         record.addProperty("kind", VERSIONS_RECORD_KIND);
         record.addProperty("schemaVersion", RECORD_SCHEMA_VERSION);
         record.addProperty("authority", RECORD_AUTHORITY);
-        record.addProperty("locationKey", text(locationKey));
+        record.addProperty("locationKey", safe(locationKey));
         record.add("envelope", envelope);
         return record;
     }
@@ -686,9 +637,5 @@ final class SharedStateCapture {
     private static Set<String> names(String... values) {
         return Collections.unmodifiableSet(
                 new LinkedHashSet<>(Arrays.asList(values)));
-    }
-
-    private static String text(String value) {
-        return value == null ? "" : value;
     }
 }

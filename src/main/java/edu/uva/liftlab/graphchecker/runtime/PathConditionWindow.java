@@ -76,71 +76,48 @@ final class PathConditionWindow {
         return tree.get(index - base);
     }
 
-    /** One branch hook's exact, VM-owned condition window. */
-    static final class Read {
-        final PathConditionWindow conditions;
-
-        Read(PathConditionWindow conditions) {
-            this.conditions = conditions;
-        }
-    }
-
     /**
      * The window one VM branch event owns: empty when it names no condition
      * or its indices are not contiguous (the event stream is the authority).
      */
-    static Read forEvent(VmExpressionTable.Store store, ConcolicVmBroker api,
-                         List<Integer> eventConditionIndices)
-            throws Exception {
-        if (eventConditionIndices != null && eventConditionIndices.isEmpty()) {
-            return new Read(PathConditionWindow.EMPTY);
-        }
-        if (!contiguousConditionIndices(eventConditionIndices)) {
-            return new Read(PathConditionWindow.EMPTY);
-        }
+    static PathConditionWindow forEvent(VmExpressionTable.Store store,
+                                        ConcolicVmBroker api,
+                                        List<Integer> eventConditionIndices) {
+        if (!contiguousConditionIndices(eventConditionIndices)) return EMPTY;
         int start = eventConditionIndices.get(0);
         int end = eventConditionIndices.get(
                 eventConditionIndices.size() - 1) + 1;
-        return readPathConditionRange(store, api, start, end);
-    }
-
-    /** Reads only the absolute indices named by an exact VM branch event. */
-    static Read readPathConditionRange(
-            VmExpressionTable.Store store, ConcolicVmBroker api,
-            int start, int end)
-            throws Exception {
-        if (start < 0 || end <= start) {
-            return new Read(PathConditionWindow.EMPTY);
-        }
         String windowed;
         try {
             windowed = api.pathConditionRange(start, end);
         } catch (Throwable refused) {
             windowed = null;
         }
-        PathConditionWindow exact =
-                PathConditionWindow.window(windowed, start, store);
-        if (exact == null) {
-            return new Read(PathConditionWindow.EMPTY);
-        }
-        return new Read(exact);
+        PathConditionWindow exact = window(windowed, start, store);
+        return exact == null ? EMPTY : exact;
     }
 
-    static List<Integer> vmEventConditionIndices(
-            JsonElement parsed, long eventId) {
-        if (!parsed.isJsonObject()) return null;
-        JsonObject selected = null;
-        int matches = 0;
-        for (JsonElement candidate : array(
-                parsed.getAsJsonObject(), "events")) {
+    /** The records of one event stream numbered {@code eventId}. */
+    static List<JsonObject> eventsNumbered(JsonObject stream, long eventId) {
+        List<JsonObject> numbered = new ArrayList<>();
+        for (JsonElement candidate : array(stream, "events")) {
             if (!candidate.isJsonObject()) continue;
             JsonObject event = candidate.getAsJsonObject();
             if (optionalLongInteger(event, "eventId", -1L) == eventId) {
-                selected = event;
-                matches++;
+                numbered.add(event);
             }
         }
-        if (matches != 1 || selected == null) return null;
+        return numbered;
+    }
+
+    /** The one event's condition indices, or null when not exactly one. */
+    static List<Integer> vmEventConditionIndices(
+            JsonElement parsed, long eventId) {
+        if (!parsed.isJsonObject()) return null;
+        List<JsonObject> numbered = eventsNumbered(parsed.getAsJsonObject(),
+                eventId);
+        if (numbered.size() != 1) return null;
+        JsonObject selected = numbered.get(0);
         JsonArray raw = array(selected, "conditionIndices");
         if (optionalInteger(selected, "conditionCount", -1) != raw.size()) {
             return null;

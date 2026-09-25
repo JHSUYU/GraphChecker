@@ -15,6 +15,8 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
+import java.util.function.Supplier;
 
 /**
  * R5 bounds: what a replay may run, and the terminal it takes after.
@@ -45,77 +47,58 @@ final class LoopAccounting {
             String backedgeId, int instrumentedMaxTraversals) {
         ActiveRegion active = ConcolicRegionRuntime.observingActiveRegion();
         if (active == null) return;
-
-        ConcolicVmBroker api = engine();
-        boolean paused = false;
-        LoopBoundCut cut = null;
-        try {
-            api.pausePathCondition();
-            paused = true;
-            String edge = safe(backedgeId);
-            int runtimeMax = instrumentedMaxTraversals;
+        String edge = safe(backedgeId);
+        account(active, () -> {
             if (edge.isEmpty() || !active.activation.loopBound
-                    .acceptsInstrumentedBound(runtimeMax)) {
-                cut = active.loopBoundCut(edge, runtimeMax,
+                    .acceptsInstrumentedBound(instrumentedMaxTraversals)) {
+                return active.loopBoundCut(edge, instrumentedMaxTraversals,
                         "INSTRUMENTATION_POLICY_MISMATCH");
-            } else {
-                long attempted = active.loopBackedges.recordTraversal(edge);
-                if (attempted >= runtimeMax) {
-                    cut = active.loopBoundCut(edge, runtimeMax,
+            }
+            long attempted = active.loopBackedges.recordTraversal(edge);
+            return attempted < instrumentedMaxTraversals ? null
+                    : active.loopBoundCut(edge, instrumentedMaxTraversals,
                             "MAX_LOOP_BODY_ITERATIONS_REACHED");
-                }
-            }
-        } catch (Throwable failure) {
-            cut = active.loopBoundCut(safe(backedgeId),
-                    instrumentedMaxTraversals,
-                    "BOUND_HOOK_FAILURE:" + ConcolicRegionRuntime.rootCause(failure));
-        } finally {
-            if (resumeLoopAccounting(active, api, paused) && cut == null) {
-                cut = active.loopBoundCut(safe(backedgeId),
-                        instrumentedMaxTraversals,
-                        "BOUND_HOOK_RESUME_FAILURE");
-            }
-        }
-        endAtCut(active, cut);
+        }, reason -> active.loopBoundCut(edge, instrumentedMaxTraversals,
+                "BOUND_HOOK_" + reason));
     }
 
-    /**
-     * Charges one loop body to the replay resource cap.
-     *
-     * <p>Same control flow as {@link #checkBackedge}, fail-CLOSED: a body
-     * whose accounting throws is cut and named too, or the ceiling silently
-     * stops being enforced.</p>
-     */
+    /** Charges one loop body to the replay resource cap. */
     static void checkReplayBody(
             String loopId, int instrumentedMaxTraversals) {
         ActiveRegion active = ConcolicRegionRuntime.observingActiveRegion();
         if (active == null) return;
+        String loop = safe(loopId);
+        // Instrumented under a different policy: loop ids untrusted.
+        account(active, () -> loop.isEmpty() || instrumentedMaxTraversals
+                != active.activation.loopBound.maxBackedgeTraversals()
+                ? active.replayBodyCut(loop, 0, 0L,
+                        "INSTRUMENTATION_POLICY_MISMATCH")
+                : active.chargeLoopBody(loop),
+                reason -> active.replayBodyCut(loop,
+                        instrumentedMaxTraversals, 0L, "BODY_HOOK_" + reason));
+    }
 
+    /**
+     * Both hooks' control flow: charge with the path condition paused, and
+     * end at the cut.  Fail-CLOSED: a charge or resume that throws is cut
+     * and named too ({@code failed}), or the bound silently stops being
+     * enforced.
+     */
+    private static void account(ActiveRegion active, Supplier<Error> charge,
+                                Function<String, Error> failed) {
         ConcolicVmBroker api = engine();
         boolean paused = false;
-        ReplayLoopResourceCut cut = null;
+        Error cut = null;
         try {
             api.pausePathCondition();
             paused = true;
-            String loop = safe(loopId);
-            if (loop.isEmpty() || instrumentedMaxTraversals
-                    != active.activation.loopBound.maxBackedgeTraversals()) {
-                // Instrumented under a different policy: loop ids untrusted.
-                cut = active.replayBodyCut(loop, 0, 0L,
-                        "INSTRUMENTATION_POLICY_MISMATCH");
-            } else {
-                cut = active.chargeLoopBody(loop);
-            }
+            cut = charge.get();
         } catch (Throwable failure) {
-            cut = active.replayBodyCut(safe(loopId),
-                    instrumentedMaxTraversals, 0L,
-                    "BODY_HOOK_FAILURE:"
-                            + ConcolicRegionRuntime.rootCause(failure));
+            cut = failed.apply("FAILURE:"
+                    + ConcolicRegionRuntime.rootCause(failure));
         } finally {
-            if (resumeLoopAccounting(active, api, paused) && cut == null) {
-                cut = active.replayBodyCut(safe(loopId),
-                        instrumentedMaxTraversals, 0L,
-                        "BODY_HOOK_RESUME_FAILURE");
+            if (resumeFailed(api, paused) && cut == null) {
+                cut = failed.apply("RESUME_FAILURE");
             }
         }
         endAtCut(active, cut);
@@ -146,8 +129,8 @@ final class LoopAccounting {
     }
 
     /** Resumes the paused path condition; true when the resume failed. */
-    private static boolean resumeLoopAccounting(
-            ActiveRegion active, ConcolicVmBroker api, boolean paused) {
+    private static boolean resumeFailed(ConcolicVmBroker api,
+                                        boolean paused) {
         if (!paused) return false;
         try {
             api.resumePathCondition();

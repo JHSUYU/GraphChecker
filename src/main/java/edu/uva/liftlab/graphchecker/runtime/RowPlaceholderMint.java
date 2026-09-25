@@ -232,7 +232,7 @@ final class RowPlaceholderMint {
         // row's own, else the type the VM spelled into the symbol this mint
         // installed.
         String stated = optionalString(row, "javaType");
-        if (stated.isEmpty()) stated = symbolType(row.get("expression"), 0);
+        if (stated.isEmpty()) stated = symbolType(row.get("expression"));
         if (stated.isEmpty()) {
             // No default type: it drives the sort check below.
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
@@ -260,7 +260,7 @@ final class RowPlaceholderMint {
             // A reference cell records no decimal: state the VM's identity
             // spelling on the leaf (as FieldAccess.concreteValue does), or
             // "N" for null.
-            String identity = symbolLeaf(row.get("expression"), 0);
+            String identity = symbolLeaf(row.get("expression"));
             if (identity.startsWith("M_L'") || identity.startsWith("P_L'")
                     || "N".equals(identity)) {
                 value = identity;
@@ -337,37 +337,18 @@ final class RowPlaceholderMint {
     /**
      * Every mint store of this activation, keyed {@code location#version}:
      * a version whose whole value is a declared mint's symbol is that
-     * mint's shadow store, and nobody wrote it.  Same scan as
-     * {@link #mintedLocations}, keyed by store instead of symbol.
+     * mint's shadow store, and nobody wrote it: {@link #mintedLocations},
+     * keyed by store instead of symbol.
      */
     static Map<String, String> mintStores(ActiveRegion active) {
-        Map<String, String> stores = new java.util.LinkedHashMap<String,
-                String>();
-        Set<String> minted = mintedLocations(active).keySet();
-        if (minted.isEmpty()) return stores;
         // EVERY such version, not the first per symbol: a second store
         // would otherwise be published as a write.
-        for (JsonObject record : active.sharedStateRecords.values()) {
-            String locationKey = optionalString(record, "locationKey");
-            if (locationId(locationKey) == null) continue;
-            for (JsonElement element
-                    : array(object(record, "envelope"), "versions")) {
-                if (!element.isJsonObject()) continue;
-                JsonObject version = element.getAsJsonObject();
-                long id = optionalLongInteger(version, "fieldVersionId", -1L);
-                JsonElement written = version.get("expression");
-                if (id < 0L || written == null || !written.isJsonObject()) {
-                    continue;
-                }
-                JsonObject node = written.getAsJsonObject();
-                if (!optionalString(node, "_type").contains("Symbol")) {
-                    continue;
-                }
-                String symbol = optionalString(node, "_exp");
-                if (minted.contains(symbol)
-                        && RowRuntime.isDeclaredMint(symbol)) {
-                    stores.put(locationKey + "#" + id, symbol);
-                }
+        Map<String, String> stores = new java.util.LinkedHashMap<String,
+                String>();
+        for (Map.Entry<String, java.util.List<String[]>> minted
+                : mintedLocations(active).entrySet()) {
+            for (String[] store : minted.getValue()) {
+                stores.put(store[0] + "#" + store[1], minted.getKey());
             }
         }
         return stores;
@@ -445,14 +426,8 @@ final class RowPlaceholderMint {
         }
         // Ordered by version id, the order the mint rows are walked in.
         for (java.util.List<String[]> stores : bySymbol.values()) {
-            java.util.Collections.sort(stores,
-                    new java.util.Comparator<String[]>() {
-                        @Override
-                        public int compare(String[] left, String[] right) {
-                            return Long.compare(Long.parseLong(left[1]),
-                                    Long.parseLong(right[1]));
-                        }
-                    });
+            stores.sort((left, right) -> Long.compare(
+                    Long.parseLong(left[1]), Long.parseLong(right[1])));
         }
         return bySymbol;
     }
@@ -484,17 +459,31 @@ final class RowPlaceholderMint {
         if (!raw.isEmpty()) return raw;
         // A configured source mints through the VM's own label and states
         // no raw symbol of its own; the expression it published names it.
-        String leaf = symbolLeaf(row.get("expression"), 0);
+        String leaf = symbolLeaf(row.get("expression"));
         return leaf.isEmpty() ? optionalString(row, "symbol") : leaf;
     }
 
     /** The first symbol leaf an expression states, or {@code ""}. */
-    private static String symbolLeaf(JsonElement node, int depth) {
-        if (cut("symbolLeaf", depth)) return "";
+    private static String symbolLeaf(JsonElement expression) {
+        return firstSymbol(expression, 0, "_exp", "symbolLeaf");
+    }
+
+    /** The type of the first symbol leaf an expression states. */
+    private static String symbolType(JsonElement expression) {
+        return firstSymbol(expression, 0, "_java_type", "symbolType");
+    }
+
+    /**
+     * One member of the first symbol leaf that states it; {@code walk} names
+     * a cut ({@link RowPublication#cut}).
+     */
+    private static String firstSymbol(JsonElement node, int depth,
+                                      String member, String walk) {
+        if (cut(walk, depth)) return "";
         if (node == null || node.isJsonNull()) return "";
         if (node.isJsonArray()) {
             for (JsonElement element : node.getAsJsonArray()) {
-                String found = symbolLeaf(element, depth + 1);
+                String found = firstSymbol(element, depth + 1, member, walk);
                 if (!found.isEmpty()) return found;
             }
             return "";
@@ -502,10 +491,11 @@ final class RowPlaceholderMint {
         if (!node.isJsonObject()) return "";
         JsonObject object = node.getAsJsonObject();
         if (optionalString(object, "_type").contains("Symbol")) {
-            return optionalString(object, "_exp");
+            return optionalString(object, member);
         }
-        for (Map.Entry<String, JsonElement> member : object.entrySet()) {
-            String found = symbolLeaf(member.getValue(), depth + 1);
+        for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
+            String found = firstSymbol(entry.getValue(), depth + 1, member,
+                    walk);
             if (!found.isEmpty()) return found;
         }
         return "";
@@ -536,30 +526,8 @@ final class RowPlaceholderMint {
         // this a boolean configured root reads INTEGRAL.
         String stated = optionalString(row, "javaType");
         String javaType = stated.isEmpty()
-                ? symbolType(row.get("expression"), 0) : stated;
+                ? symbolType(row.get("expression")) : stated;
         return "Z".equals(javaType) || "boolean".equals(javaType)
                 ? RootKind.MARKER : RootKind.INTEGRAL;
     }
-
-    /** The type of the first symbol leaf an expression states. */
-    private static String symbolType(JsonElement node, int depth) {
-        if (cut("symbolType", depth)) return "";
-        if (node == null || node.isJsonNull()) return "";
-        if (node.isJsonArray()) {
-            for (JsonElement element : node.getAsJsonArray()) {
-                String found = symbolType(element, depth + 1);
-                if (!found.isEmpty()) return found;
-            }
-            return "";
-        }
-        if (!node.isJsonObject()) return "";
-        JsonObject object = node.getAsJsonObject();
-        if (optionalString(object, "_type").contains("Symbol")) {
-            return optionalString(object, "_java_type");
-        }
-        for (Map.Entry<String, JsonElement> member : object.entrySet()) {
-            String found = symbolType(member.getValue(), depth + 1);
-            if (!found.isEmpty()) return found;
-        }
-        return "";
-    }}
+}

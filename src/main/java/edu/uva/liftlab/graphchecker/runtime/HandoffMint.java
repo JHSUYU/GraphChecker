@@ -29,7 +29,7 @@ import java.util.UUID;
  * shadow becomes a FRESH variable, so the two sides are explored
  * independently and joined offline at H; e_p travels on the row, never as a
  * substitution.  Entries: {@link #mintDelivered} (element carried),
- * {@link #mintArrived} (none; row states {@code elementAbsent}) and
+ * {@link #mintArrived} (none carried) and
  * {@link #mintAmbient} (outside every selected occurrence -- selection
  * decides whose paths are explored, never whether a value crossed).</p>
  *
@@ -44,11 +44,9 @@ final class HandoffMint {
 
     /** Mints v_H for a delivery whose message carried an element. */
     static void mintDelivered(CommunicationHandoffSpec site,
-                              WireExport.HandoffResult result,
-                                             Object owner,
-                                             String declaringClass,
-                                             String fieldName,
-                                             String descriptor) {
+                              WireExport.HandoffResult result, Object owner,
+                              String declaringClass, String fieldName,
+                              String descriptor) {
         if (site == null) return;
         ActiveRegion active = attachConsumerRegion(site);
         if (active == null) {
@@ -61,17 +59,13 @@ final class HandoffMint {
             }
             return;
         }
+        // README RPC-1: both endpoints of the edge.
         long exportEvent = result.ok()
                 ? optionalLongInteger(result.record, "exportEventId", 0L) : 0L;
-        if (exportEvent <= 0L) {
-            return;
-        }
-        // README RPC-1: both endpoints of the edge.
         long attachEvent = result.ok()
                 ? optionalLongInteger(result.record, "attachEventId", 0L) : 0L;
-        if (attachEvent <= 0L) {
-            return;
-        }
+        if (exportEvent <= 0L || attachEvent <= 0L) return;
+        // Only an element the VM states an expression for is minted on.
         JsonElement expression;
         try {
             Field storage = declaredInstanceField(owner, declaringClass,
@@ -79,12 +73,8 @@ final class HandoffMint {
             if (storage == null) {
                 return;
             }
-            Object value = storage.get(owner);
-            ConcolicVmBroker api = engine();
-            expression = RootMint.containerValue(value)
-                    ? ConcolicRegionRuntime.engineExpression(api.expression(value))
-                    : ConcolicRegionRuntime.engineExpression(api.fieldExpression(owner,
-                    declaringClass, fieldName, descriptor, value));
+            expression = RootMint.cellExpression(engine(), owner,
+                    declaringClass, fieldName, descriptor, storage.get(owner));
         } catch (Throwable failure) {
             return;
         }
@@ -92,15 +82,13 @@ final class HandoffMint {
             return;
         }
         Interactions.deliveringAt(attachEvent);
-        mintHandoffVariable(active, site, exportEvent, attachEvent,
-                expression, owner, declaringClass, fieldName, descriptor,
-                false);
+        mintHandoffVariable(active, site, owner, declaringClass, fieldName,
+                descriptor);
     }
 
     /**
-     * Mints v_H at a declared capture whose message carried no element: the
-     * row states {@code elementAbsent} and no producer; an answer is written
-     * on the carrier leaf as usual.
+     * Mints v_H at a declared capture whose message carried no element; an
+     * answer is written on the carrier leaf as usual.
      */
     static void mintArrived(
             CommunicationHandoffSpec site, Object carrier, String field,
@@ -109,12 +97,12 @@ final class HandoffMint {
         try {
             ActiveRegion active = attachConsumerRegion(site);
             if (active == null) {
-                mintAmbient(site, carrier, ConcolicRegionRuntime.CARRIER_CLASS, field,
-                        descriptor);
+                mintAmbient(site, carrier, ConcolicRegionRuntime.CARRIER_CLASS,
+                        field, descriptor);
                 return;
             }
-                mintHandoffVariable(active, site, 0L, 0L, null, carrier,
-                    ConcolicRegionRuntime.CARRIER_CLASS, field, descriptor, true);
+            mintHandoffVariable(active, site, carrier,
+                    ConcolicRegionRuntime.CARRIER_CLASS, field, descriptor);
         } finally {
             ConcolicRegionRuntime.endBookkeeping();
         }
@@ -122,15 +110,18 @@ final class HandoffMint {
 
     /**
      * The activation this attach belongs to: the innermost live region whose
-     * plan declares this port IN.  Trap: the innermost live region may not
-     * own the site, and filing there reports one attach twice.  When none
-     * declares it the innermost live one carries the row, and R5 reports it
-     * unplanned; null only when no region is live.
+     * plan declares this port IN (stable across replays).  Trap: the
+     * innermost live region may not own the site, and filing there reports
+     * one attach twice.  When none declares it the innermost live one
+     * carries the row, and R5 reports it unplanned (UNPLANNED_HANDOFF); null
+     * only when no region is live.
      */
     private static ActiveRegion attachConsumerRegion(
             CommunicationHandoffSpec site) {
         return site == null ? ConcolicRegionRuntime.activeRegion()
-                : ConcolicRegionRuntime.declaringRegion(new ConcolicRegionRuntime.Declares.Port(safe(site.portId())));
+                : ConcolicRegionRuntime.declaringRegion(
+                        new ConcolicRegionRuntime.Declares.Port(
+                                safe(site.portId())));
     }
 
     /**
@@ -139,25 +130,12 @@ final class HandoffMint {
      * mechanism under a handoff label.
      */
     private static void mintHandoffVariable(
-            ActiveRegion active, CommunicationHandoffSpec site,
-            long exportEvent, long attachEvent, JsonElement producerExpression,
-            Object owner, String declaringClass, String fieldName,
-            String descriptor, boolean elementAbsent) {
+            ActiveRegion active, CommunicationHandoffSpec site, Object owner,
+            String declaringClass, String fieldName, String descriptor) {
         String portId = safe(site.portId());
-        Field element = declaredInstanceField(owner, declaringClass,
-                fieldName, descriptor);
-        List<HandoffLeaf> leaves = handoffLeaves(portId, owner, element);
-        if (leaves.isEmpty()) {
-            // No leaf, no v_H: name the loss (same words as mintAmbient).
-            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.UNSTATED_VALUE,
-                    edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC, portId,
-                    "the delivered element exposes no primitive leaf to mint"
-                            + " a boundary variable on");
-            return;
-        }
-        for (HandoffLeaf leaf : leaves) {
-            mintHandoffLeaf(active, portId, exportEvent, attachEvent,
-                    producerExpression, leaf, elementAbsent);
+        for (HandoffLeaf leaf : handoffLeaves(portId, owner, declaringClass,
+                fieldName, descriptor)) {
+            mintHandoffLeaf(active, portId, leaf);
         }
     }
 
@@ -166,33 +144,21 @@ final class HandoffMint {
      * port is one attach and several variables (e.g. {@code [i].keyId}), each
      * its own handoff occurrence for R3.
      */
-    private static void mintHandoffLeaf(
-            ActiveRegion active, String portId, long exportEvent,
-            long attachEvent, JsonElement producerExpression,
-            HandoffLeaf leaf, boolean elementAbsent) {
-        String elementPath = leaf.path;
-        // H belongs to the declared IN occurrence, not the live one (a
-        // CALL_RETURN attach runs in the caller's frame).
-        String consumerOccurrenceId = declaredConsumerOccurrence(portId,
-                active);
+    private static void mintHandoffLeaf(ActiveRegion active, String portId,
+                                        HandoffLeaf leaf) {
+        // H belongs to the declared IN occurrence (#attachConsumerRegion),
+        // not the live one: a CALL_RETURN attach runs in the caller's frame.
         // k is the OCCURRENCE's count (I3), not the activation's.
-        String phaseId = handoffMintKey(portId,
-                consumerOccurrenceId,
-                nextAttach(consumerOccurrenceId, portId, elementPath),
-                elementPath);
+        String consumerOccurrenceId = active.activation.occurrenceId;
+        String phaseId = handoffMintKey(portId, consumerOccurrenceId,
+                nextAttach(consumerOccurrenceId, portId, leaf.path),
+                leaf.path);
         if (phaseId.isEmpty()) return;
-        Object owner = leaf.owner;
-        Field element = leaf.field;
-        String declaringClass = element.getDeclaringClass().getName();
-        String fieldName = element.getName();
         String descriptor = javaTypeDescriptor(
-                element.getType().getTypeName());
+                leaf.field.getType().getTypeName());
         try {
-            ConcolicVmBroker api = engine();
-            String recordedValue = ConcolicRegionRuntime.recordedScalar(element.get(owner));
-            // Identity is the indexed path; the VM resolves the bare
-            // field signature.
-            String signature = leaf.signature();
+            String recordedValue = ConcolicRegionRuntime.recordedScalar(
+                    leaf.field.get(leaf.owner));
             // Name the endpoint first: an obligation answers an attach by
             // its endpoint id (INTERACTION-ID).
             edu.uva.liftlab.graphchecker.contract.Endpoint consumer =
@@ -202,22 +168,20 @@ final class HandoffMint {
             String answer = consumer == null ? ""
                     : edu.uva.liftlab.graphchecker.runtime.FocusedReplay
                             .answer(consumer.id());
-            if (!answer.isEmpty() && !RootMint.writeModeledField(owner, signature,
-                    descriptor, answer)) {
+            // Identity is the indexed path; the VM resolves the bare
+            // field signature.
+            if (!answer.isEmpty() && !RootMint.writeModeledField(leaf.owner,
+                    leaf.signature(), descriptor, answer)) {
                 // The answer was not written: the same named refusal a
                 // root mint states (#applyFocusedRootAssignment).
                 RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.ASSIGNMENT_UNPLANTED,
                         edu.uva.liftlab.graphchecker.contract.GapClass.BLOCKING, portId,
                         "the wave's answer for this handoff could not be"
-                                + " written into " + signature);
+                                + " written into " + leaf.signature());
                 return;
             }
-            api.symbolizeExactField(owner, signature,
+            JsonObject minted = mintLeaf(active, leaf,
                     mintLabel(phaseId, portId));
-            ConcolicRegionRuntime.ensurePathRecordingStarted(active);
-            JsonObject minted = exactSymbolOf(ConcolicRegionRuntime.engineExpression(
-                    api.fieldExpression(owner, declaringClass, fieldName,
-                            descriptor, element.get(owner))));
             if (minted == null) {
                 return;
             }
@@ -232,6 +196,26 @@ final class HandoffMint {
                             + " the delivery names no occurrence two replays"
                             + " could be joined at: " + ConcolicRegionRuntime.rootCause(failure));
         }
+    }
+
+    /**
+     * Symbolizes one leaf under {@code label} and reads back its exact VM
+     * root, or null.  {@code active} opens path recording; an ambient mint
+     * (null) records no path.
+     */
+    private static JsonObject mintLeaf(ActiveRegion active, HandoffLeaf leaf,
+                                       String label) throws Exception {
+        ConcolicVmBroker api = engine();
+        Field field = leaf.field;
+        api.symbolizeExactField(leaf.owner, leaf.signature(), label);
+        if (active != null) {
+            ConcolicRegionRuntime.ensurePathRecordingStarted(active);
+        }
+        return exactSymbolOf(ConcolicRegionRuntime.engineExpression(
+                api.fieldExpression(leaf.owner,
+                        field.getDeclaringClass().getName(), field.getName(),
+                        javaTypeDescriptor(field.getType().getTypeName()),
+                        field.get(leaf.owner))));
     }
 
     private static final String HANDOFF_MINT_PREFIX = "HANDOFF_PHASE.";
@@ -263,19 +247,6 @@ final class HandoffMint {
     static String mintLabel(String mintKey, String portId) {
         return "HOFF." + ArtifactIO.sha256(mintKey + "\n"
                 + safe(portId));
-    }
-
-    /**
-     * The occurrence this port's IN site is declared on (stable across
-     * replays), else the carrying activation -- R5's UNPLANNED_HANDOFF.
-     */
-    private static String declaredConsumerOccurrence(String portId,
-                                                     ActiveRegion carrying) {
-        // The LIVE declaring activation, not the first declaring task in
-        // the plan: several occurrences may declare one port.
-        ActiveRegion declaring = ConcolicRegionRuntime.declaringRegion(new ConcolicRegionRuntime.Declares.Port(portId));
-        return declaring == null ? carrying.activation.occurrenceId
-                : declaring.activation.occurrenceId;
     }
 
     /**
@@ -326,33 +297,14 @@ final class HandoffMint {
             return;
         }
         RowRuntime.ambientActivation(consumer);
-        Field element = declaredInstanceField(owner, declaringClass,
-                fieldName, descriptor);
-        List<HandoffLeaf> leaves = handoffLeaves(portId, owner, element);
-        if (leaves.isEmpty()) {
-            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
-                            .UNSTATED_VALUE,
-                    edu.uva.liftlab.graphchecker.contract.GapClass
-                            .DIAGNOSTIC, portId,
-                    "the delivered element exposes no primitive leaf to mint"
-                            + " a boundary variable on");
-            return;
-        }
-        for (HandoffLeaf leaf : leaves) {
+        for (HandoffLeaf leaf : handoffLeaves(portId, owner, declaringClass,
+                fieldName, descriptor)) {
             try {
-                ConcolicVmBroker api = engine();
-                Field field = leaf.field;
-                String recordedValue = ConcolicRegionRuntime.recordedScalar(field.get(leaf.owner));
-                String mintKey = ambientMintKey(portId, consumer.render(),
-                        leaf.path);
-                api.symbolizeExactField(leaf.owner, leaf.signature(),
-                        mintLabel(mintKey, portId));
-                JsonObject minted = exactSymbolOf(ConcolicRegionRuntime.engineExpression(
-                        api.fieldExpression(leaf.owner,
-                                field.getDeclaringClass().getName(),
-                                field.getName(), javaTypeDescriptor(
-                                        field.getType().getTypeName()),
-                                field.get(leaf.owner))));
+                String recordedValue = ConcolicRegionRuntime.recordedScalar(
+                        leaf.field.get(leaf.owner));
+                JsonObject minted = mintLeaf(null, leaf, mintLabel(
+                        ambientMintKey(portId, consumer.render(), leaf.path),
+                        portId));
                 publishAttachRow(RowRuntime.nextEndpoint(consumer, portId,
                                 WireExport.attemptOf(view)), portId,
                         minted == null ? "" : optionalString(minted, "_exp"),
@@ -437,9 +389,27 @@ final class HandoffMint {
      * is named as a gap, since an unminted leaf is otherwise indistinguishable
      * from nothing delivered.
      */
-    private static List<HandoffLeaf> handoffLeaves(String portId,
-                                                   Object owner,
-                                                   Field element) {
+    private static List<HandoffLeaf> handoffLeaves(
+            String portId, Object owner, String declaringClass,
+            String fieldName, String descriptor) {
+        List<HandoffLeaf> leaves = primitiveLeaves(portId, owner,
+                declaredInstanceField(owner, declaringClass, fieldName,
+                        descriptor));
+        if (leaves.isEmpty()) {
+            // No leaf, no v_H: the loss is named.
+            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
+                            .UNSTATED_VALUE,
+                    edu.uva.liftlab.graphchecker.contract.GapClass
+                            .DIAGNOSTIC, portId,
+                    "the delivered element exposes no primitive leaf to mint"
+                            + " a boundary variable on");
+        }
+        return leaves;
+    }
+
+    private static List<HandoffLeaf> primitiveLeaves(String portId,
+                                                     Object owner,
+                                                     Field element) {
         List<HandoffLeaf> leaves = new ArrayList<>();
         if (element == null) return leaves;
         if (element.getType().isPrimitive()) {

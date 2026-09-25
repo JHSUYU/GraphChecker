@@ -20,6 +20,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
+
 /**
  * The focused-region replay: one occurrence (or one state-connected factor)
  * runs symbolic; every other region runs concretely with its rows still
@@ -484,16 +486,17 @@ public final class FocusedReplay {
         try {
             for (JsonObject row : RowCodec.readJsonl(path)) {
                 if (!row.has("flip") || !row.has("taskId")) continue;
-                String obligationId = string(row, "obligationId");
+                String obligationId = optionalString(row, "obligationId");
                 if (obligationId.isEmpty()) {
-                    obligationId = string(row, "taskId");
+                    obligationId = optionalString(row, "taskId");
                 }
                 if (row.get("flip").isJsonNull()) {
                     // CONFIRM row (flip: null): roots planted, no decision
                     // owed, so it counts as flipped at load; agreement with
                     // the model is Confirmation's to read.
                     OBLIGATIONS.add(Obligation.confirming(obligationId,
-                            string(row, "taskId"), string(row, "pathId"),
+                            optionalString(row, "taskId"),
+                            optionalString(row, "pathId"),
                             strings(row, "rootAssignments"),
                             strings(row, "answers"),
                             list(row, "unproducible")));
@@ -512,8 +515,9 @@ public final class FocusedReplay {
                         continue;
                     }
                     OBLIGATIONS.add(Obligation.of(obligationId,
-                            string(row, "taskId"), string(row, "pathId"),
-                            string(flip, "siteId"),
+                            optionalString(row, "taskId"),
+                            optionalString(row, "pathId"),
+                            optionalString(flip, "siteId"),
                             flip.get("ordinal").getAsInt(),
                             flip.get("outcome").getAsBoolean(),
                             strings(row, "rootAssignments"),
@@ -521,7 +525,7 @@ public final class FocusedReplay {
                             list(row, "unproducible")));
                 }
                 FOCUS.put(obligationId,
-                        string(row, "focusedOccurrenceId"));
+                        optionalString(row, "focusedOccurrenceId"));
                 CLOCK_DELTAS.putAll(strings(row, "clockDeltas"));
                 // Each assigned root's mint is focused too.
                 for (Map.Entry<String, String> mint
@@ -541,7 +545,8 @@ public final class FocusedReplay {
                         if (!carried.has("ordinal") || !carried.has("outcome")) {
                             SHORTFALLS.add("the focus row for obligation "
                                     + obligationId + " states an inherited "
-                                    + "flip at " + string(carried, "siteId")
+                                    + "flip at "
+                                    + optionalString(carried, "siteId")
                                     + " with no "
                                     + (carried.has("ordinal") ? "outcome"
                                     : "ordinal") + ", so this replay cannot"
@@ -549,16 +554,17 @@ public final class FocusedReplay {
                                     + " from");
                             continue;
                         }
-                        String at = string(carried, "focusedOccurrenceId");
+                        String at = optionalString(carried,
+                                "focusedOccurrenceId");
                         INHERITED.add(new Inherited(at,
-                                string(carried, "siteId"),
+                                optionalString(carried, "siteId"),
                                 carried.get("ordinal").getAsInt(),
                                 carried.get("outcome").getAsBoolean(),
-                                string(carried, "obligationId")));
+                                optionalString(carried, "obligationId")));
                         if (!at.isEmpty()) INHERITED_OCCURRENCES.add(at);
                     }
                 }
-                FOCUSED_TASKS.add(string(row, "taskId"));
+                FOCUSED_TASKS.add(optionalString(row, "taskId"));
                 // Task.of refuses a null focus, so a row without one makes
                 // no Task instead of throwing.
                 OccurrenceAddress focus = occurrence(row.get("focused"));
@@ -572,10 +578,10 @@ public final class FocusedReplay {
                             if (parsed != null) members.add(parsed);
                         }
                     }
-                    String seed = string(row, "seedSessionId");
+                    String seed = optionalString(row, "seedSessionId");
                     if (!seed.isEmpty()) {
-                        focusedTask = Task.of(string(row, "taskId"), focus,
-                                members, seed);
+                        focusedTask = Task.of(optionalString(row, "taskId"),
+                                focus, members, seed);
                     }
                 }
             }
@@ -674,21 +680,21 @@ public final class FocusedReplay {
         load();
         Map<String, String> unplanted = new LinkedHashMap<String, String>();
         synchronized (LOCK) {
+            List<Map<String, String>> asked =
+                    new ArrayList<Map<String, String>>();
             for (Obligation obligation : OBLIGATIONS) {
-                if (obligation.rootAssignments() == null) continue;
-                for (Map.Entry<String, String> assigned
-                        : obligation.rootAssignments().entrySet()) {
+                if (obligation.rootAssignments() != null) {
+                    asked.add(obligation.rootAssignments());
+                }
+            }
+            asked.add(CLOCK_DELTAS);
+            for (Map<String, String> roots : asked) {
+                for (Map.Entry<String, String> assigned : roots.entrySet()) {
                     String id = Text.safe(assigned.getKey());
                     if (id.isEmpty() || PLANTED.contains(id)) continue;
                     if (!reachedLocked(id)) continue;
                     unplanted.put(id, assigned.getValue());
                 }
-            }
-            for (Map.Entry<String, String> skew : CLOCK_DELTAS.entrySet()) {
-                String id = Text.safe(skew.getKey());
-                if (id.isEmpty() || PLANTED.contains(id)) continue;
-                if (!reachedLocked(id)) continue;
-                unplanted.put(id, skew.getValue());
             }
         }
         return unplanted;
@@ -712,8 +718,7 @@ public final class FocusedReplay {
      * edges), from the worker directory else beside the plan; or null.
      */
     static Path workerFile(String name) {
-        String worker = Text.safe(
-                System.getenv("CAUSYNTH_CONCOLIC_WORKER_DIR"));
+        String worker = workerDir();
         if (!worker.isEmpty()) {
             Path inWorker = readable(Paths.get(worker).resolve(name));
             if (inWorker != null) return inWorker;
@@ -725,6 +730,11 @@ public final class FocusedReplay {
         if (plan.isEmpty()) return null;
         Path beside = Paths.get(plan).getParent();
         return beside == null ? null : readable(beside.resolve(name));
+    }
+
+    /** The directory the campaign hands this replay's worker, or "". */
+    static String workerDir() {
+        return Text.safe(System.getenv("CAUSYNTH_CONCOLIC_WORKER_DIR"));
     }
 
     private static Path readable(Path file) {
@@ -746,11 +756,6 @@ public final class FocusedReplay {
             return OccurrenceAddress.parse(element.getAsString());
         }
         return RowCodec.readOccurrence(element.getAsJsonObject());
-    }
-
-    private static String string(JsonObject row, String member) {
-        return row.has(member) && !row.get(member).isJsonNull()
-                ? row.get(member).getAsString() : "";
     }
 
     private static Map<String, String> strings(JsonObject row,

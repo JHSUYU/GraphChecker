@@ -357,18 +357,11 @@ public final class RowRuntime {
         Confirmation.wrote(location, version, at);
     }
 
-    /** One read, at the site index the event itself stood on. */
-    public static void read(OccurrenceAddress occurrence, long seq,
-                            String site, LocationId location,
-                            long observedVersion, String symbol,
-                            String javaType, String concreteValue,
-                            String siteIndex) {
-        read(occurrence, seq, site, location, observedVersion, symbol,
-                javaType, concreteValue, siteIndex,
-                ReadRow.UNKNOWN_VERSION);
-    }
-
-    /** One read, plus its placeholder mint's version (CONTRACT v2.4). */
+    /**
+     * One read, at the site index the event itself stood on, plus its
+     * placeholder mint's version ({@link ReadRow#UNKNOWN_VERSION} for none,
+     * CONTRACT v2.4).
+     */
     public static void read(OccurrenceAddress occurrence, long seq,
                             String site, LocationId location,
                             long observedVersion, String symbol,
@@ -868,7 +861,7 @@ public final class RowRuntime {
     /** The wave's own file: one row per obligation this replay ran. */
     private static void writeWorkerVerdicts(List<ObligationResult> results) {
         if (results.isEmpty()) return;
-        String worker = Text.safe(System.getenv("CAUSYNTH_CONCOLIC_WORKER_DIR"));
+        String worker = FocusedReplay.workerDir();
         if (worker.isEmpty()) return;
         StringBuilder rows = new StringBuilder();
         for (ObligationResult result : results) {
