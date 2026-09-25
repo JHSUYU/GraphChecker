@@ -37,7 +37,8 @@ import static edu.uva.liftlab.graphchecker.compose.VmTermLowering.smtLiteral;
  * ({@code Arms} decides what an arm IS).  WIRE families via {@link
  * #closeFamilies}, STATE families via {@link #stateFamilies}.  It holds the
  * composition's own collections, not copies, and reaches {@link Composer}
- * for gaps, the free-symbol test and the epoch's slot table.
+ * for gaps, the epoch's slot table and the path routines an arm is closed
+ * by (closure, stated reads, state joins, prefixes).
  */
 final class ComposedFamilies {
 

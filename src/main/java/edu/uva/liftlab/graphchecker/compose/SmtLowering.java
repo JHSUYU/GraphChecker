@@ -144,7 +144,7 @@ public final class SmtLowering {
     /**
      * Every name this query gives a meaning to: ONE registry for both what
      * the recording states and what the query declares ({@link #declare}).
-     * Two maps once cut leaves as free while their name was bound.
+     * Two registries would cut a leaf as free while its name is bound.
      */
     private final Map<String, Declared> declarations =
             new LinkedHashMap<String, Declared>();
