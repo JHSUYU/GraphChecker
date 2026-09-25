@@ -974,8 +974,10 @@ names.
   `requestContexts` (write-only), `attachPortIds` — readers, else dead.
 - R12 `RuntimeRegionPlanner.putRecordedTraceIds` keeps laneId only; `MethodEvent.reattribute`
   (called?); the `ANCHOR_*` kinds are validated in `RootContextSelector.from` and never read.
-- R13 `CausynthTraceRecorder` pass 1 (`enterMethodLite`/`exitActiveMethodLite`) — delete after
-  diffing the occurrence-address sets of the nine recordings (§10 item 9); R14/R48 DONE (2026-09-24): `RuntimeRefinedGraphBuilder` is deleted -- the finalizer reads the candidate graph and looks an edge's regions up in the skeletons; the region plans of all nine v44 recordings re-plan byte-identical.
+- R13 DONE (2026-09-24): the recording is one run. The weave of it covers every candidate region
+  and every weave opens regions at the candidate roots; the aggregation reads which candidates
+  the run exercised off its own trace (entries, folded or not), which on the nine v44
+  recordings is exactly pass 1's selection, anchors included; R14/R48 DONE (2026-09-24): `RuntimeRefinedGraphBuilder` is deleted -- the finalizer reads the candidate graph and looks an edge's regions up in the skeletons; the region plans of all nine v44 recordings re-plan byte-identical.
 - R15 switch support is real on both halves (`instrumentConcolicSwitch`, `RESOLVE/RECORD_SWITCH_
   BRANCH`); unexercised by the nine cases; keep.
 - R16 `SymbolizeAction.symbolicName`/`rootKind`/`replayOccurrence` readers?;

@@ -2368,6 +2368,19 @@ public final class RuntimeRegionPlanner {
             this.requestApi = safe(requestApi);
         }
 
+        /**
+         * This entry as a pass with no region frames would have stated it:
+         * folded or not, the method was entered.  Which regions a recording
+         * EXERCISED is asked of entries, not of occurrences
+         * ({@code CausynthTraceRecorder#aggregateStateTrace}).
+         */
+        MethodEvent unfolded() {
+            return new MethodEvent(seq, test, threadName, tid, method,
+                    objectId, receiverType, callId, parentCallId,
+                    parentSiteId, laneId, spanId, remoteParentSpanId,
+                    source, receiverAttributed, requestKey, requestApi,
+                    occurrenceAddress, false);
+        }
     }
 
     static final class ProtocolEvent {

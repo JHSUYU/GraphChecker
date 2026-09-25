@@ -10,7 +10,15 @@ import java.util.Set;
 
 import static edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.firstNonBlank;
 
-/** Methods selected by the runtime region-discovery pass. */
+/**
+ * The candidate region skeletons every weave opens its regions from.
+ *
+ * <p>Candidates, not the regions a run turned out to exercise: the recording
+ * is woven before it runs, and the replay has to stand on the same frame
+ * stack, so the frame set is a static fact.  Which candidates the recording
+ * exercised is read off its trace afterwards and decides only which regions
+ * are planned.</p>
+ */
 final class RegionSkeletonInstrumentationSelection {
     private RegionSkeletonInstrumentationSelection() {
     }
@@ -59,8 +67,7 @@ final class RegionSkeletonInstrumentationSelection {
             for (StaticProgram.RegionRow region : regions) {
                 if (region.anchorMethod.isEmpty()) {
                     throw new IllegalArgumentException("REGION_SKELETON "
-                            + region.regionId + " states no anchor; this "
-                            + "reads selected skeletons, not candidates");
+                            + region.regionId + " states no anchor");
                 }
             }
             return regions;

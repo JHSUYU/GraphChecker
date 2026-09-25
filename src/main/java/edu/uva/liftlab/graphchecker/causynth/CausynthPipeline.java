@@ -148,7 +148,7 @@ public final class CausynthPipeline {
                     RegionSkeletonInstrumentationSelection
                             .methodsFromEnvironment());
             instrumentRuntimeState(selected);
-            LOG.info("REGION_STATE reused runtime-selected skeletons; "
+            LOG.info("REGION_STATE wove the candidate skeletons; "
                     + "static seed analysis was not rerun");
             return;
         }
@@ -176,7 +176,7 @@ public final class CausynthPipeline {
         // CLOSURE-V2 SS4, before ANY weaving: the sites of the static scope
         // map are named in original unit indices (the graph's own numbering),
         // and its guard sets are read off the same bodies the graph was built
-        // from.  Computing them after instrumentRegionSkeletonTrace read the
+        // from.  Computing them after a discovery weave read the
         // guards off a body with hooks in it, which shifted every index past
         // the first hook -- 17960's target guard came out #u63 for a branch
         // INSTRUMENT wove as #u61 -- so no published guard id was a site any
@@ -187,18 +187,14 @@ public final class CausynthPipeline {
         List<JsonObject> scopeMap = StaticScopeMap.rows(scopeSites,
                 SiteControlDependence.over(
                         StaticScopeMap.siteIds(scopeSites)));
-        long instrumentationStart = System.nanoTime();
-        instrumentRegionSkeletonTrace(result);
-        long instrumentationMillis = elapsedMillis(instrumentationStart);
         long artifactWriteStart = System.nanoTime();
         CausynthArtifactWriter.writeDiscoveryArtifacts(
                 target.outputDir, result, scopeMap);
         long artifactWriteMillis = elapsedMillis(artifactWriteStart);
         LOG.info("Discovery phase timing: seedAnalysis={} ms, "
-                        + "skeletonPlanning={} ms, instrumentation={} ms, "
-                        + "artifactWrite={} ms",
+                        + "skeletonPlanning={} ms, artifactWrite={} ms",
                 seedAnalysisMillis, skeletonPlanningMillis,
-                instrumentationMillis, artifactWriteMillis);
+                artifactWriteMillis);
         LOG.info("Seed backward analysis wrote the frozen graph to {}; "
                 + "symbolic regions will be finalized from the runtime trace",
                 target.outputDir);
@@ -378,95 +374,10 @@ public final class CausynthPipeline {
         // it reads an address, and one walk, so a scope one pass frames and
         // the other does not cannot exist.
         instrumentApplicationScope(refs);
-        LOG.info("Instrumented {} of {} runtime-selected methods for "
+        LOG.info("Instrumented {} of {} candidate methods for "
                 + "REGION_STATE trace; {} of them open a region",
                 rewritten.size(), result.traceMethods.size(),
                 regionRoots.size());
-    }
-
-    /** The methods the skeleton pass exists to watch. */
-    static Set<String> skeletonCandidateMethods(StaticProgram result) {
-        Set<String> candidates = new LinkedHashSet<>();
-        for (Map<String, Object> region : result.regions) {
-            Object methods = region.get("methods");
-            if (!(methods instanceof Collection)) {
-                continue;
-            }
-            for (Object method : (Collection<?>) methods) {
-                candidates.add(String.valueOf(method));
-            }
-        }
-        candidates.retainAll(new LinkedHashSet<>(result.traceMethods));
-        Object target = result.targetResolved.get("method");
-        if (target != null && !String.valueOf(target).trim().isEmpty()) {
-            candidates.add(String.valueOf(target));
-        }
-        return candidates;
-    }
-
-    /**
-     * Region discovery records only the balanced activation tree, plus the
-     * annotated target method's exceptional exit.
-     *
-     * <p>An envelope is balanced by popping the thread-local activation, and
-     * for every method but one that is all the skeleton pass needs: the
-     * planner rebuilds nesting from {@code callId}/{@code parentCallId} on the
-     * entry rows, so a silent pop costs it nothing. The annotated target is
-     * the exception. Whether the run reached the target's throw is the one
-     * question this pass exists to answer for the launcher, and a silent pop
-     * cannot answer it - it leaves a run in which the exception escaped the
-     * target twelve times indistinguishable from one in which the method
-     * returned normally every time. So the target, and only the target, gets
-     * the row-writing exceptional-exit hook.</p>
-     *
-     * <p>That difference is deliberate: the absence of a
-     * {@code METHOD_EXIT_THROW} row for the target is an observation; the
-     * absence of one for any other instrumented method is not, because none
-     * is ever written.  Normal exits stay silent everywhere, the target
-     * included, so the entry-row counts this pass has always produced do not
-     * move.</p>
-     */
-    private void instrumentRegionSkeletonTrace(StaticProgram result) {
-        Set<String> selectedMethods = skeletonCandidateMethods(result);
-        if (selectedMethods.isEmpty()) {
-            LOG.warn("No candidate region selected a method to instrument; "
-                    + "the REGION_SKELETON pass will bind no activation");
-        }
-        HookCatalog refs = HookCatalog.trace();
-        String annotatedTarget = annotatedTargetMethod(result);
-        Set<String> rewritten = instrumentMethods(selectedMethods, "",
-                (body, method, units, entry, lowerBound, receiver) ->
-                        instrumentLiteMethod(body, method, units, entry,
-                                lowerBound, receiver, refs,
-                                !annotatedTarget.isEmpty()
-                                        && annotatedTarget.equals(
-                                                method.getSignature())));
-        LOG.info("Instrumented {} of {} candidate methods for REGION_SKELETON "
-                        + "trace out of a {}-method static slice "
-                        + "and {} candidate regions",
-                rewritten.size(), selectedMethods.size(),
-                result.traceMethods.size(), result.regions.size());
-        if (!annotatedTarget.isEmpty()
-                && rewritten.contains(annotatedTarget)) {
-            LOG.info("Exceptional exit is recorded for the annotated target "
-                    + "{} only; every other instrumented method still pops "
-                    + "its activation without a row", annotatedTarget);
-        } else {
-            LOG.warn("No exceptional-exit row will be written for the "
-                    + "annotated target {}; a run in which the target throws "
-                    + "will be indistinguishable from one in which it does "
-                    + "not", annotatedTarget.isEmpty()
-                    ? "<unresolved>" : annotatedTarget);
-        }
-    }
-
-    /** The annotated target's Soot signature, or {@code ""} when absent. */
-    private static String annotatedTargetMethod(StaticProgram result) {
-        Object method = result.targetResolved.get("method");
-        if (method == null || String.valueOf(method).trim().isEmpty()) {
-            return "";
-        }
-        return String.valueOf(method);
     }
 
     /** The campaign's one deduplicated instrumentation envelope. */
@@ -3317,30 +3228,6 @@ public final class CausynthPipeline {
         return created;
     }
 
-    /** Wraps one method in a balanced skeleton envelope. */
-    private void instrumentLiteMethod(
-            Body body, SootMethod method, List<Unit> originalUnits,
-            Unit insertionPoint, Unit lowerBound, Value receiver,
-            HookCatalog refs, boolean recordExceptionalExit) {
-        List<Unit> entry = new ArrayList<>();
-        emit(entry, refs.ref(Hook.ENTER_METHOD_LITE),
-                StringConstant.v(method.getSignature()), receiver);
-        insertBeforeOrAppendNoRedirect(body, insertionPoint, entry);
-
-        for (int index = instrumentableFrom(originalUnits, lowerBound);
-                index >= 0 && index < originalUnits.size(); index++) {
-            Unit unit = originalUnits.get(index);
-            if (unit instanceof ReturnStmt
-                    || unit instanceof ReturnVoidStmt) {
-                Stmt exit = invoke(refs.ref(Hook.EXIT_ACTIVE_METHOD_LITE));
-                body.getUnits().insertBefore(exit, unit);
-            }
-        }
-        addThrowHandler(body, insertionPoint, refs,
-                recordExceptionalExit ? Hook.THROW_ACTIVE_METHOD
-                        : Hook.THROW_ACTIVE_METHOD_LITE, "$causynthThrown");
-    }
-
     private void instrumentRichMethod(
             Body body, SootMethod method, List<Unit> originalUnits,
             Unit insertionPoint, Unit lowerBound, Value receiver,
@@ -3876,9 +3763,6 @@ public final class CausynthPipeline {
     }
 
     private enum Hook {
-        ENTER_METHOD_LITE,
-        EXIT_ACTIVE_METHOD_LITE,
-        THROW_ACTIVE_METHOD_LITE,
         ENTER_METHOD,
         RECORD_METHOD_ARGUMENT,
         BEGIN_CALL,
@@ -4011,13 +3895,6 @@ public final class CausynthPipeline {
             Type string = RefType.v("java.lang.String");
             Type object = RefType.v("java.lang.Object");
             return new HookCatalog()
-                    .add(Hook.ENTER_METHOD_LITE, recorder,
-                            "enterMethodLite", LongType.v(), string, object)
-                    .add(Hook.EXIT_ACTIVE_METHOD_LITE, recorder,
-                            "exitActiveMethodLite", VoidType.v())
-                    .add(Hook.THROW_ACTIVE_METHOD_LITE, recorder,
-                            "throwActiveMethodLite", VoidType.v(),
-                            RefType.v("java.lang.Throwable"))
                     .add(Hook.ENTER_METHOD, recorder, "enterMethod",
                             LongType.v(), string, object, string)
                     .shared(recorder)

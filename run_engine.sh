@@ -381,7 +381,7 @@ initialize_config() {
   candidate_graph="${causynth_output_dir}/candidate_dataflow_edges.jsonl.gz"
   causynth_static_scope_map="${causynth_output_dir}/static_scope_map.jsonl"
   runtime_region_plan="${causynth_output_dir}/runtime/concolic_region_plan.jsonl"
-  causynth_region_skeletons="${causynth_output_dir}/runtime/skeleton-pass/region_skeletons.jsonl"
+  causynth_region_skeletons="${causynth_output_dir}/region_skeletons.jsonl.gz"
   analysis_classes_dir="${causynth_output_dir}/instrumented-classes"
   schedule_output_dir="${causynth_output_dir}/schedule"
 }
@@ -595,8 +595,9 @@ do_analyze() {
       "-Dcausynth.trace.mode=${CAUSYNTH_TRACE_MODE}"
     )
   fi
-  # One file, every weave.  The region-state pass and the concolic pass both
-  # open their regions from it; a pass that read a different one would stand
+  # One file, every weave: the CANDIDATE skeletons.  The recording and the
+  # concolic pass both open their regions at its roots, whichever of them the
+  # run turns out to exercise; a pass that read a different one would stand
   # on a different frame stack and address a different occurrence for the
   # same event.
   system_properties+=(
@@ -728,68 +729,27 @@ run_configured_workload() {
     env "${workload_env[@]}" bash -lc "${workload_command}")
 }
 
-do_regions() {
+do_workload() {
   [[ -n "${workload_command}" ]] || die "workload_command is empty"
   require_directory "workload working" "${workload_work_dir}"
   local trace_dir
   trace_dir=$(dirname "${runtime_region_plan}")
-  local skeleton_pass="${trace_dir}/skeleton-pass"
-  local candidate_skeletons="${causynth_output_dir}/region_skeletons.jsonl.gz"
-  require_file "candidate region skeletons" "${candidate_skeletons}"
+  require_file "candidate region skeletons" "${causynth_region_skeletons}"
   ensure_output_directory "${trace_dir}"
-  ensure_output_directory "${skeleton_pass}"
-
-  # Pass 1: method activation envelopes only.
+  # ONE recording: rich calls, branches, arguments and every declared-field
+  # access over every candidate region, whose roots open the execution
+  # index exactly where the replay's weave opens it (the same candidate
+  # file).  Which regions the run exercised is read off this trace by the
+  # aggregation below, which writes them to ${trace_dir}/region_skeletons.jsonl.
+  CAUSYNTH_TRACE_MODE=region-state do_analyze
   run_configured_workload
+  require_file "static scope map" "${causynth_static_scope_map}"
   run_java_main edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder \
     --trace-dir "${trace_dir}" \
-    --region-skeletons "${candidate_skeletons}" \
-    --region-skeleton-only true \
-    --output-dir "${skeleton_pass}" \
+    --candidate-graph "${candidate_graph}" \
+    --region-skeletons "${causynth_region_skeletons}" \
+    --static-scope-map "${causynth_static_scope_map}" \
     --test "${trace_test}"
-  require_file "runtime-selected region skeletons" \
-    "${causynth_region_skeletons}"
-  # The gaps pass 1 stated; the state pass files them with its own, so an
-  # absent artifact is a plan with a silently short gap list.
-  require_file "pass-1 recording gaps" "${skeleton_pass}/recording_gaps.jsonl"
-
-  # Preserve pass-1 evidence and leave the configured trace directory clean
-  # for the state pass.
-  mv "${trace_dir}/runtime_trace.jsonl" \
-    "${skeleton_pass}/runtime_trace.jsonl"
-  mv "${trace_dir}/streaming_trace_manifest.json" \
-    "${skeleton_pass}/streaming_trace_manifest.json"
-}
-
-do_workload() {
-  do_regions
-  local trace_dir
-  trace_dir=$(dirname "${runtime_region_plan}")
-
-  # Pass 2: re-instrument only selected region methods, then collect rich
-  # calls, branches, arguments and every direct declared-field access. Keep
-  # the lite classes intact so a failed or repeated workload starts from the
-  # same pass-1 instrumentation instead of accidentally tracing REGION_STATE.
-  local skeleton_class_backup
-  skeleton_class_backup=$(mktemp -d /tmp/graphchecker-skeleton-classes.XXXXXX)
-  cp -a "${analysis_classes_dir}/." "${skeleton_class_backup}/"
-  (
-    restore_skeleton_classes() {
-      cp -a "${skeleton_class_backup}/." "${analysis_classes_dir}/"
-      rm -rf -- "${skeleton_class_backup}"
-    }
-    trap restore_skeleton_classes EXIT
-    CAUSYNTH_TRACE_MODE=region-state do_analyze
-    run_configured_workload
-    require_file "static scope map" "${causynth_static_scope_map}"
-    run_java_main edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder \
-      --trace-dir "${trace_dir}" \
-      --candidate-graph "${candidate_graph}" \
-      --region-skeletons "${causynth_region_skeletons}" \
-      --static-scope-map "${causynth_static_scope_map}" \
-      --recording-gaps "${trace_dir}/skeleton-pass/recording_gaps.jsonl" \
-      --test "${trace_test}"
-  )
 }
 
 # ---------------------------------------------------------------------------
@@ -1830,8 +1790,8 @@ campaign_seed() {
   local skeleton_snapshot="${campaign_root}/seed-skeletons"
   mkdir -p "${skeleton_snapshot}"
   local skeleton
-  for skeleton in "${causynth_output_dir}/region_skeletons.jsonl.gz" \
-      "${causynth_region_skeletons}"; do
+  for skeleton in "${causynth_region_skeletons}" \
+      "$(dirname "${runtime_region_plan}")/region_skeletons.jsonl"; do
     [[ -f "${skeleton}" ]] && cp -p "${skeleton}" "${skeleton_snapshot}/" || true
   done
   if ! catalog_sha=$(campaign_digest "${candidate_graph}"); then

@@ -16,18 +16,20 @@ import java.util.Locale;
  * not something to read off which unrelated keys happen to be set.</p>
  */
 public enum RuntimeTraceMode {
-    REGION_SKELETON,
+    /** Static discovery: the weaver analyses and weaves nothing. */
+    DISCOVERY,
+    /** The recording: rich hooks over every candidate region. */
     REGION_STATE,
     REPLAY_CONTEXT;
 
     public static RuntimeTraceMode configured() {
         String value = firstNonBlank(
                 System.getProperty("causynth.trace.mode"),
-                System.getenv("CAUSYNTH_TRACE_MODE"), "region-skeleton");
+                System.getenv("CAUSYNTH_TRACE_MODE"), "discovery");
         String normalized = value.trim().toLowerCase(Locale.ROOT)
                 .replace('_', '-');
-        if ("region-skeleton".equals(normalized)) {
-            return REGION_SKELETON;
+        if ("discovery".equals(normalized)) {
+            return DISCOVERY;
         }
         if ("region-state".equals(normalized)) {
             return REGION_STATE;

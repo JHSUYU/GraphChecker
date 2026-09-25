@@ -716,7 +716,7 @@ for derived_key in candidate_graph runtime_region_plan \
 done
 # CONFIG-3: the region skeletons are ONE path, and every weave takes them
 # from that one key.
-grep -qF 'causynth_region_skeletons="${causynth_output_dir}/runtime/skeleton-pass/region_skeletons.jsonl"' \
+grep -qF 'causynth_region_skeletons="${causynth_output_dir}/region_skeletons.jsonl.gz"' \
     "${repo}/run_engine.sh" \
   || fail "the region skeletons are not derived beside the discovery artifacts"
 grep -qF '"-Dcausynth.region.skeletons=${causynth_region_skeletons}"' \

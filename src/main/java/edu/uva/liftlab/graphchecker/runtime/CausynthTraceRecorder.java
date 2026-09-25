@@ -99,8 +99,6 @@ public final class CausynthTraceRecorder {
         Map<String, String> params = parseArgs(args);
         File directory = new File(requiredArg(params, "trace-dir"));
         String test = requiredArg(params, "test");
-        boolean skeletonOnly = Boolean.parseBoolean(
-                params.get("region-skeleton-only"));
         String configuredSkeletons = params.get("region-skeletons");
         File candidateSkeletons = configuredSkeletons == null
                 || configuredSkeletons.trim().isEmpty()
@@ -109,22 +107,15 @@ public final class CausynthTraceRecorder {
             throw new IllegalArgumentException(
                     "--region-skeletons is required");
         }
-        File graph = skeletonOnly ? null
-                : new File(requiredArg(params, "candidate-graph"));
+        File graph = new File(requiredArg(params, "candidate-graph"));
         String configuredOutput = params.get("output-dir");
         File planOutputDirectory = configuredOutput == null
                 || configuredOutput.trim().isEmpty()
                 ? directory : new File(configuredOutput.trim());
         try {
-            if (skeletonOnly) {
-                aggregateSkeletonTrace(directory, candidateSkeletons,
-                        test, planOutputDirectory);
-            } else {
-                aggregateStateTrace(directory, graph, candidateSkeletons,
-                        test, planOutputDirectory,
-                        new File(requiredArg(params, "recording-gaps")),
-                        new File(requiredArg(params, "static-scope-map")));
-            }
+            aggregateStateTrace(directory, graph, candidateSkeletons,
+                    test, planOutputDirectory,
+                    new File(requiredArg(params, "static-scope-map")));
         } catch (Throwable throwable) {
             System.err.println("Failed to aggregate Causynth runtime trace: "
                     + throwable);
@@ -358,42 +349,6 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    /** Records only the balanced activation tree for skeleton selection. */
-    public static long enterMethodLite(String method, Object receiver) {
-        if (method == null) {
-            return 0L;
-        }
-        initialize();
-        long id = EVENT_COUNTER.incrementAndGet();
-        Deque<ActiveCall> calls = ACTIVE_CALLS.get();
-        ActiveCall parent = calls.peek();
-        long parentCallId = parent == null ? 0L : parent.callId;
-        RuntimeTraceContext.View context = parent == null
-                ? RuntimeTraceContext.enterRoot(receiver)
-                : RuntimeTraceContext.current();
-        boolean receiverAttributed = parent == null
-                ? context.receiverAttributed
-                : context.source != null && context.source.equals(
-                RuntimeTraceContext.sourceFor(receiver));
-        calls.push(new ActiveCall(id, 0L, method, context.spanId,
-                parent == null, false));
-        Thread thread = Thread.currentThread();
-        String threadName = thread.getName();
-        RuntimeRegionPlanner.MethodEvent event =
-                new RuntimeRegionPlanner.MethodEvent(id, testName,
-                        threadName, thread.getId(), method, 0, "", id,
-                        parentCallId, 0L, context.laneId, context.spanId,
-                        context.remoteParentSpanId,
-                        context.source, receiverAttributed,
-                        context.requestKey, context.requestApi);
-        if (!contextOnlyConcolicReplay) {
-            synchronized (LOCK) {
-                writeTraceLine(event);
-            }
-        }
-        return id;
-    }
-
     public static void recordMethodArgument(long callId, int argumentIndex,
                                             String declaredType, Object value,
                                             String primitiveValue) {
@@ -587,30 +542,6 @@ public final class CausynthTraceRecorder {
         if (call != null && call.rootContext) {
             RuntimeTraceContext.exitRoot(call.spanId);
         }
-    }
-
-    /** Removes the current lite activation without emitting an exit row. */
-    public static void exitActiveMethodLite() {
-        exitActiveMethodLite("CALL_SITE_INCOMPLETE");
-    }
-
-    private static void exitActiveMethodLite(String callSiteExit) {
-        ActiveCall call = ACTIVE_CALLS.get().peek();
-        if (call != null) {
-            closeCallSites(call.callId, callSiteExit);
-            removeCall(call.callId);
-            if (call.regionFrame) {
-                popRegion();
-            }
-            if (call.rootContext) {
-                RuntimeTraceContext.exitRoot(call.spanId);
-            }
-        }
-    }
-
-    /** Removes an exceptionally exiting lite activation without trace output. */
-    public static void throwActiveMethodLite(Throwable ignored) {
-        exitActiveMethodLite("CALL_SITE_THROW");
     }
 
     public static void recordField(String kind, String method, int unitIndex,
@@ -1319,18 +1250,15 @@ public final class CausynthTraceRecorder {
     }
 
     private static void aggregateStateTrace(
-            File directory, File candidateGraph, File selectedSkeletons,
-            String test, File planOutputDirectory,
-            File recordingGaps, File staticScopeMap)
+            File directory, File candidateGraph, File candidateSkeletons,
+            String test, File planOutputDirectory, File staticScopeMap)
             throws IOException {
         synchronized (LOCK) {
-            List<Map<String, Object>> earlierPassGaps =
-                    readRecordingGaps(recordingGaps);
             clearInMemoryTrace();
             requireClosedTrace(new File(directory,
                     "streaming_trace_manifest.json"));
             TraceData trace = loadExistingTrace(new File(directory,
-                    "runtime_trace.jsonl"), test, false);
+                    "runtime_trace.jsonl"), test);
             trace.sort();
             // No offline reattribution: every METHOD_ENTER was stamped by
             // THE attribution rule live (runtime.Attribution), in this pass
@@ -1341,10 +1269,42 @@ public final class CausynthTraceRecorder {
             for (RuntimeRegionPlanner.MethodEvent event : trace.methods) {
                 observedMethods.add(event.method);
             }
+            // WHICH REGIONS THIS RECORDING EXERCISED: a candidate whose root
+            // was entered and whose subtree reached one of its anchors, with
+            // the anchors narrowed to the ones it reached.  Asked of entries,
+            // folded or not, because a fold is a fact about occurrences and
+            // this is a fact about the program having run the region -- the
+            // question the recording's first pass used to answer by running
+            // the workload a second time, over the same candidates.
+            File selectedSkeletons = new File(planOutputDirectory,
+                    "region_skeletons.jsonl");
+            List<RuntimeRegionPlanner.MethodEvent> entries =
+                    new ArrayList<>(trace.methods.size());
+            for (RuntimeRegionPlanner.MethodEvent event : trace.methods) {
+                entries.add(event.unfolded());
+            }
+            RuntimeRegionPlanner.Result exercised =
+                    RuntimeRegionPlanner.planSkeletonGraph(
+                            StaticProgram.regionRows(
+                                    MapFields.readRows(candidateSkeletons),
+                                    RuntimeSelectedRegionFinalizer
+                                            .SKELETON_KIND,
+                                    candidateSkeletons),
+                            entries, Collections.emptyList(),
+                            Collections.emptyList(),
+                            Collections.<String>emptySet());
+            if (exercised.staticRegionCount == 0
+                    || exercised.runtimeInstances.isEmpty()) {
+                throw new IOException("the recording exercised no candidate"
+                        + " region: " + exercised.staticRegionCount
+                        + " region(s), " + exercised.runtimeInstances.size()
+                        + " activation(s)");
+            }
+            writeSelectedSkeletons(candidateSkeletons, selectedSkeletons,
+                    exercised.runtimeInstances);
             // One decode of the selected skeletons for the whole bridge: the
-            // activation planner, the graph refiner and the region finalizer
-            // all take these rows, so the artifact is parsed and validated
-            // once rather than once per stage.
+            // activation planner and the region finalizer both take these
+            // rows, so the artifact is parsed and validated once.
             List<StaticProgram.RegionRow> skeletons =
                     StaticProgram.regionRows(
                             MapFields.readRows(selectedSkeletons),
@@ -1381,7 +1341,6 @@ public final class CausynthTraceRecorder {
             planGaps.addAll(trace.lineageGaps);
             // And the earlier recording pass's, which had no plan of its
             // own to carry them: one workload, one gap list.
-            planGaps.addAll(earlierPassGaps);
             writeRuntimeRegionPlans(planOutputDirectory,
                     closure.regions, trace,
                     activationGraph.runtimeInstances, planGaps);
@@ -1441,124 +1400,6 @@ public final class CausynthTraceRecorder {
             result.add(row);
         }
         return result;
-    }
-
-    /** Emits only static region skeletons and their concrete activation graph. */
-    private static void aggregateSkeletonTrace(
-            File directory, File candidateSkeletons,
-            String test,
-            File outputDirectory)
-            throws IOException {
-        synchronized (LOCK) {
-            clearInMemoryTrace();
-            requireClosedTrace(new File(directory,
-                    "streaming_trace_manifest.json"));
-            TraceData trace = loadExistingTrace(new File(directory,
-                    "runtime_trace.jsonl"), test, true);
-            trace.sort();
-            // No offline reattribution: every METHOD_ENTER was stamped by
-            // THE attribution rule live (runtime.Attribution), in this pass
-            // and in the replay alike, so a second rule applied here would
-            // give the planner an answer the replay cannot compute.
-            nameObservedObjectsFromContent(trace);
-            File skeletons = new File(outputDirectory,
-                    "region_skeletons.jsonl");
-            if (candidateSkeletons == null) {
-                throw new IOException("skeleton aggregation requires the "
-                        + "schema-3 candidate skeleton artifact");
-            }
-            RuntimeRegionPlanner.Result graph =
-                    RuntimeRegionPlanner.planSkeletonGraph(
-                            StaticProgram.regionRows(
-                                    MapFields.readRows(candidateSkeletons),
-                                    RuntimeSelectedRegionFinalizer
-                                            .SKELETON_KIND,
-                                    candidateSkeletons),
-                            trace.methods,
-                            Collections.emptyList(),
-                            Collections.emptyList(),
-                            Collections.<String>emptySet());
-            if (graph.staticRegionCount == 0) {
-                throw new IOException(
-                        "skeleton aggregation selected no static regions");
-            }
-            if (graph.runtimeInstances.isEmpty()) {
-                throw new IOException(
-                        "skeleton aggregation selected no runtime "
-                                + "activations");
-            }
-            writeSelectedSkeletons(candidateSkeletons, skeletons,
-                    graph.runtimeInstances);
-            writeRecordingGaps(outputDirectory, trace.lineageGaps);
-        }
-    }
-
-    /**
-     * The name a recording pass publishes its own stated gaps under.
-     *
-     * <p>A pass with no plan artifact still states its refusals: the
-     * REGION_SKELETON aggregation writes what it parsed here and the
-     * REGION_STATE aggregation -- the pass that publishes the plan -- files
-     * them with its own.  Before this channel existed, a gap pass 1 stated
-     * lived only in a trace file nothing read again.</p>
-     */
-    static final String RECORDING_GAPS_FILE = "recording_gaps.jsonl";
-
-    private static void writeRecordingGaps(
-            File directory, List<Map<String, Object>> gaps)
-            throws IOException {
-        StringBuilder text = new StringBuilder();
-        for (Map<String, Object> gap : gaps) {
-            text.append(objectWithoutNulls(
-                    "schemaVersion", gap.get("schemaVersion"),
-                    "kind", gap.get("kind"),
-                    "cls", gap.get("cls"),
-                    "subject", gap.get("subject"),
-                    "detail", gap.get("detail")));
-            text.append('\n');
-        }
-        writeFile(new File(directory, RECORDING_GAPS_FILE), text.toString());
-    }
-
-    /**
-     * The earlier recording pass's gap rows, in the plan-gap shape {@code
-     * parseTraceLine} builds, refusing rather than defaulting: the file is
-     * an artifact the earlier pass wrote, so its absence is a broken
-     * pipeline and not an empty gap list.
-     */
-    private static List<Map<String, Object>> readRecordingGaps(File file)
-            throws IOException {
-        if (file == null || String.valueOf(file).trim().isEmpty()) {
-            throw new IOException("--recording-gaps is required: the plan "
-                    + "states the gaps of every recording pass");
-        }
-        if (!file.isFile()) {
-            throw new IOException("no recording gap artifact at " + file
-                    + "; the earlier recording pass must publish "
-                    + RECORDING_GAPS_FILE + " before the plan is written");
-        }
-        List<Map<String, Object>> gaps = new ArrayList<>();
-        ConcurrentHashMap<String, String> pool = new ConcurrentHashMap<>();
-        try (BufferedReader reader = Files.newBufferedReader(file.toPath(),
-                StandardCharsets.UTF_8)) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                if (line.trim().isEmpty()) continue;
-                FlatJsonRow row = FlatJsonRow.parse(line, pool);
-                if (row == null) {
-                    throw new IOException("Malformed recording gap row in "
-                            + file + ": " + line);
-                }
-                Map<String, Object> gap = new LinkedHashMap<>();
-                gap.put("schemaVersion", row.intValue("schemaVersion", 1));
-                gap.put("kind", row.stringValue("kind"));
-                gap.put("cls", row.stringValue("cls"));
-                gap.put("subject", row.stringValue("subject"));
-                gap.put("detail", row.stringValue("detail"));
-                gaps.add(gap);
-            }
-        }
-        return gaps;
     }
 
     /**
@@ -1859,7 +1700,7 @@ public final class CausynthTraceRecorder {
     }
 
     private static TraceData loadExistingTrace(
-            File file, String test, boolean skeletonOnly) throws IOException {
+            File file, String test) throws IOException {
         if (file == null || !file.isFile()) {
             throw new IOException("Runtime trace not found: " + file);
         }
@@ -1889,7 +1730,7 @@ public final class CausynthTraceRecorder {
                 batch.add(line);
                 if (batch.size() >= batchCapacity) {
                     submitBatch(executor, pending, trace, batch,
-                            firstLineNumber, file, test, skeletonOnly, pool,
+                            firstLineNumber, file, test, pool,
                             threads);
                     firstLineNumber = lineNumber + 1;
                     batch = new ArrayList<>(batchCapacity);
@@ -1897,7 +1738,7 @@ public final class CausynthTraceRecorder {
             }
             if (!batch.isEmpty()) {
                 submitBatch(executor, pending, trace, batch,
-                        firstLineNumber, file, test, skeletonOnly, pool,
+                        firstLineNumber, file, test, pool,
                         threads);
             }
             while (!pending.isEmpty()) {
@@ -1912,11 +1753,11 @@ public final class CausynthTraceRecorder {
     private static void submitBatch(
             ExecutorService executor, ArrayDeque<Future<TraceData>> pending,
             TraceData trace, List<String> batch, int firstLineNumber,
-            File file, String test, boolean skeletonOnly,
+            File file, String test,
             ConcurrentHashMap<String, String> pool, int threads)
             throws IOException {
         pending.addLast(executor.submit(() -> parseTraceBatch(batch,
-                firstLineNumber, file, test, skeletonOnly, pool)));
+                firstLineNumber, file, test, pool)));
         // Bound the number of in-flight batches; the head of the queue is
         // always the oldest batch, so merging preserves file order.
         while (pending.size() > threads * 2) {
@@ -1954,19 +1795,19 @@ public final class CausynthTraceRecorder {
 
     private static TraceData parseTraceBatch(
             List<String> lines, int firstLineNumber, File file, String test,
-            boolean skeletonOnly, ConcurrentHashMap<String, String> pool)
+            ConcurrentHashMap<String, String> pool)
             throws IOException {
         TraceData trace = new TraceData();
         for (int index = 0; index < lines.size(); index++) {
             parseTraceLine(trace, lines.get(index),
-                    firstLineNumber + index, file, test, skeletonOnly, pool);
+                    firstLineNumber + index, file, test, pool);
         }
         return trace;
     }
 
     private static void parseTraceLine(
             TraceData trace, String line, int lineNumber, File file,
-            String test, boolean skeletonOnly,
+            String test,
             ConcurrentHashMap<String, String> pool) throws IOException {
         FlatJsonRow row = FlatJsonRow.parse(line, pool);
         if (row == null) {
@@ -2000,7 +1841,7 @@ public final class CausynthTraceRecorder {
                     row.stringValue("requestApi"),
                     row.stringValue("occurrenceAddress"),
                     row.longValue("regionFolded", 0L) != 0L));
-        } else if (!skeletonOnly && ("FIELD_READ".equals(eventKind)
+        } else if (("FIELD_READ".equals(eventKind)
                 || "FIELD_WRITE".equals(eventKind))) {
             trace.fields.add(
                     new RuntimeRegionPlanner.FieldAccessEvent(
@@ -2051,8 +1892,7 @@ public final class CausynthTraceRecorder {
                     row.longValue("seq", 0L), eventKind,
                     sourceRef(row), relatedSourceRef(row),
                     row.intValue("objectId", 0)));
-        } else if ((!skeletonOnly || "CALL_SITE_ENTER".equals(eventKind))
-                && isExecutionEventKind(eventKind)) {
+        } else if (isExecutionEventKind(eventKind)) {
             trace.execution.add(new RuntimeRegionPlanner.RuntimeEvent(
                     row.longValue("seq", 0L), eventKind,
                     row.stringValue("method"),
