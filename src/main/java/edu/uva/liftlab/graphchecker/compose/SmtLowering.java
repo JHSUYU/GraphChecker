@@ -109,7 +109,8 @@ public final class SmtLowering {
         Set<String> readSymbols(String locationKey, long version);
     }
 
-    private static final SessionJoin NO_JOIN = new SessionJoin() {
+    /** The join of no session: it states nothing. */
+    public static final SessionJoin NO_JOIN = new SessionJoin() {
         @Override
         public JsonElement writeExpression(String locationKey, long version) {
             return null;
@@ -245,22 +246,21 @@ public final class SmtLowering {
      * The lowering of ONE session's expressions, by reference, with its
      * write log (the flip solver's entry; same lowering as the composer's).
      */
-    public static SmtLowering forSession(SessionReader session) {
+    public static SmtLowering forSession(SessionReader session,
+                                         SessionJoin join) {
         SmtLowering lowering = new SmtLowering(
                 Collections.<String, Sort>emptyMap(), true,
                 session.expressions());
         lowering.scope = session.sessionId();
-        lowering.join = joinOf(session);
+        lowering.join = join;
         return lowering;
     }
 
     /**
      * One session's write log and read rows, as the state join reads them;
-     * the only implementation (the composer uses it too).  A null session
-     * answers nothing.
+     * the only implementation, built once per session ({@code Corpus#join}).
      */
     public static SessionJoin joinOf(final SessionReader session) {
-        if (session == null) return NO_JOIN;
         final Map<String, String> writes = new LinkedHashMap<String, String>();
         for (WriteRow write : session.writes()) {
             writes.put(locationKey(write.location()) + "#" + write.version(),

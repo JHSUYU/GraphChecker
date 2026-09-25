@@ -409,14 +409,9 @@ public final class Composer {
         return slots;
     }
 
-    /** Session -> its state join, indexed once per composition. */
-    private final Map<String, SmtLowering.SessionJoin> joins =
-            new LinkedHashMap<String, SmtLowering.SessionJoin>();
-
     /** One session's state join, for every conjunction lowered in it. */
     SmtLowering.SessionJoin join(String session) {
-        return joins.computeIfAbsent(session,
-                id -> SmtLowering.joinOf(corpus.session(id)));
+        return corpus.join(session);
     }
 
     /** Composes the declared occurrence; a missing one is a claim, not a

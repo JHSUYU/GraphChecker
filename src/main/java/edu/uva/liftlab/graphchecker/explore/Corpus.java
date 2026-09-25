@@ -143,6 +143,10 @@ public final class Corpus implements Arms.Rows {
     /** One lowering per session. */
     private final Map<String, SmtLowering> loweringById =
             new LinkedHashMap<String, SmtLowering>();
+    /** One state join per session, shared by the composer and the flip
+     *  lowering. */
+    private final Map<String, SmtLowering.SessionJoin> joinById =
+            new LinkedHashMap<String, SmtLowering.SessionJoin>();
     /** occurrence id -> the activations of it, across sessions. */
     private final Map<String, List<ActivationRow>> activations =
             new LinkedHashMap<String, List<ActivationRow>>();
@@ -396,7 +400,10 @@ public final class Corpus implements Arms.Rows {
     private void index(SessionReader session) {
         indexSchedule(session);
         sessionById.put(session.sessionId(), session);
-        loweringById.put(session.sessionId(), SmtLowering.forSession(session));
+        SmtLowering.SessionJoin join = SmtLowering.joinOf(session);
+        joinById.put(session.sessionId(), join);
+        loweringById.put(session.sessionId(),
+                SmtLowering.forSession(session, join));
         for (ActivationRow row : session.activations()) {
             activationByOccurrence.put(session.sessionId() + "|"
                     + row.occurrence().id(), row);
@@ -522,6 +529,11 @@ public final class Corpus implements Arms.Rows {
     /** One session's lowering: the one the composer lowers with. */
     public SmtLowering lowering(String sessionId) {
         return loweringById.get(sessionId);
+    }
+
+    /** One session's state join; a session this corpus lacks joins nothing. */
+    public SmtLowering.SessionJoin join(String sessionId) {
+        return joinById.getOrDefault(sessionId, SmtLowering.NO_JOIN);
     }
 
     public List<SessionReader> sessions() {
