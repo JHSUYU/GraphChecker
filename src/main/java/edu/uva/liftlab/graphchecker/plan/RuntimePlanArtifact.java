@@ -29,14 +29,11 @@ public final class RuntimePlanArtifact {
 
     private final List<RegionInstancePlan> plans;
     private final List<JsonObject> regions;
-    private final List<JsonObject> gaps;
 
     private RuntimePlanArtifact(List<RegionInstancePlan> plans,
-                                List<JsonObject> regions,
-                                List<JsonObject> gaps) {
+                                List<JsonObject> regions) {
         this.plans = plans;
         this.regions = regions;
-        this.gaps = gaps;
     }
 
     /** Decoded once here, never re-parsed. */
@@ -106,8 +103,9 @@ public final class RuntimePlanArtifact {
                         + plan.occurrenceId());
             }
         }
-        return new RuntimePlanArtifact(decoded, regions,
-                objects(array(catalog, "gaps"), "runtime plan gaps", path));
+        // Gaps are the catalog's to state, not this reader's to keep.
+        objects(array(catalog, "gaps"), "runtime plan gaps", path);
+        return new RuntimePlanArtifact(decoded, regions);
     }
 
     private static List<JsonObject> readRows(Path path) throws IOException {

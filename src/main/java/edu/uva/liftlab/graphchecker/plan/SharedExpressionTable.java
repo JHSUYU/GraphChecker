@@ -18,6 +18,9 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BiConsumer;
+import java.util.function.Consumer;
+import java.util.function.Function;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
@@ -267,6 +270,81 @@ public final class SharedExpressionTable {
         }
     }
 
+    /**
+     * THE DAG CHECK of every expression table: each key a walk reaches is
+     * defined ({@code definition} answers null otherwise) and none lies on a
+     * cycle. {@code references} visits the keys one value names.
+     */
+    static final class Dag<K> {
+        private final String noun;
+        private final Function<K, JsonObject> definition;
+        private final BiConsumer<JsonElement, Consumer<K>> references;
+        final Set<K> visited = new LinkedHashSet<>();
+        private final Set<K> active = new LinkedHashSet<>();
+
+        Dag(String noun, Function<K, JsonObject> definition,
+            BiConsumer<JsonElement, Consumer<K>> references) {
+            this.noun = noun;
+            this.definition = definition;
+            this.references = references;
+        }
+
+        void require(K key) {
+            if (visited.contains(key)) return;
+            JsonObject defined = definition.apply(key);
+            if (defined == null) {
+                throw new IllegalArgumentException(
+                        "missing " + noun + " definition: " + key);
+            }
+            if (!active.add(key)) {
+                throw new IllegalArgumentException(
+                        "cyclic " + noun + " definition: " + key);
+            }
+            references.accept(defined, this::require);
+            active.remove(key);
+            visited.add(key);
+        }
+    }
+
+    /** Visits the key of every reference object {@code keyOf} recognizes
+     *  (null: not a reference) in one value, each shared subtree once, never
+     *  inside a {@code skipped} member. */
+    static <K> void eachReference(JsonElement value, String skipped,
+                                  Function<JsonObject, K> keyOf,
+                                  Consumer<K> visit, Set<JsonElement> seen) {
+        if (value == null || value.isJsonNull() || value.isJsonPrimitive()
+                || !seen.add(value)) return;
+        if (value.isJsonArray()) {
+            for (JsonElement child : value.getAsJsonArray()) {
+                eachReference(child, skipped, keyOf, visit, seen);
+            }
+            return;
+        }
+        JsonObject object = value.getAsJsonObject();
+        K key = keyOf.apply(object);
+        if (key != null) {
+            visit.accept(key);
+            return;
+        }
+        for (Map.Entry<String, JsonElement> field : object.entrySet()) {
+            if (!field.getKey().equals(skipped)) {
+                eachReference(field.getValue(), skipped, keyOf, visit, seen);
+            }
+        }
+    }
+
+    /** The check over portable anchors. */
+    private static Dag<String> anchors(
+            Function<String, JsonObject> definition) {
+        return new Dag<>("shared expression", definition,
+                (value, visit) -> eachReference(value, null, row -> {
+                    if (!declaresReference(row)) return null;
+                    requireReference(row, false);
+                    return exactString(row, ANCHOR);
+                }, visit, Collections.newSetFromMap(
+                        new IdentityHashMap<JsonElement, Boolean>())));
+    }
+
     private static final class Builder {
         private final Map<String, JsonObject> definitions =
                 new LinkedHashMap<>();
@@ -327,60 +405,12 @@ public final class SharedExpressionTable {
         }
 
         private void validateReferences() {
-            Set<String> visited = new LinkedHashSet<>();
-            Set<String> active = new LinkedHashSet<>();
-            for (String anchor : references) {
-                validateReachable(anchor, visited, active);
-            }
-            reachable = visited;
-        }
-
-        private void validateReachable(String anchor, Set<String> visited,
-                                       Set<String> active) {
-            requireAnchor(anchor);
-            if (visited.contains(anchor)) return;
-            JsonObject definition = definitions.get(anchor);
-            if (definition == null) {
-                throw new IllegalArgumentException(
-                        "missing shared expression definition: " + anchor);
-            }
-            if (!active.add(anchor)) {
-                throw new IllegalArgumentException(
-                        "cyclic shared expression definition: " + anchor);
-            }
-            for (String dependency : referencesIn(definition)) {
-                validateReachable(dependency, visited, active);
-            }
-            active.remove(anchor);
-            visited.add(anchor);
-        }
-
-        private static Set<String> referencesIn(JsonElement value) {
-            Set<String> result = new LinkedHashSet<>();
-            collectReferences(value, result);
-            return result;
-        }
-
-        private static void collectReferences(JsonElement value,
-                                              Set<String> result) {
-            if (value == null || value.isJsonNull()
-                    || value.isJsonPrimitive()) return;
-            if (value.isJsonArray()) {
-                for (JsonElement child : value.getAsJsonArray()) {
-                    collectReferences(child, result);
-                }
-                return;
-            }
-            JsonObject row = value.getAsJsonObject();
-            if (declaresReference(row)) {
-                requireReference(row, false);
-                String anchor = exactString(row, ANCHOR);
-                result.add(anchor);
-                return;
-            }
-            for (Map.Entry<String, JsonElement> field : row.entrySet()) {
-                collectReferences(field.getValue(), result);
-            }
+            Dag<String> dag = anchors(anchor -> {
+                requireAnchor(anchor);
+                return definitions.get(anchor);
+            });
+            for (String anchor : references) dag.require(anchor);
+            reachable = dag.visited;
         }
 
         private JsonObject encode() {
@@ -446,35 +476,12 @@ public final class SharedExpressionTable {
             }
         }
 
+        /** A verified definition's closure was checked when it arrived, so
+         *  it stands for no further dependency. */
         private void validateIncoming(Map<String, JsonObject> incoming) {
-            Set<String> visited = new LinkedHashSet<>();
-            Set<String> active = new LinkedHashSet<>();
-            for (String anchor : incoming.keySet()) {
-                validateIncoming(anchor, incoming, visited, active);
-            }
-        }
-
-        private void validateIncoming(String anchor,
-                                      Map<String, JsonObject> incoming,
-                                      Set<String> visited,
-                                      Set<String> active) {
-            if (definitions.containsKey(anchor) || visited.contains(anchor)) {
-                return;
-            }
-            JsonObject definition = incoming.get(anchor);
-            if (definition == null) {
-                throw new IllegalArgumentException(
-                        "missing shared expression definition: " + anchor);
-            }
-            if (!active.add(anchor)) {
-                throw new IllegalArgumentException(
-                        "cyclic shared expression definition: " + anchor);
-            }
-            for (String dependency : Builder.referencesIn(definition)) {
-                validateIncoming(dependency, incoming, visited, active);
-            }
-            active.remove(anchor);
-            visited.add(anchor);
+            Dag<String> dag = anchors(anchor -> definitions.containsKey(anchor)
+                    ? new JsonObject() : incoming.get(anchor));
+            for (String anchor : incoming.keySet()) dag.require(anchor);
         }
 
         private JsonElement internExpression(JsonObject expression) {

@@ -325,12 +325,7 @@ final class FlipQuery {
             if (refused != null) return refused;
             drain();
             stateFacts();
-            if (!refusal.isEmpty()) {
-                return new Built("", Collections.<String>emptyList(),
-                        refusal, flipped,
-                        new ArrayList<Control>(controls.values()),
-                        rootVariables, clockVariables, gaps);
-            }
+            if (!refusal.isEmpty()) return refused(refusal, flipped);
             String free = unbound();
             if (!free.isEmpty()) {
                 return refuse(GapKind.UNPRODUCIBLE_ANSWER, free,
@@ -1182,10 +1177,14 @@ final class FlipQuery {
                              String subject, String detail,
                              DecisionRow flipped) {
             gaps.add(GapRow.of(sessionId, kind, cls, subject, detail));
-            return new Built("", Collections.<String>emptyList(),
-                    kind.name() + ":" + subject, flipped,
-                    new ArrayList<Control>(controls.values()), rootVariables,
-                    clockVariables, gaps);
+            return refused(kind.name() + ":" + subject, flipped);
+        }
+
+        /** No query, for the named reason. */
+        private Built refused(String reason, DecisionRow flipped) {
+            return new Built("", Collections.<String>emptyList(), reason,
+                    flipped, new ArrayList<Control>(controls.values()),
+                    rootVariables, clockVariables, gaps);
         }
 
         /** Every text this query ASSERTS (assertions, root facts, stated

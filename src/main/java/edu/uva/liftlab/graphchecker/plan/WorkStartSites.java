@@ -76,16 +76,27 @@ public final class WorkStartSites {
      *  sees its type). */
     public static boolean startsReceiver(String calleeName, int argumentCount,
                                          Types receiverType) {
-        if (argumentCount != 0 || calleeName == null
-                || receiverType == null) {
-            return false;
-        }
-        for (Map.Entry<String, Set<String>> shape
-                : RECEIVER_STARTS.entrySet()) {
-            if (shape.getValue().contains(calleeName)
-                    && receiverType.is(shape.getKey())) {
+        return argumentCount == 0 && shaped(RECEIVER_STARTS, calleeName,
+                receiverType);
+    }
+
+    /** Whether some shape names {@code name} on a type {@code type} is. */
+    private static boolean shaped(Map<String, Set<String>> shapes,
+                                  String name, Types type) {
+        if (name == null || type == null) return false;
+        for (Map.Entry<String, Set<String>> shape : shapes.entrySet()) {
+            if (shape.getValue().contains(name) && type.is(shape.getKey())) {
                 return true;
             }
+        }
+        return false;
+    }
+
+    /** Whether some shape names {@code name}, whatever the type. */
+    private static boolean named(Map<String, Set<String>> shapes,
+                                 String name) {
+        for (Set<String> names : shapes.values()) {
+            if (names.contains(name)) return true;
         }
         return false;
     }
@@ -125,18 +136,8 @@ public final class WorkStartSites {
      *  instance-bound ({@code this} is the carrier). */
     public static boolean entersWork(String methodName, int argumentCount,
                                      Types declaringType) {
-        if (argumentCount != 0 || methodName == null
-                || declaringType == null) {
-            return false;
-        }
-        for (Map.Entry<String, Set<String>> shape
-                : WORK_ENTRIES.entrySet()) {
-            if (shape.getValue().contains(methodName)
-                    && declaringType.is(shape.getKey())) {
-                return true;
-            }
-        }
-        return false;
+        return argumentCount == 0 && shaped(WORK_ENTRIES, methodName,
+                declaringType);
     }
 
 
@@ -177,10 +178,8 @@ public final class WorkStartSites {
                                          String calleeName,
                                          int argumentCount) {
         if (calleeName == null) return false;
-        if (argumentCount == 0) {
-            for (Set<String> starts : RECEIVER_STARTS.values()) {
-                if (starts.contains(calleeName)) return true;
-            }
+        if (argumentCount == 0 && named(RECEIVER_STARTS, calleeName)) {
+            return true;
         }
         if (argumentCount >= 1 && SUBMISSION_NAMES.contains(calleeName)) {
             return true;
@@ -195,11 +194,8 @@ public final class WorkStartSites {
     /** Bytecode-level {@link #WORK_ENTRIES} test, wide like {@link
      *  #mayHandOffWork}. */
     public static boolean mayEnterWork(String methodName, int argumentCount) {
-        if (argumentCount != 0 || methodName == null) return false;
-        for (Set<String> entries : WORK_ENTRIES.values()) {
-            if (entries.contains(methodName)) return true;
-        }
-        return false;
+        return argumentCount == 0 && methodName != null
+                && named(WORK_ENTRIES, methodName);
     }
 
 

@@ -5,10 +5,8 @@ import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.Selector;
-import edu.uva.liftlab.graphchecker.plan.RegionInstancePlan;
 import edu.uva.liftlab.graphchecker.plan.RegionInstancePlan.Goal;
 
 import java.io.IOException;
@@ -39,8 +37,7 @@ public final class RuntimeWorkflowDiscovery {
      * wrote nothing (hdfs-11741's {@code removeExpiredKeys}).</p>
      *
      * <p>Fail-closed on the plan only: the case must declare its target ({@link
-     * #declaredTarget}); two replayable goals are refused ({@link
-     * #onlyReplayableGoal}).</p>
+     * #declaredTarget}).</p>
      */
     static Workflow workflow(List<RegionInstancePlan> plans,
                                    String declaredOccurrence)
@@ -56,11 +53,10 @@ public final class RuntimeWorkflowDiscovery {
                 throw new IOException("duplicate planned region occurrence: "
                         + occurrence);
             }
-            for (Goal goal : plan.goals()) {
-                if (goal.kind().capturesTargetReach() && goal.replayable()
-                        && namesFailureSite(goal)) {
-                    targets.add(new Target(plan, goal));
-                }
+            Goal goal = plan.goal();
+            if (goal.kind().capturesTargetReach() && goal.replayable()
+                    && !failureSites(goal).isEmpty()) {
+                targets.add(new Target(plan, goal));
             }
         }
         if (targets.isEmpty()) {
@@ -79,8 +75,8 @@ public final class RuntimeWorkflowDiscovery {
         for (RegionInstancePlan plan : plans) {
             if (plan.occurrenceId().equals(target.occurrenceId)) continue;
             // Not READY in the plan = not a task.
-            Goal goal = onlyReplayableGoal(plan);
-            if (goal == null) continue;
+            Goal goal = plan.goal();
+            if (!goal.replayable()) continue;
             selections.add(Selection.dependency(target.campaignId, plan,
                     goal, targetReachGoals.contains(goal.goalId())));
         }
@@ -120,12 +116,12 @@ public final class RuntimeWorkflowDiscovery {
                     + "target occurrences: " + observed);
         }
         int k = declaredK(declared);
+        Target named = SelectorResolution.kth(targets,
+                candidate -> declares(declared, candidate.occurrenceId), k);
+        if (named != null) return named;
         int matched = 0;
         for (Target candidate : targets) {
-            if (declares(declared, candidate.occurrenceId)
-                    && ++matched == k) {
-                return candidate;
-            }
+            if (declares(declared, candidate.occurrenceId)) matched++;
         }
         throw new IOException("DECLARED_TARGET_OCCURRENCE_UNOBSERVED: "
                 + declared + " names " + matched + " of the "
@@ -178,8 +174,7 @@ public final class RuntimeWorkflowDiscovery {
         }
         // SelectorResolution's rule minus k: k is resolved once, against the
         // seed.
-        return selector.matches(address,
-                SelectorResolution.apiOf(selector, address));
+        return SelectorResolution.names(selector, address);
     }
 
     /** The observed failure-target branch sites one goal names. */
@@ -195,24 +190,6 @@ public final class RuntimeWorkflowDiscovery {
             }
         }
         return result;
-    }
-
-    private static Goal onlyReplayableGoal(RegionInstancePlan plan)
-            throws IOException {
-        Goal selected = null;
-        for (Goal goal : plan.goals()) {
-            if (!goal.replayable()) continue;
-            if (selected != null) {
-                throw new IOException("region occurrence has multiple replayable "
-                        + "goals: " + plan.occurrenceId());
-            }
-            selected = goal;
-        }
-        return selected;
-    }
-
-    private static boolean namesFailureSite(Goal goal) {
-        return !failureSites(goal).isEmpty();
     }
 
     static final class Workflow {

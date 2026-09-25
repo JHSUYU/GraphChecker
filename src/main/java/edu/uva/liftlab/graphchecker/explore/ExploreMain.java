@@ -262,16 +262,18 @@ public final class ExploreMain {
         }
         List<OccurrenceAddress> roots = new ArrayList<OccurrenceAddress>();
         OccurrenceAddress anchor = root(declaredAnchor, seed, activations,
-                ranInTheSeed, GapClass.BLOCKING, gaps);
+                ranInTheSeed, gaps);
         if (anchor != null) roots.add(anchor);
         return roots;
     }
 
-    /** The declaration's occurrence, or null with the refusal named. */
+    /** The declaration's occurrence, or null with the BLOCKING refusal named.
+     */
     private static OccurrenceAddress root(String declared, String seed,
                                           List<ActivationRow> activations,
                                           Set<String> ranInTheSeed,
-                                          GapClass cls, List<GapRow> gaps) {
+                                          List<GapRow> gaps) {
+        GapClass cls = GapClass.BLOCKING;
         OccurrenceAddress match;
         try {
             match = SelectorResolution.resolve(declared, activations);

@@ -279,7 +279,7 @@ public final class ConfiguredSourcePhaseContract {
                     PLAN_FIELD + " requires a non-empty enclosingCallIds");
         }
         return new Occurrence(declared, phaseId, sourceOccurrenceId,
-                eventSeq, invocationId, declaredCallee, ancestry);
+                eventSeq, invocationId, declaredCallee);
     }
 
     /** An exact integral member, or -1 when absent or another shape. */
@@ -326,8 +326,7 @@ public final class ConfiguredSourcePhaseContract {
             this.fieldSignature = fieldSignature;
             this.method = method;
             this.unitIndex = unitIndex;
-            this.siteId = SiteId.of(
-                    method, unitIndex);
+            this.siteId = SiteId.of(method, unitIndex);
         }
 
         public Phase phase() { return phase; }
@@ -341,10 +340,6 @@ public final class ConfiguredSourcePhaseContract {
         public int declarationUnitIndex() { return unitIndex; }
 
         public String siteId() { return siteId; }
-
-        public String identity() {
-            return phase.name() + "\n" + sourceId + "\n" + siteId;
-        }
     }
 
     public static final class Occurrence {
@@ -354,21 +349,17 @@ public final class ConfiguredSourcePhaseContract {
         private final long runtimeEventSeq;
         private final long runtimeInvocationId;
         private final String runtimeDeclaredCallee;
-        private final List<Long> enclosingCallIds;
 
         private Occurrence(Declaration declared, String phaseId,
                            String sourceOccurrenceId,
                            long runtimeEventSeq, long runtimeInvocationId,
-                           String runtimeDeclaredCallee,
-                           List<Long> enclosingCallIds) {
+                           String runtimeDeclaredCallee) {
             this.declared = declared;
             this.phaseId = phaseId;
             this.sourceOccurrenceId = sourceOccurrenceId;
             this.runtimeEventSeq = runtimeEventSeq;
             this.runtimeInvocationId = runtimeInvocationId;
             this.runtimeDeclaredCallee = runtimeDeclaredCallee;
-            this.enclosingCallIds = Collections.unmodifiableList(
-                    enclosingCallIds);
         }
 
         public Phase phase() { return declared.phase(); }

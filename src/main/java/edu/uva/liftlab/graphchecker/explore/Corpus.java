@@ -595,13 +595,6 @@ public final class Corpus implements Arms.Rows {
         return rows == null ? Collections.<DecisionRow>emptyList() : rows;
     }
 
-    /** Every export any session recorded at one producer endpoint. */
-    public List<ExportRow> exportsAt(Endpoint producer) {
-        if (producer == null) return Collections.emptyList();
-        List<ExportRow> rows = exports.get(producer.id());
-        return rows == null ? Collections.<ExportRow>emptyList() : rows;
-    }
-
     public List<AttachRow> attachesOn(OccurrenceAddress occurrence) {
         List<AttachRow> rows = attachesOn.get(occurrence.id());
         return rows == null ? Collections.<AttachRow>emptyList() : rows;
@@ -949,9 +942,12 @@ public final class Corpus implements Arms.Rows {
         return rows == null ? Collections.<AttachRow>emptyList() : rows;
     }
 
+    /** Every export any session recorded at one producer endpoint. */
     @Override
     public List<ExportRow> exportsOf(Endpoint producer) {
-        return exportsAt(producer);
+        if (producer == null) return Collections.emptyList();
+        List<ExportRow> rows = exports.get(producer.id());
+        return rows == null ? Collections.<ExportRow>emptyList() : rows;
     }
 
     @Override
@@ -1054,17 +1050,13 @@ public final class Corpus implements Arms.Rows {
     public String rootValue(String sessionId, String rootId) {
         String wave = world(sessionId).rootAssignments.get(rootId);
         if (wave != null && !wave.isEmpty()) return wave;
-        Map<String, RootMintRow> bySession = rootsById.get(rootId);
-        RootMintRow row = bySession == null ? null : bySession.get(sessionId);
-        return row == null || row.recordedValue() == null
-                ? "" : row.recordedValue();
+        return rootReading(sessionId, rootId);
     }
 
     /** The mint's own reading, or "" (unlike {@link #rootValue}, ignores the
      *  ask). */
     public String rootReading(String sessionId, String rootId) {
-        Map<String, RootMintRow> bySession = rootsById.get(rootId);
-        RootMintRow row = bySession == null ? null : bySession.get(sessionId);
+        RootMintRow row = rootOf(sessionId, rootId);
         return row == null || row.recordedValue() == null
                 ? "" : row.recordedValue();
     }

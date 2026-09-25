@@ -108,21 +108,10 @@ public final class DeclaredSymbolicInputs {
         return declared;
     }
 
-    /** Declared callees of the configured case; same key and refusal as {@link
-     *  #configured}. */
+    /** Declared callees of the configured case ({@link #configured}). */
     public static Map<String, String> configuredCallees() {
-        String configured = firstNonBlank(System.getProperty(PROPERTY),
-                System.getenv(ENVIRONMENT), "");
-        if (configured.isEmpty()) return Collections.emptyMap();
-        Path path = Paths.get(configured);
-        try {
-            return callees(path);
-        } catch (IOException | RuntimeException unreadable) {
-            throw new IllegalStateException(
-                    "DECLARED_INPUT_FILE_UNREADABLE: cannot read the case's "
-                            + "symbolic input declarations from " + path,
-                    unreadable);
-        }
+        return configured(DeclaredSymbolicInputs::callees,
+                Collections.<String, String>emptyMap());
     }
 
     /** The kind a CLOCK declaration states. */
@@ -139,15 +128,25 @@ public final class DeclaredSymbolicInputs {
         return methods;
     }
 
-    /** Declared methods of the configured case. An unset key declares none
-     *  (legal); an unreadable file is refused by name, never read as "none". */
+    /** Declared methods of the configured case. */
     public static Set<String> configured() {
+        return configured(DeclaredSymbolicInputs::methods,
+                Collections.<String>emptySet());
+    }
+
+    private interface Reader<T> {
+        T read(Path path) throws IOException;
+    }
+
+    /** One reading of the configured case's file. An unset key declares none
+     *  (legal); an unreadable file is refused by name, never read as "none". */
+    private static <T> T configured(Reader<T> reader, T none) {
         String configured = firstNonBlank(System.getProperty(PROPERTY),
                 System.getenv(ENVIRONMENT), "");
-        if (configured.isEmpty()) return Collections.emptySet();
+        if (configured.isEmpty()) return none;
         Path path = Paths.get(configured);
         try {
-            return methods(path);
+            return reader.read(path);
         } catch (IOException | RuntimeException unreadable) {
             throw new IllegalStateException(
                     "DECLARED_INPUT_FILE_UNREADABLE: cannot read the case's "

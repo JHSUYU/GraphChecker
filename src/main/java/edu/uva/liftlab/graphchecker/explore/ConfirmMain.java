@@ -1,7 +1,6 @@
 package edu.uva.liftlab.graphchecker.explore;
 
 import com.google.gson.GsonBuilder;
-import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -9,6 +8,7 @@ import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
 import edu.uva.liftlab.graphchecker.contract.InteractionKind;
+import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
@@ -17,7 +17,6 @@ import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
-import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -29,6 +28,10 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
 /**
  * CONFIRM: one focused replay that asks the program whether it agrees with
@@ -115,25 +118,25 @@ public final class ConfirmMain {
         JsonObject decided = claim.getAsJsonObject("claim");
         int ordinal = decided.get("valuationOrdinal").getAsInt();
         JsonObject valuation = valuation(claim, ordinal);
-        String pathId = text(valuation, "selectedPathId");
-        String sessionId = text(valuation, "selectedSessionId");
+        String pathId = optionalString(valuation, "selectedPathId");
+        String sessionId = optionalString(valuation, "selectedSessionId");
         if (pathId.isEmpty() || sessionId.isEmpty()) {
             throw new Refused("valuation " + ordinal
                     + " selected no path, so there is nothing to confirm");
         }
         OccurrenceAddress anchor =
-                OccurrenceAddress.parse(text(claim, "anchor"));
+                OccurrenceAddress.parse(optionalString(claim, "anchor"));
         if (anchor == null) {
             throw new Refused("the claim states no parseable anchor");
         }
-        String seedSessionId = text(claim, "seedSessionId");
+        String seedSessionId = optionalString(claim, "seedSessionId");
         // Only the selected path's arms (others are free in the model),
         // joined by the path ordinal in the composer's selector names.
         String ordinalOfPath = "";
         for (JsonElement element : array(manifest, "paths")) {
             JsonObject path = element.getAsJsonObject();
-            if (pathId.equals(text(path, "pathId"))) {
-                ordinalOfPath = ordinalOf(text(path, "selector"));
+            if (pathId.equals(optionalString(path, "pathId"))) {
+                ordinalOfPath = ordinalOf(optionalString(path, "selector"));
             }
         }
         if (ordinalOfPath.isEmpty()) {
@@ -143,7 +146,8 @@ public final class ConfirmMain {
         List<JsonObject> arms = new ArrayList<JsonObject>();
         for (JsonElement element : array(valuation, "selectedArms")) {
             JsonObject arm = element.getAsJsonObject();
-            if (ordinalOfPath.equals(ordinalOf(text(arm, "selector")))) {
+            if (ordinalOfPath.equals(
+                    ordinalOf(optionalString(arm, "selector")))) {
                 arms.add(arm);
             }
         }
@@ -186,15 +190,19 @@ public final class ConfirmMain {
 
         // The selected path's world, values only, nothing forced.
         JsonObject world = obligationWorld(iteration, sessionId);
-        Map<String, String> assignments = strings(world, "rootAssignments");
-        Map<String, String> clockDeltas = strings(world, "clockDeltas");
-        Map<String, String> mints = strings(world, "rootMints");
-        Map<String, String> answers = strings(world, "answers");
+        Map<String, String> assignments =
+                ExploreCodec.map(object(world, "rootAssignments"));
+        Map<String, String> clockDeltas =
+                ExploreCodec.map(object(world, "clockDeltas"));
+        Map<String, String> mints =
+                ExploreCodec.map(object(world, "rootMints"));
+        Map<String, String> answers =
+                ExploreCodec.map(object(world, "answers"));
         List<JsonObject> markers = new ArrayList<JsonObject>();
         for (JsonElement element : array(manifest, "roots")) {
             JsonObject root = element.getAsJsonObject();
-            String rootId = text(root, "rootId");
-            if (!"MARKER".equals(text(root, "kind"))
+            String rootId = optionalString(root, "rootId");
+            if (!"MARKER".equals(optionalString(root, "kind"))
                     || !assignments.containsKey(rootId)) {
                 continue;
             }
@@ -209,7 +217,7 @@ public final class ConfirmMain {
                 new LinkedHashMap<String, SessionReader>();
         armSessions.put(sessionId, session);
         for (JsonObject arm : arms) {
-            String armSession = text(arm, "sessionId");
+            String armSession = optionalString(arm, "sessionId");
             if (armSession.isEmpty() || armSessions.containsKey(armSession)) {
                 continue;
             }
@@ -239,8 +247,12 @@ public final class ConfirmMain {
                 out.resolve(edu.uva.liftlab.graphchecker.runtime
                         .Confirmation.FILE), edges);
 
-        JsonObject focus = focusRow(anchor, seedSessionId, pathId,
-                assignments, clockDeltas, answers, mints, cut);
+        // An obligation that flips nothing: the values drive every decision.
+        JsonObject focus = ExploreCodec.writeFocusRow(anchor, seedSessionId,
+                Collections.<OccurrenceAddress>emptyList(),
+                Obligation.confirming(OBLIGATION_ID, OBLIGATION_ID, pathId,
+                        assignments, answers, Collections.<String>emptyList()),
+                Collections.<Corpus.Flip>emptyList(), clockDeltas, mints, cut);
         // {@code flip: null} is the statement: serialize nulls.
         Files.write(out.resolve(ObligationDir.FOCUSED_TASK),
                 (new GsonBuilder().serializeNulls().create().toJson(focus)
@@ -267,16 +279,14 @@ public final class ConfirmMain {
                              TargetRow target) {
         if (!target.observedFatal()) return "";
         for (JsonObject arm : arms) {
-            if (!sessionId.equals(text(arm, "sessionId"))) return "";
+            if (!sessionId.equals(optionalString(arm, "sessionId"))) return "";
         }
         Map<String, String> ran = new LinkedHashMap<String, String>();
         for (RootMintRow row : session.roots()) {
             ran.put(row.rootId(), row.recordedValue());
             ran.put(row.symbol(), row.recordedValue());
         }
-        JsonObject moved = decided.has("movedRoots")
-                && decided.get("movedRoots").isJsonObject()
-                ? decided.getAsJsonObject("movedRoots") : new JsonObject();
+        JsonObject moved = object(decided, "movedRoots");
         for (Map.Entry<String, JsonElement> root : moved.entrySet()) {
             String value = ran.get(root.getKey());
             if (value == null || !value.trim().equalsIgnoreCase(
@@ -305,45 +315,16 @@ public final class ConfirmMain {
         return new JsonObject();
     }
 
-    /** The focus row: an obligation that flips nothing. */
-    private static JsonObject focusRow(OccurrenceAddress anchor,
-                                       String seedSessionId, String pathId,
-                                       Map<String, String> assignments,
-                                       Map<String, String> clockDeltas,
-                                       Map<String, String> answers,
-                                       Map<String, String> mints,
-                                       SchedulePrefix.Cut cut) {
-        JsonObject task = new JsonObject();
-        task.addProperty("schemaVersion", 1);
-        task.addProperty("kind", "FOCUSED_TASK");
-        task.addProperty("taskId", OBLIGATION_ID);
-        task.addProperty("focused", anchor.render());
-        task.addProperty("focusedOccurrenceId", anchor.id());
-        task.addProperty("seedSessionId", seedSessionId);
-        task.add("factor", new JsonArray());
-        task.addProperty("obligationId", OBLIGATION_ID);
-        task.addProperty("pathId", pathId);
-        // No flip: the values drive every decision.
-        task.add("flip", null);
-        task.add("inheritedFlips", new JsonArray());
-        task.add("rootAssignments", object(assignments));
-        task.add("clockDeltas", object(clockDeltas));
-        task.add("answers", object(answers));
-        task.add("rootMints", object(mints));
-        task.add("unproducible", new JsonArray());
-        task.add("schedulePrefix", cut.toJson());
-        return task;
-    }
-
     /** One WIRE edge per consumer of each selected message arm, paired as that
      *  arm's session recorded. */
     private static List<JsonObject> wireEdges(
             List<JsonObject> arms, Map<String, SessionReader> armSessions) {
         List<JsonObject> edges = new ArrayList<JsonObject>();
         for (JsonObject arm : arms) {
-            if (!text(arm, "selector").startsWith("message_arm__")) continue;
+            String selector = optionalString(arm, "selector");
+            if (!selector.startsWith("message_arm__")) continue;
             SessionReader producerSession =
-                    armSessions.get(text(arm, "sessionId"));
+                    armSessions.get(optionalString(arm, "sessionId"));
             if (producerSession == null) continue;
             for (JsonElement consumer : array(arm, "attachEndpointIds")) {
                 String consumerId = consumer.getAsString();
@@ -352,16 +333,16 @@ public final class ConfirmMain {
                     if (row.endpoint().id().equals(consumerId)) paired = row;
                 }
                 if (paired == null || paired.producer() == null) {
-                    throw new Refused("selected arm " + text(arm, "selector")
+                    throw new Refused("selected arm " + selector
                             + " names consumer " + consumerId + ", which "
-                            + "session " + text(arm, "sessionId")
+                            + "session " + optionalString(arm, "sessionId")
                             + " states no paired attach for");
                 }
                 JsonObject edge = new JsonObject();
                 edge.addProperty("kind", "WIRE");
                 edge.addProperty("consumer", consumerId);
                 edge.addProperty("producer", paired.producer().id());
-                edge.addProperty("selector", text(arm, "selector"));
+                edge.addProperty("selector", selector);
                 edges.add(edge);
             }
         }
@@ -447,8 +428,10 @@ public final class ConfirmMain {
         }
         Map<String, String> chosen = new LinkedHashMap<String, String>();
         for (JsonObject arm : arms) {
-            if (!text(arm, "selector").startsWith("writer_arm__")) continue;
-            Endpoint writer = writers.get(text(arm, "groupId"));
+            if (!optionalString(arm, "selector").startsWith("writer_arm__")) {
+                continue;
+            }
+            Endpoint writer = writers.get(optionalString(arm, "groupId"));
             if (writer == null) continue;
             Set<String> fills = new LinkedHashSet<String>();
             for (JsonElement id : array(arm, "interactionIds")) {
@@ -527,36 +510,5 @@ public final class ConfirmMain {
     private static JsonObject json(Path file) throws IOException {
         return JsonParser.parseString(new String(Files.readAllBytes(file),
                 StandardCharsets.UTF_8)).getAsJsonObject();
-    }
-
-    private static JsonArray array(JsonObject json, String member) {
-        return json.has(member) && json.get(member).isJsonArray()
-                ? json.getAsJsonArray(member) : new JsonArray();
-    }
-
-    private static String text(JsonObject json, String member) {
-        return json.has(member) && !json.get(member).isJsonNull()
-                ? json.get(member).getAsString() : "";
-    }
-
-    private static Map<String, String> strings(JsonObject json,
-                                               String member) {
-        Map<String, String> values = new LinkedHashMap<String, String>();
-        if (!json.has(member) || !json.get(member).isJsonObject()) {
-            return values;
-        }
-        for (Map.Entry<String, JsonElement> entry
-                : json.getAsJsonObject(member).entrySet()) {
-            values.put(entry.getKey(), entry.getValue().getAsString());
-        }
-        return values;
-    }
-
-    private static JsonObject object(Map<String, String> values) {
-        JsonObject json = new JsonObject();
-        for (Map.Entry<String, String> entry : values.entrySet()) {
-            json.addProperty(entry.getKey(), entry.getValue());
-        }
-        return json;
     }
 }

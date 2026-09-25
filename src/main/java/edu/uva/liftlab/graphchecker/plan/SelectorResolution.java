@@ -1,6 +1,5 @@
 package edu.uva.liftlab.graphchecker.plan;
 
-
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
@@ -13,7 +12,9 @@ import edu.uva.liftlab.graphchecker.contract.SessionDir;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.Collections;
 import java.util.List;
+import java.util.function.Predicate;
 
 /** IDENTITY-IMPL D: which occurrence a case's v1 {@link Selector} ({@code
  *  node#epoch0/region/REGION.x@src#epoch0/api#k}) names; resolved once, against
@@ -37,17 +38,28 @@ public final class SelectorResolution {
             return OccurrenceAddress.parse(value);
         }
         Selector selector = OccurrenceAddress.parseSelector(value);
+        ActivationRow named = kth(seed == null
+                        ? Collections.<ActivationRow>emptyList() : seed,
+                activation -> names(selector, activation.occurrence()),
+                selector.k());
+        return named == null ? unresolved(selector) : named.occurrence();
+    }
+
+    /** THE k-th-match rule: the {@code k}-th of {@code candidates}, in order,
+     *  that {@code names} holds for; null when fewer match. */
+    public static <T> T kth(Iterable<T> candidates, Predicate<T> names,
+                            int k) {
         int matched = 0;
-        if (seed != null) {
-            for (ActivationRow activation : seed) {
-                OccurrenceAddress occurrence = activation.occurrence();
-                if (!selector.matches(occurrence, apiOf(selector, occurrence))) {
-                    continue;
-                }
-                if (++matched == selector.k()) return occurrence;
-            }
+        for (T candidate : candidates) {
+            if (names.test(candidate) && ++matched == k) return candidate;
         }
-        return unresolved(selector);
+        return null;
+    }
+
+    /** Whether {@code selector} names {@code occurrence}, k aside. */
+    public static boolean names(Selector selector,
+                                OccurrenceAddress occurrence) {
+        return selector.matches(occurrence, apiOf(selector, occurrence));
     }
 
     public static OccurrenceAddress resolve(String declared, Path iteration,
@@ -73,7 +85,7 @@ public final class SelectorResolution {
 
     /** The api of the message that started this occurrence, or ""; v1 apis
      *  match on the last path segment. */
-    public static String apiOf(Selector selector,
+    private static String apiOf(Selector selector,
                                OccurrenceAddress occurrence) {
         if (occurrence.context().form() != CausalContext.Form.ANCHOR) {
             return "";

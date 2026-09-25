@@ -55,11 +55,7 @@ public final class ExploreCodec {
         json.addProperty("flippedOutcome", obligation.flippedOutcome());
         json.add("rootAssignments", strings(obligation.rootAssignments()));
         json.add("answers", strings(obligation.answers()));
-        JsonArray unproducible = new JsonArray();
-        for (String endpoint : obligation.unproducible()) {
-            unproducible.add(endpoint);
-        }
-        json.add("unproducible", unproducible);
+        json.add("unproducible", list(obligation.unproducible()));
         return json;
     }
 
@@ -75,6 +71,59 @@ public final class ExploreCodec {
                 list(array(json, "unproducible")));
     }
 
+
+    /**
+     * THE FOCUS ROW ({@code focused_task.jsonl}) a replay runs: focus, factor,
+     * the flip ({@code null} when {@code obligation} flips nothing), inherited
+     * flips, mint values (a clock as a skew), answers, each root's mint
+     * occurrence, unproducible handoffs and the schedule cut ({@code cut} null:
+     * none). Read back by {@link #readWorld}.
+     */
+    static JsonObject writeFocusRow(OccurrenceAddress focused,
+                                    String seedSessionId,
+                                    List<OccurrenceAddress> factor,
+                                    Obligation obligation,
+                                    List<Corpus.Flip> inheritedFlips,
+                                    Map<String, String> clockDeltas,
+                                    Map<String, String> rootMints,
+                                    SchedulePrefix.Cut cut) {
+        JsonObject row = new JsonObject();
+        row.addProperty("schemaVersion", 1);
+        row.addProperty("kind", "FOCUSED_TASK");
+        row.addProperty("taskId", obligation.taskId());
+        // Render for OccurrenceAddress.parse, id for grep.
+        row.addProperty("focused", focused.render());
+        row.addProperty("focusedOccurrenceId", focused.id());
+        row.addProperty("seedSessionId", seedSessionId);
+        JsonArray members = new JsonArray();
+        for (OccurrenceAddress member : factor) members.add(member.render());
+        row.add("factor", members);
+        row.addProperty("obligationId", obligation.obligationId());
+        row.addProperty("pathId", obligation.pathId());
+        JsonObject flip = null;
+        if (obligation.flips()) {
+            flip = new JsonObject();
+            flip.addProperty("siteId", obligation.siteId());
+            flip.addProperty("ordinal", obligation.ordinal());
+            flip.addProperty("outcome", obligation.flippedOutcome());
+        }
+        row.add("flip", flip);
+        // Held like the flip (a wrong arm un-admits); still ONE verdict row.
+        JsonArray inherited = new JsonArray();
+        for (Corpus.Flip carried : inheritedFlips) {
+            inherited.add(writeFlip(carried));
+        }
+        row.add("inheritedFlips", inherited);
+        row.add("rootAssignments", strings(obligation.rootAssignments()));
+        // A clock's counterfactual is a SKEW off the replay's own reading.
+        row.add("clockDeltas", strings(clockDeltas));
+        row.add("answers", strings(obligation.answers()));
+        // Each root's mint occurrence is focused, or it reads the recording.
+        row.add("rootMints", strings(rootMints));
+        row.add("unproducible", list(obligation.unproducible()));
+        if (cut != null) row.add("schedulePrefix", cut.toJson());
+        return row;
+    }
 
     /** The world one focus row states; mirrored by {@code
      *  runtime.FocusedReplay}. Flips: the row's own (at {@code
@@ -151,7 +200,14 @@ public final class ExploreCodec {
         return json;
     }
 
-    private static Map<String, String> map(JsonObject json) {
+    private static JsonArray list(List<String> values) {
+        JsonArray json = new JsonArray();
+        for (String value : values) json.add(value);
+        return json;
+    }
+
+    /** A string-valued object member as a map; absent is empty. */
+    static Map<String, String> map(JsonObject json) {
         Map<String, String> values = new LinkedHashMap<String, String>();
         for (Map.Entry<String, JsonElement> entry : json.entrySet()) {
             values.put(entry.getKey(), entry.getValue().getAsString());
@@ -164,5 +220,4 @@ public final class ExploreCodec {
         for (JsonElement element : array) values.add(element.getAsString());
         return values;
     }
-
 }

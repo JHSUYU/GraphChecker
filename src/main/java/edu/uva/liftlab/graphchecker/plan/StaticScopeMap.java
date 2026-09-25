@@ -20,6 +20,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
+
 /**
  * What the static slice knows about the sites the target's demand can reach:
  * one artifact, one row shape (CLOSURE-V2 SS4). The demand is dynamic, so this
@@ -137,14 +140,6 @@ public final class StaticScopeMap {
 
         Site(String role, String regionId, String siteId, String vmSite,
              String cell, String carrier, String portId,
-             String declaredCallee, String local,
-             List<String> guards, List<Boolean> guardOutcomes) {
-            this(role, regionId, siteId, vmSite, cell, carrier, portId,
-                    declaredCallee, local, null, guards, guardOutcomes);
-        }
-
-        Site(String role, String regionId, String siteId, String vmSite,
-             String cell, String carrier, String portId,
              String declaredCallee, String local, Declared declared,
              List<String> guards, List<Boolean> guardOutcomes) {
             this.declared = declared;
@@ -225,10 +220,6 @@ public final class StaticScopeMap {
      *  an enclosing R' ({@code explore.ClosurePlanner#candidates}), which
      *  region-id equality cannot see. Empty when skeletons were absent. */
     private final Map<String, Set<String>> regionMethods;
-
-    private StaticScopeMap(List<Site> sites) {
-        this(sites, Collections.<String, Set<String>>emptyMap());
-    }
 
     private StaticScopeMap(List<Site> sites,
                            Map<String, Set<String>> regionMethods) {
@@ -317,7 +308,7 @@ public final class StaticScopeMap {
                     continue;
                 }
                 found.add(new Site(EXPORT_SITE, region.regionId, siteId,
-                        vmSite(method), "", "", portId, "", "",
+                        vmSite(method), "", "", portId, "", "", null,
                         Collections.<String>emptyList(),
                         Collections.<Boolean>emptyList()));
             }
@@ -415,7 +406,7 @@ public final class StaticScopeMap {
                 continue;
             }
             into.add(new Site(ROOT_SITE, regionId, siteId, vmSite(method),
-                    source, "", "", "", local.group(2),
+                    source, "", "", "", local.group(2), null,
                     Collections.<String>emptyList(),
                     Collections.<Boolean>emptyList()));
         }
@@ -437,7 +428,7 @@ public final class StaticScopeMap {
         String cell;
         String implementation = "";
         if ("accessor_field_return".equals(kind)) {
-            cell = firstNonEmpty(text(edge.get("declaredFieldSignature")),
+            cell = firstNonBlank(text(edge.get("declaredFieldSignature")),
                     text(edge.get("fromCell")));
             implementation = text(edge.get("accessorImplementationMethod"));
             if (implementation.isEmpty()) return;
@@ -505,11 +496,6 @@ public final class StaticScopeMap {
                     java.util.Arrays.asList("boolean", "byte", "char",
                             "short", "int", "long", "float", "double")));
 
-    private static String firstNonEmpty(String first, String second) {
-        return first == null || first.isEmpty()
-                ? (second == null ? "" : second) : first;
-    }
-
     private static void add(List<Site> into, Set<String> seen,
                             List<Region> retained, String role, String method,
                             int unitIndex, String cell, String carrier,
@@ -521,7 +507,7 @@ public final class StaticScopeMap {
                 continue;
             }
             into.add(new Site(role, regionId, siteId, vmSite(method), cell,
-                    carrier, portId, declaredCallee, "",
+                    carrier, portId, declaredCallee, "", null,
                     Collections.<String>emptyList(),
                     Collections.<Boolean>emptyList()));
         }
@@ -603,7 +589,7 @@ public final class StaticScopeMap {
         if (file == null || !Files.isRegularFile(file)) return empty();
         List<Site> sites = new ArrayList<Site>();
         for (JsonObject row : ArtifactIO.readJsonl(file)) {
-            if (!SITE_KIND.equals(string(row, "kind"))) continue;
+            if (!SITE_KIND.equals(optionalString(row, "kind"))) continue;
             List<String> guards = new ArrayList<String>();
             JsonElement stated = row.get("guards");
             if (stated != null && stated.isJsonArray()) {
@@ -619,17 +605,21 @@ public final class StaticScopeMap {
                             ? null : Boolean.valueOf(outcome.getAsBoolean()));
                 }
             }
-            String declaredKind = string(row, "declaredKind");
+            String declaredKind = optionalString(row, "declaredKind");
             Declared declared = declaredKind.isEmpty() ? null
-                    : new Declared(declaredKind, string(row, "edgeId"),
-                            string(row, "dependencyCell"),
-                            string(row, "implementationMethod"),
-                            string(row, "javaType"));
-            sites.add(new Site(string(row, "role"), string(row, "regionId"),
-                    string(row, "siteId"), string(row, "vmSite"),
-                    string(row, "cell"), string(row, "carrier"),
-                    string(row, "portId"), string(row, "declaredCallee"),
-                    string(row, "local"), declared, guards, outcomes));
+                    : new Declared(declaredKind, optionalString(row, "edgeId"),
+                            optionalString(row, "dependencyCell"),
+                            optionalString(row, "implementationMethod"),
+                            optionalString(row, "javaType"));
+            sites.add(new Site(optionalString(row, "role"),
+                    optionalString(row, "regionId"),
+                    optionalString(row, "siteId"),
+                    optionalString(row, "vmSite"),
+                    optionalString(row, "cell"),
+                    optionalString(row, "carrier"),
+                    optionalString(row, "portId"),
+                    optionalString(row, "declaredCallee"),
+                    optionalString(row, "local"), declared, guards, outcomes));
         }
         return new StaticScopeMap(sites, readRegions(file));
     }
@@ -647,7 +637,7 @@ public final class StaticScopeMap {
             if (!Files.isRegularFile(file)) continue;
             try {
                 for (JsonObject row : ArtifactIO.readJsonl(file)) {
-                    String regionId = string(row, "regionId");
+                    String regionId = optionalString(row, "regionId");
                     if (regionId.isEmpty()) continue;
                     Set<String> held = new LinkedHashSet<String>();
                     JsonElement stated = row.get("methods");
@@ -670,7 +660,8 @@ public final class StaticScopeMap {
 
     /** No map: every join answers nothing. */
     public static StaticScopeMap empty() {
-        return new StaticScopeMap(new ArrayList<Site>());
+        return new StaticScopeMap(new ArrayList<Site>(),
+                Collections.<String, Set<String>>emptyMap());
     }
 
     public boolean stated() {
@@ -773,7 +764,7 @@ public final class StaticScopeMap {
                 continue;
             }
             JsonObject row = new JsonObject();
-            row.addProperty("method", methodOfSite(site));
+            row.addProperty("method", SiteId.methodOf(site.siteId));
             row.addProperty("unitIndex", SiteId.unitIndexOf(site.siteId));
             row.addProperty("siteId", site.siteId);
             row.addProperty("declaredCallee", site.declaredCallee);
@@ -794,7 +785,7 @@ public final class StaticScopeMap {
             if (!ROOT_SITE.equals(site.role) || !named.equals(site.cell)) {
                 continue;
             }
-            String method = methodOfSite(site);
+            String method = SiteId.methodOf(site.siteId);
             if (allowedMethods != null && !allowedMethods.contains(method)) {
                 continue;
             }
@@ -807,10 +798,6 @@ public final class StaticScopeMap {
             found.add(row);
         }
         return found;
-    }
-
-    private static String methodOfSite(Site site) {
-        return SiteId.methodOf(site.siteId);
     }
 
     /** Every DECLARED_SITE, in publication order. Whether any mints is {@link
@@ -949,12 +936,6 @@ public final class StaticScopeMap {
         FieldPathSpec.DeclaredField declared =
                 FieldPathSpec.declaredField(cell);
         return declared == null ? "" : declared.signature();
-    }
-
-    private static String string(JsonObject row, String member) {
-        JsonElement value = row == null ? null : row.get(member);
-        return value == null || value.isJsonNull() ? ""
-                : value.getAsString();
     }
 
     private static String text(Object value) {

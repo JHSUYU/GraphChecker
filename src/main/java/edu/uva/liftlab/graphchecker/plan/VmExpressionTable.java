@@ -12,6 +12,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
@@ -153,65 +154,23 @@ public final class VmExpressionTable {
          *  any cache hit, so none borrows an earlier one's definitions. */
         private void validateDefinitions(JsonElement artifact,
                                          Set<RawKey> supplied) {
-            Set<RawKey> visited = new LinkedHashSet<>();
-            Set<RawKey> active = new LinkedHashSet<>();
-            for (RawKey key : supplied) {
-                validateDefinition(key, supplied, visited, active);
-            }
-            validateArtifactReferences(artifact, supplied, visited, active,
-                    Collections.newSetFromMap(
-                            new IdentityHashMap<JsonElement, Boolean>()));
+            SharedExpressionTable.Dag<RawKey> dag =
+                    new SharedExpressionTable.Dag<>("VM expression",
+                            key -> supplied.contains(key)
+                                    ? definitions.get(key) : null,
+                            RawResolver::references);
+            for (RawKey key : supplied) dag.require(key);
+            references(artifact, dag::require);
         }
 
-        private void validateDefinition(
-                RawKey key, Set<RawKey> supplied, Set<RawKey> visited,
-                Set<RawKey> active) {
-            if (visited.contains(key)) return;
-            if (!supplied.contains(key)) {
-                throw new IllegalArgumentException(
-                        "missing VM expression definition: " + key);
-            }
-            JsonObject definition = definitions.get(key);
-            if (definition == null) {
-                throw new IllegalArgumentException(
-                        "missing VM expression definition: " + key);
-            }
-            if (!active.add(key)) {
-                throw new IllegalArgumentException(
-                        "cyclic VM expression definition: " + key);
-            }
-            validateArtifactReferences(definition, supplied, visited, active,
-                    Collections.newSetFromMap(
+        private static void references(JsonElement value,
+                                       Consumer<RawKey> visit) {
+            SharedExpressionTable.eachReference(value, FIELD,
+                    object -> REFERENCE_TYPE.equals(
+                            optionalString(object, "_type"))
+                            ? rawKey(object, REFERENCE_TYPE) : null,
+                    visit, Collections.newSetFromMap(
                             new IdentityHashMap<JsonElement, Boolean>()));
-            active.remove(key);
-            visited.add(key);
-        }
-
-        private void validateArtifactReferences(
-                JsonElement value, Set<RawKey> supplied,
-                Set<RawKey> visited, Set<RawKey> active,
-                Set<JsonElement> seen) {
-            if (value == null || value.isJsonNull()
-                    || value.isJsonPrimitive() || !seen.add(value)) return;
-            if (value.isJsonArray()) {
-                for (JsonElement child : value.getAsJsonArray()) {
-                    validateArtifactReferences(child, supplied, visited,
-                            active, seen);
-                }
-                return;
-            }
-            JsonObject object = value.getAsJsonObject();
-            if (REFERENCE_TYPE.equals(optionalString(object, "_type"))) {
-                validateDefinition(rawKey(object, REFERENCE_TYPE), supplied,
-                        visited, active);
-                return;
-            }
-            for (Map.Entry<String, JsonElement> field : object.entrySet()) {
-                if (!FIELD.equals(field.getKey())) {
-                    validateArtifactReferences(field.getValue(), supplied,
-                            visited, active, seen);
-                }
-            }
         }
 
         private void collectTables(JsonElement value, Set<RawKey> supplied) {

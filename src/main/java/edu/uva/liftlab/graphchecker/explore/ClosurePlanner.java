@@ -351,7 +351,11 @@ public final class ClosurePlanner {
                 if (!settled.add(symbol)) continue;
                 for (ReadRow row : reads) {
                     if (!symbol.equals(row.symbol())) continue;
-                    for (WriteRow write : eligibleWrites(corpus, row)) {
+                    for (WriteRow write : corpus.eligibleWrites(
+                            row.sessionId(),
+                            SmtLowering.locationKey(row.location()),
+                            row.observedVersion(),
+                            row.endpoint().occurrence())) {
                         grew |= reaches(corpus, write.sessionId(),
                                 corpus.lowering(write.sessionId())
                                         .lower(write.expressionRef()).text(),
@@ -379,25 +383,6 @@ public final class ClosurePlanner {
         Set<String> reached = new LinkedHashSet<String>();
         lowering.reachedSymbols(text, reached, reached);
         return named.addAll(reached);
-    }
-
-    /** The writes one read could have taken its value from: observed, or
-     *  HB-concurrent (R-I7.1, {@code smt.Arms}). */
-    private static List<WriteRow> eligibleWrites(Corpus corpus, ReadRow row) {
-        return eligibleWrites(corpus, row.sessionId(),
-                SmtLowering.locationKey(row.location()),
-                row.observedVersion(), row.endpoint().occurrence());
-    }
-
-    /** The same for a read stated only in an expression (E2); one rule, {@link
-     *  Corpus#eligibleWrites}. */
-    private static List<WriteRow> eligibleWrites(Corpus corpus,
-                                                 String sessionId,
-                                                 String locationKey,
-                                                 long observedVersion,
-                                                 OccurrenceAddress reader) {
-        return corpus.eligibleWrites(sessionId, locationKey, observedVersion,
-                reader);
     }
 
     /** A delivery this anchor's paths never read: recorded, not planned. */
@@ -436,7 +421,7 @@ public final class ClosurePlanner {
             Demand paired = new Demand(attach.producer().occurrence(),
                     CLOSURE_MEMBER, false);
             paired.flipSites.addAll(guards);
-            for (ExportRow export : corpus.exportsAt(attach.producer())) {
+            for (ExportRow export : corpus.exportsOf(attach.producer())) {
                 paired.contributed.add(export.sessionId() + "|"
                         + export.expressionRef());
             }
@@ -486,7 +471,7 @@ public final class ClosurePlanner {
                                          List<Demand> into,
                                          List<GapRow> gaps) {
         Set<String> carriers = carriersOf(corpus, map, locationKey);
-        for (WriteRow write : eligibleWrites(corpus, sessionId, locationKey,
+        for (WriteRow write : corpus.eligibleWrites(sessionId, locationKey,
                 observedVersion, reader)) {
             Demand paired = new Demand(write.endpoint().occurrence(),
                     CLOSURE_MEMBER, false);

@@ -25,7 +25,7 @@ public final class RegionInstancePlan extends PlanRow {
             CommunicationHandoffSpec.FIELD,
             LoopBoundPolicy.PLAN_FIELD
     };
-    private final List<Goal> goals;
+    private final Goal goal;
 
     private RegionInstancePlan(JsonObject source) {
         super(source, "region plan");
@@ -37,13 +37,13 @@ public final class RegionInstancePlan extends PlanRow {
                         "closureGoals must contain objects for "
                                 + occurrenceId());
             }
-            Goal goal = new Goal(this, element.getAsJsonObject());
-            if (!ids.add(goal.goalId())) {
+            Goal each = new Goal(this, element.getAsJsonObject());
+            if (!ids.add(each.goalId())) {
                 throw new IllegalArgumentException(
                         "closure goal ids must be unique for "
                                 + occurrenceId());
             }
-            decoded.add(goal);
+            decoded.add(each);
         }
         // README REGION-1: one occurrence = one task = one guarded summary.
         if (decoded.size() != 1) {
@@ -52,7 +52,7 @@ public final class RegionInstancePlan extends PlanRow {
                             + "found " + decoded.size() + ": "
                             + occurrenceId());
         }
-        goals = Collections.unmodifiableList(decoded);
+        goal = decoded.get(0);
     }
 
     public static RegionInstancePlan decode(JsonObject encoded) {
@@ -62,7 +62,8 @@ public final class RegionInstancePlan extends PlanRow {
         return new RegionInstancePlan(encoded.deepCopy());
     }
 
-    public List<Goal> goals() { return goals; }
+    /** The occurrence's one closure goal. */
+    public Goal goal() { return goal; }
 
     void writeTaskIdentityTo(JsonObject target) {
         target.addProperty("sourceKey", sourceKey());

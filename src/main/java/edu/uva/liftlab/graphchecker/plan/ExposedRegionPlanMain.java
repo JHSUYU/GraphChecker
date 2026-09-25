@@ -48,9 +48,9 @@ public final class ExposedRegionPlanMain {
     public static void main(String[] args) throws Exception {
         Map<String, String> values = ConcolicScheduler.parseArgs(args,
                 "iteration", "growth", "output");
-        Path iteration = required(values, "iteration");
-        Path growth = required(values, "growth");
-        Path output = required(values, "output");
+        Path iteration = ConcolicScheduler.requiredPath(values, "iteration");
+        Path growth = ConcolicScheduler.requiredPath(values, "growth");
+        Path output = ConcolicScheduler.requiredPath(values, "output");
         ArtifactIO.replaceJsonl(output, plan(iteration,
                 ArtifactIO.readJsonl(growth)));
     }
@@ -66,13 +66,13 @@ public final class ExposedRegionPlanMain {
         Path symbolicInputs = Paths.get(optionalString(
                 object(provenance, "symbolicInputs"), "path"));
         StaticScopeMap scopeMap = StaticScopeMap.read(
-                catalog.resolveSibling("static_scope_map.jsonl"));
+                catalog.resolveSibling(StaticScopeMap.FILE));
         if (!scopeMap.stated()) {
             throw new IOException("static scope map states no site beside "
                     + catalog);
         }
         Path skeletonFile = iteration.resolveSibling("seed-skeletons")
-                .resolve("region_skeletons.jsonl.gz");
+                .resolve(StaticScopeMap.REGIONS + ".gz");
         Map<String, StaticProgram.RegionRow> skeletons = new LinkedHashMap<>();
         for (StaticProgram.RegionRow skeleton : StaticProgram.regionRows(
                 MapFields.readRows(skeletonFile.toFile()),
@@ -128,7 +128,7 @@ public final class ExposedRegionPlanMain {
         List<JsonObject> rows = new ArrayList<>();
         for (int index = 0; index < exposed.size(); index++) {
             RegionInstancePlan plan = exposed.get(index);
-            RegionInstancePlan.Goal goal = plan.goals().get(0);
+            RegionInstancePlan.Goal goal = plan.goal();
             Set<String> methods = goal.runtimeDefinitionMethods();
             JsonArray actions = ConcolicScheduler.materializationPlan(goal,
                     ConcolicScheduler.withDeclaredPorts(goal.symbolize(),
@@ -241,13 +241,5 @@ public final class ExposedRegionPlanMain {
             throw new IOException("the iteration plan holds no task: " + plan);
         }
         return group;
-    }
-
-    private static Path required(Map<String, String> values, String key) {
-        String value = values.get(key);
-        if (value == null || value.trim().isEmpty()) {
-            throw new IllegalArgumentException("Missing --" + key);
-        }
-        return Paths.get(value);
     }
 }

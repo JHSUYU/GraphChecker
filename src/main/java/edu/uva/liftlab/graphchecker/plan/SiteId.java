@@ -20,8 +20,7 @@ public final class SiteId {
             throw new IllegalArgumentException(
                     "unitIndex must be non-negative");
         }
-        return JsonFields.requireText(method, "method")
-                + UNIT_MARKER + unitIndex;
+        return render(method, unitIndex);
     }
 
     /** {@link #of} tolerating the {@code -1} sentinel; never for a published

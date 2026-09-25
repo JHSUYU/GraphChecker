@@ -106,8 +106,6 @@ public final class ObligationFactory {
 
     /** One obligation solved: the query, the verdict, and what to apply. */
     public static final class Outcome {
-        public final String obligationId;
-        public final String taskId;
         /** Null unless the query is satisfiable and the flip can be run. */
         public final Obligation obligation;
         public final ObligationResult result;
@@ -128,14 +126,11 @@ public final class ObligationFactory {
         public final List<Corpus.Flip> inheritedFlips;
         public final List<GapRow> gaps;
 
-        private Outcome(String obligationId, String taskId,
-                        Obligation obligation, ObligationResult result,
+        private Outcome(Obligation obligation, ObligationResult result,
                         String smt2, Map<String, String> clockDeltas,
                         Map<String, String> rootMints,
                         List<Corpus.Flip> inheritedFlips,
                         List<GapRow> gaps) {
-            this.obligationId = obligationId;
-            this.taskId = taskId;
             this.obligation = obligation;
             this.result = result;
             this.smt2 = smt2;
@@ -149,21 +144,19 @@ public final class ObligationFactory {
         public boolean issued() {
             return obligation != null;
         }
-
-        public Verdict verdict() {
-            return result.verdict();
-        }
     }
 
-    private static final Map<String, String> NO_SKEW =
-            Collections.<String, String>emptyMap();
-
-    private static final Map<String, String> NO_MINTS =
-            Collections.<String, String>emptyMap();
-
-    /** Empty results of every outcome but a satisfied one. */
-    private static final List<Corpus.Flip> NO_FLIPS =
-            Collections.<Corpus.Flip>emptyList();
+    /** Every outcome but a satisfied one: no obligation to run, nothing to
+     *  apply. */
+    private static Outcome refused(Candidate candidate, Verdict verdict,
+                                   String detail, String query,
+                                   List<GapRow> gaps) {
+        return new Outcome(null, ObligationResult.of(candidate.obligationId,
+                verdict, "", detail), query,
+                Collections.<String, String>emptyMap(),
+                Collections.<String, String>emptyMap(),
+                Collections.<Corpus.Flip>emptyList(), gaps);
+    }
 
     /** {@code model - recorded} as a decimal, or "" if either is not one. */
     private static String skew(String model, String recorded) {
@@ -261,7 +254,6 @@ public final class ObligationFactory {
         Set<String> offered = new LinkedHashSet<String>();
         int paths = 0;
         int unread = 0;
-        int cappedPaths = 0;
         int tooDeep = 0;
         for (Corpus.RecordedPath path : smallestWorldFirst(corpus,
                 corpus.pathsOf(task.focused()))) {
@@ -280,7 +272,6 @@ public final class ObligationFactory {
                 continue;
             }
             paths++;
-            cappedPaths++;
             int flips = 0;
             int unflipped = 0;
             // Fault flips first (DESIGN4 SS1.4): cheap, and they grow the
@@ -342,9 +333,9 @@ public final class ObligationFactory {
                     GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                     task.taskId() + " max-paths-per-region="
                             + bounds.maxPathsPerTask,
-                    "this task has " + (cappedPaths + unread) + " cuttable "
+                    "this task has " + (paths + unread) + " cuttable "
                             + "recorded path(s) and this wave planned from "
-                            + cappedPaths + ": " + unread + " path(s), the "
+                            + paths + ": " + unread + " path(s), the "
                             + "ones carrying the largest worlds, were not "
                             + "read at all"));
         }
@@ -456,10 +447,8 @@ public final class ObligationFactory {
                 candidate.path, candidate.index);
         List<GapRow> gaps = new ArrayList<GapRow>(built.gaps);
         if (!built.ok()) {
-            return new Outcome(id, candidate.task.taskId(), null,
-                    ObligationResult.of(id, Verdict.NOT_ADMITTED, "",
-                            "the query was refused: " + built.refusal),
-                    "", NO_SKEW, NO_MINTS, NO_FLIPS, gaps);
+            return refused(candidate, Verdict.NOT_ADMITTED,
+                    "the query was refused: " + built.refusal, "", gaps);
         }
         long budget = timeoutMillis <= 0 ? Z3.DEFAULT_TIMEOUT_MILLIS
                 : timeoutMillis;
@@ -473,31 +462,24 @@ public final class ObligationFactory {
                     GapKind.SOLVER_TIMEOUT, GapClass.DIAGNOSTIC, id,
                     "no verdict in " + budget + "ms: the flip is an "
                             + "unexplored sibling, not a closed one"));
-            return new Outcome(id, candidate.task.taskId(), null,
-                    ObligationResult.of(id, Verdict.NOT_ADMITTED, "",
-                            "SOLVER_TIMEOUT after " + budget + "ms"),
-                    query, NO_SKEW, NO_MINTS, NO_FLIPS, gaps);
+            return refused(candidate, Verdict.NOT_ADMITTED,
+                    "SOLVER_TIMEOUT after " + budget + "ms", query, gaps);
         }
         // Neither sat nor unsat (error/unknown) is no verdict: refused by name,
         // never read as UNSAT.
         if (!answer.decided()) {
-            return new Outcome(id, candidate.task.taskId(), null,
-                    ObligationResult.of(id, Verdict.NOT_ADMITTED, "",
-                            "the solver did not decide this flip: "
-                                    + answer.status()
-                                    + (answer.reason().isEmpty() ? ""
-                                    : " " + answer.reason())
-                                    + (solver.errors().isEmpty() ? ""
-                                    : " " + solver.errors())),
-                    query, NO_SKEW, NO_MINTS, NO_FLIPS, gaps);
+            return refused(candidate, Verdict.NOT_ADMITTED,
+                    "the solver did not decide this flip: " + answer.status()
+                            + (answer.reason().isEmpty() ? ""
+                            : " " + answer.reason())
+                            + (solver.errors().isEmpty() ? ""
+                            : " " + solver.errors()), query, gaps);
         }
         if (!answer.sat()) {
-            return new Outcome(id, candidate.task.taskId(), null,
-                    ObligationResult.of(id, Verdict.UNSAT, "",
-                            "no world of this corpus takes the other arm at "
-                                    + decision.siteId() + "#"
-                                    + decision.ordinal()),
-                    query, NO_SKEW, NO_MINTS, NO_FLIPS, gaps);
+            return refused(candidate, Verdict.UNSAT,
+                    "no world of this corpus takes the other arm at "
+                            + decision.siteId() + "#" + decision.ordinal(),
+                    query, gaps);
         }
         Map<String, String> roots = new LinkedHashMap<String, String>();
         for (Map.Entry<String, String> variable
@@ -539,13 +521,11 @@ public final class ObligationFactory {
                                 + " this replay read, and a clock is a "
                                 + "millisecond count in a Java long: no "
                                 + "replay could apply it"));
-                return new Outcome(id, candidate.task.taskId(), null,
-                        ObligationResult.of(id, Verdict.NOT_ADMITTED, "",
-                                "clock root " + rootId + " is owed a skew of "
-                                        + skewed + ", which is not a Java "
-                                        + "long, so the obligation states a "
-                                        + "world no replay can run"),
-                        query, NO_SKEW, NO_MINTS, NO_FLIPS, gaps);
+                return refused(candidate, Verdict.NOT_ADMITTED,
+                        "clock root " + rootId + " is owed a skew of "
+                                + skewed + ", which is not a Java long, so "
+                                + "the obligation states a world no replay "
+                                + "can run", query, gaps);
             }
             clockDeltas.put(rootId, delta);
         }
@@ -570,9 +550,8 @@ public final class ObligationFactory {
             gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
                     GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC, id,
                     recorded));
-            return new Outcome(id, candidate.task.taskId(), null,
-                    ObligationResult.of(id, Verdict.NOT_ADMITTED, "",
-                            recorded), query, NO_SKEW, NO_MINTS, NO_FLIPS, gaps);
+            return refused(candidate, Verdict.NOT_ADMITTED, recorded, query,
+                    gaps);
         }
         // The world this flip extends ({@link Corpus.World}): the parent's
         // values are the floor, the model overlays them (model wins), and the
@@ -604,23 +583,22 @@ public final class ObligationFactory {
             mints.put(rootId, mint.occurrence().render());
         }
         if (!unmintable.isEmpty()) {
-            return new Outcome(id, candidate.task.taskId(), null,
-                    ObligationResult.of(id, Verdict.NOT_ADMITTED, "",
-                            "ASSIGNMENT_UNMINTABLE: the model assigns "
-                                    + String.join(", ", unmintable)
-                                    + ", which the recording "
-                                    + corpus.seedSessionId()
-                                    + " mints nowhere, so no occurrence of a "
-                                    + "replay can be focused to plant it"),
-                    query, NO_SKEW, NO_MINTS, NO_FLIPS, gaps);
+            return refused(candidate, Verdict.NOT_ADMITTED,
+                    "ASSIGNMENT_UNMINTABLE: the model assigns "
+                            + String.join(", ", unmintable)
+                            + ", which the recording "
+                            + corpus.seedSessionId()
+                            + " mints nowhere, so no occurrence of a "
+                            + "replay can be focused to plant it", query,
+                    gaps);
         }
-        return new Outcome(id, candidate.task.taskId(), solved,
-                ObligationResult.of(id, Verdict.SAT_MODEL_READY, "",
-                        "the flip at " + decision.siteId() + "#"
-                                + decision.ordinal() + " is reachable under "
-                                + roots.size() + " root value(s) and "
-                                + answers.size() + " answered handoff(s), "
-                                + "planted at " + mints.size() + " mint(s)"),
+        return new Outcome(solved, ObligationResult.of(id,
+                Verdict.SAT_MODEL_READY, "", "the flip at "
+                        + decision.siteId() + "#" + decision.ordinal()
+                        + " is reachable under " + roots.size()
+                        + " root value(s) and " + answers.size()
+                        + " answered handoff(s), planted at " + mints.size()
+                        + " mint(s)"),
                 query, clockDeltas, mints, inherited.flips, gaps);
     }
 

@@ -1,9 +1,7 @@
 package edu.uva.liftlab.graphchecker.plan;
 
-
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.CanonicalJson;
-
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
 
@@ -11,16 +9,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
-import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
-import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
-import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
-import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
-import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
-import edu.uva.liftlab.graphchecker.plan.RegionInstancePlan;
 import edu.uva.liftlab.graphchecker.plan.RegionInstancePlan.Goal;
-import edu.uva.liftlab.graphchecker.plan.RuntimePlanArtifact;
-import edu.uva.liftlab.graphchecker.plan.StaticSymbolicSourceDeclaration;
-import edu.uva.liftlab.graphchecker.plan.SiteId;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -42,6 +31,7 @@ import java.util.TreeMap;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.nonNull;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
@@ -435,17 +425,16 @@ public final class ConcolicScheduler {
             if (!regions.contains(plan.regionId())) {
                 continue;
             }
-            for (Goal goal : plan.goals()) {
-                if (!arguments.goalId.isEmpty()
-                        && !arguments.goalId.equals(goal.goalId())) {
-                    continue;
-                }
-                if (!goal.replayable()) {
-                    continue;
-                }
-                appendGoalCandidates(arguments, result, goal, scopeMap,
-                        symbolicInputs);
+            Goal goal = plan.goal();
+            if (!arguments.goalId.isEmpty()
+                    && !arguments.goalId.equals(goal.goalId())) {
+                continue;
             }
+            if (!goal.replayable()) {
+                continue;
+            }
+            appendGoalCandidates(arguments, result, goal, scopeMap,
+                    symbolicInputs);
         }
         return result;
     }
@@ -799,6 +788,15 @@ public final class ConcolicScheduler {
         return values;
     }
 
+    /** One required path option; missing is refused by name. */
+    static Path requiredPath(Map<String, String> values, String key) {
+        String value = values.get(key);
+        if (value == null || value.trim().isEmpty()) {
+            throw new IllegalArgumentException("Missing --" + key);
+        }
+        return Paths.get(value);
+    }
+
     private static void requireFile(Path path, String label) throws IOException {
         if (path == null || !Files.isRegularFile(path)) {
             throw new IOException(label + " not found: " + path);
@@ -818,10 +816,6 @@ public final class ConcolicScheduler {
                         "scheduler accepts only the schema-3 candidate graph");
             }
         }
-    }
-
-    private static String safe(String value) {
-        return value == null ? "" : value;
     }
 
     private static final class Candidate {
@@ -847,7 +841,7 @@ public final class ConcolicScheduler {
                           JsonArray inputActions) {
             this.goal = goal;
             this.branches = branches;
-            this.targetSiteId = safe(targetSiteId);
+            this.targetSiteId = nonNull(targetSiteId);
             this.targetOccurrence = Math.max(1, targetOccurrence);
             this.targetRequiredOutcome = targetRequiredOutcome;
             this.inputActions = inputActions;
@@ -972,16 +966,10 @@ public final class ConcolicScheduler {
                 // Kept so an unmatched goal still reports what was searched.
                 selected = plan;
             }
-            Goal found = null;
-            for (Goal goal : plan.goals()) {
-                if (!arguments.goalId.isEmpty()
-                        && !arguments.goalId.equals(goal.goalId())) continue;
-                found = goal;
-                break;
-            }
-            if (found == null) continue;
+            if (!arguments.goalId.isEmpty()
+                    && !arguments.goalId.equals(plan.goal().goalId())) continue;
             selected = plan;
-            selectedGoal = found;
+            selectedGoal = plan.goal();
             break;
         }
         String reason;
@@ -1018,7 +1006,7 @@ public final class ConcolicScheduler {
     }
 
     private static String display(String value) {
-        return safe(value).isEmpty() ? "<none>" : value;
+        return nonNull(value).isEmpty() ? "<none>" : value;
     }
 
     private static String artifact(Path path) {
@@ -1195,42 +1183,30 @@ public final class ConcolicScheduler {
             String method = DeclaredSymbolicInputs.declaredMethod(row);
             if (method.isEmpty()) {
                 // A callee names no site: admit its name in every scoped
-                // region; the recording's port walk decides which regions
-                // actually call it.
+                // region (empty is legal); the recording's port walk decides
+                // which regions actually call it.
                 if (!DeclaredSymbolicInputs.declaredCallee(row).isEmpty()) {
-                    return everyPlannedRegion(row, catalogRegions,
-                            regionPlans);
+                    return scopedRegions(row, catalogRegions, regionPlans,
+                            plan -> true);
                 }
                 throw new IOException("symbolic input selection row declares "
                         + "neither a regionId nor a static site "
                         + "(class + method) nor a callee: " + row);
             }
-            String node = firstNonBlank(optionalString(row, "node"));
-            String epoch = firstNonBlank(optionalString(row, "epoch"));
-            List<String> resolved = new ArrayList<>();
-            Set<String> seen = new LinkedHashSet<>();
             // Rooted by declaration, or anchored: the same site seen from two
             // sides.
-            Set<String> rooted = declaredRootRegions == null
-                    ? Collections.<String>emptySet()
-                    : declaredRootRegions.getOrDefault(method,
+            Set<String> rooted = declaredRootRegions.getOrDefault(method,
                     Collections.<String>emptySet());
-            for (RegionInstancePlan plan : regionPlans == null
-                    ? Collections.<RegionInstancePlan>emptyList()
-                    : regionPlans) {
-                boolean names = method.equals(optionalString(plan.json(),
-                        "targetMethod")) || rooted.contains(plan.regionId())
-                        || ranTheDeclaredMethod(plan, method);
-                if (!names
-                        || !scopeAdmits(plan.sourceKey(), node, epoch)
-                        || !catalogRegions.contains(plan.regionId())) {
-                    continue;
-                }
-                if (seen.add(plan.regionId())) resolved.add(plan.regionId());
-            }
+            List<String> resolved = scopedRegions(row, catalogRegions,
+                    regionPlans, plan -> method.equals(optionalString(
+                            plan.json(), "targetMethod"))
+                            || rooted.contains(plan.regionId())
+                            || ranTheDeclaredMethod(plan, method));
             if (resolved.isEmpty()) {
                 // Empty = a plan built without this declaration: re-plan, don't
                 // edit the case.
+                String node = firstNonBlank(optionalString(row, "node"));
+                String epoch = firstNonBlank(optionalString(row, "epoch"));
                 String scope = (node.isEmpty() ? "" : " on node " + node)
                         + (epoch.isEmpty() ? "" : " at epoch " + epoch);
                 throw new IOException("DECLARED_INPUT_NOT_PLANNED: symbolic "
@@ -1252,33 +1228,28 @@ public final class ConcolicScheduler {
          */
         private static boolean ranTheDeclaredMethod(
                 RegionInstancePlan plan, String method) {
-            for (RegionInstancePlan.Goal goal : plan.goals()) {
-                if (goal.runtimeDefinitionMethods().contains(method)) {
-                    return true;
-                }
-            }
-            return false;
+            return plan.goal().runtimeDefinitionMethods().contains(method);
         }
 
-        /** Every scoped planned region, for a callee; empty is legal (a callee
-         *  names no site). */
-        private static List<String> everyPlannedRegion(
+        /** The catalogued planned regions in the row's node/epoch scope that
+         *  {@code names} holds for, once each, in plan order. */
+        private static List<String> scopedRegions(
                 JsonObject row, Set<String> catalogRegions,
-                List<RegionInstancePlan> regionPlans) {
+                List<RegionInstancePlan> regionPlans,
+                java.util.function.Predicate<RegionInstancePlan> names) {
             String node = firstNonBlank(optionalString(row, "node"));
             String epoch = firstNonBlank(optionalString(row, "epoch"));
-            List<String> resolved = new ArrayList<>();
-            Set<String> seen = new LinkedHashSet<>();
+            Set<String> resolved = new LinkedHashSet<>();
             for (RegionInstancePlan plan : regionPlans == null
                     ? Collections.<RegionInstancePlan>emptyList()
                     : regionPlans) {
-                if (!scopeAdmits(plan.sourceKey(), node, epoch)
-                        || !catalogRegions.contains(plan.regionId())) {
-                    continue;
+                if (names.test(plan)
+                        && scopeAdmits(plan.sourceKey(), node, epoch)
+                        && catalogRegions.contains(plan.regionId())) {
+                    resolved.add(plan.regionId());
                 }
-                if (seen.add(plan.regionId())) resolved.add(plan.regionId());
             }
-            return resolved;
+            return new ArrayList<>(resolved);
         }
 
         /** Whether a {@code <workload>/<node>#epoch<n>} source key is in the
@@ -1286,7 +1257,7 @@ public final class ConcolicScheduler {
         static boolean scopeAdmits(String sourceKey, String node,
                                    String epoch) {
             if (node.isEmpty() && epoch.isEmpty()) return true;
-            String key = safe(sourceKey);
+            String key = nonNull(sourceKey);
             int slash = key.indexOf('/');
             String address = slash < 0 ? key : key.substring(slash + 1);
             int hash = address.indexOf('#');
@@ -1346,12 +1317,6 @@ public final class ConcolicScheduler {
                 }
                 output.add(firstNonBlank(element.getAsString()));
             }
-        }
-
-        /** Extends declared names over proven exact copies, before any {@code
-         *  select}. */
-        void resolveDeclaredNames(List<JsonObject> candidateGraph) {
-            renameDeclaredNames(candidateGraph);
         }
 
         /**
@@ -1499,14 +1464,14 @@ public final class ConcolicScheduler {
          *  hook owns it). */
         private boolean minted(String regionId, JsonObject action) {
             String field = actionField(action);
-            return !field.isEmpty() && minted.getOrDefault(safe(regionId),
+            return !field.isEmpty() && minted.getOrDefault(nonNull(regionId),
                     Collections.<String, String>emptyMap())
                     .containsValue(field);
         }
 
         /** Whether one region admits one declared name, for tests. */
         boolean declares(String regionId, String name) {
-            Set<String> names = admitted.get(safe(regionId));
+            Set<String> names = admitted.get(nonNull(regionId));
             return names != null && names.contains(name);
         }
 
@@ -1521,7 +1486,7 @@ public final class ConcolicScheduler {
         /** Whether one declared name set covers this action's port or cells. */
         private static boolean names(Map<String, Set<String>> declared,
                                      String regionId, JsonObject action) {
-            Set<String> names = declared.get(safe(regionId));
+            Set<String> names = declared.get(nonNull(regionId));
             if (names == null || names.isEmpty()) return false;
             if (names.contains(actionPort(action))) return true;
             for (String cell : actionCells(action)) {
@@ -1543,9 +1508,9 @@ public final class ConcolicScheduler {
          * is copied into (a {@code .return} cell included). Walking only
          * Soot-proven exact-copy edges ({@code valueFlowAuthority}) renames
          * without inferring dataflow, so no upstream carrier becomes a root.
-         * Idempotent.</p>
+         * Idempotent; done before any {@code select}.</p>
          */
-        private void renameDeclaredNames(List<JsonObject> candidateGraph) {
+        void resolveDeclaredNames(List<JsonObject> candidateGraph) {
             if (admitted.isEmpty()) return;
             // Clock names are renamed too: the flag travels with the
             // declaration.
@@ -1646,12 +1611,12 @@ public final class ConcolicScheduler {
             this.candidateGraph = candidateGraph;
             this.staticScopeMap = staticScopeMap;
             this.outputDirectory = outputDirectory;
-            this.regionId = safe(regionId);
-            this.occurrenceId = safe(occurrenceId);
-            this.goalId = safe(goalId);
+            this.regionId = nonNull(regionId);
+            this.occurrenceId = nonNull(occurrenceId);
+            this.goalId = nonNull(goalId);
             this.maxJobs = Math.max(1, maxJobs);
             this.symbolicInputs = symbolicInputs;
-            this.targetOccurrence = safe(targetOccurrence);
+            this.targetOccurrence = nonNull(targetOccurrence);
         }
 
         public static Arguments parse(String[] args) {
@@ -1670,15 +1635,6 @@ public final class ConcolicScheduler {
                     output, "", "", "",
                     positiveInt(values.get("max-jobs"), 1, "max-jobs"),
                     symbolicInputs, values.get("target-occurrence"));
-        }
-
-        private static Path requiredPath(Map<String, String> values,
-                                         String key) {
-            String value = values.get(key);
-            if (value == null || value.trim().isEmpty()) {
-                throw new IllegalArgumentException("Missing --" + key);
-            }
-            return Paths.get(value);
         }
 
         private static Path optionalPath(String value) {

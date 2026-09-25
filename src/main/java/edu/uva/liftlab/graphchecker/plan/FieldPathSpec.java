@@ -27,13 +27,6 @@ public final class FieldPathSpec {
                 : null;
     }
 
-    public static List<String> path(String cell) {
-        List<String> result = new ArrayList<>();
-        DeclaredField declared = declaredField(cell);
-        if (declared != null) result.add(declared.name());
-        return Collections.unmodifiableList(result);
-    }
-
     /** Dotted label of a field path; "" when empty or any segment is blank. A
      *  blank segment names no field ({@code a..b} would match no written
      *  symbol); Runtime and Solver share this so their labels cannot drift. */
@@ -51,7 +44,11 @@ public final class FieldPathSpec {
 
     public static List<String> stringArray(JsonObject object,
                                            String member) {
-        JsonElement value = object == null ? null : object.get(member);
+        return strings(object == null ? null : object.get(member));
+    }
+
+    /** Non-blank trimmed strings of an array; empty when any entry is not. */
+    private static List<String> strings(JsonElement value) {
         if (value == null || !value.isJsonArray()) {
             return Collections.emptyList();
         }
@@ -73,10 +70,7 @@ public final class FieldPathSpec {
         }
         List<List<String>> result = new ArrayList<>();
         for (JsonElement element : value.getAsJsonArray()) {
-            if (!element.isJsonArray()) return Collections.emptyList();
-            JsonObject row = new JsonObject();
-            row.add("path", element);
-            List<String> path = stringArray(row, "path");
+            List<String> path = strings(element);
             if (path.isEmpty()) return Collections.emptyList();
             result.add(path);
         }
