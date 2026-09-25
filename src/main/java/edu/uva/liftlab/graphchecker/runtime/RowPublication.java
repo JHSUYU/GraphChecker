@@ -154,7 +154,7 @@ final class RowPublication {
      * One row per write version, and one per read node
      * ({@code ReadFromExpression}) the published expressions contain.
      *
-     * <p>Site from the VM log (REPORT-VM21), frames from the frame journal.
+     * <p>Site from the VM log (REPORT-VM21), index from the frame journal.
      * A row belongs to the activation that PERFORMED the event
      * ({@link LoggedEventSites#performer}), not to the one that found it.</p>
      */
@@ -196,10 +196,11 @@ final class RowPublication {
                 OccurrenceAddress performer = LoggedEventSites.performer(
                         version, locationKey, id, true);
                 if (performer != null) {
-                    RowRuntime.write(performer, id,
-                            LoggedEventSites.site(version, locationKey, id, true),
-                            location, id, written, "",
-                            LoggedEventSites.frames(version, locationKey, id, true));
+                    String site = LoggedEventSites.site(version, locationKey,
+                            id, true);
+                    RowRuntime.write(performer, id, site, location, id,
+                            written, "", LoggedEventSites.siteIndex(version,
+                                    locationKey, id, site, true));
                 }
                 collect(expression, published, seen);
             }
@@ -341,11 +342,12 @@ final class RowPublication {
         OccurrenceAddress performer = LoggedEventSites.performer(
                 node, locationKey, event, false);
         if (performer == null) return;
+        String site = LoggedEventSites.site(node, locationKey, event, false);
         RowRuntime.read(performer, event >= 0L ? event : Math.max(0L, observed),
-                LoggedEventSites.site(node, locationKey, event, false),
-                location, observed, symbol,
+                site, location, observed, symbol,
                 optionalString(node, "_java_type"), value,
-                LoggedEventSites.frames(node, locationKey, event, false),
+                LoggedEventSites.siteIndex(node, locationKey, event, site,
+                        false),
                 ReadRow.UNKNOWN_VERSION);
     }
 

@@ -216,9 +216,9 @@ public final class Identity {
 
         /**
          * THE counter: the k of one event at {@code site} in the top level
-         * under the current root hop.  Sends, reads, writes, region entries,
-         * work starts and frame entries all count here, so recording and
-         * replay compute the same k.
+         * under the current root hop.  Sends, region entries, work starts
+         * and frame entries count here; VM-logged reads and writes by the
+         * same rule at read-out ({@code LoggedEventSites#siteIndex}).
          *
          * <p>Keyed by (level, root hop, site) only.  Trap: keying also by
          * the live causal context moves the key whenever the thread's anchor

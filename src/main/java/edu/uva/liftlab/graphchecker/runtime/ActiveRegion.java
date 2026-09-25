@@ -477,8 +477,8 @@ final class ActiveRegion {
         row.addProperty("actionDigest", action.actionDigest);
         row.addProperty("plannedOccurrenceId",
                 activation.occurrenceId);
-        // Captured now: frames are gone at publish.  Two reads of one site
-        // differ by the innermost frame (Identity.eventSiteIndex).
+        // Captured now: frames are gone at publish.  One row per mint
+        // (RowPlaceholderMint), so the frames alone place it.
         row.addProperty("siteIndex", RowRuntime.siteIndexHere());
         row.addProperty("symbol", safe(requestedSymbol));
         JsonArray encodedPath = new JsonArray();

@@ -3,11 +3,19 @@ package edu.uva.liftlab.graphchecker.runtime;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
+import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
+import edu.uva.liftlab.graphchecker.contract.Frame;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.JvmNames;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.NavigableSet;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentSkipListSet;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
@@ -17,10 +25,10 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
 /**
  * WHERE and BY WHOM one VM-logged event happened: its bytecode site, its
- * performing activation, and its frames ({@link FrameJournal}).  Keyed by
- * the session-wide event id, because a {@code ReadFromExpression} names its
- * read event id but not its activation.  {@link RowPublication} owns what
- * an activation observed.
+ * performing activation, and its site index.  Keyed by the session-wide
+ * event id, because a {@code ReadFromExpression} names its read event id but
+ * not its activation.  {@link RowPublication} owns what an activation
+ * observed.
  */
 final class LoggedEventSites {
     private LoggedEventSites() {
@@ -34,19 +42,25 @@ final class LoggedEventSites {
         JsonObject envelope = object(record, "envelope");
         for (JsonElement element : array(envelope, "versions")) {
             if (!element.isJsonObject()) continue;
-            index(element.getAsJsonObject(), "fieldVersionId");
+            index(element.getAsJsonObject(), "fieldVersionId", true);
         }
         for (JsonElement element : array(envelope, "reads")) {
             if (!element.isJsonObject()) continue;
-            index(element.getAsJsonObject(), "readEventId");
+            index(element.getAsJsonObject(), "readEventId", false);
         }
     }
 
     /** One logged event, by the id the VM numbered it with. */
-    private static void index(JsonObject node, String idKey) {
+    private static void index(JsonObject node, String idKey, boolean write) {
         long id = optionalLongInteger(node, idKey, -1L);
         if (id < 0L) return;
-        LOGGED.putIfAbsent(Long.valueOf(id), new Logged(node));
+        Logged logged = new Logged(node);
+        if (LOGGED.putIfAbsent(Long.valueOf(id), logged) != null
+                || !logged.states()) {
+            return;
+        }
+        AT_SITE.computeIfAbsent(logged.activation + "|" + logged.site(write),
+                key -> new ConcurrentSkipListSet<Long>()).add(id);
     }
 
     /**
@@ -77,17 +91,57 @@ final class LoggedEventSites {
         private boolean states() {
             return !className.isEmpty() && !method.isEmpty();
         }
+
+        /**
+         * The one spelling of the site, and the one place a VM class name is
+         * converted to source form.  Stabilised BEFORE slashes become dots:
+         * in {@code <Outer>$$Lambda$14/123} the slash separates the hash.
+         */
+        private String site(boolean write) {
+            return Endpoint.stateSite(
+                    JvmNames.stable(className).replace('/', '.'), method,
+                    descriptor, Math.max(0, bci), write);
+        }
     }
 
     /** Every logged event of this session, by version or read event id. */
     private static final Map<Long, Logged> LOGGED =
-            new java.util.concurrent.ConcurrentHashMap<Long, Logged>();
+            new ConcurrentHashMap<Long, Logged>();
+
+    /** The logged events of one activation at one site, by event id. */
+    private static final Map<String, NavigableSet<Long>> AT_SITE =
+            new ConcurrentHashMap<String, NavigableSet<Long>>();
+
+    /** One {@link #AT_SITE} group ranked: each event's frames and k. */
+    private static final class Ranked {
+        private final int size;
+        private final Map<Long, String> frames = new HashMap<Long, String>();
+        private final Map<Long, Integer> ranks = new HashMap<Long, Integer>();
+
+        private Ranked(long activation, NavigableSet<Long> group) {
+            Map<String, Integer> made = new HashMap<String, Integer>();
+            int counted = 0;
+            for (Long event : group) {
+                String stood = RowRuntime.framesOf(activation, event);
+                String key = stood == null ? "" : stood;
+                Integer k = made.get(key);
+                made.put(key, k == null ? 1 : k + 1);
+                frames.put(event, stood);
+                ranks.put(event, k == null ? 0 : k);
+                counted++;
+            }
+            this.size = counted;
+        }
+    }
+
+    /** Each group ranked once, again only after it grew. */
+    private static final Map<String, Ranked> RANKED =
+            new ConcurrentHashMap<String, Ranked>();
 
     /**
-     * The one spelling of a logged event's site, and the one place a VM class
-     * name is converted to source form.  The descriptor separates overloads;
-     * per-run JVM names are stabilised ({@link JvmNames#stable}).  An event
-     * with no stated site is a gap spelled by its location.
+     * A logged event's site ({@link Logged#site}); the descriptor separates
+     * overloads.  An event with no stated site is a gap spelled by its
+     * location.
      */
     static String site(JsonObject node, String locationKey,
                                      long eventId, boolean write) {
@@ -105,11 +159,7 @@ final class LoggedEventSites {
                             + " distinguishes no event of it");
             return Endpoint.stateSite(locationKey, "UNSTATED_SITE", 0, write);
         }
-        // Stabilise BEFORE slashes become dots: in <Outer>$$Lambda$14/123
-        // the slash separates the hash, not a package.
-        return Endpoint.stateSite(
-                JvmNames.stable(site.className).replace('/', '.'),
-                site.method, site.descriptor, Math.max(0, site.bci), write);
+        return site.site(write);
     }
 
     /**
@@ -141,22 +191,49 @@ final class LoggedEventSites {
         return record == null ? -1L : record.activation;
     }
 
-    /** The frames one logged event stood on, or {@code ""} with a gap. */
-    static String frames(JsonObject node, String locationKey,
-                                       long eventId, boolean write) {
+    /**
+     * The site index of one logged event: the frames it stood on, then the
+     * event itself as {@code (site, k)}, k its rank by event id among this
+     * activation's logged events at {@code site} on the same frames -- DEI's
+     * count per (site, stack).  Counted over every logged event, published
+     * or not, so a flip that changes which reads are symbolic moves no k;
+     * without it one loop's reads at one bytecode share one endpoint id.
+     * Frames the journal cannot place are {@code ""}, with a gap.
+     */
+    static String siteIndex(JsonObject node, String locationKey,
+                            long eventId, String site, boolean write) {
         long activation = activationOf(node, eventId);
-        String frames = RowRuntime.framesOf(activation, eventId);
-        // "" (no frames: the region's own method) is placed; only null is
-        // a gap.
-        if (frames != null) return frames;
-        RowRuntime.gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC,
-                locationKey + "#" + eventId,
-                "this " + (write ? "version" : "read")
-                        + (activation <= 0L
-                        ? " states no region activation, so no frame journal"
-                        + " can place it"
-                        : " ran under activation " + activation
-                        + " with no frame journal entry below its event id")
-                        + "; the endpoint carries the empty site index");
-        return "";
-    }}
+        String group = activation + "|" + site;
+        NavigableSet<Long> atSite = AT_SITE.get(group);
+        Ranked ranked = null;
+        if (atSite != null && atSite.contains(eventId)) {
+            ranked = RANKED.get(group);
+            if (ranked == null || ranked.size != atSite.size()) {
+                ranked = new Ranked(activation, atSite);
+                RANKED.put(group, ranked);
+            }
+        }
+        String frames = ranked != null ? ranked.frames.get(eventId)
+                : RowRuntime.framesOf(activation, eventId);
+        if (frames == null) {
+            RowRuntime.gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC,
+                    locationKey + "#" + eventId,
+                    "this " + (write ? "version" : "read")
+                            + (activation <= 0L
+                            ? " states no region activation, so no frame"
+                            + " journal can place it"
+                            : " ran under activation " + activation
+                            + " with no frame journal entry below its event"
+                            + " id")
+                            + "; the endpoint carries no frames");
+            frames = "";
+        }
+        // An event the VM log never named counts none before it.
+        int k = ranked == null ? 0 : ranked.ranks.get(eventId);
+        List<Frame> index =
+                new ArrayList<Frame>(ExecutionIndex.parse(frames).frames());
+        // A frame's site carries no '/': the descriptor's, in source form.
+        index.add(Frame.of(site.replace('/', '.'), k));
+        return ExecutionIndex.of(index).render();
+    }
+}
