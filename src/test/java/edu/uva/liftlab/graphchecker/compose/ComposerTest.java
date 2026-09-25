@@ -3083,6 +3083,28 @@ public class ComposerTest {
         }
     }
 
+    /**
+     * One reference, one rule: lowered alone (the flip solver's and the
+     * closure planner's entry) it states where it is defined, as it does
+     * when a published term names it.
+     */
+    @Test
+    public void aLoweredReferenceStatesWhereItIsDefined() throws Exception {
+        Path iteration = folder.newFolder("defined").toPath();
+        Session seed = new Session(iteration, "s0", false);
+        seed.activation(PRODUCER);
+        seed.expression("EXPR.v1.quotient", binary("/",
+                symbol("dividend", "I"), symbol("divisor", "I")));
+        seed.write();
+        SmtLowering lowering = Corpus.read(iteration, null).lowering("s0");
+        SmtLowering.Lowered quotient = lowering.lower("EXPR.v1.quotient");
+        assertTrue("the quotient lowers: " + quotient, quotient.ok());
+        List<String> facts =
+                lowering.facts(Collections.singletonList(quotient.text()));
+        assertTrue("and the JVM divided, so the divisor was not zero: "
+                + facts, facts.contains("(not (= divisor 0))"));
+    }
+
     @Test
     public void aRunMissingALeafIsStillNoOptionForTheMessage()
             throws Exception {

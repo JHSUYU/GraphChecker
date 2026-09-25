@@ -313,17 +313,17 @@ public final class SmtLowering {
 
     /**
      * One expression of this session, lowered to text and sort, or a named
-     * refusal.  Callers ask {@link #declarations()} for the names it reaches.
+     * refusal; {@link #reference} is the rule, so its definedness is a fact
+     * of this lowering ({@link #facts}).  Callers ask
+     * {@link #declarations()} for the names it reaches.
      */
     public Lowered lower(String expressionRef) {
-        JsonObject expression = expressionRef == null ? null
-                : table.expression(expressionRef);
-        if (expression == null) {
-            return Lowered.refused("ABSENT_EXPRESSION:" + expressionRef);
-        }
         List<String> refusalsBefore =
                 new ArrayList<String>(unsupported);
-        Term value = dispatch(expression, null, "lower:" + expressionRef);
+        Term value = reference(expressionRef, "lower:" + expressionRef);
+        if (value == null) {
+            return Lowered.refused("ABSENT_EXPRESSION:" + expressionRef);
+        }
         List<String> refused = new ArrayList<String>(unsupported);
         refused.removeAll(refusalsBefore);
         if (!refused.isEmpty()) return Lowered.refused(refused.get(0));
@@ -371,22 +371,34 @@ public final class SmtLowering {
         return refused[0] ? "" : text;
     }
 
-    /** One reference, lowered in the open session's scope, or "". */
+    /** One reference of a published term, lowered by {@link #reference}. */
     private String loweredReference(String reference, String origin) {
-        ExpressionTable expressions = openTable == null ? table : openTable;
-        JsonObject expression = expressions.expression(reference);
-        if (expression == null) {
+        Term value = reference(reference, origin + ":" + reference);
+        if (value == null) {
             refuse(UNSTATED + ":" + reference,
                     "a published term names this expression reference and "
                             + "the session's expression table does not "
                             + "hold it");
             return "";
         }
-        Term value = dispatch(expression, null, origin + ":" + reference);
-        // The JVM evaluated the term, so its definedness is this
-        // conjunction's own fact.
-        sideCondition(value.precondition);
         return value.text;
+    }
+
+    /**
+     * THE rule for one expression reference: lowered in the open session's
+     * scope (this lowering's own table when none is open), its definedness
+     * conjoined, since the JVM evaluated it: a side condition of the open
+     * conjunction, else a fact of this lowering.  Null when the table does
+     * not hold the reference.
+     */
+    private Term reference(String reference, String origin) {
+        ExpressionTable expressions = openTable == null ? table : openTable;
+        JsonObject expression = reference == null ? null
+                : expressions.expression(reference);
+        if (expression == null) return null;
+        Term value = dispatch(expression, null, origin);
+        sideCondition(value.precondition);
+        return value;
     }
 
     /** One lowered expression: its text, its sort, its symbols, or why not. */
