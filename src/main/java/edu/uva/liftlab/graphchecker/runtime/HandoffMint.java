@@ -196,9 +196,7 @@ final class HandoffMint {
         ConcolicVmBroker api = engine();
         Field field = leaf.field;
         api.symbolizeExactField(leaf.owner, leaf.signature(), label);
-        if (active != null) {
-            ConcolicRegionRuntime.ensurePathRecordingStarted(active);
-        }
+        if (active != null) active.pathRecordingStarted = true;
         return exactSymbolOf(ConcolicRegionRuntime.engineExpression(
                 api.fieldExpression(leaf.owner,
                         field.getDeclaringClass().getName(), field.getName(),

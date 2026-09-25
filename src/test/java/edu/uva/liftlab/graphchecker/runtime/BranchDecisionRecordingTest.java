@@ -360,10 +360,13 @@ public class BranchDecisionRecordingTest {
         java.lang.reflect.Constructor<?> open = null;
         for (java.lang.reflect.Constructor<?> declared
                 : shape.getDeclaredConstructors()) {
-            if (declared.getParameterTypes().length == 5) open = declared;
+            if (declared.getParameterTypes().length == 4) open = declared;
         }
         open.setAccessible(true);
-        Object frame = open.newInstance("sel", METHOD, "group", 0, token);
+        Object frame = open.newInstance("sel", METHOD, "group", 0);
+        Field owner = shape.getDeclaredField("token");
+        owner.setAccessible(true);
+        owner.setLong(frame, token);
         rootInvocationFrames().push(frame);
         return frame;
     }

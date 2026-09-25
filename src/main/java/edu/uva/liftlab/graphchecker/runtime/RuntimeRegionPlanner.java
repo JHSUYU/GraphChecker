@@ -1,17 +1,17 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
-
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonPrimitive;
 import com.google.gson.ToNumberPolicy;
-import edu.uva.liftlab.graphchecker.causynth.MapFields;
 import edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts;
+import edu.uva.liftlab.graphchecker.causynth.MapFields;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
-import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
@@ -19,9 +19,9 @@ import edu.uva.liftlab.graphchecker.plan.DeclaredSiteCapture;
 import edu.uva.liftlab.graphchecker.plan.DeclaredSymbolicInputs;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.plan.RuntimePlanArtifact;
-import edu.uva.liftlab.graphchecker.plan.StaticSymbolicSourceDeclaration;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
-
+import edu.uva.liftlab.graphchecker.plan.StaticSymbolicSourceDeclaration;
+import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -40,8 +40,8 @@ import java.util.function.Function;
 import java.util.function.ToLongFunction;
 
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.longNumber;
-import static edu.uva.liftlab.graphchecker.causynth.MapFields.object;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.number;
+import static edu.uva.liftlab.graphchecker.causynth.MapFields.object;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.rows;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.stringValue;
@@ -65,7 +65,6 @@ public final class RuntimeRegionPlanner {
                                     List<RuntimeEvent> runtimeEvents,
                                     List<ProtocolEvent> protocolEvents,
                                     Set<String> declaredSites) {
-        if (protocolEvents == null) protocolEvents = Collections.emptyList();
         TraceIndex trace = new TraceIndex(methods, runtimeEvents,
                 Collections.emptyList(), protocolEvents);
         Result result = new Result();
@@ -263,12 +262,9 @@ public final class RuntimeRegionPlanner {
         Map<String, ConfiguredSourcePhaseContract.Declaration> bySite =
                 region.sourcePhasesBySite();
         if (bySite.isEmpty()) return Collections.emptyList();
-        Set<Long> activationCalls = trace.subtree(activationRootCallId);
-        List<RuntimeEvent> ordered = new ArrayList<>(
-                trace.runtime(activationCalls));
-        ordered.sort(Comparator.comparingLong(event -> event.seq));
         List<JsonObject> result = new ArrayList<>();
-        for (RuntimeEvent event : ordered) {
+        for (RuntimeEvent event
+                : trace.runtime(trace.subtree(activationRootCallId))) {
             if (!"CALL_SITE_ENTER".equals(event.kind)) continue;
             ConfiguredSourcePhaseContract.Declaration declaration =
                     bySite.get(event.siteId);
@@ -741,7 +737,7 @@ public final class RuntimeRegionPlanner {
 
     /**
      * Declares each IN capture site on exactly one consumer: the innermost
-     * selected region, as {@code ConcolicRegionRuntime.attachConsumerRegion}
+     * selected region, as {@code HandoffMint.attachConsumerRegion}
      * does.  A second declaring region would be a second H variable for one
      * wire value.
      */
@@ -876,8 +872,7 @@ public final class RuntimeRegionPlanner {
     static LoopBoundPolicy declaredLoopBounds(
             List<Map<String, Object>> regions) {
         Map<String, Integer> declared = new TreeMap<>();
-        for (Map<String, Object> region : regions == null
-                ? Collections.<Map<String, Object>>emptyList() : regions) {
+        for (Map<String, Object> region : regions) {
             for (Map<String, Object> loop : rows(region.get(
                     RuntimeSelectedRegionFinalizer.RETAINED_LOOPS))) {
                 Object stated = loop.get(LoopBoundPolicy.LOOP_BODY_BOUND);
@@ -918,7 +913,7 @@ public final class RuntimeRegionPlanner {
                 fieldEvents, protocolEvents);
         Result result = new Result();
         // The finalizer's gaps ride the plan: no later artifact carries them.
-        if (planGaps != null) result.planGaps.addAll(planGaps);
+        result.planGaps.addAll(planGaps);
         Map<String, StaticProgram.RegionRow> regionById =
                 new LinkedHashMap<>();
         for (StaticProgram.RegionRow region : StaticProgram.regionRows(
@@ -936,9 +931,7 @@ public final class RuntimeRegionPlanner {
         // once all are named (republishEnclosingActivationIds).
         Map<String, String> publishedActivationIds = new LinkedHashMap<>();
         Set<String> publishedActivationNames = new LinkedHashSet<>();
-        for (Map<String, Object> seed : runtimeSeeds == null
-                ? Collections.<Map<String, Object>>emptyList()
-                : runtimeSeeds) {
+        for (Map<String, Object> seed : runtimeSeeds) {
             if (!"RUNTIME_REGION_ACTIVATION".equals(
                     stringValue(seed.get("kind")))) {
                 throw new IllegalArgumentException(
@@ -1199,16 +1192,16 @@ public final class RuntimeRegionPlanner {
      * (null map entries dropped, JsonNull list members kept). */
     private static JsonElement toJsonTreeFast(Object value) {
         if (value == null) {
-            return com.google.gson.JsonNull.INSTANCE;
+            return JsonNull.INSTANCE;
         }
         if (value instanceof String) {
-            return new com.google.gson.JsonPrimitive((String) value);
+            return new JsonPrimitive((String) value);
         }
         if (value instanceof Boolean) {
-            return new com.google.gson.JsonPrimitive((Boolean) value);
+            return new JsonPrimitive((Boolean) value);
         }
         if (value instanceof Number) {
-            return new com.google.gson.JsonPrimitive((Number) value);
+            return new JsonPrimitive((Number) value);
         }
         if (value instanceof Map<?, ?>) {
             JsonObject result = new JsonObject();
@@ -1312,7 +1305,8 @@ public final class RuntimeRegionPlanner {
         return site;
     }
 
-    /** True for a port row {@link SymbolicRegionPlanner} declared at a cut. */
+    /** True for a port row {@code causynth.SymbolicRegionPlanner} declared
+     *  at a cut. */
     private static boolean declaredCutPort(Map<String, Object> port) {
         return port != null
                 && RuntimeSelectedRegionFinalizer.COMMUNICATION_SITE_PORT
@@ -1628,8 +1622,7 @@ public final class RuntimeRegionPlanner {
         return anchor;
     }
 
-    /** Grouping key for the replay ordinal, shared with {@code
-     * ConcolicTaskPlan.RuntimeTask.invocationCounterKey}; not an identity. */
+    /** Grouping key for the replay ordinal; not an identity. */
     private static String replayInvocationScope(
             String regionId, MethodEvent root, SourceRef source) {
         return source.key() + "\n" + safe(regionId) + "\n"
@@ -1745,8 +1738,7 @@ public final class RuntimeRegionPlanner {
 
     private static <T> List<T> sorted(Collection<T> source,
                                       ToLongFunction<T> sequence) {
-        List<T> result = new ArrayList<>(source == null
-                ? Collections.emptyList() : source);
+        List<T> result = new ArrayList<>(source);
         result.sort(Comparator.comparingLong(sequence));
         return result;
     }
@@ -1795,15 +1787,13 @@ public final class RuntimeRegionPlanner {
         final long laneId;
         final long spanId;
         final long remoteParentSpanId;
-        /** Owner of this frame.  Not final: stamped at entry, it may be
-         * re-attributed once the node declares its source. */
-        SourceRef source;
+        /** Owner of this frame, as stamped at entry. */
+        final SourceRef source;
         /** Stable logical scope of this event; never a transient trace id. */
-        String sourceKey;
+        final String sourceKey;
         /** Whether {@link #source} is this receiver's own registration
-         *  ({@code false}: inherited context).  Not final: load-time
-         *  re-attribution may find a late alias. */
-        boolean receiverAttributed;
+         *  ({@code false}: inherited context). */
+        final boolean receiverAttributed;
         final String requestKey;
         final String requestApi;
         /** The RECORDING's occurrence address (IDENTITY-IMPL B) on a region
@@ -1910,17 +1900,11 @@ public final class RuntimeRegionPlanner {
 
         /** The one half of one exchange this leg is on. */
         String exchangeLeg() {
-            return RuntimeRegionPlanner.exchangeLeg(correlationId,
-                    attemptId, half);
+            String result = correlationId;
+            if (!attemptId.isEmpty()) result += "\n" + attemptId;
+            if (!half.isEmpty()) result += "\n" + half;
+            return result;
         }
-    }
-
-    static String exchangeLeg(String exchangeId, String attemptId,
-                              String half) {
-        String result = safe(exchangeId);
-        if (!safe(attemptId).isEmpty()) result += "\n" + safe(attemptId);
-        if (!safe(half).isEmpty()) result += "\n" + safe(half);
-        return result;
     }
 
     static final class RuntimeEvent {

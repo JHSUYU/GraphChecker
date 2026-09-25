@@ -13,6 +13,7 @@ import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
+import edu.uva.liftlab.graphchecker.option.LongOptions;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.plan.DeclaredSymbolicInputs;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
@@ -96,20 +97,19 @@ public final class CausynthTraceRecorder {
     }
 
     public static void main(String[] args) {
-        Map<String, String> params = parseArgs(args);
-        File directory = new File(requiredArg(params, "trace-dir"));
-        String test = requiredArg(params, "test");
+        LongOptions options = LongOptions.parse(args);
+        File directory = new File(required(options, "trace-dir"));
+        String test = required(options, "test");
         File candidateSkeletons =
-                new File(requiredArg(params, "region-skeletons"));
-        File graph = new File(requiredArg(params, "candidate-graph"));
-        String configuredOutput = params.get("output-dir");
+                new File(required(options, "region-skeletons"));
+        File graph = new File(required(options, "candidate-graph"));
+        String configuredOutput = options.value("output-dir", null);
         File planOutputDirectory = configuredOutput == null
-                || configuredOutput.trim().isEmpty()
                 ? directory : new File(configuredOutput.trim());
         try {
             aggregateStateTrace(directory, graph, candidateSkeletons,
                     test, planOutputDirectory,
-                    new File(requiredArg(params, "static-scope-map")));
+                    new File(required(options, "static-scope-map")));
         } catch (Throwable throwable) {
             System.err.println("Failed to aggregate Causynth runtime trace: "
                     + throwable);
@@ -199,42 +199,14 @@ public final class CausynthTraceRecorder {
         return address == null ? "" : address.render();
     }
 
-    /**
-     * Claims the start frame filed for {@code carrier}'s work.  A hook never
-     * fails the work; an unclaimable frame is a stated LINEAGE_LOST gap,
-     * never swallowed.
-     */
+    /** The recording's half of {@link RowRuntime#claimStart}. */
     public static void claimStart(Object carrier) {
-        try {
-            Identity.claimStart(carrier);
-        } catch (Throwable unnamed) {
-            String subject = lineageSubject(carrier == null ? ""
-                    : carrier.getClass().getName());
-            RowRuntime.gap(GapKind
-                            .LINEAGE_LOST,
-                    GapClass.DIAGNOSTIC,
-                    subject, "the start frame filed for this work could not "
-                            + "be claimed, so the occurrences it publishes "
-                            + "carry no start-site frame in their execution "
-                            + "index: " + unnamed);
-        }
+        RowRuntime.claimStart(carrier);
     }
 
+    /** The recording's half of {@link RowRuntime#startWork}. */
     public static void startWork(String startSiteId, Object carrier) {
-        String site = MapFields.safe(startSiteId);
-        try {
-            Identity.startWork(site, carrier);
-        } catch (Throwable unnamed) {
-            RowRuntime.gap(GapKind
-                            .LINEAGE_LOST,
-                    GapClass.DIAGNOSTIC,
-                    lineageSubject(site.isEmpty() && carrier != null
-                                    ? carrier.getClass().getName() : site),
-                    "the frame of this work start could not be filed, "
-                            + "so the work it started carries no start-site "
-                            + "frame in its execution index: "
-                            + unnamed);
-        }
+        RowRuntime.startWork(startSiteId, carrier);
     }
 
     /** {@code event} of one gap the RECORDING states. */
@@ -308,10 +280,8 @@ public final class CausynthTraceRecorder {
         event.invocationId = event.id;
         emitExecutionEvent(event);
         // No scope capture here: Identity.startWork owns it in both passes.
-        if (event.id > 0L) {
-            ACTIVE_CALL_SITES.get().push(new ActiveCallSite(event.id, ownerCallId,
-                    event.siteId, event.method, event.declaredCallee));
-        }
+        ACTIVE_CALL_SITES.get().push(new ActiveCallSite(event.id, ownerCallId,
+                event.siteId, event.method, event.declaredCallee));
         return event.id;
     }
 
@@ -601,7 +571,7 @@ public final class CausynthTraceRecorder {
      * Records one transport-neutral message boundary, attributed to the
      * scope the work carries, stating the producer endpoint a SEND minted.
      */
-    public static void recordExchange(String direction, String transport,
+    private static void recordExchange(String direction, String transport,
                                       String correlationId, String attemptId,
                                       String half, Object localOwner,
                                       Object carriedScope,
@@ -768,12 +738,7 @@ public final class CausynthTraceRecorder {
 
     /** Writes one execution row unless this JVM is a context-only replay. */
     private static void emitExecutionEvent(ExecutionEvent event) {
-        if (event == null || event.id <= 0L) {
-            return;
-        }
-        if (contextOnlyConcolicReplay) {
-            return;
-        }
+        if (contextOnlyConcolicReplay) return;
         synchronized (LOCK) {
             writeExecutionTraceLine(event);
         }
@@ -1651,11 +1616,11 @@ public final class CausynthTraceRecorder {
         } else if ("SOURCE_REGISTER".equals(eventKind)
                 || "SOURCE_ALIAS".equals(eventKind)
                 || "SOURCE_RESTART".equals(eventKind)) {
-            trace.sources.add(new SourceTraceEvent(
-                    row.longValue("seq", 0L), eventKind,
-                    sourceRef(row, "source"),
-                    sourceRef(row, "relatedSource"),
-                    row.intValue("objectId", 0)));
+            SourceRef source = sourceRef(row, "source");
+            // The related source is refused like the source, and not kept.
+            sourceRef(row, "relatedSource");
+            trace.sources.add(new SourceTraceEvent(row.longValue("seq", 0L),
+                    eventKind, source, row.intValue("objectId", 0)));
         } else if (isExecutionEventKind(eventKind)) {
             trace.execution.add(new RuntimeRegionPlanner.RuntimeEvent(
                     row.longValue("seq", 0L), eventKind,
@@ -1743,26 +1708,14 @@ public final class CausynthTraceRecorder {
                 "primitiveValue", event.primitiveValue);
     }
 
-    /**
-     * The row kind of one protocol leg: SEND or RECEIVE only ({@link
-     * #recordExchange} refuses others), since no parse branch reads a third.
-     */
-    static String protocolEventKind(String direction) {
-        if ("SEND".equals(direction)) return "EXCHANGE_SEND";
-        if ("RECEIVE".equals(direction)) return "EXCHANGE_RECEIVE";
-        throw new IllegalStateException("EXCHANGE_DIRECTION_UNSTATED: "
-                + "a protocol leg states SEND or RECEIVE, not "
-                + direction);
-    }
-
     private static void writeProtocolTraceLine(
             RuntimeRegionPlanner.ProtocolEvent event) {
         // The trace states the window only: nothing before it opens.
         if (!RecordingWindow.opened()) return;
-        String kind = protocolEventKind(event.direction);
         writeTraceRow(
                 "schemaVersion", 3,
-                "event", kind,
+                // SEND or RECEIVE: #recordExchange refuses any other.
+                "event", "EXCHANGE_" + event.direction,
                 "seq", event.seq,
                 "transport", event.transport,
                 "correlationId", event.correlationId,
@@ -1857,31 +1810,9 @@ public final class CausynthTraceRecorder {
         }
     }
 
-    private static Map<String, String> parseArgs(String[] args) {
-        Map<String, String> params = new LinkedHashMap<>();
-        if (args == null) {
-            return params;
-        }
-        for (int i = 0; i < args.length; i++) {
-            String arg = args[i];
-            if (arg == null || !arg.startsWith("--")) {
-                continue;
-            }
-            String key = arg.substring(2);
-            String value = "true";
-            if (i + 1 < args.length && args[i + 1] != null
-                    && !args[i + 1].startsWith("--")) {
-                value = args[++i];
-            }
-            params.put(key, value);
-        }
-        return params;
-    }
-
-    private static String requiredArg(Map<String, String> params,
-                                      String name) {
-        String value = params.get(name);
-        if (value == null || value.trim().isEmpty()) {
+    private static String required(LongOptions options, String name) {
+        String value = options.value(name, null);
+        if (value == null) {
             throw new IllegalArgumentException("--" + name + " is required");
         }
         return value.trim();
@@ -1985,17 +1916,15 @@ public final class CausynthTraceRecorder {
         private final long seq;
         private final String kind;
         private final SourceRef source;
-        private final SourceRef relatedSource;
         /** Registered object's identity, or 0; renamed after load. */
         private int objectId;
 
         private SourceTraceEvent(long seq, String kind, SourceRef source,
-                                 SourceRef relatedSource, int objectId) {
-            this.objectId = objectId;
+                                 int objectId) {
             this.seq = seq;
             this.kind = MapFields.safe(kind);
             this.source = source;
-            this.relatedSource = relatedSource;
+            this.objectId = objectId;
         }
     }
 

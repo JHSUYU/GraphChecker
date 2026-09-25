@@ -10,18 +10,22 @@ import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
+import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.locationId;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
-import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
-import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.locationId;
 // One reader per VM value spelling, shared with RowPublication.
 import static edu.uva.liftlab.graphchecker.runtime.RowPublication.cut;
 import static edu.uva.liftlab.graphchecker.runtime.RowPublication.literal;
@@ -72,15 +76,15 @@ final class RowPlaceholderMint {
 
     private static void roots(ActiveRegion active,
                               OccurrenceAddress occurrence, boolean whole) {
-        Map<String, java.util.List<String[]>> installed = whole
+        Map<String, List<String[]>> installed = whole
                 ? mintedLocations(active)
-                : java.util.Collections
-                        .<String, java.util.List<String[]>>emptyMap();
+                : Collections
+                        .<String, List<String[]>>emptyMap();
         // ONE PLACEHOLDER PER MINT STORE, IN ORDER: a symbol minted twice
         // in one activation has two suppressed stores, and pairing both rows
         // with the first store leaves the second unstated.
         Map<String, Integer> consumed =
-                new java.util.LinkedHashMap<String, Integer>();
+                new LinkedHashMap<String, Integer>();
         Set<String> stated = new LinkedHashSet<String>();
         for (JsonObject row : active.symbolizedRows) {
             String symbol = vmSymbol(row);
@@ -174,9 +178,9 @@ final class RowPlaceholderMint {
      * real duplicate.
      */
     private static String[] nextStore(
-            Map<String, java.util.List<String[]>> installed,
+            Map<String, List<String[]>> installed,
             Map<String, Integer> consumed, String symbol) {
-        java.util.List<String[]> stores = installed.get(symbol);
+        List<String[]> stores = installed.get(symbol);
         if (stores == null || stores.isEmpty()) return null;
         Integer seen = consumed.get(symbol);
         int index = seen == null ? 0 : seen.intValue();
@@ -343,9 +347,9 @@ final class RowPlaceholderMint {
     static Map<String, String> mintStores(ActiveRegion active) {
         // EVERY such version, not the first per symbol: a second store
         // would otherwise be published as a write.
-        Map<String, String> stores = new java.util.LinkedHashMap<String,
+        Map<String, String> stores = new LinkedHashMap<String,
                 String>();
-        for (Map.Entry<String, java.util.List<String[]>> minted
+        for (Map.Entry<String, List<String[]>> minted
                 : mintedLocations(active).entrySet()) {
             for (String[] store : minted.getValue()) {
                 stores.put(store[0] + "#" + store[1], minted.getKey());
@@ -360,11 +364,11 @@ final class RowPlaceholderMint {
      * Only a version whose expression IS the symbol counts; one computed
      * FROM it is a different value.
      */
-    private static Map<String, java.util.List<String[]>> mintedLocations(
+    private static Map<String, List<String[]>> mintedLocations(
             ActiveRegion active) {
-        Map<String, java.util.List<String[]>> bySymbol =
-                new java.util.LinkedHashMap<String,
-                        java.util.List<String[]>>();
+        Map<String, List<String[]>> bySymbol =
+                new LinkedHashMap<String,
+                        List<String[]>>();
         for (JsonObject record : active.sharedStateRecords.values()) {
             String locationKey = optionalString(record, "locationKey");
             if (locationId(locationKey) == null) continue;
@@ -404,9 +408,9 @@ final class RowPlaceholderMint {
                         observed = otherId;
                     }
                 }
-                java.util.List<String[]> stores = bySymbol.get(symbol);
+                List<String[]> stores = bySymbol.get(symbol);
                 if (stores == null) {
-                    stores = new java.util.ArrayList<String[]>();
+                    stores = new ArrayList<String[]>();
                     bySymbol.put(symbol, stores);
                 }
                 String versionId = Long.toString(id);
@@ -425,7 +429,7 @@ final class RowPlaceholderMint {
             }
         }
         // Ordered by version id, the order the mint rows are walked in.
-        for (java.util.List<String[]> stores : bySymbol.values()) {
+        for (List<String[]> stores : bySymbol.values()) {
             stores.sort((left, right) -> Long.compare(
                     Long.parseLong(left[1]), Long.parseLong(right[1])));
         }

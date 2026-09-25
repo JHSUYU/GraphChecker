@@ -1,22 +1,22 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
-import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicVmBroker.engine;
-import static edu.uva.liftlab.graphchecker.runtime.PathConditionWindow.contiguousConditionIndices;
-import static edu.uva.liftlab.graphchecker.runtime.PathConditionWindow.vmEventConditionIndices;
-
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.GapClass;
+import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.plan.BranchWitness;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
-
-import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
-
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+
+import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
+import static edu.uva.liftlab.graphchecker.runtime.ConcolicVmBroker.engine;
+import static edu.uva.liftlab.graphchecker.runtime.PathConditionWindow.contiguousConditionIndices;
+import static edu.uva.liftlab.graphchecker.runtime.PathConditionWindow.vmEventConditionIndices;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 
 /**
  * R3: one decision of one instrumented site, as a published row.
@@ -63,9 +63,7 @@ final class BranchObservation {
             // UNATTESTED_ARM and recorded CONCRETE, so the row shows the site
             // ran (silence would read as "never reached") but states no term.
             ActiveRegion unattested = ConcolicRegionRuntime.activeRegion();
-            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
-                            .UNATTESTED_ARM,
-                    edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
+            RowRuntime.gap(GapKind.UNATTESTED_ARM, GapClass.DIAGNOSTIC,
                     SiteId.render(method, unitIndex),
                     "the weave states switch domain kind=" + safe(branchKind)
                             + " keys=[" + safe(encodedCaseKeys)
@@ -132,8 +130,7 @@ final class BranchObservation {
             // one: targetReach keeps the planner's address, the mapping the
             // actual occurrence.
             boolean permuted = decision.addressesPermutedTargetOccurrence()
-                    && edu.uva.liftlab.graphchecker.runtime.FocusedReplay
-                            .focused(active.d3Address);
+                    && FocusedReplay.focused(active.d3Address);
             if (ConcolicRegionRuntime.statesTargetReach(recorded, permuted,
                     active.activation.targetBranchSite,
                     active.activation.targetBranchOccurrence,
@@ -153,8 +150,7 @@ final class BranchObservation {
                         decision.outcome(), vmEventId);
             }
         } catch (Throwable throwable) {
-            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.UNATTESTED_ARM,
-                    edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
+            RowRuntime.gap(GapKind.UNATTESTED_ARM, GapClass.DIAGNOSTIC,
                     branchSite + "#" + prepared.occurrence,
                     "this decision was not captured, so it states neither an"
                             + " arm nor the target reach that would have"
@@ -245,19 +241,16 @@ final class BranchObservation {
         int conditionIndex = vmAttestation.valid
                 && vmAttestation.conditionIndices.size() == 1
                 ? vmAttestation.conditionIndices.get(0) : -1;
-        JsonObject mapping = branchMapping(method, unitIndex, occurrence,
-                vmEventId);
-        // A row with no term of its own states the arm the jump took; a row
-        // that publishes a term states whether THAT term held, and the term
-        // is added below (CONTRACT v2.3 sec 1.3).
-        mapping.addProperty("outcome", observedOutcome);
         // Exact VM ownership is one condition for an IfStmt.
         int mappingBaseline = conditionIndex >= 0
                 ? conditionIndex : baseline;
         int mappingLimit = conditionIndex >= 0
                 ? conditionIndex + 1 : rawPathConditionSize;
-        mapping.addProperty("rawPathConditionSize", mappingLimit);
-        mapping.addProperty("rawPathConditionBaseline", mappingBaseline);
+        // A row with no term of its own states the arm the jump took; a row
+        // that publishes a term states whether THAT term held, and the term
+        // is added below (CONTRACT v2.3 sec 1.3).
+        JsonObject mapping = decisionRow(method, unitIndex, occurrence,
+                vmEventId, observedOutcome, mappingBaseline, mappingLimit);
         if (conditionIndex >= 0) {
             JsonElement condition = conditions.get(conditionIndex);
             JsonElement semanticCondition =
@@ -300,18 +293,11 @@ final class BranchObservation {
         int mappingLimit = conditionIndices.isEmpty()
                 ? baseline : conditionIndices.get(
                 conditionIndices.size() - 1) + 1;
-        JsonObject mapping = branchMapping(method, unitIndex, occurrence,
-                vmEventId);
-        mapping.addProperty("outcome", expected.caseArm());
-        mapping.addProperty("rawPathConditionSize", mappingLimit);
-        mapping.addProperty("rawPathConditionBaseline", mappingBaseline);
-        active.branchMappings.add(mapping);
+        active.branchMappings.add(decisionRow(method, unitIndex, occurrence,
+                vmEventId, expected.caseArm(), mappingBaseline, mappingLimit));
         for (Integer conditionIndex : conditionIndices) {
-            JsonObject predicate = branchMapping(method, unitIndex,
-                    occurrence, vmEventId);
-            predicate.addProperty("rawPathConditionSize", mappingLimit);
-            predicate.addProperty("rawPathConditionBaseline",
-                    mappingBaseline);
+            JsonObject predicate = decisionRow(method, unitIndex, occurrence,
+                    vmEventId, null, mappingBaseline, mappingLimit);
             predicate.add("witness",
                     BranchWitness.immutablePredicate(
                             read.conditions.get(conditionIndex))
@@ -344,7 +330,9 @@ final class BranchObservation {
     }
 
     /**
-     * One published decision row.
+     * One decision row, the DecisionRow is built from: its site, arm
+     * ({@code null} on a switch's predicate row) and the raw path-condition
+     * range {@code [baseline, limit)} it owns.
      *
      * <p>{@code vmEventId} is the VM's session-global event number for the
      * decision (the counter behind {@code fieldVersionId} and {@code
@@ -353,15 +341,18 @@ final class BranchObservation {
      * log, within one {@code sessionId}.  Published only when the VM
      * assigned one; a zero would order the decision ahead of everything.</p>
      */
-    static JsonObject branchMapping(
-            String method, int unitIndex, int occurrence, long vmEventId) {
-        // Site, arm and predicate only; the DecisionRow is built from this.
+    static JsonObject decisionRow(String method, int unitIndex,
+                                  int occurrence, long vmEventId,
+                                  Boolean outcome, int baseline, int limit) {
         JsonObject mapping = new JsonObject();
         mapping.addProperty("siteId", SiteId.render(method, unitIndex));
         mapping.addProperty("method", safe(method));
         mapping.addProperty("unitIndex", unitIndex);
         mapping.addProperty("occurrence", occurrence);
         if (vmEventId > 0L) mapping.addProperty("vmEventId", vmEventId);
+        if (outcome != null) mapping.addProperty("outcome", outcome);
+        mapping.addProperty("rawPathConditionSize", limit);
+        mapping.addProperty("rawPathConditionBaseline", baseline);
         return mapping;
     }
 
@@ -375,8 +366,7 @@ final class BranchObservation {
         try {
             api.resumePathCondition();
         } catch (Throwable throwable) {
-            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.UNATTESTED_ARM,
-                    edu.uva.liftlab.graphchecker.contract.GapClass.BLOCKING,
+            RowRuntime.gap(GapKind.UNATTESTED_ARM, GapClass.BLOCKING,
                     firstNonBlank(active.address(),
                             Long.toString(active.token)),
                     "the path condition this branch observation paused was"

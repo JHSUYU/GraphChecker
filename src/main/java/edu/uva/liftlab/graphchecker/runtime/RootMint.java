@@ -1,5 +1,26 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
+import com.google.gson.JsonElement;
+import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
+import edu.uva.liftlab.graphchecker.contract.GapClass;
+import edu.uva.liftlab.graphchecker.contract.GapKind;
+import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
+import edu.uva.liftlab.graphchecker.plan.FieldPathSpec.DeclaredField;
+import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
+import edu.uva.liftlab.graphchecker.plan.SiteId;
+import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
+import edu.uva.liftlab.graphchecker.runtime.FieldAccess.MissingValue;
+import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
+import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveBoxing;
+import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
+import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
+import java.lang.reflect.Field;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicVmBroker.engine;
 import static edu.uva.liftlab.graphchecker.runtime.FieldAccess.declaredInstanceField;
@@ -10,26 +31,6 @@ import static edu.uva.liftlab.graphchecker.runtime.FieldAccess.resolveFieldPathL
 import static edu.uva.liftlab.graphchecker.runtime.ModelValues.isPrimitiveBox;
 import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.javaTypeDescriptor;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
-
-import com.google.gson.JsonElement;
-import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
-import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
-import edu.uva.liftlab.graphchecker.plan.FieldPathSpec;
-import edu.uva.liftlab.graphchecker.plan.FieldPathSpec.DeclaredField;
-import edu.uva.liftlab.graphchecker.plan.SiteId;
-import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
-import edu.uva.liftlab.graphchecker.runtime.FieldAccess.MissingValue;
-import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
-import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveBoxing;
-import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
-import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
-
-import java.lang.reflect.Field;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.Map;
-import java.util.Set;
-import java.util.List;
 
 /**
  * Root minting (R1 §1.2, R5): where a root's value comes from, at every
@@ -286,8 +287,7 @@ final class RootMint {
             } catch (Throwable throwable) {
                 // Stated, never swallowed: a failed mint and an undeclared
                 // cell otherwise read identically from the corpus.
-                RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.UNSTATED_VALUE,
-                        edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
+                RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                         firstNonBlank(action.symbol, action.actionDigest),
                         "the declared heap-field input at "
                                 + SiteId.render(method, unitIndex)
@@ -348,13 +348,10 @@ final class RootMint {
     static boolean mintUnattributed(ActiveRegion active, String rootId,
                                     String context) {
         if (mintOwner(active, rootId) != null) return false;
-        RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
-                        .MINT_UNATTRIBUTED,
+        RowRuntime.gap(GapKind.MINT_UNATTRIBUTED,
                 assignedByTheWave(rootId)
-                        ? edu.uva.liftlab.graphchecker.contract.GapClass
-                                .BLOCKING
-                        : edu.uva.liftlab.graphchecker.contract.GapClass
-                                .DIAGNOSTIC,
+                        ? GapClass.BLOCKING
+                        : GapClass.DIAGNOSTIC,
                 firstNonBlank(safe(rootId), safe(context)),
                 "no admitted activation of this session owns this mint ("
                         + safe(context) + "), so the declared root is read"
@@ -364,10 +361,8 @@ final class RootMint {
 
     /** Whether the obligation this session runs assigns this root. */
     private static boolean assignedByTheWave(String rootId) {
-        return !edu.uva.liftlab.graphchecker.runtime.FocusedReplay
-                .rootAssignment(safe(rootId)).isEmpty()
-                || edu.uva.liftlab.graphchecker.runtime.FocusedReplay
-                        .clockSkew(safe(rootId)) != null;
+        return !FocusedReplay.rootAssignment(safe(rootId)).isEmpty()
+                || FocusedReplay.clockSkew(safe(rootId)) != null;
     }
 
     /**
@@ -392,7 +387,7 @@ final class RootMint {
         SourceSiteEntry entry = active.observeConfiguredSourceEntry(
                 safe(sourceId), safe(fieldSignature));
         if (entry == null) return false;
-        ConcolicRegionRuntime.beginBookkeeping();
+        ConcolicRegionRuntime.pauseObservation();
         try {
             Field field = declaredInstanceField(owner, safe(fieldSignature));
             if (field == null || !field.getType().isPrimitive()) {
@@ -419,9 +414,10 @@ final class RootMint {
             } catch (Throwable unsymbolized) {
                 carried = null;
             }
-            // The strict question (see carriesInputAuthority): a ReadFrom
-            // wrapper of constants is not an expression of its own.
-            boolean reused = configuredSourceCarriesAuthority(carried);
+            // #carriesInputAuthority's strict question (a configured source
+            // is a declared primitive): a ReadFrom wrapper of constants is
+            // not an expression of its own.
+            boolean reused = VmExpressionIr.carriesSymbolicValue(carried);
             // What the region observed, read before the plant overwrites it.
             String observed = ConcolicRegionRuntime.recordedScalar(
                     field.get(owner));
@@ -440,7 +436,7 @@ final class RootMint {
                 api.symbolizeExactField(owner, exactFieldSignature(field),
                         declaring(symbol));
             }
-            ConcolicRegionRuntime.ensurePathRecordingStarted(active);
+            active.pathRecordingStarted = true;
             Object value = field.get(owner);
             JsonElement expression = ConcolicRegionRuntime.engineExpression(api.fieldExpression(
                     owner, declaringClass, field.getName(), descriptor,
@@ -449,8 +445,7 @@ final class RootMint {
             // stated twice and differently and Composer refuses the path.
             // A CLOCK states its reading: FlipQuery bounds the cell by it.
             String stated = !planted.isEmpty()
-                    && edu.uva.liftlab.graphchecker.runtime.FocusedReplay
-                            .clockSkew(safe(sourceId)) == null
+                    && FocusedReplay.clockSkew(safe(sourceId)) == null
                     ? planted : observed;
             active.recordConfiguredSourceMint(entry, safe(sourceId),
                     safe(fieldSignature), symbol, expression, reused,
@@ -459,7 +454,7 @@ final class RootMint {
         } catch (Throwable failure) {
             return false;
         } finally {
-            ConcolicRegionRuntime.endBookkeeping();
+            ConcolicRegionRuntime.resumeObservation();
         }
     }
 
@@ -474,28 +469,22 @@ final class RootMint {
      */
     static String focusedRootValue(ActiveRegion active,
                                            String rootId, Object observed) {
-        edu.uva.liftlab.graphchecker.runtime.FocusedReplay.mintReached(
-                rootId);
+        FocusedReplay.mintReached(rootId);
         if (active == null) return "";
         // At the region that OWNS the mint, as the recording resolved it.
         ActiveRegion owner = active.rootOwner(rootId);
         if (owner.d3Address == null) return "";
-        if (!edu.uva.liftlab.graphchecker.runtime.FocusedReplay
-                .focused(owner.d3Address)) {
+        if (!FocusedReplay.focused(owner.d3Address)) {
             return "";
         }
-        Long skew = edu.uva.liftlab.graphchecker.runtime.FocusedReplay
-                .clockSkew(rootId);
+        Long skew = FocusedReplay.clockSkew(rootId);
         if (skew == null) {
-            return edu.uva.liftlab.graphchecker.runtime.FocusedReplay
-                    .rootAssignment(rootId);
+            return FocusedReplay.rootAssignment(rootId);
         }
         Long reading = readingOf(observed);
         if (reading == null) {
-            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
-                            .UNPRODUCIBLE_ANSWER,
-                    edu.uva.liftlab.graphchecker.contract.GapClass
-                            .BLOCKING, rootId,
+            RowRuntime.gap(GapKind.UNPRODUCIBLE_ANSWER,
+                    GapClass.BLOCKING, rootId,
                     "the wave states a skew for this clock and the mint read"
                             + " no instant to add it to");
             return "";
@@ -524,14 +513,11 @@ final class RootMint {
         if (!active.mintIsPlaceable(owner)) return "";
         if (writeModeledField(owner, fieldSignature, descriptor, value)) {
             // Filed only on a write: an unplaced one is ASSIGNMENT_UNPLANTED.
-            edu.uva.liftlab.graphchecker.runtime.FocusedReplay.planted(
-                    sourceId);
+            FocusedReplay.planted(sourceId);
             return value;
         }
-        RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
-                        .UNPRODUCIBLE_ANSWER,
-                edu.uva.liftlab.graphchecker.contract.GapClass
-                        .BLOCKING, sourceId,
+        RowRuntime.gap(GapKind.UNPRODUCIBLE_ANSWER,
+                GapClass.BLOCKING, sourceId,
                 "the wave's assignment for this root could not be"
                         + " written into " + fieldSignature);
         return "";
@@ -592,8 +578,7 @@ final class RootMint {
                     leafFieldSignature, minted.expression, true, false,
                     minted.recordedValue);
         } catch (Throwable throwable) {
-            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.UNSTATED_VALUE,
-                    edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC, symbol,
+            RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, symbol,
                     "this declared field input was not minted, so the region"
                             + " reads it concretely and no row states a"
                             + " value for it: " + ConcolicRegionRuntime.rootCause(throwable));
@@ -633,7 +618,7 @@ final class RootMint {
                         active.activation.occurrenceId,
                         JavaPrimitiveSmtSemantics.primitive(
                                 field.type()))));
-        ConcolicRegionRuntime.ensurePathRecordingStarted(active);
+        active.pathRecordingStarted = true;
         return new MintedLeaf(ConcolicRegionRuntime.engineExpression(api.fieldExpression(owner,
                 field.owner(), field.name(), descriptor, held)), recorded);
     }
@@ -685,8 +670,7 @@ final class RootMint {
     private static Object materializePrimitiveValue(
             ActiveRegion active, SymbolizeAction action, Object concrete,
             List<String> path) {
-        edu.uva.liftlab.graphchecker.runtime.FocusedReplay.mintReached(
-                action.symbol);
+        FocusedReplay.mintReached(action.symbol);
         ConcolicVmBroker api = engine();
         List<String> exactPath = path == null
                 ? Collections.<String>emptyList() : path;
@@ -718,10 +702,8 @@ final class RootMint {
                     concrete == null ? null : concrete.getClass());
             if (modeled == null
                     || modeled == ModelValues.UnsupportedReplayValue.INSTANCE) {
-                RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
-                                .UNPRODUCIBLE_ANSWER,
-                        edu.uva.liftlab.graphchecker.contract.GapClass
-                                .BLOCKING, action.symbol,
+                RowRuntime.gap(GapKind.UNPRODUCIBLE_ANSWER,
+                        GapClass.BLOCKING, action.symbol,
                         "the wave's value for this root could not be read as"
                                 + " the type the mint reads");
                 assigned = "";
@@ -733,7 +715,7 @@ final class RootMint {
         try {
             api.symbolizeField(fresh, "value", declaring(manualMintLabel(
                     action.symbol, active.activation.occurrenceId, true)));
-            ConcolicRegionRuntime.ensurePathRecordingStarted(active);
+            active.pathRecordingStarted = true;
             JsonElement expression = primitiveBoxExpression(api, fresh);
             active.recordManualSymbolization(action, action.symbol,
                     exactPath, fieldSignature, expression, true, false,
@@ -744,8 +726,7 @@ final class RootMint {
                     ConcolicRegionRuntime.recordedScalar(
                             action.clock ? concrete : planted));
             if (!assigned.isEmpty()) {
-                edu.uva.liftlab.graphchecker.runtime.FocusedReplay.planted(
-                        action.symbol);
+                FocusedReplay.planted(action.symbol);
             }
             return fresh;
         } catch (Throwable throwable) {
@@ -808,15 +789,14 @@ final class RootMint {
             api.symbolize(value, declaring(manualMintLabel(action.symbol,
                     active.activation.occurrenceId,
                     isPrimitiveBox(value))));
-            ConcolicRegionRuntime.ensurePathRecordingStarted(active);
+            active.pathRecordingStarted = true;
             JsonElement expression = value == null ? null
                     : ConcolicRegionRuntime.engineExpression(api.expression(value));
             active.recordManualSymbolization(action, action.symbol,
                     Collections.<String>emptyList(), "", expression,
                     true, false, "");
         } catch (Throwable throwable) {
-            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.UNSTATED_VALUE,
-                    edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
+            RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                     firstNonBlank(action.symbol, action.actionDigest),
                     "this declared input was not minted, so the region reads"
                             + " it concretely and no row states a value for"
@@ -832,7 +812,7 @@ final class RootMint {
         if (!carriesInputAuthority(action, expression)) {
             return observeCutPortWithoutMinting(active, action);
         }
-        ConcolicRegionRuntime.ensurePathRecordingStarted(active);
+        active.pathRecordingStarted = true;
         active.recordManualSymbolization(action, requestedSymbol, fieldPath,
                 fieldSignature, expression, false, true,
                 ConcolicRegionRuntime.recordedScalar(value));
@@ -853,7 +833,7 @@ final class RootMint {
     private static boolean observeCutPortWithoutMinting(
             ActiveRegion active, SymbolizeAction action) {
         if (!declaredCommunicationCutPort(action)) return false;
-        ConcolicRegionRuntime.ensurePathRecordingStarted(active);
+        active.pathRecordingStarted = true;
         return true;
     }
 
@@ -871,7 +851,7 @@ final class RootMint {
                         descriptor, value));
     }
 
-    static boolean containerValue(Object value) {
+    private static boolean containerValue(Object value) {
         return value != null && (value.getClass().isArray()
                 || value instanceof Map<?, ?>
                 || value instanceof Set<?>
@@ -906,7 +886,7 @@ final class RootMint {
      * Gives a manually minted primitive root the stable address of its
      * planned occurrence; reference labels keep their wire identity.
      */
-    static String manualMintLabel(String requestedSymbol,
+    private static String manualMintLabel(String requestedSymbol,
                                   String plannedOccurrenceId,
                                   boolean primitiveRoot) {
         String requested = safe(requestedSymbol);
@@ -926,9 +906,9 @@ final class RootMint {
      * <p>Any propagated expression, except for a DECLARED primitive root,
      * which asks the strict question (anything symbolic inside?): a
      * {@code ReadFrom} of constants would otherwise keep it concrete forever.
-     * Package-visible for the declared-mint contract test.</p>
+     * </p>
      */
-    static boolean carriesInputAuthority(
+    private static boolean carriesInputAuthority(
             SymbolizeAction action, JsonElement expression) {
         return action != null && action.declaredSymbolicRoot
                 && JavaPrimitiveSmtSemantics.primitive(action.javaType)
@@ -937,20 +917,12 @@ final class RootMint {
     }
 
     /**
-     * {@link #carriesInputAuthority}'s strict rule for the configured-source
-     * hook, which only takes declared primitives.  A named seam for the
-     * declared-mint contract test.
-     */
-    static boolean configuredSourceCarriesAuthority(JsonElement carried) {
-        return VmExpressionIr.carriesSymbolicValue(carried);
-    }
-
-    /**
      * Whether this action names a declared communication port, on either side
      * of the wire; same test as
      * {@code ConcolicScheduler.SymbolicInputSelection.declaredCutPort}.
      */
-    static boolean declaredCommunicationCutPort(SymbolizeAction action) {
+    private static boolean declaredCommunicationCutPort(
+            SymbolizeAction action) {
         return action != null
                 && RuntimeSelectedRegionFinalizer.COMMUNICATION_SITE_PORT
                 .equals(action.sourceKind);

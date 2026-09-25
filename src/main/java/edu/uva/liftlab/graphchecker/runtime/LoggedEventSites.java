@@ -122,7 +122,7 @@ final class LoggedEventSites {
             Map<String, Integer> made = new HashMap<String, Integer>();
             int counted = 0;
             for (Long event : group) {
-                String stood = RowRuntime.framesOf(activation, event);
+                String stood = framesOf(activation, event);
                 String key = stood == null ? "" : stood;
                 Integer k = made.get(key);
                 made.put(key, k == null ? 1 : k + 1);
@@ -132,6 +132,16 @@ final class LoggedEventSites {
             }
             this.size = counted;
         }
+    }
+
+    /**
+     * The rendered frames one logged event stood on ({@link FrameJournal}):
+     * null is an event this run cannot place (a gap), {@code ""} one placed
+     * at the region entry on no frames.
+     */
+    private static String framesOf(long activation, long eventId) {
+        ExecutionIndex index = FrameJournal.framesAt(activation, eventId);
+        return index == null ? null : index.render();
     }
 
     /** Each group ranked once, again only after it grew. */
@@ -214,7 +224,7 @@ final class LoggedEventSites {
             }
         }
         String frames = ranked != null ? ranked.frames.get(eventId)
-                : RowRuntime.framesOf(activation, eventId);
+                : framesOf(activation, eventId);
         if (frames == null) {
             RowRuntime.gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC,
                     locationKey + "#" + eventId,

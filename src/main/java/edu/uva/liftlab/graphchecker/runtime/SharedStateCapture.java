@@ -3,26 +3,32 @@ package edu.uva.liftlab.graphchecker.runtime;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-
+import edu.uva.liftlab.graphchecker.contract.GapClass;
+import edu.uva.liftlab.graphchecker.contract.GapKind;
+import edu.uva.liftlab.graphchecker.contract.LocationId;
+import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Set;
 
+import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
+import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.decodeVmEnvelope;
+import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.parseJson;
+import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.rootCause;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
-import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.textString;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.decodeVmEnvelope;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.parseJson;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.rootCause;
-import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
 
 /**
  * The write log of one activation, read out by object.
@@ -45,7 +51,7 @@ final class SharedStateCapture {
      */
     static RawSharedStateReadOut captureRecordedSharedStateRaw(
             ActiveRegion active, ConcolicVmBroker api) {
-        java.util.List<String> pages = new java.util.ArrayList<>();
+        List<String> pages = new ArrayList<>();
         String fault = "";
         long after = active == null ? 0L : active.vmRegionEnterEventId;
         for (int page = 0; page < MAX_READ_OUT_PAGES; page++) {
@@ -145,7 +151,8 @@ final class SharedStateCapture {
         }
     }
 
-    static final String TRACKED_LOCATIONS_KIND = "SHARED_TRACKED_LOCATIONS";
+    private static final String TRACKED_LOCATIONS_KIND =
+            "SHARED_TRACKED_LOCATIONS";
 
     /**
      * Files one tracked location's write log with the active region, or
@@ -166,51 +173,35 @@ final class SharedStateCapture {
         }
         if (active != null && !locationKey.isEmpty()) {
             active.sharedStateRecords.put(locationKey,
-                    writeLogRecord(versionsRecord(locationKey, envelope)));
+                    writeLogRecord(locationKey, envelope));
         }
     }
 
     /**
-     * One location's write log: {@code location#version -> expression}, the
-     * whole of what a replay says about shared state.
+     * One admitted location's write log, reduced to what the rows read:
+     * {@code location#version -> expression} plus where each version and
+     * read ran.
      *
      * <p>{@code fieldVersionId} is on the same session-global counter as the
      * decisions' {@code vmEventId}, so "latest write before this access" is a
      * comparison within one {@code sessionId} (the counter restarts per
-     * session).  An INITIAL version stays, tagged, to keep "the program
-     * computed this" apart from "the recording started after it".</p>
+     * session).</p>
      */
-    static JsonObject writeLogRecord(JsonObject record) {
-        JsonObject envelope = edu.uva.liftlab.graphchecker.smt.JsonFields
-                .object(record, "envelope");
-        JsonObject published = new JsonObject();
-        copyIfPresent(record, published, "kind");
-        copyIfPresent(record, published, "authority");
-        copyIfPresent(record, published, "locationKey");
-        JsonObject publishedEnvelope = new JsonObject();
-        copyIfPresent(envelope, publishedEnvelope, "kind");
-        copyIfPresent(envelope, publishedEnvelope, "schemaVersion");
-        copyIfPresent(envelope, publishedEnvelope, "sessionId");
-        copyIfPresent(envelope, publishedEnvelope, "location");
+    static JsonObject writeLogRecord(String locationKey, JsonObject envelope) {
         JsonArray versions = new JsonArray();
         for (JsonElement element : array(envelope, "versions")) {
             if (!element.isJsonObject()) continue;
             JsonObject version = element.getAsJsonObject();
             JsonObject entry = new JsonObject();
             copyIfPresent(version, entry, "fieldVersionId");
-            copyIfPresent(version, entry, "versionKind");
             // Site and activation: the two halves of the WriteRow's
             // endpoint identity (IDENTITY-V3 sec 1); dropping them merges
             // distinct writes into one endpoint.
             copyIfPresent(version, entry, "site");
             copyIfPresent(version, entry, "regionEnterEventId");
-            // A container INITIAL's base contents; every relation over the
-            // container stands on it, and containerBaseFault re-reads it.
-            copyIfPresent(version, entry, "initialSnapshot");
             copyIfPresent(version, entry, "expression");
             versions.add(entry);
         }
-        publishedEnvelope.add("versions", versions);
         // The read log, by event id: it supplies the activation a
         // ReadFromExpression node does not name.  No value -- the node
         // already carries the version it observed.
@@ -224,10 +215,13 @@ final class SharedStateCapture {
             copyIfPresent(read, entry, "site");
             reads.add(entry);
         }
-        publishedEnvelope.add("reads", reads);
-        copyIfPresent(envelope, publishedEnvelope, "readLogTruncated");
-        published.add("envelope", publishedEnvelope);
-        return published;
+        JsonObject kept = new JsonObject();
+        kept.add("versions", versions);
+        kept.add("reads", reads);
+        JsonObject record = new JsonObject();
+        record.addProperty("locationKey", locationKey);
+        record.add("envelope", kept);
+        return record;
     }
 
     private static void copyIfPresent(JsonObject from, JsonObject to,
@@ -243,22 +237,19 @@ final class SharedStateCapture {
      */
     private static void refuse(int status, String locationKey,
                                String detail) {
-        RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
-                        .UNSTATED_VALUE,
-                edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
+        RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                 // A blank subject would refuse inside Fields.text.
-                edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank(
-                        safe(locationKey), STAGE_VERSIONS,
+                firstNonBlank(safe(locationKey), STAGE_VERSIONS,
                         RowRuntime.sessionId()),
                 reason(status) + ": " + safe(detail));
     }
 
     /** Raw read-out pages frozen before one VM region is finished. */
     static final class RawSharedStateReadOut {
-        private final java.util.List<String> pages;
+        private final List<String> pages;
         private final String fault;
 
-        private RawSharedStateReadOut(java.util.List<String> pages,
+        private RawSharedStateReadOut(List<String> pages,
                                       String fault) {
             this.pages = pages;
             this.fault = fault;
@@ -268,48 +259,38 @@ final class SharedStateCapture {
     // ---- the VM's shared-state vocabulary (this decoder is its one reader)
 
     /** Schema of the VM envelopes and gap rows this vocabulary reads. */
-    static final int SCHEMA_VERSION = 1;
-
-    /** Schema of the admitted record wrappers this vocabulary produces. */
-    private static final int RECORD_SCHEMA_VERSION = 2;
+    private static final int SCHEMA_VERSION = 1;
 
     /** Envelope kind of one selected location's version store. */
     private static final String VERSIONS_ENVELOPE_KIND =
             "SHARED_FIELD_VERSIONS";
     /** Node type emitted where the VM serializer bounded one expression. */
-    static final String TRUNCATED_EXPRESSION_TYPE =
+    private static final String TRUNCATED_EXPRESSION_TYPE =
             "TruncatedExpression";
     /** Authority proving that a truncated node came from the VM serializer. */
     private static final String VM_SERIALIZATION_TRUNCATION_AUTHORITY =
             "VM_SERIALIZATION_TRUNCATION_V1";
 
-    /** Kind of one admitted version-store record. */
-    private static final String VERSIONS_RECORD_KIND =
-            "VM_SHARED_FIELD_VERSIONS_V1";
-    /** Authority stamped on admitted version records. */
-    private static final String RECORD_AUTHORITY =
-            "VM_SHARED_STATE_EVIDENCE_V1";
-
     static final String STAGE_VERSIONS = "VERSIONS";
 
-    static final int OK = 0;
+    private static final int OK = 0;
 
     /**
      * The one refusal this decoder raises on its own: an envelope it will not
      * admit.  Undeclared statuses read as {@link #UNDECLARED_REASON}.
      */
-    static final int MALFORMED_ENVELOPE = -1002;
+    private static final int MALFORMED_ENVELOPE = -1002;
     /** One expression root was serialized only up to the VM's safety bound. */
-    static final int EXPRESSION_SERIALIZATION_TRUNCATED = -1007;
+    private static final int EXPRESSION_SERIALIZATION_TRUNCATED = -1007;
     /**
      * A container's INITIAL version states no base contents, so every read of
      * it (base plus mutation chain) stands on nothing.  The gap names the
      * class the VM has no walker for, because that is the fix.
      */
-    static final int CONTAINER_BASE_UNSTATED = -1012;
+    private static final int CONTAINER_BASE_UNSTATED = -1012;
 
     /** Exact coverage reason for a VM-bounded expression tree. */
-    static final String VM_EXPRESSION_SERIALIZATION_TRUNCATED =
+    private static final String VM_EXPRESSION_SERIALIZATION_TRUNCATED =
             "VM_EXPRESSION_SERIALIZATION_TRUNCATED";
 
     private static final String REASON_PREFIX = "SHARED_STATE_";
@@ -318,9 +299,9 @@ final class SharedStateCapture {
             REASON_PREFIX + "UNDECLARED_STATUS";
 
     /** Location kind of one selected map's whole immutable state. */
-    static final String LOCATION_KIND_MAP_STATE = "MAP_STATE";
+    private static final String LOCATION_KIND_MAP_STATE = "MAP_STATE";
     /** The reserved slot of a whole-state location. */
-    static final int MAP_STATE_SLOT = -3;
+    private static final int MAP_STATE_SLOT = -3;
 
     private static final Set<String> LOCATION_KINDS = names("INSTANCE_FIELD",
             "STATIC_FIELD", "ARRAY_ELEMENT", LOCATION_KIND_MAP_STATE);
@@ -337,7 +318,7 @@ final class SharedStateCapture {
     /** The version kind every location may publish, whatever its shape. */
     private static final String INITIAL_VERSION_KIND = "INITIAL";
 
-    static String reason(int status) {
+    private static String reason(int status) {
         switch (status) {
             case OK:
                 return "";
@@ -353,7 +334,7 @@ final class SharedStateCapture {
     }
 
     /** Whether an expression tree contains the VM's truncation marker. */
-    static boolean containsVmSerializationTruncation(
+    private static boolean containsVmSerializationTruncation(
             JsonElement expression) {
         if (expression == null) return false;
         Deque<JsonElement> pending = new ArrayDeque<>();
@@ -387,7 +368,7 @@ final class SharedStateCapture {
     }
 
     /** Whether {@code fault} names exactly this serializer-bound refusal. */
-    static boolean expressionSerializationTruncationFault(
+    private static boolean expressionSerializationTruncationFault(
             String fault) {
         return fault != null
                 && (VM_EXPRESSION_SERIALIZATION_TRUNCATED.equals(fault)
@@ -396,7 +377,7 @@ final class SharedStateCapture {
     }
 
     /** The location key one version-store envelope describes. */
-    static String locationKey(JsonObject envelope) {
+    private static String locationKey(JsonObject envelope) {
         return locationKeyOf(object(envelope, "location"));
     }
 
@@ -424,55 +405,37 @@ final class SharedStateCapture {
      * default kind: defaulting to {@code INSTANCE} makes a read that joins
      * nothing.
      */
-    static edu.uva.liftlab.graphchecker.contract.LocationId locationId(
+    static LocationId locationId(
             String locationKey) {
         String key = safe(locationKey);
         int separator = key.indexOf('/');
         int slot = key.lastIndexOf('#');
         if (separator <= 0 || slot <= separator) return null;
         String kind = key.substring(0, separator);
-        edu.uva.liftlab.graphchecker.contract.LocationKind declared;
+        LocationKind declared;
         if ("INSTANCE_FIELD".equals(kind)) {
-            declared = edu.uva.liftlab.graphchecker.contract
-                    .LocationKind.INSTANCE;
+            declared = LocationKind.INSTANCE;
         } else if ("STATIC_FIELD".equals(kind)) {
-            declared = edu.uva.liftlab.graphchecker.contract
-                    .LocationKind.STATIC;
+            declared = LocationKind.STATIC;
         } else if ("ARRAY_ELEMENT".equals(kind)) {
-            declared = edu.uva.liftlab.graphchecker.contract
-                    .LocationKind.ARRAY;
+            declared = LocationKind.ARRAY;
         } else if (LOCATION_KIND_MAP_STATE.equals(kind)) {
-            declared = edu.uva.liftlab.graphchecker.contract
-                    .LocationKind.MAP;
+            declared = LocationKind.MAP;
         } else {
             return null;
         }
-        return edu.uva.liftlab.graphchecker.contract.LocationId.of(declared,
+        return LocationId.of(declared,
                 key.substring(separator + 1, slot), key.substring(slot + 1));
     }
 
-    /** The declared kind of one location key, or "". */
-    static String locationKindOf(String locationKey) {
-        if (locationKey == null) return "";
-        int separator = locationKey.indexOf('/');
-        if (separator <= 0) return "";
-        String kind = locationKey.substring(0, separator);
-        return LOCATION_KINDS.contains(kind) ? kind : "";
-    }
-
-    /** Whether {@code locationKey} names one selected map's whole state. */
-    static boolean isMapState(String locationKey) {
-        return LOCATION_KIND_MAP_STATE.equals(locationKindOf(locationKey));
-    }
-
     /** Whether {@code versionKind} publishes one immutable whole state. */
-    static boolean stateVersionKind(String versionKind) {
+    private static boolean stateVersionKind(String versionKind) {
         return versionKind != null && (versionKind.equals("STATE")
                 || versionKind.startsWith("STATE_"));
     }
 
     /** Admits one version-store envelope: {@code ""} or the refusal reason. */
-    static String versionsFault(JsonObject envelope) {
+    private static String versionsFault(JsonObject envelope) {
         if (envelope == null || envelope.size() == 0) {
             return "no version envelope";
         }
@@ -506,7 +469,9 @@ final class SharedStateCapture {
             return VM_EXPRESSION_SERIALIZATION_TRUNCATED
                     + ": version envelope";
         }
-        boolean mapState = isMapState(locationKey(envelope));
+        // A selected map's whole state (#locationKeyOf's spelling).
+        boolean mapState = locationKey(envelope).startsWith(
+                LOCATION_KIND_MAP_STATE + "/");
         Set<Long> versionIds = new LinkedHashSet<>();
         for (JsonElement element : versions) {
             if (!element.isJsonObject()) return "version is not an object";
@@ -560,11 +525,11 @@ final class SharedStateCapture {
     }
 
     /** Fault prefix that maps to {@link #CONTAINER_BASE_UNSTATED}. */
-    static final String CONTAINER_BASE_UNSTATED_FAULT =
+    private static final String CONTAINER_BASE_UNSTATED_FAULT =
             "CONTAINER_BASE_UNSTATED";
 
     /** Whether {@code fault} is an unstated container base. */
-    static boolean containerBaseUnstatedFault(String fault) {
+    private static boolean containerBaseUnstatedFault(String fault) {
         return fault != null && fault.startsWith(CONTAINER_BASE_UNSTATED_FAULT);
     }
 
@@ -615,17 +580,6 @@ final class SharedStateCapture {
             return "read " + readEvent + " names no reader case";
         }
         return "";
-    }
-
-    static JsonObject versionsRecord(String locationKey,
-                                            JsonObject envelope) {
-        JsonObject record = new JsonObject();
-        record.addProperty("kind", VERSIONS_RECORD_KIND);
-        record.addProperty("schemaVersion", RECORD_SCHEMA_VERSION);
-        record.addProperty("authority", RECORD_AUTHORITY);
-        record.addProperty("locationKey", safe(locationKey));
-        record.add("envelope", envelope);
-        return record;
     }
 
     private static boolean booleanMember(JsonObject object, String field) {

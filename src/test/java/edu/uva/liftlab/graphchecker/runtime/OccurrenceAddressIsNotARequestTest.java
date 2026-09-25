@@ -20,7 +20,7 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.Map;
+import java.util.Set;
 
 import static java.util.Collections.singletonList;
 import static org.junit.Assert.assertEquals;
@@ -185,7 +185,7 @@ public class OccurrenceAddressIsNotARequestTest {
                 new SourceRef("DATANODE", "dn", TARGET, 0L));
         long request = RuntimeTraceContext.beginRequest(caller, "heartbeat");
         try {
-            Map<String, Integer> admitted = plan.addressLoopRootInvocation(
+            Set<String> admitted = plan.addressLoopRootInvocation(
                     deferred.rootMethod, deferred.rootMethod, null,
                     new Object[0], 11L);
 

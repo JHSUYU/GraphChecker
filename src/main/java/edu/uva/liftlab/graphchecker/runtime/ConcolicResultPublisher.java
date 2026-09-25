@@ -256,21 +256,15 @@ final class ConcolicResultPublisher {
         }
     }
 
+    /**
+     * A complete non-loop activation settles its task, target or not; a
+     * loop body only by deciding the declared fatal target (no declared
+     * target is "not reached": no throw stands in for it).
+     */
     private static boolean resultAnswersSelectedGoal(ActiveRegion active) {
-        // A complete non-loop activation settles its task, target or not.
         RuntimeTask task = active.activation;
         if (!task.loopBodyRoot) return true;
         return !task.capturesTargetReach
-                || targetReachedByActivation(active);
-    }
-
-    /**
-     * Whether this activation decided the declared fatal target.  No declared
-     * target means "not reached": any throw must never stand in for it.
-     */
-    static boolean targetReachedByActivation(ActiveRegion active) {
-        RuntimeTask task = active.activation;
-        return task.declaresTargetBranch()
-                && task.reachedRequiredTargetOutcome(active.targetReach);
+                || task.reachedRequiredTargetOutcome(active.targetReach);
     }
 }

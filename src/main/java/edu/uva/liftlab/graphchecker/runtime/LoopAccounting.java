@@ -1,13 +1,10 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
-import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.configuration;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicVmBroker.engine;
-
+import edu.uva.liftlab.graphchecker.contract.GapClass;
+import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.RootHookGroup;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
-
 import java.util.ArrayDeque;
 import java.util.Collections;
 import java.util.Deque;
@@ -17,6 +14,11 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.function.Supplier;
+
+import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
+import static edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.configuration;
+import static edu.uva.liftlab.graphchecker.runtime.ConcolicVmBroker.engine;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 
 /**
  * R5 bounds: what a replay may run, and the terminal it takes after.
@@ -51,14 +53,14 @@ final class LoopAccounting {
         account(active, () -> {
             if (edge.isEmpty() || !active.activation.loopBound
                     .acceptsInstrumentedBound(instrumentedMaxTraversals)) {
-                return active.loopBoundCut(edge, instrumentedMaxTraversals,
+                return new LoopBoundCut(edge, instrumentedMaxTraversals,
                         "INSTRUMENTATION_POLICY_MISMATCH");
             }
             long attempted = active.loopBackedges.recordTraversal(edge);
             return attempted < instrumentedMaxTraversals ? null
-                    : active.loopBoundCut(edge, instrumentedMaxTraversals,
+                    : new LoopBoundCut(edge, instrumentedMaxTraversals,
                             "MAX_LOOP_BODY_ITERATIONS_REACHED");
-        }, reason -> active.loopBoundCut(edge, instrumentedMaxTraversals,
+        }, reason -> new LoopBoundCut(edge, instrumentedMaxTraversals,
                 "BOUND_HOOK_" + reason));
     }
 
@@ -71,10 +73,10 @@ final class LoopAccounting {
         // Instrumented under a different policy: loop ids untrusted.
         account(active, () -> loop.isEmpty() || instrumentedMaxTraversals
                 != active.activation.loopBound.maxBackedgeTraversals()
-                ? active.replayBodyCut(loop, 0, 0L,
+                ? new ReplayLoopResourceCut(loop, 0, 0L,
                         "INSTRUMENTATION_POLICY_MISMATCH")
                 : active.chargeLoopBody(loop),
-                reason -> active.replayBodyCut(loop,
+                reason -> new ReplayLoopResourceCut(loop,
                         instrumentedMaxTraversals, 0L, "BODY_HOOK_" + reason));
     }
 
@@ -108,11 +110,11 @@ final class LoopAccounting {
     static void openInvocation(String loopId) {
         ActiveRegion active = ConcolicRegionRuntime.observingActiveRegion();
         if (active == null) return;
-        ConcolicRegionRuntime.beginBookkeeping();
+        ConcolicRegionRuntime.pauseObservation();
         try {
             active.openLoopInvocation(safe(loopId));
         } finally {
-            ConcolicRegionRuntime.endBookkeeping();
+            ConcolicRegionRuntime.resumeObservation();
         }
     }
 
@@ -120,11 +122,11 @@ final class LoopAccounting {
     static void closeInvocation(String loopId) {
         ActiveRegion active = ConcolicRegionRuntime.observingActiveRegion();
         if (active == null) return;
-        ConcolicRegionRuntime.beginBookkeeping();
+        ConcolicRegionRuntime.pauseObservation();
         try {
             active.closeLoopInvocation(safe(loopId));
         } finally {
-            ConcolicRegionRuntime.endBookkeeping();
+            ConcolicRegionRuntime.resumeObservation();
         }
     }
 
@@ -147,11 +149,8 @@ final class LoopAccounting {
      */
     private static void endAtCut(ActiveRegion active, Error cut) {
         if (cut == null) return;
-        RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
-                        .BOUND_INSUFFICIENT,
-                edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
-                edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank(
-                        active.address(), Long.toString(active.token)),
+        RowRuntime.gap(GapKind.BOUND_INSUFFICIENT, GapClass.DIAGNOSTIC,
+                firstNonBlank(active.address(), Long.toString(active.token)),
                 "this activation's local path was cut: " + cut.getMessage());
         ConcolicRegionRuntime.finish(active.token, "CUT", "", null);
     }
@@ -175,14 +174,13 @@ final class LoopAccounting {
         long token = ConcolicRegionRuntime.TOKEN_COUNTER.incrementAndGet();
         // No index frame: only the campaign weaves this hook, so the
         // recording never stands on it; the REGION hook pushes the frame.
-        Map<String, Integer> admittedTasks = config.addressLoopRootInvocation(
+        Set<String> admittedTasks = config.addressLoopRootInvocation(
                 group.key, rootMethod, receiver, rootArguments, token);
         // Asked here, the only place this entry's fold is still innermost:
         // a folded entry addresses no bodies (#bodiesAddressedHere).
         contexts.push(new LoopRootInvocationContext(token, group.key,
-                Math.max(0, group.hookCount - 1), admittedTasks.keySet(),
-                edu.uva.liftlab.graphchecker.runtime.Identity
-                        .foldedEntry()));
+                Math.max(0, group.hookCount - 1), admittedTasks,
+                Identity.foldedEntry()));
         return token;
     }
 

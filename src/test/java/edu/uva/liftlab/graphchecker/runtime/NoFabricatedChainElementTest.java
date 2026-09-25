@@ -52,12 +52,14 @@ public class NoFabricatedChainElementTest {
      */
     @Test
     public void anyThrowIsNoLongerATargetReach() throws Exception {
+        ActiveRegion undeclared = region(false);
         assertFalse("an undeclared target cannot have been reached",
-                ConcolicResultPublisher.targetReachedByActivation(
-                        region(false)));
+                undeclared.activation.reachedRequiredTargetOutcome(
+                        undeclared.targetReach));
         ActiveRegion declared = region(true);
         recordReach(declared);
-        assertTrue(ConcolicResultPublisher.targetReachedByActivation(declared));
+        assertTrue(declared.activation.reachedRequiredTargetOutcome(
+                declared.targetReach));
     }
 
     /** The declared target occurrence, decided at its required outcome. */

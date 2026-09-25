@@ -1,17 +1,10 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
-import edu.uva.liftlab.graphchecker.smt.Arms;
-
-import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
-
-import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
-
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
-import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
@@ -19,6 +12,7 @@ import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
+import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
@@ -28,11 +22,25 @@ import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
+import edu.uva.liftlab.graphchecker.smt.Arms;
+import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
+import java.io.IOException;
 import java.lang.management.ManagementFactory;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.ArrayDeque;
+import java.util.Collections;
+import java.util.Deque;
+import java.util.IdentityHashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 
 /**
  * The one door between the replay and the row set.
@@ -91,7 +99,7 @@ public final class RowRuntime {
         final SessionPublisher opened = publisher;
         ScheduleLog.install(new ScheduleLog.Sink() {
             @Override
-            public void write(com.google.gson.JsonObject row) {
+            public void write(JsonObject row) {
                 opened.schedule(row);
             }
         });
@@ -110,7 +118,7 @@ public final class RowRuntime {
     private static Path declaredSessionsRoot() {
         String declared = Text.safe(System.getenv(SESSIONS_ENV));
         return declared.isEmpty() ? null
-                : java.nio.file.Paths.get(declared).toAbsolutePath();
+                : Paths.get(declared).toAbsolutePath();
     }
 
     /** The iteration directory a campaign path belongs to. */
@@ -484,7 +492,7 @@ public final class RowRuntime {
     }
 
     /** The labels this session's declared mints asked the VM for. */
-    private static final java.util.Set<String> MINT_LABELS =
+    private static final Set<String> MINT_LABELS =
             ConcurrentHashMap.<String>newKeySet();
 
     /**
@@ -531,34 +539,41 @@ public final class RowRuntime {
     private static final int FIELD_SYMBOL_HEAD = "M_J_field_".length();
 
     /**
-     * Enters one execution-index level at an application method's entry;
-     * counts are keyed by (level, root hop, site) only
-     * ({@code Identity.State#nextSiteEvent}).
-     *
-     * @return the token that closes exactly this level
+     * Files the frame of one work start (thread start, executor submit,
+     * fork) for the started work to claim (IDENTITY-V3 SS1).  The start
+     * happens either way; a frame that cannot be filed is a stated gap.
      */
-    public static long enterFrame(String callSiteId, Object receiver) {
-        return Identity.enterFrame(callSiteId, receiver);
-    }
-
-    /** Leaves the level {@code token} opened. */
-    public static void exitFrame(long token) {
-        Identity.exitFrame(token);
-    }
-
-    /** I3: counted on the performing occurrence; 0 when none runs. */
-    public static int nextBranchOrdinal(String siteId) {
-        return Identity.nextBranchOrdinal(siteId);
-    }
-
-    /** Files the STARTED work's frame (IDENTITY-V3 SS1). */
     public static void startWork(String startSiteId, Object carrier) {
-        Identity.startWork(startSiteId, carrier);
+        String site = Text.safe(startSiteId);
+        try {
+            Identity.startWork(site, carrier);
+        } catch (Throwable unnamed) {
+            gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC,
+                    firstNonBlank(site, carrier == null ? ""
+                            : carrier.getClass().getName()),
+                    "the frame of this work start could not be filed, "
+                            + "so the work it started carries no start-site "
+                            + "frame in its execution index: " + unnamed);
+        }
     }
 
-    /** Takes the start frame filed for the work this object carries. */
+    /**
+     * Takes the start frame filed for the work {@code carrier} carries.  The
+     * work runs either way; an unclaimable frame is a stated gap.
+     */
     public static void claimStart(Object carrier) {
-        Identity.claimStart(carrier);
+        // No carrier, no frame, and no subject to name a gap by.
+        if (carrier == null) return;
+        try {
+            Identity.claimStart(carrier);
+        } catch (Throwable unnamed) {
+            gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC,
+                    carrier.getClass().getName(),
+                    "the start frame filed for this work could not be "
+                            + "claimed, so the occurrences it publishes carry "
+                            + "no start-site frame in their execution index: "
+                            + unnamed);
+        }
     }
 
     /** Files one expression and returns the ref rows name it by. */
@@ -591,14 +606,14 @@ public final class RowRuntime {
      * decision read this cell".</p>
      */
     static Map<String, Long> clockReadings(JsonObject term) {
-        Map<String, Long> named = new java.util.LinkedHashMap<String, Long>();
+        Map<String, Long> named = new LinkedHashMap<String, Long>();
         if (term == null || CLOCK_CELLS.isEmpty()) return named;
-        java.util.Deque<JsonElement> pending =
-                new java.util.ArrayDeque<JsonElement>();
+        Deque<JsonElement> pending =
+                new ArrayDeque<JsonElement>();
         // Iterative and uncut: deep trees would overflow a recursion, and a
         // cell dropped by a cut reads as one the term never named.
-        java.util.Map<JsonElement, Boolean> seen =
-                new java.util.IdentityHashMap<JsonElement, Boolean>();
+        Map<JsonElement, Boolean> seen =
+                new IdentityHashMap<JsonElement, Boolean>();
         pending.push(term);
         while (!pending.isEmpty()) {
             JsonElement node = pending.pop();
@@ -707,7 +722,7 @@ public final class RowRuntime {
             String stated = Text.safe(own.getAsString());
             if (!stated.isEmpty()) return stated;
         }
-        for (java.util.Map.Entry<String, JsonElement> member
+        for (Map.Entry<String, JsonElement> member
                 : object.entrySet()) {
             String found = statedType(member.getValue(), depth + 1, walk);
             if (!found.isEmpty()) return found;
@@ -725,8 +740,8 @@ public final class RowRuntime {
 
     /** Expression refs already computed, by the tree they name. */
     private static final Map<JsonObject, String> REFS =
-            java.util.Collections.synchronizedMap(
-                    new java.util.IdentityHashMap<JsonObject, String>());
+            Collections.synchronizedMap(
+                    new IdentityHashMap<JsonObject, String>());
 
     /** Events already stated (every kind), so one event is one occurrence's. */
     private static final Map<String, Boolean> CLAIMED_READS =
@@ -765,11 +780,6 @@ public final class RowRuntime {
                 ExecutionIndex.parse(Text.safe(siteIndex)), attempt);
     }
 
-    /** The frames from the region entry to the site running right now. */
-    public static String siteIndexHere() {
-        return Identity.siteIndex().render();
-    }
-
     /** Keys this activation's frame journal by the VM's enter id. */
     public static void journalRegion(long vmRegionEnterEventId,
                                      OccurrenceAddress occurrence) {
@@ -795,28 +805,6 @@ public final class RowRuntime {
     /** The occurrence of every activation this session has entered. */
     private static final Map<Long, OccurrenceAddress> PERFORMERS =
             new ConcurrentHashMap<Long, OccurrenceAddress>();
-
-    /** Leaves the innermost region of the execution index. */
-    public static void exitRegionIndex() {
-        Identity.regionExit();
-    }
-
-    /** Installs the VM's event clock the frame journal samples. */
-    public static void clock(FrameJournal.Clock source) {
-        Identity.clock(source);
-    }
-
-    /**
-     * The rendered site index of one VM-logged event, from the
-     * {@link FrameJournal}.
-     *
-     * <p>Null is an event this run cannot place (a gap); {@code ""} is one
-     * placed at the region entry on no frames (stated).</p>
-     */
-    public static String framesOf(long activationKey, long eventId) {
-        ExecutionIndex index = FrameJournal.framesAt(activationKey, eventId);
-        return index == null ? null : index.render();
-    }
 
     /**
      * Publishes what only the end of a replay can state, and closes.
@@ -869,13 +857,12 @@ public final class RowRuntime {
                     RowCodec.writeObligationResult(result))).append('\n');
         }
         try {
-            java.nio.file.Files.write(
-                    java.nio.file.Paths.get(worker,
-                            edu.uva.liftlab.graphchecker.contract
-                                    .ObligationDir.RESULT),
+            Files.write(
+                    Paths.get(worker,
+                            ObligationDir.RESULT),
                     rows.toString().getBytes(
-                            java.nio.charset.StandardCharsets.UTF_8));
-        } catch (java.io.IOException unwritable) {
+                            StandardCharsets.UTF_8));
+        } catch (IOException unwritable) {
             System.err.println("Causynth could not write the replay's"
                     + " obligation verdict: " + unwritable);
         }

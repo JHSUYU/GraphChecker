@@ -1,5 +1,18 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.GapClass;
+import edu.uva.liftlab.graphchecker.contract.GapKind;
+import edu.uva.liftlab.graphchecker.plan.BranchPredicateAlgebra;
+import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
@@ -7,18 +20,6 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.shallowCopy;
-
-import com.google.gson.JsonArray;
-import com.google.gson.JsonElement;
-import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.plan.BranchPredicateAlgebra;
-import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
-
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * Whether the VM's branch event is the decision the workload just took --
@@ -43,8 +44,7 @@ final class VmBranchAttestation {
      */
     static void noteRefused(String siteId, int occurrence,
                             Attestation attestation, String windowOutcome) {
-        RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.UNATTESTED_ARM,
-                edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
+        RowRuntime.gap(GapKind.UNATTESTED_ARM, GapClass.DIAGNOSTIC,
                 safe(siteId) + "#" + occurrence,
                 "this decision publishes no site predicate ("
                         + safe(windowOutcome) + "): " + attestation.error);

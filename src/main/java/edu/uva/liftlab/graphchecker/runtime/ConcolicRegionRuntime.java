@@ -1,35 +1,31 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
-
-import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
-
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import edu.uva.liftlab.graphchecker.plan.VmExpressionTable;
+import edu.uva.liftlab.graphchecker.contract.GapClass;
+import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
-import edu.uva.liftlab.graphchecker.runtime.RowRuntime;
-import edu.uva.liftlab.graphchecker.runtime.BranchObservation.BranchDecision;
-import edu.uva.liftlab.graphchecker.runtime.LoopAccounting.LoopBoundCut;
-
-
 import edu.uva.liftlab.graphchecker.plan.SiteId;
+import edu.uva.liftlab.graphchecker.plan.VmExpressionTable;
+import edu.uva.liftlab.graphchecker.runtime.BranchObservation.BranchDecision;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
+import edu.uva.liftlab.graphchecker.runtime.LoopAccounting.LoopBoundCut;
 import edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.RawSharedStateReadOut;
 import java.lang.reflect.InvocationTargetException;
-import java.nio.file.Files;
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
+import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
-import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.configuration;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.beginLiveSelectedRegion;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.beginSelectedResultPublication;
@@ -48,13 +44,7 @@ import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.captureRec
  * GraphChecker itself remains buildable and testable on an ordinary JDK.</p>
  */
 public final class ConcolicRegionRuntime {
-    static final String MANUAL_INPUT_OBSERVATION_KIND =
-            "MANUAL_SYMBOLIC_INPUT_OBSERVATION";
-    static final String MANUAL_INPUT_OBSERVATION_AUTHORITY =
-            "EXACT_PLANNED_SYMBOLIZATION_ACTION_V1";
-    static final String ROOT_ARGUMENT_PREDICATE_KIND =
-            "EXACT_RUNTIME_TYPE";
-    static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
+    private static final Gson GSON = new GsonBuilder().disableHtmlEscaping().create();
     /** Shared with {@link LoopAccounting}, which mints a loop-root entry. */
     static final AtomicLong TOKEN_COUNTER = new AtomicLong();
     private static final AtomicLong ACCESSOR_CONTEXT_TOKEN_COUNTER =
@@ -82,10 +72,10 @@ public final class ConcolicRegionRuntime {
             return new ArrayDeque<>();
                 }
             };
-    static final ThreadLocal<AccessorCallContext>
+    private static final ThreadLocal<AccessorCallContext>
             CURRENT_ACCESSOR_CALL_CONTEXT = new ThreadLocal<>();
     /** Session this JVM opened for its workload, or zero when it opened none. */
-    static volatile long workloadSessionId;
+    private static volatile long workloadSessionId;
     /**
      * Expression store of the current workload session; native expression
      * ids are session-wide, so one store serves every region.
@@ -97,7 +87,10 @@ public final class ConcolicRegionRuntime {
 
     /**
      * Mutes symbolic propagation before an instrumented method calls back
-     * into this runtime; the VM still balances its shadow frames.
+     * into this runtime; the VM still balances its shadow frames.  Also
+     * mutes this layer's own bookkeeping (pair with {@link
+     * #resumeObservation} in a finally): unmuted, GraphChecker's control
+     * flow over symbolized objects lands in the workload's path condition.
      */
     public static void pauseObservation() {
         OBSERVATION_PAUSE_DEPTH.set(OBSERVATION_PAUSE_DEPTH.get() + 1);
@@ -154,20 +147,6 @@ public final class ConcolicRegionRuntime {
         } catch (Throwable ignored) {
             // Keep the original workload exception as the only visible one.
         }
-    }
-
-    /**
-     * Mutes this layer's own bookkeeping; pair with {@link #endBookkeeping()}
-     * in a finally.  Unmuted, GraphChecker's own control flow over symbolized
-     * objects lands in the workload's path condition.
-     */
-    static void beginBookkeeping() {
-        pauseObservation();
-    }
-
-    /** Ends the muted subtree {@link #beginBookkeeping()} opened. */
-    static void endBookkeeping() {
-        resumeObservation();
     }
 
     /**
@@ -307,7 +286,7 @@ public final class ConcolicRegionRuntime {
      */
     public static String closeWorkloadSession() {
         // The durability boundary, whichever launcher owns it.
-        awaitSelectedResultPublications();
+        ConcolicResultPublisher.awaitSelectedResultPublications();
         long sessionId = workloadSessionId;
         if (sessionId == 0L) {
             workloadExpressionStore = new VmExpressionTable.Store();
@@ -330,15 +309,6 @@ public final class ConcolicRegionRuntime {
         workloadSessionId = 0L;
         workloadExpressionStore = new VmExpressionTable.Store();
         return "";
-    }
-
-    /**
-     * Waits until every selected activation has durably published or
-     * reported a write failure.  Public driver entry point for launchers
-     * that own no workload session.
-     */
-    public static void awaitSelectedResultPublications() {
-        ConcolicResultPublisher.awaitSelectedResultPublications();
     }
 
     private static String workloadSessionStatusName(long status) {
@@ -383,12 +353,12 @@ public final class ConcolicRegionRuntime {
                                           String rootMethod,
                                           Object receiver,
                                           Object[] rootArguments) {
-        beginBookkeeping();
+        pauseObservation();
         try {
             return config.select(rootHookGroupKey, rootMethod, receiver,
                     rootArguments);
         } finally {
-            endBookkeeping();
+            resumeObservation();
         }
     }
 
@@ -435,16 +405,13 @@ public final class ConcolicRegionRuntime {
                 active.pathRecordingStarted = true;
             }
             active.claimActivation();
-            edu.uva.liftlab.graphchecker.runtime.RowRuntime.configure(
-                    configuration().resultFile);
+            RowRuntime.configure(configuration().resultFile);
             // The node it RAN on (planner's attribution rule), not the node
             // the plan addressed -- that is what it is checked against.
             SourceRef ranOn = RuntimeTraceContext.activationSource(receiver);
-            active.d3Address = edu.uva.liftlab.graphchecker.runtime
-                    .RowRuntime.beginActivation(active.token,
-                            ranOn == null ? safe(admitted.sourceKey)
-                                    : ranOn.key(),
-                            admitted.regionId, admitted.taskId);
+            active.d3Address = RowRuntime.beginActivation(active.token,
+                    ranOn == null ? safe(admitted.sourceKey) : ranOn.key(),
+                    admitted.regionId, admitted.taskId);
             ACTIVE.put(active.token, active);
             pushActiveRegion(active);
             javaRegionPushed = true;
@@ -462,8 +429,8 @@ public final class ConcolicRegionRuntime {
             // logged events get their frames (FrameJournal).  Never evicted
             // here: publication is asynchronous and an enclosing activation
             // may still publish under this id -- a bounded leak.
-            edu.uva.liftlab.graphchecker.runtime.RowRuntime.journalRegion(
-                    active.vmRegionEnterEventId, active.d3Address);
+            RowRuntime.journalRegion(active.vmRegionEnterEventId,
+                    active.d3Address);
             // A delivery may have set the causal source just before entry.
             RuntimeTraceContext.View context = RuntimeTraceContext.current();
             SourceRef receiverSource = RuntimeTraceContext.sourceFor(receiver);
@@ -514,22 +481,7 @@ public final class ConcolicRegionRuntime {
      * is the carrier the start was filed under.
      */
     public static void claimStart(Object carrier) {
-        // No carrier, no frame; and a gap row with an empty subject would
-        // throw into the workload.
-        if (carrier == null) return;
-        try {
-            RowRuntime.claimStart(carrier);
-        } catch (Throwable unnamed) {
-            // The work runs either way; the missing frame is stated.
-            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
-                            .LINEAGE_LOST,
-                    edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
-                    carrier.getClass().getName(),
-                    "the start frame filed for this work could not be "
-                            + "claimed, so the occurrences it publishes carry "
-                            + "no start-site frame in their execution index: "
-                            + unnamed);
-        }
+        RowRuntime.claimStart(carrier);
     }
 
     /**
@@ -541,17 +493,17 @@ public final class ConcolicRegionRuntime {
      * @return the token that closes exactly the level this opened
      */
     public static long enterMethodFrame(String callSiteId, Object receiver) {
-        return RowRuntime.enterFrame(safe(callSiteId), receiver);
+        return Identity.enterFrame(safe(callSiteId), receiver);
     }
 
     /** Leaves the level {@link #enterMethodFrame} opened. */
     public static void exitMethodFrame(long token) {
-        RowRuntime.exitFrame(token);
+        Identity.exitFrame(token);
     }
 
     /** The exceptional edge of {@link #enterMethodFrame}. */
     public static void throwMethodFrame(long token, Throwable thrown) {
-        RowRuntime.exitFrame(token);
+        Identity.exitFrame(token);
     }
 
     /**
@@ -560,20 +512,7 @@ public final class ConcolicRegionRuntime {
      * work claims the frame ({@link #claimStart}).
      */
     public static void startWork(String startSiteId, Object carrier) {
-        String site = safe(startSiteId);
-        try {
-            RowRuntime.startWork(site, carrier);
-        } catch (Throwable unnamed) {
-            // The start happens either way; the missing frame is stated.
-            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
-                            .LINEAGE_LOST,
-                    edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
-                    firstNonBlank(site, carrier == null ? ""
-                            : carrier.getClass().getName()),
-                    "the frame of this work start could not be filed, "
-                            + "so the work it started carries no start-site "
-                            + "frame in its execution index: " + unnamed);
-        }
+        RowRuntime.startWork(startSiteId, carrier);
     }
 
     /**
@@ -592,13 +531,11 @@ public final class ConcolicRegionRuntime {
                                         Object receiver) {
         // No claim here: work claims its start frame earlier (#claimStart).
         long entry = TOKEN_COUNTER.incrementAndGet();
-        int depth = edu.uva.liftlab.graphchecker.runtime.Identity.depth();
-        int regions = edu.uva.liftlab.graphchecker.runtime.Identity
-                .regionDepth();
+        int depth = Identity.depth();
+        int regions = Identity.regionDepth();
         // No frame here: the frame hook at this same entry already opened it.
         String node = RuntimeTraceContext.activationSource(receiver).key();
-        edu.uva.liftlab.graphchecker.runtime.Identity.occurrence(
-                node, safe(regionId), true);
+        Identity.occurrence(node, safe(regionId), true);
         REGION_ENTRIES.get().push(new RegionEntry(entry, depth, regions,
                 safe(rootMethod)));
         return entry;
@@ -657,32 +594,25 @@ public final class ConcolicRegionRuntime {
         if (mine == null) return;
         while (!open.isEmpty()) {
             RegionEntry top = open.pop();
-            RowRuntime.exitRegionIndex();
+            Identity.regionExit();
             if (top.token == entry) break;
         }
         if (open.isEmpty()) REGION_ENTRIES.remove();
-        int depth = edu.uva.liftlab.graphchecker.runtime.Identity.depth();
-        int regions = edu.uva.liftlab.graphchecker.runtime.Identity
-                .regionDepth();
+        int depth = Identity.depth();
+        int regions = Identity.regionDepth();
         // Both index stacks must close where they opened.  An unbalanced
         // region stack silently rebases later addresses rather than breaking
         // one.
         if (depth != mine.depthAtOpen) {
-            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
-                            .FRAME_UNBALANCED,
-                    edu.uva.liftlab.graphchecker.contract.GapClass.BLOCKING,
+            RowRuntime.gap(GapKind.FRAME_UNBALANCED, GapClass.BLOCKING,
                     mine.rootMethod,
                     "this activation closed at execution-index depth "
                             + depth + " and opened at " + mine.depthAtOpen
                             + "; the innermost frame left standing is "
-                            + edu.uva.liftlab.graphchecker.runtime.Identity
-                                    .innermostFrame());
+                            + Identity.innermostFrame());
         } else if (regions != mine.regionsAtOpen) {
-            String standing = edu.uva.liftlab.graphchecker.runtime.Identity
-                    .innermostRegion();
-            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
-                            .FRAME_UNBALANCED,
-                    edu.uva.liftlab.graphchecker.contract.GapClass.BLOCKING,
+            String standing = Identity.innermostRegion();
+            RowRuntime.gap(GapKind.FRAME_UNBALANCED, GapClass.BLOCKING,
                     mine.rootMethod,
                     "this activation closed with " + regions
                             + " region(s) open and opened with "
@@ -712,13 +642,13 @@ public final class ConcolicRegionRuntime {
         for (RootInvocationFrame existing : frames) {
             if (existing.claimsSiblingHook(group.key)) {
                 frames.push(new RootInvocationFrame(instrumentationSelector,
-                        rootMethod, group.key, 0, 0L));
+                        rootMethod, group.key, 0));
                 return 0L;
             }
         }
         RootInvocationFrame frame = new RootInvocationFrame(
                 instrumentationSelector, rootMethod, group.key,
-                Math.max(0, group.hookCount - 1), 0L);
+                Math.max(0, group.hookCount - 1));
         frames.push(frame);
         // No index frame here: the entry hook owns it (#enterRegionEntry).
         //
@@ -729,17 +659,15 @@ public final class ConcolicRegionRuntime {
         // occurrence, not a region entry (LoopAccounting#bodiesAddressedHere).
         // Trap: loop contexts are keyed by the LOOP hook-group key, not the
         // one #rootHookGroup gives this selector.
-        ActiveRegion active = edu.uva.liftlab.graphchecker.runtime.Identity
-                .foldedEntry()
+        ActiveRegion active = Identity.foldedEntry()
                 && !LoopAccounting.bodiesAddressedHere(
                         config.loopRootHookGroup(instrumentationSelector,
                                 rootMethod).key)
                 ? null
                 : admitRegion(config, group.key, rootMethod, receiver,
                         rootArguments);
-        long token = active == null ? 0L : active.token;
-        frame.token = token;
-        return token;
+        frame.token = active == null ? 0L : active.token;
+        return frame.token;
     }
 
     /**
@@ -819,11 +747,10 @@ public final class ConcolicRegionRuntime {
         }
         try {
             engine().observeExactPrimitiveField(receiver, fieldSignature);
-            ensurePathRecordingStarted(active);
+            active.pathRecordingStarted = true;
         } catch (Throwable failure) {
             // Not one lost row: every later read of the cell joins nothing.
-            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.UNSTATED_VALUE,
-                    edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
+            RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                     firstNonBlank(safe(siteId), safe(fieldSignature)),
                     "this write site could not start the VM's version log"
                             + " for " + safe(fieldSignature) + ", so every"
@@ -924,7 +851,7 @@ public final class ConcolicRegionRuntime {
      * as its own exception; no caller mints on it, and the importer refuses
      * the summary as {@code UNRESOLVED_INPUT}.</p>
      */
-    static final String PROPAGATED_EXPRESSION_IMPORT_FAILED =
+    private static final String PROPAGATED_EXPRESSION_IMPORT_FAILED =
             "PROPAGATED_EXPRESSION_IMPORT_FAILED";
 
     /**
@@ -957,7 +884,7 @@ public final class ConcolicRegionRuntime {
     }
 
     /** The outermost shape of a VM payload an import refused, for the row. */
-    static String describeImportPayload(String serialized) {
+    private static String describeImportPayload(String serialized) {
         String value = safe(serialized);
         if (value.isEmpty()) return "<empty payload>";
         return value.length() <= 160 ? value
@@ -1228,12 +1155,10 @@ public final class ConcolicRegionRuntime {
 
         private RootInvocationFrame(String instrumentationSelector,
                                     String rootMethod, String rootHookGroupKey,
-                                    int remainingSiblingHooks,
-                                    long token) {
+                                    int remainingSiblingHooks) {
             super(rootHookGroupKey, remainingSiblingHooks);
             this.instrumentationSelector = instrumentationSelector;
             this.rootMethod = rootMethod;
-            this.token = token;
         }
     }
 
@@ -1293,7 +1218,7 @@ public final class ConcolicRegionRuntime {
         beginSelectedResultPublication();
         boolean publicationDeferred = false;
         // Judgement and publication are bookkeeping: muted until VM close.
-        beginBookkeeping();
+        pauseObservation();
         try {
             try {
                 AccessorCallContext scope =
@@ -1306,7 +1231,7 @@ public final class ConcolicRegionRuntime {
                 publicationDeferred = closeOccurrence(active);
             }
         } finally {
-            endBookkeeping();
+            resumeObservation();
             if (!publicationDeferred) endSelectedResultPublication();
         }
     }
@@ -1334,8 +1259,7 @@ public final class ConcolicRegionRuntime {
         if (active.replayPrefixContradicted()) {
             abandonOccurrence(active, "REPLAY_PREFIX_UNMATCHED: the"
                     + " activation contradicts its obligation's prefix: "
-                    + edu.uva.liftlab.graphchecker.runtime.FocusedReplay
-                            .refusal(active.d3Address));
+                    + FocusedReplay.refusal(active.d3Address));
             return;
         }
         // Completeness is asked only of an occurrence this terminal ENDS.
@@ -1345,13 +1269,11 @@ public final class ConcolicRegionRuntime {
         // above; "no flip at all" is FocusedReplay#results' end-of-run check.
         if (active.d3Address != null
                 && !active.activation.loopBodyRoot
-                && !edu.uva.liftlab.graphchecker.runtime.FocusedReplay
-                        .complete(active.d3Address)) {
+                && !FocusedReplay.complete(active.d3Address)) {
             abandonOccurrence(active, "REPLAY_PREFIX_UNMATCHED: the"
                     + " focused occurrence did not take the decision its"
                     + " obligation flips: "
-                    + edu.uva.liftlab.graphchecker.runtime.FocusedReplay
-                            .refusal(active.d3Address));
+                    + FocusedReplay.refusal(active.d3Address));
         }
     }
 
@@ -1365,9 +1287,13 @@ public final class ConcolicRegionRuntime {
     private static boolean closeOccurrence(ActiveRegion active) {
         if (!active.beginClose()) return false;
         silenceStillRunningFrame(active);
-        boolean hasEnclosingRegion = hasEnclosingActiveRegion(active);
+        Iterator<Long> stack = innermostActiveRegionStack(active,
+                "selected regions must close in strict LIFO order")
+                .iterator();
+        stack.next();
+        boolean hasEnclosingRegion = stack.hasNext();
         ActiveRegion enclosingRegion = hasEnclosingRegion
-                ? enclosingActiveRegion(active) : null;
+                ? ownerRegion(stack.next()) : null;
         ConcolicVmBroker api = engine();
         boolean engineFinished = false;
         boolean pathConditionPaused = false;
@@ -1383,11 +1309,7 @@ public final class ConcolicRegionRuntime {
                             api);
                 } catch (Throwable throwable) {
                     // An unread write log leaves its locations unjoinable.
-                    RowRuntime.gap(
-                            edu.uva.liftlab.graphchecker.contract.GapKind
-                                    .UNSTATED_VALUE,
-                            edu.uva.liftlab.graphchecker.contract.GapClass
-                                    .DIAGNOSTIC,
+                    RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                             SharedStateCapture.STAGE_VERSIONS,
                             "the tracked-location read-out could not be"
                                     + " invoked, so no write version of this"
@@ -1496,22 +1418,6 @@ public final class ConcolicRegionRuntime {
         return tokens;
     }
 
-    /** True only when {@code active} is the innermost region with a caller. */
-    private static boolean hasEnclosingActiveRegion(ActiveRegion active) {
-        return innermostActiveRegionStack(active,
-                "selected regions must close in strict LIFO order").size() > 1;
-    }
-
-    /** The exact selected caller of the current innermost activation. */
-    private static ActiveRegion enclosingActiveRegion(ActiveRegion active) {
-        Deque<Long> tokens = innermostActiveRegionStack(active,
-                "selected regions must inspect callers in strict LIFO order");
-        java.util.Iterator<Long> iterator = tokens.iterator();
-        iterator.next();
-        Long enclosingToken = iterator.hasNext() ? iterator.next() : null;
-        return enclosingToken == null ? null : ownerRegion(enclosingToken);
-    }
-
     /** Pops the exact innermost activation; an ownership mismatch is fatal. */
     private static void popActiveRegion(ActiveRegion active) {
         Deque<Long> tokens = innermostActiveRegionStack(active,
@@ -1528,18 +1434,16 @@ public final class ConcolicRegionRuntime {
      * journal; idempotent, called at every region start.
      */
     private static void installEventClock(final ConcolicVmBroker api) {
-        edu.uva.liftlab.graphchecker.runtime.RowRuntime.clock(
-                new edu.uva.liftlab.graphchecker.runtime.FrameJournal
-                        .Clock() {
-                    @Override
-                    public long now() {
-                        try {
-                            return api.currentEventId();
-                        } catch (Throwable unavailable) {
-                            return -1L;
-                        }
-                    }
-                });
+        Identity.clock(new FrameJournal.Clock() {
+            @Override
+            public long now() {
+                try {
+                    return api.currentEventId();
+                } catch (Throwable unavailable) {
+                    return -1L;
+                }
+            }
+        });
     }
 
     /** Returns null only when no lightweight accessor scope is active. */
@@ -1565,15 +1469,6 @@ public final class ConcolicRegionRuntime {
         ActiveRegion active = ACTIVE.get(token);
         return active != null && active.thread == Thread.currentThread()
                 ? active : null;
-    }
-
-    /**
-     * Opens the Java-side branch-observation gate when the first selected
-     * input becomes symbolic.
-     */
-    static void ensurePathRecordingStarted(ActiveRegion active) {
-        if (active.pathRecordingStarted) return;
-        active.pathRecordingStarted = true;
     }
 
     static JsonElement parseJson(String value) {

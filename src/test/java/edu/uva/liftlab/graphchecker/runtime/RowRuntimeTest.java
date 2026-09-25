@@ -480,7 +480,7 @@ public class RowRuntimeTest {
         Identity.occurrence(NN.key(), "REGION.loader", true);
         long nested = ConcolicRegionRuntime.enterRegionEntry("REGION.apply",
                 "<a.Loader: long applyEditLogOp()>", null);
-        RowRuntime.exitRegionIndex();
+        Identity.regionExit();
         ConcolicRegionRuntime.exitRegionEntry(nested);
 
         RowRuntime.closeSession();
@@ -658,7 +658,8 @@ public class RowRuntimeTest {
         // both and the whole read log, which is why every write endpoint
         // carried its location as a site and the empty index.
         JsonObject reduced = SharedStateCapture.writeLogRecord(
-                vmEnvelopeRecord());
+                "INSTANCE_FIELD/2#24",
+                vmEnvelopeRecord().getAsJsonObject("envelope"));
         JsonObject envelope = reduced.getAsJsonObject("envelope");
         JsonObject version = envelope.getAsJsonArray("versions").get(0)
                 .getAsJsonObject();

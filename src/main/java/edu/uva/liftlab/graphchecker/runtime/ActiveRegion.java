@@ -1,48 +1,34 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
-import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
-
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
-
-import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
-import edu.uva.liftlab.graphchecker.plan.VmExpressionTable;
-
+import edu.uva.liftlab.graphchecker.contract.GapClass;
+import edu.uva.liftlab.graphchecker.contract.GapKind;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
-
 import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
-
-import edu.uva.liftlab.graphchecker.runtime.RowRuntime;
-
+import edu.uva.liftlab.graphchecker.plan.SiteId;
+import edu.uva.liftlab.graphchecker.plan.VmExpressionTable;
 import edu.uva.liftlab.graphchecker.runtime.BranchObservation.BranchDecision;
 import edu.uva.liftlab.graphchecker.runtime.BranchObservation.PreparedBranch;
-import edu.uva.liftlab.graphchecker.runtime.LoopAccounting.LoopBackedgeBudget;
-import edu.uva.liftlab.graphchecker.runtime.LoopAccounting.LoopBoundCut;
-import edu.uva.liftlab.graphchecker.runtime.LoopAccounting.ReplayLoopResourceCut;
-
-import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
-
+import edu.uva.liftlab.graphchecker.runtime.LoopAccounting.LoopBackedgeBudget;
+import edu.uva.liftlab.graphchecker.runtime.LoopAccounting.ReplayLoopResourceCut;
+import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
 import java.util.ArrayList;
-
 import java.util.Collections;
-
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-
 import java.util.Map;
 import java.util.Set;
-
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
-
-import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
-
+import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
 /** One live activation of a declared region, and what it records. */
@@ -50,8 +36,8 @@ final class ActiveRegion {
     final long token;
     /** The one task whose region-local path this activation records. */
     final RuntimeTask activation;
-    /** The address every row of this activation is keyed by (IDENTITY-V3), or null. */
-    edu.uva.liftlab.graphchecker.contract.OccurrenceAddress d3Address;
+    /** The address every row of this activation is keyed by, or null. */
+    OccurrenceAddress d3Address;
     /** Whether this activation counts against its address's set. */
     private boolean activationClaimed;
     /** Exact event-ledger entry of this native region frame. */
@@ -70,7 +56,8 @@ final class ActiveRegion {
     volatile long chargedLoopBodies;
     /** Logical sources and request scopes observed while this ran. */
     final Set<String> observedSourceKeys = new LinkedHashSet<>();
-    /** Every source the observed context or the receiver's registration attributes this to. */
+    /** Every source the observed context or the receiver's registration
+     *  attributes this to. */
     Set<String> attributedSourceKeys() {
         Set<String> keys = new LinkedHashSet<>(observedSourceKeys);
         SourceRef registered = RuntimeTraceContext.sourceFor(receiver);
@@ -113,23 +100,24 @@ final class ActiveRegion {
     final VmExpressionTable.Store expressionStore;
     private long preparedBranchSequence;
     int lastPathConditionSize;
-    /** Whether this activation's bounded local path has been cut. */
-    boolean loopBoundCut;
+    /**
+     * The Java-side branch-observation gate, opened once the first selected
+     * input is symbolic (or inherited from a symbolic caller).
+     */
     boolean pathRecordingStarted;
 
     ActiveRegion(long token, RuntimeTask activation,
-                         Object receiver, Thread thread) {
+                 Object receiver, Thread thread) {
         this.token = token;
         this.activation = activation;
         this.receiver = receiver;
         this.thread = thread;
         this.expressionStore = ConcolicRegionRuntime.workloadExpressionStore;
-        this.loopBackedges = new LoopBackedgeBudget(
-                activation.loopBound);
+        this.loopBackedges = new LoopBackedgeBudget(activation.loopBound);
     }
 
-
-    /** Counts this activation against its address's set (bounds loop-body occurrences). */
+    /** Counts this activation against its address's set (bounds loop-body
+     *  occurrences). */
     void claimActivation() {
         if (activationClaimed) return;
         activationClaimed = true;
@@ -152,8 +140,7 @@ final class ActiveRegion {
      * Charges one body of this loop to the replay resource cap, returning
      * the cut that ends the activation once the cap is spent.
      */
-    synchronized ReplayLoopResourceCut chargeLoopBody(
-            String loopId) {
+    synchronized ReplayLoopResourceCut chargeLoopBody(String loopId) {
         // Body entries a loop may run before the replay is cut.
         int maxBodies = LoopBoundPolicy.MAX_REPLAY_PATH_LOOP_BODIES;
         chargedLoopBodies++;
@@ -161,27 +148,15 @@ final class ActiveRegion {
         // id alone, repeated walks of one loop would share one budget.
         Integer invocation = activeLoopInvocations.get(loopId);
         String budgetKey = invocation == null ? loopId
-                : LoopBackedgeBudget.scoped(loopId,
-                        invocation.intValue());
+                : LoopBackedgeBudget.scoped(loopId, invocation.intValue());
         long entered = loopBackedges.recordBody(budgetKey);
         if (entered <= maxBodies) return null;
-        return replayBodyCut(loopId, maxBodies, entered,
+        return new ReplayLoopResourceCut(loopId, maxBodies, entered,
                 ReplayLoopResourceCut.REASON);
     }
 
-    /**
-     * Records the terminal of this activation's spent body budget.  Like
-     * {@link #loopBoundCut}: marks the activation cut and carries the reason,
-     * so a hook failure is told apart from the bound.
-     */
-    ReplayLoopResourceCut replayBodyCut(String loopId, int maxBodies,
-                                        long attemptedBody, String reason) {
-        loopBoundCut = true;
-        return new ReplayLoopResourceCut(loopId, maxBodies, attemptedBody,
-                reason);
-    }
-
-    /** Opens one dynamic invocation of a fixed-count loop (scopes its budget). */
+    /** Opens one dynamic invocation of a fixed-count loop (scopes its
+     *  budget). */
     synchronized void openLoopInvocation(String loopId) {
         if (loopId.isEmpty()
                 || activeLoopInvocations.containsKey(loopId)) {
@@ -195,13 +170,6 @@ final class ActiveRegion {
         if (!loopId.isEmpty()) activeLoopInvocations.remove(loopId);
     }
 
-    /** Records the terminal of this activation's bounded local path. */
-    LoopBoundCut loopBoundCut(
-            String backedgeId, int maxTraversals, String reason) {
-        loopBoundCut = true;
-        return new LoopBoundCut(backedgeId, maxTraversals, reason);
-    }
-
     /**
      * Records a decision while the symbolic gate is closed, and answers
      * with the occurrence of the site it charged, or {@code 0} where
@@ -212,9 +180,10 @@ final class ActiveRegion {
         try {
             // The only caller has filtered out undeclared sites.
             String site = SiteId.render(method, unitIndex);
-            int occurrence = RowRuntime.nextBranchOrdinal(site);
-            recordDecisionRow(method, unitIndex, occurrence,
-                    decision.outcome());
+            int occurrence = Identity.nextBranchOrdinal(site);
+            // No path condition was added: the row owns an empty range.
+            branchMappings.add(BranchObservation.decisionRow(method,
+                    unitIndex, occurrence, 0L, decision.outcome(), 0, 0));
             if (activation.targetBranchSite.equals(site)
                     && activation.targetBranchOccurrence == occurrence) {
                 recordTargetReach(site, occurrence, decision.outcome(),
@@ -227,44 +196,27 @@ final class ActiveRegion {
         }
     }
 
-    /** The branch row one decision that added no path condition is. */
-    private void recordDecisionRow(
-            String method, int unitIndex, int occurrence,
-            boolean outcome) {
-        JsonObject mapping = BranchObservation.branchMapping(
-                method, unitIndex, occurrence, 0L);
-        mapping.addProperty("outcome", outcome);
-        mapping.addProperty("rawPathConditionSize", 0);
-        mapping.addProperty("rawPathConditionBaseline", 0);
-        branchMappings.add(mapping);
-    }
-
     /**
      * States one decision to {@code FocusedReplay}, the only account of
      * whether a replay follows its obligation; keep no second account here.
      */
-    boolean observeReplayDecision(
+    void observeReplayDecision(
             String siteId, int occurrence, BranchDecision decision) {
-        if (d3Address == null) return true;
-        edu.uva.liftlab.graphchecker.runtime.FocusedReplay
-                .observeDecision(d3Address, siteId, occurrence,
-                        decision.outcome);
-        return !edu.uva.liftlab.graphchecker.runtime.FocusedReplay
-                .contradicted(d3Address);
+        if (d3Address == null) return;
+        FocusedReplay.observeDecision(d3Address, siteId, occurrence,
+                decision.outcome);
     }
 
     /** Whether this activation has walked a branch its obligation forbids. */
     boolean replayPrefixContradicted() {
-        return d3Address != null
-                && edu.uva.liftlab.graphchecker.runtime.FocusedReplay
-                        .contradicted(d3Address);
+        return d3Address != null && FocusedReplay.contradicted(d3Address);
     }
 
     PreparedBranch prepareBranch(
             String method, int unitIndex, String expression)
             throws Exception {
         String site = SiteId.render(method, unitIndex);
-        int occurrence = RowRuntime.nextBranchOrdinal(site);
+        int occurrence = Identity.nextBranchOrdinal(site);
         long sequence = ++preparedBranchSequence;
         if (sequence > Integer.MAX_VALUE) {
             return null;
@@ -311,11 +263,8 @@ final class ActiveRegion {
     static boolean mintsUnderSymbolicOccurrence(
             ActiveRegion active, String sourceId, String fieldSignature) {
         if (active != null && active.symbolicallyActive()) return true;
-        RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
-                        .DECLARATION_MISSING,
-                edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
-                edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank(
-                        safe(sourceId), safe(fieldSignature)),
+        RowRuntime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                firstNonBlank(safe(sourceId), safe(fieldSignature)),
                 "this configured-source hook fired under "
                         + (active == null ? "none" : active.mintAddress())
                         + ", which is not an occurrence this replay runs"
@@ -337,10 +286,8 @@ final class ActiveRegion {
 
     /** This activation, as a row about its mint names it. */
     private String mintAddress() {
-        return edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank(
-                address(),
-                Long.toString(token)) + " of region "
-                + safe(activation.regionId);
+        return firstNonBlank(address(), Long.toString(token))
+                + " of region " + safe(activation.regionId);
     }
 
     /**
@@ -367,8 +314,7 @@ final class ActiveRegion {
             }
         }
         if (context == null) {
-            refuseMint(edu.uva.liftlab.graphchecker.contract.GapKind
-                            .DECLARATION_MISSING,
+            refuseMint(GapKind.DECLARATION_MISSING,
                     declaration.isEmpty() ? null : declaration.get(0),
                     "the PUBLISH hook for " + safe(sourceId)
                             + " ran under no active call site, so the"
@@ -376,8 +322,7 @@ final class ActiveRegion {
             return null;
         }
         if (declaration.isEmpty()) {
-            refuseMint(edu.uva.liftlab.graphchecker.contract.GapKind
-                            .DECLARATION_MISSING, null,
+            refuseMint(GapKind.DECLARATION_MISSING, null,
                     "PUBLISH " + site + " is outside the frozen phase"
                             + " catalog, so nothing declares this mint");
             return null;
@@ -390,8 +335,7 @@ final class ActiveRegion {
                 safe(runtimeFieldSignature))
                 || !matched.runtimeDeclaredCallee().equals(
                 context.declaredCallee())) {
-            refuseMint(edu.uva.liftlab.graphchecker.contract.GapKind
-                            .DECLARATION_MISSING, matched,
+            refuseMint(GapKind.DECLARATION_MISSING, matched,
                     "the runtime field and callee differ from the ones"
                             + " the catalog site declares");
             return null;
@@ -469,17 +413,15 @@ final class ActiveRegion {
         }
         JsonObject row = new JsonObject();
         row.addProperty("schemaVersion", 1);
-        row.addProperty("kind",
-                ConcolicRegionRuntime.MANUAL_INPUT_OBSERVATION_KIND);
-        row.addProperty("authority",
-                ConcolicRegionRuntime.MANUAL_INPUT_OBSERVATION_AUTHORITY);
+        row.addProperty("kind", "MANUAL_SYMBOLIC_INPUT_OBSERVATION");
+        row.addProperty("authority", "EXACT_PLANNED_SYMBOLIZATION_ACTION_V1");
         row.addProperty("portId", action.symbol);
         row.addProperty("actionDigest", action.actionDigest);
         row.addProperty("plannedOccurrenceId",
                 activation.occurrenceId);
         // Captured now: frames are gone at publish.  One row per mint
         // (RowPlaceholderMint), so the frames alone place it.
-        row.addProperty("siteIndex", RowRuntime.siteIndexHere());
+        row.addProperty("siteIndex", Identity.siteIndex().render());
         row.addProperty("symbol", safe(requestedSymbol));
         JsonArray encodedPath = new JsonArray();
         for (String segment : fieldPath == null
@@ -530,14 +472,13 @@ final class ActiveRegion {
      * wave's value was not written at the mint the obligation is about.
      */
     private void refuseMint(
-            edu.uva.liftlab.graphchecker.contract.GapKind kind,
+            GapKind kind,
             ConfiguredSourcePhaseContract.Occurrence phase,
             String detail) {
-        RowRuntime.gap(kind, edu.uva.liftlab.graphchecker.contract
-                        .GapClass.BLOCKING,
+        RowRuntime.gap(kind, GapClass.BLOCKING,
                 // Never blank: a blank subject throws inside Fields.text,
                 // out of the mint hook into the workload.
-                edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank(
+                firstNonBlank(
                         phase == null ? "" : phase.phaseId(),
                         address(), Long.toString(token)),
                 safe(detail));
@@ -552,10 +493,8 @@ final class ActiveRegion {
         String unattributed = mintIsNotThePlannedNode(mintOwner);
         if (unattributed.isEmpty()) return true;
         refuseMint(mintAttribution(mintOwner).isEmpty()
-                        ? edu.uva.liftlab.graphchecker.contract.GapKind
-                                .MINT_UNATTRIBUTED
-                        : edu.uva.liftlab.graphchecker.contract.GapKind
-                                .EPOCH_UNMATCHED, null, unattributed);
+                        ? GapKind.MINT_UNATTRIBUTED
+                        : GapKind.EPOCH_UNMATCHED, null, unattributed);
         return false;
     }
 

@@ -5,22 +5,23 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
-
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 
+import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
+import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.locationId;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
-import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
-import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.locationId;
 
 /**
  * Publishes one finished activation as contract rows: decisions, writes,
@@ -218,8 +219,8 @@ final class RowPublication {
     private static void collect(JsonElement root, Set<String> published,
                                 Map<JsonElement, Boolean> seen) {
         if (root == null) return;
-        java.util.Deque<JsonElement> pending =
-                new java.util.ArrayDeque<JsonElement>();
+        Deque<JsonElement> pending =
+                new ArrayDeque<JsonElement>();
         pending.push(root);
         while (!pending.isEmpty()) {
             JsonElement node = pending.pop();

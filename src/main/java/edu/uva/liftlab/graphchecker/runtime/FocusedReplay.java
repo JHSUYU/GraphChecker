@@ -50,8 +50,8 @@ public final class FocusedReplay {
      * by contract id.
      *
      * <p>Focused because an assignment is planted only at a focused MINT
-     * ({@code ConcolicRegionRuntime#focusedRootValue}); an unfocused mint
-     * reads the recording's value (ASSIGNMENT_UNPLANTED).</p>
+     * ({@code RootMint#focusedRootValue}); an unfocused mint reads the
+     * recording's value (ASSIGNMENT_UNPLANTED).</p>
      */
     private static final Set<String> ROOT_MINTS =
             new LinkedHashSet<String>();
@@ -483,6 +483,8 @@ public final class FocusedReplay {
         if (path == null) return;
         // The role is decided HERE: handed a focus row means FOCUSED.
         handedAFocusRow = true;
+        // The Task the focus row states, when it states one.
+        Task focusedTask = null;
         try {
             for (JsonObject row : RowCodec.readJsonl(path)) {
                 if (!row.has("flip") || !row.has("taskId")) continue;
@@ -610,9 +612,6 @@ public final class FocusedReplay {
             return new ArrayList<String>(SHORTFALLS);
         }
     }
-
-    /** The Task the focus row states, when it states one. */
-    private static Task focusedTask;
 
     /** Whether this replay was handed a focus row at all. */
     private static boolean handedAFocusRow;
@@ -783,7 +782,6 @@ public final class FocusedReplay {
         synchronized (LOCK) {
             loaded = false;
             handedAFocusRow = false;
-            focusedTask = null;
             PLANTED.clear();
             MINTED.clear();
             REACHED.clear();

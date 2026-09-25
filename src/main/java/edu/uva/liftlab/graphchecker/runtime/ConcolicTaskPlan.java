@@ -1,20 +1,19 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
-import edu.uva.liftlab.graphchecker.plan.ConcolicScheduler;
-
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
-import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.Frame;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
+import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
 import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
+import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.RootHookGroup;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -32,16 +31,12 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
-import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
+import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
+import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.registerRunTotalsHook;
+import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.taskUnanswered;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
-import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.RootHookGroup;
-
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime.ROOT_ARGUMENT_PREDICATE_KIND;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.registerRunTotalsHook;
-import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
-import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.taskUnanswered;
 
 /** The bounded campaign this JVM executes. */
 final class ConcolicTaskPlan {
@@ -300,7 +295,7 @@ final class ConcolicTaskPlan {
      * Counts one real enclosing method entry and freezes which loop task
      * owns all body iterations executed by that invocation.
      */
-    synchronized Map<String, Integer> addressLoopRootInvocation(
+    synchronized Set<String> addressLoopRootInvocation(
             String loopRootHookGroupKey, String rootMethod,
             Object receiver, Object[] rootArguments,
             long enclosingInvocationEvent) {
@@ -311,7 +306,7 @@ final class ConcolicTaskPlan {
         SourceRef activationSource =
                 RuntimeTraceContext.activationSource(receiver);
         RuntimeTraceContext.View context = RuntimeTraceContext.current();
-        Map<String, Integer> admitted = new LinkedHashMap<>();
+        Set<String> admitted = new LinkedHashSet<>();
         // Outside the recording window nothing has an ordinal, so nothing is
         // a candidate.
         if (!RecordingWindow.opened()) {
@@ -351,8 +346,7 @@ final class ConcolicTaskPlan {
                         activationSource));
                 continue;
             }
-            // Admission order within this invocation, not an address ordinal.
-            admitted.put(task.taskId, admitted.size() + 1);
+            admitted.add(task.taskId);
         }
         return admitted;
     }
@@ -375,29 +369,14 @@ final class ConcolicTaskPlan {
             RuntimeTask task = tasks.get(index);
             if (!task.rootHookGroupKey().equals(
                     safe(rootHookGroupKey))) continue;
-            if (task.blocksAdmissionAfterCompletedGoal()) continue;
-            if (task.loopBodyRoot) {
-                if (LoopAccounting.enclosingLoopRoot(task) == null) {
-                    // Stated, or the run end reports ROOT_NEVER_EXECUTED.
-                    task.noteUnaddressedCandidate(RefusedCandidate.stated(
-                            "a body of this loop ran under no enclosing"
-                                    + " invocation admitted for it: the"
-                                    + " enclosing root hook "
-                                    + task.loopRootHookGroupKey()
-                                    + " either did not run on this thread or"
-                                    + " refused this task when it did",
-                            activationSource));
-                    continue;
-                }
-                if (candidateLive[index]) continue;
-                candidateLive[index] = true;
-                return task;
-            }
+            if (task.completedGoalReserved) continue;
             // Stated, or the run end reports ROOT_NEVER_EXECUTED.
-            RefusedCandidate refused = refusal(task, false, rootMethod,
-                    task.rootArgumentSelector, receiver, rootArguments,
-                    registeredReceiverSource, context, activationSource,
-                    observedAddresses);
+            RefusedCandidate refused = task.loopBodyRoot
+                    ? unenclosedBody(task, activationSource)
+                    : refusal(task, false, rootMethod,
+                            task.rootArgumentSelector, receiver,
+                            rootArguments, registeredReceiverSource, context,
+                            activationSource, observedAddresses);
             if (refused != null) {
                 task.noteUnaddressedCandidate(refused);
                 continue;
@@ -407,6 +386,18 @@ final class ConcolicTaskPlan {
             return task;
         }
         return null;
+    }
+
+    /** Why a loop body ran under no enclosing invocation admitted for it,
+     *  or null when one was. */
+    private static RefusedCandidate unenclosedBody(RuntimeTask task,
+                                                   SourceRef activationSource) {
+        if (LoopAccounting.enclosingLoopRoot(task) != null) return null;
+        return RefusedCandidate.stated("a body of this loop ran under no"
+                + " enclosing invocation admitted for it: the enclosing root"
+                + " hook " + task.loopRootHookGroupKey() + " either did not"
+                + " run on this thread or refused this task when it did",
+                activationSource);
     }
 
     /**
@@ -579,7 +570,7 @@ final class ConcolicTaskPlan {
 
     static ConcolicTaskPlan load() {
         String planValue = safe(System.getProperty(
-                "causynth.concolic.task.plan")).trim();
+                FocusedReplay.PLAN_PROPERTY)).trim();
         String selectedTasks = safe(System.getProperty(
                 "causynth.concolic.task.id")).trim();
         if (planValue.isEmpty()) {
@@ -832,7 +823,7 @@ final class ConcolicTaskPlan {
                     return invalid("each predicate must be an object");
                 }
                 JsonObject predicate = rawPredicate.getAsJsonObject();
-                if (!ROOT_ARGUMENT_PREDICATE_KIND.equals(
+                if (!"EXACT_RUNTIME_TYPE".equals(
                         optionalString(predicate, "kind"))) {
                     return invalid("predicate kind must be exact runtime type");
                 }
@@ -903,7 +894,10 @@ final class ConcolicTaskPlan {
         final List<SymbolizeAction> symbolize;
         final LoopBoundPolicy loopBound;
         final boolean capturesTargetReach;
-        /** Whether this non-loop address has already completed its goal. */
+        /**
+         * Whether this non-loop address has completed its goal, which closes
+         * its admission; loop-body roots are governed by K_L alone.
+         */
         volatile boolean completedGoalReserved;
         /** Result rows this address has published in this replay. */
         int publishedActivations;
@@ -1129,7 +1123,7 @@ final class ConcolicTaskPlan {
         OccurrenceAddress observedAddress(String lifecycle) {
             // open=false: the session publisher opens the region later, and
             // opening twice would move every endpoint's index base.
-            return edu.uva.liftlab.graphchecker.runtime.Identity.occurrence(
+            return Identity.occurrence(
                     safe(lifecycle).isEmpty() ? sourceKey : lifecycle,
                     regionId, false);
         }
@@ -1160,7 +1154,7 @@ final class ConcolicTaskPlan {
         /**
          * Why {@code observed} is not this task's occurrence: the differing
          * component ({@link #difference}), both whole addresses, and each
-         * anchor's mint components ({@link Interactions#components}).
+         * anchor's mint components ({@link InteractionRefusals#components}).
          */
         String addressDifference(OccurrenceAddress observed) {
             if (address == null) return "the task plans no occurrence";
@@ -1243,7 +1237,8 @@ final class ConcolicTaskPlan {
 
         /**
          * Which part of the causal context differs, over the mint's inputs
-         * read back from the filed producer ({@link Interactions#endpoint}).
+         * read back from the filed producer
+         * ({@link InteractionRefusals#endpoint}).
          */
         private static String contextDifference(CausalContext planned,
                 CausalContext observed) {
@@ -1308,18 +1303,10 @@ final class ConcolicTaskPlan {
         }
 
 
-        /**
-         * Closes admission for a non-loop address after its first terminal
-         * result; loop-body roots are governed by K_L alone.
-         */
+        /** Closes admission for a non-loop address after its first
+         *  terminal result. */
         void reserveCompletedEvidence() {
-            if (!loopBodyRoot) {
-                completedGoalReserved = true;
-            }
-        }
-
-        boolean blocksAdmissionAfterCompletedGoal() {
-            return completedGoalReserved;
+            if (!loopBodyRoot) completedGoalReserved = true;
         }
 
         /** Whether this occurrence witnessed the selected failure outcome. */

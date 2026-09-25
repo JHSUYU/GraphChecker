@@ -17,37 +17,13 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
  * ({@link #requireCurrentCapabilities}) before its workload starts.
  */
 final class ConcolicVmBroker {
-    /** Status ABI mirrored from expressionBroker.hpp; gaps stay unassigned. */
+    /** The statuses this side reads, mirrored from expressionBroker.hpp. */
     static final int OK = 0;
-    static final int NO_ACTIVE_REGION = -1;
     static final int MISSING_METADATA = -2;
-    static final int FIELD_NOT_FOUND = -3;
     static final int NOT_SYMBOLIC = -4;
-    static final int FOREIGN_HANDLE = -5;
-    static final int UNKNOWN_HANDLE = -6;
-    static final int SORT_MISMATCH = -9;
-    static final int UNSUPPORTED_TARGET = -12;
     /** Bridge-local statuses, below every value the VM answers. */
     static final int INVOCATION_FAILED = -1001;
     static final int MALFORMED_RESULT = -1002;
-
-    /** Names one broker status, for a message a human reads. */
-    static String describe(int status) {
-        switch (status) {
-            case OK: return "";
-            case NO_ACTIVE_REGION: return "NO_ACTIVE_REGION";
-            case MISSING_METADATA: return "MISSING_METADATA";
-            case FIELD_NOT_FOUND: return "FIELD_NOT_FOUND";
-            case NOT_SYMBOLIC: return "NOT_SYMBOLIC";
-            case FOREIGN_HANDLE: return "FOREIGN_HANDLE";
-            case UNKNOWN_HANDLE: return "UNKNOWN_HANDLE";
-            case SORT_MISMATCH: return "SORT_MISMATCH";
-            case UNSUPPORTED_TARGET: return "UNSUPPORTED_TARGET";
-            case INVOCATION_FAILED: return "INVOCATION_FAILED";
-            case MALFORMED_RESULT: return "MALFORMED_RESULT";
-            default: return "UNDECLARED_STATUS";
-        }
-    }
 
     private static final Object LOCK = new Object();
     private static volatile ConcolicVmBroker engineApi;
