@@ -324,11 +324,7 @@ public final class Composer {
 
         /** Every selector, for reading which disjunct a model selected. */
         public List<String> selectors() {
-            List<String> selectors = new ArrayList<String>();
-            for (Disjunct disjunct : disjuncts) {
-                selectors.add(disjunct.selector());
-            }
-            return selectors;
+            return Composer.selectors(disjuncts);
         }
 
         /** The disjunct one selector names, or null. */
@@ -373,18 +369,12 @@ public final class Composer {
     /** Path id -> what the anchor's attaches received. */
     private final Map<String, List<String>> observedArrivals =
             new LinkedHashMap<String, List<String>>();
-    /** Attaches already named as unpaired; one row per attach, not per path. */
-    private final Set<String> unpairedNamed = new LinkedHashSet<String>();
     /** This epoch's skeleton: which interactions have a slot (R-I6). */
     private SlotTable slots;
     /** Sessions whose pairing replaces a slot's: their arms are not ours. */
     private final Set<String> replacing = new LinkedHashSet<String>();
-    /** Interactions already remarked on, so one row says it once. */
-    private final Set<String> slotNamed = new LinkedHashSet<String>();
     /** What refused the first path that reached the anchor, or "". */
     private String firstRefusal = "";
-    /** Locations already named as aliasing, so one row says it once. */
-    private final Set<String> aliasingNamed = new LinkedHashSet<String>();
     /** How the alternatives of one slot read in SMT. */
     private final ComposedFamilies composedFamilies;
 
@@ -399,19 +389,13 @@ public final class Composer {
         this.maxValuations = maxValuations <= 0 ? 64 : maxValuations;
         this.lowering = new SmtLowering(corpus.declaredSymbols());
         this.arms = new Arms(corpus);
-        this.composedFamilies = new ComposedFamilies(this, corpus, anchor,
-                arms, lowering, families, unattestedRoots, replacing,
-                slotNamed, unpairedNamed, aliasingNamed, gaps);
+        this.composedFamilies = new ComposedFamilies(this, corpus, arms,
+                lowering, families, unattestedRoots, replacing, gaps);
     }
 
     /** This epoch's skeleton, for the relocated family bodies. */
     SlotTable slots() {
         return slots;
-    }
-
-    /** One session's state join, for every conjunction lowered in it. */
-    SmtLowering.SessionJoin join(String session) {
-        return corpus.join(session);
     }
 
     /** Composes the declared occurrence; a missing one is a claim, not a
@@ -435,8 +419,7 @@ public final class Composer {
         }
 
         // A session read short would hide missing decisions.
-        for (edu.uva.liftlab.graphchecker.contract.SessionReader session
-                : corpus.sessions()) {
+        for (SessionReader session : corpus.sessions()) {
             if (session.incomplete().isEmpty()) continue;
             gap(GapKind.SESSION_INCOMPLETE, GapClass.BLOCKING,
                     session.sessionId(), "this session could not be read "
@@ -445,8 +428,7 @@ public final class Composer {
 
         // A verdict is the session's own row; the wave's aggregate copy is
         // checked against it, and a disagreement is BLOCKING.
-        for (edu.uva.liftlab.graphchecker.contract.SessionReader session
-                : corpus.sessions()) {
+        for (SessionReader session : corpus.sessions()) {
             for (ObligationResult settled : session.obligations()) {
                 ObligationResult wave =
                         corpus.waveVerdict(settled.obligationId());
@@ -525,10 +507,7 @@ public final class Composer {
                             .isEmpty() ? "no refusal was named"
                             : firstRefusal));
         } else {
-            List<String> selectors = new ArrayList<String>();
-            for (Disjunct disjunct : disjuncts) {
-                selectors.add(disjunct.selector());
-            }
+            List<String> selectors = selectors(disjuncts);
             lowering.assertNamed("target_path_partition",
                     Arms.exactlyOne(selectors));
             // OR over selectors = OR_p (pi_p and phi_p), since each path
@@ -666,7 +645,7 @@ public final class Composer {
         String selector = "path_selector__" + ordinal + "__"
                 + ArtifactIO.digest(path.pathId, 10);
         lowering.declare(selector, Sort.BOOL);
-        SmtLowering.SessionJoin rows = join(session);
+        SmtLowering.SessionJoin rows = corpus.join(session);
         lowering.begin(session, rows, corpus.expressions(session));
 
         List<String> terms = new ArrayList<String>();
@@ -758,10 +737,7 @@ public final class Composer {
                             + "state, so it is not in the disjunction"));
         }
         if (!refusals.isEmpty()) {
-            gaps.addAll(refusals);
-            if (firstRefusal.isEmpty()) {
-                firstRefusal = refusals.get(0).subject();
-            }
+            refused(refusals);
             return null;
         }
 
@@ -773,10 +749,7 @@ public final class Composer {
         List<GapRow> unproducible = new ArrayList<GapRow>();
         if (!composedFamilies.closeFamilies(ordinal, selector, session,
                 interactionIds, bound, familyTerms, unproducible)) {
-            gaps.addAll(unproducible);
-            if (firstRefusal.isEmpty() && !unproducible.isEmpty()) {
-                firstRefusal = unproducible.get(0).subject();
-            }
+            refused(unproducible);
             return null;
         }
         // (7) And the STATE families: which writer the read may have seen.
@@ -794,6 +767,20 @@ public final class Composer {
         heldArrivals.put(path.pathId, arrivals(bound));
         return new Disjunct(path, selector, target.observedFatal(),
                 interactionIds);
+    }
+
+    private static List<String> selectors(List<Disjunct> disjuncts) {
+        List<String> selectors = new ArrayList<String>();
+        for (Disjunct disjunct : disjuncts) selectors.add(disjunct.selector());
+        return selectors;
+    }
+
+    /** Files one path's refusals; the first names an empty disjunction. */
+    private void refused(List<GapRow> rows) {
+        gaps.addAll(rows);
+        if (firstRefusal.isEmpty() && !rows.isEmpty()) {
+            firstRefusal = rows.get(0).subject();
+        }
     }
 
     /**
@@ -816,11 +803,7 @@ public final class Composer {
         List<String> reaching = new ArrayList<String>(terms);
         reaching.addAll(familyTerms);
         while (!reaching.isEmpty()) {
-            Set<String> reached = new LinkedHashSet<String>();
-            for (String text : reaching) {
-                lowering.reachedSymbols(text, reached,
-                        new LinkedHashSet<String>());
-            }
+            Set<String> reached = lowering.reachedSymbols(reaching);
             reaching = new ArrayList<String>();
             for (String symbol : reached) {
                 String join = pending.remove(symbol);
@@ -927,13 +910,8 @@ public final class Composer {
         if (unminted.isEmpty()) return;
         List<String> texts = new ArrayList<String>(terms);
         texts.addAll(joins.values());
-        Set<String> named = new LinkedHashSet<String>();
-        for (String text : texts) {
-            if (text == null || text.isEmpty()) continue;
-            lowering.reachedSymbols(text, named,
-                    new LinkedHashSet<String>());
-            named.addAll(SmtNames.names(text));
-        }
+        Set<String> named = lowering.reachedSymbols(texts);
+        for (String text : texts) named.addAll(SmtNames.names(text));
         for (Map.Entry<String, Set<String>> root : unminted.entrySet()) {
             for (String symbol : root.getValue()) {
                 if (!named.contains(symbol)) continue;
@@ -959,9 +937,13 @@ public final class Composer {
                 || integralLiteral(max).isEmpty()) {
             return "";
         }
-        return "(and (>= " + row.symbol() + " " + integralLiteral(min)
-                + ") (<= " + row.symbol() + " " + integralLiteral(max)
-                + "))";
+        return window(row.symbol(), min, max);
+    }
+
+    /** {@code min <= symbol <= max}: a declared domain as one predicate. */
+    private static String window(String symbol, String min, String max) {
+        return "(and (>= " + symbol + " " + integralLiteral(min) + ") (<= "
+                + symbol + " " + integralLiteral(max) + "))";
     }
 
     /**
@@ -1001,11 +983,7 @@ public final class Composer {
         List<String> reads = new ArrayList<String>();
         List<String> pending = new ArrayList<String>(terms);
         while (!pending.isEmpty()) {
-            Set<String> reached = new LinkedHashSet<String>();
-            for (String text : pending) {
-                lowering.reachedSymbols(text, reached,
-                        new LinkedHashSet<String>());
-            }
+            Set<String> reached = lowering.reachedSymbols(pending);
             pending = new ArrayList<String>();
             for (String name : reached) {
                 if (handoffs.contains(name)) continue;
@@ -1085,10 +1063,7 @@ public final class Composer {
     private Sort scalarSort(String javaType, String session, String subject,
                             List<GapRow> refusals) {
         Sort sort = JavaSmtSorts.sortOfJava(javaType);
-        if (sort == Sort.BOOL || sort == Sort.INT || sort == Sort.FLOAT32
-                || sort == Sort.FLOAT64 || sort == Sort.STRING) {
-            return sort;
-        }
+        if (sort.scalar()) return sort;
         refusals.add(GapRow.of(session == null || session.isEmpty()
                         ? COMPOSITION : session, GapKind.UNSTATED_VALUE,
                 GapClass.DIAGNOSTIC, subject,
@@ -1404,11 +1379,10 @@ public final class Composer {
             }
             if (joins.containsKey(read.symbol())) continue;
             // The row's own value (non-joinable rows were asked at step 0).
-            if (!answered.contains(read.symbol())
-                    && pin(session, read, refusals, joins, answered)) {
+            if (answered.contains(read.symbol())
+                    || pin(session, read, refusals, joins, answered)) {
                 continue;
             }
-            if (answered.contains(read.symbol())) continue;
             // What the MINT that created this version gave it, keyed by
             // `mintVersion` alone (CONTRACT v2.4).
             String minted = SmtLowering.mintedReadSymbol(join,
@@ -1498,10 +1472,8 @@ public final class Composer {
             RootDomain domain = domainOf(row);
             roots.put(row.rootId(), domain);
             if (!lowering.declared(row.symbol())) continue;
-            if (row.kind() == RootKind.MARKER) {
-                // A declared marker is free: nothing to assert.
-                if (row.declared()) continue;
-            }
+            // A declared marker is free: nothing to assert.
+            if (row.kind() == RootKind.MARKER && row.declared()) continue;
             // A root sessions recorded differently has no corpus-wide
             // window; each path carries its own ({@link #valuationOf}).
             if (corpus.varied(row.rootId())) {
@@ -1516,10 +1488,7 @@ public final class Composer {
             if (min != null && max != null && !min.isEmpty()
                     && !max.isEmpty()) {
                 lowering.assertNamed("root_domain__" + ordinal++,
-                        "(and (>= " + row.symbol() + " "
-                                + integralLiteral(min) + ") (<= "
-                                + row.symbol() + " "
-                                + integralLiteral(max) + "))");
+                        window(row.symbol(), min, max));
                 continue;
             }
             // No domain: pin to the recording, unless the symbol is also a
@@ -1614,20 +1583,11 @@ public final class Composer {
                 continue;
             }
             readings.put(row.symbol(), reading);
-            List<RootMintRow> mints = byNode.get(row.occurrence().node());
-            if (mints == null) {
-                mints = new ArrayList<RootMintRow>();
-                byNode.put(row.occurrence().node(), mints);
-            }
-            mints.add(row);
+            byNode.computeIfAbsent(row.occurrence().node(),
+                    node -> new ArrayList<RootMintRow>()).add(row);
         }
         for (List<RootMintRow> mints : byNode.values()) {
-            Collections.sort(mints, new Comparator<RootMintRow>() {
-                @Override
-                public int compare(RootMintRow left, RootMintRow right) {
-                    return Long.compare(left.seq(), right.seq());
-                }
-            });
+            mints.sort(Comparator.comparingLong(RootMintRow::seq));
             for (int index = 1; index < mints.size(); index++) {
                 String earlier = mints.get(index - 1).symbol();
                 String later = mints.get(index).symbol();
@@ -1718,13 +1678,7 @@ public final class Composer {
                 moves.add(move);
             }
         }
-        Collections.sort(moves, new Comparator<Map<String, String>>() {
-            @Override
-            public int compare(Map<String, String> left,
-                               Map<String, String> right) {
-                return Long.compare(distance(left), distance(right));
-            }
-        });
+        moves.sort(Comparator.comparingLong(this::distance));
         List<Map<String, String>> pairs =
                 new ArrayList<Map<String, String>>();
         for (int first = 0; first < moves.size(); first++) {
@@ -1763,7 +1717,8 @@ public final class Composer {
             if (domain == null) continue;
             String moved = entry.getValue().trim();
             String recorded = domain.recordedValue().trim();
-            if (!integral(moved) || !integral(recorded)) {
+            if (integralLiteral(moved).isEmpty()
+                    || integralLiteral(recorded).isEmpty()) {
                 total += 1L;
                 continue;
             }
@@ -1771,17 +1726,6 @@ public final class Composer {
                     .subtract(new BigInteger(recorded)).abs().longValue();
         }
         return total;
-    }
-
-    /** Whether one domain value is an integer this ordering can subtract. */
-    private static boolean integral(String value) {
-        if (value.isEmpty()) return false;
-        int start = value.charAt(0) == '-' || value.charAt(0) == '+' ? 1 : 0;
-        if (start >= value.length()) return false;
-        for (int index = start; index < value.length(); index++) {
-            if (!Character.isDigit(value.charAt(index))) return false;
-        }
-        return true;
     }
 
     private Valuation valuation(int ordinal, Map<String, String> assignment,
@@ -1827,14 +1771,8 @@ public final class Composer {
             candidates.add(value);
             if (candidates.size() >= maxValuations) break;
         }
-        final BigInteger origin = centre;
-        Collections.sort(candidates, new Comparator<BigInteger>() {
-            @Override
-            public int compare(BigInteger left, BigInteger right) {
-                return left.subtract(origin).abs()
-                        .compareTo(right.subtract(origin).abs());
-            }
-        });
+        candidates.sort(Comparator.comparing(
+                value -> value.subtract(centre).abs()));
         for (BigInteger value : candidates) values.add(value.toString());
         return values;
     }

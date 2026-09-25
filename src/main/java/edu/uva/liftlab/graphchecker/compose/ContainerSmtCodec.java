@@ -24,7 +24,7 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
 /** The single SMT lowering for VM container operations. */
 public final class ContainerSmtCodec {
-    public static final String EXPRESSION_TYPE = "ContainerRelation";
+    private static final String EXPRESSION_TYPE = "ContainerRelation";
     private ContainerSmtCodec() {
     }
 
@@ -55,15 +55,12 @@ public final class ContainerSmtCodec {
     }
 
     public static boolean handles(JsonElement expression) {
-        return expression != null && expression.isJsonObject()
-                && EXPRESSION_TYPE.equals(
-                optionalString(expression.getAsJsonObject(), "_type"));
+        return EXPRESSION_TYPE.equals(VmExpressionIr.typeOf(expression));
     }
 
     public static boolean handlesField(JsonElement expression) {
-        return expression != null && expression.isJsonObject()
-                && "FieldAccessExpression".equals(
-                optionalString(expression.getAsJsonObject(), "_type"));
+        return "FieldAccessExpression".equals(
+                VmExpressionIr.typeOf(expression));
     }
 
     public static boolean handlesFieldBinding(JsonElement expression) {
@@ -101,13 +98,12 @@ public final class ContainerSmtCodec {
     }
 
     private static boolean symbol(JsonElement expression) {
-        return expression != null && expression.isJsonObject()
-                && "SymbolExpression".equals(
-                optionalString(expression.getAsJsonObject(), "_type"));
+        return VmExpressionIr.SYMBOL_TYPE.equals(
+                VmExpressionIr.typeOf(expression));
     }
 
     /** The one refusal for a projection no evidence values. */
-    public static final String UNSTATED_FIELD_PROJECTION =
+    private static final String UNSTATED_FIELD_PROJECTION =
             "UNSTATED_FIELD_PROJECTION:";
 
     /**
@@ -301,12 +297,9 @@ public final class ContainerSmtCodec {
         if (!"ConstExpr".equals(type) && !"ConSymbolExp".equals(type)) {
             return null;
         }
-        String javaType = optionalString(object, "_java_type");
-        if (!"I".equals(javaType) && !"int".equals(javaType)) return null;
-        String payload = optionalString(object, "_exp");
-        int first = payload.indexOf('_');
-        int second = first < 0 ? -1 : payload.indexOf('_', first + 1);
-        String value = second < 0 ? payload : payload.substring(second + 1);
+        if (!VmExpressionIr.isPrimitiveIntExpression(object)) return null;
+        String value = VmExpressionIr.constantPayload(
+                optionalString(object, "_exp"));
         if (!value.matches("-?[0-9]+")) return null;
         try {
             return Integer.valueOf(value);
@@ -625,7 +618,8 @@ public final class ContainerSmtCodec {
         for (int depth = 0; depth < CONTAINER_CHAIN_LIMIT; depth++) {
             Mutation mutation = associativeMutation(chain);
             if (mutation == null) {
-                host.unsupported(CONTAINER_BASE_UNSTATED + ":" + key.text);
+                host.unsupported(VmRows.CONTAINER_BASE_UNSTATED + ":"
+                        + key.text);
                 return;
             }
             if (emptiesState(mutation.operation)) return;
@@ -634,10 +628,6 @@ public final class ContainerSmtCodec {
     }
 
     private static final int CONTAINER_CHAIN_LIMIT = 512;
-
-    /** Refusal subject for an unwalked base; same name as the VM rows use. */
-    public static final String CONTAINER_BASE_UNSTATED =
-            VmRows.CONTAINER_BASE_UNSTATED;
 
     /** The value at one key, or the null cell where the key is absent. */
     private static Term associativeRead(Term state, Term key, Host host) {

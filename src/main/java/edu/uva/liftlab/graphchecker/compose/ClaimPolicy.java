@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.compose;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.Z3;
 
+import edu.uva.liftlab.graphchecker.contract.Arm;
 import edu.uva.liftlab.graphchecker.contract.Claim;
 import edu.uva.liftlab.graphchecker.contract.ClaimKind;
 import edu.uva.liftlab.graphchecker.contract.Family;
@@ -101,6 +102,11 @@ public final class ClaimPolicy {
         /** The disjunct a sat model selected, or null. */
         public Composer.Disjunct selected() {
             return selected;
+        }
+
+        /** Whether the model is sat and names the disjunct it selected. */
+        boolean witness() {
+            return answer.sat() && selected != null;
         }
 
         @Override
@@ -206,8 +212,7 @@ public final class ClaimPolicy {
         List<String> asHappened = new ArrayList<String>(pins(composition,
                 cells));
         asHappened.addAll(composition.recordedPairings());
-        boolean freeSat = recorded != null && recorded.answer().sat()
-                && recorded.selected() != null;
+        boolean freeSat = recorded != null && recorded.witness();
         Outcome asRecorded = freeSat && !asHappened.isEmpty()
                 ? outcome(composition, solver, recorded.valuation(),
                         asHappened, false) : null;
@@ -220,8 +225,7 @@ public final class ClaimPolicy {
             recorded = leastClocks(composition, solver, recorded, cells);
             outcomes.set(0, recorded);
         }
-        if (recorded != null && recorded.answer().sat()
-                && recorded.selected() != null
+        if (recorded != null && recorded.witness()
                 && !recorded.selected().fatalObserved()
                 && !recordingDecides) {
             gaps.add(GapRow.of(recorded.selected().path().sessionId,
@@ -247,14 +251,14 @@ public final class ClaimPolicy {
             List<String> held = asHappened;
             for (int index = 0; index < outcomes.size(); index++) {
                 Outcome free = outcomes.get(index);
-                if (free.valuation().ordinal() == 0) continue;
-                if (!free.answer().sat() || free.selected() == null) continue;
-                Outcome asked = outcome(composition, solver,
-                        free.valuation(), held, false);
-                if (!asked.answer().sat() || asked.selected() == null) {
+                if (free.valuation().ordinal() == 0 || !free.witness()) {
                     continue;
                 }
-                if (unattested(composition, asked, gaps)) continue;
+                Outcome asked = outcome(composition, solver,
+                        free.valuation(), held, false);
+                if (!asked.witness() || unattested(composition, asked, gaps)) {
+                    continue;
+                }
                 outcomes.set(index, asked);
                 outcomes.set(0, asRecorded);
                 return new Decision(Claim.of(mechanism(composition, solver,
@@ -266,8 +270,7 @@ public final class ClaimPolicy {
         }
         if (!recordingDecides) {
             for (Outcome found : new ArrayList<Outcome>(outcomes)) {
-                if (found.valuation().ordinal() == 0) continue;
-                if (!found.answer().sat() || found.selected() == null) {
+                if (found.valuation().ordinal() == 0 || !found.witness()) {
                     continue;
                 }
                 // Publish the witness under every clock pin it can keep.
@@ -293,10 +296,10 @@ public final class ClaimPolicy {
         // 2. No root moves, and the clocks are necessary -- with the same
         //    polarity condition, for the same reason.
         for (Outcome outcome : outcomes) {
-            if (!outcome.answer().sat() || outcome.selected() == null) {
+            if (!outcome.witness()
+                    || !outcome.valuation().moved().isEmpty()) {
                 continue;
             }
-            if (!outcome.valuation().moved().isEmpty()) continue;
             // RECORDED_FAILURE_EXPLAINED is asked below, with the flips.
             ClaimKind still = mechanism(composition, solver, outcome,
                     outcomes, clockDriven);
@@ -320,8 +323,7 @@ public final class ClaimPolicy {
 
         // 3 and 4. The recorded valuation reaches the fatal arm on a path
         // that OBSERVED it -- the recording's own, or another session's.
-        if (recorded != null && recorded.answer().sat()
-                && recorded.selected() != null
+        if (recorded != null && recorded.witness()
                 && recorded.selected().fatalObserved()) {
             String session = recorded.selected().path().sessionId;
             boolean seed = session.equals(composition.seedSessionId());
@@ -643,14 +645,14 @@ public final class ClaimPolicy {
         if (cells.isEmpty()) return outcome;
         Outcome all = outcome(composition, solver, outcome.valuation(),
                 pins(composition, cells), false);
-        if (all.answer().sat() && all.selected() != null) return all;
+        if (all.witness()) return all;
         List<String> kept = new ArrayList<String>();
         Outcome witness = outcome;
         for (String cell : cells) {
             kept.add(cell);
             Outcome asked = outcome(composition, solver, outcome.valuation(),
                     pins(composition, kept), false);
-            if (asked.answer().sat() && asked.selected() != null) {
+            if (asked.witness()) {
                 witness = asked;
             } else {
                 kept.remove(kept.size() - 1);
@@ -696,12 +698,7 @@ public final class ClaimPolicy {
             Family family = byInteraction.get(interactionId);
             if (family == null) continue;
             boolean attested = false;
-            for (int index = 0; index < family.arms().size(); index++) {
-                if (family.arms().get(index).attested()) {
-                    attested = true;
-                    break;
-                }
-            }
+            for (Arm arm : family.arms()) attested |= arm.attested();
             if (!attested) return false;
         }
         return true;

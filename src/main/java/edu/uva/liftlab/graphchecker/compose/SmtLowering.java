@@ -762,10 +762,7 @@ public final class SmtLowering {
         String literal = smtLiteral(text);
         if (literal.isEmpty()) return null;
         Sort sort = JavaSmtSorts.sortOfJava(javaType);
-        if (sort != Sort.BOOL && sort != Sort.INT && sort != Sort.FLOAT32
-                && sort != Sort.FLOAT64 && sort != Sort.STRING) {
-            return null;
-        }
+        if (!sort.scalar()) return null;
         return Term.of(literal, sort,
                 JavaPrimitiveSmtSemantics.widthOfJavaType(javaType));
     }
@@ -854,12 +851,9 @@ public final class SmtLowering {
         long rid = VmRows.referencedObjectRid(raw);
         if (minted && sort == Sort.REF && rid > 0L) {
             assertPlain("(not (= " + name + " nullRef))");
-            Map<Long, String> held = recordedObjects.get(scope);
-            if (held == null) {
-                held = new LinkedHashMap<Long, String>();
-                recordedObjects.put(scope, held);
-            }
-            held.put(rid, name);
+            recordedObjects.computeIfAbsent(scope,
+                    session -> new LinkedHashMap<Long, String>())
+                    .put(rid, name);
         }
         return name;
     }
@@ -1356,6 +1350,13 @@ public final class SmtLowering {
     public Set<String> reachedSymbols(String text, Set<String> into,
                                       Set<String> states) {
         reachedSymbols(text, new LinkedHashSet<String>(), into, states, 0);
+        return into;
+    }
+
+    /** What these texts SAY, together; what they rest on is not asked. */
+    Set<String> reachedSymbols(Iterable<String> texts) {
+        Set<String> into = new LinkedHashSet<String>();
+        for (String text : texts) reachedSymbols(text, into, null);
         return into;
     }
 
@@ -2280,11 +2281,7 @@ public final class SmtLowering {
 
     private static <K> void add(Map<K, Set<String>> index, K key,
                                 String symbol) {
-        Set<String> symbols = index.get(key);
-        if (symbols == null) {
-            symbols = new LinkedHashSet<String>();
-            index.put(key, symbols);
-        }
-        symbols.add(symbol);
+        index.computeIfAbsent(key, held -> new LinkedHashSet<String>())
+                .add(symbol);
     }
 }

@@ -43,35 +43,30 @@ final class ComposedFamilies {
 
     private final Composer composer;
     private final Corpus corpus;
-    private final OccurrenceAddress anchor;
     private final Arms arms;
     private final SmtLowering lowering;
     private final Map<String, Family> families;
     private final Map<String, Set<String>> unattestedRoots;
     private final Set<String> replacing;
-    private final Set<String> slotNamed;
-    private final Set<String> unpairedNamed;
-    private final Set<String> aliasingNamed;
     private final List<GapRow> gaps;
+    /** Interactions already remarked on, so one row says it once. */
+    private final Set<String> slotNamed = new LinkedHashSet<String>();
+    /** Attaches already named as unpaired; one row per attach, not path. */
+    private final Set<String> unpairedNamed = new LinkedHashSet<String>();
+    /** Locations already named as aliasing, so one row says it once. */
+    private final Set<String> aliasingNamed = new LinkedHashSet<String>();
 
-    ComposedFamilies(Composer composer, Corpus corpus,
-                     OccurrenceAddress anchor, Arms arms,
+    ComposedFamilies(Composer composer, Corpus corpus, Arms arms,
                      SmtLowering lowering, Map<String, Family> families,
                      Map<String, Set<String>> unattestedRoots,
-                     Set<String> replacing, Set<String> slotNamed,
-                     Set<String> unpairedNamed, Set<String> aliasingNamed,
-                     List<GapRow> gaps) {
+                     Set<String> replacing, List<GapRow> gaps) {
         this.composer = composer;
         this.corpus = corpus;
-        this.anchor = anchor;
         this.arms = arms;
         this.lowering = lowering;
         this.families = families;
         this.unattestedRoots = unattestedRoots;
         this.replacing = replacing;
-        this.slotNamed = slotNamed;
-        this.unpairedNamed = unpairedNamed;
-        this.aliasingNamed = aliasingNamed;
         this.gaps = gaps;
     }
 
@@ -536,7 +531,7 @@ final class ComposedFamilies {
                                 List<String> nestedStated,
                                 Set<String> closedProducers, int depth) {
         List<GapRow> local = new ArrayList<GapRow>();
-        SmtLowering.SessionJoin rows = composer.join(session);
+        SmtLowering.SessionJoin rows = corpus.join(session);
         lowering.begin(session, rows, corpus.expressions(session));
         List<String> conjuncts = new ArrayList<String>();
         boolean stated = true;
@@ -691,11 +686,8 @@ final class ComposedFamilies {
      * move a root inside it.
      */
     private void noteUnattested(Arms.Arm arm, String detail) {
-        Set<String> held = unattestedRoots.get(arm.slotId());
-        if (held == null) {
-            held = new LinkedHashSet<String>();
-            unattestedRoots.put(arm.slotId(), held);
-        }
+        Set<String> held = unattestedRoots.computeIfAbsent(arm.slotId(),
+                slot -> new LinkedHashSet<String>());
         SessionReader reader = corpus.session(arm.sessionId());
         JsonObject expression = reader == null ? null
                 : reader.expressions().expression(arm.expressionRef());
@@ -750,12 +742,7 @@ final class ComposedFamilies {
 
     private static <T> void add(Map<String, List<T>> index, String key,
                                 T value) {
-        List<T> held = index.get(key);
-        if (held == null) {
-            held = new ArrayList<T>();
-            index.put(key, held);
-        }
-        held.add(value);
+        index.computeIfAbsent(key, held -> new ArrayList<T>()).add(value);
     }
 
     /**
@@ -946,7 +933,7 @@ final class ComposedFamilies {
                             + "its session's table does not hold");
             return null;
         }
-        lowering.begin(session, composer.join(session),
+        lowering.begin(session, corpus.join(session),
                 reader.expressions());
         Term value = lowering.dispatch(expression, null, origin);
         List<String> refused = new ArrayList<String>(
