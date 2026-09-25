@@ -21,55 +21,37 @@ import java.util.Set;
 import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.integralLiteral;
 
 /**
- * What a composed, solved query supports -- and what it refuses to say.
+ * What a composed, solved query supports, and what it refuses to say.
  *
- * <p>There is no VALIDATE stage behind this (owner ruling): the composed
- * query and z3's verdicts on it ARE the deliverable, so the policy has to
- * be exact about what each verdict does and does not license.</p>
+ * <p>There is no VALIDATE stage: the query and z3's verdicts ARE the
+ * deliverable, so each claim kind states exactly what licenses it.</p>
  *
  * <ul>
- *   <li><b>MARKER_FLIPPED</b> -- a declared root moved inside its declared
- *       domain reaches the fatal arm.  The polarity is what makes it a
- *       finding: ordinal 0, the run as it happened, must be unsat.</li>
- *   <li><b>CLOCK_SKEW</b> -- the fatal arm is reached with no DECLARED root
- *       moved, and only because a clock cell may sit elsewhere: pinning
- *       every cell to what the recording read makes it unsat.  WHICH cells
- *       is answered by pinning them back one at a time
- *       ({@link #leastClocks}), and the witness published is the query
- *       under every pin that could be kept, so its moved roots ({@link
- *       Claim#movedRoots}, read in {@link #movedRoots}) are the cells the
- *       witness needs and not the ones z3 moved for free.  A clock is not
- *       a root a valuation pins, so the model is the only statement of
- *       where it sat.  A MARKER moved is
- *       MARKER_FLIPPED and is asked first -- {@link #mechanism} names the
- *       narrowest mechanism the evidence supports, and a clock beside a
- *       moved marker is not what made the difference.  Where the clock pins
- *       are what refute the recorded valuation, a moved root is asked under
- *       those same pins: it is a finding only if it reaches the fatal arm
- *       with every clock where the recording read it, and only when none
- *       does is the clock the mechanism.</li>
- *   <li><b>MESSAGE_PAIRING_FLIPPED</b> -- a fatal-observed path of an
- *       EXPLORED session is satisfiable at the recorded roots through
- *       attested arms, while the seed session's own disjunct is not: the
- *       pairing, not a root, is what differs.</li>
- *   <li><b>RECORDED_FAILURE_EXPLAINED</b> -- the seed session observed the
- *       fatal arm and the composition reproduces it with nothing moved,
- *       every flipped valuation being decided and unsat.</li>
- *   <li><b>NO_SUPPORTED_WITNESS</b> -- everything else, including a
- *       declared occurrence no session reached.  That is an answer, not an
- *       exception.</li>
+ *   <li><b>MARKER_FLIPPED</b> -- a declared root moved inside its domain
+ *       reaches the fatal arm, and ordinal 0 (the run as it happened) is
+ *       unsat.</li>
+ *   <li><b>CLOCK_SKEW</b> -- no declared root moved; pinning every clock
+ *       cell to its recorded reading makes the query unsat.  The witness is
+ *       asked under every pin it can keep ({@link #leastClocks}), so {@link
+ *       Claim#movedRoots} ({@link #movedRoots}) names only the cells it
+ *       needs.  A moved marker is asked first ({@link #mechanism}); where
+ *       the clock pins refute the recorded valuation, a moved root must
+ *       reach the fatal arm under those same pins.</li>
+ *   <li><b>MESSAGE_PAIRING_FLIPPED</b> -- an explored session's fatal path
+ *       is sat at the recorded roots through attested arms while the seed's
+ *       own disjunct is not.</li>
+ *   <li><b>RECORDED_FAILURE_EXPLAINED</b> -- the seed observed the fatal arm
+ *       and the composition reproduces it with nothing moved, every flipped
+ *       valuation decided and unsat.</li>
+ *   <li><b>NO_SUPPORTED_WITNESS</b> -- everything else, including an
+ *       occurrence no session reached; an answer, not an exception.</li>
  * </ul>
  *
- * <p>Two refusals ride on top.  A formula satisfiable as the run happened
- * -- every declared root at its recorded value, every clock at its reading,
- * every path on the pairing its own run had -- on a session whose recording
- * took the HEALTHY arm, is the blocking alarm
- * FORMULA_SAT_AT_RECORDED_VALUATION -- the
- * enumeration continues past it, so a polarity-decided witness is still
- * found and reported beside it.  And a witness that moves a root occurring
- * inside an UNATTESTED arm is refused: that arm has no producer path
- * condition behind it, so nothing says the delivery would survive the
- * move.</p>
+ * <p>Two refusals ride on top: a formula sat as the run happened (recorded
+ * roots, clocks and pairings) on a session that took the HEALTHY arm raises
+ * the blocking FORMULA_SAT_AT_RECORDED_VALUATION, and enumeration continues
+ * past it; a witness moving a root inside an UNATTESTED arm is refused,
+ * since no producer path condition says the delivery survives the move.</p>
  */
 public final class ClaimPolicy {
 
@@ -92,23 +74,18 @@ public final class ClaimPolicy {
         }
 
         /**
-         * What this model was asked with held at the recording, beside the
-         * valuation: the clock cells the witness does not need ({@link
-         * #leastClocks}), and where the recording decides the arm, every
-         * path's own pairing too.  Part of the question the published
-         * model answers, so the artifact states them.
+         * What this model was asked with held at the recording beside the
+         * valuation: unneeded clock cells ({@link #leastClocks}) and, where
+         * the recording decides the arm, every path's own pairing.
          */
         public List<String> pinned() {
             return pinned;
         }
 
         /**
-         * Arm selector -> the delivery this model rested on.
-         *
-         * <p>Only where the model set the selector: a family is a case
-         * split with exactly-one over its arms, so a sat model names one
-         * arm per family it reached and nothing for the families the
-         * selected path did not open.</p>
+        /**
+         * Arm selector -> the delivery this model rested on; only families
+         * the selected path opened have an entry (exactly-one per family).
          */
         public Map<String, ComposedFamilies.ArmChoice> selectedArms() {
             return arms;
@@ -161,11 +138,8 @@ public final class ClaimPolicy {
     public static Decision decide(Composer.Composition composition,
                                   Z3 solver) {
         Decision decision = read(composition, solver);
-        // AFTER the asks, over all of them: a solver error is not a verdict
-        // it answered with, it is the solver saying it could not read the
-        // query -- so the claim read off the other answers is a claim about
-        // a formula that was never asked, and the composition refuses by
-        // name instead of publishing it.
+        // After every ask: a solver error means some query was never read,
+        // so the claim over it is refused by name.
         List<String> errors = solver.errors();
         if (errors.isEmpty()) return decision;
         List<GapRow> gaps = new ArrayList<GapRow>(decision.claim().gaps());
@@ -189,8 +163,7 @@ public final class ClaimPolicy {
         List<GapRow> gaps = new ArrayList<GapRow>(composition.gaps());
         List<Outcome> outcomes = new ArrayList<Outcome>();
         if (composition.disjuncts().isEmpty()) {
-            // The declared occurrence is the anchor, always; one no session
-            // reached is a claim about the corpus, never an exception.
+            // An occurrence no session reached is a claim about the corpus.
             return new Decision(Claim.of(ClaimKind.NO_SUPPORTED_WITNESS, 0,
                     Collections.<String, String>emptyMap(), false, gaps),
                     outcomes);
@@ -202,23 +175,12 @@ public final class ClaimPolicy {
         }
         Outcome recorded = outcomes.isEmpty() ? null : outcomes.get(0);
 
-        // A PATH IS A QUESTION, NOT A CONTRADICTION.  Asked of each
-        // disjunct on its own, with every root FREE: unsat here says
-        // nothing about the roots, because there was no world of the
-        // formula to put them in.  The one that shipped for two rounds was
-        // pi_p carrying the anchor decision's recorded polarity beside
-        // phi_p's complement of it (Composer, rule P1), and it is exactly
-        // the shape no other check could see: every valuation came back
-        // unsat, the claim read that as "the recording decides the arm",
-        // and z3's core named only path_fatal__* and fatal_target.
+        // Each disjunct asked alone with every root free: unsat there is a
+        // self-contradictory path, not a statement about the roots.
         selfContradictory(composition, solver, gaps);
 
-        // A valuation the solver did not decide is NAMED, and it blocks.
-        // Neither a witness nor a refutation is closed over it, and the
-        // manifest used to carry it as a bare `state=unknown` with nothing
-        // to route: 17960's moved valuation sat there for 141 s and came
-        // back "(incomplete quantifiers)", which says the fragment the
-        // lowering wrote, not anything about the recording.
+        // An undecided valuation is named and blocks: neither a witness nor
+        // a refutation is closed over it.
         for (Outcome outcome : outcomes) {
             if (outcome.answer().decided()) continue;
             String reason = outcome.answer().reason();
@@ -235,29 +197,12 @@ public final class ClaimPolicy {
                             ? "it stated no reason" : reason)));
         }
 
-        // The alarm: the run as it happened reaches the fatal arm on a path
-        // whose own recording took the healthy one.
-        //
-        // THE RUN AS IT HAPPENED is more than the recorded roots.  No
-        // valuation pins a clock -- it is free in every valuation including
-        // ordinal 0 -- and no valuation pins a pairing: a family offers a
-        // read or an attach every attested delivery of its slot.  Either
-        // makes the alarm's premise true of every witness that moves one.
-        // So the recorded valuation is asked once more with EVERY clock at
-        // the instant its session read and every path held to the pairing
-        // its own run had (Composition#recordedPairings); on a corpus with
-        // neither nothing is asked, so nothing else changes.
-        //
-        // THE SAME ANSWER IS WHAT SAYS THE RECORDING DECIDES THE ARM, so it
-        // is asked ONCE, here, and read by the alarm below, by loop 1, by
-        // branch 2 and by #mechanism.  Unsat while the free valuation is
-        // sat: a clock or a pairing is what reaches the fatal arm at the
-        // recorded roots, and that pinned refutation is the polarity every
-        // moved root is judged by (loop 1) -- hdfs-17967 path B's heartbeat
-        // reply fault is a finding only with the proxy's own pairing held.
-        // Which of the two it is, is asked of the clocks alone: they name
-        // CLOCK_SKEW, and the recorded outcome published moves only the
-        // cells the clock witness needs (#leastClocks).
+        // The run as it happened pins every clock to its reading and every
+        // path to its own pairing (Composition#recordedPairings), not just
+        // the roots: no valuation pins either.  Asked ONCE here; the answer
+        // is read by the alarm, loop 1, branch 2 and #mechanism.  Unsat while
+        // the free valuation is sat means a clock or a pairing reaches the
+        // fatal arm; asking the clocks alone tells which (CLOCK_SKEW).
         List<String> cells = clockCellsRead(composition);
         List<String> asHappened = new ArrayList<String>(pins(composition,
                 cells));
@@ -289,39 +234,16 @@ public final class ClaimPolicy {
                             + "took the healthy arm"));
         }
 
-        // POLARITY DECIDES ONLY WHEN A VALUATION IS WHY.  "The run as it
-        // happened does not reach the fatal arm" is a statement about the
-        // recorded ROOTS, so the refutation has to rest on them: an unsat
-        // whose core names no valuation assertion refuted the path's own
-        // conjunction and would have refuted it under every valuation
-        // there is.  11741 campaign #4 reported polarityDecides=true off a
-        // core of path_fatal__0..6 + fatal_target, which is a statement
-        // about the composition and not about the recording; 17960's
-        // core names valuation__M_Z_field_SRC_... and still decides.
+        // Polarity decides only when the unsat core names a valuation pin;
+        // otherwise the path refuted itself under every valuation.
         boolean polarityDecides = recorded != null
                 && recorded.answer().unsat()
                 && namesAValuation(recorded.answer().core());
 
-        // 1. A declared root moved inside its domain.
-        //
-        // Polarity is a CONDITION on this claim and not a field beside it.
-        // "These controls plus this rotation reach the failure" says nothing
-        // unless the run as it happened does NOT reach it: a formula that is
-        // satisfiable at the recorded valuation was satisfiable all along,
-        // and the rotation explained nothing about the difference.
-        //
-        //
-        // ASKED AS THE RUN HAPPENED WHEN THE RECORDING DECIDES THE ARM.
-        // There the free recorded valuation is sat for any root at all, so
-        // polarity is the pinned refutation above, and a moved root is a
-        // finding only if it reaches the fatal arm with every clock where
-        // the recording read it and every path on its own pairing -- the
-        // question asked here, per moved valuation that is sat at all.
-        // Nothing about time or pairing is then part of the witness.
-        // hdfs-17899's trees carry 11741's expiry check, so a key goes stale
-        // there only through a failed RPC; the clock witness this loop used
-        // to step aside for moved one node's clock hours past another's
-        // inside one JVM, and it shadowed every fault witness.
+        // 1. A declared root moved inside its domain; polarity (ordinal 0
+        // unsat) is a CONDITION on the claim.  When the recording decides
+        // the arm, a moved root must reach the fatal arm with clocks and
+        // pairings held as recorded, so neither is part of the witness.
         if (recordingDecides) {
             List<String> held = asHappened;
             for (int index = 0; index < outcomes.size(); index++) {
@@ -359,8 +281,7 @@ public final class ClaimPolicy {
                 if (!found.answer().sat() || found.selected() == null) {
                     continue;
                 }
-                // The witness under every clock pin it can keep: what it
-                // publishes moved is what it needs, not what z3 moved free.
+                // Publish the witness under every clock pin it can keep.
                 Outcome outcome = leastClocks(composition, solver, found,
                         cells);
                 outcomes.set(outcomes.indexOf(found), outcome);
@@ -375,10 +296,8 @@ public final class ClaimPolicy {
                                     + "witness"));
                     continue;
                 }
-                // This valuation MOVED a declared root, which is
-                // MARKER_FLIPPED's own evidence, so #mechanism answers with
-                // that or with the narrower slot it also replaced -- never
-                // with NO_SUPPORTED_WITNESS.
+                // A moved root: #mechanism answers MARKER_FLIPPED or a
+                // narrower replaced slot, never NO_SUPPORTED_WITNESS.
                 ClaimKind moved = mechanism(composition, solver, outcome,
                         outcomes, clockDriven);
                 if (!polarityDecides) {
@@ -399,10 +318,7 @@ public final class ClaimPolicy {
                 continue;
             }
             if (!outcome.valuation().moved().isEmpty()) continue;
-            // The witness that moves nothing: its mechanism is the clocks
-            // it needs or the slot it replaces.  RECORDED_FAILURE_EXPLAINED
-            // is not this branch's -- the recording's own failure is asked
-            // below, with the polarity of the flips.
+            // RECORDED_FAILURE_EXPLAINED is asked below, with the flips.
             ClaimKind still = mechanism(composition, solver, outcome,
                     outcomes, clockDriven);
             if (still != ClaimKind.CLOCK_SKEW
@@ -410,15 +326,9 @@ public final class ClaimPolicy {
                     && still != ClaimKind.MESSAGE_PAIRING_FLIPPED) {
                 continue;
             }
-            // A CLOCK or a PAIRING the recording decides carries its OWN
-            // polarity and this is the rule that says so (class doc:
-            // "pinning every cell to what its session read makes it
-            // unsat"; the same for the pairing each run had).  Asking
-            // `recorded.answer().unsat()` of it asks a different question --
-            // whether the fatal arm is reached at the recorded ROOTS with
-            // the clocks and pairings already free -- and whenever one of
-            // them does the work the answer is "sat", so the claim could
-            // never be published: CLOCK_SKEW never was, in 52+ manifests.
+            // A clock or pairing the recording decides carries its own
+            // polarity (recordingDecides); recorded.answer().unsat() asks
+            // with them free and so could never publish CLOCK_SKEW.
             if (!recordingDecides && !polarityDecides) {
                 undecidedPolarity(gaps, recorded, still);
                 break;
@@ -447,13 +357,8 @@ public final class ClaimPolicy {
             }
             if (!seed && attestedArms(composition, recorded)
                     && seedDisjunctUnsat(composition, solver)) {
-                // A path of an EXPLORED session reaches the fatal arm at
-                // the recorded roots while the seed's own disjunct does
-                // not.  WHICH mechanism differs is not stated by that
-                // fact: it is the pin tests inside #mechanism, and where
-                // neither fires nothing has been established -- the claim
-                // this branch used to publish named a wire pairing over a
-                // composition with no wire family at all.
+                // Which mechanism differs is #mechanism's pin tests; if
+                // none fires, nothing has been established.
                 ClaimKind kind = mechanism(composition, solver, recorded,
                         outcomes, clockDriven);
                 if (kind != ClaimKind.NO_SUPPORTED_WITNESS) {
@@ -480,9 +385,7 @@ public final class ClaimPolicy {
                 gaps), outcomes);
     }
 
-    /**
-     * The label every valuation pin carries ({@code Composer}'s spelling).
-     */
+    /** The label every valuation pin carries ({@code Composer}'s spelling). */
     private static final String VALUATION_LABEL = "valuation__";
 
     /** Whether one unsat core rests on a valuation pin at all. */
@@ -496,34 +399,19 @@ public final class ClaimPolicy {
         return false;
     }
 
-    /**
-     * Every path whose OWN conjunction is unsatisfiable, named.
-     *
-     * <p>One solver run per disjunct, with its selector forced and no
-     * valuation assertion at all.  BLOCKING, because a composition that
-     * refutes its own paths answers every question about every root the
-     * same way and states nothing: the claim it publishes is about the
-     * formula it built.</p>
-     */
-    /**
-     * The budget one self-refutation run gets: one minute, long enough to
-     * decide a path and short enough to scan every one.
-     */
+    /** Budget of one self-refutation run: decides a path, scans them all. */
     static final long SELF_CHECK_BUDGET_MS = 60000L;
 
+    /**
+     * Names every path whose OWN conjunction is unsat (selector forced, no
+     * valuation): such a path answers every root question the same way.
+     */
     private static void selfContradictory(Composer.Composition composition,
                                           Z3 solver, List<GapRow> gaps) {
         int inert = 0;
         int undecided = 0;
-        // A SANITY CHECK IS NOT THE WITNESS SEARCH, so it does not get the
-        // witness search's budget.  This is one run per disjunct and the
-        // composition's own solver carries `solver_timeout_ms`, which on
-        // hdfs-11741 is thirty minutes: 145 disjuncts against that bound is
-        // three days of worst case for a question whose undecided answer is
-        // already harmless.  `!unsat()` continues, so a run that does not
-        // finish leaves the path in the disjunction, which is the safe
-        // direction -- the only cost is that a genuinely inert path is not
-        // named.  Campaign #8 spent over an hour here.
+        // A sanity check, not the witness search: its own short budget.  An
+        // undecided run leaves the path in the disjunction (safe direction).
         for (Composer.Disjunct disjunct : composition.disjuncts()) {
             List<String> forced = new ArrayList<String>();
             forced.add("(assert (! " + disjunct.selector()
@@ -535,14 +423,8 @@ public final class ClaimPolicy {
             if (!answer.decided()) undecided++;
             if (!answer.unsat()) continue;
             inert++;
-            // DIAGNOSTIC per path, because one such path is a statement
-            // about THAT path: no world of this corpus reaches the fatal
-            // arm along it, which may be a fact about the corpus and not a
-            // defect -- 17960's third path is fatalObserved=false and its
-            // container joins refute the fatal read whatever the marker
-            // is, while the claim is found on the other two.  What is NOT
-            // allowed is a claim whose POLARITY rests on such a
-            // refutation, and that is asked separately (#namesAValuation).
+            // DIAGNOSTIC per path (may be a corpus fact); a claim whose
+            // polarity rests on it is refused separately (#namesAValuation).
             gaps.add(GapRow.of(disjunct.path().sessionId,
                     GapKind.PATH_SELF_CONTRADICTORY, GapClass.DIAGNOSTIC,
                     disjunct.path().pathId,
@@ -553,11 +435,7 @@ public final class ClaimPolicy {
                             + answer.core()));
         }
         if (undecided > 0) {
-            // A BUDGET THAT DROPS A QUESTION SAYS SO.  These paths were not
-            // shown to be satisfiable; the scan simply ran out of time on
-            // them and left them in the disjunction, which is the safe
-            // direction but not a silent one -- a reader comparing two runs
-            // must be able to see that this one asked less.
+            // A budget that drops a question says so: runs stay comparable.
             gaps.add(GapRow.of(Composer.COMPOSITION,
                     GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                     "self-check budget " + SELF_CHECK_BUDGET_MS + "ms",
@@ -567,11 +445,7 @@ public final class ClaimPolicy {
                             + "disjunction unexamined"));
         }
         if (inert > 0 && inert == composition.disjuncts().size()) {
-            // EVERY path inert: the disjunction is false in every world of
-            // the corpus, so the composition answers every question about
-            // every root the same way and states nothing at all.  That is
-            // the shape that shipped for two rounds on hdfs-11741 and the
-            // one no other check could see.
+            // Every path inert: the composition is false in every world.
             gaps.add(GapRow.of(Composer.COMPOSITION,
                     GapKind.PATH_SELF_CONTRADICTORY, GapClass.BLOCKING,
                     composition.anchor().render(),
@@ -584,14 +458,9 @@ public final class ClaimPolicy {
     }
 
     /**
-     * A mechanism the formula shows and the recording does not decide.
-     *
-     * <p>Named rather than published as a finding: the run reached the fatal
-     * arm at the recorded valuation too, so what the moved quantity explains
-     * is not the difference between failing and not failing.  The alarm is
-     * the same one a healthy-observed recorded-valuation model raises, and it
-     * is raised here as well for a fatal-observed one, because the question
-     * it asks -- "what does this witness add?" -- is the same.</p>
+     * A mechanism the formula shows but the recording does not decide: the
+     * run reached the fatal arm at the recorded valuation too, so it is
+     * raised as FORMULA_SAT_AT_RECORDED_VALUATION, not published.
      */
     private static void undecidedPolarity(List<GapRow> gaps,
                                           Outcome recorded, ClaimKind kind) {
@@ -611,36 +480,21 @@ public final class ClaimPolicy {
     }
 
     /**
-     * THE MECHANISM this witness's own EVIDENCE names.
-     *
-     * <p>A findingKind names a mechanism, so a claim may name one only
-     * where the evidence for that mechanism is in this composition.  One
-     * routine asks, in the order of how narrow the claim is, and there is
-     * no parameter a caller can hand it to name a mechanism the witness
-     * does not show:</p>
+     * The mechanism this witness's own evidence names, narrowest first; no
+     * caller can make it name one the witness does not show.
      *
      * <ul>
-     *   <li>STATE_PAIRING_FLIPPED -- pin the versions the selected path's
-     *       reads OBSERVED and the query is unsat: the witness needs a
-     *       different eligible attested writer, a REPLACED STATE SLOT.</li>
-     *   <li>MESSAGE_PAIRING_FLIPPED -- the same for the values its attaches
-     *       ARRIVED at: a REPLACED WIRE SLOT.  Asked second because a
-     *       witness that needs both is about the interleaving, and the wire
-     *       pairing it also happens to use is not what makes it one.</li>
-     *   <li>MARKER_FLIPPED -- the valuation MOVED a declared root inside
-     *       the domain the case declared.</li>
-     *   <li>CLOCK_SKEW -- nothing moved and the clocks are NECESSARY:
-     *       pinning every clock cell to the instant the recording read
-     *       makes the query unsat (asked once, in {@code read}).</li>
-     *   <li>RECORDED_FAILURE_EXPLAINED -- the SEED path reached the fatal
-     *       arm at the recorded valuation and every valuation that moved a
-     *       root is decided and unsat.  Not a mechanism the checker found:
-     *       the recording is the evidence.</li>
-     *   <li>NO_SUPPORTED_WITNESS -- none of them.  Refused by name, and
-     *       never a default: the branch this replaced handed
-     *       MESSAGE_PAIRING_FLIPPED to a non-seed fatal-observed path whose
-     *       composition had families=0 and no wire row at all, which is
-     *       verification #6's wrong claim.</li>
+     *   <li>STATE_PAIRING_FLIPPED -- pinning the versions the path's reads
+     *       observed makes it unsat: a replaced state slot.</li>
+     *   <li>MESSAGE_PAIRING_FLIPPED -- the same for its attaches' arrivals:
+     *       a replaced wire slot (second: a witness needing both is about
+     *       the interleaving).</li>
+     *   <li>MARKER_FLIPPED -- the valuation moved a declared root.</li>
+     *   <li>CLOCK_SKEW -- nothing moved and the clocks are necessary
+     *       ({@code clockDriven}, asked once in {@code read}).</li>
+     *   <li>RECORDED_FAILURE_EXPLAINED -- the seed path reached the fatal
+     *       arm at ordinal 0 and every moved valuation is decided unsat.</li>
+     *   <li>NO_SUPPORTED_WITNESS -- none of them; never a default.</li>
      * </ul>
      */
     private static ClaimKind mechanism(Composer.Composition composition,
@@ -662,8 +516,7 @@ public final class ClaimPolicy {
         if (!outcome.valuation().moved().isEmpty()) {
             return ClaimKind.MARKER_FLIPPED;
         }
-        // Only the recorded valuation reaches here with nothing moved,
-        // and whether its clocks are necessary was asked once, in #read.
+        // Nothing moved: whether the clocks are necessary was asked in #read.
         if (clockDriven) return ClaimKind.CLOCK_SKEW;
         if (outcome.valuation().ordinal() == 0
                 && outcome.selected().fatalObserved()
@@ -676,29 +529,11 @@ public final class ClaimPolicy {
     }
 
     /**
-     * WHICH ROOTS THIS WITNESS MOVED -- the one statement of it.
-     *
-     * <p>Two halves, and the claim has to carry both or it names a
-     * mechanism it does not exhibit:</p>
-     *
-     * <ul>
-     *   <li>the roots the VALUATION moved, which the enumeration asked for
-     *       and pinned;</li>
-     *   <li>the CLOCK CELLS the model put somewhere other than the instant
-     *       the recording read.  No valuation pins a clock, so it is free
-     *       in every valuation including ordinal 0; where it had to sit is
-     *       stated by the model and by nothing else.  CLOCK_SKEW was
-     *       published with {@code movedRoots {}} -- 11741 campaign #3's
-     *       own claim -- which reads as "nothing had to move" about the
-     *       one finding whose whole content is that something did.</li>
-     * </ul>
-     *
-     * <p>A cell the model did not answer for, or answered at the recorded
-     * instant, is not stated: it is a clock the witness did not need, and
-     * {@link #leastClocks} is what pinned it there.  A
-     * claim that names no witness states no moved roots at all, which is
-     * why the three NO_SUPPORTED_WITNESS returns hand an empty map rather
-     * than asking this.</p>
+     * The roots this witness moved: the valuation's moved roots plus every
+     * clock cell the model placed off its recorded reading (no valuation
+     * pins a clock, so the model is the only statement of it).  Cells at
+     * their reading are ones {@link #leastClocks} pinned as unneeded.
+     * NO_SUPPORTED_WITNESS claims carry an empty map instead.
      */
     private static Map<String, String> movedRoots(
             Composer.Composition composition, Outcome outcome) {
@@ -731,7 +566,6 @@ public final class ClaimPolicy {
                 Collections.<String>emptyList(), false).unsat();
     }
 
-    /** Which disjunct a sat model selected, or null when it named none. */
     /** Which arm of each family this model set the selector of. */
     private static Map<String, ComposedFamilies.ArmChoice> armsOf(
             Composer.Composition composition, Z3.Answer answer) {
@@ -747,6 +581,7 @@ public final class ClaimPolicy {
         return taken;
     }
 
+    /** Which disjunct a sat model selected, or null when it named none. */
     private static Composer.Disjunct selectedOf(
             Composer.Composition composition, Z3.Answer answer) {
         if (!answer.sat()) return null;
@@ -760,12 +595,8 @@ public final class ClaimPolicy {
     }
 
     /**
-     * The moved roots this witness may not move.
-     *
-     * <p>A root inside an arm whose producer ran concretely: the recording
-     * states what that arm delivered and nothing about what it would have
-     * delivered had the root been elsewhere, so a witness resting on the
-     * move is resting on nothing.</p>
+     * Moved roots inside an arm whose producer ran concretely: the recording
+     * says nothing of what it would deliver had the root moved.
      */
     private static Set<String> unattested(Composer.Composition composition,
                                           Outcome outcome) {
@@ -783,15 +614,9 @@ public final class ClaimPolicy {
     }
 
     /**
-     * One valuation asked, with everything a claim reads off a model.
-     *
-     * <p>A sat model must carry back the path selectors, so the claim can
-     * say which disjunct it is about; every family ARM selector, so it can
-     * say which delivery the witness rested on; and every clock cell, so
-     * it can say where the clocks had to sit -- no valuation pins a clock,
-     * so the model is the only statement of it.  A cell is spelled
-     * {@code CLOCK/...#...} and is asked for legally, since
-     * {@code Z3.modelQuery} appends the names raw.</p>
+     * One valuation asked for every path selector, family arm selector and
+     * clock cell (legalized: {@code Z3.modelQuery} appends names raw), so
+     * the claim can read path, delivery and clocks off the model.
      */
     private static Outcome outcome(Composer.Composition composition,
                                    Z3 solver, Composer.Valuation valuation,
@@ -821,17 +646,10 @@ public final class ClaimPolicy {
     }
 
     /**
-     * The witness under every clock pin it can keep.
-     *
-     * <p>All cells at the instants the recording read, first: still
-     * satisfiable means the witness needs no clock, and that is the outcome
-     * published.  Otherwise the cells are pinned back one at a time, in the
-     * recording's order, each kept at its reading while the query stays
-     * satisfiable and left free when it does not: what is left free is a
-     * minimal set of cells without which the fatal arm is not reached, and
-     * its model moves only those -- forward, since a cell's domain floors at
-     * its reading.  z3's unsat core does not answer this: on bug1 it named
-     * all nine pins.</p>
+     * The witness under every clock pin it can keep: all cells pinned first;
+     * otherwise pin back one at a time in recording order, keeping each pin
+     * that stays sat.  The free cells are then a minimal needed set (z3's
+     * unsat core is not: it names every pin).
      */
     private static Outcome leastClocks(Composer.Composition composition,
                                        Z3 solver, Outcome outcome,
@@ -904,12 +722,8 @@ public final class ClaimPolicy {
     }
 
     /**
-     * Whether the seed session's own disjunct is unsat at the recording.
-     *
-     * <p>What separates "the pairing differs" from "the recording failed":
-     * the recording's own path must NOT reach the fatal arm at the recorded
-     * roots, or the claim is about the recording and not about a pairing.
-     * A corpus with no seed session states nothing either way.</p>
+     * Whether the seed's own disjunct is unsat at the recorded roots; else
+     * the claim is about the recording, not a pairing.  No seed: false.
      */
     private static boolean seedDisjunctUnsat(
             Composer.Composition composition, Z3 solver) {

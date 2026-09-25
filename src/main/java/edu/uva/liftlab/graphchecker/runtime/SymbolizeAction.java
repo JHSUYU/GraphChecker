@@ -61,7 +61,6 @@ final class SymbolizeAction {
     final String accessorImplementationMethod;
     /** How the finalizer classified the port that minted this action. */
     final String sourceKind;
-    /** Whether the case declared this read to be a wall clock. */
     final boolean clock;
     /** The static site the plan observed this read at, or "". */
     final String siteId;
@@ -142,8 +141,7 @@ final class SymbolizeAction {
         if (this.fieldPaths.isEmpty() && !this.fieldPath.isEmpty()) {
             this.fieldPaths.add(new ArrayList<>(this.fieldPath));
         }
-        // A port materialized through several hops carries one declared
-        // field per hop.
+        // One declared field per hop of a multi-hop port.
         List<String> pathDeclarations = FieldPathSpec.stringArray(json,
                 "fieldPathDeclarations");
         if (pathDeclarations.size() == this.fieldPath.size()) {
@@ -227,16 +225,7 @@ final class SymbolizeAction {
                 && JavaPrimitiveBoxing.unboxReturn(cell);
     }
 
-    /**
-     * Whether this root is a wall-clock read whose recorded answer is
-     * known.
-     *
-     * <p>The case's {@code symbolic-inputs.jsonl} row declares it
-     * ({@link InputActionCatalog#DECLARED_WALL_CLOCK}); nothing here
-     * matches a callee signature against a list of clock names.  A root
-     * the case declares a clock is exactly the root the composer moves by
-     * an offset from what the recording read.</p>
-     */
+    /** A declared wall-clock read with a recorded answer (moved by offset). */
     boolean declaresWallClockRead() {
         return clock && !recordedPrimitiveValue.isEmpty();
     }
@@ -274,10 +263,7 @@ final class SymbolizeAction {
                 || accessFieldSignature.equals(exactSignature));
     }
 
-    /**
-     * Reconstructs the activation's logical path for an exact getstatic
-     * materialization.
-     */
+    /** The logical path for an exact getstatic materialization. */
     List<String> exactStaticFieldPath(
             String signature, String actualField) {
         String exactSignature = safe(signature);
@@ -316,8 +302,7 @@ final class SymbolizeAction {
                 : SiteId.render(accessorCallerMethod,
                         accessorCallUnitIndex);
         boolean accessSiteConstrained = !accessSites.isEmpty();
-        // Accessor actions name their caller's invoke site in accessSites,
-        // while this hook runs at the implementation's field read.
+        // Accessor actions name the caller's invoke site, not this read.
         if (accessSiteConstrained) {
             String constrainedSite = accessorConstrained
                     ? accessorSiteId
@@ -362,8 +347,7 @@ final class SymbolizeAction {
                 || !accessFieldSignature.equals(safe(signature)))) {
             return false;
         }
-        // A path rooted at a method return/local may not carry a
-        // statically known access owner.
+        // A path rooted at a return/local may have no static owner.
         return !accessOwnerClass.isEmpty()
                 || !safe(signature).isEmpty()
                 && cell.contains(safe(signature));
@@ -373,10 +357,7 @@ final class SymbolizeAction {
         return resolveFieldPathLeafOwner(accessOwner, fieldPath);
     }
 
-    /**
-     * Returns the exact declaration of the scalar/array leaf that will
-     * actually be symbolized.
-     */
+    /** The exact declaration of the leaf that will be symbolized. */
     String exactLeafFieldSignature() {
         return exactLeafFieldSignature(fieldPath);
     }

@@ -3,15 +3,9 @@ package edu.uva.liftlab.graphchecker.contract;
 import java.util.Objects;
 
 /**
- * CONTRACT-SPEC 2: the anchor, as the runtime published it.
- *
- * <p>{@code phiTerm} is published in the FATAL polarity by the runtime and the
- * composer never re-derives it -- two places deciding a polarity is how a
- * composed formula ends up asserting the healthy arm and reporting the bug
- * as unsat.</p>
- *
- * <p>{@code seq} is where the anchor falls in its session's event order: the
- * decisions and reads that precede the fatal read are the ones below it.</p>
+ * CONTRACT-SPEC 2: the anchor, as the runtime published it.  {@code phiTerm}
+ * is in the FATAL polarity and the composer never re-derives it: two places
+ * deciding polarity end up asserting the healthy arm.
  */
 public final class TargetRow {
     private final String sessionId;
@@ -50,7 +44,6 @@ public final class TargetRow {
         return sessionId;
     }
 
-    /** Where the anchor falls in its session's event order. */
     public long seq() {
         return seq;
     }

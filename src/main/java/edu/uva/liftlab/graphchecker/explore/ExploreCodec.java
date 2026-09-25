@@ -21,30 +21,12 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
-/**
- * The JSON of the exploration contract: tasks, obligations, results.
- *
- * <p>The contract gives the row kinds a codec and leaves these to their
- * readers, so this is where the runtime's and the explorer's spelling of an
- * obligation is fixed.  Addresses go through {@link RowCodec}'s own
- * occurrence form, so a task names an occurrence exactly as every row does
- * and the two join on the rendered address.</p>
- *
- * <p>Reading a field of a row is NOT fixed here: the forgiving accessors are
- * {@code smt.JsonFields}', statically imported, because "what does this
- * member hold when the writer left it out" is one answer for every row kind
- * and this file used to hold a third copy of it.</p>
- */
+/** The JSON of the exploration contract: tasks, obligations, results. Addresses
+ *  use {@link RowCodec}'s occurrence form so tasks and rows join on the
+ *  rendered address; field accessors are {@code smt.JsonFields}'. */
 public final class ExploreCodec {
-    /**
-     * The session id a gap raised BY this stage carries.
-     *
-     * <p>{@code GapRow.sessionId} is required, and a gap the exploration
-     * itself raises belongs to no replay -- exactly as a composer-raised one
-     * belongs to none and says "composition".  Every such row used to pass
-     * "", which throws, so the first divergence a wave found killed the
-     * wave instead of being reported by it.</p>
-     */
+    /** Session id of a gap this stage raises ({@code GapRow.sessionId} must be
+     *  non-empty). */
     public static final String EXPLORATION = "exploration";
 
     private ExploreCodec() {
@@ -94,17 +76,10 @@ public final class ExploreCodec {
     }
 
 
-    /**
-     * The WORLD one focus row states: what the replay it drove ran in.
-     *
-     * <p>The one reader of a focus row on this side -- {@link Corpus} indexes
-     * it and {@code runtime.FocusedReplay} enforces it -- so the members are
-     * spelled once here and once there, and never in a third place.  The
-     * flips are the row's OWN flip first (addressed at its {@code
-     * focusedOccurrenceId}, carrying its own obligation id) and then the
-     * ones it inherited, in the order the row lists them: that is the order
-     * a child of this session inherits them in.</p>
-     */
+    /** The world one focus row states; mirrored by {@code
+     *  runtime.FocusedReplay}. Flips: the row's own (at {@code
+     *  focusedOccurrenceId}) first, then inherited ones in row order -- the
+     *  order a child session inherits them in. */
     public static Corpus.World readWorld(JsonObject json) {
         List<Corpus.Flip> flips = new ArrayList<Corpus.Flip>();
         JsonObject own = object(json, "flip");

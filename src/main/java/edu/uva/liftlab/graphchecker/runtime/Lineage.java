@@ -10,22 +10,15 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * The control lineage of the running activation: the chain of scope frames
- * it entered under, each one a {@code (role, api, k)} hop.
+ * it entered under, each one a {@code (role, api, k)} hop (IDENTITY-V2 §1).
  *
- * <p>IDENTITY-V2 §1.  A lineage is a TYPE and the per-hop {@code k}
- * separates two instances of it; {@code k} counts within the PARENT hop, so
- * two callers of one api never share a count and two activations never
- * share an address.  Roles are scope KINDS -- never thread names -- and a
- * hop nothing can attribute is pushed all the same, marked lost, because
- * "the value arrived under a scope this run cannot name" is a fact the row
- * has to state rather than a reason to publish no row.</p>
+ * <p>Roles are scope KINDS, never thread names.  A hop nothing can
+ * attribute is still pushed, marked lost: the row states it.</p>
  *
- * <p>The stack is inheritable so a thread created inside a scope starts
- * where its creator was, exactly as the request scope does; the explicit
- * {@link #capture()} / {@link #restore} pair is what carries a scope to a
- * pool thread that was created before it -- {@code Thread.start}, an
- * executor submission, and the IPC {@code Server.Call} queue, none of which
- * an {@code InheritableThreadLocal} reaches.</p>
+ * <p>The stack is inheritable, so a new thread starts in its creator's
+ * scope; {@link #capture()} / {@link #restore} carry a scope to a pool thread
+ * created earlier (executor, IPC {@code Server.Call} queue), which an
+ * {@code InheritableThreadLocal} does not reach.</p>
  */
 public final class Lineage {
     /** k for the root hops of one (window, node, role, api). */
@@ -41,7 +34,6 @@ public final class Lineage {
 
                 @Override
                 protected List<Frame> childValue(List<Frame> parent) {
-                    // A thread created inside a scope starts inside it.
                     return parent == null ? new ArrayList<Frame>()
                             : new ArrayList<Frame>(parent);
                 }
@@ -54,16 +46,7 @@ public final class Lineage {
     private static final class Frame {
         private final long token;
         private final Role role;
-        /**
-         * The api this hop's {@code k} was counted under, or {@code ""}.
-         *
-         * <p>Kept because {@link #push} counts k per (node, role, api) and
-         * the rendered context is what a replay compares: dn1's
-         * {@code refresh-block-keys} request and its {@code offer-service}
-         * tick are the first root of their own api on that node, so both
-         * rendered {@code Root:CLIENT#1} while being two occurrences
-         * (IDENTITY-V3 §1: the context states what the k counts).</p>
-         */
+        /** The api k was counted under, or "" (IDENTITY-V3 §1). */
         private final String api;
         /** The window index of this hop, which only a ROOT hop carries. */
         private final int k;
@@ -107,31 +90,20 @@ public final class Lineage {
     /**
      * Enters one scope frame and returns the token that leaves it.
      *
-     * <p>{@code k} counts the ROOT hops of one (node, role, api) inside the
-     * recording window, because that k is the only one any address reads
-     * ({@link #rootWindowIndex}, the window index of a
-     * {@link edu.uva.liftlab.graphchecker.contract.CausalContext.Root}).  A
-     * hop entered inside another counts nothing: IDENTITY-V3 SS4 replaced the
-     * rendered lineage list with the causal anchor, so nothing asks a nested
-     * hop which one it is.  A node this run cannot name still gets its hop,
-     * marked lost: the activation ran, and a guessed node is a wrong causal
-     * chain.</p>
+     * <p>{@code k} counts only ROOT hops of one (node, role, api) inside the
+     * window: that is the only k an address reads ({@link #rootWindowIndex},
+     * {@link edu.uva.liftlab.graphchecker.contract.CausalContext.Root}).
+     * Nested hops count nothing (IDENTITY-V3 §4: the anchor replaced the
+     * lineage list).  An unnameable node still gets its hop, marked lost; a
+     * guessed node is a wrong causal chain.</p>
      */
     public static long push(String nodeKey, Role role, String api) {
         return push(nodeKey, role, api, STACK.get().isEmpty(), false);
     }
 
     /**
-     * Enters one ROOT hop, whatever the thread already stands in.
-     *
-     * <p>A daemon tick is started by no message and serves none, so it is
-     * its own root wherever it runs: {@code KeyManager$BlockKeyUpdater} is
-     * constructed on the balancer's {@code main} inside
-     * {@code balance-block#1} and the workload's own two
-     * {@code KEY_MANAGER_TICK} rotations are opened ON {@code main} inside
-     * it, and a nested hop made all three render {@code main}'s
-     * {@code Root:CLIENT#1} -- the request's context on an occurrence no
-     * request started.</p>
+     * Enters one ROOT hop, whatever the thread already stands in: a daemon
+     * tick is its own root, never nested in the request it runs under.
      */
     public static long pushRoot(String nodeKey, Role role, String api) {
         return push(nodeKey, role, api, true, true);
@@ -143,7 +115,6 @@ public final class Lineage {
         String node = Text.safe(nodeKey);
         Role kind = role == null ? Role.UNKNOWN : role;
         String family = Text.safe(api);
-        // k counts within the window: the counter is the window's.
         int window = RecordingWindow.index();
         int k = root
                 ? counter(window + "\n" + node + "\n" + kind.name() + "\n"
@@ -154,10 +125,7 @@ public final class Lineage {
         return token;
     }
 
-    /**
-     * Leaves the frame {@code token} opened, and every frame opened inside
-     * it that a non-local exit left behind.
-     */
+    /** Leaves frame {@code token} and any frame a non-local exit left. */
     public static void pop(long token) {
         List<Frame> stack = STACK.get();
         for (int i = stack.size() - 1; i >= 0; i--) {
@@ -173,20 +141,16 @@ public final class Lineage {
     }
 
     /**
-     * Installs a carried lineage and opens one hop inside it.
-     *
-     * <p>This is the dequeue half of every queue that outlives its
-     * enqueueing thread: the IPC {@code Server.Call} queue, an executor's
-     * work queue, a thread the workload started.  Returns the token that
-     * both closes the hop and restores the thread's own lineage.</p>
+     * Installs a carried lineage and opens one hop inside it: the dequeue
+     * half of every queue that outlives its enqueueing thread.  The token
+     * both closes the hop and restores the thread's own lineage.
      */
     public static long restore(Object carried, String nodeKey, Role role,
                                String api) {
         List<Frame> stack = STACK.get();
         final List<Frame> restored = new ArrayList<Frame>(stack);
         if (carried instanceof Carried && ((Carried) carried).names()) {
-            // Inside a carried lineage the hop is no root, so its node is
-            // counted nowhere: the carried frames name where the work began.
+            // Inside a carried lineage the hop is no root.
             stack.clear();
             stack.addAll(((Carried) carried).frames);
         }
@@ -227,14 +191,7 @@ public final class Lineage {
                 : stack.get(stack.size() - 1).role;
     }
 
-    /**
-     * States which message opened the innermost scope.
-     *
-     * <p>IDENTITY-V3: the causal context of everything inside this scope is
-     * that producer's endpoint, which carries the producer's own occurrence
-     * and where in it the export was -- recursively, all the way back to a
-     * workload action or a tick.</p>
-     */
+    /** States the message that opened this scope: its causal context. */
     public static void anchor(String producerEndpointId, String rpcSite) {
         List<Frame> stack = STACK.get();
         if (stack.isEmpty()) return;
@@ -246,24 +203,11 @@ public final class Lineage {
     /**
      * The producer endpoint of the message that opened this scope, or "".
      *
-     * <p>Searched outwards from the innermost hop and STOPPED at the
-     * innermost root, whose own anchor still counts: a root hop descends
-     * from nothing ({@link #pushRoot}), so a message that opened some
-     * enclosing scope did not open this one.  Reaching past it is the same
-     * bug {@code pushRoot} exists for, one form along: it stopped a tick
-     * inheriting the enclosing request's {@code Root} form and this stops it
-     * inheriting the enclosing request's {@code Anchor} form.  hdfs-11741's
-     * workload drives two {@code KEY_MANAGER_TICK} rotations on {@code main}
-     * inside its {@code balance-block} request, and both rendered {@code
-     * Anchor:a34f4570d766297e@HADOOP_IPC/balance-block} -- the balancer
-     * send's context on two occurrences no message started -- so the four
-     * {@code KeyManager.updateKeys} regions of the second rotation shared an
-     * address with the first's and were dropped from the plan (4 BLOCKING
-     * {@code OCCURRENCE_ADDRESS_SHARED}, PLAN 85 rows to 81, and the
-     * rotation that mints {@code SERIAL_NO + 2} unaddressed).  Two turns of
-     * a tick are told apart by the window index of the root hop, which is
-     * what a {@code Root} context states ({@code
-     * Identity.Hop#STARTED_ROOT}).</p>
+     * <p>Searched outwards and STOPPED at the innermost root (whose own
+     * anchor counts): a root descends from nothing ({@link #pushRoot}), so a
+     * tick inside a request must not inherit the request's {@code Anchor}
+     * form, or two ticks share one address.  Turns of a tick differ by the
+     * root's window index ({@code Identity.Hop#STARTED_ROOT}).</p>
      */
     public static String anchor() {
         Frame anchored = anchored();
@@ -287,14 +231,7 @@ public final class Lineage {
         return null;
     }
 
-    /**
-     * The innermost ROOT hop: the root this scope descends from.
-     *
-     * <p>Innermost rather than outermost, because a root hop is one: a
-     * daemon tick opened inside a request descends from the tick, not from
-     * the request that happened to be in force on the thread that
-     * constructed it ({@link #pushRoot}).</p>
-     */
+    /** The innermost ROOT hop, which this scope descends from. */
     private static Frame root() {
         List<Frame> stack = STACK.get();
         for (int index = stack.size() - 1; index >= 0; index--) {
@@ -312,20 +249,10 @@ public final class Lineage {
     /**
      * The window index of that root, or 0.
      *
-     * <p>A TURN begun before the window is the set-up's: it stands at 0 in
-     * any in-window address, as a frame entered before the window stands at
-     * iteration 0 ({@code Identity}).  Its k counted the turns a daemon loop
-     * took before the window -- as many as the wall clock allowed -- so it
-     * is no window index, and it collides with the window's own turns.
-     * hdfs-11741's dn0 had ticked once before the window and its first tick
-     * inside it was {@code #1} as well.  A replay, slower than the
-     * recording, finished that pre-window turn only after the window opened,
-     * and its heartbeat reached the NameNode under the very anchor the
-     * recorded {@code #1}'s heartbeat had.  It carried the key list from
-     * before the window's two rotations, and that TOPOLOGY_DIVERGENCE
-     * (a replacement, BLOCKING) withheld the claim.  A request the workload
-     * opens before its window keeps its k: the workload decides how many it
-     * opens, and a declared target may name it.</p>
+     * <p>A TURN begun before the window stands at 0, as a pre-window frame
+     * stands at iteration 0 ({@code Identity}): its k counted wall-clock
+     * turns and would collide with the window's own turns.  A pre-window
+     * REQUEST keeps its k: the workload decides it.</p>
      */
     public static int rootWindowIndex() {
         Frame root = root();
@@ -337,23 +264,12 @@ public final class Lineage {
     /**
      * The token of that root, or 0: which root hop is running here.
      *
-     * <p>THE lifetime of an execution-index level's counters ({@code
-     * Identity.Level}).  A level counts the events made at each site while it
-     * is the innermost one, and a level with no frame to close it -- the
-     * thread base level, outside every woven method -- would otherwise count
-     * for the whole thread: the 12th {@code Client.call} of the process
-     * rather than the 12th of this request, which is the run-length ordinal
-     * IDENTITY-V3 SS1 forbids.  A root hop is the lifetime, because a root hop
-     * is what an occurrence descends from: the next request is a new root
-     * occurrence and its k starts again.</p>
-     *
-     * <p>Thread-local bookkeeping, published nowhere.  Two replays never
-     * compare tokens; they compare the k a token's counters produced, and
-     * they see the same sequence of root hops on a thread because both
-     * passes open them through the same doors ({@code RuntimeTraceContext}).
-     * A captured lineage carries its frames by reference ({@link #capture}),
-     * so work dequeued on a pool thread counts under the root hop that
-     * created it rather than under the carrier's.</p>
+     * <p>The lifetime of an execution-index level's counters ({@code
+     * Identity.Level}); without it the thread base level counts for the whole
+     * thread, a run-length ordinal IDENTITY-V3 §1 forbids.  Tokens are
+     * thread-local and never published: replays compare the k they produce.
+     * Carried frames are shared by reference ({@link #capture}), so pool work
+     * counts under the root that created it.</p>
      */
     public static long rootToken() {
         Frame root = root();
@@ -367,14 +283,8 @@ public final class Lineage {
     }
 
     /**
-     * Whether the root hop {@code token} is still standing on this thread.
-     *
-     * <p>What tells an ENCLOSING hop from one that has closed, for the
-     * counters an execution-index level files per hop ({@code
-     * Identity.Level#events}).  {@code 0} -- "this thread stands in no root
-     * hop" -- is always standing: it is a state of the thread rather than a
-     * hop, and a hop opened and closed in the middle of it does not end
-     * it.</p>
+     * Whether the root hop {@code token} is still standing on this thread;
+     * {@code 0} (no root hop) is a thread state and always standing.
      */
     public static boolean isOpenRoot(long token) {
         if (token == 0L) return true;

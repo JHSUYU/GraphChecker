@@ -12,20 +12,8 @@ import java.lang.reflect.Modifier;
 import java.util.List;
 
 /**
- * Reflective access to the exact cell a declared input names.
- *
- * <p>Support, not a notion: every method here answers a question about the
- * workload's own heap that the mint and wire mechanisms ask, and none of
- * them decides anything about the replay.  It holds no state, needs nothing
- * back from {@link ConcolicRegionRuntime}, and is the one place a field is
- * resolved from a signature -- so the exactness rule (the one non-static
- * {@code declaringClass#fieldName} whose type descriptor matches) is
- * written once.</p>
- *
- * <p>{@link MissingValue} is its answer for "there is no such cell here",
- * told apart from a cell that holds {@code null}: a declared path that does
- * not resolve and a path whose leaf is null are different facts, and the
- * callers act differently on them.</p>
+ * Stateless reflective access to the exact cell a declared input names.
+ * {@link MissingValue} means "no such cell", distinct from a {@code null}.
  */
 final class FieldAccess {
     private FieldAccess() {
@@ -134,10 +122,8 @@ final class FieldAccess {
     }
 
     /**
-     * The one non-static {@code declaringClass#fieldName} of {@code owner}
-     * whose type descriptor matches, made accessible.  {@code inherited} also
-     * accepts a field the declaring class inherits - which the field-signature
-     * form resolves and an exact VM export must not.
+     * The non-static, descriptor-matching field; {@code inherited} (never for
+     * an exact VM export) also accepts one the declaring class inherits.
      */
     private static Field declaredInstanceField(
             Object owner, String declaringClass, String fieldName,

@@ -21,24 +21,14 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
 /**
- * What ONE recording states at one site the static scope map named
- * {@code DECLARED_SITE}: that the call ran, what it returned, and the
- * receiver it ran on.
+ * What one recording states at a {@code DECLARED_SITE}: that the call ran, what
+ * it returned, and the receiver. The dynamic half of a declared port; the
+ * static half is {@link StaticScopeMap.Declared}, joined by {@link
+ * ConcolicScheduler.SymbolicInputSelection}. Decides nothing.
  *
- * <p>The dynamic half of a declared port, and the whole of it.  The static
- * half -- the cell, the callee, the implementation method, the dependency
- * cell and the type -- is the scope map's {@link StaticScopeMap.Declared},
- * and the two are joined by {@link
- * ConcolicScheduler.SymbolicInputSelection}, the one rule that decides
- * whether the case declared this site at all.  Nothing here decides
- * anything: a capture is published for every declared site the recording
- * entered, whether or not a declaration names it.</p>
- *
- * <p>{@link #ORDINAL} is the port's replay address -- the occurrence's own
- * returns at one site, counted 1, 2, 3 in recorded order.  It counts per
- * (occurrence, site, callee) and never per recorded {@code callId}: the
- * recorder's call id is a per-run event counter, so a port id spelled from
- * it would rename the same root on every run of the same obligation.</p>
+ * <p>{@link #ORDINAL} (the port's replay address) counts per (occurrence, site,
+ * callee) in recorded order, never per {@code callId}: the call id is a per-run
+ * counter and would rename the same root on every run.</p>
  */
 public final class DeclaredSiteCapture {
     /** Region-plan member carrying one occurrence's captures. */
@@ -99,10 +89,7 @@ public final class DeclaredSiteCapture {
         }
     }
 
-    /**
-     * The row one recorded return publishes.  Written by the runtime
-     * planner, which holds the recording, and read back here; the member
-     * names are stated once, in this class, so the two cannot drift.
+    /** The row one recorded return publishes (written by the runtime planner).
      */
     public static Map<String, Object> row(
             String siteId, String declaredCallee, int ordinal,
@@ -156,25 +143,16 @@ public final class DeclaredSiteCapture {
 
     public String declaredCallee() { return declaredCallee; }
 
-    /**
-     * The port one declaration mints at this capture, before the binding
-     * mode {@link ConcolicScheduler#materializationPlan} gives it.
-     *
-     * <p>Every static member is the scope map's and every dynamic one is the
-     * recording's, so two stages holding the two artifacts spell the same
-     * port.  The region is the PLAN's -- the occurrence this capture was
-     * recorded in belongs to that region -- and not the scope map's
-     * {@code regionId}, which names the innermost static region holding the
-     * site and answers a different question.</p>
-     */
+    /** The port one declaration mints at this capture, before {@link
+     *  ConcolicScheduler#materializationPlan} binds it. The region is the
+     *  PLAN's, not the scope map's innermost static {@code regionId}. */
     JsonObject port(RegionInstancePlan plan, StaticScopeMap.Site site) {
         StaticScopeMap.Declared declared = site.declared;
         boolean accessor = StaticScopeMap.ACCESSOR_RETURN.equals(
                 declared.kind);
         String occurrenceId = plan.occurrenceId();
-        // Published identity, spelled from content alone.  The accessor
-        // family names the candidate edge the declaration was read from, as
-        // its ports always have; the call-return family names the site.
+        // Identity from content alone: accessor ports name their candidate
+        // edge, call-return ports the site.
         String key = accessor
                 ? occurrenceId + "\n" + declared.edgeId + "\n" + siteId
                 + "\n" + declaredCallee + "\n" + ordinal
@@ -198,15 +176,9 @@ public final class DeclaredSiteCapture {
         return port;
     }
 
-    /**
-     * The port a CALL_RETURN declaration mints at a site no recording
-     * captured: the static half alone, for an occurrence a replay exposed
-     * (DESIGN4 section 3.3b).  Its id carries no ordinal, so the one action
-     * answers every firing of the site ({@code SymbolizeAction
-     * #acceptsOccurrence}), and it states no observed value.  An accessor
-     * return is ported from the recorded receiver, which such an occurrence
-     * has none of, and is refused by name.
-     */
+    /** A CALL_RETURN port for a site no recording captured (exposed occurrence,
+     *  DESIGN4 section 3.3b): no ordinal, so it answers every firing ({@code
+     *  SymbolizeAction#acceptsOccurrence}); accessor returns are refused. */
     public static JsonObject declaredPort(RegionInstancePlan plan,
                                           StaticScopeMap.Site site) {
         if (StaticScopeMap.ACCESSOR_RETURN.equals(site.declared.kind)) {
@@ -252,11 +224,8 @@ public final class DeclaredSiteCapture {
         port.add("dependencyCells", dependencyCells);
     }
 
-    /**
-     * A structural getter's return.  What the replay presents is the FIELD
-     * the getter reads, at the receiver the call ran on, so the port carries
-     * the field's own declaration and the recorded receiver identity.
-     */
+    /** A getter's return: the port is the field it reads, at the recorded
+     *  receiver. */
     private void accessorPort(JsonObject port, StaticScopeMap.Site site,
                               String caller, String regionId) {
         StaticScopeMap.Declared declared = site.declared;
@@ -277,8 +246,7 @@ public final class DeclaredSiteCapture {
         port.addProperty("authority",
                 "EXACT_RUNTIME_ACCESSOR_RECEIVER_RETURN_V1");
         port.addProperty("accessorOccurrence", ordinal);
-        // The occurrence's own returns at this site are what this port
-        // addresses, so under that bound it is the first of them.
+        // Bounded to this occurrence's returns at the site, it is the first.
         port.addProperty("helperActivationBoundedOccurrence", 1);
         port.addProperty(ROOT_CALL_ID, rootCallId);
         port.addProperty(INVOCATION_ID, invocationId);
@@ -296,10 +264,8 @@ public final class DeclaredSiteCapture {
         JsonArray declarations = new JsonArray();
         declarations.add(site.cell);
         port.add("fieldPathDeclarations", declarations);
-        // The one path this port materializes, as every materialized port
-        // states it: the task row drops it again where it is exactly the
-        // single `fieldPath` (ExecutionTask#compactInputActions), but the
-        // task's own port-set identity is taken over the port as planned.
+        // Kept though ExecutionTask#compactInputActions drops it: the port-set
+        // identity is taken over the port as planned.
         JsonArray paths = new JsonArray();
         JsonArray only = new JsonArray();
         only.add(field.name());
@@ -317,12 +283,9 @@ public final class DeclaredSiteCapture {
         port.addProperty("location", "HEAP_OBJECT_FIELD");
     }
 
-    /**
-     * An external call's return: the local it lands in is the port.  The
-     * one callee the workload declares in its own text, the fault marker
-     * ({@code Debug.makeSymbolicBoolean}), is stamped as such: its
-     * {@code boolean} local is the MARKER root the replay flips.
-     */
+    /** An external call's return: the local it lands in is the port. The fault
+     *  marker ({@code Debug.makeSymbolicBoolean}) is stamped as the MARKER
+     *  root. */
     private static void callReturnPort(JsonObject port,
                                        StaticScopeMap.Site site) {
         String caller = SiteId.methodOf(site.siteId);

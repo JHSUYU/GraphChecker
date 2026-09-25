@@ -11,13 +11,8 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
 /**
- * The one reading of the custom VM's expression IR the Composer and the
- * path-flip Solver share: operator vocabulary, constant payloads, and the
- * literal shapes both encoders must agree on before either lowers a term.
- *
- * <p>Where the two encoders resolve a Java type differently the difference is
- * a parameter, never a second copy: {@code stringTyped} is the caller's own
- * Java-type-to-sort decision.</p>
+ * The one reading of the VM's expression IR: operator vocabulary, constant
+ * payloads, literal shapes and root patterns.
  */
 public final class VmExpressionIr {
 
@@ -37,19 +32,15 @@ public final class VmExpressionIr {
     public static final String EXPRESSION = "expression";
 
     /**
-     * Exact serialization of {@code InstanceSymbolExp}: the VM can only
-     * construct it from an allocated oop and appends that object's positive
-     * symbolic runtime id.  Field roots ({@code M_L_field_*}) and unknown
-     * writer placeholders deliberately do not match.
+     * Exact serialization of {@code InstanceSymbolExp} (allocated oop plus
+     * its positive rid).  Field roots {@code M_L_field_*} must not match.
      */
     private static final Pattern ALLOCATED_INSTANCE_REFERENCE =
             Pattern.compile("^M_L'[^']+'_([1-9][0-9]*)$");
 
     /**
-     * Exact serialization of {@code ArraySymbolExp}.  Like an
-     * {@link #ALLOCATED_INSTANCE_REFERENCE}, this is minted from a concrete
-     * array shadow.  The final number is the array-state version, not another
-     * object identity.
+     * Exact serialization of {@code ArraySymbolExp}; the final number is the
+     * array-state version, not an identity.
      */
     private static final Pattern ALLOCATED_ARRAY_REFERENCE =
             Pattern.compile("^A(?:[ZBCSIJFDL]|\\[)_([1-9][0-9]*)-([0-9]+)$");
@@ -66,11 +57,9 @@ public final class VmExpressionIr {
     }
 
     /**
-     * True when the expression tree already carries symbolic value or exact
-     * consumer provenance.  A consumer boundary around a constant counts:
-     * its producer case and path condition still decide when that constant
-     * reaches the reader.  A structural constant fold with neither a root
-     * nor a boundary does not, and may be minted afresh.
+     * True when the tree carries a symbol, a read-from or a consumer boundary
+     * (even around a constant: its producer still decides when it arrives).
+     * A plain constant fold may be minted afresh.
      */
     public static boolean carriesPropagatedValue(JsonElement expression) {
         if (expression == null || expression.isJsonNull()) return false;
@@ -99,18 +88,10 @@ public final class VmExpressionIr {
     }
 
     /**
-     * True only when the tree names at least one VM symbol root.
-     *
-     * <p>The difference from {@link #carriesPropagatedValue} is the one a
-     * declared source needs.  A field that is only ever written from
-     * constants still reaches its reader wrapped in a {@code ReadFrom} or a
-     * {@code ConsumerBoundary} once a shared-state carrier is installed, so
-     * the looser predicate answers "already propagated" and the mint is
-     * skipped -- which is why an experiment could declare a field symbolic
-     * and still get no root for it.  This one looks through those wrappers
-     * and asks whether anything symbolic is actually inside.  It is the same
-     * rule the {@code CausynthSymbolicSource} hook path applies to its own
-     * pre-carrier read.</p>
+     * True only when the tree names at least one VM symbol root, looking
+     * through {@code ReadFrom}/{@code ConsumerBoundary} wrappers.  A declared
+     * source needs this, not {@link #carriesPropagatedValue}: a
+     * constant-written field arrives wrapped and would never get a root.
      */
     public static boolean carriesSymbolicValue(JsonElement expression) {
         if (expression == null || expression.isJsonNull()) return false;

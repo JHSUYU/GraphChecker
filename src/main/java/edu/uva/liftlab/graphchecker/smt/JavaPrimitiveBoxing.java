@@ -37,13 +37,9 @@ public final class JavaPrimitiveBoxing {
     }
 
     /**
-     * The descriptor of the primitive this WRAPPER boxes, or "".
-     *
-     * <p>Not the wrapper's own descriptor: {@code java.lang.Integer} answers
-     * {@code I}, which is the question an unboxing site asks.  The wrapper's
-     * own descriptor is {@link JavaPrimitiveSmtSemantics#javaTypeDescriptor}
-     * -- one name per question, after the alias that spelled the second one
-     * "primitiveDescriptor" as well.</p>
+     * The descriptor of the primitive this WRAPPER boxes ({@code Integer} ->
+     * {@code I}), or "".  The wrapper's own descriptor is
+     * {@link JavaPrimitiveSmtSemantics#javaTypeDescriptor}.
      */
     public static String primitiveDescriptor(String wrapperType) {
         Primitive primitive = BY_WRAPPER.get(

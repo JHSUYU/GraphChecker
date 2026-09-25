@@ -10,32 +10,18 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * Accessors for OPTIONAL fields inside an already admitted row.
- *
- * <p>Optional means "the row may state it or state nothing": an absent
- * member and an explicit null are a stated absence, and the caller's
- * fallback is what the contract says such a row means.  A member that IS
- * there but does not hold the kind of value the field is -- an object where
- * a string belongs, a string where a number belongs, a number too wide for
- * its field -- is neither of those.  The ROWS ARE THE AUTHORITY: such a
- * member is a row-invariant violation, so it is refused by name here and
- * never read as the fallback, which is how a malformed recording used to
- * reach the composer as a default it never wrote.  A refusal raised while a
- * session is being read lands as {@code SESSION_INCOMPLETE} (BLOCKING) with
- * the file and the reason ({@code contract.SessionReader.read}).</p>
+ * Accessors for OPTIONAL fields inside an already admitted row.  Absent or
+ * null is a stated absence and yields the caller's fallback; a member of the
+ * wrong kind is a row-invariant violation, refused by name and never read
+ * as the fallback (it surfaces as {@code SESSION_INCOMPLETE} via
+ * {@code contract.SessionReader.read}).
  */
 public final class JsonFields {
     /**
-     * The one writer every artifact row is serialized through.
-     *
-     * <p>HTML escaping is off because a Soot signature starts with {@code <}:
-     * escaping it to {@code \u003c} would change every recorded method name
-     * and every artifact digest that pins one. Nulls are written because a
-     * row member whose value is null is a stated absence a reader decodes,
-     * not a member that was never there -- dropping it silently changes
-     * {@code "requiredOutcome":null} into no requiredOutcome at all. A caller
-     * that means "omit it" drops the pair itself; see
-     * {@link #objectWithoutNulls}.</p>
+     * The one writer every artifact row is serialized through.  HTML
+     * escaping is off (Soot signatures start with {@code <}; escaping would
+     * change digests).  Nulls are written: a null member is a stated absence;
+     * to omit, use {@link #objectWithoutNulls}.
      */
     public static final Gson WRITER = new GsonBuilder()
             .disableHtmlEscaping().serializeNulls().create();
@@ -43,13 +29,7 @@ public final class JsonFields {
     private JsonFields() {
     }
 
-    /**
-     * The one refusal every accessor here raises.
-     *
-     * <p>Named with the field, the value as written and what the field is,
-     * because the reader that catches it can only say as much about the row
-     * as this message does.</p>
-     */
+    /** The one refusal every accessor raises: field, value, expected kind. */
     private static IllegalArgumentException malformed(
             String field, JsonElement value, String expected,
             RuntimeException cause) {
@@ -61,10 +41,8 @@ public final class JsonFields {
     }
 
     /**
-     * {@code {k:v, ...}} from alternating keys and values, dropping any pair
-     * whose value is null before it reaches {@link #WRITER}: this caller
-     * means "omit it", so no null ever reaches the writer that would have
-     * written one.
+     * {@code {k:v, ...}} from alternating keys and values, omitting pairs
+     * whose value is null.
      */
     public static String objectWithoutNulls(Object... fields) {
         Map<String, Object> row = new LinkedHashMap<>();
@@ -192,9 +170,7 @@ public final class JsonFields {
         return value == null ? "" : value.trim();
     }
 
-    /** {@code value}, or "" when null.  Unlike {@link #trimmed} it keeps
-     * surrounding whitespace, so an identity read back off the wire is the
-     * one that was written. */
+    /** {@code value}, or "" when null; untrimmed, unlike {@link #trimmed}. */
     public static String nonNull(String value) {
         return value == null ? "" : value;
     }

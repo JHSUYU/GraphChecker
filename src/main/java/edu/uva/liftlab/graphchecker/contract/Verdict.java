@@ -9,12 +9,9 @@ public enum Verdict {
     /** No valuation of the declared roots satisfies the obligation. */
     UNSAT,
     /**
-     * A focused replay took the flipped arm and published its rows.
-     *
-     * <p>ADMITTED, never "validated": a focused replay exists to COLLECT the
-     * arms the seed does not contain, and confirms nothing.  What a flip,
-     * a witness or a bug rests on is the composed query and z3's verdict on
-     * it, and no replay is evidence for or against one.</p>
+     * A focused replay took the flipped arm and published its rows.  Never
+     * "validated": replays collect arms; only z3 on the composed query
+     * decides a witness.
      */
     ADMITTED,
     /** The replay did not reproduce the focused region's own prefix. */

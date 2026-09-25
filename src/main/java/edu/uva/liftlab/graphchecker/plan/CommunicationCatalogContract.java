@@ -5,17 +5,11 @@ import java.util.UUID;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.nonNull;
 
-/**
- * The static catalog of communication call sites, their typed ports and the
- * gaps discovery could not resolve.  A region is coarse and a synchronous
- * call does not split it, so a call site is one typed event site inside a
- * region template and this contract says nothing about fragment identity.
- *
- * <p>{@link #EXCHANGE_SITE_KEY} is the pure static identity of one site pair
- * and never a runtime exchange: it is the join column the runtime stamps
- * provenance against, not a second pairing protocol.  A value that crossed
- * the boundary is named by the VM's own {@code VALUE_HANDOFF} edge.</p>
- */
+/** Static catalog of communication call sites, their typed ports and the gaps
+ *  discovery could not resolve. A call site is one typed event site inside a
+ *  coarse region; this says nothing about fragment identity. {@link
+ *  #EXCHANGE_SITE_KEY} is the static identity of a site pair (the join column
+ *  for runtime provenance), never a runtime exchange. */
 public final class CommunicationCatalogContract {
 
     /** Bump whenever a field is added, removed or re-interpreted. */
@@ -24,41 +18,29 @@ public final class CommunicationCatalogContract {
     public static final String SCHEMA_VERSION_FIELD = "schemaVersion";
     public static final String KIND = "kind";
 
-    /** Stable site id of the client call: {@code <method>#u<unitIndex>}. */
     public static final String CALL_SITE_ID = "callSiteId";
     public static final String EXCHANGE_SITE_KEY = "exchangeSiteKey";
     public static final String TRANSPORT = "transport";
     public static final String CLIENT_METHOD = "clientMethod";
     public static final String DECLARED_CALLEE = "declaredCallee";
-    /** Consumer-side method of the declared wire flow. */
     public static final String SERVER_ENTRY_METHOD = "serverEntryMethod";
     public static final String PORT_ID = "portId";
-    /** REQUEST or RESPONSE. */
     public static final String PORT_DIRECTION = "direction";
     public static final String PORT_NAME = "name";
     public static final String PORT_JAVA_TYPE = "javaType";
-    /**
-     * Exact leaf path the runtime handoff broker addresses a component by.
-     * Distinct from {@link #PORT_NAME}: wire adapters may namespace a leaf.
-     */
+    /** Leaf path the handoff broker addresses (may differ from the name). */
     public static final String PORT_HANDOFF_LEAF_PATH = "handoffLeafPath";
-    /** Capture kind of a port read at a call site rather than out of the
-     *  heap; see {@link #PORT_ARGUMENT_INDEX}. */
+    /** Capture kind of a call-site port; see {@link #PORT_ARGUMENT_INDEX}. */
     public static final String PORT_OUTPUT_CAPTURE_KIND =
             "outputCaptureKind";
     public static final String CAPTURE_CALL_ARGUMENT = "CALL_ARGUMENT";
-    /** Response port read as the call's return value: {@code Resp_in}, in
-     *  the caller's own frame at the call unit. */
+    /** Response read as the call's return value, in the caller's frame. */
     public static final String CAPTURE_CALL_RETURN = "CALL_RETURN";
     public static final String CAPTURE_METHOD_PARAMETER = "METHOD_PARAMETER";
     public static final String CAPTURE_METHOD_RETURN = "METHOD_RETURN";
     public static final String PORT_ARGUMENT_INDEX = "argumentIndex";
     public static final String PORT_DEFINITION_METHOD = "definitionMethod";
-    /**
-     * The method whose one call builds one instance of the value a port
-     * belongs to -- the frame leaves of that port are addressed within.
-     * Optional: a port that names none is addressed within its RPC message.
-     */
+    /** Method whose one call builds a value of the port; absent = RPC. */
     public static final String PORT_FRAME_METHOD = "frameMethod";
     public static final String PORT_DEFINITION_UNIT_INDEX =
             "definitionUnitIndex";
@@ -66,8 +48,7 @@ public final class CommunicationCatalogContract {
     public static final String DIRECTION_REQUEST = "REQUEST";
     public static final String DIRECTION_RESPONSE = "RESPONSE";
 
-    // Discovery never guesses: anything it cannot resolve statically becomes
-    // one of these gap rows and no call-site or port row.
+    // Discovery never guesses: what it cannot resolve becomes a gap row.
 
     /** The row's class, BLOCKING or DIAGNOSTIC, as a GapRow states it. */
     public static final String GAP_CLASS = "cls";
@@ -79,10 +60,7 @@ public final class CommunicationCatalogContract {
     private CommunicationCatalogContract() {
     }
 
-    /**
-     * Derives the static {@link #EXCHANGE_SITE_KEY} of one client call site
-     * and its resolved server entry.  Names the site pair, never one attempt.
-     */
+    /** Static key of a client call site + server entry, never one attempt. */
     public static String exchangeSiteKey(String transport, String protocol,
                                          String clientCallSiteId,
                                          String declaredCallee,
@@ -110,8 +88,7 @@ public final class CommunicationCatalogContract {
         return responsePortId(exchangeSiteKey) + "." + nonNull(name);
     }
 
-    /** Length of the leading {@link #exchangeSiteKey}, or {@code -1}: the key
-     *  is {@code "XCH."} plus one canonical UUID. */
+    /** Whether {@code portId} is key + .resp, .resp.NAME or .req.NAME. */
     public static boolean declaredPortId(String portId) {
         String value = nonNull(portId);
         int suffix = exchangeSiteKeyLength(value);
@@ -124,10 +101,7 @@ public final class CommunicationCatalogContract {
                 && tail.length() > ".req.".length();
     }
 
-    /**
-     * Length of the leading {@link #exchangeSiteKey}, or {@code -1}: the key
-     * is {@code "XCH."} plus one canonical UUID.
-     */
+    /** Length of the leading {@code "XCH." + canonical UUID}, or -1. */
     private static int exchangeSiteKeyLength(String value) {
         String prefix = "XCH.";
         int end = prefix.length() + 36;

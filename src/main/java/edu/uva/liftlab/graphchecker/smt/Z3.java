@@ -18,28 +18,16 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * THE z3 driver: one query text in, one answer out.
+ * THE z3 driver: one query text in, one answer out.  It launches the
+ * process, enforces the budget, drains both streams, and parses verdict,
+ * model and errors; what an answer MEANS is the caller's policy.
  *
- * <p>Owns the four things running a solver is: launching the process,
- * enforcing the budget, reading both streams without deadlocking, and
- * reading the verdict, the model and the errors back out of what z3
- * printed.  Nothing here decides what an answer MEANS -- the composer turns
- * an undecided valuation or an error into its own named BLOCKING gap, and
- * the obligation solver refuses a model equal to the seed's -- because a
- * policy is about the campaign and this is about a process.</p>
+ * <p>Only {@code sat}/{@code unsat} is decided ({@link Answer#decided()});
+ * a timeout, {@code unknown} or {@code (error ...)} is not a refutation.</p>
  *
- * <p>An answer that is not {@code sat} or {@code unsat} is neither: a
- * timeout, an {@code unknown} or an {@code (error ...)} says the solver did
- * not decide, and a caller that reads one as a refutation is making a claim
- * about the solver.  {@link Answer#decided()} is the one test for that.</p>
- *
- * <p>The model is asked for in its OWN run, after the verdict is known, and
- * so are the unsat core and the reason: a script that appends
- * {@code (get-value ...)} to every question makes z3 answer
- * {@code "(error ... model is not available)"} on every unsat one, and an
- * error z3 prints as a matter of course is an error nobody reads -- which is
- * how a genuine "invalid bit-vector literal" once sat in a manifest as if it
- * were a verdict.</p>
+ * <p>Model, core and reason are each asked in their OWN run after the
+ * verdict: {@code (get-value ...)} on an unsat query makes z3 print a
+ * routine error that would hide real ones.</p>
  */
 public final class Z3 {
 
@@ -93,15 +81,8 @@ public final class Z3 {
         }
 
         /**
-         * Why the solver did not decide, in its own words, or "".
-         *
-         * <p>{@code (get-info :reason-unknown)}, asked only of an answer
-         * that is neither sat nor unsat.  Without it an undecided valuation
-         * reached the manifest as a bare {@code state=unknown}, which tells
-         * a reader nothing about whether the query was too hard, in the
-         * wrong fragment, or cut off -- 17960's moved valuation came back
-         * {@code (incomplete quantifiers)}, and that named the two
-         * {@code lambda} definitions it was about.</p>
+         * Why the solver did not decide ({@code :reason-unknown}), or "";
+         * asked only of an undecided, non-timeout answer.
          */
         public String reason() {
             return reason;
@@ -146,15 +127,9 @@ public final class Z3 {
     }
 
     /**
-     * Every {@code (error ...)} z3 answered, over every ask.
-     *
-     * <p>An error is not a verdict and not an "undecided": it says the
-     * solver could not READ the query this lowering wrote, so whatever it
-     * printed afterwards is about a different formula.  It is collected
-     * here, over the auxiliary asks (the unsat core, the pairing probes,
-     * the clock probe) as well as the valuations, because one such answer
-     * anywhere invalidates the claim a caller would otherwise read off the
-     * others.</p>
+     * Every {@code (error ...)} z3 answered, over every ask including the
+     * auxiliary ones: an error means z3 could not read the query, and one
+     * anywhere invalidates the claim.
      */
     public List<String> errors() {
         return new ArrayList<String>(errors);
@@ -174,14 +149,8 @@ public final class Z3 {
     }
 
     /**
-     * The same ask under a budget of its own.
-     *
-     * <p>ONE SOLVER, TWO KINDS OF QUESTION.  A composition's witness search
-     * is worth minutes; the per-path sanity checks beside it are not, and
-     * they are asked once per disjunct.  A budget of {@code <= 0} means the
-     * instance's own, so every existing caller is unchanged, and the run
-     * counter and the error set stay this solver's -- a separate {@code Z3}
-     * would have split both, and the claim reads them after.</p>
+     * The same ask under its own budget ({@code <= 0}: the instance's).
+     * Same instance, so the run counter and error set stay whole.
      */
     public Answer ask(String query, List<String> modelSymbols,
                       boolean wantCore, long budgetMillis) {
@@ -209,15 +178,9 @@ public final class Z3 {
         }
         List<String> core = Collections.emptyList();
         if (wantCore && "unsat".equals(status)) {
-            // The core as z3 returns it; (set-option :smt.core.minimize
-            // true) before this check-sat is an optional later switch.
             core = parseCore(run(text + "(check-sat)\n(get-unsat-core)\n"));
         }
-        // Why it did not decide, asked the same way: one more run, only
-        // when there is something to ask for.  An undecided answer with no
-        // reason is a silence, and a silence is not a verdict.  A timeout is
-        // not asked: no process survived to print a reason, so a second run
-        // would spend the whole budget again to read the same "".
+        // Not after a timeout: it would spend the budget again for "".
         String reason = "";
         if (!"sat".equals(status) && !"unsat".equals(status)
                 && !TIMEOUT.equals(status)) {
@@ -228,12 +191,8 @@ public final class Z3 {
     }
 
     /**
-     * The exact text {@link #ask} sends when it asks for a model.
-     *
-     * <p>Public because a stage that publishes its query as an artifact
-     * publishes the question that was asked, and there is one spelling of
-     * that question: a file that says {@code (get-model)} while the run
-     * asked {@code (get-value ...)} is a second query nobody solved.</p>
+     * The exact text {@link #ask} sends for a model; published artifacts
+     * must use it so the file is the question actually solved.
      */
     public static String modelQuery(String query, List<String> modelSymbols) {
         StringBuilder text = new StringBuilder(query == null ? "" : query);
@@ -251,13 +210,8 @@ public final class Z3 {
     // ------------------------------------------------------------------
 
     /**
-     * One z3 process, fed on stdin, read on a second thread.
-     *
-     * <p>Writing the whole query and only then reading deadlocks on the
-     * pipe buffers as soon as a query or a model is larger than one: both
-     * directions are therefore their own thread, and the timeout is
-     * enforced here rather than handed to z3, so that a solver that ignores
-     * it cannot hold the campaign open.</p>
+     * One z3 process.  Each pipe direction has its own thread (else large
+     * queries deadlock), and the timeout is enforced here, not by z3.
      */
     private String run(String input) {
         runs++;
@@ -270,8 +224,7 @@ public final class Z3 {
             builder.redirectErrorStream(true);
             process = builder.start();
         } catch (IOException notLaunched) {
-            // Not an "(error ...)" z3 printed -- z3 never ran -- so it is
-            // an undecided answer and not a query the solver could not read.
+            // z3 never ran: undecided, not a z3 "(error ...)".
             return "error " + notLaunched.getMessage();
         }
         final Process running = process;
@@ -285,8 +238,7 @@ public final class Z3 {
                     stream.write(bytes);
                     stream.flush();
                 } catch (IOException closed) {
-                    // The solver answered and closed its input; that is an
-                    // answer, not an error.
+                    // z3 closed its input after answering.
                 } finally {
                     try {
                         stream.close();
@@ -376,8 +328,7 @@ public final class Z3 {
                     Math.max(1, matching(pair, 0))).trim();
             int split = inner.indexOf(' ');
             if (split < 0) continue;
-            // z3 answers with the name as the query spelled it, quoted
-            // bars and all; the caller asked about the name itself.
+            // Strip SMT-LIB |bars| from the name.
             values.put(unquoted(inner.substring(0, split).trim()),
                     normalize(inner.substring(split + 1).trim()));
         }

@@ -17,30 +17,15 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * The INSTRUMENT stage's verifier gate: every class the weave wrote links and
- * verifies, here, before a replay JVM is asked to run it.
+ * The INSTRUMENT stage's verifier gate: every woven class links and verifies
+ * here, not first inside a replay.
  *
- * <p>The JVM verifier is the authority on whether woven bytecode is
- * executable, and it used to be consulted for the first time inside a replay
- * -- hdfs-17960's woven {@code FSNamesystem} was refused with {@code
- * VerifyError: get long/double overflows locals} at {@code
- * allowSnapshot(Ljava/lang/String;)V @142: lload_2}, which ended the seed
- * replay before any region ran and was reported as a failed JUnit method.
- * This main asks the same verifier the same question in the stage that wrote
- * the classes, so the answer names the class, the method and the reason.</p>
- *
- * <p>The class loader is the replay's own layout: the woven tree first, the
- * engine jar (this process's own classpath, the loader's parent) next, and
- * the case classpath last, which is how {@code execute.sh} composes {@code
- * ${classes}:${jar}:${cp}}.  A woven class therefore resolves its hooks and
- * its unwoven neighbours exactly as it will at replay.  Loading is enough to
- * verify: {@code Class.forName(name, false, loader)} leaves the class
- * uninitialized -- no workload static initializer runs -- and the reflective
- * read that follows links it, which is what runs the verifier.</p>
+ * <p>The loader mirrors {@code execute.sh}'s {@code ${classes}:${jar}:${cp}}.
+ * {@code Class.forName(name, false, loader)} runs no static initializer; the
+ * reflective read after it links the class, which runs the verifier.</p>
  *
  * <p>Usage: {@code VerifyWovenClasses <instrumented-classes-dir>
- * [<classpath>]}.  Exit 0 when every class verified, 1 when one did not, 2
- * when the gate could not ask the question.</p>
+ * [<classpath>]}.  Exit 0 all verified, 1 one did not, 2 could not ask.</p>
  */
 public final class VerifyWovenClasses {
     private VerifyWovenClasses() {
@@ -51,8 +36,7 @@ public final class VerifyWovenClasses {
             refuse("usage: VerifyWovenClasses <instrumented-classes-dir> "
                     + "[<classpath>]");
         }
-        // A verifier the JVM was told to skip answers every question with
-        // "fine", which is the one answer this gate must never report.
+        // A disabled verifier answers "fine" to everything.
         for (String argument : ManagementFactory.getRuntimeMXBean()
                 .getInputArguments()) {
             if ("-Xverify:none".equals(argument)

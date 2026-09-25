@@ -54,7 +54,6 @@ public final class WireFlowCatalog {
         return new WireFlowCatalog(flows);
     }
 
-    /** One mapping row, and where the file states it. */
     private static final class Row {
         final String at;
         final JsonObject json;
@@ -113,11 +112,9 @@ public final class WireFlowCatalog {
     }
 
     /**
-     * The transports whose doors are the case's fault points: a door fault
-     * {@code FAULT:<TRANSPORT>:<DIRECTION>} is declared exactly when the
-     * case maps that transport, so a case that maps no wire (hdfs-17960)
-     * plans no IPC door.  Read off the mapping rows' {@code transport}
-     * fields alone, so the static pass can ask before it resolves methods.
+     * The mapped transports: a door fault {@code FAULT:<TRANSPORT>:<DIRECTION>}
+     * exists exactly for these.  Read off the raw rows, before method
+     * resolution.
      */
     public static java.util.Set<String> declaredTransports() {
         java.util.Set<String> found = new java.util.LinkedHashSet<String>();
@@ -137,9 +134,7 @@ public final class WireFlowCatalog {
                                   Map<String, SootMethod> methods) {
         if (integer(row, "schemaVersion", -1) != SCHEMA_VERSION
                 || !KIND.equals(string(row, "kind"))) {
-            // Named with the record, never skipped: a declared flow this
-            // build cannot read is a port that will not mint, and a silent
-            // skip turns that into "the workload never sent it".
+            // Refused, never skipped: a skipped flow reads as "never sent".
             throw new IllegalArgumentException(
                     "communication mapping " + string(row, "id")
                             + " states schemaVersion "
@@ -174,14 +169,9 @@ public final class WireFlowCatalog {
     }
 
     /**
-     * One side's declared frame method, or "".
-     *
-     * <p>A port is one pair of bytecode sites and a protocol sends many
-     * unrelated values of that shape through it.  The frame method is the one
-     * whose single call builds one instance of the value the port belongs to,
-     * so the leaves of that instance are addressed within it and two groups of
-     * the same shape in one message stay apart.  Declaring none is allowed and
-     * means the RPC message itself is the frame.</p>
+     * One side's declared frame method, or "" (the RPC message is the frame).
+     * One call of it builds one value instance, so same-shaped groups in one
+     * message stay apart.
      */
     private static String frameMethod(JsonObject row, String name,
                                       Map<String, SootMethod> methods) {

@@ -13,15 +13,8 @@ final class CausynthTargetResolver {
     }
 
     /**
-     * The target spec and the output directory the campaign declared.
-     *
-     * <p>Both arrive as system properties, which {@code run_engine.sh} sets
-     * unconditionally from the one workflow config.  There used to be a
-     * second config-file parser here, reached through
-     * {@code firstNonBlank(property, config.get(key), literal)}: the property
-     * always won, so neither the config branch nor its two literal defaults
-     * ("target.yaml", "causynth-output/seed-backward") was reachable.  A
-     * property the campaign does not set is refused by name instead.</p>
+     * The target spec and output dir, as system properties {@code
+     * run_engine.sh} always sets; an unset one is refused by name.
      */
     static CausynthTargetContext resolve() throws IOException {
         Path specPath = declaredPath("causynth.target.spec");
@@ -37,8 +30,7 @@ final class CausynthTargetResolver {
         return Paths.get(declared.trim()).toAbsolutePath().normalize();
     }
 
-    /** The single {@code exception_target_id} of a target specification, or
-     *  null when the file is absent. */
+    /** The spec's single {@code exception_target_id}, or null if absent. */
     private static String exceptionTargetId(Path path) throws IOException {
         if (!Files.isRegularFile(path)) {
             return null;

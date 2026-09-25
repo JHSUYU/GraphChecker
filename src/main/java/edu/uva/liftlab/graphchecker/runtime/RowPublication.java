@@ -23,21 +23,13 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
 import static edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.locationId;
 
 /**
- * Publishes one finished activation as contract rows.
+ * Publishes one finished activation as contract rows: decisions, writes,
+ * reads and the anchor.  It reads only what the activation already
+ * published, so it never changes the execution.
  *
- * <p>One translation, run once per activation, from what the replay has
- * assembled -- its decisions, its write log, its mints and its anchor -- to
- * the per-kind row set the contract defines.  It reads only what the
- * activation already published, so nothing here changes the execution and
- * no row exists that the single-row result does not also state.</p>
- *
- * <p>{@link #publish} is the one entry point anywhere.  Two halves of the
- * translation live beside it, because they are other notions and not other
- * doors: {@link RowPlaceholderMint} answers what this activation MINTED,
- * and {@link LoggedEventSites} answers where and by whom one event the VM
- * logged happened.  What stays here is the decisions, the write and read
- * rows, the anchor row, and the readers of the VM's own value spellings
- * that all three share.</p>
+ * <p>{@link #publish} is the one entry point.  {@link RowPlaceholderMint}
+ * answers what the activation minted; {@link LoggedEventSites} answers where
+ * and by whom a logged event happened.</p>
  */
 final class RowPublication {
     private RowPublication() {
@@ -55,15 +47,11 @@ final class RowPublication {
     }
 
     /**
-     * The MINTS of an activation whose other rows are withheld.
+     * The mints of an abandoned activation, whose other rows are withheld.
      *
-     * <p>An abandoned activation states no path -- its decisions, writes and
-     * anchor are about a replay that did not run what it was asked -- but
-     * its mints are already in the VM, and a symbol the session carries with
-     * no row to resolve it is what every later stage then reads as "this
-     * quantity is nobody's".  One of the two, never neither: either the mint
-     * was refused at the mint ({@code RootMint#mintUnattributed}, no symbol)
-     * or it is rowed here.</p>
+     * <p>Its mints are already in the VM; a symbol with no row reads
+     * downstream as "nobody's".  Every mint is either refused at the mint
+     * ({@code RootMint#mintUnattributed}) or rowed here.</p>
      */
     static void publishMints(ActiveRegion active) {
         if (active == null || !RowRuntime.open()) return;
@@ -73,12 +61,8 @@ final class RowPublication {
     }
 
     /**
-     * One kind, and its own refusal.
-     *
-     * <p>A row kind that cannot be built is that kind's gap: publishing them
-     * under one try left a refused read suppressing the anchor row of the
-     * same activation, which reads afterwards as an occurrence that never
-     * reached its target.</p>
+     * One kind, and its own refusal: a kind that cannot be built is that
+     * kind's gap only, so a failed read never suppresses the anchor row.
      */
     private static void publishKind(String kind, ActiveRegion active,
                                     OccurrenceAddress occurrence) {
@@ -95,9 +79,8 @@ final class RowPublication {
                 target(active, occurrence);
             }
         } catch (RuntimeException failure) {
-            // The rows describe a run; a translation that throws must not
-            // end one.  It says so instead, which is the difference between
-            // "this run published no writes" and "this run made none".
+            // A failed translation must not end the run; the gap tells
+            // "published no writes" apart from "made none".
             RowRuntime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
                     occurrence.render(),
                     "the " + kind + " rows of this activation could not be"
@@ -107,29 +90,15 @@ final class RowPublication {
     }
 
     /**
-     * One row per decision, with the predicate the taken arm satisfied.
+     * One row per decision, with the predicate the taken arm satisfied (as
+     * published, never negated a second time) and which arm that was.
      *
-     * <p>The term is the satisfied predicate as published -- no second
-     * negation anywhere -- and the outcome states which arm that was.</p>
-     *
-     * <p>I3 -- THE ROW IS ADDRESSED BY THE OCCURRENCE THAT PERFORMED THE
-     * BRANCH, and that is what {@code active.d3Address} is: the occurrence
-     * running on the thread when this activation was entered
-     * ({@code Identity#currentOccurrence}, read by {@code
-     * RowRuntime#beginActivation}), which under I1 is the occurrence every
-     * site executed synchronously below it belongs to.  It is the same
-     * answer {@link #writes} gets from the VM's own statement -- {@code
-     * LoggedEventSites#performer} resolves an event's {@code
-     * regionEnterEventId} through the very address filed for it at {@code
-     * RowRuntime#journalRegion} -- so a decision and a write of one
-     * execution point now name one occurrence.  A branch this activation
-     * could not perform is not in {@code branchMappings} at all: once an
-     * activation closes, {@code ConcolicRegionRuntime#activeRegion} answers
-     * nothing for the rest of its frame (I3, silence), so no later branch is
-     * handed to another activation's list.  The ordinal beside the site is
-     * counted on the same occurrence ({@code Identity#nextBranchOrdinal}),
-     * which is what makes (occurrence, site, ordinal) the address an
-     * obligation's flip is written at.</p>
+     * <p>I3: the row is addressed by the occurrence that performed the
+     * branch, {@code active.d3Address} ({@code Identity#currentOccurrence}
+     * at entry), the same answer {@code LoggedEventSites#performer} gives a
+     * write.  The ordinal is counted on that occurrence
+     * ({@code Identity#nextBranchOrdinal}), so (occurrence, site, ordinal)
+     * is the address a flip is written at.</p>
      */
     private static void decisions(ActiveRegion active,
                                   OccurrenceAddress occurrence) {
@@ -137,16 +106,14 @@ final class RowPublication {
             String siteId = optionalString(mapping, "siteId");
             int ordinal = optionalInteger(mapping, "occurrence", 1);
             long seq = optionalLongInteger(mapping, "vmEventId", 0L);
-            // One branch event, one occurrence: the VM's event range is read
-            // out per activation and overlaps every activation the branch
-            // ran inside.
+            // One branch event, one row: the VM's event range overlaps every
+            // enclosing activation.
             if (!RowRuntime.claimEvent("decision",
                     seq + "#" + siteId + "#" + ordinal)) {
                 continue;
             }
-            // The row states the site, the arm it took and the predicate as
-            // written; nothing here applies one to the other
-            // (CONTRACT-SPEC §2), and nothing reads the old witness shapes.
+            // Site, arm and predicate as written; nothing applies one to the
+            // other (CONTRACT-SPEC §2).
             JsonObject written = object(mapping, "siteCondition");
             RowRuntime.decision(occurrence, seq, siteId, ordinal,
                     optionalBool(mapping, "outcome", false),
@@ -155,11 +122,8 @@ final class RowPublication {
     }
 
     /**
-     * The VM's constant spelling as the literal it stands for.
-     *
-     * <p>{@code Y_I_119992} is the VM's name for the int constant 119992 --
-     * {@code Y} marks a concrete value, the letter after it is the JVM type
-     * and the rest is the value.  A row states the value.</p>
+     * The VM's constant spelling as its literal: {@code Y_I_119992} is the
+     * int 119992 ({@code Y}, JVM type letter, value).
      */
     static String literal(String value) {
         String stated = safe(value);
@@ -171,16 +135,8 @@ final class RowPublication {
     }
 
     /**
-     * The bound every expression walk in this file stops at, and the row
-     * that states it stopped.
-     *
-     * <p>Two answers used to be one: a walk that found no symbol and a walk
-     * that was cut before it could look both returned {@code ""}, so a root
-     * named from a deep tree read downstream exactly like a root the VM
-     * never named.  The bound stays -- a container's expression on
-     * hdfs-17960 nests one relation per recorded operation and the leaves
-     * these walks look for are near the top -- and a cut says so, once per
-     * walk and subject, in the session's own gap rows.</p>
+     * The depth every recursive expression walk here stops at.  A cut is
+     * stated as a gap, so "cut" never reads as "the VM named nothing".
      */
     static final int WALK_DEPTH = 8;
 
@@ -195,43 +151,25 @@ final class RowPublication {
     }
 
     /**
-     * One row per write version, and one per read the expressions state.
+     * One row per write version, and one per read node
+     * ({@code ReadFromExpression}) the published expressions contain.
      *
-     * <p>The write log is by location and version; the reads are the
-     * {@code ReadFromExpression} nodes inside the expressions this
-     * activation published, each of which names the version it observed.
-     * Both halves of an endpoint come from the run itself: the VM states the
-     * bytecode site of every version and read it logs (REPORT-VM21), and the
-     * frames those events stood on come from the activation's own frame
-     * journal, aligned to the event id (FrameJournal).  The row belongs to
-     * the activation that PERFORMED the event, which the VM also states, not
-     * to this one -- this activation is only the one whose read-out found the
-     * event first (see {@link LoggedEventSites#performer}).</p>
+     * <p>Site from the VM log (REPORT-VM21), frames from the frame journal.
+     * A row belongs to the activation that PERFORMED the event
+     * ({@link LoggedEventSites#performer}), not to the one that found it.</p>
      */
     private static void writes(ActiveRegion active) {
-        // One activation, one population of reads: the same node is reached
-        // from many versions of one location, and a row per reachable path
-        // would count one read many times.
+        // One read node is reachable from many versions: count it once.
         Set<String> published = new LinkedHashSet<String>();
         Map<JsonElement, Boolean> seen =
                 new IdentityHashMap<JsonElement, Boolean>();
-        // The mint stores of this activation, by the one key the row's
-        // mintVersion is: (location, version).  A declared region input is a
-        // READ, so its store is no write and states no WriteRow -- and the
-        // key is the store itself, never the spelling of its symbol: the
-        // mint row's leaf reads `P_L'...'` where the version the VM
-        // published carries `M_L'...'`, so a symbol-set test let five
-        // "writes nobody performed" through (v86 the MARKER root's store,
-        // v203/v210/v269/v276 the FsImage reference mints).
+        // Mint stores by (location, version): a declared input is a READ and
+        // states no WriteRow.  Key by the store, never the symbol spelling
+        // (the mint row says `P_L'...'`, the VM version `M_L'...'`).
         Map<String, String> mints = RowPlaceholderMint.mintStores(active);
-        // The read log first, and for every location: a read node inside one
-        // location's value is a read OF ANOTHER location, and the activation
-        // that logged it is what its own log record states.
-        // What the VM's log says about every event of one location.
-        // Session-wide and keyed by event id, which is one monotone counter
-        // for versions and reads alike: a ReadFromExpression node names its
-        // read event id but not the activation that ran it, and the log
-        // record of the same event does.
+        // Index every location's log first: a read node inside one value
+        // reads ANOTHER location, and only its log record names the
+        // activation that ran it (by event id).
         for (JsonObject record : active.sharedStateRecords.values()) {
             LoggedEventSites.index(record);
         }
@@ -272,13 +210,9 @@ final class RowPublication {
     }
 
     /**
-     * Every read one expression tree states, by the version it observed.
-     *
-     * <p>Iteratively, over an explicit stack: a container's expression nests
-     * one relation per operation the recording saw, which on hdfs-17960's
-     * snapshot list is hundreds deep -- a recursion guard cuts the walk
-     * before the reads, and publishing no read row reads afterwards as a
-     * path that read nothing.</p>
+     * Every read one expression tree states.  Iterative on purpose: a
+     * container's expression can nest hundreds deep, and a depth guard would
+     * drop reads silently.
      */
     private static void collect(JsonElement root, Set<String> published,
                                 Map<JsonElement, Boolean> seen) {
@@ -324,11 +258,9 @@ final class RowPublication {
         if (!published.add(identity)) return;
         String symbol = optionalString(node, "_exp");
         if (symbol.isEmpty()) {
-            // A guarded read names no symbol of its own: what it read is
-            // the version of the location, and that is what the row says.
+            // A guarded read has no symbol: name the version it read.
             symbol = locationKey + "@v" + observed;
         }
-        // What this read node says the read returned, or "".
         JsonElement returned = node.get("concreteValue");
         if (returned == null || returned.isJsonNull()) {
             returned = object(node, "observedVersion").get("concreteValue");
@@ -338,8 +270,6 @@ final class RowPublication {
                         ? optionalString(returned.getAsJsonObject(), "_exp")
                         : returned.getAsString());
         if (observed < 0L && value.isEmpty()) {
-            // Neither a version to join nor a value to pin: the row would
-            // say nothing a reader could use, and saying so is the point.
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                     locationKey, "a read states neither the version it"
                             + " observed nor the value it returned");
@@ -357,16 +287,10 @@ final class RowPublication {
     }
 
     /**
-     * A read the log does not cover: the object read from and what its
-     * field then held, which is the pair the VM states (REPORT15).
-     *
-     * <p>The value the VM states here is an expression, not always a
-     * constant: a field read whose value came from another read carries
-     * that read, and with it the version it observed and the location it
-     * observed it at.  A row states the version when there is one and the
-     * literal when there is not -- never neither -- and spells the
-     * location the way the write log spells it, so the two sides of one
-     * location join.</p>
+     * A read the log does not cover: the object and what its field held
+     * (REPORT15).  The value may nest another read, which supplies version
+     * and location.  The row states the version or the literal, never
+     * neither, and spells the location as the write log does so they join.
      */
     private static void fieldAccess(JsonObject node,
                                     Set<String> published) {
@@ -377,15 +301,9 @@ final class RowPublication {
                 : SharedStateCapture.locationKeyOf(object(read, "location"));
         LocationId location = locationId(locationKey);
         if (location == null) {
-            // The location is the VM's or there is none.  Building it out of
-            // the projection's own ownerClass and fieldOffset -- and the
-            // literal owner "<unstated>" when even the class was absent --
-            // named `INSTANCE/<class>#<offset>` while every write of the
-            // same storage is logged as `INSTANCE_FIELD/<rid>#<slot>`: the
-            // row joined no write version, and its symbol then named a
-            // location nothing else in the corpus spells.  Every projected
-            // read whose nested read node states no admissible location is
-            // this class, whatever its ownerClass says.
+            // The location is the VM's or none: one built from ownerClass
+            // and fieldOffset would never join the `INSTANCE_FIELD/<rid>#<slot>`
+            // spelling of the writes.
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                     optionalString(node, "ownerClass") + "#"
                             + optionalInteger(node, "fieldOffset", -1),
@@ -410,8 +328,7 @@ final class RowPublication {
         if (!published.add(identity)) return;
         String projected = optionalString(node, "_exp");
         if (projected.isEmpty()) {
-            // One symbol per READ, not per field: the same name on every
-            // read of one field is one unknown the whole run shares.
+            // One symbol per READ, not per field.
             projected = locationKey + (observed >= 0L ? "@v" + observed
                     : "@e" + event);
         }
@@ -427,13 +344,9 @@ final class RowPublication {
     }
 
     /**
-     * One read event, wherever it is reached from.
-     *
-     * <p>A read happened once, inside one occurrence; the expression trees
-     * of every activation that later used the value carry the same node,
-     * and a row per tree counts one read many times.  The first activation
-     * to publish it states it -- activations finish innermost first, so
-     * that is the innermost region the read ran in.</p>
+     * One read event, wherever it is reached from.  The first activation to
+     * publish it wins, which is the innermost (activations finish innermost
+     * first).
      */
     private static String readIdentity(String locationKey, long observed,
                                        long event) {
@@ -486,13 +399,9 @@ final class RowPublication {
     }
 
     /**
-     * The anchor, with phi in the FATAL polarity whichever arm ran.
-     *
-     * <p>The recorded decision's predicate is the arm this run took; the
-     * task declares which arm is fatal.  So the row states the fatal arm of
-     * that predicate and, separately, whether this run took it -- and no
-     * reader downstream re-derives a polarity (the second negation is
-     * exactly the bug the phi-polarity fix removed).</p>
+     * The anchor row: the predicate of the arm this run took, plus whether
+     * that arm is the fatal one the task declares.  No reader re-derives a
+     * polarity (a second negation is the trap).
      */
     private static void target(ActiveRegion active,
                                OccurrenceAddress occurrence) {
@@ -501,9 +410,7 @@ final class RowPublication {
         if (!task.declaresTargetBranch() && reach == null) return;
         boolean reached = reach != null;
         boolean observed = reached && optionalBool(reach, "outcome", false);
-        // The fatal arm is the one the case declared; a seed task that
-        // captured the reach without declaring the arm states the arm it
-        // observed, which is a fact of the run rather than a derivation.
+        // An undeclared seed task states the arm it observed.
         boolean fatalArm = task.declaresTargetBranch()
                 ? task.targetBranchRequiredOutcome : observed;
         String anchor = task.declaresTargetBranch()
@@ -530,18 +437,10 @@ final class RowPublication {
         }
         long at = reach == null ? 0L
                 : optionalLongInteger(reach, "vmEventId", 0L);
-        // A TARGET ROW WITH NO VM CLOCK CANNOT SAY WHERE ITS PATH WAS CUT.
-        // seq == 0 states "no VM clock" and never borrows the run's latest
-        // event, and the composer cuts a path's prefix strictly before the
-        // target (P1, Arms#pathCondition(decisions, target.seq())): at 0
-        // that prefix is EMPTY, so pi_p would be weaker than the run's --
-        // the satisfiable direction, where a claim can be made on a path
-        // whose real condition was stronger.  It happens when the anchor
-        // was reached on a CONCRETE decision, which ActiveRegion
-        // #recordConcreteDecision records with vmEventId 0.  Named, so the
-        // gate withholds instead of the composer quietly composing a
-        // shorter path; 0 such rows on either kept corpus (every target
-        // seq there is positive).
+        // seq == 0 means "no VM clock" (a CONCRETE decision, see
+        // ActiveRegion#recordConcreteDecision).  The composer cuts the prefix
+        // before target.seq() (P1), so at 0 pi_p would be empty and too
+        // weak; state a BLOCKING gap instead.
         if (at <= 0L && reached) {
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.BLOCKING, anchor,
                     "this run reached the anchor on a decision the VM gave"

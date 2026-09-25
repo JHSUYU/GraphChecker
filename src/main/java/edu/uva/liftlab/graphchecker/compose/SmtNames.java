@@ -16,25 +16,10 @@ import java.util.Set;
 import java.util.function.Predicate;
 
 /**
- * THE ONE TOKENIZER over SMT-LIB text, and the vocabulary it reads with.
- *
- * <p>Relocated out of {@link SmtLowering} unchanged: the same bodies, the
- * same order, no rule altered.  Nothing here holds any state of a lowering
- * -- every member is static and every answer is a function of the text and
- * the theory's own names -- which is why it can stand apart from the class
- * that owns the sessions, the declarations and the assertions.</p>
- *
- * <p>ONE vocabulary and ONE pass, for every stage: {@link #BUILTIN} is what
- * the theory states, {@link #names} is how a term is broken into tokens,
- * {@link #symbols} is the free names of it, {@link #rename} is the same
- * pass with a caller's variables substituted, and {@link #reachedPreamble}
- * is which lines of a fixed preamble a query's own texts reach.  Two
- * vocabularies over one query text is a name one stage calls a theory
- * operator and the other calls undeclared, which is the defect this file
- * exists to make impossible.</p>
- *
- * <p>{@link SmtLowering} keeps a delegator for each member its callers name,
- * so nothing outside this package had to change.</p>
+ * THE ONE TOKENIZER over SMT-LIB text, and the ONE vocabulary
+ * ({@link #BUILTIN}) every stage reads with; stateless.  Two vocabularies
+ * over one query would let one stage call a name a theory operator and
+ * another call it undeclared.
  */
 public final class SmtNames {
 
@@ -72,14 +57,9 @@ public final class SmtNames {
     }
 
     /**
-     * A character a NAME may be spelled with.
-     *
-     * <p>SMT-LIB's simple-symbol alphabet, plus the two the runtime's own
-     * names use: {@code #} in a row's location symbol, {@code '} in the
-     * VM's.  The set was letters, digits, {@code _ . $} -- which splits
-     * {@code M_I_field_HOFF.…_edu/uva/liftlab/…} at the slash, so half a
-     * name was looked up, no declaration was found for it, and a query
-     * emitted a subterm over a constant it never declared.</p>
+     * A character a NAME may be spelled with: SMT-LIB's simple-symbol
+     * alphabet plus the runtime's {@code #} and the VM's {@code '}.  Trap: a
+     * narrower set splits names at {@code /} and looks up half a name.
      */
     public static boolean symbolCharacter(char value) {
         if (Character.isLetterOrDigit(value)) return true;
@@ -87,12 +67,9 @@ public final class SmtNames {
     }
 
     /**
-     * Every name the fixed preamble gives a meaning to.
-     *
-     * <p>Sorts, datatype constructors and selectors, and the functions the
-     * container model is written in.  A caller that renders the preamble
-     * states these; one that reads a lowered term must not call them free.
-     * Read off the preamble text so the two cannot drift apart.</p>
+     * Every name the fixed preamble declares (sorts, constructors,
+     * selectors, container functions), read off the preamble text so the
+     * two cannot drift.
      */
     public static Set<String> preambleNames() {
         if (PREAMBLE_NAMES.isEmpty()) {
@@ -123,9 +100,8 @@ public final class SmtNames {
                     && symbolCharacter(line.charAt(end))) end++;
             String head = line.substring(index + 1, end);
             if (head.isEmpty()) continue;
-            // Outside a datatype only a declaration states a name, and it is
-            // the token after the keyword; inside one, every list opens with
-            // a sort, a constructor or a selector.
+            // In a datatype every list head is a name; elsewhere only the
+            // token after a declare-/define- keyword.
             if (datatype) {
                 names.add(head);
                 continue;
@@ -147,22 +123,8 @@ public final class SmtNames {
     }
 
     /**
-     * Every name the query's own logic gives a meaning to.
-     *
-     * <p>The operators belong here for the same reason the datatype
-     * selectors do: in SMT-LIB {@code =} and {@code <=} are SYMBOLS, and
-     * {@link #names} reads them as such, so a caller asking "which names
-     * does nothing declare" must be told that the theory declares these.
-     * Left out, the check reported {@code =} as a free symbol of every term
-     * it read.</p>
-     *
-     * <p>One set, for both stages: it was the composer's private BUILTIN and
-     * the flip query's own KEYWORDS, and the two differed -- the flip
-     * query's was missing every datatype selector and every bit-vector
-     * operator the composer lists, and the composer's was missing
-     * {@code is_int} beside the {@code to_int} and {@code to_real} it
-     * already had.  Two vocabularies over one query text is a name one
-     * stage calls a theory operator and the other calls undeclared.</p>
+     * Every name the query's logic gives a meaning to, operators included:
+     * in SMT-LIB {@code =} is a SYMBOL, and {@link #names} reads it as one.
      */
     public static final Set<String> BUILTIN =
             Collections.unmodifiableSet(new LinkedHashSet<String>(
@@ -193,33 +155,17 @@ public final class SmtNames {
                     "valueInt", "valueLong", "valueFloat", "valueDouble",
                     "valueBool", "valueRef", "valueString", "str", "fp",
                     "to_real", "to_int", "is_int", "divisible",
-                    // The string-theory names THIS lowering writes, and no
-                    // others: VmLoweringCore writes str.len, str.contains,
-                    // str.prefixof, str.suffixof and str.++, and
-                    // VmTermLowering's java_int_to_string writes str.++ and
-                    // str.from_int.  A name the engine emits and this set
-                    // does not hold is read as a free symbol and refuses
-                    // the path that carries it -- which is what dropped
-                    // hdfs-17960's third path the moment P3 conjoined the
-                    // prefix of a writer occurrence whose branch compares
-                    // two snapshot names ("join-pi renameSnapshot#u19#1
-                    // names symbols nothing declares: [str.++]").
+                    // Exactly the string names the lowering writes
+                    // (SmtLowering, java_int_to_string): one missing here is
+                    // read as a free symbol and refuses its path.
                     "str.++", "str.len", "str.contains", "str.prefixof",
                     "str.suffixof", "str.from_int")));
 
     /**
-     * Every NAME one SMT term names: the one tokenizer.
-     *
-     * <p>The alphabet is {@link #symbolCharacter}'s, which is SMT-LIB's, so
-     * {@code /} and {@code #} are parts of a name and not breaks in it.  A
-     * second tokenizer that stopped at {@code /} cut
-     * {@code M_I_field_REGION...._java/util/concurrent/atomic/AtomicInteger}
-     * into five pieces and reported all five as symbols nothing declares --
-     * the same one-rule-two-implementations defect as the two declaration
-     * maps, in the same path.  Text inside {@code "..."} is a literal and
-     * names nothing; text inside {@code |...|} is ONE name, however it is
-     * spelled; a numeral is a value and not a name, and neither is a
-     * {@code #x}/{@code #b} literal.</p>
+     * Every NAME one SMT term names: the one tokenizer, over
+     * {@link #symbolCharacter}'s alphabet.  {@code "..."} names nothing,
+     * {@code |...|} is ONE name, numerals and {@code #x}/{@code #b} literals
+     * are values.
      */
     public static List<String> names(String text) {
         List<String> names = new ArrayList<String>();
@@ -228,29 +174,10 @@ public final class SmtNames {
     }
 
     /**
-     * The names a {@code let} in this text BINDS.
-     *
-     * <p>A bound name is not free, so a pass that reports "nothing declares
-     * this" must not report one.  {@link #rename} already knows that and
-     * declines to report anything at all once it sees a {@code let}; this
-     * is the same fact, stated precisely enough that a caller can keep
-     * reporting the names a {@code let} did NOT bind.
-     *
-     * <p>hdfs-11741 campaign #6: the associative size model emits {@code
-     * (let ((previous_size ...)) (ite ... previous_size (- previous_size
-     * 1)))} for the map a key was removed from, and {@code Composer#unknown}
-     * -- which tokenizes without this -- refused every path that reached the
-     * anchor with "this term names symbols nothing declares:
-     * [previous_size, previous_size, previous_size]".
-     *
-     * <p>The shape is SMT-LIB's: {@code (let ((name term)+) body)}. Only the
-     * first token of each binding pair is a name; everything in the pair's
-     * term, and the body, is ordinary text this walks past. Nesting is
-     * handled by depth, and a name bound in one {@code let} is reported for
-     * the whole text rather than for its scope alone -- deliberately, since
-     * the caller's question is "is this token a binder's name somewhere in
-     * this term", and answering it too generously only ever withholds a
-     * complaint.</p>
+     * The names a {@code let} in this text BINDS, so a caller can exclude
+     * them from "names nothing declares" (the associative size model emits
+     * {@code let}).  Scope is ignored: over-reporting only withholds a
+     * complaint.
      */
     public static Set<String> letBound(String text) {
         Set<String> bound = new LinkedHashSet<String>();
@@ -326,13 +253,7 @@ public final class SmtNames {
         return tokens;
     }
 
-    /**
-     * The same names, minus the ones the theory declares.
-     *
-     * <p>What a caller means by "the symbols of this term": the free names,
-     * which it then asks the corpus about.  One tokenizer, one vocabulary --
-     * the flip query and the closure planner each had their own pair.</p>
-     */
+    /** The free names of a term: {@link #names} minus {@link #BUILTIN}. */
     public static Set<String> symbols(String text, Set<String> into) {
         for (String name : names(text)) {
             if (!BUILTIN.contains(name)) into.add(name);
@@ -341,21 +262,10 @@ public final class SmtNames {
     }
 
     /**
-     * The same text with the caller's renames applied, and every name it
-     * left free that nothing states.
-     *
-     * <p>A recorded predicate arrives already spelled in SMT-LIB over the
-     * symbols the recording declared, so a stage that needs it over its own
-     * variables RENAMES -- it never re-derives the predicate.  Renaming is
-     * therefore one pass of the one tokenizer, and a token the renames do
-     * not name is copied through exactly as it was written, bars and all.</p>
-     *
-     * <p>{@code unknown} collects the free names that are neither theory
-     * vocabulary nor stated by {@code stated}; that is what makes a query
-     * refuse itself rather than emit a formula over a constant nothing
-     * declares.  A term that BINDS names of its own ({@code let}) reports
-     * none of them, because a bound name is not free and the pass does not
-     * track scopes.</p>
+     * The text with the caller's renames applied (unrenamed tokens copied as
+     * written), collecting into {@code unknown} every free name neither
+     * builtin nor {@code stated}, so a query refuses itself rather than use
+     * an undeclared constant.  A text with a {@code let} reports none.
      */
     public static String rename(String text, Map<String, String> renames,
                                 Predicate<String> stated,
@@ -376,20 +286,7 @@ public final class SmtNames {
     private enum Spelling {
         /** Exactly as written, which is what a rename pass needs. */
         AS_WRITTEN,
-        /**
-         * Bar-quoted where SMT-LIB cannot spell the name bare.
-         *
-         * <p>A row's symbol is a NAME the runtime chose --
-         * {@code MAP_STATE/4#-3@v112} -- and {@code #} is not in SMT-LIB's
-         * simple-symbol alphabet: it opens a bit-vector literal, so z3
-         * answers the whole query with "invalid bit-vector literal" and the
-         * composition has no verdict at all.  {@code |...|} is the SAME
-         * symbol spelled legally, which is why the fix is a spelling and
-         * not a rename: renaming would need every published term rewritten
-         * in step, and a term the runtime wrote about {@code x} must stay
-         * about {@code x}.  Idempotent, because an already-quoted name is
-         * one token here and is copied through.</p>
-         */
+        /** Bar-quoted where SMT-LIB cannot spell the name bare. */
         LEGAL
     }
 
@@ -412,7 +309,6 @@ public final class SmtNames {
                 continue;
             }
             if (value == ';') {
-                // A comment runs to the end of the line and names nothing.
                 int end = text.indexOf('\n', index);
                 end = end < 0 ? text.length() : end;
                 out.append(text, index, end);
@@ -485,13 +381,9 @@ public final class SmtNames {
     }
 
     /**
-     * Whether one token is a NAME and not a value.
-     *
-     * <p>A numeral is a value; so is {@code #x1f} and {@code #b01}, which
-     * SMT-LIB spells with a {@code #} that {@link #symbolCharacter} admits
-     * because the runtime's own location symbols use one.  Reporting a
-     * hexadecimal literal as a free name is how a float in a lowered term
-     * became "this term names symbols nothing declares".</p>
+     * Whether one token is a NAME, not a value: numerals and
+     * {@code #x}/{@code #b} literals are values, though
+     * {@link #symbolCharacter} admits {@code #}.
      */
     private static boolean name(String token) {
         if (token.isEmpty()) return false;
@@ -501,26 +393,11 @@ public final class SmtNames {
     }
 
     /**
-     * The preamble lines one query NEEDS: every line but a {@code
-     * define-fun} nothing in it reaches.
-     *
-     * <p>A preamble is fixed and a query is not.  Stating the whole
-     * container model in every query put the associative model -- five
-     * array fields, {@code assoc_put}'s five stores and {@code
-     * assoc_remove}'s two lambdas -- into 17960's queries, which name no
-     * associative term at all, and the indexed model into 11741's, which
-     * name no indexed term at all.  Those are not neutral: a lambda and a
-     * datatype the query never applies still put the goal in a fragment
-     * z3 decides differently, and a reader of a published query cannot
-     * tell a definition the formula rests on from one it does not.</p>
-     *
-     * <p>Only a {@code define-fun} is dropped.  A sort, a datatype and a
-     * {@code declare-fun} are what the query's own SORTS are written in,
-     * so dropping one would change what its declarations mean; a
-     * definition is reached or it is inert.  Reachability is transitive
-     * through definition bodies -- {@code assoc_put} names {@code
-     * assoc_has} -- and it is the same notion {@link SmtLowering#reachedBy} applies
-     * to declarations, over the same tokenizer ({@link #names}).</p>
+     * The preamble lines one query NEEDS: all but the {@code define-fun}s its
+     * texts do not reach, transitively through definition bodies (as
+     * {@link SmtLowering#reachedBy} does for declarations).  Unused lambdas
+     * are not neutral: they change the fragment z3 decides.  Sorts,
+     * datatypes and {@code declare-fun}s always stay.
      */
     public static List<String> reachedPreamble(List<String> preamble,
                                                Iterable<String> texts) {
@@ -566,20 +443,10 @@ public final class SmtNames {
     }
 
     /**
-     * The same text, with every name SMT-LIB cannot spell bare quoted.
-     *
-     * <p>A row's symbol is a NAME the runtime chose --
-     * {@code MAP_STATE/4#-3@v112} -- and {@code #} is not in SMT-LIB's
-     * simple-symbol alphabet: it opens a bit-vector literal, so z3 answers
-     * the whole query with "invalid bit-vector literal" and the
-     * composition has no verdict at all.  {@code |...|} is the SAME symbol
-     * spelled legally, which is why the fix is a spelling and not a
-     * rename: renaming would need every published term rewritten in step,
-     * and a term the runtime wrote about {@code x} must stay about
-     * {@code x}.</p>
-     *
-     * <p>Idempotent: an already-quoted name is copied through, so a body
-     * that passes here twice is the text it was.</p>
+     * The text with every name SMT-LIB cannot spell bare bar-quoted (a
+     * runtime symbol like {@code MAP_STATE/4#-3@v112} would otherwise read
+     * as a bit-vector literal).  A spelling, not a rename, so published
+     * terms stay valid; idempotent.
      */
     public static String legalSymbols(String query) {
         if (query == null || query.isEmpty()) return query;
@@ -601,8 +468,7 @@ public final class SmtNames {
         return true;
     }
 
-    /** Copies one string or one already-quoted symbol, closing mark and
-     *  all. */
+    /** SMT-LIB's simple-symbol alphabet. */
     private static boolean simpleCharacter(char value) {
         if (Character.isLetterOrDigit(value)) return true;
         return "~!@$%^&*_-+=<>.?/".indexOf(value) >= 0;

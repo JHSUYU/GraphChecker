@@ -19,12 +19,8 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
-/**
- * Canonical runtime-planning artifact.
- *
- * <p>The first JSONL row owns the region catalog and the planning gaps; the
- * rows after it are the occurrence plans, each self-contained.</p>
- */
+/** Runtime-planning JSONL: row 1 is the region catalog plus gaps, then one
+ *  self-contained row per occurrence plan. */
 public final class RuntimePlanArtifact {
     private static final int SCHEMA_VERSION = 2;
     private static final String CATALOG_KIND =
@@ -43,12 +39,12 @@ public final class RuntimePlanArtifact {
         this.gaps = gaps;
     }
 
-    /** The occurrence plans, decoded once here and never re-parsed. */
+    /** Decoded once here, never re-parsed. */
     public List<RegionInstancePlan> regionPlans() { return plans; }
 
     public List<JsonObject> regions() { return copies(regions); }
 
-    /** As above, carrying the planning gaps the catalog publishes. */
+    /** Catalog row (regions + gaps) followed by the plan rows. */
     public static String encode(Collection<JsonObject> encodedPlans,
                                 Collection<JsonObject> encodedRegions,
                                 Collection<JsonObject> encodedGaps) {
@@ -102,9 +98,7 @@ public final class RuntimePlanArtifact {
             throw new IOException("invalid runtime plan row: " + path,
                     malformed);
         }
-        // One coarse occurrence is one row (README REGION-1); the decode
-        // point owns that, and names the duplicate rather than reporting a
-        // schema complaint about the artifact it sits in.
+        // README REGION-1: one coarse occurrence is one row.
         Set<String> occurrences = new LinkedHashSet<>();
         for (RegionInstancePlan plan : decoded) {
             if (!occurrences.add(plan.occurrenceId())) {

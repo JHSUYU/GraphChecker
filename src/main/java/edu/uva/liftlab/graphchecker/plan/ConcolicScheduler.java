@@ -94,8 +94,7 @@ public final class ConcolicScheduler {
             throw new IOException("static scope map states no site: "
                     + arguments.staticScopeMap);
         }
-        // The identities recorded here are verified once, against the same
-        // files, at the point the schedule index commits them.
+        // These identities are re-verified when the schedule index commits.
         return new LoadedInputs(regionPlans, regionIndex,
                 candidateGraph, staticScopeMap,
                 regionPlanIdentity,
@@ -106,9 +105,8 @@ public final class ConcolicScheduler {
     private static Result scheduleLoaded(
             Arguments arguments, LoadedInputs loaded)
             throws IOException {
-        // A declaration names a value and the graph names that value once
-        // per local it is copied into, so the declared names are resolved
-        // over Soot's exact-copy edges once, before any region selects.
+        // Resolve declared names over Soot's exact-copy edges before any region
+        // selects.
         loaded.symbolicInputs.resolveDeclaredNames(loaded.candidateGraph);
         List<Candidate> candidates = candidates(arguments,
                 loaded.regionPlans, loaded.regionIndex,
@@ -126,16 +124,13 @@ public final class ConcolicScheduler {
             ExecutionTask scheduled = task(candidate,
                     branchMethods(candidate.branches), loopBound,
                     loaded.symbolicInputs);
-            // json() is the live row by decision (contract/PlanRow): the
-            // scheduler annotates the task it has just created, and no typed
-            // member it already decoded is derived from these carriers.
+            // json() is the live row (PlanRow): the scheduler annotates its own
+            // new task.
             JsonObject executionTask = scheduled.json();
             if (candidate.goal.kind().capturesTargetReach()) {
-                // The branch event this occurrence must decide, and the arm
-                // that reaches the annotated throw -- phi's fatal polarity,
-                // stated by the one guard authority
-                // (static_scope_map's TARGET_SITE row) and carried here so
-                // no later stage re-derives it.
+                // The branch event this occurrence must decide and phi's fatal
+                // arm, from the TARGET_SITE guards, so no later stage
+                // re-derives it.
                 JsonObject target = new JsonObject();
                 target.addProperty("siteId", candidate.targetSiteId);
                 target.addProperty("occurrence",
@@ -147,12 +142,9 @@ public final class ConcolicScheduler {
 
             result.executionTasks.add(scheduled);
         }
-        // Which stores of a declared input's cell the replay must observe:
-        // one campaign-wide answer, computed from the same refined graph the
-        // root-dependence slice is computed from, and annotated onto every
-        // task because a location is shared and the first write of it in
-        // the window is what starts its log -- whichever occurrence makes
-        // it.  json() is the live row by decision (PlanRow).
+        // Stores of declared input cells the replay must observe:
+        // campaign-wide, on every task, since whichever occurrence writes first
+        // starts the log.
         JsonArray writeSites = loaded.staticScopeMap.writeSitesOf(
                 declaredInputCells(result.executionTasks));
         if (writeSites.size() > 0) {
@@ -164,11 +156,8 @@ public final class ConcolicScheduler {
         return result;
     }
 
-    /**
-     * The task of one region-path goal whose inputs and woven methods the
-     * caller states: the schedule's own rule ({@link #task}), for an
-     * occurrence a replay exposed ({@code ExposedRegionPlanMain}).
-     */
+    /** A region-path task with caller-stated inputs, for an exposed occurrence
+     *  ({@code ExposedRegionPlanMain}). */
     static ExecutionTask regionPathTask(
             Goal goal, JsonArray inputActions, JsonArray branchMethods,
             LoopBoundPolicy loopBound, SymbolicInputSelection symbolicInputs) {
@@ -190,23 +179,9 @@ public final class ConcolicScheduler {
                 loopBound);
     }
 
-    /**
-     * The ONE cap rule: a selection that does not fit {@code --max-jobs} is
-     * refused, by name and with its own admission summary.
-     *
-     * <p>A bare count says only that the campaign is too big; what a reader
-     * needs is which admission rule bought the rows, so the next step is
-     * either raising {@code --max-jobs} or tightening that rule.</p>
-     *
-     * <p>Both scheduling paths refuse here.  {@link #scheduleLoaded} used to
-     * {@code continue} past the cap instead: the run then published the
-     * first {@code maxJobs} tasks, dropped every candidate after them and
-     * said nothing, so a campaign composed a formula missing arms it never
-     * reported dropping -- not a weaker claim, an unsound one.  A cap is a
-     * declaration about the size of the campaign, and a campaign that
-     * exceeds it is a campaign that has to be re-declared, never one to
-     * truncate silently.</p>
-     */
+    /** The ONE cap rule: a selection over {@code --max-jobs} is refused by name
+     *  with its admission summary. Never truncate: dropped candidates are arms
+     *  missing from the formula, an unsound claim. */
     private static IOException overMaxJobs(
             int selected, int maxJobs, List<RegionInstancePlan> regionPlans) {
         return new IOException("selected exact closure exceeds max jobs: "
@@ -214,13 +189,8 @@ public final class ConcolicScheduler {
                 + closureAdmissionSummary(regionPlans));
     }
 
-    /**
-     * The exact cells this campaign's DECLARED region inputs name.
-     *
-     * <p>Only a declared input: the experiment said "the search starts at
-     * this cell", and the write sites of anything else are not this
-     * campaign's business.</p>
-     */
+    /** The exact cells the campaign's DECLARED region inputs name (nothing
+     *  else). */
     static Set<String> declaredInputCells(Iterable<ExecutionTask> tasks) {
         Set<String> cells = new LinkedHashSet<>();
         for (ExecutionTask task : tasks == null
@@ -244,19 +214,9 @@ public final class ConcolicScheduler {
         return cells;
     }
 
-    /**
-     * A selected receive gets its symbolic value from the VM handoff.  A
-     * local action for the same exact port would mint a temporary second root
-     * before attach, so it is not part of the frozen task.
-     *
-     * <p>The rule reads the DECLARED handoff spec: an IN site is where this
-     * occurrence attaches, which is its own declaration and not something an
-     * edge row grants it.  It used to additionally require a correlated
-     * exchange binding naming the port -- a second authority over the same
-     * declaration.  Measured on both kept corpora the two sets are equal
-     * (hdfs-11741: 48 declared IN ports, 48 supplied; hdfs-17960: 0 and 0)
-     * and neither rule suppresses any action, so no task changes.</p>
-     */
+    /** Drops local SYMBOLIC actions for ports this occurrence attaches
+     *  (declared IN handoffs): the VM handoff supplies that value, and a local
+     *  action would mint a second root before attach. */
     static JsonArray removeInboundProtocolHandoffInputs(
             JsonArray actions,
             Iterable<CommunicationHandoffSpec> declaredHandoffs) {
@@ -286,15 +246,8 @@ public final class ConcolicScheduler {
         return retained;
     }
 
-    /**
-     * The methods whose conditional branches this task's weave covers.
-     *
-     * <p>The plan names methods, not sites: INSTRUMENT weaves
-     * {@code markConcolicBranch} at every conditional branch of every method
-     * it instruments, so the site list the region plan carries is the
-     * scheduler's own scope answer and not a per-branch selection anything
-     * downstream has to honour.</p>
-     */
+    /** Methods whose branches the weave covers (INSTRUMENT weaves every branch
+     *  of a method). */
     private static JsonArray branchMethods(JsonArray branches) {
         java.util.TreeSet<String> methods = new java.util.TreeSet<>();
         for (JsonElement element : branches == null
@@ -311,16 +264,9 @@ public final class ConcolicScheduler {
         return result;
     }
 
-    /**
-     * The arm of one branch site that reaches the annotated target.
-     *
-     * <p>The one guard authority, {@code causynth.SiteControlDependence},
-     * computed this in ANALYZE and published it on the TARGET_SITE row of
-     * {@code static_scope_map.jsonl}: post-dominance keeps a branch exactly
-     * when one arm makes the throw unavoidable, so the kept branch names
-     * that arm.  {@code null} means this map states no arm for the site,
-     * which is a refusal at the caller and never a default.</p>
-     */
+    /** The arm of one branch site that reaches the annotated target, from the
+     *  TARGET_SITE guards ({@code causynth.SiteControlDependence}). {@code
+     *  null}: no arm stated, which the caller refuses (never a default). */
     static Boolean fatalArm(StaticScopeMap map, String guardSiteId) {
         Boolean found = null;
         for (StaticScopeMap.Site target : map.targetSites()) {
@@ -398,8 +344,6 @@ public final class ConcolicScheduler {
                         "runtime_workflow_schedule_index.json"),
                 CanonicalJson.render(index) + "\n");
         if (result.executionTasks.isEmpty()) {
-            // Diagnosed from the plan this run already loaded, not from a
-            // second read of the same file.
             throw new IllegalStateException(noCandidateDiagnostic(
                     arguments, loaded.regionPlans));
         }
@@ -425,16 +369,9 @@ public final class ConcolicScheduler {
         return result;
     }
 
-    /**
-     * Names the propagation ledger of the plan's replays.
-     *
-     * <p>Every task replayed in one workload JVM shares one ledger, and the
-     * ledger's identity is what a reader joins two runs on.  The seed is
-     * the plan itself, which makes the identity stable across iterations
-     * and campaign roots: the same tasks replayed again are the same
-     * ledger.  A flip replay links this same plan, so it carries the same
-     * group.</p>
-     */
+    /** Stamps the replay ledger id: a hash of the plan, so the same tasks are
+     *  the same ledger across iterations; flip replays link the same plan and
+     *  group. */
     private static List<JsonObject> withSeedReplayGroup(
             List<JsonObject> taskRows) {
         StringBuilder seed = new StringBuilder();
@@ -487,7 +424,6 @@ public final class ConcolicScheduler {
             throws IOException {
         List<Candidate> result = new ArrayList<>();
         for (RegionInstancePlan plan : regionPlans) {
-            // Target-first scheduling selects one exact occurrence at a time.
             if (!arguments.occurrenceId.isEmpty()
                     && !arguments.occurrenceId.equals(plan.occurrenceId())) {
                 continue;
@@ -514,9 +450,8 @@ public final class ConcolicScheduler {
         return result;
     }
 
-    /** The per-loop {@code K_L} values declared by the region plan. Explicit
-     * declarations remain authoritative even when they equal the inherited
-     * bound, so their loop sites do not become undeclared. */
+    /** Per-loop {@code K_L} the plan declares; kept even when equal to the
+     *  inherited bound. */
     static LoopBoundPolicy declaredLoopBounds(
             int inheritedBound, List<RegionInstancePlan> regionPlans) {
         Map<String, Integer> declared = new TreeMap<>();
@@ -542,18 +477,9 @@ public final class ConcolicScheduler {
         return LoopBoundPolicy.cfgBackedges(inheritedBound, declared);
     }
 
-    /**
-     * The one candidate of one replayable goal.
-     *
-     * <p>A region-path goal replays its own occurrence.  A target-reach goal
-     * additionally names the branch event it must decide: the branch the ONE
-     * guard authority named as a guard of the annotated throw, at the
-     * occurrence the recording decided it, on the arm that reaches the
-     * throw.  Nothing here searches for a path, ranks a branch or elects an
-     * occurrence: a case that states no target occurrence is refused by name
-     * in {@link RuntimeWorkflowDiscovery}, and one with no guarded failure
-     * branch is refused below.</p>
-     */
+    /** The one candidate of one replayable goal. A target-reach goal also names
+     *  the branch it must decide: the recorded guard of the annotated throw, on
+     *  the arm that reaches it. No path search, ranking or election here. */
     private static void appendGoalCandidates(
             Arguments arguments, List<Candidate> result, Goal goal,
             StaticScopeMap scopeMap, SymbolicInputSelection symbolicInputs)
@@ -580,15 +506,8 @@ public final class ConcolicScheduler {
                 inputActions));
     }
 
-    /**
-     * The one branch of this region the annotated throw is guarded by.
-     *
-     * <p>Guarded means what {@code static_scope_map}'s TARGET_SITE row says
-     * it means, so a branch is a candidate here only if the map named it and
-     * the recording decided it.  Two of them, or none, is a named refusal:
-     * phi has one polarity and the anchor one site, and choosing between
-     * them is the offline path planning this replaced.</p>
-     */
+    /** The one recorded branch the scope map names as a guard of the annotated
+     *  throw; none or several is a named refusal (phi has one polarity). */
     private static JsonObject fatalBranch(JsonArray branches,
                                           StaticScopeMap scopeMap)
             throws IOException {
@@ -634,18 +553,9 @@ public final class ConcolicScheduler {
         }
     }
 
-    /**
-     * One goal's proposed inputs, with the declared ports the one admission
-     * rule minted from the scope map and the recording.
-     *
-     * <p>A minted port and the region row's own port for the same site are
-     * the same port -- same id, same static members, same recorded ordinal
-     * and value -- so the minted one takes its place rather than standing
-     * beside it.  The region row's copy is the one that is going: it is
-     * assembled from the refined graph's runtime bindings, and the minted
-     * one is assembled from the two artifacts that publish the same facts.
-     * A minted port the row does not carry is appended.</p>
-     */
+    /** Proposed inputs with the minted declared ports: a minted port replaces
+     *  the region row's port of the same symbol (same port, built from the
+     *  publishing artifacts), and is appended otherwise. */
     static JsonArray withDeclaredPorts(JsonArray proposed, JsonArray minted) {
         if (minted.size() == 0) return proposed;
         Map<String, JsonObject> bySymbol = new LinkedHashMap<>();
@@ -669,25 +579,12 @@ public final class ConcolicScheduler {
     }
 
     /**
-     * The binding mode of each proposed input: how the VM would present that
-     * location as a symbol, or the one reason it cannot.
+     * The binding mode of each proposed input, or why the VM cannot present it.
      *
-     * <p>No admission decision is made here.  {@code
-     * SymbolicInputSelection.decide} is the ONE admission rule -- declared,
-     * workload-owned, hook-minted or a declared cut port, and
-     * UNDECLARED_SYMBOLIC_INPUT otherwise -- and this used to run a
-     * fourteen-name refusal taxonomy in front of it: a cost heuristic
-     * ("symbolic freedom is only worth its cost when some explored decision
-     * can read the value"), a structure-carrier role test, an enum-ordinal
-     * and container-cardinality classifier, a JDK-name test, a regex, and an
-     * unobserved-input rule.  Measured on the 17960 seed, the taxonomy
-     * changed no action's mode -- all 106 rows it labelled were undeclared
-     * anyway -- while it could and did drop a DECLARED cell before the one
-     * rule saw the declaration.</p>
-     *
-     * <p>The two refusals that remain are not policy.  A location the VM has
-     * no presentation for cannot carry a symbol however it is declared, and
-     * neither can a value whose type the SMT layer has no term for.</p>
+     * <p>No admission here: {@code SymbolicInputSelection.decide} is the ONE
+     * rule. Trap: a refusal taxonomy in front of it would drop DECLARED cells
+     * before the rule sees them. The only refusals are mechanism facts: no VM
+     * presentation, or no SMT term for the type.</p>
      */
     static JsonArray materializationPlan(
             Goal goal, JsonArray sourceActions,
@@ -720,11 +617,9 @@ public final class ConcolicScheduler {
                         && !argumentMethod.isEmpty()
                         && !argumentMethod.equals(planRootMethod)
                         && argumentIndex >= 0) {
-                    // The value is an argument of a frame that is not this
-                    // plan's root, so the root-entry hook cannot see it: that
-                    // hook is injected at the root and matches by position
-                    // alone, and the root of a server fragment is the serving
-                    // thread's own entry, which has no arguments at all.
+                    // Argument of a non-root frame: the root-entry hook matches
+                    // by position at the root only (a server fragment's root
+                    // has no arguments).
                     binding.addProperty("bindingMode", "METHOD_ARGUMENT");
                     binding.addProperty("method", argumentMethod);
                     binding.addProperty("index", argumentIndex);
@@ -800,16 +695,8 @@ public final class ConcolicScheduler {
     static final String UNSUPPORTED_LEAF_TYPE =
             "UNSUPPORTED_SYMBOLIC_LEAF_TYPE";
 
-    /**
-     * Whether the SMT layer has a term for this value: a primitive, a
-     * String, or an array of primitives.
-     *
-     * <p>A mechanism fact and the whole of what is left of the leaf
-     * contract.  The four field-path spellings it used to check after this
-     * -- ambiguous path, undeclared leaf, leaf name mismatch, leaf type
-     * mismatch -- named four ways for one plan row to be malformed and
-     * demoted a declared cell for each of them.</p>
-     */
+    /** Whether the SMT layer has a term for this value: primitive, String, or
+     *  primitive array. */
     private static boolean supportedSymbolicLeafType(JsonObject action) {
         String descriptor = JavaPrimitiveSmtSemantics.javaTypeDescriptor(
                 optionalString(action, "javaType"));
@@ -872,13 +759,8 @@ public final class ConcolicScheduler {
     /** The static region schema version this build reads. */
     private static final int STATIC_REGION_SCHEMA_VERSION = 3;
 
-    /**
-     * The region ids of one campaign's port catalog.
-     *
-     * <p>Every row states the schema version it was written under and a row
-     * stating another is refused rather than partly read.  This used to be a
-     * {@code Region} class holding exactly that check and the id.</p>
-     */
+    /** Region ids of the port catalog; a row of another schema version is
+     *  refused. */
     private static Set<String> regionIndex(List<JsonObject> regions) {
         Set<String> index = new LinkedHashSet<>();
         for (JsonObject row : regions) {
@@ -894,8 +776,8 @@ public final class ConcolicScheduler {
         return index;
     }
 
-    /** The one option scan of this entry point: {@code --key value} pairs,
-     *  a bare {@code --flag} reading "true", and no unknown key. */
+    /** The one option scan: {@code --key value}, bare {@code --flag} = "true",
+     *  no unknown key. */
     static Map<String, String> parseArgs(String[] args, String... known) {
         Set<String> options = new LinkedHashSet<>(Arrays.asList(known));
         Map<String, String> values = new LinkedHashMap<>();
@@ -923,16 +805,8 @@ public final class ConcolicScheduler {
         }
     }
 
-    /**
-     * The static candidate graph, which the scheduler reads for exactly one
-     * thing: the exact-copy relation a declaration is renamed over.
-     *
-     * <p>It used to read the runtime-refined graph, for four things.  Three
-     * of them were static facts of this same graph or of the static scope
-     * map -- the declared cells' write sites, a root cell's definition
-     * sites, and the guard-dependent cells of the deleted cost heuristic --
-     * so PLAN no longer takes a runtime artifact for any of them.</p>
-     */
+    /** The static candidate graph, read only for the exact-copy relation
+     *  declarations are renamed over. */
     private static void requireCandidateGraph(List<JsonObject> rows) {
         if (rows.isEmpty()) {
             throw new IllegalArgumentException(
@@ -951,15 +825,8 @@ public final class ConcolicScheduler {
     }
 
     private static final class Candidate {
-        /**
-         * Name order, not rank order.
-         *
-         * <p>It used to lead with "directed", then with the highest recorded
-         * event sequence of the target branch -- an evidence ranking over
-         * candidates, which is the offline path planning this file no longer
-         * does.  One selection produces one candidate, so this is only a
-         * stable order.</p>
-         */
+        /** Name order for stability only; never a rank (one selection, one
+         *  candidate). */
         private static final Comparator<Candidate> ORDER =
                 Comparator.comparing((Candidate value) -> value.targetSiteId)
                         .thenComparing(value ->
@@ -986,8 +853,8 @@ public final class ConcolicScheduler {
             this.inputActions = inputActions;
         }
 
-        /** Stable task identity: source occurrence x relation content x exact
-         * port set (x target predicate for reach goals). */
+        /** Stable task identity: occurrence x region content x port set (x
+         *  target for reach goals). */
         private String seedTaskId(JsonArray taskInputActions) {
             StringBuilder identity = new StringBuilder(
                     "TASK.SEED.SEMANTIC.V3");
@@ -1017,7 +884,7 @@ public final class ConcolicScheduler {
                     + "\n--BRANCH-SITES--\n" + String.join("\n", sites));
         }
 
-        /** Canonical ordinal-free descriptors for the local symbolic roots. */
+        /** Ordinal-free descriptors of the local symbolic roots. */
         private String portSetHash(JsonArray taskInputActions) {
             java.util.TreeSet<String> descriptors = new java.util.TreeSet<>();
             for (JsonElement element : taskInputActions) {
@@ -1052,12 +919,8 @@ public final class ConcolicScheduler {
         }
     }
 
-    /**
-     * How the plan rows of an over-sized closure were admitted.  Counted by
-     * admission basis, then by demand depth, then by the region anchors that
-     * contributed most, so the cap failure names its own top contributors
-     * instead of sending a reader back to the plan artifact.
-     */
+    /** How an over-sized closure's rows were admitted (by basis, depth, top
+     *  anchors), for the cap refusal. */
     static String closureAdmissionSummary(List<RegionInstancePlan> rows) {
         Map<String, Integer> byBasis = new TreeMap<>();
         Map<String, Integer> byDepth = new TreeMap<>();
@@ -1106,8 +969,7 @@ public final class ConcolicScheduler {
                     && !plan.occurrenceId().equals(
                     arguments.occurrenceId.trim())) continue;
             if (selected == null) {
-                // Remembered only so an unmatched goal still reports which
-                // fragments were searched.
+                // Kept so an unmatched goal still reports what was searched.
                 selected = plan;
             }
             Goal found = null;
@@ -1168,19 +1030,10 @@ public final class ConcolicScheduler {
         public final List<ExecutionTask> executionTasks = new ArrayList<>();
     }
 
-    /**
-     * Every dataflow cell one proposed input action names.
-     *
-     * <p>The read's own cell is the location for a field or a call
-     * return; {@code dependencyCells} is the local the value lands in,
-     * which is the only cell an accessor read shares with the graph --
-     * a library field like {@code AtomicInteger#value} is a source cell
-     * of its own and converges with its receiver's field read only at
-     * that local.  Both are consulted so
-     * {@code SnapshotManager#numSnapshots} selects the
-     * {@code AtomicInteger#value} port the experiment used to have to
-     * name by hand.</p>
-     */
+    /** Every dataflow cell one proposed action names: its own cell plus {@code
+     *  dependencyCells} (the local it lands in), since an accessor's library
+     *  field (e.g. {@code AtomicInteger#value}) meets its receiver's field only
+     *  at that local. */
     static Set<String> actionCells(JsonObject action) {
         Set<String> cells = new LinkedHashSet<>();
         for (String member : new String[]{"cell", "declaredFieldSignature",
@@ -1201,45 +1054,28 @@ public final class ConcolicScheduler {
 
 
     /**
-     * The experiment's declaration of which inputs are symbolic at all.
-     *
-     * <p>One decision per proposed input action, and one authority for it:
-     * a symbol enters the run only where the campaign said so.  Four
-     * declarations say so, and nothing else does.</p>
+     * The experiment's declaration of which inputs are symbolic: one decision
+     * per proposed input, one authority. Four declarations exist:
      *
      * <ul>
-     *   <li>a cell, port or field signature this file names for the
-     *   action's own region -- the case declaration.  It mints: the read
-     *   is where the search starts;</li>
-     *   <li>an {@code EXPLICIT_SYMBOLIC_FAULT} marker the workload wrote
-     *   into its own program text, which is a declaration in the same
-     *   sense.  It mints;</li>
-     *   <li>a field a {@code CausynthSymbolicSource} hook site owns: the
-     *   hook mints at its own call site, so the action itself stands
-     *   down and stays concrete;</li>
-     *   <li>a {@code COMMUNICATION_SITE_PORT} the communication catalog
-     *   declared -- a wire attach point.  It is tracked and never mints:
-     *   the value is produced on the other side and installed here.</li>
+     *   <li>a cell, port or field this file names for the action's region:
+     * mints;</li>
+     *   <li>an {@code EXPLICIT_SYMBOLIC_FAULT} marker in the workload's text:
+     * mints;</li>
+     *   <li>a field a {@code CausynthSymbolicSource} hook owns: the hook mints,
+     * the action stays concrete;</li>
+     *   <li>a declared {@code COMMUNICATION_SITE_PORT}: tracked, never minted
+     * (the value is installed from the other side).</li>
      * </ul>
      *
-     * <p>Every other proposed read is concrete.  A read no declaration
-     * names is not a carrier to be versioned: the expression a value
-     * carries rides with the value in the VM, so a read that observes a
-     * root-derived store gets that expression whether or not the plan
-     * named the location, and a read that observes nothing symbolic has
-     * nothing to publish.  Which branches the exploration flips is what
-     * finds the relations; a region-entry symbol for an undeclared cell
-     * only invents an input the case never declared.</p>
-     *
-     * <p>Which symbol reaches which read is decided at replay -- the VM's
-     * propagated expression is the authority -- so no selector, selected
-     * phase, producer version or output-version boundary is predicted
-     * here.</p>
+     * <p>Everything else is concrete: expressions ride with values in the VM,
+     * so an undeclared entry symbol would only invent an input. Which symbol
+     * reaches which read is decided at replay, never predicted here.</p>
      */
     static final class SymbolicInputSelection {
         /** Verdict of a read no declaration names. */
         static final String UNDECLARED = "UNDECLARED_SYMBOLIC_INPUT";
-        /** regionId -> the field signatures, port ids and cells it admits. */
+        /** regionId -> admitted field signatures, port ids and cells. */
         private final Map<String, Set<String>> admitted;
         /** The subset of {@link #admitted} the case declared to be clocks. */
         private final Map<String, Set<String>> clocks;
@@ -1254,23 +1090,17 @@ public final class ConcolicScheduler {
             this.minted = minted;
         }
 
-        /** One pass over the static hook declarations and, when the campaign
-         *  configured one, over the declared field/port/cell rows. */
+        /** One pass over the static hook declarations and the declared rows, if
+         *  any. */
         static SymbolicInputSelection read(
                 Path path, List<JsonObject> regionCatalog,
                 List<RegionInstancePlan> regionPlans)
                 throws IOException {
             Map<String, Map<String, String>> minted = new LinkedHashMap<>();
             Set<String> catalogRegions = new LinkedHashSet<>();
-            // The declaration this plan was built under, published on the
-            // region rows by the finalizer that honoured it: declared
-            // method -> the regions it roots.  It is both halves of the
-            // rule.  It resolves the declaration the way the rule states
-            // it -- a declared method is a region root -- and a declared
-            // method missing from it says the plan never saw the
-            // declaration, which is a different fault from a site the
-            // recording never entered, and nothing else can tell the two
-            // apart.
+            // Declared method -> regions it roots, as the finalizer published.
+            // A declared method missing here means the plan never saw the
+            // declaration (distinct from a site the recording never entered).
             Map<String, Set<String>> declaredRootRegions =
                     new LinkedHashMap<>();
             for (JsonObject region : regionCatalog == null
@@ -1301,13 +1131,8 @@ public final class ConcolicScheduler {
             }
             requireFile(path, "symbolic input selection");
             for (JsonObject row : ArtifactIO.readJsonl(path)) {
-                // A row that declares itself a clock declares every name on
-                // it a clock: the case states which of its reads is a wall
-                // clock, and the planner never decides that from a callee.
-                // ONE statement, two spellings the file may use for it --
-                // the cell form's `clock: true` and the callee form's
-                // `kind: CLOCK` -- exactly as declaredMethod accepts a whole
-                // signature or a class plus a method half.
+                // A clock row makes every name on it a clock (never decided
+                // from a callee); spelled `clock: true` or `kind: CLOCK`.
                 String callee = DeclaredSymbolicInputs.declaredCallee(row);
                 boolean clock = optionalBool(
                         row, InputActionCatalog.DECLARED_WALL_CLOCK, false)
@@ -1328,10 +1153,8 @@ public final class ConcolicScheduler {
                             addDeclaredNames(clockNames, row, field);
                         }
                     }
-                    // A callee declaration's name is its RETURN cell, which
-                    // is the cell every external-call-return port of it
-                    // carries: one name, so the admission test and the clock
-                    // test are the same tests they were.
+                    // A callee's name is its return cell, carried by its
+                    // call-return ports.
                     if (!callee.isEmpty()) {
                         String cell = DeclaredSymbolicInputs
                                 .returnCell(callee);
@@ -1346,33 +1169,15 @@ public final class ConcolicScheduler {
         /**
          * Which planned regions one declaration row admits its names in.
          *
-         * <p>A manual root belongs to a <em>site</em> -- the class and method
-         * the cell is read in -- not to a region.  A region id is a hash the
-         * planner mints from what the recording selected, so it moves when
-         * the selection moves, and a campaign that spells one has to be
-         * re-derived by hand every time: that is what refused bug3's clock
-         * declaration at PLAN when the retained region set changed
-         * underneath it.  A site is what the experiment actually knows, and
-         * it is resolved here, against the plan that names each region's
-         * {@code targetMethod}.</p>
+         * <p>A manual root belongs to a SITE, not a region id (ids are minted
+         * from the selection and move with it). Per {@link
+         * DeclaredSymbolicInputs} a declared method names every scoped region
+         * it roots, anchors, or whose occurrence ran it ({@link
+         * #ranTheDeclaredMethod}). The region-id form is still read.</p>
          *
-         * <p>Resolution is the rule of {@link DeclaredSymbolicInputs}: a
-         * declared method is a region root by declaration, so it names every
-         * planned region it roots, and -- since a region opens on the anchor
-         * the recording selected, which need not be the root -- every region
-         * it anchors as well, and -- since an entry inside a running
-         * occurrence opens none of its own -- every region whose occurrence
-         * RAN it ({@link #ranTheDeclaredMethod}).  A site that matches
-         * several regions declares the root in each of them: the same Java
-         * method planned on two nodes is two regions and the declaration
-         * means both, unless it scopes itself to a node or an epoch.  The
-         * region-id form is still read.</p>
-         *
-         * <p>A site that matches nothing is a hard error naming the site.
-         * Under the rule it can mean only one thing -- this plan was built
-         * without the declaration -- because a declared root the recording
-         * never entered is refused at aggregation, by name and with its
-         * activation count.</p>
+         * <p>No match is a hard error: the plan was built without the
+         * declaration (a never-entered root is refused earlier, at
+         * aggregation).</p>
          */
         private static List<String> declaredRegions(
                 JsonObject row, Set<String> catalogRegions,
@@ -1389,15 +1194,9 @@ public final class ConcolicScheduler {
             }
             String method = DeclaredSymbolicInputs.declaredMethod(row);
             if (method.isEmpty()) {
-                // A CALLEE declaration names no site of its own: it is
-                // about every call of that method in the application scope,
-                // and WHICH regions actually call it is answered by the
-                // port walk over the recording
-                // (RuntimeSelectedRegionFinalizer
-                // #semanticExternalCallReturnEdges), not here.  So it
-                // admits its name in every planned region of its declared
-                // scope, and a region that never calls the callee carries
-                // the name and no port.
+                // A callee names no site: admit its name in every scoped
+                // region; the recording's port walk decides which regions
+                // actually call it.
                 if (!DeclaredSymbolicInputs.declaredCallee(row).isEmpty()) {
                     return everyPlannedRegion(row, catalogRegions,
                             regionPlans);
@@ -1410,11 +1209,8 @@ public final class ConcolicScheduler {
             String epoch = firstNonBlank(optionalString(row, "epoch"));
             List<String> resolved = new ArrayList<>();
             Set<String> seen = new LinkedHashSet<>();
-            // The regions this method roots by declaration, plus the ones
-            // it anchors.  Both are the same site seen from two sides: the
-            // declaration names a method, the plan names each region's
-            // anchor, and a declared root whose region opens on some other
-            // anchor is still the region the declaration meant.
+            // Rooted by declaration, or anchored: the same site seen from two
+            // sides.
             Set<String> rooted = declaredRootRegions == null
                     ? Collections.<String>emptySet()
                     : declaredRootRegions.getOrDefault(method,
@@ -1433,15 +1229,8 @@ public final class ConcolicScheduler {
                 if (seen.add(plan.regionId())) resolved.add(plan.regionId());
             }
             if (resolved.isEmpty()) {
-                // A declared method is a region root by declaration, and the
-                // finalizer publishes one region row per honoured
-                // declaration and refuses DECLARED_INPUT_NEVER_ACTIVATED for
-                // a declared root the recording never entered.  So an empty
-                // resolution here is not "the site is not causal": it is a
-                // plan that was built without this declaration -- a stale
-                // plan, or a PLAN stage the case file never reached -- and
-                // saying so is the only way the reader knows to re-plan
-                // rather than to edit the case.
+                // Empty = a plan built without this declaration: re-plan, don't
+                // edit the case.
                 String scope = (node.isEmpty() ? "" : " on node " + node)
                         + (epoch.isEmpty() ? "" : " at epoch " + epoch);
                 throw new IOException("DECLARED_INPUT_NOT_PLANNED: symbolic "
@@ -1455,25 +1244,11 @@ public final class ConcolicScheduler {
             return resolved;
         }
 
-        /**
-         * Whether this occurrence RAN the declared method.
-         *
-         * <p>The fold rule's half of the resolution (paper SS3.1.2, {@code
-         * Identity#fold}).  A declared method called synchronously inside a
-         * running occurrence opens NO occurrence of its own, so it roots no
-         * planned region and anchors none: on hdfs-11741 campaign #5 every
-         * entry of {@code removeExpiredKeys()} ran inside another
-         * occurrence, and the two tests above resolved it to nothing at all
-         * -- a plan that honoured the declaration exactly, refused as one
-         * that had never seen it.</p>
-         *
-         * <p>The occurrence that ran it is where its sites were recorded and
-         * where its ports are minted, so it is the region the declaration
-         * means.  Read off the goal's {@code runtimeDefinitionMethods},
-         * which is the recording's own statement of the methods this
-         * occurrence ran inside its region's text -- never a static
-         * containment test, because a region holding the method statically
-         * says nothing about which occurrence entered it.</p>
+        /** Whether this occurrence RAN the declared method (the fold rule,
+         *  paper SS3.1.2, {@code Identity#fold}): a method called synchronously
+         *  inside an occurrence opens none of its own, so root/anchor tests
+         *  miss it (hdfs-11741's {@code removeExpiredKeys}). Read from the
+         *  recorded {@code runtimeDefinitionMethods}, never static containment.
          */
         private static boolean ranTheDeclaredMethod(
                 RegionInstancePlan plan, String method) {
@@ -1485,16 +1260,8 @@ public final class ConcolicScheduler {
             return false;
         }
 
-        /**
-         * Every planned region of one declaration's scope, for a callee.
-         *
-         * <p>Empty is legal and is not an error: a callee declaration that
-         * resolves to no region says the plan retained none in that scope,
-         * which the case's own target declaration already refuses if it
-         * matters.  The method form's DECLARED_INPUT_NOT_PLANNED refusal is
-         * about a SITE the plan must carry a region for, and a callee names
-         * no site.</p>
-         */
+        /** Every scoped planned region, for a callee; empty is legal (a callee
+         *  names no site). */
         private static List<String> everyPlannedRegion(
                 JsonObject row, Set<String> catalogRegions,
                 List<RegionInstancePlan> regionPlans) {
@@ -1514,11 +1281,8 @@ public final class ConcolicScheduler {
             return resolved;
         }
 
-        /**
-         * Whether one planned region's source key is inside the declared
-         * scope.  {@code sourceKey} reads {@code <workload>/<node>#epoch<n>};
-         * an undeclared node or epoch admits every one of them.
-         */
+        /** Whether a {@code <workload>/<node>#epoch<n>} source key is in the
+         *  declared scope; unset = any. */
         static boolean scopeAdmits(String sourceKey, String node,
                                    String epoch) {
             if (node.isEmpty() && epoch.isEmpty()) return true;
@@ -1584,35 +1348,19 @@ public final class ConcolicScheduler {
             }
         }
 
-        /**
-         * Resolves every declared name onto the cells it is a proven exact
-         * copy of.  Called once, before any {@code select}, so every region
-         * decides against the same declarations.
-         */
+        /** Extends declared names over proven exact copies, before any {@code
+         *  select}. */
         void resolveDeclaredNames(List<JsonObject> candidateGraph) {
             renameDeclaredNames(candidateGraph);
         }
 
         /**
-         * The ports one occurrence's DECLARED sites mint: the static scope
-         * map's {@code DECLARED_SITE} rows joined with the recording's own
-         * captures of the same site, for the sites THIS rule admits.
-         *
-         * <p>One rule, one place.  A site the case declared mints a port per
-         * recorded return; a site it did not declare mints nothing at all,
-         * so no candidate is built for the rule to discard afterwards.  The
-         * static half is the map's, the dynamic half is the recording's, and
-         * the region is the plan's -- the occurrence the capture was
-         * recorded in belongs to it.</p>
-         *
-         * <p>A site whose declarations include an accessor return mints only
-         * that: the VM propagates the field's own expression through the
-         * getter, so a second symbol for the same call result would give one
-         * value two authorities.  The occurrence a capture belongs to is
-         * the recording's answer -- the innermost planned activation that
-         * ran the call, decided where the captures are published -- and the
-         * port is spelled with the PLAN's region, which is the region that
-         * activation ran as.</p>
+         * Ports one occurrence's DECLARED sites mint: scope-map static half
+         * joined with the recording's captures, for sites this rule admits
+         * (undeclared sites mint nothing). Static half from the map, dynamic
+         * from the recording, region from the PLAN. An accessor declaration at
+         * a site wins: the VM already propagates the field's expression through
+         * the getter, so a call-result symbol would be a second authority.
          */
         JsonArray declaredPorts(RegionInstancePlan plan,
                                 StaticScopeMap scopeMap,
@@ -1620,8 +1368,7 @@ public final class ConcolicScheduler {
             Map<String, JsonObject> ports = new LinkedHashMap<>();
             for (DeclaredSiteCapture capture
                     : DeclaredSiteCapture.decode(plan.json())) {
-                // The region's own text has to hold the site: a read this
-                // region does not contain is not this region's port.
+                // The region's own text must hold the site.
                 if (!regionMethods.contains(
                         SiteId.methodOf(capture.siteId()))) {
                     continue;
@@ -1639,13 +1386,9 @@ public final class ConcolicScheduler {
             return minted;
         }
 
-        /**
-         * The ports the same rule mints in an occurrence no recording
-         * captured -- one a replay exposed (DESIGN4 section 3.3b): one
-         * static port per CALL_RETURN declared site the region's text
-         * holds, from the scope map alone.  Accessor returns need the
-         * recorded receiver and are not minted here.
-         */
+        /** The same rule for an exposed occurrence (DESIGN4 section 3.3b): one
+         *  static port per CALL_RETURN declared site its text holds; no
+         *  accessor returns. */
         JsonArray declaredSitePorts(RegionInstancePlan plan,
                                     StaticScopeMap scopeMap,
                                     Set<String> regionMethods) {
@@ -1665,17 +1408,14 @@ public final class ConcolicScheduler {
             return minted;
         }
 
-        /**
-         * Whether one region declares one proposed action: named by the
-         * selection file, or written into the workload's own text (a fault
-         * marker).  Both are declarations in the same sense.
-         */
+        /** Named by the selection file, or a fault marker in the workload's
+         *  text. */
         private boolean declares(String regionId, JsonObject action) {
             return admits(regionId, action) || workloadOwnedSymbol(action);
         }
 
-        /** The accessor declarations of one site, or all of them when it
-         *  has none. */
+        /** The accessor declarations of one site, or all of them when it has
+         *  none. */
         private static List<StaticScopeMap.Site> accessorFirst(
                 List<StaticScopeMap.Site> declarations) {
             List<StaticScopeMap.Site> accessors = new ArrayList<>();
@@ -1694,8 +1434,8 @@ public final class ConcolicScheduler {
                 if (!element.isJsonObject()) continue;
                 JsonObject action = element.getAsJsonObject();
                 JsonObject retained = action.deepCopy();
-                // Every input remains declared because concrete topology may
-                // use it as an instrumentation anchor.
+                // Every input stays listed: concrete topology may anchor
+                // instrumentation on it.
                 if ("SYMBOLIC".equals(optionalString(action, "mode"))) {
                     decide(regionId, action, retained);
                 }
@@ -1704,52 +1444,33 @@ public final class ConcolicScheduler {
             return selected;
         }
 
-        /**
-         * Stamps one proposed input with the verdict of its declaration.
-         *
-         * <p>Four declarations make a read symbolic and nothing else does,
-         * so there is no third state between "declared" and "concrete": a
-         * read the campaign never named publishes no port, mints no
-         * symbol and opens no version log of its own.</p>
-         */
+        /** Stamps one proposed input with its declaration's verdict: declared
+         *  or concrete, no third state. */
         private void decide(
                 String regionId, JsonObject action, JsonObject retained) {
             if (minted(regionId, action)) {
-                // The Java hook mints this exact root once, at its own call
-                // site; a second action for the same location would add a
-                // free root beside it.
+                // The hook mints this root at its own call site; a second
+                // action would add a free root.
                 retained.addProperty("mode", "CONCRETE");
                 retained.addProperty("symbolicDemand",
                         "CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED");
                 return;
             }
             if (declaredCutPort(action)) {
-                // Tracked, and never mint-eligible.  The value this port
-                // names is produced on the other side of the wire and
-                // installed at the consumer by attachCommunicationLeaf, so
-                // the consumer's copy carries the producer's expression and
-                // starts no search of its own.  Naming the port in the
-                // selection file cannot change that -- a root minted here is
-                // a free variable the attach immediately overwrites, which
-                // is how HDFS-17899 bug3 acquired four existential roots on
-                // PBHelper.convert(BlockKeyProto) -- so the declaration is
-                // not allowed to reach it.
+                // Tracked, never minted, even if named: the value is installed
+                // from the other side (attachCommunicationLeaf), so a root
+                // minted here is a free variable the attach overwrites.
                 return;
             }
             if (!declares(regionId, action)) {
-                // No declaration names this read, so it is not an input of
-                // this campaign.  It observes whatever the run put in the
-                // location, and the expression of a root-derived store
-                // rides with that value inside the VM: a plan-side port
-                // here would invent a symbol the case never declared, and
-                // its region-entry mint would hide the real writer behind
-                // a fresh root.
+                // Undeclared: concrete. Its root-derived expression still rides
+                // with the value; a plan-side mint would hide the real writer
+                // behind a fresh root.
                 retained.addProperty("mode", "CONCRETE");
                 retained.addProperty("symbolicDemand", UNDECLARED);
                 return;
             }
-            // Declared: the replay mints here, which is what "the search
-            // starts at this cell" means.
+            // Declared: the replay mints here.
             retained.addProperty(
                     InputActionCatalog.DECLARED_SYMBOLIC_ROOT, true);
             if (names(clocks, regionId, action)) {
@@ -1758,30 +1479,24 @@ public final class ConcolicScheduler {
             }
         }
 
-        /**
-         * A port declared by {@code communication-mappings.jsonl}.
-         *
-         * <p>It is a handoff, not a mint: the consumer reuses the producer's
-         * already-propagated expression.  {@code ConcolicRegionRuntime
-         * .declaredCommunicationCutPort} answers the same question at
-         * replay, off the same {@code sourceKind}, so the two stages agree
-         * without the plan carrying a second marker.</p>
-         */
+        /** A port declared by {@code communication-mappings.jsonl}: a handoff,
+         *  not a mint. {@code
+         *  ConcolicRegionRuntime.declaredCommunicationCutPort} asks the same
+         *  {@code sourceKind} at replay. */
         private static boolean declaredCutPort(JsonObject action) {
             return RuntimeSelectedRegionFinalizer.COMMUNICATION_SITE_PORT
                     .equals(optionalString(action, "sourceKind"));
         }
 
-        /** An explicit {@code Debug.makeSymbolicBoolean} marker: the fault
-         *  symbol is written in the workload's own source, so it needs no
-         *  row in the selection file to survive it. */
+        /** A {@code Debug.makeSymbolicBoolean} fault marker: declared by the
+         *  workload's own text. */
         private static boolean workloadOwnedSymbol(JsonObject action) {
             return RuntimeSelectedRegionFinalizer.EXPLICIT_SYMBOLIC_FAULT
                     .equals(optionalString(action, "sourceKind"));
         }
 
-        /** Whether a declaring hook site of this region mints the action's
-         *  field: one field is one root, and the hook owns it. */
+        /** Whether a hook site of this region mints the action's field (the
+         *  hook owns it). */
         private boolean minted(String regionId, JsonObject action) {
             String field = actionField(action);
             return !field.isEmpty() && minted.getOrDefault(safe(regionId),
@@ -1795,19 +1510,10 @@ public final class ConcolicScheduler {
             return names != null && names.contains(name);
         }
 
-        /**
-         * Whether one region admits one proposed action.
-         *
-         * <p>A declaration names the action's port or one of its dataflow
-         * cells, and {@link ConcolicScheduler#actionCells} is already the
-         * one answer to "which cells does this action name": the read's own
-         * location <em>and</em> the local the value lands in, which is the
-         * only cell an accessor read shares with the graph.  Asking the
-         * narrower question here -- the access signature, the port, the
-         * cell -- is what refused hdfs-17960's declared region input, whose
-         * port names the {@code AtomicInteger.value} leaf while the case
-         * names the accessor's return.</p>
-         */
+        /** Whether one region admits one proposed action: its port or any of
+         *  {@link ConcolicScheduler#actionCells} (including the landing local).
+         *  Trap: a narrower test misses declarations that name the accessor's
+         *  return while the port names the leaf field. */
         private boolean admits(String regionId, JsonObject action) {
             return names(admitted, regionId, action);
         }
@@ -1833,28 +1539,16 @@ public final class ConcolicScheduler {
         /**
          * Adds to every declared name the cells it is a proven exact copy of.
          *
-         * <p>A declaration names a <em>value</em>; the graph names the same
-         * value once per Jimple local it is copied into, and a method's
-         * {@code .return} cell is one of those names -- the return statement
-         * is a rename of the local it returns.  Soot proves which edges are
-         * exact JVM value copies and stamps {@code valueFlowAuthority} on
-         * them, so walking <em>only</em> those edges backwards renames the
-         * declaration without inferring any dataflow: nothing upstream of
-         * the copy chain is reached, so an upstream carrier never becomes a
-         * declared root.</p>
-         *
-         * <p>This is what lets hdfs-17960 declare
-         * {@code <SnapshotManager: int getNumSnapshots()>.return} and select
-         * the accessor-return port that already names
-         * {@code <SnapshotManager: int getNumSnapshots()>::$i0} in its
-         * {@code dependencyCells}.  Idempotent, and a graph with no such
-         * edge leaves every declaration exactly as the case wrote it.</p>
+         * <p>A declaration names a value; the graph names it once per local it
+         * is copied into (a {@code .return} cell included). Walking only
+         * Soot-proven exact-copy edges ({@code valueFlowAuthority}) renames
+         * without inferring dataflow, so no upstream carrier becomes a root.
+         * Idempotent.</p>
          */
         private void renameDeclaredNames(List<JsonObject> candidateGraph) {
             if (admitted.isEmpty()) return;
-            // Both name sets are renamed: a declared clock cell and the
-            // exact copies of it are the same read under different Jimple
-            // names, so the flag travels with the declaration.
+            // Clock names are renamed too: the flag travels with the
+            // declaration.
 
             Map<String, Set<String>> copies = new LinkedHashMap<>();
             for (JsonObject edge : candidateGraph == null
@@ -1931,7 +1625,7 @@ public final class ConcolicScheduler {
     public static final class Arguments {
         public final Path regionPlan;
         public final Path candidateGraph;
-        /** The static scope map: the one guard authority's publication. */
+        /** The static scope map (the guard authority's publication). */
         public final Path staticScopeMap;
         public final Path outputDirectory;
         public final String regionId;
@@ -1992,13 +1686,8 @@ public final class ConcolicScheduler {
                     ? null : Paths.get(value);
         }
 
-        /**
-         * The one option-integer parse: a bound the campaign states and a
-         * mistyped one are different things.  `--max-jobs` went through a
-         * catch that returned the fallback, so `--max-jobs 12o` scheduled
-         * ONE task and the truncation was invisible -- a schedule of one
-         * task is not an empty schedule, so the stage exited 0.
-         */
+        /** The one option-integer parse: a mistyped bound is refused, never
+         *  replaced by the fallback (which would truncate silently). */
         private static int positiveInt(String value, int fallback,
                                        String option) {
             int parsed;

@@ -11,57 +11,33 @@ import java.util.Set;
 /**
  * THE MARGIN a DEMANDED flip over a clock is strengthened by.
  *
- * <p>A flip query asks for the complement of an arm the recording took, and
- * the solver answers with the cheapest world that satisfies it: on
- * hdfs-11741 campaign #4, {@code expiryDate < now} was satisfied by ONE
- * millisecond.  The instant is not what the replay then runs -- a clock is
- * stated as a SKEW ({@code ObligationFactory#solve}) and the replay adds it
- * to the instant it reads for itself, while the quantity the guard compares
- * against moves between runs by tens to thousands of milliseconds -- so the
- * guard fell back on the recorded arm and 35 of wave 1's 59 replays came
- * back NOT_ADMITTED with "wrong decision at removeExpiredKeys#u15".  The 5
- * that were admitted had margins of +57 to +405ms; the refusals, -21ms and
- * below.</p>
+ * <p>The solver returns the cheapest world (hdfs-11741: {@code expiryDate <
+ * now} by one millisecond), but a clock is replayed as a SKEW ({@code
+ * ObligationFactory#solve}) over an instant that drifts between runs, so a thin
+ * margin falls back on the recorded arm (NOT_ADMITTED).</p>
  *
- * <p>So every comparison atom of a demanded decision term that names a CLOCK
- * cell is asked for with room to spare: {@code a >= b} demanded true becomes
- * {@code a >= b + eps}, {@code a < b} becomes {@code a + eps < b}, and a
- * demanded FALSE is the same rule on the proposition the query actually
- * asserts -- {@code (not (>= a b))} becomes {@code (not (>= (+ a eps) b))},
- * which is {@code a + eps < b}.  {@code eps} is {@value #MARGIN_MS}
- * milliseconds.</p>
+ * <p>So each comparison atom naming a CLOCK cell is demanded with room: {@code
+ * a >= b} true becomes {@code a >= b + eps}; demanded FALSE applies the same
+ * rule to the asserted negation. {@code eps} = {@value #MARGIN_MS} ms.</p>
  *
- * <p>WHAT AN ATOM IS.  The JVM does not compare two longs with a relational
- * operator: it runs {@code lcmp} and branches on the result, which lowers to
- * {@link JavaPrimitiveSmtSemantics#integralCompareResult} -- {@code (ite (<
- * A B) (- 1) (ite (> A B) 1 0))} -- under a {@code (>= ... 0)}.  Every one
- * of the 35 refusals is that shape, so {@code (>= CMP 0)} is READ BACK as
- * {@code A >= B} (the same equivalence the lowering states, checked by
- * rebuilding the text) and strengthened there.  Adding the margin to the
- * {@code 0} would have added a millisecond count to a three-valued compare
- * code and made every one of those queries unsatisfiable.</p>
+ * <p>Trap: a JVM {@code lcmp} lowers to {@link
+ * JavaPrimitiveSmtSemantics#integralCompareResult} under {@code (>= ... 0)}; it
+ * is read back as {@code A >= B} (verified by rebuilding the text), since
+ * adding eps to the three-valued compare code makes the query UNSAT.</p>
  *
- * <p>NOTHING ELSE IS TOUCHED.  An atom no clock cell reaches is left alone;
- * so is one whose polarity this walk cannot resolve (under an {@code ite},
- * an {@code =}, a {@code distinct} or an {@code xor}), and so is one whose
- * operands are not arithmetic -- a margin has the unit of the quantity it is
- * added to, and a term with a branch in it is not a millisecond count.  Each
- * of those is named to the caller, which files it as one DIAGNOSTIC row.
- * Polarity is pushed through {@code not}, {@code and} and {@code or} only,
- * which are the connectives a demanded conjunct is built from.</p>
+ * <p>Nothing else is touched: atoms with no clock, unresolved polarity (under
+ * {@code ite}, {@code =}, {@code distinct}, {@code xor}) or non-arithmetic
+ * operands are returned for one DIAGNOSTIC row each. Polarity passes only
+ * through {@code not}, {@code and}, {@code or}.</p>
  */
 final class ClockMargin {
-    /** How many milliseconds of room a demanded clock comparison is given. */
     static final long MARGIN_MS = 60_000L;
 
-    /** The comparison atoms this rule is about. */
     private static final Set<String> COMPARISONS =
             new LinkedHashSet<String>(java.util.Arrays.asList(
                     "<", "<=", ">", ">="));
 
-    /**
-     * What may stand inside an operand the margin is added to or compared
-     * against: an arithmetic term, and never a branch or a predicate.
+    /** Heads that make an operand non-arithmetic (a margin needs a quantity).
      */
     private static final Set<String> NOT_ARITHMETIC =
             new LinkedHashSet<String>(java.util.Arrays.asList(
@@ -74,7 +50,7 @@ final class ClockMargin {
     /** One demanded term, strengthened, and the atoms it could not reach. */
     static final class Strengthened {
         final String text;
-        /** The atoms left as they were, each one a DIAGNOSTIC of its own. */
+        /** Atoms left as they were, one DIAGNOSTIC each. */
         final List<String> unstrengthened;
 
         private Strengthened(String text, List<String> unstrengthened) {
@@ -85,13 +61,11 @@ final class ClockMargin {
     }
 
     /**
-     * One demanded assertion with every clock comparison it states given
-     * {@code epsilon} milliseconds of room.
+     * One demanded assertion with every clock comparison given {@code epsilon}
+     * of room.
      *
-     * @param asserted the text the query asserts, lowered and renamed: the
-     *                 flipped conjunct's negation, or an inherited flip's
-     *                 own conjunct
-     * @param clocks   the query's CLOCK cell variables, by name
+     * @param asserted the lowered, renamed text the query asserts
+     * @param clocks   the query's CLOCK cell variables
      * @param epsilon  the margin; {@code 0} leaves the text alone
      */
     static Strengthened strengthen(String asserted, Set<String> clocks,
@@ -112,9 +86,7 @@ final class ClockMargin {
                 new ArrayList<String>(walk.unstrengthened));
     }
 
-    // ---- the walk ----------------------------------------------------
 
-    /** One edit: the span of the source it replaces, and what it says. */
     private static final class Edit implements Comparable<Edit> {
         private final int start;
         private final int end;
@@ -145,14 +117,8 @@ final class ClockMargin {
             this.epsilon = epsilon;
         }
 
-        /**
-         * One subterm, at the polarity the assertion demands of it.
-         *
-         * @param polarity {@code TRUE} where the demanded proposition holds
-         *                 if this subterm does, {@code FALSE} where it holds
-         *                 if this subterm does not, {@code null} where this
-         *                 walk cannot say
-         */
+        /** One subterm at the demanded polarity: TRUE (holds if it does), FALSE
+         *  (holds if it does not), null (unknown). */
         private void visit(Node node, Boolean polarity) {
             if (node.children == null) return;
             String head = node.head();
@@ -163,8 +129,8 @@ final class ClockMargin {
             }
             if (("and".equals(head) || "or".equals(head))
                     && node.children.size() > 1) {
-                // Both are monotone in every argument, so a conjunct made
-                // stronger makes the whole demanded proposition stronger.
+                // Monotone connectives: a stronger conjunct strengthens the
+                // whole.
                 for (int index = 1; index < node.children.size(); index++) {
                     visit(node.children.get(index), polarity);
                 }
@@ -175,14 +141,13 @@ final class ClockMargin {
                         polarity);
                 return;
             }
-            // Anything else -- an ite, an =, a distinct, an xor, an
-            // arithmetic term -- decides no polarity for what is under it.
+            // Anything else decides no polarity below it.
             for (int index = 1; index < node.children.size(); index++) {
                 visit(node.children.get(index), null);
             }
         }
 
-        /** One comparison atom, read back through the JVM's own compare. */
+        /** One comparison atom, read back through the JVM's compare. */
         private void atom(Node node, String head, Node left, Node right,
                           Boolean polarity) {
             String operator = head;
@@ -193,7 +158,7 @@ final class ClockMargin {
             if (compared == null) {
                 compared = integralCompare(right, left);
                 if (compared != null) {
-                    // (op 0 CMP) states the mirrored comparison of A and B.
+                    // (op 0 CMP) is the mirrored comparison of A and B.
                     operator = mirrored(head);
                     whole = true;
                 }
@@ -213,11 +178,9 @@ final class ClockMargin {
                 unstrengthened.add(node.text());
                 return;
             }
-            // WHICH SIDE THE MARGIN GOES ON: the one that makes the
-            // DEMANDED proposition harder to satisfy.  Demanded true, the
-            // greater side has to clear the smaller by eps; demanded false,
-            // the query asserts the atom's negation, so the margin moves to
-            // the other side and the negation says the same thing.
+            // The margin goes on the side that makes the DEMANDED proposition
+            // harder; for a demanded false it moves to the other side of the
+            // negated atom.
             boolean upper = ">".equals(operator) || ">=".equals(operator);
             boolean left0 = upper != polarity.booleanValue();
             String padded = "(+ " + (left0 ? a.text() : b.text()) + " "
@@ -246,7 +209,6 @@ final class ClockMargin {
         }
     }
 
-    /** {@code >=} and {@code <=} read from the other side, and so on. */
     private static String mirrored(String operator) {
         if (">".equals(operator)) return "<";
         if (">=".equals(operator)) return "<=";
@@ -254,15 +216,8 @@ final class ClockMargin {
         return ">=";
     }
 
-    /**
-     * The two longs a {@code (ite (< A B) (- 1) (ite (> A B) 1 0))} beside a
-     * {@code 0} compares, or null when this is not that atom.
-     *
-     * <p>Recognized by REBUILDING it: the lowering has one spelling for a
-     * JVM {@code lcmp} ({@link
-     * JavaPrimitiveSmtSemantics#integralCompareResult}), and a candidate
-     * that does not come back as that text is some other {@code ite}.</p>
-     */
+    /** The two longs an {@code lcmp} term beside {@code 0} compares, or null;
+     *  recognized only if rebuilding it yields the same text. */
     private static Node[] integralCompare(Node compare, Node zero) {
         if (compare.children == null || compare.children.size() != 4
                 || !"ite".equals(compare.head())
@@ -279,7 +234,6 @@ final class ClockMargin {
         return new Node[]{a, b};
     }
 
-    /** Whether any name of this subterm is one of these. */
     private static boolean names(Node node, Set<String> wanted) {
         if (node.children == null) return wanted.contains(node.text());
         for (Node child : node.children) {
@@ -288,10 +242,7 @@ final class ClockMargin {
         return false;
     }
 
-    /**
-     * Whether a margin can be added to this term at all: it has to be an
-     * arithmetic one, because eps has the unit of what it is added to.
-     */
+    /** Whether a margin can be added to this term (it must be arithmetic). */
     private static boolean arithmetic(Node node) {
         if (node.children == null) return true;
         String head = node.head();
@@ -322,12 +273,11 @@ final class ClockMargin {
 
     // ---- the one reading of an s-expression --------------------------
 
-    /** One subterm of the asserted text, and where it stands in it. */
     private static final class Node {
         private final String source;
         private final int start;
         private final int end;
-        /** Null for a token; the head and its arguments for a list. */
+        /** Null for a token. */
         private final List<Node> children;
 
         private Node(String source, int start, int end, List<Node> children) {
@@ -341,7 +291,6 @@ final class ClockMargin {
             return source.substring(start, end);
         }
 
-        /** The operator this list applies, or {@code ""}. */
         private String head() {
             if (children == null || children.isEmpty()) return "";
             Node first = children.get(0);
@@ -349,7 +298,7 @@ final class ClockMargin {
         }
     }
 
-    /** One term, read from {@code at[0]}, which is left past it. */
+    /** One term from {@code at[0]}; {@code at[0]} is left past it. */
     private static Node parse(String text, int[] at) {
         int index = skip(text, at[0]);
         if (index >= text.length()) {
@@ -393,7 +342,7 @@ final class ClockMargin {
         return index;
     }
 
-    /** Past one token, keeping a quoted symbol or a string whole. */
+    /** Past one token; a quoted symbol or string stays whole. */
     private static int token(String text, int at) {
         char first = text.charAt(at);
         if (first == '|' || first == '"') {

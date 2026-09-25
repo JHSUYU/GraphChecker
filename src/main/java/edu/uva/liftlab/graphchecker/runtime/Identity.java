@@ -18,19 +18,14 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * The execution index of the running thread: one stack, O(1) per event.
+ * The execution index of the running thread: one stack, O(1) per event
+ * (IDENTITY-IMPL §B).
  *
- * <p>IDENTITY-IMPL §B.  Every instrumented call site pushes a frame carrying
- * the iteration of the innermost loop enclosing it; a region entry reads the
- * frames from its scope root, and every event inside the region reads the
- * frames from the region entry.  The prefix hashes are folded incrementally
- * on push, so an id is constant-size and two replays compare by equality
- * rather than by walking two lists.</p>
- *
- * <p>What this replaces: "the k-th activation", "the k-th attach".  A flat
- * ordinal moves when an unrelated invocation is inserted anywhere earlier in
- * the run, which is precisely what a branch flip does; the point of an
- * execution index is that it does not.</p>
+ * <p>Every instrumented call site pushes a frame carrying its iteration in
+ * the enclosing level; an occurrence is indexed from its scope root and an
+ * event from its region entry.  A flat ordinal ("the k-th activation") is
+ * forbidden: a branch flip inserts invocations earlier in the run and moves
+ * it, while an execution index does not.</p>
  */
 public final class Identity {
     private static final ThreadLocal<State> CURRENT =
@@ -42,9 +37,8 @@ public final class Identity {
 
                 @Override
                 protected State childValue(State parent) {
-                    // A thread starts where it was created, as the scope
-                    // does; the explicit carry is for a pool thread that was
-                    // created before the work existed.
+                    // A thread starts where it was created; the explicit
+                    // carry is for a pool thread created before the work.
                     return parent == null ? new State() : parent.copy();
                 }
             };
@@ -59,27 +53,11 @@ public final class Identity {
     /**
      * One thread's index levels: the thread root and one level per frame.
      *
-     * <p>A LEVEL is one entered frame and the events minted while it was the
-     * innermost one.  IDENTITY-V3 §1 asks for a PEPID index -- a calling
-     * context plus per-call-site iteration counts -- so a count belongs to
-     * the level it was taken in and dies with it: the k of an event is the
-     * k-th event at {@code site} in the enclosing LEVEL, under the root hop
-     * that level is running in, and at nothing else ({@link
-     * State#nextSiteEvent}).  A polling loop's extra calls are frames of
-     * their own and cannot move a sibling's k.</p>
-     *
-     * <p>What this replaces: one counter map per THREAD, keyed by the
-     * occurrence alone.  With frames only at region roots and work starts,
-     * the balancer's {@code main} addressed every event it made outside a
-     * region as ONE degraded occurrence {@code
-     * balancer#epoch0/ROLE.CLIENT/Root:CLIENT#1/idx:} for the whole
-     * process, so its {@code HADOOP_IPC#REQUEST} count was a run-length
-     * ordinal over the process: the recording's {@code balance-block}
-     * request was the 19th such send (@18) and the replay's the 23rd (@22),
-     * because the replay's {@code main} polled {@code
-     * MiniDFSCluster.waitActive} four more times first.  IDENTITY-V3 §1
-     * forbids a run-length ordinal, and the frames of the whole
-     * application scope are what replace it.</p>
+     * <p>A count belongs to the level it was taken in and dies with it
+     * (IDENTITY-V3 §1, PEPID): the k of an event is the k-th event at its
+     * site in the enclosing level under the current root hop ({@link
+     * State#nextSiteEvent}).  Never a per-thread counter: that is a
+     * run-length ordinal, which a polling loop elsewhere shifts.</p>
      */
     private static final class State {
         /** The thread root, then one level per open frame, outermost last. */
@@ -87,21 +65,16 @@ public final class Identity {
         /** Whether this thread has looked for the start that created it. */
         private boolean claimed;
         private int scopeBase;
-        /**
-         * Where the frame of the start this thread's work runs under sits,
-         * or -1 on a thread that runs its own work.
-         */
+        /** Depth of the claimed start frame, or -1 when none. */
         private int startDepth = -1;
         /** The region activations open on this thread, innermost last. */
         private final List<Region> regions = new ArrayList<Region>();
         /**
-         * Where the work this thread runs was started, as a reference the
-         * attribution rule resolves when it is asked ({@link Attribution},
-         * rule 3): the claimed start's, else the thread's creator's.
+         * Where this thread's work was started ({@link Attribution}, rule
+         * 3): the claimed start's, else the thread's creator's.
          */
         private Attribution.Reference starter;
-        /** Whether {@link #starter} is a claimed start rather than the
-         *  creator the thread inherited at construction. */
+        /** Whether {@link #starter} is a claimed start, not the creator. */
         private boolean adopted;
 
         private State() {
@@ -119,20 +92,10 @@ public final class Identity {
         }
 
         /**
-         * The same frame as an ADDRESS states it: a frame entered before the
-         * recording window stands at iteration 0.
-         *
-         * <p>The window rule for frames, as {@link RecordingWindow} is for
-         * counts and {@link RecordingWindow} for root k: an iteration
-         * counted before the window is set-up history neither run controls.
-         * hdfs-17899-bug1 is why: every DataXceiver thread inherits the main
-         * thread's frames from DataNode start-up, {@code
-         * instantiateDataNode} among them at the k-th DataNode started, and
-         * which started DataNode plays the case's target is the cluster's
-         * random block placement -- so the target's SASL response had the
-         * producer endpoint {@code instantiateDataNode@0} in the recording
-         * and {@code @1} in the replay, and the balancer's receive of it was
-         * a different anchor in every run.</p>
+         * The frame as an address states it: one entered before the
+         * recording window stands at iteration 0 ({@link RecordingWindow}).
+         * Otherwise start-up history -- e.g. which DataNode the random block
+         * placement made the k-th -- leaks into every inherited address.
          */
         private Frame addressedFrame(int index) {
             return levels.get(index + 1).addressed();
@@ -145,9 +108,8 @@ public final class Identity {
 
         private State copy() {
             State child = new State();
-            // The frames carry over -- a child thread's index continues its
-            // parent's -- but not the counts: an event of the child is not
-            // an event the frame the parent took its own counts in made.
+            // Frames carry over; counts do not: the child's events are not
+            // events of the parent's levels.
             for (int index = 1; index < levels.size(); index++) {
                 child.levels.add(new Level(levels.get(index).frame,
                         levels.get(index).token,
@@ -155,75 +117,46 @@ public final class Identity {
                         levels.get(index).window));
             }
             child.scopeBase = scopeBase;
-            // The start frame of the work THIS thread runs is not the start
-            // frame of the work the child will run: the child claims its
-            // own, at the site that started it.
+            // The child claims its own start frame.
             child.claimed = false;
             child.startDepth = -1;
-            // The thread was created HERE, by this thread's work: until it
-            // claims a start of its own, that is what started it.  Read off
-            // this state directly -- this runs inside the child's
-            // construction, where no thread-local may be touched.
+            // Until it claims a start, its creator started it.  Read this
+            // state directly: no thread-local may be touched during the
+            // child's construction.
             child.starter = Attribution.Reference.of(receiversOf(this),
                     starter);
             child.adopted = false;
             for (Region region : regions) {
-                // The depth carries over -- a child thread's frames continue
-                // its parent's -- but not the journal: a journal is one
-                // thread's clock readings in order, and a second writer would
-                // interleave two threads' events into one sequence.
+                // Depth carries over, the journal does not: a journal has
+                // one writer thread.
                 child.regions.add(new Region(region.base));
             }
             return child;
         }
 
         /**
-         * Opens the frame of the start this thread's work runs under.
-         *
-         * <p>The inherited stack GAINS one frame -- the start site and the
-         * iteration of that start inside the starter's activation -- so two
-         * siblings started from one site in one loop differ by it and by
-         * nothing else (IDENTITY-V3 SS1, scope transfer).  It sits at the
-         * boundary between the frames the starter stood on and the frames
-         * the work itself pushes, which is where the start happened.</p>
-         *
-         * <p>Its level carries no token: nothing the work returns from
-         * opened it, so no frame exit may close it.</p>
+         * Opens the frame of the start this thread's work runs under
+         * (IDENTITY-V3 §1, scope transfer): two siblings started from one
+         * site in one loop differ by this frame alone.  Its level has no
+         * token, so no frame exit closes it.
          */
         private void openStart(Frame frame, int startedIn) {
-            // A pool thread that finished its last task drops that task's
-            // start frame before it takes the next: the work that frame
-            // named is over, and the next task was started elsewhere.  A
-            // task started from inside another one nests instead.
+            // A pool thread drops its finished task's start frame (and the
+            // scope it carried) before taking the next; a nested start nests.
             if (startDepth >= 0 && startDepth == depth() - 1) {
                 levels.remove(startDepth + 1);
-                // ...and the scope that task carried goes with its frame.
                 RuntimeTraceContext.releaseCarried();
             }
             startDepth = depth();
-            // The start was COUNTED where it was made, so its frame belongs
-            // to that window, whenever the work claims it.
+            // The frame belongs to the window the start was counted in.
             levels.add(new Level(frame, 0L, null, startedIn));
         }
 
         /**
-         * The frame depth an endpoint's site index is measured from: the
-         * innermost region's, else the scope root's.
-         *
-         * <p>An occurrence with no region open -- a role occurrence, the
-         * transport's own send and receive -- used to measure from the
-         * thread base, so its endpoint ids carried the whole thread's
-         * history: which pool handler served the message ({@code
-         * Server.start#u31@k}) and how many calls the reader had queued
-         * before it ({@code CallQueueManager.put#u7@k}), ordinals of the
-         * thread and of the server, never of the message (IDENTITY-V3 §1).
-         * hdfs-17960's recordings carried them in every response id and
-         * matched by luck until the daemons took part; then a response's id
-         * differed from the recording's with the same causal context, and
-         * the client's every later message id cascaded after it.  The
-         * scope root is where the message's own work begins ({@link
-         * Identity#scopeStart}), and {@link Identity#atScope} already
-         * measures the occurrence's index from it.</p>
+         * The depth an endpoint's site index is measured from: the
+         * innermost region's, else the scope root's.  Never the thread
+         * base: that leaks pool-handler and queue ordinals into message
+         * ids (IDENTITY-V3 §1).
          */
         private int regionBase() {
             return regions.isEmpty() ? scopeBase
@@ -236,15 +169,10 @@ public final class Identity {
         }
 
         /**
-         * The occurrence running on this thread right now, or null.
-         *
-         * <p>THE test the fold rule asks ({@link #occurrence}): an entry
-         * opens an occurrence only when there is none.  A region entry
-         * inherited across a thread boundary carries its DEPTH and not its
-         * occurrence ({@link #copy}), so a child thread answers null here
-         * and the first declared region it enters opens its own -- which is
-         * what "an occurrence ends when execution crosses a thread or
-         * process boundary" means (paper SS3.1.2).</p>
+         * The occurrence running on this thread, or null: the fold rule's
+         * test ({@link #occurrence}).  A child thread inherits region depth
+         * but no occurrence ({@link #copy}), so it opens its own -- an
+         * occurrence ends at a thread boundary (paper §3.1.2).
          */
         private Region activeRegion() {
             for (int index = regions.size() - 1; index >= 0; index--) {
@@ -255,22 +183,16 @@ public final class Identity {
         }
 
         /**
-         * Journals the frames now standing, for the VM's logged events.
-         *
-         * <p>Every open region, not only the innermost: an enclosing
-         * activation's journal has to be current when a nested one returns
-         * and its events start being stamped with the enclosing entry
-         * again.  One clock reading serves them all -- it is the same
-         * instant -- and each journal measures from its own entry.</p>
+         * Journals the standing frames into every open region's journal,
+         * not only the innermost: an enclosing journal must be current when
+         * a nested region returns.  One clock reading serves all.
          */
         private void journal() {
             boolean journalled = false;
             for (int index = 0; index < regions.size(); index++) {
                 if (regions.get(index).journal != null) journalled = true;
             }
-            // Reading the clock costs a call into the VM, so a thread with no
-            // journal of its own -- a child that inherited only the depth,
-            // any thread outside a selected region -- never pays for it.
+            // The clock is a VM call: skip it when nothing journals.
             if (!journalled) return;
             long now = CLOCK.now();
             if (now < 0L) return;
@@ -291,39 +213,15 @@ public final class Identity {
         }
 
         /**
-         * The k of one event at {@code site}: how many this level has
-         * already made there, under the root hop it is running in.
+         * THE counter: the k of one event at {@code site} in the top level
+         * under the current root hop.  Sends, reads, writes, region entries,
+         * work starts and frame entries all count here, so recording and
+         * replay compute the same k.
          *
-         * <p>THE counter.  A send, a read, a write, a region entry, a work
-         * start and a frame entry are all events of the level they are made
-         * in, and one of them is the k-th at its site or two of them share an
-         * address.  Every caller comes through here so that the number the
-         * recording states and the number a replay computes are the same
-         * number for the same event.</p>
-         *
-         * <p>Keyed by (level, root hop, site) and by nothing else.  What this
-         * replaces: a key that also carried the BUCKET the event was minted
-         * in -- the open region's serial, else the degraded occurrence's
-         * (node, role, causal context).  A causal context is read live from
-         * {@link Lineage}, so the key of a count moved whenever the thread's
-         * innermost anchor moved, and a frame entered under one anchor was
-         * counted apart from the same site entered under another: hdfs-17960
-         * verification #6 sent six {@code create-snapshots} RPCs from {@code
-         * main} in one request and minted ONE producer endpoint for all six
-         * ({@code 98ad5650d0490b91}, 46 sends over 28 ids, 158 downstream
-         * {@code OCCURRENCE_ADDRESS_SHARED} rows), because the client's
-         * response install leaves an anchored hop standing until the next
-         * request is written, so every {@code Client.call} frame was counted
-         * under the PREVIOUS response's anchor and its iteration restarted
-         * at 0 while the endpoint was published under the request's own
-         * {@code Root:CLIENT/create-snapshots#1}.  A counter keyed by what
-         * the index is FOR cannot count the index.</p>
-         *
-         * <p>Two events of two occurrences at one site in one level are
-         * still two events: they take k 0 and 1, and their occurrences
-         * differ, so no two endpoints collide.  What the bucket was for --
-         * two activations of one region counting apart -- is what the levels
-         * already give, since every application-scope method opens one
+         * <p>Keyed by (level, root hop, site) only.  Trap: keying also by
+         * the live causal context moves the key whenever the thread's anchor
+         * moves, and sibling sends collapse to one endpoint.  Two
+         * activations of one region count apart through their own levels
          * (G11).</p>
          */
         private int nextSiteEvent(String site) {
@@ -351,44 +249,22 @@ public final class Identity {
         private final Frame frame;
         /** The token the frame exit closes this level by, or 0. */
         private final long token;
-        /**
-         * The receiver of the activation this level is, or null: what the
-         * attribution rule asks is registered ({@link Attribution}, rule 2).
-         */
+        /** The activation's receiver, or null ({@link Attribution}, rule 2). */
         private final Object receiver;
         /**
-         * This level's site counts, one map per root hop it has been the
-         * innermost level under, outermost hop first.
+         * Site counts, one map per root hop this level was innermost under,
+         * outermost hop first.
          *
-         * <p>THE lifetime rule: a level's counters live for the level's
-         * lifetime WITHIN one root hop.  A woven frame's exit drops its
-         * level and its counts with it; the thread base level has no frame
-         * to close it, so the root hop is what ends its counts -- the next
-         * request is a new root occurrence and its k starts again.  Without
-         * that, main's base level would count for the whole thread and the
-         * k of a send would be a run-length ordinal over the process, which
-         * IDENTITY-V3 SS1 forbids.</p>
-         *
-         * <p>One map per hop rather than one map cleared on each: a root hop
-         * opened INSIDE this level -- hdfs-11741's {@code KEY_MANAGER_TICK}
-         * rotations, opened on the balancer's {@code main} inside {@code
-         * balance-block#1} -- must not move the enclosing hop's counts, and
-         * hands them back untouched when it closes.  That is what separated
-         * this from the scope TOKEN a former implementation keyed on: a
-         * scope token changes every time a scope is entered and left, which
-         * on that {@code main} is at every request it sends, so the
-         * enclosing level's count restarted mid-run and two {@code
-         * Balancer.runOneIteration} calls of one request both stood at
-         * iteration 0.  A ROOT hop does not move while the occurrence does
-         * not.</p>
+         * <p>Counts live for the level's lifetime within one root hop, so
+         * the thread base level restarts k at each new root (IDENTITY-V3
+         * §1).  One map per hop, not one cleared map: a hop opened inside
+         * this level (a daemon tick inside a request) must hand the
+         * enclosing hop's counts back untouched.  Trap: keying by scope
+         * token instead restarts counts at every request sent.</p>
          */
         private final List<Counters> counters = new ArrayList<Counters>();
 
-        /**
-         * The window {@link #frame} was entered in ({@link RecordingWindow}).
-         * A frame entered before the window stands in no in-window address
-         * with the iteration it was counted at ({@link State#from}).
-         */
+        /** The window {@link #frame} was entered in ({@link RecordingWindow}). */
         private final int window;
 
         private Level(Frame frame, long token, Object receiver) {
@@ -412,37 +288,26 @@ public final class Identity {
         }
 
         /**
-         * This level's counts under the root hop {@code rootToken}.
-         *
-         * <p>What is filed for a hop that has CLOSED goes with it, here,
-         * where the level is next read: a level that outlives a hop does not
-         * outlive that hop's counts, and nothing filed for a closed hop can
-         * be reached again because a hop token is never reused.  Dropping it
-         * on the spot is also what keeps a level that outlives thousands of
-         * hops -- a pool thread's start level -- from holding one map per
-         * task it ever ran.</p>
+         * This level's counts under the root hop {@code rootToken}.  Counts
+         * of closed hops are dropped here (hop tokens are never reused), so
+         * a long-lived pool level holds no map per past task.
          */
         private Map<String, Integer> events(long rootToken) {
             for (int index = counters.size() - 1; index >= 0; index--) {
                 Counters filed = counters.get(index);
                 if (filed.rootToken == rootToken) {
-                    // Every hop filed above this one was opened inside it
-                    // and has closed, so its counts go with it.
+                    // Hops filed above this one were nested and have closed.
                     while (counters.size() > index + 1) {
                         counters.remove(counters.size() - 1);
                     }
-                    // Counted before the recording window opened: what the
-                    // hop made there is nothing either run states
-                    // ({@link RecordingWindow}), so it counts again from here.
+                    // Counted before the window opened: count again.
                     if (filed.window != RecordingWindow.index()) {
                         filed = new Counters(rootToken);
                         counters.set(index, filed);
                     }
                     return filed.events;
                 }
-                // A hop still open is an ENCLOSING one, and its counts stand:
-                // the turns of a tick opened inside a request cannot move the
-                // request's k, nor the request's the tick's.
+                // An open hop encloses this one: its counts stand.
                 if (Lineage.isOpenRoot(filed.rootToken)) break;
                 counters.remove(index);
             }
@@ -467,26 +332,16 @@ public final class Identity {
 
     /**
      * The frames filed at a start site, by the object that carries the work.
-     *
-     * <p>A start is not an event of the thread that runs the work: it is an
-     * event of the STARTER, at the starter's call site and inside the
-     * starter's activation.  The frame is computed there, filed under the
-     * Thread or the task the start named, and taken by the work when it
-     * runs -- which is the only way a child can carry it, since a thread
-     * inherits its creator's state when it is CONSTRUCTED and the start
-     * happens afterwards.</p>
+     * A start is an event of the STARTER; it is filed here and taken by the
+     * work when it runs, since a thread inherits its creator's state at
+     * construction, before the start.
      */
     private static final Map<Carrier, Start> STARTS =
             new ConcurrentHashMap<Carrier, Start>();
 
     /**
-     * One filed start: where it was made, and on which node.
-     *
-     * <p>The node travels with the frame because it is the same fact about
-     * the same event.  A thread whose own frames name no component belongs
-     * to the component that STARTED it -- the DataNode whose
-     * BPServiceActor this is -- and that is a statement of the recording
-     * and of every replay alike, not an inference over the graph.</p>
+     * One filed start: its frame and its starter.  A thread whose frames
+     * name no component belongs to the one that started it.
      */
     private static final class Start {
         private final Frame frame;
@@ -504,12 +359,8 @@ public final class Identity {
             new ReferenceQueue<Object>();
 
     /**
-     * One pending start's carrier, held weakly and keyed by identity.
-     *
-     * <p>Weakly, so a submission nothing ever runs is collected rather than
-     * retained for the run; by identity, because two equal task objects are
-     * two submissions and the frame of one is not the frame of the
-     * other.</p>
+     * One pending start's carrier: weak, so an unrun submission is
+     * collected; by identity, because two equal tasks are two submissions.
      */
     private static final class Carrier extends WeakReference<Object> {
         private final int identity;
@@ -534,30 +385,15 @@ public final class Identity {
     }
 
     /**
-     * This thread's state, having claimed the start that created it once.
+     * This thread's state, having claimed the start filed for the THREAD
+     * once.
      *
-     * <p>THE claim rule, one half of it: a started work claims its start
-     * frame at its FIRST identity event on that thread -- a region entry, a
-     * message send, a read or write endpoint, another work start, whatever
-     * comes first.  Every one of them reaches this method before it answers
-     * anything ({@link #currentOccurrence}, {@link #occurrence}, {@link
-     * #endpointAt}, {@link #enterFrame}, {@link #startWork}), so the frame is
-     * standing before the first address that would otherwise be computed
-     * without it.  The claim is lazy for exactly that reason: the start is
-     * filed after this thread's state was inherited (at construction) and
-     * before the thread runs anything.</p>
-     *
-     * <p>This half takes the start filed for the THREAD -- a {@code
-     * Thread.start}, where the thread is the work.  The other half is {@link
-     * #claimStart}, for work whose carrier is a task object the thread never
-     * sees through an event of its own: that claim is woven at the entry of
-     * the functional method the start named, which is the work's own first
-     * instruction.  Before this, the task claim happened only at a region
-     * entry, and hdfs-11741's mover pool threads send the balancer's
-     * HDFS_SASL request before entering any region -- so two mover tasks
-     * stood on one empty index under one degraded {@code ROLE.HDFS_SASL}
-     * occurrence, each counted its site events from 0 in its own state, and
-     * the two sends carried ONE producer endpoint id.</p>
+     * <p>The claim rule: started work claims its start frame at its FIRST
+     * identity event, and every such event passes through here first, so
+     * no address is computed without it.  Work carried by a task object
+     * claims at its functional method's entry instead ({@link
+     * #claimStart}); claiming only at region entry lets a pool task send
+     * before claiming and share an endpoint with its sibling.</p>
      */
     private static State state() {
         State state = CURRENT.get();
@@ -575,12 +411,10 @@ public final class Identity {
         state.openStart(start.frame, start.window);
         state.starter = start.starter;
         state.adopted = true;
-        // The scope the starter was in comes with the work, whatever thread
-        // the pool hands it to: installed here, closed when the work's start
+        // The starter's scope comes with the work; it closes when the start
         // level goes (#exitFrame, State#openStart).
         RuntimeTraceContext.claimCarried(carrier);
-        // The CLAIM half of the handoff, at the site the START named: the
-        // work begins to run here.
+        // The CLAIM half of the handoff, at the site the START named.
         ScheduleLog.observe(
                 edu.uva.liftlab.graphchecker.contract.ScheduleEvent.Kind.CLAIM,
                 start.frame.callSite());
@@ -589,45 +423,24 @@ public final class Identity {
     /**
      * Files the frame of one {@code Thread.start} or work submission.
      *
-     * <p>The iteration is the k-th start AT THIS SITE in the level that
-     * makes it -- the one counter every other event is counted by ({@link
-     * State#nextSiteEvent}) -- so two siblings started from one site in one
-     * loop differ by it and by nothing else (IDENTITY-V3 SS1: "two siblings
-     * started from one site in one loop differ by the loop iteration of the
-     * start site").  It is a structural count of starts, never a thread id,
-     * an address or a session ordinal.</p>
-     *
-     * <p>Two starts made at one site from two activations of a CALLER are
-     * two levels, because every method of the application scope enters one
-     * (G11).  A caller outside that scope shares the thread base level with
-     * its siblings, and two starts it makes at one site inside one root hop
-     * are the 0th and the 1st there.  Two under DIFFERENT root hops are
-     * both the 0th -- their root occurrences differ, so their addresses do
-     * -- and two the index cannot separate at all are a shared endpoint id
-     * and a named refusal at the mint, never a renumbering here.</p>
+     * <p>The iteration is the k-th start at this site in the level making
+     * it ({@link State#nextSiteEvent}), so siblings from one loop differ by
+     * it alone (IDENTITY-V3 §1) -- never a thread id or session ordinal.
+     * Starts the index cannot separate share an endpoint id and are refused
+     * at the mint, never renumbered here.</p>
      */
     public static void startWork(String startSiteId, Object carrier) {
         String site = JvmNames.stable(Text.safe(startSiteId));
         if (site.isEmpty() || carrier == null) return;
-        // A START MADE BY A THREAD WITH NO IDENTITY FILES NO FRAME.  The k
-        // of a start is the k-th start of that site in the level that makes
-        // it, within one root hop; a thread under no root hop -- a
-        // DataNode's connection acceptor, created at start-up and never
-        // ticked -- has one level for its whole life, so its k is the count
-        // of connections it has accepted, an ordinal of arrivals nothing
-        // schedules.  hdfs-11741 v30: the balance-block's DataXceiver on dn1
-        // was Daemon.start#u5@1 in the recording and @0 in the replay, on
-        // which mover's connection the acceptor met first.  Its identity is
-        // its own turn (Root:DATA_XCEIVER#k) and the message its handshake
-        // serves, as it was before the acceptor's start was woven; the
-        // schedule refuses such an event a place for the same reason
-        // (ScheduleLog.pending).
+        // A thread with no identity files no frame: under no root hop (a
+        // connection acceptor) its k would count arrivals, which nothing
+        // schedules.  ScheduleLog.pending refuses such events likewise.
         if (contextHere().isLost()) return;
         State state = state();
         int iteration = state.nextSiteEvent(site);
         sweep();
-        // The scope this start was made in travels with the work
-        // (RuntimeTraceContext#claimCarried takes it back at the claim).
+        // The start's scope travels with the work
+        // (RuntimeTraceContext#claimCarried takes it back).
         RuntimeTraceContext.captureAsync(carrier);
         STARTS.put(new Carrier(carrier, COLLECTED),
                 new Start(Frame.of(site, iteration), Attribution.capture()));
@@ -667,28 +480,11 @@ public final class Identity {
     }
 
     /**
-     * Takes the start frame filed for {@code carrier}, if there is one.
-     *
-     * <p>The other half of {@link #startWork}: a thread claims the start
-     * filed for ITSELF the first time it does anything ({@link #state}), and
-     * work whose carrier is a task object claims the start filed for that
-     * task at its own first instruction -- the entry of the functional
-     * method the start named, woven by {@code
-     * CausynthPipeline.claimWorkEntry} in BOTH passes over the same
-     * {@code WorkStartSites} list the filing half reads.</p>
-     *
-     * <p>One claim point per notion.  It used to be the region entry as
-     * well, which is neither first nor reached at all on a pool thread whose
-     * task enters no selected region.</p>
-     *
-     * <p>A thread nobody filed a start for -- started before the recording
-     * began, or from JDK code the weave cannot touch -- claims nothing and
-     * keeps the role occurrence it has today.  Two of its events that the
-     * index cannot separate then share one endpoint id, which is a named
-     * refusal at the mint (LINEAGE_LOST, DIAGNOSTIC: {@code
-     * CausynthTraceRecorder.refuseSharedProducer} for a message, {@code
-     * RowRuntime.distinct} for a read or write) and not a frame invented
-     * here.</p>
+     * Takes the start frame filed for task {@code carrier}, if any: the
+     * task half of the claim rule ({@link #state}), woven at the functional
+     * method's entry by {@code CausynthPipeline.claimWorkEntry} in both
+     * passes.  An unfiled thread claims nothing; its inseparable events are
+     * refused at the mint, not given an invented frame.
      */
     public static void claimStart(Object carrier) {
         if (carrier == null || STARTS.isEmpty()) return;
@@ -704,30 +500,15 @@ public final class Identity {
     }
 
     /**
-     * Enters the index frame of ONE application-scope method activation.
+     * Enters the frame of one application-scope method activation.
      *
-     * <p>THE frame rule, and there is no second one: every method of the
-     * application scope opens a level at its entry and closes it at every
-     * exit, in BOTH passes, from the one weave walk
-     * ({@code CausynthPipeline.instrumentApplicationScope}).  The calling
-     * context of an event is then the frames of the application methods it
-     * is inside, which is what IDENTITY-V3 §1 asks a LocalExecutionIndex to
-     * be (Execution Indexing / PEPID) and what the region-root-only frame
-     * rule could not give: a thread outside every region had an EMPTY
-     * calling context, so its site counts were run-length ordinals over the
-     * process.</p>
-     *
-     * <p>The frame's iteration is the k-th entry of THIS site in the level
-     * that ENCLOSES it: a method entry is an event of that level, counted
-     * by the one counter every other event is counted by ({@link
-     * State#nextSiteEvent}).  A loop body re-entering the same call site is
-     * that site at iteration 1, 2, 3 -- which is what the innermost
-     * enclosing loop's iteration count means -- and one rule computes it in
-     * the recording and in the replay alike.  A caller the weave does not
-     * reach (a test method, JDK code) opens no level, so its calls are
-     * counted in the thread base level and advance {@code @0, @1, @2}
-     * there: that is what separates the six {@code create-snapshots} RPCs
-     * hdfs-17960's {@code main} sends at one transport site.</p>
+     * <p>THE frame rule: every application-scope method opens a level at
+     * entry and closes it at every exit, in both passes ({@code
+     * CausynthPipeline.instrumentApplicationScope}), so an event's calling
+     * context is the application methods it is inside (IDENTITY-V3 §1).
+     * The iteration is the k-th entry of this site in the enclosing level
+     * ({@link State#nextSiteEvent}); callers outside the weave count in the
+     * thread base level.</p>
      *
      * @return the token that closes exactly the level this opened
      */
@@ -743,14 +524,9 @@ public final class Identity {
     }
 
     /**
-     * Leaves the level {@code token} opened, and every level opened inside
-     * it that a non-local exit left behind.
-     *
-     * <p>The token is a local of the woven frame, so recursion holds a
-     * different one at every depth and the exit closes the entry that token
-     * owns rather than whatever the runtime finds innermost.  A level the
-     * token does not name -- the start frame of the work this thread runs,
-     * which no call of that work pushed -- is never closed here.</p>
+     * Leaves the level {@code token} opened and every level a non-local
+     * exit left inside it.  The token is per activation, so recursion
+     * closes its own entry; a start frame (token 0) is never closed here.
      */
     public static void exitFrame(long token) {
         if (token <= 0L) return;
@@ -761,23 +537,15 @@ public final class Identity {
                 state.levels.remove(state.levels.size() - 1);
             }
             if (state.startDepth >= state.depth()) {
-                // The start frame was inside the level that just closed, so
-                // the work it named is over with it -- and so is the scope it
-                // carried.
+                // The start frame closed with this level: its work and
+                // carried scope are over.
                 state.startDepth = -1;
                 RuntimeTraceContext.releaseCarried();
             }
-            // The scope root is the deepest level the scope start and this
-            // point still SHARE.  A scope is opened inside a call that
-            // returns -- CausynthMessagePropagation.inbound opens the scope
-            // of a served message and hands control back to the handler --
-            // and an index measured from a level that has gone is empty:
-            // on hdfs-11741 the four PBHelper.convert activations of one
-            // refresh answered one address, which is the collision the
-            // index exists to prevent.  It is also what puts an ANCHOR
-            // hop's base on the handler's own level: the inbound scope is
-            // opened one level down, inside the propagation call, and this
-            // brings it back to the level the served api is entered at.
+            // Clamp the scope root to the deepest level still shared: a
+            // scope opened inside a returning call (inbound propagation)
+            // would otherwise index from a gone level and collide.  This
+            // also lands an ANCHOR hop's base on the handler's own level.
             if (state.scopeBase > state.depth()) {
                 state.scopeBase = state.depth();
             }
@@ -787,79 +555,38 @@ public final class Identity {
     }
 
     /**
-     * What opened the causal context whose index begins at a scope start.
-     *
-     * <p>THE key of the one scope-base rule ({@link #scopeStart}).  An
-     * occurrence's execution index is relative to its causal context's own
-     * ORIGIN, and which point on the thread that is depends on what opened
-     * the context -- so every door states its kind and there is nothing
-     * left for the rule to infer from the stack.</p>
+     * What opened a causal context: the key of the one scope-base rule
+     * ({@link #scopeStart}).  Every door states its kind, so nothing is
+     * inferred from the stack.
      */
     public enum Hop {
         /**
-         * An inbound request, paired to its producer endpoint by
-         * {@code RuntimeTraceContext.enterInbound}.
-         *
-         * <p>The origin is the inbound scope itself.  The frames ABOVE it
-         * are the carrier thread's -- the pooled handler's start frame,
-         * {@code Server$Handler.run}, {@code RpcCall.run}, an executor's
-         * frames -- and which pooled handler serves a request is
-         * scheduling, not identity: hdfs-17960 planned every activation
-         * under {@code Anchor:...@HADOOP_IPC/checkpoint-namespace} from
-         * {@code <org.apache.hadoop.ipc.Server: void start()>#u31@3}, ran
-         * it on handler 0 and refused 14 tasks at frame 0.  The anchor
-         * already identifies the request; the carrier does not enter into
-         * it.</p>
+         * An inbound request ({@code RuntimeTraceContext.enterInbound}).
+         * The origin is the inbound scope: which pooled handler serves it
+         * is scheduling, not identity.
          */
         ANCHOR,
         /**
-         * A scope the running thread opens for itself: the workload's own
-         * request ({@code beginRequest}) or the scope carried to the
-         * thread that runs the work ({@code enterCarriedScope}).
-         *
-         * <p>The origin is that scope's start.  A claimed start frame
-         * standing above it is the ROOT's -- the frame that tells two
-         * started siblings apart -- and not the request's, so it stays out
-         * of the request's index exactly as a handler's does.</p>
+         * A scope the thread opens for itself ({@code beginRequest}, {@code
+         * enterCarriedScope}).  The origin is the scope start; a claimed
+         * start frame above it belongs to the root, not the request.
          */
         SCOPE_ROOT,
         /**
-         * A root that IS the started work: a daemon tick
-         * ({@code beginTick}).
-         *
-         * <p>The origin is the start frame the work claimed, because that
-         * frame is the tick's own beginning rather than some carrier's:
-         * hdfs-11741's {@code KeyManager$BlockKeyUpdater} claims it at its
-         * entry and a base below it drops the start site and its iteration
-         * from every address the tick publishes, so two pooled tasks would
-         * be one occurrence (G10/G11).  A tick on a thread nobody filed a
-         * start for -- the balancer's {@code main}, which drives its own
-         * {@code KEY_MANAGER_TICK} rotations -- has no such frame and
-         * begins where it was opened; two of its turns are told apart by
-         * the window index of the root hop, which is what a {@code Root}
-         * context states.</p>
+         * A root that IS the started work: a daemon tick ({@code
+         * beginTick}).  The origin is the claimed start frame, else a
+         * pooled tick's addresses lose the frame that separates tasks
+         * (G10/G11); with no claimed start it begins where opened.
          */
         STARTED_ROOT
     }
 
     /**
-     * Opens a scope: the execution index of what runs inside starts here.
-     *
-     * <p>THE scope-base rule, and there is no second one: the execution
-     * index of an occurrence is relative to its causal context's own
-     * origin.  A {@link Hop#STARTED_ROOT}'s origin is the start frame its
-     * work claimed; every other context's origin is the point the scope
-     * was opened at, and the frames above that point belong to the thread
-     * that carried the work there rather than to the work.</p>
-     *
-     * <p>What this replaces: "never above the start frame this thread's
-     * work already claimed", which was written for the tick and applied to
-     * every hop, so the pooled handler that happened to serve a request
-     * became part of the request's address (hdfs-17960 verification #5,
-     * 14 REPLAY refusals at {@code <org.apache.hadoop.ipc.Server: void
-     * start()>#u31}, planned at iteration 3 and run at 0).  One rule keyed
-     * on the hop, called through the same doors by the recording and by
-     * the replay ({@code RuntimeTraceContext}).</p>
+     * Opens a scope: THE scope-base rule.  An index is relative to its
+     * causal context's origin -- a {@link Hop#STARTED_ROOT}'s claimed start
+     * frame, else the point the scope is opened at.  Trap: applying the
+     * start-frame base to every hop puts the serving pool handler into a
+     * request's address.
      */
     public static int scopeStart(Hop hop) {
         if (hop == null) {
@@ -875,17 +602,9 @@ public final class Identity {
     }
 
     /**
-     * Puts back the scope root a hop replaced, when the hop ends.
-     *
-     * <p>A HOP'S SCOPE ROOT LASTS AS LONG AS THE HOP.  A served message's
-     * root was set and never put back: once the message's scope had ended
-     * the root stayed where the message had opened it, the frame exit's
-     * clamp then moved it up to the thread's base, and every later
-     * occurrence of that thread lost the frames that name the thread -- its
-     * claimed start above all.  hdfs-17899 bug2's three SPS-node threads
-     * each carried their start frame on their first RPC and none after, so
-     * their k-th calls shared one address (PLAN OCCURRENCE_ADDRESS_SHARED,
-     * six of them).</p>
+     * Puts back the scope root a hop replaced: a hop's scope root lasts as
+     * long as the hop.  Left in place, the exit clamp lifts it to the
+     * thread base and later occurrences lose their claimed start frame.
      */
     public static void scopeRestore(int before) {
         State state = state();
@@ -911,18 +630,10 @@ public final class Identity {
     }
 
     /**
-     * Files the innermost open region's journal under the VM's own key.
-     *
-     * <p>The key is the region-enter event id the VM stamps on every version
-     * and every read it logs from inside this activation, so an event and the
-     * frames it stood on are joined by the VM's statement rather than by the
-     * runtime guessing which activation was live.</p>
-     *
-     * <p>A FOLDED entry keys a journal of its own -- the VM numbers its
-     * region entry whether or not this class opens an occurrence for it --
-     * and that journal measures from the base of the occurrence the entry
-     * folded into, which is the occurrence that performed the events it
-     * holds ({@link #fold}).</p>
+     * Files the innermost open region's journal under the VM's region-enter
+     * event id, so VM events join their frames by the VM's statement.  A
+     * folded entry keys its own journal, measured from the base of the
+     * occurrence it folded into ({@link #fold}).
      */
     public static void regionKey(long vmRegionEnterEventId) {
         State state = state();
@@ -933,59 +644,37 @@ public final class Identity {
     }
 
     /**
-     * Closes the innermost open region entry.
-     *
-     * <p>One pop per entry, folded or not: a folded entry pushed a marker
-     * ({@link #fold}) and this pops that marker, so the exit hook of a region
-     * that was folded cannot close the occurrence it folded into.  Only the
-     * entry that opened an occurrence pops the region that carries it.</p>
-     *
-     * <p>No counter cleanup, and nothing here to clean: counts live in the
-     * levels, keyed by (level, root hop, site), and a region holds none.
-     * Two activations of one region count apart because each entered its
-     * region root's own level (G11), and the level drops its counts when
-     * the frame that opened it exits.  What this replaces: deleting the
-     * closing occurrence's counter bucket from a thread-wide map, which had
-     * to run at exactly the right region depth or it renumbered the
-     * enclosing occurrence's events
-     * (ConcolicRegionRuntime#popActiveRegion).</p>
+     * Closes the innermost open region entry: one pop per entry, folded or
+     * not, so a folded exit pops its marker and cannot close the occurrence
+     * it folded into ({@link #fold}).  Regions hold no counts; nothing to
+     * clean.
      */
     public static void regionExit() {
         State state = state();
         if (state.regions.isEmpty()) return;
         Region closed = state.regions.remove(state.regions.size() - 1);
-        // An occurrence that closes makes no further event: whatever the
-        // order held for it and it did not make is settled (ScheduleLog).
+        // A closed occurrence makes no further event (ScheduleLog).
         if (closed.occurrence != null) {
             ScheduleLog.closed(closed.occurrence.id());
         }
     }
 
     /**
-     * The ordinal of one decision at {@code site} in the occurrence running
-     * here, or {@code 0} when this thread is running none.
+     * The 1-based ordinal of one decision at {@code site} in the occurrence
+     * running here, or {@code 0} when none runs.
      *
-     * <p>I3 -- ROWS AND ORDINALS BELONG TO THE PERFORMER.  A decision row is
-     * addressed by the occurrence that performed the branch, so its site
-     * ordinal is counted on THAT occurrence: the count lives beside the
-     * address, on the region entry that opened it, and every entry folded
-     * into it ({@link #fold}) goes on counting there.  Counted per
-     * ACTIVATION instead, two selected activations that fold into one
-     * occurrence each start at 1 and two rows collide at (occurrence, site,
-     * ordinal) -- which is the pair an obligation's flip is addressed
-     * by.</p>
-     *
-     * <p>1-based, because an obligation's {@code ordinal} is: the first
-     * decision of a site in an occurrence is its first.</p>
+     * <p>I3: ordinals belong to the performer.  Counted on the occurrence
+     * (folded entries included), not per activation -- else two
+     * activations folded into one occurrence collide at (occurrence, site,
+     * ordinal), the key an obligation's flip is addressed by.</p>
      */
     public static int nextBranchOrdinal(String site) {
         State state = state();
         Region running = state.activeRegion();
         if (running == null) return 0;
         String key = Text.safe(site);
-        // The same window rule as every other count ({@link RecordingWindow}): an
-        // activation that straddles the window's opening numbers its
-        // decisions from there.
+        // The window rule ({@link RecordingWindow}): renumber from the
+        // window's opening.
         if (running.window != RecordingWindow.index()) {
             running.branchOrdinals.clear();
             running.window = RecordingWindow.index();
@@ -1015,49 +704,29 @@ public final class Identity {
     }
 
     /**
-     * How many regions this thread has open: the other stack to balance.
-     *
-     * <p>{@link #depth} counts frames and {@link #regionExit} pops regions,
-     * so a region popped without a push leaves the frame count right and
-     * this one wrong -- and it is this stack that decides which occurrence
-     * an event belongs to ({@link #currentOccurrence}) and which frame the
-     * site index of its endpoints is measured from ({@link #siteIndex}).
-     * An activation that closes at a region depth other than the one it
-     * opened at must be refused, exactly as an unbalanced frame is.</p>
+     * How many regions this thread has open: the second stack to balance.
+     * It decides an event's occurrence and site-index base, so an
+     * activation closing at another region depth must be refused, as an
+     * unbalanced frame is.
      */
     public static int regionDepth() {
         return state().regions.size();
     }
 
     /**
-     * The causal context the running thread is in right now, by the one
-     * rule ({@link #here(Role)}): what a schedule event states as its
-     * {@code c}.
+     * The causal context the running thread is in ({@link #here(Role)}):
+     * a schedule event's {@code c}.
      */
     public static CausalContext contextHere() {
         return here(Lineage.role());
     }
 
     /**
-     * The thread handoffs this thread's work stands on inside its scope:
-     * the start frames from the scope root, outermost first, rendered
-     * {@code site@k>site@k}, or {@code ""} on a thread that runs its scope's
-     * own work.
-     *
-     * <p>THE REST OF THE CAUSAL CONTEXT.  The paper's {@code c} records the
-     * cross-thread and RPC handoffs a region is reached through: a message
-     * opens a scope of its own ({@link #scopeStart}), and a task submission
-     * or thread start inside a scope hands the work on under a start frame
-     * ({@link #startWork}, {@link #claimStart}).  {@link #contextHere} names
-     * the scope; this names the starts inside it.  A schedule event keyed
-     * by the scope alone counts every thread started under it together --
-     * hdfs-17899 bug2's {@code Root:CLIENT/satisfy-storage-policy#1} holds
-     * ~90 sends from the workload thread and the storage-policy
-     * satisfier's, and its k-th send was whichever thread sent k-th -- a
-     * cross-thread counter, which an event's identity may never be
-     * ({@link ScheduleLog}).  A start frame is a level no call opened (its
-     * token is 0), and it is addressed by the window rule so a recording
-     * and its replays name the same thread the same way.</p>
+     * The start frames from the scope root, outermost first, as {@code
+     * site@k>site@k}, or {@code ""}: the thread handoffs inside the scope,
+     * the rest of the causal context.  Keyed by scope alone, a schedule
+     * event's k would count across threads started under it, which an
+     * event identity may never do ({@link ScheduleLog}).
      */
     public static String handoffs() {
         State state = state();
@@ -1075,8 +744,8 @@ public final class Identity {
     }
 
     /**
-     * The id of the occurrence running on this thread, or {@code ""}: where a
-     * schedule event happened, which is what a task's prefix is cut at.
+     * The id of the occurrence running on this thread, or {@code ""}: where
+     * a task's prefix is cut.
      */
     public static String innermostRegionId() {
         State state = state();
@@ -1096,26 +765,15 @@ public final class Identity {
     }
 
     /**
-     * The address of the activation entering here (IDENTITY-IMPL A).
+     * THE one computation of an occurrence address (IDENTITY-IMPL §A).
+     * Recording and replay both call it over the same stack, so their
+     * addresses match by construction; offline passes read what the
+     * recording stated, never re-derive it.  {@code null} when no node can
+     * be named: a guessed node is a wrong causal chain.
      *
-     * <p>THE one computation of an occurrence address, and there is no
-     * second one.  The recording calls it on the stock JDK from the trace
-     * recorder's own method hook, and the replay calls it on the custom VM
-     * from the region hook; both read the frame stack and the scope this
-     * class maintains, so the address the SEED trace carries and the address
-     * a replay computes for the same occurrence are the same string by
-     * construction rather than by reconciliation.  An offline pass over
-     * trace rows never re-derives it: it reads what the recording
-     * stated.</p>
-     *
-     * <p>{@code null} when this run can name no node to put the occurrence
-     * on -- a guessed node is a wrong causal chain.</p>
-     *
-     * @param open whether this is a region ENTRY -- which opens an occurrence
-     *             when the thread runs none and is folded into the running
-     *             one when it does ({@link #fold}) -- or only a read (the
-     *             recording and admission, which must not move the base the
-     *             endpoints of an already-open region are indexed from)
+     * @param open whether this is a region ENTRY (opens an occurrence, or
+     *             folds into the running one, {@link #fold}) or only a read,
+     *             which must not move the base of an open region
      */
     public static OccurrenceAddress occurrence(String nodeKey, String regionId,
                                                boolean open) {
@@ -1135,49 +793,21 @@ public final class Identity {
             State state = state();
             Region region = state.region();
             if (region != null) region.occurrence = address;
-            // Where this occurrence began in the run's schedule: what a
-            // prefix that focuses it is cut at.
+            // Where a prefix focusing this occurrence is cut.
             ScheduleLog.mark(address.id());
         }
         return address;
     }
 
     /**
-     * Folds one declared region entry into the occurrence already running.
+     * THE FOLD RULE (paper §3.1.2): a declared region entered synchronously
+     * inside a running occurrence opens none; everything below it is an
+     * event of the running occurrence.  Decided by the call stack only, so
+     * recording and replay fold at the same entries.
      *
-     * <p>THE FOLD RULE (paper SS3.1.2: sites connected by synchronous calls
-     * are one region, and an occurrence ends only when execution crosses a
-     * thread or process boundary).  A declared region method called
-     * synchronously inside another region's occurrence opens NO occurrence
-     * of its own: its entry is folded, and every site executed below it --
-     * decisions, reads, writes, exports, attaches, hook mints -- is an event
-     * of the occurrence that was already running.  A declared region opens
-     * its own occurrence only on a thread where none is.</p>
-     *
-     * <p>Decided by the CALL STACK and by nothing else: which obligation a
-     * replay focuses, which task a plan named, what a region is called -- all
-     * out.  So the recording and the replay fold at the same entries, which
-     * they must, because the plan names the occurrences the replay is asked
-     * to open ({@code CausynthTraceRecorder#enterMethod} and {@code
-     * ConcolicRegionRuntime#enterRegionEntry} both reach this one function).
-     * Before this, dn1's {@code addKeys} (REGION.ba3902cd) calling {@code
-     * removeExpiredKeys} (REGION.094a8e3d) opened a NESTED occurrence
-     * {@code 845fa3841a35af67} inside one synchronous call.</p>
-     *
-     * <p>OWNERSHIP is the pushed marker.  A folded entry still pushes a
-     * region -- with the enclosing occurrence's base and no occurrence of its
-     * own -- so the one exit hook that pairs with this entry pops the marker
-     * and cannot close the occurrence it folded into.  An entry that OPENS
-     * an occurrence is the only entry whose exit closes one, and the two
-     * stacks stay balanced for the check {@code
-     * ConcolicRegionRuntime#closeRegionEntry} makes.</p>
-     *
-     * <p>The folded region's base is the enclosing entry's, so the site
-     * index of an event below it -- and the frames its journal hands the VM's
-     * logged events -- are measured from the occurrence that performed it
-     * (IDENTITY-IMPL SSA).  The enclosing occurrence's own address does not
-     * move: nothing is pushed above its base and its address was minted when
-     * it was entered.</p>
+     * <p>The folded entry still pushes a marker region with the enclosing
+     * base and no occurrence, so its exit closes nothing and the two stacks
+     * stay balanced ({@code ConcolicRegionRuntime#closeRegionEntry}).</p>
      *
      * @return the occurrence this entry folded into, or null when this
      *         thread runs none and the entry opens its own
@@ -1191,22 +821,9 @@ public final class Identity {
     }
 
     /**
-     * Whether the region entry standing on this thread was FOLDED.
-     *
-     * <p>F1 -- A FOLDED ENTRY IS NOT AN ENTRY OF AN OCCURRENCE, it is a
-     * method call inside the one already running, so neither pass records an
-     * activation for it: the recording states no occurrence address on its
-     * trace row ({@code CausynthTraceRecorder#enterMethod}) and the replay
-     * starts no ActiveRegion at it ({@code
-     * ConcolicRegionRuntime#enterRegionFrame}).  What remains is the marker
-     * this class pushed, so the two index stacks balance and the fold's own
-     * exit closes nothing ({@link #fold}).</p>
-     *
-     * <p>Asked at the entry, where the marker is innermost -- both hooks sit
-     * at one Java entry and the region entry hook runs first.  It stays true
-     * for everything executed below that entry, which is the same statement:
-     * no activation is started while the innermost entry on this thread is a
-     * fold, so one occurrence has one activation.</p>
+     * Whether the innermost region entry was FOLDED (F1): it is a call
+     * inside the running occurrence, so neither pass records an activation
+     * for it.  Asked at the entry, where the marker is innermost.
      */
     public static boolean foldedEntry() {
         State state = state();
@@ -1216,14 +833,8 @@ public final class Identity {
     }
 
     /**
-     * The occurrence an event on this thread belongs to.
-     *
-     * <p>The innermost region activation open here, whose address was filed
-     * when it was entered by {@link #occurrence} -- in the recording and in
-     * a replay alike, because both open their regions through that one
-     * call.  Outside every region it is the degraded role occurrence, which
-     * is still an occurrence an endpoint can be keyed by (INTERACTION-ID
-     * R-I1).</p>
+     * The occurrence an event on this thread belongs to: the innermost open
+     * region's, else the degraded role occurrence (INTERACTION-ID R-I1).
      */
     public static OccurrenceAddress currentOccurrence(String nodeKey) {
         State state = state();
@@ -1236,32 +847,17 @@ public final class Identity {
     }
 
     /**
-     * THE endpoint of one event: where it happened, in which occurrence.
-     *
-     * <p>IDENTITY-IMPL §A: (occurrence, site, site-local execution index,
-     * attempt).  One computation for both passes, as the occurrence address
-     * is: a producer endpoint the recording mints and a producer endpoint a
-     * replay mints are the same string for the same event, which is what
-     * lets the causal context of everything downstream of a message be the
-     * SAME context in the two passes.  Before this, the recording minted
-     * its senders from a degraded role occurrence (or, behind a session
-     * guard, not at all) and the replay from its live activation, so the
-     * anchor of every occurrence a message started drifted -- hdfs-17960's
-     * two FSImageSaver activations were planned at {@code
-     * Anchor:...@THREAD_START} and ran at {@code
-     * Anchor:...@HADOOP_IPC/checkpoint-namespace}.</p>
+     * THE endpoint of one event (IDENTITY-IMPL §A): (occurrence, site,
+     * site-local index, attempt), one computation for both passes so the
+     * contexts downstream of a message match.
      */
     public static Endpoint endpoint(String nodeKey, String site, int attempt) {
         return endpointAt(currentOccurrence(nodeKey), site, attempt);
     }
 
     /**
-     * The same endpoint, for an occurrence the caller already holds.
-     *
-     * <p>The site is put in its stable spelling ONCE, here, and the index
-     * is taken over that same string: a class the JVM minted per run is not
-     * an identity ({@link JvmNames#stable}), and the site of an endpoint
-     * and the innermost frame of its index are the same site.</p>
+     * The same endpoint for a held occurrence.  The site is stabilised once
+     * ({@link JvmNames#stable}) and the index is taken over that string.
      */
     public static Endpoint endpointAt(OccurrenceAddress occurrence,
                                       String site, int attempt) {
@@ -1272,23 +868,10 @@ public final class Identity {
     }
 
     /**
-     * The site-local index of the event minting an endpoint HERE, with the
-     * event itself as the innermost frame.
-     *
-     * <p>IDENTITY-V3 §1: an Endpoint is (occurrence, site, site-local
-     * execution index, attempt), and two events of one occurrence at one
-     * site are two points of its control structure.  Without the innermost
-     * frame they share one endpoint id -- which is what RowInvariants:337
-     * states as "invariant 4 site index missing ... 2 events of this site in
-     * one occurrence share one endpoint id" and says is the identity's to
-     * fix with no ordinal and no counter of the session's.  The count is
-     * the enclosing LEVEL's ({@link State#nextSiteEvent}), keyed by (level,
-     * root hop, site): it starts at zero in that calling context under that
-     * root and is therefore the same number in the recording and in a
-     * replay of it, whatever else the thread it ran on did.  Two sends made
-     * inside ONE activation of the transport site's caller advance k there;
-     * two sends made from two activations differ by that caller's own frame
-     * iteration instead, which is the same count taken one level up.</p>
+     * The site-local index of the event minting an endpoint here, with the
+     * event itself as the innermost frame (IDENTITY-V3 §1).  Without that
+     * frame two events of one occurrence at one site share an endpoint id.
+     * Its k is the enclosing level's ({@link State#nextSiteEvent}).
      */
     private static ExecutionIndex eventSiteIndex(OccurrenceAddress occurrence,
                                                  String site) {
@@ -1304,13 +887,8 @@ public final class Identity {
 
     /**
      * Files the producer endpoint of one whole message, for the anchor its
-     * receiver states (IDENTITY-IMPL §C).
-     *
-     * <p>The endpoint itself comes back, not its digest: the caller states
-     * the four components this mint was given -- which occurrence sent the
-     * message, at which transport site, the k-th event of that occurrence
-     * there, and the attempt -- so the trace row and a refusal spell out
-     * what the anchor is a digest OF.</p>
+     * receiver states (IDENTITY-IMPL §C).  Returns the endpoint, not its
+     * digest, so rows and refusals spell out what the anchor digests.
      *
      * @return the endpoint filed, or {@code null}
      */
@@ -1325,21 +903,11 @@ public final class Identity {
     }
 
     /**
-     * The address of work that ran under no region this plan selected: its
-     * role, on its node, at its index from the scope root -- the one
-     * scope-base rule ({@link #scopeStart}), as a region's is.  Measured
-     * from the thread's first frame instead, a response the pooled handler
-     * sent outside every region carried that handler's start iteration
-     * ({@code Server.start()#u31@N}), and hdfs-17960's replay -- one
-     * heartbeat shifting the handler rotation -- anchored the client's
-     * next request on an endpoint the recording never minted.
-     *
-     * <p>REPORT-ENTRY §4: the region slot carries a role id rather than a
-     * plan region, so a reader tells an ambient occurrence from a planned
-     * one by the visible {@code ROLE.} prefix.  An activation no PLAN
-     * selected is not an activation with no CONTEXT: the message that opened
-     * its scope, or the root it descends from, is known exactly as it is for
-     * a selected one.</p>
+     * The address of work under no selected region: its role, node and
+     * index from the scope root ({@link #scopeStart}), never from the
+     * thread's first frame (that leaks the pool handler's iteration).
+     * The region slot is {@code ROLE.<role>} (REPORT-ENTRY §4); the
+     * context is still exact.
      */
     public static OccurrenceAddress roleOccurrence(String nodeKey, Role role) {
         if (Text.safe(nodeKey).isEmpty()) return null;
@@ -1349,14 +917,10 @@ public final class Identity {
     }
 
     /**
-     * The context the running thread is in, by the one rule.
-     *
-     * <p>{@code role} is what the thread degrades to when nothing can be
-     * attributed at all ({@link CausalContext.Lost}).  A ROOT context takes
-     * its role, its api and its k from the root hop itself -- the innermost
-     * one, so a daemon tick opened inside a request descends from the tick
-     * -- because those three are one fact: {@code Lineage.push} counts the
-     * k per (node, role, api).</p>
+     * The context the running thread is in, by the one rule.  {@code role}
+     * is the fallback when nothing is attributable ({@link
+     * CausalContext.Lost}).  A ROOT context takes role, api and k from the
+     * innermost root hop, which are one fact ({@code Lineage.push}).
      */
     private static CausalContext here(Role role) {
         return context(Lineage.anchor(), Lineage.rpcSite(),
@@ -1379,14 +943,10 @@ public final class Identity {
         if (!Text.safe(anchorEndpointId).isEmpty()) {
             return CausalContext.of(anchorEndpointId, Text.safe(rpcSite));
         }
-        // No arm for "started by a submission".  A thread start is not a
-        // message: the work runs inside the scope its starter was in, whose
-        // anchor is the arm above, and two siblings started from one site
-        // are told apart by the start-site FRAME in the index (#startWork,
-        // REPORT-P2H) rather than by a second context form.  The arm that
-        // used to stand here fired only in the recording -- the replay
-        // always had the scope's anchor by then -- so one occurrence
-        // carried two contexts.
+        // No "started by a submission" arm: started work runs in its
+        // starter's scope, and siblings differ by the start FRAME
+        // (#startWork).  Trap: such an arm fires only in the recording, so
+        // one occurrence gets two contexts.
         if (role != null && !Role.UNKNOWN.equals(role)
                 && windowIndex > 0) {
             return CausalContext.of(role, api, windowIndex);
@@ -1396,11 +956,8 @@ public final class Identity {
     }
 
     /**
-     * The VM's session event clock, which the frame journal samples.
-     *
-     * <p>Installed by the runtime that owns the VM bindings: this package
-     * states identity and holds no reflective view of the engine, and a run
-     * with no such clock journals nothing rather than inventing readings.</p>
+     * Installs the VM's session event clock the frame journal samples.  No
+     * clock, no journal: readings are never invented.
      */
     public static void clock(FrameJournal.Clock source) {
         CLOCK = source == null ? UNAVAILABLE : source;
@@ -1417,25 +974,18 @@ public final class Identity {
     private static volatile FrameJournal.Clock CLOCK = UNAVAILABLE;
 
     /**
-     * One open region entry: where its endpoints are indexed from.
-     *
-     * <p>Two kinds, one stack.  An entry that OPENED an occurrence carries
-     * it; an entry that was FOLDED into the occurrence already running
-     * ({@link #fold}) carries none and inherits the opener's base, so it is
-     * a pure ownership marker: its exit pops it and closes nothing.</p>
+     * One open region entry: where its endpoints are indexed from.  An
+     * opening entry carries its occurrence; a folded one ({@link #fold})
+     * carries none and is a pure ownership marker.
      */
     private static final class Region {
         private final int base;
         private FrameJournal journal;
-        /**
-         * The occurrence this entry opened, or null when it was folded into
-         * the one already running on this thread.
-         */
+        /** The occurrence this entry opened, or null when folded. */
         private OccurrenceAddress occurrence;
         /**
-         * How many decisions this OCCURRENCE has taken at each site, for the
-         * ordinal its rows carry ({@link #nextBranchOrdinal}).  Empty on a
-         * folded entry: it counts on the occurrence it folded into.
+         * Decisions per site on this OCCURRENCE ({@link #nextBranchOrdinal});
+         * empty on a folded entry.
          */
         private final Map<String, Integer> branchOrdinals =
                 new HashMap<String, Integer>();

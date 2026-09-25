@@ -5,25 +5,19 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Stamps the occurrence a recorded root call belongs to onto the rows it
- * named.
+ * Stamps a recorded root call's occurrence onto the rows it named.
  *
- * <p>It computes no identity.  An occurrence address is computed exactly
- * once, by {@link Identity#occurrence}, at the entry where the activation
- * ran -- on the stock JDK for the recording and on the custom VM for every
- * replay -- and every later pass reads that string.  This class is the one
- * place a trace call id selects rows; afterwards an activation is addressed
- * by {@code occurrenceId} alone.</p>
+ * <p>Computes no identity: {@link Identity#occurrence} computes it once, at
+ * entry.  The one place a trace call id selects rows; afterwards an
+ * activation is addressed by {@code occurrenceId} alone.</p>
  */
 public final class OccurrenceBinding {
-    /** Declared source of a workload whose tracing registered none. */
     public static final String UNREGISTERED_SOURCE_KEY =
             RuntimeRegionPlanner.UNREGISTERED_SOURCE.key();
 
     private OccurrenceBinding() {
     }
 
-    /** Stamps one occurrence onto the ports of the region it activated. */
     public static void bindOccurrence(Map<String, Object> region,
                                       long rootCallId, String occurrenceId) {
         if (region == null) return;
@@ -50,8 +44,7 @@ public final class OccurrenceBinding {
                 owned = true;
             }
             if (!owned) continue;
-            // A retained access inherits the port's occurrence unless it
-            // recorded a different activation of its own.
+            // An access keeps its own activation if it recorded one.
             for (Map<String, Object> access
                     : MapFields.rows(port.get("runtimeAccesses"))) {
                 if (!(access.get("rootCallId") instanceof Number)

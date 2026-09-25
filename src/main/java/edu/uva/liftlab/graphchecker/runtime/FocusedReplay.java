@@ -21,17 +21,12 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * The focused-region replay: exactly one occurrence (or one state-connected
- * factor) runs symbolic, and every other region runs concretely with its
- * exports, attaches, writes and reads still recorded.
+ * The focused-region replay: one occurrence (or one state-connected factor)
+ * runs symbolic; every other region runs concretely with its rows still
+ * recorded.
  *
- * <p>This is what replaces linked replay.  A linked replay coupled a
- * primary to its companions, so an unrelated prefix mismatch in a producer
- * region rejected the consumer's whole obligation -- 26 {@code
- * REPLAY_NOT_ADMITTED} on 11741 in one round.  Here admission evidence is
- * per focused region: the producer's exports are still recorded (they are
- * what the delivery states), and only the focused occurrence's own prefix
- * decides whether the obligation was admitted.</p>
+ * <p>Admission is per focused occurrence: only its own prefix decides, so an
+ * unrelated producer's prefix mismatch cannot reject the obligation.</p>
  */
 public final class FocusedReplay {
     private static final Object LOCK = new Object();
@@ -49,36 +44,23 @@ public final class FocusedReplay {
     private static final Set<String> FOCUSED_OCCURRENCES =
             new LinkedHashSet<String>();
     /**
-     * The occurrence the recording mints each root this wave assigns at, by
-     * the contract's own id, off the focus row's {@code rootMints}.
+     * The mint occurrence of each assigned root (focus row {@code rootMints}),
+     * by contract id.
      *
-     * <p>Focused for the same reason the flipped occurrence is: an
-     * assignment is planted at the MINT and nowhere else
-     * ({@code ConcolicRegionRuntime#focusedRootValue} asks only on a
-     * focused occurrence), so a mint that runs unfocused reads the
-     * recording's value under an obligation that asked for another one --
-     * the {@code ASSIGNMENT_UNPLANTED} 31 of 11741 wave 0/1's obligations
-     * met, their whole focused set being on the balancer while {@code
-     * HDFS.BLOCK_KEY.SERIAL_NO} is minted in nn0's {@code
-     * REGION.aaa1cfd7}.  A focused replay is one run of the whole workload,
-     * so both are focused in the same run.</p>
+     * <p>Focused because an assignment is planted only at a focused MINT
+     * ({@code ConcolicRegionRuntime#focusedRootValue}); an unfocused mint
+     * reads the recording's value (ASSIGNMENT_UNPLANTED).</p>
      */
     private static final Set<String> ROOT_MINTS =
             new LinkedHashSet<String>();
 
     /**
-     * One decision this replay INHERITED: its parent's flip, or one of
-     * theirs, carried down the chain by the focus row.
+     * One flip this replay INHERITED down the focus-row chain.
      *
-     * <p>A focused replay runs inside the world of the session its path was
-     * cut from ({@code explore/Corpus.World}), and the flips that session
-     * was held to are part of that world: 11741's witness is dn1's expiry
-     * compare flipped a second time on a refresh path that exists only
-     * because nn0's rotation stopped exporting the key.  So the replay is
-     * held to every one of them, exactly as it is to its own flip -- same
-     * (occurrence, site, ordinal) join, same refusal on the wrong arm --
-     * while the RESULT ROW it publishes stays the primary obligation's
-     * alone, because one worker answers one verdict.</p>
+     * <p>The replay runs in the world of the session its path was cut from
+     * ({@code explore/Corpus.World}), so it is held to those flips with the
+     * same (occurrence, site, ordinal) join as its own; the result row stays
+     * the primary obligation's alone.</p>
      */
     private static final class Inherited {
         private final String at;
@@ -112,12 +94,9 @@ public final class FocusedReplay {
             new ArrayList<Inherited>();
 
     /**
-     * The occurrences those flips are addressed at, by the contract's id.
-     *
-     * <p>Focused, so their mints plant and their decisions are published --
-     * and NEVER abandoned: {@link #complete} asks only the primary flip's
-     * own occurrence, because an inherited flip is a condition this replay
-     * is judged on and not a prefix it is driven to.</p>
+     * The inherited flips' occurrences, by contract id: focused so they plant
+     * and publish, NEVER abandoned ({@link #complete}) -- a condition judged,
+     * not a prefix driven to.
      */
     private static final Set<String> INHERITED_OCCURRENCES =
             new LinkedHashSet<String>();
@@ -126,20 +105,14 @@ public final class FocusedReplay {
     }
 
     /**
-     * Whether this occurrence is one of the ones that run symbolic.
-     *
-     * <p>THE FOCUSED SET, and the one implementation of it: the focused
-     * occurrence, one member of the state-connected factor it is explored
-     * with -- writers and readers of one location on one node, which cannot
-     * be explored apart without inventing a write nobody made -- or the
-     * MINT of a root the obligation assigns ({@link #ROOT_MINTS}), because
-     * a value is planted where the run mints it.</p>
+     * THE FOCUSED SET, its one implementation: the focused occurrence, its
+     * state-connected factor (explored apart they would invent a write),
+     * each assigned root's MINT ({@link #ROOT_MINTS}) and each inherited
+     * flip's occurrence.
      */
     public static boolean focused(OccurrenceAddress occurrence) {
         load();
-        // A replay nothing focused -- the seed -- focuses nothing: every
-        // occurrence of it ran as the plan had it, and the composer reads
-        // the session whose activations are unfocused as the seed.
+        // The seed focuses nothing.
         if (occurrence == null) return false;
         synchronized (LOCK) {
             if (FOCUSED_OCCURRENCES.contains(occurrence.render())
@@ -158,12 +131,8 @@ public final class FocusedReplay {
     }
 
     /**
-     * Whether this activation is the one the wave focused.
-     *
-     * <p>A wave's plan row names the TASK it focuses, not the address --
-     * the address is what the replay finds out by running it.  So the first
-     * activation of that task is the focused occurrence, and every later
-     * row about it is focused by address.</p>
+     * Whether this activation is focused.  The plan row names a TASK; its
+     * activation's address is learned here and focused from then on.
      */
     public static boolean focused(String taskId, OccurrenceAddress occurrence) {
         load();
@@ -185,13 +154,8 @@ public final class FocusedReplay {
     }
 
     /**
-     * The skew the wave asks of this clock, or null when it asks none.
-     *
-     * <p>A clock is the one root every execution reads differently, so the
-     * focus row states a DIFFERENCE and the mint adds it to the instant this
-     * replay read.  Null and zero are different answers: zero is "read the
-     * same instant the recording did", null is "the wave said nothing about
-     * this clock".</p>
+     * The skew (a DIFFERENCE added to this replay's reading) the wave asks of
+     * this clock.  Zero is "the recording's instant"; null is "not asked".
      */
     public static Long clockSkew(String rootId) {
         load();
@@ -233,21 +197,13 @@ public final class FocusedReplay {
     }
 
     /**
-     * States one decision the focused occurrence took.
+     * States one decision; the flipped one must take the flipped arm, else
+     * it is a refusal naming its site.
      *
-     * <p>The flipped decision must take the flipped arm.  A decision that
-     * does not is the refusal, named with its site -- "wrong decision at X"
-     * is a fact a reader can act on and "not admitted" is not.</p>
-     *
-     * <p>AT THE OBLIGATION'S OWN OCCURRENCE.  The flip used to be addressed
-     * by (siteId, ordinal) alone, and an ordinal restarts per activation:
-     * four hdfs-11741 nodes run one {@code BlockTokenSecretManager}, so
-     * {@code removeExpiredKeys#u15#1} happens on nn0, dn0, dn1 and the
-     * balancer, and whichever ran first decided the obligation -- 6 of 11
-     * campaign-#3 flips landed on the wrong node.  The occurrence's own
-     * gate {@link #focused} does not narrow it either: it is true of every
-     * member of the focused set, which includes each assigned root's MINT
-     * and every factor member.</p>
+     * <p>Joined on (occurrence, site, ordinal) at the obligation's OWN
+     * occurrence: an ordinal restarts per activation, so (site, ordinal)
+     * alone matches the same code on every node, and {@link #focused} is too
+     * wide (the whole focused set).</p>
      */
     public static void observeDecision(OccurrenceAddress occurrence,
                                        String siteId, int ordinal,
@@ -259,11 +215,8 @@ public final class FocusedReplay {
             for (Obligation obligation : OBLIGATIONS) {
                 observe(obligation, at, siteId, ordinal, outcome);
             }
-            // THE SAME JOIN for a flip this replay inherited: the occurrence
-            // the focus row addresses it at, its site and its ordinal.  It
-            // refuses nothing and abandons nothing -- it is a condition on
-            // the ADMISSION of the primary obligation, answered in
-            // {@link #results}.
+            // Same join for inherited flips; they only condition the
+            // primary's admission ({@link #results}).
             for (Inherited flip : INHERITED) {
                 if (flip.taken || !flip.refusal.isEmpty()) continue;
                 if (!flip.at.equals(at)) continue;
@@ -289,9 +242,7 @@ public final class FocusedReplay {
                                 boolean outcome) {
         String id = Text.safe(obligation.obligationId());
         if (REFUSALS.containsKey(id) || FLIPPED.contains(id)) return;
-        // The focus row states which occurrence this obligation flips
-        // ({@code focusedOccurrenceId}), and the contract's own identity is
-        // what the two sides are joined on.
+        // Joined on the focus row's focusedOccurrenceId.
         if (!Text.safe(FOCUS.get(id)).equals(Text.safe(at))) return;
         if (!Text.safe(obligation.siteId()).equals(Text.safe(siteId))
                 || obligation.ordinal() != ordinal) {
@@ -312,26 +263,13 @@ public final class FocusedReplay {
             new LinkedHashMap<String, String>();
 
     /**
-     * Whether this occurrence has already contradicted ITS OWN obligation.
+     * Whether this occurrence has contradicted ITS OWN obligation -- the one
+     * prefix matcher, over what {@link #observeDecision} saw.
      *
-     * <p>The one prefix matcher: a replay is admitted or refused by what
-     * {@link #observeDecision} has seen, and nothing else keeps a second
-     * account of the same decisions.  A replay that was handed no
-     * obligation contradicts nothing -- the seed decides by running.</p>
-     *
-     * <p>I2 -- A REFUSAL ABANDONS ONLY ITS OWN OCCURRENCE, and the
-     * obligation's own occurrence is the one its focus row addresses
-     * ({@link #FOCUS}), which is the same join {@link #observe} takes when
-     * it FILES the refusal.  This asked {@link #focused} instead, which is
-     * true of every member of the focused set -- each assigned root's mint,
-     * every factor member, every occurrence an inherited flip named -- so
-     * one obligation's refusal abandoned the next focused activation at its
-     * first decision: {@code BranchObservation#observe} finishes it
-     * REPLAY_PREFIX_CONTRADICTED, {@code closeOccurrence} publishes none of
-     * its rows, and the Java call keeps running inside the still-live
-     * enclosing activation.  10 of hdfs-11741's 40 nn0-focused sessions show
-     * that migration, always on the node of {@code inheritedFlips[0]}, and
-     * it makes an inherited flip read as "never reached" by luck.</p>
+     * <p>I2: a refusal abandons only its own occurrence, joined through
+     * {@link #FOCUS} as {@link #observe} files it.  Trap: asking
+     * {@link #focused} instead lets one refusal abandon every other member
+     * of the focused set.</p>
      */
     public static boolean contradicted(OccurrenceAddress occurrence) {
         load();
@@ -351,12 +289,8 @@ public final class FocusedReplay {
     }
 
     /**
-     * The refusal filed against an obligation addressed AT {@code at}.
-     *
-     * <p>Called under {@link #LOCK}.  {@code ""} is "no obligation of this
-     * occurrence is refused", which includes "this occurrence carries no
-     * obligation at all" -- another obligation's refusal is not this
-     * occurrence's to answer for.</p>
+     * The refusal of an obligation addressed AT {@code at}, or {@code ""};
+     * never another occurrence's.  Called under {@link #LOCK}.
      */
     private static String refused(String at) {
         for (Obligation obligation : OBLIGATIONS) {
@@ -370,43 +304,12 @@ public final class FocusedReplay {
 
     /**
      * Whether this occurrence has taken the decision ITS OWN obligation
-     * flips.
+     * flips; true when it has no obligation, or none is addressed at it.
      *
-     * <p>True for a replay with no obligation: there is no prefix to
-     * complete, and a seed activation is never abandoned for one.  True as
-     * well for a focused occurrence NO obligation's flip is addressed at:
-     * the question is not asked of it, so it has no failing answer.</p>
-     *
-     * <p>THE SAME JOIN {@link #observe} TAKES (R4a), on the other side of
-     * it.  A decision is credited to the obligation whose {@code
-     * focusedOccurrenceId} it happened at, so the terminal that answers the
-     * obligation is that same occurrence's -- and the FOCUSED SET is
-     * wider than it: every factor member, and the MINT of each assigned
-     * root.  Asked occurrence-blind, this refused the flip's own question
-     * at a mint's terminal, and {@code judgeFinishedOccurrence} abandoned
-     * the mint -- which throws away every row that occurrence published.
-     * HDFS-17960 on 39bedd768, obligation {@code 793875fb482a10a4}: its
-     * flip is at {@code applyEditLogOp@8/deleteSnapshot} ({@code
-     * focusedOccurrenceId ea10d7e883e23973}) and its {@code rootMints}
-     * name {@code applyEditLogOp@7/deleteSnapshot} ({@code
-     * 4786cb8a1d2bd655}), a DIFFERENT occurrence.  The mint at @7 finished
-     * first, its own flip had not happened and could not have, and the
-     * replay abandoned it: 42 decision rows and the session's ONLY root
-     * mint row went with it, leaving a 0-byte {@code roots.jsonl}.  The
-     * sibling obligation {@code cb67875d1d896d4d}, whose flip and mint are
-     * the same occurrence, kept everything in the same wave.</p>
-     *
-     * <p>AND TRUE FOR EVERY OTHER MEMBER OF THE FOCUSED SET.  Only the
-     * flip's OWN occurrence can complete it -- the same join {@link #observe}
-     * takes, on the other side of it -- so only that one is asked here: a
-     * root's mint, a factor member and the occurrence of a flip this replay
-     * INHERITED are focused so that they plant and publish, and abandoning
-     * one of them for a decision it was never asked to take would throw
-     * away every row it published.</p>
-     *
-     * <p>The other half of I2, and the same join: an occurrence is
-     * abandoned for the flip IT was asked to take and for no other
-     * obligation's.</p>
+     * <p>The other half of I2, the same join as {@link #observe} (R4a).
+     * Trap: asked occurrence-blind, a root's mint or factor member is
+     * abandoned for a flip it was never asked to take, and all its rows
+     * (mint row included) are thrown away.</p>
      */
     public static boolean complete(OccurrenceAddress occurrence) {
         load();
@@ -424,14 +327,9 @@ public final class FocusedReplay {
     }
 
     /**
-     * The prefix this replay was abandoned on, as the gap that named it.
-     *
-     * <p>An abandoned occurrence publishes NO rows -- that is what
-     * abandoning one means -- so the session it leaves behind is missing
-     * every decision, read, write and mint that occurrence made.  The one
-     * account of the replay therefore has to hold it: a verdict read off
-     * {@link #FLIPPED} alone says "the focused prefix reproduced" over a
-     * session whose prefix is not in it.</p>
+     * The gap that abandoned a prefix, if any.  An abandoned occurrence
+     * publishes no rows, so {@link #FLIPPED} alone would admit over a
+     * session missing its prefix.
      */
     private static String unmatchedPrefix = "";
 
@@ -439,13 +337,8 @@ public final class FocusedReplay {
     private static final String PREFIX_UNMATCHED = "REPLAY_PREFIX_UNMATCHED";
 
     /**
-     * Notes one unanswered-task gap, and keeps the prefix ones.
-     *
-     * <p>Every such gap opens with its reason
-     * ({@code ConcolicResultPublisher#taskUnanswered}), and the reason is
-     * the field: what this reads is the word the row states, not a shape it
-     * guessed.  Anything but a prefix abandonment is a fact about a task
-     * and not about this replay's obligations, and is ignored here.</p>
+     * Keeps the first prefix-abandonment gap, recognised by the reason word
+     * it opens with ({@code ConcolicResultPublisher#taskUnanswered}).
      */
     static void noteUnansweredTask(String detail) {
         String stated = Text.safe(detail);
@@ -460,13 +353,9 @@ public final class FocusedReplay {
     private static final Set<String> MINTED = new LinkedHashSet<String>();
 
     /**
-     * Notes one root mint ROW this session published.
-     *
-     * <p>Told apart from {@link #planted} on purpose: that one says the
-     * wave's value reached the field, this one says the SESSION states the
-     * mint.  A replay can do the first and not the second -- the mint's
-     * occurrence is abandoned after the plant -- and it is the second the
-     * corpus is read on.</p>
+     * Notes one root mint ROW published.  Not {@link #planted}: a plant
+     * survives an abandoned occurrence, the row does not, and the corpus
+     * reads the row.
      */
     static void mintPublished(String rootId) {
         String id = Text.safe(rootId);
@@ -478,24 +367,12 @@ public final class FocusedReplay {
     }
 
     /**
-     * What this replay settled, one row per obligation.
+     * What this replay settled, one row per obligation.  Topology divergence
+     * is EXPLORE's finding (rule E8), not decided here.
      *
-     * <p>Topology divergence is not decided here.  A flip that discovers a
-     * topology this epoch does not have is EXPLORE's finding (rule E8),
-     * read off the rows the replay published, and the runtime states no
-     * second opinion about it.</p>
-     *
-     * <p>FAIL-CLOSED, ONE RULE.  ADMITTED means "the focused prefix
-     * reproduced and the flip took the other arm", and that is a claim
-     * about the SESSION -- the rows a later stage reads.  So the flip alone
-     * does not admit: a replay whose focused prefix was abandoned, or whose
-     * session states no mint row for a root the wave assigned, states
-     * NOT_ADMITTED naming the gap, because the evidence for the sentence is
-     * not in the corpus.  The 39bedd768 HDFS-17960 session {@code
-     * 793875fb482a10a4-4b39d011} is both at once: a 0-byte {@code
-     * roots.jsonl}, its flip occurrence's 42 rows gone with the
-     * REPLAY_PREFIX_UNMATCHED gap that abandoned them, and {@code
-     * obligation_result.jsonl} reading ADMITTED.</p>
+     * <p>FAIL-CLOSED: ADMITTED is a claim about the SESSION's rows, so the
+     * flip alone does not admit -- an abandoned prefix, a missing mint row or
+     * a broken inherited flip is NOT_ADMITTED naming the gap.</p>
      */
     public static List<ObligationResult> results(String sessionId) {
         load();
@@ -508,15 +385,9 @@ public final class FocusedReplay {
                     results.add(ObligationResult.of(id, Verdict.NOT_ADMITTED,
                             sessionId, REFUSALS.get(id)));
                 } else if (FLIPPED.contains(id)) {
-                    // The one place an ADMITTED is stated, and the only
-                    // thing this gate does is refuse one: every other
-                    // verdict below keeps the words it already had.
+                    // The one place ADMITTED is stated.
                     String unstated = unstated(obligation);
-                    // AND THE WORLD HAS TO HOLD.  A replay whose inherited
-                    // flip was contradicted, or never reached at all, ran
-                    // in a world other than the one its path was cut from,
-                    // so the path it recorded is not the path the next wave
-                    // would cut from it.
+                    // And the inherited world has to hold.
                     if (unstated.isEmpty()) unstated = inherited();
                     results.add(unstated.isEmpty()
                             ? ObligationResult.of(id, Verdict.ADMITTED,
@@ -531,10 +402,7 @@ public final class FocusedReplay {
                             : ObligationResult.of(id, Verdict.NOT_ADMITTED,
                                     sessionId, unstated));
                 } else if (Text.safe(FOCUS.get(id)).isEmpty()) {
-                    // The row states no occurrence for the flip, so the
-                    // flip is addressed at nothing and no decision of this
-                    // replay could ever answer it.  Named, not read as
-                    // "never reached": what is missing is the ask.
+                    // No occurrence stated: the ask is missing, not the run.
                     results.add(ObligationResult.of(id, Verdict.NOT_ADMITTED,
                             sessionId, "the focus row states no "
                             + "focusedOccurrenceId, so the flip at "
@@ -554,27 +422,8 @@ public final class FocusedReplay {
     }
 
     /**
-     * Why this replay's session cannot carry an admission, or {@code ""}.
-     *
-     * <p>Two ways, and both are "the rows are not there to be read".  A
-     * prefix this replay was abandoned on took the abandoned occurrence's
-     * whole row set with it.  A root the wave assigned whose mint row the
-     * session does not state leaves the valuation the replay ran unstated
-     * in the corpus -- over BOTH spellings of what a wave asks of a root,
-     * an absolute assignment and a clock's skew, for the reason {@link
-     * #unplantedAssignments} gives.</p>
-     *
-     * <p>Called under {@link #LOCK}.</p>
-     */
-    /**
-     * Why the world this replay inherited did not hold, or {@code ""}.
-     *
-     * <p>Two ways, and the row names which flip it was either way: the
-     * occurrence took the other arm, or it never took that decision at all.
-     * Both say the path this replay recorded is not a path of the world the
-     * obligation was cut from.</p>
-     *
-     * <p>Called under {@link #LOCK}.</p>
+     * Why the inherited world did not hold, or {@code ""}: a flip took the
+     * other arm or was never reached.  Called under {@link #LOCK}.
      */
     private static String inherited() {
         for (Inherited flip : INHERITED) {
@@ -590,6 +439,11 @@ public final class FocusedReplay {
         return "";
     }
 
+    /**
+     * Why the session cannot carry an admission, or {@code ""}: an abandoned
+     * prefix, or no mint row for an assigned root or clock skew.  Called
+     * under {@link #LOCK}.
+     */
     private static String unstated(Obligation obligation) {
         if (!unmatchedPrefix.isEmpty()) return unmatchedPrefix;
         List<String> missing = new ArrayList<String>();
@@ -614,35 +468,18 @@ public final class FocusedReplay {
     /** Where the campaign names this replay's execution task plan. */
     public static final String PLAN_PROPERTY = "causynth.concolic.task.plan";
     /**
-     * The focus row this replay was handed: one obligation's flip.
+     * Reads {@code focused_task.jsonl} ({@code explore.ObligationSolverMain}):
+     * {@code taskId, obligationId, pathId, focused, flip={siteId, ordinal,
+     * outcome}, rootAssignments, clockDeltas, rootMints, inheritedFlips,
+     * answers, unproducible}.
      *
-     * <p>{@code explore.ObligationSolverMain} writes {@code
-     * focused_task.jsonl} with {@code taskId}, {@code obligationId}, {@code
-     * pathId}, {@code focused} (the occurrence, rendered), {@code flip} =
-     * {siteId, ordinal, outcome}, {@code rootAssignments}, {@code
-     * clockDeltas} (root id to the skew to add to this replay's own
-     * reading), {@code rootMints} (root id to the occurrence the recording
-     * mints it at, which this replay focuses so that the assignment is
-     * planted there), {@code inheritedFlips} (the flips of the session this
-     * obligation's path was cut from, each {focusedOccurrenceId, siteId,
-     * ordinal, outcome, obligationId}), {@code answers} (attach endpoint id
-     * to value) and {@code unproducible}.  That row IS
-     * the focused task: the replay applies the assignments at the mints of
-     * the focused occurrence, the answers at its attaches, and enforces the
-     * flip at the named decision.</p>
-     *
-     * <p>It is deliberately NOT {@code execution_task_plan.jsonl}: that name
-     * belongs to the PLAN, whose rows are {@code plan.ExecutionTask}s, and
-     * the workload session opener decodes whatever stands under it.  One
-     * file, one shape.  The row is looked for in the worker directory the
-     * campaign names, else beside the plan -- the same directory in a
-     * campaign, so nothing new has to be wired.</p>
+     * <p>Trap: not {@code execution_task_plan.jsonl} -- that name is the
+     * PLAN's, and the session opener decodes whatever stands under it.</p>
      */
     private static void loadPlanRows() {
         Path path = focusRow();
         if (path == null) return;
-        // The role is decided HERE and by nothing else: a replay handed a
-        // focus row is a FOCUSED replay, whatever it goes on to activate.
+        // The role is decided HERE: handed a focus row means FOCUSED.
         handedAFocusRow = true;
         try {
             for (JsonObject row : RowCodec.readJsonl(path)) {
@@ -652,16 +489,9 @@ public final class FocusedReplay {
                     obligationId = string(row, "taskId");
                 }
                 if (row.get("flip").isJsonNull()) {
-                    // A CONFIRM row: {@code flip: null}.  The model's roots
-                    // are planted and the selected path's schedule held
-                    // exactly as for a flip, and NO decision is owed the
-                    // other arm -- the values drive them.  So the
-                    // obligation is taken at load: {@link #complete} never
-                    // abandons the anchor for a decision it was not asked
-                    // to take, and {@link #results} admits it by its
-                    // plants and its prefix alone.  Whether the run agreed
-                    // with the model is what {@link Confirmation} reads off
-                    // the rows.
+                    // CONFIRM row (flip: null): roots planted, no decision
+                    // owed, so it counts as flipped at load; agreement with
+                    // the model is Confirmation's to read.
                     OBLIGATIONS.add(Obligation.confirming(obligationId,
                             string(row, "taskId"), string(row, "pathId"),
                             strings(row, "rootAssignments"),
@@ -670,14 +500,8 @@ public final class FocusedReplay {
                     FLIPPED.add(obligationId);
                 } else {
                     JsonObject flip = row.getAsJsonObject("flip");
-                    // The flip IS the obligation: which decision, which
-                    // occurrence of it, and which arm.  A row that states
-                    // no ordinal or no outcome used to be read as
-                    // "occurrence 1, arm false", so the replay enforced a
-                    // flip nothing asked for and published its verdict as
-                    // though it had run the obligation.  Every focus row
-                    // missing either member is refused here and the
-                    // shortfall is stated at the close.
+                    // A flip missing ordinal or outcome is refused, never
+                    // defaulted, and stated as a shortfall at the close.
                     if (!flip.has("ordinal") || !flip.has("outcome")) {
                         SHORTFALLS.add("the focus row for obligation "
                                 + obligationId + " states a flip with no "
@@ -699,27 +523,15 @@ public final class FocusedReplay {
                 FOCUS.put(obligationId,
                         string(row, "focusedOccurrenceId"));
                 CLOCK_DELTAS.putAll(strings(row, "clockDeltas"));
-                // The mint of every assigned root is focused too, by
-                // ADDRESS: the row states where the recording minted it,
-                // and the assignment is planted there.
+                // Each assigned root's mint is focused too.
                 for (Map.Entry<String, String> mint
                         : strings(row, "rootMints").entrySet()) {
                     OccurrenceAddress at =
                             OccurrenceAddress.parse(mint.getValue());
-                    // BY THE CONTRACT'S IDENTITY, not by the rendered
-                    // string: the render is a spelling of the parts and
-                    // this is a join between two passes, which is what
-                    // OccurrenceAddress.id() is for.  The same join the
-                    // flip takes (FOCUS, R4a).
+                    // By id(), not render(): a join across passes (R4a).
                     if (at != null) ROOT_MINTS.add(at.id());
                 }
-                // THE FLIPS THIS REPLAY INHERITED, in the row's order: its
-                // parent's own flip first, then the ones its parent
-                // inherited.  Their occurrences are focused so their mints
-                // plant and their decisions are published; they are never
-                // abandoned ({@link #complete}) and they answer no result
-                // row of their own -- they are conditions on the primary
-                // obligation's admission.
+                // Inherited flips, parent's first (see Inherited).
                 if (row.has("inheritedFlips")
                         && !row.get("inheritedFlips").isJsonNull()) {
                     for (JsonElement element
@@ -747,11 +559,8 @@ public final class FocusedReplay {
                     }
                 }
                 FOCUSED_TASKS.add(string(row, "taskId"));
-                // The row states which occurrence it focuses, so the Task
-                // this replay reports against is the recording's, not a stub
-                // with no address.  Task.of refuses a null focus, which is
-                // what a row without one now says rather than throwing on
-                // the way out of this reader.
+                // Task.of refuses a null focus, so a row without one makes
+                // no Task instead of throwing.
                 OccurrenceAddress focus = occurrence(row.get("focused"));
                 if (focus != null && focusedTask == null) {
                     List<OccurrenceAddress> members =
@@ -771,10 +580,7 @@ public final class FocusedReplay {
                 }
             }
         } catch (RuntimeException | IOException unreadable) {
-            // handedAFocusRow is already true, so this session publishes
-            // role FOCUSED with however many obligations it parsed before
-            // the fault.  On stderr that was invisible to every reader of
-            // the corpus; the session states it as its own shortfall.
+            // Still FOCUSED with what it parsed; stated as a shortfall.
             SHORTFALLS.add("the focus row " + path + " could not be read"
                     + " whole (" + unreadable + "), so this session ran"
                     + " only the " + OBLIGATIONS.size() + " obligations it"
@@ -786,12 +592,8 @@ public final class FocusedReplay {
     }
 
     /**
-     * What this replay was asked for and could not read, for the rows that
-     * state it (published by {@code RowRuntime.closeSession}).
-     *
-     * <p>Not filed as a gap here: this runs inside the session open, before
-     * the publisher exists, so a row written now is a row nothing writes.
-     * </p>
+     * What the focus row asked and could not be read; published by
+     * {@code RowRuntime.closeSession}, since no publisher exists at load.
      */
     private static final List<String> SHORTFALLS = new ArrayList<String>();
 
@@ -810,14 +612,8 @@ public final class FocusedReplay {
     private static boolean handedAFocusRow;
 
     /**
-     * Whether this replay is a FOCUSED one, rather than the recording.
-     *
-     * <p>The role this session STATES in its manifest.  It is "was I handed a
-     * focus row", never "did I focus anything": a focused replay whose
-     * occurrence never activated focused nothing and is still a focused
-     * replay -- what it settled is its result row's to say.  Seven of the
-     * 11741 campaign #2 sessions were exactly that, and reading them as
-     * recordings left the corpus with nine candidate seeds.</p>
+     * The manifest role: "handed a focus row", never "focused anything" --
+     * a replay whose occurrence never ran is still no recording.
      */
     public static boolean focusedSession() {
         load();
@@ -840,12 +636,8 @@ public final class FocusedReplay {
     }
 
     /**
-     * Records that one mint of this replay planted the wave's value.
-     *
-     * <p>Filed where the value was actually WRITTEN, not where it was
-     * decided: {@link #rootAssignment} is asked at every mint of the focused
-     * occurrence and a mint that asked and could not place the write kept the
-     * recording's value, which is a different fact.</p>
+     * Records that a mint WROTE the wave's value; asking
+     * {@link #rootAssignment} and failing to write is a different fact.
      */
     public static void planted(String rootId) {
         load();
@@ -856,11 +648,7 @@ public final class FocusedReplay {
         }
     }
 
-    /**
-     * Notes that a mint site of this root RAN in this replay, whether or not
-     * it then planted the wave's value -- the fact that tells an unplanted
-     * assignment from one whose mint never came.
-     */
+    /** Notes that a mint of this root RAN, planted or not. */
     static void mintReached(String rootId) {
         String id = Text.safe(rootId);
         if (id.isEmpty()) return;
@@ -874,36 +662,13 @@ public final class FocusedReplay {
     private static final Set<String> REACHED = new LinkedHashSet<String>();
 
     /**
-     * Every root the obligation assigns whose mint RAN in this replay and did
-     * not plant the wave's value.
+     * Every assigned root whose mint RAN and did not plant the wave's value
+     * -- BLOCKING, stated by the replay because it did not run what was asked.
      *
-     * <p>BLOCKING for this session, and stated by the REPLAY: a replay that
-     * ran the recording's value under an obligation that asked for another
-     * one did not run what was asked, and the composer meeting that as "the
-     * mint states X and the obligation assigns Y" is the second statement of
-     * it, not the first.  11741 session 869a1f0e285913ad-6f59cb84 is the
-     * case: SERIAL_NO was minted through the field path, which never asked
-     * for the wave's value at all.</p>
-     *
-     * <p>A root whose mint never ran is not one: nothing read the
-     * recording's value in its place, because nothing read it at all.  The
-     * occurrence the obligation was for did not happen in this run, and the
-     * obligation's own verdict states that -- NOT_ADMITTED, naming the
-     * occurrence never reached or the mint row the session lacks
-     * ({@link #results}).  hdfs-17967 path B reported five such "unplanted"
-     * assignments as blockers, each the input of an addKeys occurrence its
-     * replay never ran.</p>
-     *
-     * <p>ONE RULE OVER BOTH SPELLINGS of what a wave asks of a root: an
-     * absolute {@code rootAssignment} and a {@code clockDelta}.  It covered
-     * the assignments only, and a clock is the root ELEVEN of hdfs-11741
-     * campaign #3's twelve obligations ask about -- six of them state a
-     * delta that no mint of their replay ever planted (their clock's mint
-     * row is absent from the session altogether), and every one of those
-     * six was silent.  A delta is reported as the SKEW that was asked,
-     * because that is what the row states; the instant it would have
-     * produced is the replay's own reading plus it, and the replay did not
-     * make one.</p>
+     * <p>A mint that never ran is not one: the obligation's verdict names
+     * that ({@link #results}).  One rule over both spellings, an absolute
+     * {@code rootAssignment} and a {@code clockDelta} (reported as the skew
+     * asked).</p>
      */
     public static Map<String, String> unplantedAssignments() {
         load();
@@ -943,12 +708,8 @@ public final class FocusedReplay {
     }
 
     /**
-     * One file of the worker directory this replay was handed, or null.
-     *
-     * <p>The one lookup for everything a worker hands its replay: the
-     * focus row, and the expected edges of a CONFIRM run
-     * ({@link Confirmation}).  In the worker directory the campaign names,
-     * else beside the plan -- the same directory in a campaign.</p>
+     * One file the worker handed this replay (focus row, {@link Confirmation}
+     * edges), from the worker directory else beside the plan; or null.
      */
     static Path workerFile(String name) {
         String worker = Text.safe(

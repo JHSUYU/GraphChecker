@@ -12,13 +12,8 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
 
 /**
- * Indexed access to a serialized path condition without materializing
- * every element.
- *
- * <p>A branch hook needs exactly two facts from that document: how many
- * conditions the VM has accumulated, and the one element the VM's exact
- * event says this branch owns - an index the event stream, a few kilobytes
- * wide, already carries.</p>
+ * Indexed access to a window of the VM's path condition: the total count,
+ * and the elements a branch event's indices name.
  */
 final class PathConditionWindow {
     static final PathConditionWindow EMPTY =
@@ -43,14 +38,7 @@ final class PathConditionWindow {
         this.size = size;
     }
 
-    /**
-     * Reads one {@code CONCOLIC_PATH_CONDITION_RANGE} envelope as the
-     * conditions at absolute indices {@code [startIndex, endIndex)}.
-     *
-     * <p>The VM always writes the window through the session expression
-     * table, so the envelope is decoded once by the shared importer and
-     * never rescanned by hand.</p>
-     */
+    /** One {@code CONCOLIC_PATH_CONDITION_RANGE} envelope, or null. */
     static PathConditionWindow window(String envelope, int expectedStart,
                                         VmExpressionTable.Store store) {
         if (envelope == null) return null;
@@ -75,7 +63,6 @@ final class PathConditionWindow {
         }
     }
 
-    /** Conditions the thread has accumulated, not just this window's. */
     int size() {
         return size;
     }
@@ -99,11 +86,8 @@ final class PathConditionWindow {
     }
 
     /**
-     * The condition window one VM branch event owns.  An event that named no
-     * condition contributes none; an event whose condition indices are not
-     * contiguous is not an exact range, and the event stream is the only
-     * authority on which conditions belong to the branch, so neither is read
-     * from the store.  Both branch hooks used to spell this out themselves.
+     * The window one VM branch event owns: empty when it names no condition
+     * or its indices are not contiguous (the event stream is the authority).
      */
     static Read forEvent(VmExpressionTable.Store store, ConcolicVmBroker api,
                          List<Integer> eventConditionIndices)

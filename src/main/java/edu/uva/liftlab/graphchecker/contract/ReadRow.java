@@ -3,16 +3,9 @@ package edu.uva.liftlab.graphchecker.contract;
 import java.util.Objects;
 
 /**
- * CONTRACT-SPEC 2: one read, as the consumer half of a STATE interaction.
- *
- * <p>{@code observedVersion} is the version the read saw, or -1 when the run
- * could not state it -- an unknown version is published as unknown, never as
- * version 0, because the composer joins {@code read := write version's
- * expression} and a wrong join is a fabricated causal edge.</p>
- *
- * <p>{@code seq} orders this read against its session's writes, so a read of a
- * location written twice is placed without a clock; {@code javaType} is the JVM
- * descriptor {@code symbol} is declared with.</p>
+ * CONTRACT-SPEC 2: one read, the consumer half of a STATE interaction.  An
+ * unknown {@code observedVersion} is -1, never 0: a wrong join is a
+ * fabricated causal edge.
  */
 public final class ReadRow {
     /** The version of a read the run could not attribute. */
@@ -65,18 +58,10 @@ public final class ReadRow {
     }
 
     /**
-     * The version the VM published for this mint's shadow store, or
-     * {@link #UNKNOWN_VERSION} when this row is not a placeholder.
-     *
-     * <p>A declared region input is a READ, so the mint's store is no write
-     * and no WriteRow states it -- but a term's {@code ReadFromExpression}
-     * names exactly that version, because that is what the location held
-     * when the read ran.  {@code observedVersion} is the last REAL write
-     * before the mint, which is the JOIN to the occurrence that wrote the
-     * cell; this is the other half, the version a reader arrives with.  One
-     * occurrence may declare one cell under several ports, so keying the
-     * bridge on (occurrence, location) cannot choose between them and this
-     * can: the mint's version is unique by construction.</p>
+     * A placeholder's own shadow-store version, else {@link #UNKNOWN_VERSION}.
+     * {@code observedVersion} joins to the last real write; this is the
+     * version a {@code ReadFromExpression} names, unique per mint (so it
+     * separates ports declared over one cell).
      */
     public long mintVersion() {
         return mintVersion;
@@ -86,7 +71,6 @@ public final class ReadRow {
         return sessionId;
     }
 
-    /** Where this read falls in its session's event order. */
     public long seq() {
         return seq;
     }

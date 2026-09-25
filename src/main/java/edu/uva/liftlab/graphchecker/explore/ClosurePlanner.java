@@ -35,66 +35,37 @@ import java.util.Set;
  * The target's closure: what its failure can depend on, and the branches
  * exploration may flip in it (CLOSURE-V2 SS1-SS2).
  *
- * <p>Demand starts at the ANNOTATED TARGET and not at a region: the operands
- * of the fatal predicate, as the VM's own expression states them, and the
- * branch sites the target site is control-dependent on
- * ({@link StaticScopeMap}'s guard set).  A port the region attached and a
- * field it read that no demanded value rests on are deliveries this failure
- * does not use.</p>
- *
- * <p>Each boundary variable of a demanded value grows the closure two ways,
- * and both are needed:</p>
+ * <p>Demand starts at the ANNOTATED TARGET: the fatal predicate's operands and
+ * the target's guard set ({@link StaticScopeMap}). Deliveries no demanded value
+ * rests on are not followed. Each boundary variable grows it:</p>
  * <ul>
- *   <li>by ROWS -- the producer that paired with this attach, the writers
- *       whose versions this read could have observed -- which is what the
- *       recording states;</li>
- *   <li>by the STATIC MAP -- every occurrence of a region holding a write
- *       site of that location, or an export site of that port -- which is
- *       what the recording CANNOT state.  On 17960 the seed runs the
- *       marker's true arm, where {@code deleteSnapshot} defers and the
- *       counter decrement never executes: no row of any session puts the
- *       deletion region in the anchor's closure, and a closure that waits
- *       for one waits for the replay it is supposed to ask for.</li>
+ *   <li>by ROWS: the paired producer, the writers a read could have
+ * observed;</li>
+ *   <li>by the STATIC MAP: occurrences of regions holding a write/export
+ *       site of that location/port -- what the recording cannot state (a writer
+ *       the seed's arm never ran, e.g. hdfs-17960's deferred decrement);</li>
+ *   <li>by STATED READS ({@link #statedReads}, E2): shared state a
+ *       contributed value rests on appears only inside its expression.</li>
  * </ul>
  *
- * <p>And a third way, because the first two ask only about what a ROW says:
- * a value this occurrence contributed -- its export, its write -- states the
- * shared state it RESTS ON inside its own expression, and no read row of
- * this occurrence names it ({@link #statedReads}, E2).  The NameNode's
- * export of its key set is the removal scan of the previous tick; without
- * that edge no closure holds the scan and no query declares the clock it
- * read.</p>
- *
- * <p>A static candidate is ON ONE NODE, because a CONCRETE location lives in
- * one process and a message was sent by one process: a write site's
- * candidates are the occurrences on the READER's node (N1, {@link #writers}),
- * an export site's are those on the PAIRED PRODUCER's node (N2,
- * {@link #producers}).  The class field a carrier names exists in every JVM
- * that loaded it, and none of the others hold the heap this read observed --
- * on the hdfs-11741 campaign #4 corpus (2026-09-20) admitting them gave wave
- * 1 246 obligations, 124 of them the Balancer's own
- * {@code removeExpiredKeys#u15} flips in worlds where nothing on the
- * Balancer's path to the target changed.</p>
- *
- * <p>A static candidate is a member like any other -- it opens slots and
- * joins families -- and what it is demanded FOR is its own write or export:
- * the branches that decide whether that write happens are its guard set, and
- * those are the only branches a wave flips in it.  A candidate region no
- * session activated at all is named (INTERACTION-ID SS8 case 2) and is not a
- * task: there is no run to focus.</p>
+ * <p>Static candidates are ON ONE NODE: the READER's for a write site (N1,
+ * {@link #writers}), the PAIRED PRODUCER's for an export site (N2, {@link
+ * #producers}); a class field exists in every JVM, but only one heap or sender
+ * is the real one. A candidate is flipped only at its own guards; a region no
+ * session activated is named (INTERACTION-ID SS8 case 2), not a task.</p>
  */
 public final class ClosurePlanner {
     /** How many tasks one anchor may open, before the closure is truncated. */
     public static final int DEFAULT_MAX_TASKS = 64;
 
-    /** In the closure because the rows put it there. */
+    /** Connected by rows. */
     public static final String CLOSURE_MEMBER = "CLOSURE_MEMBER";
-    /** In the closure because it sent a message a member served. */
+    /** Sent the message a member served. */
     public static final String CONTROL_PRODUCER = "CONTROL_PRODUCER";
-    /** In the closure because it holds a static write site of a location. */
+    /** Holds a static write site of a demanded location. */
     public static final String STATIC_CANDIDATE_WRITER =
             "STATIC_CANDIDATE_WRITER";
-    /** In the closure because it holds a static export site of a port. */
+    /** Holds a static export site of a demanded port. */
     public static final String STATIC_CANDIDATE_PRODUCER =
             "STATIC_CANDIDATE_PRODUCER";
 
@@ -105,9 +76,9 @@ public final class ClosurePlanner {
     public static final class Plan {
         public final List<Task> tasks;
         public final List<GapRow> gaps;
-        /** task id -> why that occurrence is in the closure. */
+        /** task id -> why it is in the closure. */
         public final Map<String, String> why;
-        /** task id -> the site ids this wave may flip in it. */
+        /** task id -> site ids this wave may flip. */
         public final Map<String, Set<String>> flipSites;
 
         private Plan(List<Task> tasks, List<GapRow> gaps,
@@ -126,11 +97,8 @@ public final class ClosurePlanner {
         Map<String, Demand> demands = new LinkedHashMap<String, Demand>();
         Deque<String> pending = new ArrayDeque<String>();
         Demand start = new Demand(anchor, CLOSURE_MEMBER, true);
-        // The anchor's flips are the GUARD SET of the annotated target and
-        // nothing else (CLOSURE-V2 SS1).  The target site itself is a throw,
-        // which is not a branch and which no DecisionRow stands at; the
-        // branch that decides whether the throw is reached is one of its
-        // guards, and on 17960 that is the fatal predicate's own site.
+        // The anchor flips only the target's guard set (CLOSURE-V2 SS1); the
+        // throw itself is no branch.
         for (StaticScopeMap.Site target : scope.targetSites()) {
             start.flipSites.addAll(target.guards);
         }
@@ -158,12 +126,8 @@ public final class ClosurePlanner {
             }
         }
         if (!truncated.isEmpty()) {
-            // A truncated closure composes a formula that is missing
-            // producers the anchor's paths read, and a composition missing an
-            // arm is not a weaker claim -- it is an unsound one.  The
-            // fixed point still runs to the end for the demands it did
-            // admit, so what this refusal names is exactly what was left
-            // out.
+            // A truncated closure misses arms: unsound, so BLOCKING, naming
+            // what was left out.
             gaps.add(GapRow.of(ExploreCodec.EXPLORATION, GapKind.ADMISSION_GAP,
                     GapClass.BLOCKING, anchor.render(),
                     "closure truncated at " + maxTasks + " tasks; "
@@ -178,13 +142,8 @@ public final class ClosurePlanner {
         for (Demand demand : demands.values()) {
             String seed = seedSession(corpus, demand.occurrence);
             if (seed.isEmpty()) {
-                // A closure member is explored by ONE focused replay of the
-                // recording it was planned from, so an address no session
-                // activated and no session decided anything at is not a task
-                // -- there is no run to focus, and no rows to walk further
-                // from.  It is BLOCKING for the same reason a truncated
-                // closure is: the composition would offer the solver an arm
-                // whose path condition nothing attests.
+                // No session ran it: no replay to focus; BLOCKING, as an
+                // unattested arm.
                 gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
                         GapKind.ADMISSION_GAP, GapClass.BLOCKING,
                         demand.occurrence.render(),
@@ -197,9 +156,8 @@ public final class ClosurePlanner {
             tasks.add(Task.of(taskId, demand.occurrence,
                     stateConnected(corpus, demand.occurrence), seed));
             why.put(taskId, demand.why);
-            // The flip sites of a task: the guards of its demanded sites,
-            // and every FAULT decision of the occurrence (DESIGN4 SS1.4) --
-            // a fault guards everything the send would have produced.
+            // Flip sites: the demanded guards plus every FAULT decision
+            // (DESIGN4 SS1.4).
             Set<String> sites = new LinkedHashSet<String>(demand.flipSites);
             sites.addAll(corpus.faultSites(demand.occurrence));
             flips.put(taskId, sites);
@@ -212,21 +170,14 @@ public final class ClosurePlanner {
         return ArtifactIO.digest("task|" + focused.id(), 16);
     }
 
-    /**
-     * The task one published obligation names.
-     *
-     * <p>A task id is its focused occurrence's id and nothing else, so the
-     * worker that executes an obligation recovers the task from the corpus
-     * rather than from a second file that could disagree with the wave's.</p>
-     */
+    /** The task one published obligation names, recovered from the corpus. */
     public static Task taskOf(Corpus corpus, String taskId) {
         if (taskId == null || taskId.isEmpty()) return null;
         for (OccurrenceAddress occurrence : corpus.occurrences()) {
             if (!taskId.equals(taskId(occurrence))) continue;
             String seed = seedSession(corpus, occurrence);
-            // The wave never published a task for such an occurrence (it said
-            // so as a BLOCKING gap), so "no task" is the honest answer here
-            // too, rather than a Task with an empty recording behind it.
+            // The wave published no task for it (BLOCKING gap), so none here
+            // either.
             if (seed.isEmpty()) return null;
             return Task.of(taskId, occurrence, stateConnected(corpus,
                     occurrence), seed);
@@ -237,7 +188,7 @@ public final class ClosurePlanner {
     /** What one occurrence is demanded for, and where its flips may be. */
     private static final class Demand {
         private final OccurrenceAddress occurrence;
-        /** session|expressionRef of the values this occurrence contributed. */
+        /** session|expressionRef of values this occurrence contributed. */
         private final Set<String> contributed = new LinkedHashSet<String>();
         private final Set<String> flipSites = new LinkedHashSet<String>();
         private final boolean anchor;
@@ -252,11 +203,8 @@ public final class ClosurePlanner {
         }
 
         /**
-         * Folds another reason to demand this occurrence into this one.
-         *
-         * <p>{@code CLOSURE_MEMBER} wins: an occurrence the rows connect is
-         * in the closure whatever the static map also says about it, and the
-         * static reason is what is left when no row does.</p>
+         * Folds another reason to demand this occurrence; {@code
+         * CLOSURE_MEMBER} wins over static reasons.
          *
          * @return whether this demand grew
          */
@@ -272,30 +220,20 @@ public final class ClosurePlanner {
         }
     }
 
-    /**
-     * Everything one demand reaches: the producers of the interactions its
-     * demanded values rest on and the writers of the versions they read, by
-     * rows and by the static map.
-     */
+    /** Everything one demand reaches, by rows and by the static map. */
     private static List<Demand> successors(Corpus corpus, StaticScopeMap map,
                                            Demand demand, List<GapRow> gaps) {
         List<OccurrenceAddress> group = new ArrayList<OccurrenceAddress>();
         group.add(demand.occurrence);
         group.addAll(stateConnected(corpus, demand.occurrence));
-        // The group is ONE symbolic unit -- a factor member exists because
-        // its writes feed the focused occurrence's reads -- so what "the
-        // demanded values read" is asked of the group, not of each member
-        // alone: the addKeys activation decides nothing itself, and the
-        // handoff it writes into the map is read by the occurrence beside it.
+        // The group (occurrence + state-connected factor) is ONE symbolic unit:
+        // demand is asked of the group, not each member.
         Set<String> demanded = demanded(corpus, demand, group);
         List<Demand> next = new ArrayList<Demand>();
         for (OccurrenceAddress member : group) {
             if (!member.equals(demand.occurrence)) {
-                // A factor member is in the closure because the occurrence it
-                // is state-connected to is, so it INHERITS that reason: being
-                // somebody's factor is not a reason of its own, and calling
-                // it one would report a static candidate's sibling as a
-                // member the rows connected.
+                // A factor member inherits the reason; being a factor is not
+                // its own.
                 next.add(new Demand(member, demand.why, false));
             }
             for (AttachRow attach : corpus.attachesOn(member)) {
@@ -320,17 +258,10 @@ public final class ClosurePlanner {
         return next;
     }
 
-    /**
-     * The occurrences at both doors of the message a demanded occurrence
-     * served are in the closure as its control producers: they contribute
-     * no value, but their fault points decide whether the message -- and
-     * everything the served occurrence produced -- exists at all (DESIGN4
-     * SS1.2, SS1.4).  The sender's door fails the request before it leaves;
-     * the receiver's door loses the reply after the server applied it.  The
-     * pairing is the served occurrence's ANCHOR, which is the producer
-     * endpoint: the schedule's SEND event states which occurrence minted
-     * it, and its RECV event which occurrence took it in.
-     */
+    /** Both doors of the message a demanded occurrence served join as control
+     *  producers: they contribute no value, but their fault points decide
+     *  whether the message exists (DESIGN4 SS1.2, SS1.4). Paired via the served
+     *  occurrence's ANCHOR (the producer endpoint). */
     private static void controlProducer(Corpus corpus, Demand demand,
                                         List<Demand> next) {
         if (!(demand.occurrence.context() instanceof CausalContext.Anchor)) {
@@ -348,35 +279,13 @@ public final class ClosurePlanner {
     /**
      * E2 -- A DEMANDED EXPORT STATES THE SHARED STATE IT RESTS ON.
      *
-     * <p>What an occurrence is demanded FOR is its own write or export
-     * ({@link Demand#contributed}), and the VM publishes that value's reads
-     * of shared state only INSIDE the expression: a
-     * {@code ReadFromExpression}, or the {@code ConsumerBoundaryExpression}
-     * over one, carrying a {@code location} and a {@code readEventId}.  No
-     * {@code ReadRow} of the producing occurrence names them, so
-     * {@link #writers} was never asked about them and the state the
-     * delivery is MADE OF was in no closure.</p>
-     *
-     * <p>So each resolved read grows the closure exactly as a read row
-     * would: the writer of the version the producer had in hand, and the
-     * static write sites of that location's carrier ON THE PRODUCER'S OWN
-     * NODE (N1 -- the map it read is an object in its own heap).  The
-     * writer is demanded for ITS expression in turn, so a chain of ticks
-     * closes by the same rule.  {@link Corpus#expressionStateReads} is the
-     * one resolution, shared with the composer's
-     * {@code ComposedFamilies.expressionWrites}.</p>
-     *
-     * <p>Never the anchor: the anchor is demanded for its fatal predicate,
-     * whose operands are what {@link #demanded} already walks, and it
-     * contributes no delivery of its own.</p>
-     *
-     * <p>Without this edge, on the hdfs-11741 campaign #4 corpus
-     * (2026-09-20), the NameNode's export region records no state read at
-     * all -- 1324 instance reads and not one map read -- so once the
-     * cross-node static fan-out of N1 was gone, nn0's
-     * {@code removeExpiredKeys#u15} and {@code updateKeys#u2} were in no
-     * flip set and the rotation flip the witness needs was proposed
-     * nowhere.</p>
+     * <p>The VM publishes a contributed value's shared-state reads only inside
+     * its expression; no ReadRow names them. Each resolved read grows the
+     * closure like a read row (writer of that version, static write sites on
+     * the producer's node, N1); writers recurse the same way. {@link
+     * Corpus#expressionStateReads} is the one resolution, shared with {@code
+     * ComposedFamilies.expressionWrites}. Never the anchor (it contributes no
+     * delivery).</p>
      */
     private static void statedReads(Corpus corpus, StaticScopeMap map,
                                     Demand demand, List<Demand> into,
@@ -397,22 +306,11 @@ public final class ClosurePlanner {
         }
     }
 
-    /**
-     * The symbols one occurrence's demanded values name.
-     *
-     * <p>Three sources and no fourth: the fatal predicate of an anchor, the
-     * decisions at the sites the demand's GUARD SET names, and the
-     * expressions this occurrence contributed to the closure (its write or
-     * its export).  Then the fixed point over reads: a demanded read joins
-     * the writes it could have observed, and what those wrote is demanded in
-     * turn -- a write may itself carry a handoff its producer forwarded.</p>
-     *
-     * <p>The runtime publishes a predicate over a propagated value as a
-     * REFERENCE into the session's expression table -- "(not
-     * EXPR.7e13ce0f9e7944ea)" -- so reading the token as a name asks about
-     * nothing.  The ONE lowering resolves it, the same routine the composer
-     * and the flip query run (CONTRACT-SPEC: one lowering, shared).</p>
-     */
+    /** The symbols one occurrence's demanded values name: the anchor's fatal
+     *  predicate, decisions at its guard-set sites, and its contributed
+     *  expressions -- then the fixed point over reads and the writes they could
+     *  observe. Terms are EXPR references, resolved by the ONE lowering
+     *  (CONTRACT-SPEC). */
     private static Set<String> demanded(Corpus corpus, Demand demand,
                                         List<OccurrenceAddress> group) {
         Set<String> named = new LinkedHashSet<String>();
@@ -466,28 +364,11 @@ public final class ClosurePlanner {
     }
 
     /**
-     * The recorded symbols one lowered term reaches, into {@code named}.
-     *
-     * <p>Reachable from it, not visible in it: a container version is
-     * lowered once and named, so a guard over a map read is
-     * {@code (not (= container_dag__... nullRef))} and the recording's own
-     * symbols -- the handoffs and roots that were PUT into that map -- are
-     * inside the body behind the name.  {@link SmtLowering#reachedSymbols}
-     * is the one answer, the same one the flip query binds its variables
-     * by; asking {@code SmtLowering.symbols} instead left 11741's anchor
-     * demanding a single {@code container_dag__} name that matches no row,
-     * so every read and every attach of its group was reported
-     * {@code ADMISSION_GAP} and the closure never left the target's node.
-     * </p>
-     *
-     * <p>And the STATE behind the name too -- the v_C rule (CLOSURE-V2).
-     * A demand is what the failure can DEPEND on, not what its text spells:
-     * a container version is the value of the read that observed it, and
-     * that read's row is the only thing that names the cell, because the
-     * chain in the body ends at the mutations and, for 11741's
-     * {@code allKeys}, at an empty base.  The flip query asks the other
-     * half alone -- it BINDS names, and a name its text never mentions is a
-     * variable nothing constrains.</p>
+     * The recorded symbols one lowered term REACHES (not merely spells), into
+     * {@code named}: {@link SmtLowering#reachedSymbols}, as the flip query
+     * uses. Trap: {@code SmtLowering.symbols} sees only a {@code
+     * container_dag__} name that matches no row. Includes the state behind a
+     * container name (the v_C rule, CLOSURE-V2).
      *
      * @return whether the set grew
      */
@@ -500,32 +381,16 @@ public final class ClosurePlanner {
         return named.addAll(reached);
     }
 
-    /**
-     * The writes one read could have taken its value from.
-     *
-     * <p>The observed one, and every write by an occurrence HB-CONCURRENT
-     * with the reader (R-I7.1).  The concurrency rule is
-     * {@code smt.Arms}', so the closure grows by exactly the writers the
-     * composition will offer the solver as alternatives.</p>
-     */
+    /** The writes one read could have taken its value from: observed, or
+     *  HB-concurrent (R-I7.1, {@code smt.Arms}). */
     private static List<WriteRow> eligibleWrites(Corpus corpus, ReadRow row) {
         return eligibleWrites(corpus, row.sessionId(),
                 SmtLowering.locationKey(row.location()),
                 row.observedVersion(), row.endpoint().occurrence());
     }
 
-    /**
-     * The same, for a read stated by an expression rather than by a row.
-     *
-     * <p>One rule and one implementation: a read is a session, a location
-     * key, the version it observed and the occurrence that made it,
-     * whether the runtime published it as a {@link ReadRow} or only inside
-     * the expression of the value it fed (E2).  It is the CORPUS's
-     * ({@link Corpus#eligibleWrites}), because the same relation is the
-     * causal graph's shared-state in-edge ({@link Corpus#upstreamOf}) and
-     * two spellings of it would be two answers to "which writer could this
-     * read have observed".</p>
-     */
+    /** The same for a read stated only in an expression (E2); one rule, {@link
+     *  Corpus#eligibleWrites}. */
     private static List<WriteRow> eligibleWrites(Corpus corpus,
                                                  String sessionId,
                                                  String locationKey,
@@ -545,29 +410,13 @@ public final class ClosurePlanner {
     }
 
     /**
-     * Who could have produced one demanded attach: the endpoint that paired
-     * with it in this session, and every static export site of its port.
+     * Who could have produced one demanded attach: the paired endpoint, and the
+     * port's static export sites. Nested handoffs need no walk: the producer is
+     * demanded for its export, and its own attaches follow.
      *
-     * <p>The nested case -- a key id an NN hands a balancer, which hands it
-     * to a data node -- needs no walk of its own: the producer is demanded
-     * FOR its export, so the leaves of that export are its demand and its
-     * own attaches are found when it is processed.</p>
-     *
-     * <p><b>N2 -- a message was sent by ONE process.</b>  The static export
-     * sites of a port are candidates only on the node of the attach's PAIRED
-     * producer ({@code attach.producer().occurrence().node()}): the arrival
-     * this attach records carries the bytes some one JVM put on the wire, and
-     * an occurrence on another node did not put them there.  Unfiltered, the
-     * export sites of {@code block-key-id} made every {@code PBHelper.convert}
-     * occurrence on dn0, dn1 AND the balancer a candidate producer of a
-     * message nn0 sent -- which is how, on the hdfs-11741 campaign #4 corpus
-     * (2026-09-20), wave 1 proposed 246 obligations, 124 of them the
-     * Balancer's own {@code removeExpiredKeys#u15} flips in worlds where
-     * nothing on the Balancer's path to the target changed.</p>
-     *
-     * <p>An UNPAIRED attach states no sender, so nothing is restricted there
-     * and every node's export sites stay candidates, beside the
-     * {@code LINEAGE_LOST} row that says why.</p>
+     * <p><b>N2 -- a message was sent by ONE process:</b> static candidates only
+     * on the paired producer's node. An unpaired attach restricts nothing (and
+     * is reported LINEAGE_LOST).</p>
      */
     private static void producers(Corpus corpus, StaticScopeMap map,
                                   AttachRow attach, List<Demand> into,
@@ -593,8 +442,7 @@ public final class ClosurePlanner {
             }
             into.add(paired);
         }
-        // N2: the sender, or null when the attach names none -- and null is
-        // "every node", which is what an unpaired attach leaves open.
+        // N2: null (unpaired) means every node.
         NodeId sender = attach.producer() == null ? null
                 : attach.producer().occurrence().node();
         for (StaticScopeMap.Site site : exports) {
@@ -604,35 +452,13 @@ public final class ClosurePlanner {
     }
 
     /**
-     * Who could have written one demanded read: the writers of the versions
-     * it could have observed, and every static write site of its location.
+     * Who could have written one demanded read: the eligible row writers, and
+     * the static write sites of its carrier (joined through a write the
+     * recording did observe; no such write = no carrier, said).
      *
-     * <p>The location is named the way the recording names it and the map is
-     * named the way the program text does, so the two are joined through the
-     * site of a write the recording DID observe: that site's carrier is this
-     * location's carrier, and the carrier's other write sites are the
-     * candidates.  A demanded location no session ever wrote has no carrier
-     * to look up, and that is said rather than guessed.</p>
-     *
-     * <p><b>N1 -- a concrete location lives in ONE process.</b>  A shared
-     * state edge is an incoming edge from Writers_W(l) where {@code l} is the
-     * CONCRETE location -- the VM's own object identity (SS4), which
-     * distinguishes the instances of one class field -- so the static
-     * candidates are restricted to occurrences on the node of the READING
-     * occurrence ({@code row.endpoint().occurrence().node()}).  The carrier is
-     * the class field the map names -- {@code BlockTokenSecretManager.allKeys}
-     * -- and its write sites exist in every JVM that loads the class, but only
-     * the reader's JVM holds the heap this read observed: no occurrence
-     * elsewhere can have written it.  Unfiltered, dn1's {@code allKeys} read
-     * admitted the Balancer's three KeyManager refreshes and dn0's refresh as
-     * candidate writers, and on the hdfs-11741 campaign #4 corpus
-     * (2026-09-20) wave 1 proposed 246 obligations, 124 of them the Balancer's
-     * own {@code removeExpiredKeys#u15} flips in worlds where nothing on the
-     * Balancer's path to the target changed.</p>
-     *
-     * <p>The ROW half is untouched: {@link #eligibleWrites} is already per
-     * session and per location KEY, and a location key names one object of one
-     * run.</p>
+     * <p><b>N1 -- a concrete location lives in ONE process:</b> static
+     * candidates only on the reader's node (Writers_W(l) is per concrete
+     * object, SS4).</p>
      */
     private static void writers(Corpus corpus, StaticScopeMap map,
                                 ReadRow row, List<Demand> into,
@@ -645,13 +471,8 @@ public final class ClosurePlanner {
     }
 
     /**
-     * The closure's growth by ONE read of ONE version of ONE location.
-     *
-     * <p>The body of {@link #writers}, taken as its own routine because E2
-     * asks the same question of a read the runtime published only inside an
-     * expression: a read is a session, a location key, the version it
-     * observed and the occurrence that made it, and the answer must not
-     * depend on which file the runtime happened to state it in.</p>
+     * The closure's growth by one read of one version of one location, whether
+     * the runtime stated it as a row or only in an expression (E2).
      *
      * @param subject what a diagnostic about this read is addressed at
      * @param located how the location reads in that diagnostic
@@ -683,7 +504,7 @@ public final class ClosurePlanner {
                             + "candidate writer of it can be"));
             return;
         }
-        // N1: the heap this read observed is the reading JVM's own.
+        // N1: the heap this read observed is the reader JVM's.
         for (String carrier : carriers) {
             for (StaticScopeMap.Site site : map.writersOf(carrier)) {
                 candidates(corpus, map, site, STATIC_CANDIDATE_WRITER,
@@ -707,14 +528,8 @@ public final class ClosurePlanner {
         return carriers;
     }
 
-    /**
-     * What a writer may flip about the write it contributed.
-     *
-     * <p>The recording states a bytecode index inside a method and the map
-     * states a unit index, so the join is the method: a writer's flip sites
-     * are the guards of every static write site IN THE METHOD it wrote from.
-     * A method with two write sites offers both guard sets, which is one
-     * flip too many rather than one too few.</p>
+    /** A writer's flip sites: guards of every static write site in the METHOD
+     *  it wrote from (bci vs unit index do not compare); may be one too many.
      */
     private static Set<String> guardsAt(StaticScopeMap map,
                                         String recordedSite) {
@@ -725,30 +540,9 @@ public final class ClosurePlanner {
         return guards;
     }
 
-    /**
-     * Every occurrence of the region one static site belongs to, ON ONE NODE.
-     *
-     * <p>A region the corpus holds no activation of is INTERACTION-ID SS8
-     * case 2: the candidate exists in the program and not in any recording,
-     * so it is named and no task is opened -- a replay cannot be focused on
-     * an occurrence nothing ran.</p>
-     *
-     * <p>{@code node} is the process the candidate must have run in: the
-     * READER's node for a static write site (N1 -- a concrete location lives
-     * in one JVM's heap) and the PAIRED PRODUCER's node for a static export
-     * site (N2 -- a message was sent by one process).  A site's region runs on
-     * every node that loaded the class, and a candidate elsewhere could not
-     * have written this location or sent this message; admitting it cost the
-     * hdfs-11741 campaign #4 corpus (2026-09-20) 124 of wave 1's 246
-     * obligations, all of them Balancer flips reachable from neither.
-     * {@code null} means "no node was stated" -- an unpaired attach -- and
-     * every node's occurrences stay candidates.</p>
-     *
-     * <p>The "never activated" diagnostic follows the same restriction: it is
-     * asked of THIS node's activations, and its detail names the node, so a
-     * region another node ran and this one did not is reported as the growth
-     * it would actually need.</p>
-     */
+    /** Every activated occurrence of the region holding one static site, on
+     *  {@code node} (N1/N2; null = any). None: named (INTERACTION-ID SS8 case
+     *  2), scoped to that node, and no task. */
     private static void candidates(Corpus corpus, StaticScopeMap map,
                                    StaticScopeMap.Site site,
                                    String why, Set<String> guards,
@@ -780,25 +574,10 @@ public final class ClosurePlanner {
                         + "SS8 case 2)"));
     }
 
-    /**
-     * Whether one occurrence's region would RUN one static site.
-     *
-     * <p>By HOLDING, not by equality of region ids.  A declared region
-     * entered synchronously inside another region's occurrence opens none of
-     * its own, so a site of region R is recorded under an occurrence of the
-     * enclosing R' that holds R's method -- and the static map publishes a
-     * site under its INNERMOST holder alone ({@code
-     * StaticScopeMap#holders}), so R' never appears beside that site and
-     * equality found no occurrence at all.  The candidate then read as
-     * "no session activated that region" and no task was opened for a
-     * writer the corpus had run.</p>
-     *
-     * <p>The map's method set is the same {@code Region} rows {@code
-     * holders} reads, asked the other way round.  An occurrence whose region
-     * the map does not know -- no skeletons beside the map, a {@code ROLE.}
-     * occurrence no region declares -- falls back to comparing the ids,
-     * which is what this join was before.</p>
-     */
+    /** Whether an occurrence's region would RUN a static site: by HOLDING its
+     *  method, not region-id equality. Under the fold rule a site of R is
+     *  recorded under an enclosing R', while the map names only the innermost
+     *  holder. Falls back to id equality when the map knows no method set. */
     private static boolean holds(StaticScopeMap map, String regionId,
                                  StaticScopeMap.Site site) {
         Set<String> methods = map == null
@@ -819,21 +598,9 @@ public final class ClosurePlanner {
         return false;
     }
 
-    /**
-     * The recorded pairing against the consumer's own causal context.
-     *
-     * <p>Under identity v3 a consumer started by a message carries its
-     * producer's endpoint id INSIDE its own id, so the run states the pairing
-     * twice: once as the attach row's producer endpoint, once as the
-     * occurrence's {@code Anchor} context.  The ROW is the authority -- it is
-     * the pairing the run recorded -- and the context is a cross-check: when
-     * the two disagree, the closure still follows the row and a reader is
-     * told, because two statements about one interaction that do not agree is
-     * the runtime's defect to fix and not this stage's to arbitrate.  A
-     * {@code Root} or {@code Lost} context raises nothing: there is no anchor
-     * to disagree with, and an unpaired attach already says
-     * {@code LINEAGE_LOST}.</p>
-     */
+    /** Cross-checks the recorded pairing against the consumer's Anchor context
+     *  (identity v3 states it twice). The row is authoritative; a mismatch is
+     *  the runtime's defect, reported. Root/Lost contexts raise nothing. */
     private static void crossCheck(AttachRow attach, List<GapRow> gaps) {
         CausalContext context = attach.endpoint().occurrence().context();
         if (!(context instanceof CausalContext.Anchor)) return;
@@ -849,10 +616,8 @@ public final class ClosurePlanner {
                         + "pairing"));
     }
 
-    /**
-     * The co-occurrences one occurrence is state-connected to: the writers
-     * and readers of a location it touches, on its own node.
-     */
+    /** Co-occurrences state-connected to one occurrence (writers/readers of its
+     *  locations). */
     private static List<OccurrenceAddress> stateConnected(
             Corpus corpus, OccurrenceAddress occurrence) {
         Set<LocationId> locations = new LinkedHashSet<LocationId>();
@@ -875,12 +640,8 @@ public final class ClosurePlanner {
         return factor;
     }
 
-    /**
-     * The session a task is planned from: the SEED when it ran the
-     * occurrence, else the first ADMITTED session that did, else {@code ""}.
-     * A replay that was not admitted did not run the world it was asked
-     * for, so nothing is planned from it.
-     */
+    /** The session a task is planned from: the SEED if it ran the occurrence,
+     *  else the first ADMITTED one that did, else "". */
     private static String seedSession(Corpus corpus,
                                       OccurrenceAddress occurrence) {
         String seed = corpus.seedSessionId();

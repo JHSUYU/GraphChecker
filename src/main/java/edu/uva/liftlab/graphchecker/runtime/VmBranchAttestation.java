@@ -21,31 +21,14 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Whether the VM's own branch event is the decision the workload just took.
+ * Whether the VM's branch event is the decision the workload just took --
+ * R3's gate, the only thing that lets a decision row carry a term.
  *
- * <p>R3's gate, and the only thing that decides whether a decision row may
- * carry a term.  Two halves of one question: the event envelope's exact
- * ownership -- this thread's context, this region and task, this site and
- * occurrence, this outcome, one matching record, a condition index inside
- * the new suffix -- and the algebra that says the VM's relation IS the
- * Jimple predicate the source branched on.</p>
- *
- * <p>{@link #observedOperatorImpliesBranch} is the one tolerance in the
- * whole class, and it is named and directional: Soot may describe a
- * selected edge as {@code >=} where the asserted VM relation for that
- * concrete edge is the stronger {@code >} or {@code ==}.  Nothing else
- * here admits a difference.</p>
- *
- * <p>A refusal is a row, not a field: {@link #noteRefused} publishes
- * {@code UNATTESTED_ARM} carrying the attestation's own sentence -- the
- * only reader {@link Attestation#error} has -- beside the named outcome of
- * the condition-window read ({@code BranchObservation.windowOutcome}), so
- * a refused VM range and an event that named no condition at all are two
- * facts on the stream instead of one empty window.</p>
- *
- * <p>Needs back from {@link ConcolicRegionRuntime}: {@code parseJson},
- * {@code rootCause}, and {@code SwitchExpectation}, which belongs to the
- * decision it describes.</p>
+ * <p>Two checks: the event's exact ownership (thread context, region, task,
+ * site, occurrence, outcome, one record, a condition index in the new
+ * suffix), and that the VM relation IS the Jimple predicate.  The one
+ * tolerance is {@link #observedOperatorImpliesBranch}.  A refusal is
+ * published as an {@code UNATTESTED_ARM} gap by {@link #noteRefused}.</p>
  */
 final class VmBranchAttestation {
     private VmBranchAttestation() {
@@ -55,15 +38,8 @@ final class VmBranchAttestation {
             "(?:^|\\s)(==|!=|<=|>=|<|>)(?:\\s|$)");
 
     /**
-     * Names one VM branch event this replay could not attest.
-     *
-     * <p>The refusal used to travel on {@code
-     * VmBranchEventAttestation.error}: 24 call sites built a sentence
-     * saying exactly what the VM had handed back, and nothing ever read the
-     * field.  A refused attestation means the decision row publishes no
-     * site predicate, so the arm it states carries no term -- which is what
-     * {@code UNATTESTED_ARM} names, and the row is the reader the field
-     * never had.</p>
+     * Names one VM branch event this replay could not attest: its decision
+     * row carries no site predicate, so its arm has no term.
      */
     static void noteRefused(String siteId, int occurrence,
                             Attestation attestation, String windowOutcome) {
@@ -75,13 +51,9 @@ final class VmBranchAttestation {
     }
 
     /**
-     * @param readEvents the caller's own read of the exact event stream, or
-     *                   {@code null} to read it here.  A caller that has
-     *                   already asked the stream a question about this event
-     *                   passes what it read: a second read costs a full
-     *                   serialization and decode of every event the thread has
-     *                   recorded, and would let the two answers be taken from
-     *                   two different observations of it.
+     * @param readEvents the caller's read of the event stream, or
+     *                   {@code null} to read it here; reuse it so both
+     *                   answers come from one (costly) observation.
      */
     static Attestation attest(
             ConcolicVmBroker api, ActiveRegion active, String siteId,
@@ -406,13 +378,10 @@ final class VmBranchAttestation {
     }
 
     /**
-     * Soot may describe one selected Jimple edge as {@code >=}/{@code <=}
-     * while the asserted VM relation for that concrete edge is the stronger
-     * {@code >}, {@code <}, or {@code ==}.  Admit only that forward
-     * implication, then canonicalize the retained condition to the actual
-     * Jimple predicate below.  Numeric {@code *cmp*} bytecodes now propagate
-     * their symbolic trichotomy result to the consuming branch; this is not a
-     * fallback to the removed concrete compare-witness mechanism.
+     * The one tolerance: Soot may spell an edge {@code >=}/{@code <=} where
+     * the VM asserts the stronger {@code >}, {@code <} or {@code ==}.  Only
+     * that forward implication is admitted; {@link #semanticCondition} then
+     * restores the Jimple operator.
      */
     private static boolean observedOperatorImpliesBranch(
             String expected, String observed, boolean nullComparison) {
@@ -457,14 +426,8 @@ final class VmBranchAttestation {
     }
 
     /**
-     * One constraint, negated by spelling, or null.
-     *
-     * <p>The negation of a relational predicate is the same predicate over
-     * the same operands with the complementary operator, so nothing is
-     * re-evaluated and no second expression is built: the operands are the
-     * VM's own nodes.  Null when the constraint carries no relational
-     * operator to complement -- the run then states no term rather than one
-     * it cannot spell.</p>
+     * One constraint negated by complementing its operator over the VM's own
+     * operands, or null when it has no relational operator.
      */
     static JsonElement negated(JsonElement condition) {
         if (condition == null || !condition.isJsonObject()) return null;

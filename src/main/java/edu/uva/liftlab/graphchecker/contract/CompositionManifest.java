@@ -4,14 +4,9 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * CONTRACT-SPEC 4: everything one anchor's composition stands on.
- *
- * <p>The anchor, the consumer paths that were composed, the interaction
- * families their controls read, the root domains the enumeration ran over, how
- * many valuations it took, the claim, and the {@code .smt2} the solver was
- * given -- which, with z3's verdict, is the deliverable (no VALIDATE stage).
- * A manifest that cannot name its {@code .smt2} is a claim nobody can
- * re-check.</p>
+ * CONTRACT-SPEC 4: everything one anchor's composition stands on, including
+ * the {@code .smt2} that with z3's verdict is the deliverable; without it the
+ * claim cannot be re-checked.
  */
 public final class CompositionManifest {
     private final OccurrenceAddress anchor;

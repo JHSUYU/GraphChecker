@@ -18,10 +18,7 @@ import java.util.function.Predicate;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.asMap;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
 
-/**
- * Builds candidate region skeletons around authoritative execution-context
- * entries.
- */
+/** Builds candidate region skeletons around execution-context entries. */
 final class SymbolicRegionPlanner {
     /** A demanded shared-state writer no enclosing task region can own. */
     static final String STATE_WRITER_ENTRY = "STATE_WRITER_ENTRY";
@@ -39,31 +36,21 @@ final class SymbolicRegionPlanner {
         selected.remove("");
         Map<String, Set<String>> outgoing = new LinkedHashMap<>();
         Set<String> failureMethods = new LinkedHashSet<>();
-        // README Step 1.1: the transport boundary is discovered from the
-        // target slice, not declared.
+        // README Step 1.1: discovered from the slice, not declared.
         Set<String> transportBoundaries = new LinkedHashSet<>(
                 program.communicationCallSiteCallees);
-        // A wire value has two symmetric captures.  Either exact endpoint may
-        // own an occurrence; request/response direction only decides which
-        // side is IN or OUT.
+        // Either capture of a wire value may own an occurrence.
         Set<String> communicationAnchors = communicationEndpoints(program);
         communicationAnchors.retainAll(selected);
         Set<String> stateAnchors = new LinkedHashSet<>();
-        // Roots are manual: the case's symbolic-inputs.jsonl is the one
-        // authority on what is symbolic, so every method it names is an
-        // anchor and a region root here by declaration, whatever the
-        // backward slice from the target did or did not reach.  See
-        // DeclaredSymbolicInputs for why the two differ.
+        // Every declared symbolic-input method is an anchor and a root by
+        // declaration (see DeclaredSymbolicInputs).
         Set<String> declaredAnchors = new LinkedHashSet<>(
                 DeclaredSymbolicInputs.configured());
         Set<String> unsliced = new LinkedHashSet<>(declaredAnchors);
         unsliced.removeAll(selected);
         if (!unsliced.isEmpty()) {
-            // SeedBackwardStaticAnalyzer seeds every declared method into
-            // the slice, so this cannot happen without one of the two rules
-            // having been weakened.  Refused rather than intersected away:
-            // planning around a declaration the slice dropped is how the
-            // declaration became invisible in the first place.
+            // The analyzer seeds every declaration; refuse, never drop.
             throw new IllegalStateException(
                     "DECLARED_INPUT_OUTSIDE_STATIC_SLICE: declared symbolic "
                             + "input methods are not in the static slice: "
@@ -158,12 +145,8 @@ final class SymbolicRegionPlanner {
                     transportBoundaries);
         }
 
-        // Last, so that a declared method some other authority already roots
-        // keeps that authority: the region id is minted from the authority
-        // and the root, and a declaration must not rename a region the rest
-        // of the pipeline already addresses.  What is left here is a
-        // declared method no other rule roots -- which is exactly the case
-        // this rule exists for.
+        // Last: the region id is minted from (authority, root), so a
+        // declaration must not rename a region another rule already roots.
         List<String> declaredEntries = new ArrayList<>(declaredAnchors);
         Collections.sort(declaredEntries);
         for (String entry : declaredEntries) {
@@ -182,7 +165,7 @@ final class SymbolicRegionPlanner {
         declareRetainedLoops(program);
     }
 
-    /** A method held by another context still needs its own state occurrence. */
+    /** Whether some skeleton is already rooted at {@code method}. */
     private static boolean hasSkeletonRoot(StaticProgram program,
                                            String method) {
         for (Map<String, Object> region : program.regions) {
@@ -193,9 +176,7 @@ final class SymbolicRegionPlanner {
         return false;
     }
 
-    /**
-     * Declares, on each region, the retained loops of the methods it holds.
-     */
+    /** Declares on each region the retained loops of the methods it holds. */
     private static void declareRetainedLoops(StaticProgram program) {
         if (program.regions.isEmpty() || program.retainedLoops.isEmpty()) {
             return;
@@ -220,41 +201,12 @@ final class SymbolicRegionPlanner {
         }
     }
 
-    // ------------------------------------------------------------------
-    // README section 3 -- the ports of a cut, declared on a region
-    // ------------------------------------------------------------------
-
     /**
-     * Declares every port of every discovered cut on the regions that own the
-     * two sides of that cut.
-     *
-     * <p>README section 3 fixes the distributed value-flow shape:</p>
-     *
-     * <pre>
-     * Req = T_C0(Input, Live)
-     * Resp = T_S(Req)
-     * Target = T_C1(Live, Resp)
-     * </pre>
-     *
-     * <p>The ports identify the producer output and consumer input at each
-     * cut.  The VM propagates the producer expression and runtime evidence
-     * records the exact endpoints; composition substitutes that expression
-     * directly instead of creating a second pair of port values and an
-     * equality between them.  Both endpoints must still be declared here so
-     * an absent or ambiguous runtime handoff fails closed.</p>
-     *
-     * <ul>
-     *   <li>a REQUEST port is an <b>output</b> of the region holding the
-     *       client cut and an <b>input</b> of the region holding the resolved
-     *       server entry;</li>
-     *   <li>a RESPONSE port is an <b>output</b> of the server region and an
-     *       <b>input</b> of the client region;</li>
-     * </ul>
-     *
-     * <p>There is no third kind.  A synchronous call does not split its
-     * caller, so a value the client holds across the call stays in one
-     * region and needs no port at all.</p>
-     *
+     * README section 3: declares every cut's ports on the regions owning its
+     * two sides -- the producer's region gets an OUT, the consumer's an IN.
+     * Composition substitutes the producer expression directly; both ends are
+     * still declared so an absent or ambiguous handoff fails closed.  A value
+     * held across a synchronous call stays in one region and has no port.
      */
     private static void declareCommunicationPorts(StaticProgram program) {
         if (program.regions.isEmpty()) {
@@ -343,11 +295,7 @@ final class SymbolicRegionPlanner {
         List<String> communication = intersections(methods,
                 communicationAnchors);
         List<String> state = intersections(methods, stateAnchors);
-        // Appended last, so a region whose anchor some other kind already
-        // named keeps that anchor: anchorMethod is anchors.get(0) and the
-        // plan publishes it as the region's targetMethod.  A declared method
-        // this region holds is added to the list, and a region held by
-        // nothing else is anchored on its declared root.
+        // Last: anchorMethod is anchors.get(0), and another kind keeps it.
         List<String> declared = intersections(methods, declaredAnchors);
         boolean explicitFault = EXPLICIT_FAULT_ENTRY.equals(authority);
         List<String> fault = explicitFault
@@ -360,8 +308,6 @@ final class SymbolicRegionPlanner {
         }
         Map<String, Object> row = skeletonRow(root, authority);
         if (declaredAnchors.contains(root)) {
-            // The declaration, published.  Every stage after this one reads
-            // it off the skeleton rather than re-reading the case file.
             row.put(DeclaredSymbolicInputs.ROOT_FIELD, true);
         }
         row.put("anchorMethod", anchors.get(0));
@@ -402,11 +348,7 @@ final class SymbolicRegionPlanner {
         return result;
     }
 
-    /**
-     * Forward closure from every anchor of the admitting kind, kept inside the
-     * context closure the root already bounds.
-     */
-    /** Every declared producer and consumer capture, without transport roles. */
+    /** Every declared producer and consumer capture method. */
     private static Set<String> communicationEndpoints(
             StaticProgram program) {
         Set<String> entries = new LinkedHashSet<>();
@@ -457,10 +399,7 @@ final class SymbolicRegionPlanner {
         return new ArrayList<>(unique);
     }
 
-    /**
-     * Finds declared state read by the failure slice, then admits only roots
-     * that access that state.
-     */
+    /** The declared fields the failure slice reads (HEAP_READ sources). */
     private static Set<String> failureRelevantState(
             Collection<Map<String, Object>> edges) {
         Map<String, List<Map<String, Object>>> incoming =

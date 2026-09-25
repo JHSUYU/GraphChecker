@@ -17,19 +17,9 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
 /** Scheduled work for one causal-skeleton region occurrence. */
 public final class ExecutionTask extends PlanRow {
-    /**
-     * How many tasks one campaign may contain.
-     *
-     * <p>A campaign has to be bounded to be a campaign: the instrumentation
-     * pass rewrites every row and the runtime admits every row, so an
-     * unbounded plan is a runaway workload rather than an experiment, and it
-     * is refused by name instead of being started.</p>
-     *
-     * <p>The bound lives here because both ends of the plan check it -- the
-     * Soot pass before the workload runs and the replay JVM as it loads the
-     * same file -- and they were checking two copies of one constant against
-     * one property name, with two copies of the parse.</p>
-     */
+    /** How many tasks one campaign may contain; an unbounded plan is refused,
+     *  not started. Here because both the Soot pass and the replay JVM check
+     *  it. */
     public static final String MAX_TASKS_PROPERTY =
             "causynth.concolic.campaign.max.tasks";
     public static final int DEFAULT_MAX_TASKS = 64;
@@ -64,9 +54,8 @@ public final class ExecutionTask extends PlanRow {
     private final Set<String> rootLoopControlSites;
     private final Set<String> fixedCountLoopSites;
 
-    /** {@code bound} and {@code phases} are the values
-     *  {@link #create} just encoded; a decoder passes null and the wire is
-     *  parsed instead. */
+    /** {@code bound}/{@code phases}: what {@link #create} just encoded; null =
+     *  parse the wire. */
     private ExecutionTask(JsonObject source, LoopBoundPolicy bound,
                           List<ConfiguredSourcePhaseContract.Occurrence>
                                   phases) {
@@ -75,9 +64,8 @@ public final class ExecutionTask extends PlanRow {
         require(goalId(), "goalId");
         inputActions = InputActionCatalog.decode(encoded);
         loopBound = bound == null ? LoopBoundPolicy.decode(encoded) : bound;
-        // The once-only-root rule: a region rooted on a service loop is
-        // entered once per iteration, at the loop body rather than at the
-        // frame above it.
+        // Once-only root: a region rooted on a service loop is entered once per
+        // iteration, at the body.
         JsonObject rootLoop = LoopBoundPolicy.LOOP_BODY_ROOT.equals(
                 rootAuthority()) ? object(encoded, LoopBoundPolicy.ROOT_LOOP)
                 : new JsonObject();
@@ -132,10 +120,8 @@ public final class ExecutionTask extends PlanRow {
         task.add(InputActionCatalog.FIELD, compactInputActions(inputActions));
         task.add(BRANCH_METHODS, branchMethods.deepCopy());
         loopBound.writeTo(task);
-        // A scheduled task is executable by construction: the scheduler
-        // publishes the occurrences it selected, never ones it decided
-        // against.  The state is still written, and still read back on
-        // decode, because a decoded row is externally authored.
+        // Executable by construction; still written because a decoded row is
+        // externally authored.
         JsonObject admission = new JsonObject();
         admission.addProperty("state", "EXECUTABLE");
         task.add("admission", admission);
@@ -169,11 +155,8 @@ public final class ExecutionTask extends PlanRow {
 
     public String taskId() { return optionalString(encoded, "taskId"); }
 
-    /**
-     * Stable identity of the instrumentation owned by this plan row.  A
-     * replay gets a new task id while the occurrence remains the same; goal
-     * ids and capture alternatives are case-obligation labels inside the one
-     * coarse result, so neither may create another injected root hook.
+    /** Stable identity of this row's instrumentation: (region, occurrence).
+     *  Task and goal ids change per replay and must not add another root hook.
      */
     public String instrumentationSelector() {
         StringBuilder selector = new StringBuilder();
@@ -203,23 +186,18 @@ public final class ExecutionTask extends PlanRow {
 
     public String targetMethod() { return optionalString(encoded, "targetMethod"); }
 
-    /**
-     * Which activation this task's region is rooted on. {@link
-     * LoopBoundPolicy#LOOP_BODY_ROOT} names a region re-rooted at a service
-     * loop's body, whose activation is one iteration rather than the one
-     * entry above it; anything else leaves the root method's own entry.
-     */
+    /** {@link LoopBoundPolicy#LOOP_BODY_ROOT}: rooted at a service loop's body
+     *  (one iteration per activation). */
     public String rootAuthority() {
         return optionalString(encoded, LoopBoundPolicy.ROOT_AUTHORITY);
     }
 
-    /** The method holding the loop body this region is rooted at, else "". */
     public String rootLoopMethod() { return rootLoopMethod; }
 
-    /** Original unit index of that loop's dominance-proved header. */
+    /** Unit indices of the root loop's dominance-proved header and demanded
+     *  unit. */
     public int rootLoopHeaderUnitIndex() { return rootLoopHeaderUnitIndex; }
 
-    /** Original unit index the rooted loop body must reach. */
     public int rootLoopDemandedUnitIndex() {
         return rootLoopDemandedUnitIndex;
     }
@@ -227,9 +205,8 @@ public final class ExecutionTask extends PlanRow {
     /** Iteration-control sites the region's exits are installed on. */
     public Set<String> rootLoopControlSites() { return rootLoopControlSites; }
 
-    /** The root loop's own {@code loopSiteId} -- the key its declared
-     *  {@code K_L} is under in {@link #loopBound()} -- or "" for a
-     *  non-loop-body region. */
+    /** The root loop's {@code loopSiteId} (its {@code K_L} key in {@link
+     *  #loopBound()}), else "". */
     public String rootLoopSiteId() { return rootLoopSiteId; }
 
     /** Retained loops whose concrete cardinality is exact, not a {@code K_L}. */
@@ -274,45 +251,26 @@ public final class ExecutionTask extends PlanRow {
 
     public InputActionCatalog inputActions() { return inputActions; }
 
-    /**
-     * The methods whose conditional branches INSTRUMENT weaves.
-     *
-     * <p>The plan says which methods are instrumented; which branches inside
-     * them are woven is the Soot bodies' answer and INSTRUMENT's to take
-     * (LEAN section 1: any decision whose term has a symbolic operand is
-     * recorded, so there is no per-branch selection to publish).  This used
-     * to be a {@code branches[]} array of one row per site -- 636 of them on
-     * the 17960 seed -- carrying a {@code policy}, an outcome and the
-     * operand cells, and the weave read the site ids out of it.</p>
-     */
+    /** The methods whose conditional branches INSTRUMENT weaves; which branches
+     *  is the Soot bodies' answer (LEAN section 1: every symbolic-operand
+     *  decision is recorded, so there is no per-branch selection). */
     public JsonArray branchMethods() {
         return array(encoded, BRANCH_METHODS).deepCopy();
     }
 
     public LoopBoundPolicy loopBound() { return loopBound; }
 
-    /**
-     * Where this occurrence hands a declared communication port to the VM.
-     * An export site sends the port's live expression; an attach site takes
-     * it.  The VM's successful attach and its {@code VALUE_HANDOFF} edge are
-     * the whole value relation across the cut, so these sites declare where
-     * the propagation happens and are never a pairing.
-     */
+    /** Where this occurrence exports or attaches a declared communication port.
+     *  Only declares where propagation happens; the VM's {@code VALUE_HANDOFF}
+     *  edge is the value relation, never a pairing from here. */
     public List<CommunicationHandoffSpec> communicationHandoffs() {
         return CommunicationHandoffSpec.decode(encoded);
     }
 
-    /**
-     * The write sites of a declared region input's cell.
-     *
-     * <p>Scoping, not value: the VM retains a location by value, so a cell
-     * nothing symbolic has reached yet keeps no version log and its stores
-     * publish nothing.  These are the stores the replay must OBSERVE -- the
-     * concrete value the field already holds becomes the location's first
-     * expression -- so that every later write of it is a version a reader
-     * can join to.  Each entry names a bytecode site and the cell it
-     * writes; what the write did is the runtime's to state.</p>
-     */
+    /** Write sites of a declared input's cell that the replay must OBSERVE: a
+     *  cell nothing symbolic reached keeps no version log, so the concrete
+     *  value becomes its first expression and later writes are versions a
+     *  reader can join to. */
     public JsonArray observedWriteSites() {
         return array(encoded, OBSERVED_WRITE_SITES).deepCopy();
     }

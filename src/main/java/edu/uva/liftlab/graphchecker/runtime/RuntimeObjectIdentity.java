@@ -8,48 +8,19 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Content-addressed names for the objects one recording observed.
+ * Content-addressed names for the objects one recording observed, so two
+ * recordings of one obligation can be compared.
  *
- * <p>{@link CausynthTraceRecorder} names each distinct object with its
- * {@code identity()} counter: a per-run sequence over an
- * {@code IdentityHashMap}.  That number is exact inside one recording and
- * meaningless across two.  The same planned field receiver of hdfs-17899's
- * {@code BlockTokenSecretManager.allKeys} was object 313 in one recording of
- * bug3 and object 300 in the next, which renamed the planned receiver anchor,
- * every {@code SF.} shared-field flow minted from it and every
- * {@code MEMBER.} associative member token, so two recordings of one
- * obligation could not be compared.
- *
- * <p>This renames every recorded object from the content of its <em>first
- * observation</em>: the source it ran on, the event kind that produced it, the
- * declaring method and static site, the argument or field slot, the runtime
- * type, and the slot the id was read out of.  One static site usually
- * allocates many objects, so the address alone is not injective; the ordinal
- * of the object among those first observed at that same address completes it.
- * That ordinal counts per address rather than per run, which is the spelling
- * the plan already uses for activation-local site occurrences and for accessor
- * return ports.
- *
- * <p>The renaming is a bijection on the ids one recording observed, so every
- * consumer that only asks whether two published ids name the same object
- * keeps its answer unchanged: the planned receiver index in
- * {@code ConcolicTaskPlan}, the shared-field flow grouping by receiver and
- * declared field in {@code RuntimeSelectedRegionFinalizer}, and the
- * associative member token.
- *
- * <p>Where two recordings genuinely observed <em>different</em> objects the
- * names still differ, because the objects do.  hdfs-17899 rolls a fresh
- * {@code BlockKey} on a wall-clock timer, so two recordings of bug3 reach the
- * target with a different number of keys created and a different
- * {@code serialNo} on each; the object naming reports that as the content
- * difference it is, on the same rows whose {@code primitiveValue} differs.
+ * <p>{@link CausynthTraceRecorder}'s {@code identity()} counter is exact in
+ * one recording and meaningless across two.  Each object is renamed from its
+ * <em>first observation</em> (source, event kind, method, site, slot, runtime
+ * type) plus its ordinal among objects first seen at that address.  The
+ * renaming is a bijection per recording, so same-object questions keep their
+ * answers; genuinely different objects still get different names.</p>
  */
 final class RuntimeObjectIdentity {
 
-    /**
-     * Names never collide with the recorder's own small counter values, so a
-     * published id that was never renamed is recognisable in a diff.
-     */
+    /** Names sit above the recorder's counters, so an unrenamed id shows. */
     private static final int FLOOR = 1 << 20;
 
     private final Map<Integer, Integer> names = new LinkedHashMap<>();
@@ -57,11 +28,8 @@ final class RuntimeObjectIdentity {
     private final Set<Integer> used = new LinkedHashSet<>();
 
     /**
-     * Records that {@code objectId} was first seen at {@code address}.
-     *
-     * <p>Must be called for every object slot of every event in recorded
-     * order; later observations of an object already named are ignored, which
-     * is what makes the first one the address.</p>
+     * Records that {@code objectId} was first seen at {@code address}; call
+     * for every object slot in recorded order (later sightings are ignored).
      */
     void observe(int objectId, String address) {
         if (objectId <= 0 || names.containsKey(objectId)) {
@@ -72,12 +40,8 @@ final class RuntimeObjectIdentity {
     }
 
     /**
-     * The content-addressed name of one recorded object.
-     *
-     * <p>0 stays 0: it is the recorder's statement that a slot held no
-     * object, not an object.  An id no event ever introduced keeps its
-     * recorded value rather than being silently renamed to something no
-     * other row shares.</p>
+     * The name of one recorded object; 0 ("no object") and ids no event
+     * introduced keep their recorded value.
      */
     int nameOf(int objectId) {
         if (objectId <= 0) {
@@ -89,12 +53,9 @@ final class RuntimeObjectIdentity {
 
 
     /**
-     * One address's name, kept distinct from every name already minted.
-     *
-     * <p>A 31-bit name cannot be collision-free by construction, so a
-     * collision is resolved by re-hashing the address with the number of
-     * attempts already made.  The address set and the order it is offered in
-     * are both fixed by the recording, so the resolution is reproducible.</p>
+     * One address's name, distinct from every name minted: a collision is
+     * re-hashed with the attempt number (reproducible, since the recording
+     * fixes the order).
      */
     private int mint(String address) {
         for (int attempt = 0; ; attempt++) {
@@ -123,13 +84,9 @@ final class RuntimeObjectIdentity {
     }
 
     /**
-     * The content address of one observation.
-     *
-     * <p>{@code sourceKey} is the logical node the frame ran on, not a
-     * transient trace id, and it is read after load-time source
-     * re-attribution has settled.  Without it the same static site on two
-     * cluster nodes would share one address and its objects would be told
-     * apart only by an ordinal over an interleaving no run reproduces.</p>
+     * The content address of one observation.  {@code sourceKey} is the
+     * logical node (after re-attribution); without it one site on two nodes
+     * would share an address and depend on the interleaving.
      */
     static String address(String sourceKey, String eventKind, String method,
                           String siteId, int argumentIndex, String field,

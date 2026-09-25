@@ -1,12 +1,9 @@
 package edu.uva.liftlab.graphchecker.contract;
 
 /**
- * CONTRACT-SPEC 2: the closed set of things a stage may refuse on.
- *
- * <p>Closed on purpose: a kind without a consumer is a report nobody reads, and
- * the deletion pass removed several.  Every kind here is either BLOCKING for
- * some stage or a DIAGNOSTIC that a report prints, and the producer that raises
- * it states which on the row.</p>
+ * CONTRACT-SPEC 2: the closed set of things a stage may refuse on.  Closed on
+ * purpose: every kind has a consumer, and the producer states on the row
+ * whether it is BLOCKING or DIAGNOSTIC.
  */
 public enum GapKind {
     /** A selected path's replay was not admitted on its focused region. */
@@ -16,13 +13,9 @@ public enum GapKind {
     /** An arm from a run whose producer never stated a path condition. */
     UNATTESTED_ARM,
     /**
-     * A focused replay left the schedule prefix it was held to.
-     *
-     * <p>Stated by the replay's turnstile at the position where the run's
-     * next event was not the prefix's, with both events spelled out.  From
-     * there the replay runs free, exactly as a replay with no prefix did:
-     * DIAGNOSTIC, because what the prefix could not hold is an ordering fact,
-     * and every row the replay publishes after it still states what ran.</p>
+     * A focused replay left its schedule prefix; stated by the turnstile with
+     * both events.  DIAGNOSTIC: the replay runs free after it and its rows
+     * still state what ran.
      */
     SCHEDULE_DIVERGED,
     /** A projection joined to no write version and pinned to no value. */
@@ -39,28 +32,16 @@ public enum GapKind {
     TASK_UNANSWERED,
     /**
      * One planned task answered at two addresses across the corpus.
-     *
-     * <p>DIAGNOSTIC, and read by EXPLORE: an arm is owed once per planned
-     * OCCURRENCE, so an address that moves between replays of the same plan
-     * row splits one owed fact into two and the arms answered at the first
-     * address settle nothing at the second.  The cause is upstream of any
-     * wave -- what the execution index counted -- so the wave names it and
-     * goes on.</p>
+     * DIAGNOSTIC, read by EXPLORE: arms answered at one address settle
+     * nothing at the other; the cause is the execution index, upstream.
      */
     ADDRESS_UNSTABLE,
     /** The solver gave no answer in the time it was given. */
     SOLVER_TIMEOUT,
     /**
      * An activation closed at a different execution-index depth than it
-     * opened at.
-     *
-     * <p>BLOCKING, and it has to be: the frames an occurrence stands on ARE
-     * its identity (IDENTITY-V3 §1), so a frame pushed at an entry and not
-     * popped at its exit moves the address of everything that runs after
-     * it -- on hdfs-17960 it moved four frames onto the replay's index and
-     * 34 of 81 planned tasks were refused on an address nobody could see
-     * was wrong.  A leak cannot be reported as a diagnostic, because every
-     * row published after it is addressed by the wrong occurrence.</p>
+     * opened at.  BLOCKING: frames are identity (IDENTITY-V3 §1), so a leaked
+     * frame misaddresses every later row.
      */
     FRAME_UNBALANCED,
     /** A retained condition loop ran under an inherited K_L, not a declared
@@ -77,121 +58,59 @@ public enum GapKind {
     /** A port truncated its recorded accesses, so the accesses above the
      *  retained ones are invisible to every later stage. */
     BOUND_INSUFFICIENT,
-    /** Two activations of one region share an address: nothing IDENTITY-V3
-     *  names tells them apart.  Every one of them is published with its own
-     *  events, so a chain is not broken; a declared selector's k picks among
-     *  them in seed order. */
+    /** Two activations of one region share an address (IDENTITY-V3 cannot
+     *  tell them apart); each keeps its events, and a selector's k picks in
+     *  seed order. */
     OCCURRENCE_ADDRESS_SHARED,
     /**
-     * A mint this run could attribute to no node, so nothing was written.
-     *
-     * <p>BLOCKING for the session that met it: the wave's value for this
-     * root was NOT written, so the replay ran the recording's value under an
-     * obligation that asked for another one.</p>
-     *
-     * <p>IMPORT raises it too, under invariant 11: a session whose
-     * expressions name a root's symbol and that states no {@code
-     * RootMintRow} for that root carries a quantity no row of it
-     * attributes.</p>
+     * A mint this run could attribute to no node, so the wave's value was not
+     * written (BLOCKING for that session).  IMPORT also raises it (invariant
+     * 11) for a named root symbol with no {@code RootMintRow}.
      */
     MINT_UNATTRIBUTED,
     /**
-     * A message-carried context this side refused to install, so the
-     * values that message carried are unattributed.
-     *
-     * <p>DIAGNOSTIC: the consequence is already on the rows the message
-     * would have fed -- an attach with no element states {@code
-     * elementAbsent} and mints v_H on the arrived value, and a send with no
-     * request scope carries no header -- so this row is the reason those
-     * say what they say, once per distinct refusal.  It is a row and not an
-     * exception because the doors that raise it are called from inside the
-     * workload's own transport: thrown, a refused registration-response
-     * envelope stopped two DataNodes from ever registering and the
-     * MiniDFSCluster wait never ended (lane11741d).</p>
+     * A message-carried context this side refused to install, so its values
+     * are unattributed.  DIAGNOSTIC: the affected rows already say so
+     * ({@code elementAbsent}); this names why, once per refusal.  A row, never
+     * an exception: the doors run inside the workload's transport, where a
+     * throw can hang the cluster.
      */
     MESSAGE_CONTEXT_REFUSED,
     /**
-     * A mint of the right site at the wrong node epoch.
-     *
-     * <p>Same consequence, and the same class: a configured source is
-     * reached once per node lifecycle, so an assignment applied at another
-     * epoch rewrites a value the wave said nothing about.</p>
+     * A mint of the right site at the wrong node epoch; applying the
+     * assignment there would rewrite a value the wave said nothing about.
      */
     EPOCH_UNMATCHED,
     /**
-     * A session no reader could read whole.
-     *
-     * <p>BLOCKING, raised at IMPORT: a truncated row or an absent {@code
-     * manifest.json} makes a kind come back empty, which every later stage
-     * reads as "this run had none".  Seven of the 11741 campaign #2 sessions
-     * were cut by the campaign's kill, and one of them left a half-written
-     * gap row that made the whole corpus unreadable with a JSON exception
-     * instead of a named refusal.</p>
+     * A session no reader could read whole.  BLOCKING at IMPORT: a truncated
+     * row or absent {@code manifest.json} reads back as "this run had none".
      */
     SESSION_INCOMPLETE,
     /**
-     * A root the obligation assigns whose mint RAN in the replay and did not
-     * plant the wave's value.  A root whose mint never ran is not one -- the
-     * occurrence the obligation was for did not happen, which its
-     * NOT_ADMITTED verdict states.
-     *
-     * <p>BLOCKING for the session that met it, and stated by the REPLAY: the
-     * run read the recording's value where the wave asked for another one,
-     * so it did not run what was asked.  11741 session
-     * 869a1f0e285913ad-6f59cb84 is the case -- {@code
-     * HDFS.BLOCK_KEY.SERIAL_NO} was minted through the field path, which
-     * never asked for the wave's value -- and the composer meeting it as
-     * "the mint states 182907 and the obligation assigns 182910" was the
-     * second statement of the same fact, not the first.</p>
+     * An assigned root whose mint RAN in the replay without planting the
+     * wave's value (a mint that never ran is NOT_ADMITTED instead).
+     * BLOCKING for that session, stated by the replay.
      */
     ASSIGNMENT_UNPLANTED,
     /**
-     * A root the obligation assigns that the recording mints nowhere.
-     *
-     * <p>DIAGNOSTIC, and raised where the obligation is PROPOSED: a replay
-     * plants an assignment at the MINT of the root, so an assignment the
-     * recording published no mint for names no occurrence any replay could
-     * be focused on, and running it would spend a replay on the recording's
-     * own value.  The subject is the obligation -- that is what is not run
-     * -- and the detail is the root, which is why.</p>
-     *
-     * <p>Told apart from {@link #ASSIGNMENT_UNPLANTED}, which is a REPLAY
-     * that reached a mint and could not place the write: this one never
-     * gets that far, and the wave spends nothing on it.</p>
+     * An assigned root the recording mints nowhere, so no replay could plant
+     * it.  DIAGNOSTIC, raised when the obligation is proposed; the obligation
+     * is not run.  Unlike {@link #ASSIGNMENT_UNPLANTED}, no replay is spent.
      */
     ASSIGNMENT_UNMINTABLE,
     /**
-     * One composed path whose own conjunction is unsatisfiable before any
-     * root is considered.
-     *
-     * <p>BLOCKING, and raised at DECIDE.  A path is a question -- "is there
-     * a world of this corpus in which this path reaches the fatal arm?" --
-     * and a question that is unsat with every root free is not a question
-     * about the roots at all: it is a contradiction the composition built.
-     * The one that shipped for two rounds was pi_p carrying the anchor
-     * decision's RECORDED polarity while phi_p asserted its complement, so
-     * every path whose session did not observe the fatal arm was refuted by
-     * construction -- all 7 paths of hdfs-11741 campaign #4 and 17960's own
-     * third path, with z3's core naming only {@code path_fatal__*} and
-     * {@code fatal_target} and no valuation assertion at all.  A claim
-     * whose polarity rests on such a refutation states "the recording
-     * decides the arm" about a formula no root could have satisfied, which
-     * is why this is BLOCKING and why {@code polarityDecides} is withheld
-     * beside it.</p>
+     * One composed path unsatisfiable with every root free: a contradiction
+     * the composition built, not a fact about roots.  BLOCKING at DECIDE, and
+     * {@code polarityDecides} is withheld beside it.  Typical trap: pi_p
+     * carrying the anchor's recorded polarity while phi_p asserts its
+     * complement.
      */
     PATH_SELF_CONTRADICTORY,
     /**
-     * The confirmation replay took an edge the model did not choose.
-     *
-     * <p>DIAGNOSTIC on the confirmation session, and read by CONFIRM: a SAT
-     * claim says the model satisfies the formula, and the one replay that
-     * plants the model's roots and holds the selected path's schedule says
-     * whether the program agrees.  Each row names one expected edge -- a
-     * message family's arm (consumer endpoint <- producer endpoint), a
-     * state join (reader <- writer version) -- and the edge the run took
-     * instead; any one of them downgrades the claim to SAT_UNCONFIRMED.
-     * The run itself is never steered by the expectation: it is scheduled
-     * by the session's schedule as every focused replay is.</p>
+     * The confirmation replay took an edge the model did not choose (a
+     * family arm or a state join), named with the edge taken instead.
+     * DIAGNOSTIC, read by CONFIRM: any one downgrades the claim to
+     * SAT_UNCONFIRMED.  The expectation never steers the run.
      */
     CONFIRM_MISMATCH
 }

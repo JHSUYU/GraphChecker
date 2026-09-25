@@ -11,19 +11,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-/**
- * ONE flip query, as TEXT.  Relocated out of {@link FlipQuery} unchanged.
- *
- * <p>{@link FlipQuery} decides what a flip query SAYS -- which prefix, which
- * arm, which variable stands for which recorded symbol; this decides how it
- * READS, which is the part with no rule in it at all: the header comments
- * that name the task and the flip, the part of each session's preamble the
- * query's own texts reach, the query's variables before the definitions that
- * name them, and the assertions.</p>
- *
- * <p>Two questions the text has to ask the builder that owns the renaming,
- * and no more, so the rendering holds no query state of its own.</p>
- */
+/** One flip query as text: {@link FlipQuery} decides what it says; this only
+ *  lays it out (header comments, reached preamble, own variables, definitions,
+ *  assertions), asking the builder's {@link Scope} about renaming. */
 final class FlipQueryText {
 
     /** What the query knows about a recorded name; the builder answers. */
@@ -38,16 +28,9 @@ final class FlipQueryText {
     private FlipQueryText() {
     }
 
-    /**
-     * Exactly the declarations these texts reach, in this query's own
-     * variables.
-     *
-     * <p>A lowering is cached per session and answers many questions, so
-     * emitting all of its declarations would state symbols this query
-     * does not conjoin, and a reader cannot tell those from the ones the
-     * query rests on.  Deduplicated by line: two sessions share a minted
-     * name only when the definition is literally the same closed term,
-     * because the digest is over the scoped text.</p>
+    /** Exactly the declarations these texts reach, in this query's variables. A
+     *  cached lowering holds many more; stating them would blur what the query
+     *  rests on. Line-deduplicated: equal minted names mean equal closed terms.
      */
     static Set<String> statedDeclarations(Corpus corpus,
                                           Set<String> lowered, Scope scope,
@@ -59,8 +42,8 @@ final class FlipQueryText {
             Map<String, String> rename = scope.renamesOf(sessionId);
             for (SmtLowering.Declaration declaration
                     : lowering.reachedBy(texts)) {
-                // A recorded symbol the query bound is declared by the
-                // query, under its own variable, once.
+                // A recorded symbol the query bound is declared once, by the
+                // query.
                 if (rename.containsKey(declaration.name)) continue;
                 stated.add(declaration.body.isEmpty()
                         ? declaration.render()
@@ -95,15 +78,10 @@ final class FlipQueryText {
             text.append("; ").append(entry.getKey()).append(" = ")
                     .append(entry.getValue()).append('\n');
         }
-        // The lowering's own preamble, then EXACTLY the declarations
-        // this query's texts reach ({@link #statedDeclarations}).
+        // Preamble: exactly what assertions, declarations and variable sorts
+        // reach (SmtNames#reachedPreamble, same rule as the composed query).
         Set<String> declarations = statedDeclarations(corpus, lowered,
                 scope, assertions);
-        // WHAT THIS QUERY REACHES: its assertions, the declarations
-        // they reach, and the sorts of its own variables -- which is
-        // what decides the part of the preamble the query states
-        // (SmtLowering#reachedPreamble, the same rule the composed
-        // query is written by).
         List<String> reaching = new ArrayList<String>(assertions);
         reaching.addAll(declarations);
         reaching.addAll(sorts.values());
@@ -116,10 +94,8 @@ final class FlipQueryText {
         }
         if (opening.isEmpty()) opening.add("(set-logic ALL)");
         for (String line : opening) text.append(line).append('\n');
-        // The query's OWN variables before the definitions: a renamed
-        // subterm body names them, and a define-fun over a constant
-        // nothing has declared yet is an error that cascades into every
-        // definition above it.
+        // Own variables before definitions: a define-fun over an undeclared
+        // constant errors and cascades.
         for (Map.Entry<String, String> entry : sorts.entrySet()) {
             text.append("(declare-fun ").append(entry.getKey())
                     .append(" () ").append(entry.getValue()).append(")\n");
@@ -130,8 +106,8 @@ final class FlipQueryText {
         for (String assertion : assertions) {
             text.append("(assert ").append(assertion).append(")\n");
         }
-        // THE NEAREST WORLD (FlipQuery.Builder#nearest): of the models,
-        // the one that moves the recording's roots and clocks least.
+        // The nearest world (FlipQuery.Builder#nearest): least movement of
+        // roots and clocks.
         if (!nearest.isEmpty()) {
             StringBuilder distance = new StringBuilder();
             for (Map.Entry<String, String> entry : nearest.entrySet()) {
@@ -142,13 +118,9 @@ final class FlipQueryText {
                     ? distance.substring(1) : "(+" + distance + ")")
                     .append(")\n");
         }
-        // No check-sat here: the body is the formula, and what is
-        // ASKED of it -- the verdict, then the values of the variables
-        // this query declared -- is the one z3 driver's own text
-        // ({@link Z3#modelQuery}), so the published query is the
-        // question that was actually solved and not a second one.
-        // A name SMT-LIB cannot spell bare is quoted, once, on the way
-        // out -- the same routine the composed query is rendered by.
+        // No check-sat: the ask is Z3#modelQuery's, so the published query is
+        // the one solved. Illegal bare names are quoted once, as in the
+        // composed query.
         return SmtNames.legalSymbols(text.toString());
     }
 }

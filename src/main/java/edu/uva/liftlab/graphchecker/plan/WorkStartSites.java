@@ -11,42 +11,25 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ForkJoinTask;
 
 /**
- * THE list of call shapes that start work, for the weave and for the runtime.
+ * THE list of call shapes that start work, hand it off, or wait.
  *
- * <p>A work start is where one activation hands work to another thread: a
- * {@code Thread.start}, an executor submission, a fork-join {@code fork}.
- * Two things read this list and they must read the same one: the INSTRUMENT
- * weave, which files the start-site frame of the work that was started
- * (IDENTITY-V3 SS1, {@code CausynthPipeline.instrumentWorkStarts}), and the
- * recording's own call hooks, which carry the request scope across the same
- * boundary ({@code RuntimeTraceContext.captureAsync}).  They used to carry
- * one list each -- the weave's was narrower, so a start the recorder saw had
- * no frame -- and a start only one of them recognizes is a lineage hole by
- * construction.</p>
- *
- * <p>The list is names, arities and types; each reader evaluates it with the
- * types it can see.  The weave asks Soot about declared types; the recorder
- * asks the live object.  Neither adds a shape of its own.</p>
+ * <p>Read by both the INSTRUMENT weave (IDENTITY-V3 SS1, {@code
+ * CausynthPipeline.instrumentWorkStarts}) and the recorder's hooks ({@code
+ * RuntimeTraceContext.captureAsync}); a shape only one of them recognizes is a
+ * lineage hole. Each evaluates it with the {@link Types} it can see (Soot
+ * hierarchy or the live object) and adds none of its own.</p>
  */
 public final class WorkStartSites {
     private WorkStartSites() {
     }
 
-    /**
-     * Whether a type is, or inherits, the named one.
-     *
-     * <p>Soot answers it over the class hierarchy of a declared type; the
-     * runtime answers it with {@code isInstance} on the value itself.</p>
-     */
+    /** Whether a type is, or inherits, the named one (Soot hierarchy or {@code
+     *  isInstance}). */
     public interface Types {
         boolean is(String typeName);
     }
 
-    /**
-     * The receiver-carried starts: a no-argument call whose RECEIVER is the
-     * work.  {@code Thread.start} starts its thread, and a fork-join {@code
-     * fork}/{@code invoke} starts its task -- a pool worker that steals such
-     * a task inherits nothing from the submission that created the worker.
+    /** Receiver-carried starts: a no-argument call whose receiver is the work.
      */
     private static final Map<String, Set<String>> RECEIVER_STARTS =
             receiverStarts();
@@ -59,30 +42,19 @@ public final class WorkStartSites {
         return starts;
     }
 
-    /**
-     * The argument-carried starts: a submission whose ARGUMENTS are the work.
-     *
-     * <p>Every argument, not only the first: {@code ForkJoinTask.invokeAll(t1,
-     * t2)} submits two tasks as two arguments, and each of them is a start
-     * of its own -- which is the only thing that tells the two activations
-     * apart.</p>
-     */
+    /** Argument-carried starts: each argument is a start of its own ({@code
+     *  invokeAll(t1, t2)}). */
     private static final Set<String> SUBMISSION_NAMES =
             names("execute", "submit", "schedule", "invokeAll");
 
-    /**
-     * What can BE the work a submission starts.
-     *
-     * <p>A {@code Collection} is one submission per element (a batch), which
-     * is why it belongs here rather than in the readers.</p>
-     */
+    /** What can be the work a submission starts; a {@code Collection} is a
+     *  batch. */
     private static final List<String> WORK_TYPES = Arrays.asList(
             "java.lang.Runnable",
             "java.util.concurrent.Callable",
             "java.util.concurrent.ForkJoinTask",
             "java.util.Collection");
 
-    /** The classes the runtime projection answers {@link Types} with. */
     private static final Map<String, Class<?>> RUNTIME_TYPES = runtimeTypes();
 
     private static Map<String, Class<?>> runtimeTypes() {
@@ -100,13 +72,8 @@ public final class WorkStartSites {
         return new LinkedHashSet<>(Arrays.asList(values));
     }
 
-    /**
-     * Whether this call starts the work its receiver carries.
-     *
-     * @param calleeName   the callee's own name, no signature
-     * @param argumentCount how many arguments the call passes
-     * @param receiverType the receiver's type, as the caller can see it
-     */
+    /** Whether this call starts the work its receiver carries (as the caller
+     *  sees its type). */
     public static boolean startsReceiver(String calleeName, int argumentCount,
                                          Types receiverType) {
         if (argumentCount != 0 || calleeName == null
@@ -123,14 +90,12 @@ public final class WorkStartSites {
         return false;
     }
 
-    /** Whether this call submits the work its arguments carry. */
     public static boolean submitsArguments(String calleeName,
                                            int argumentCount) {
         return argumentCount >= 1 && calleeName != null
                 && SUBMISSION_NAMES.contains(calleeName);
     }
 
-    /** Whether a value of this type can be the work a submission starts. */
     public static boolean carriesWork(Types type) {
         if (type == null) return false;
         for (String work : WORK_TYPES) {
@@ -139,21 +104,10 @@ public final class WorkStartSites {
         return false;
     }
 
-    /**
-     * The methods a started work RUNS: this list, read from the other side.
-     *
-     * <p>A start is filed under the object that carries the work
-     * ({@code Identity.startWork}), and the thread that runs it never sees
-     * that object through any hook of its own -- a pool worker is handed a
-     * task by {@code ThreadPoolExecutor}, which is JDK code no weave
-     * touches.  So the work claims its own start frame at its own first
-     * instruction: the entry of the functional method the start named.  The
-     * shapes are the mirror of {@link #RECEIVER_STARTS} and
-     * {@link #WORK_TYPES} -- {@code Runnable.run}, {@code Callable.call},
-     * a fork-join {@code exec}/{@code compute}, {@code Thread.run} -- and
-     * nothing else, so a work shape only one of the two sides recognizes
-     * is impossible by construction.</p>
-     */
+    /** The methods started work RUNS: the mirror of {@link #RECEIVER_STARTS}
+     *  and {@link #WORK_TYPES}. The running thread never sees the start's
+     *  carrier (a pool worker gets it from JDK code), so the work claims its
+     *  start frame at the entry of its functional method. */
     private static final Map<String, Set<String>> WORK_ENTRIES =
             workEntries();
 
@@ -167,17 +121,8 @@ public final class WorkStartSites {
         return entries;
     }
 
-    /**
-     * Whether this method is the entry of work a start hands to a thread.
-     *
-     * <p>Zero-argument and instance-bound, because that is what every shape
-     * above is: the work is the receiver, so {@code this} is the carrier the
-     * start was filed under and the claim needs no argument of its own.</p>
-     *
-     * @param methodName     the method's own name, no signature
-     * @param argumentCount  how many arguments it declares
-     * @param declaringType  the declaring class, as the reader can see it
-     */
+    /** Whether this method is the entry of started work: zero-argument,
+     *  instance-bound ({@code this} is the carrier). */
     public static boolean entersWork(String methodName, int argumentCount,
                                      Types declaringType) {
         if (argumentCount != 0 || methodName == null
@@ -194,38 +139,20 @@ public final class WorkStartSites {
         return false;
     }
 
-    // ---- queue handoffs --------------------------------------------------
 
-    /** The queue a handoff goes through: a producer puts, a consumer takes. */
     private static final String QUEUE_TYPE =
             "java.util.concurrent.BlockingQueue";
 
-    /**
-     * The submissions of a queue handoff: the ELEMENT is the work.
-     *
-     * <p>Any element, not only a {@code Runnable}: what a producer puts on a
-     * queue -- an IPC {@code Call}, a command array, a lambda -- is the work
-     * the consumer that takes it runs, and the consumer never sees the
-     * producer through a hook of its own.  The receiver's type is checked,
-     * because {@code put} and {@code add} are the names of a map's and a
-     * list's writes too.</p>
-     */
+    /** Queue submissions: the ELEMENT is the work; receiver type checked
+     *  ({@code put}/{@code add} are map/list writes too). */
     private static final Set<String> QUEUE_SUBMISSIONS =
             names("put", "offer", "add", "putFirst", "putLast", "offerFirst",
                     "offerLast", "addFirst", "addLast");
 
-    /**
-     * The claims of a queue handoff: what the call RETURNS is the work.
-     *
-     * <p>A deque's ends are handoffs too: the DataNode actor puts a
-     * KeyUpdateCommand at the head of its command queue ({@code putFirst})
-     * and its command processor takes it, and a list without the ends left
-     * that key delivery with no cause.</p>
-     */
+    /** Queue claims: the returned value is the work; deque ends count too. */
     private static final Set<String> QUEUE_CLAIMS = names("take", "poll",
             "takeFirst", "takeLast", "pollFirst", "pollLast");
 
-    /** Whether this call hands its first argument to a queue's consumer. */
     public static boolean submitsToQueue(String calleeName, int argumentCount,
                                          Types receiverType) {
         return argumentCount >= 1 && calleeName != null
@@ -234,7 +161,6 @@ public final class WorkStartSites {
                 && receiverType.is(QUEUE_TYPE);
     }
 
-    /** Whether the value this call returns is work a producer handed over. */
     public static boolean claimsFromQueue(String calleeName,
                                           Types receiverType) {
         return calleeName != null && receiverType != null
@@ -242,18 +168,11 @@ public final class WorkStartSites {
                 && receiverType.is(QUEUE_TYPE);
     }
 
-    // ---- the lineage scan ------------------------------------------------
 
-    /**
-     * Whether a call, read off bytecode with no class hierarchy, may be a
-     * work start or a queue handoff: the names above, the receiver-carried
-     * starts with no argument, the submissions with one, and a queue's by a
-     * {@code java.util.concurrent} owner.  It errs wide on purpose -- a class
-     * it keeps is only handed to the weave, which asks the exact shapes of
-     * {@link #startsReceiver}, {@link #submitsArguments}, {@link
-     * #submitsToQueue} and {@link #claimsFromQueue} with the hierarchy in
-     * hand; a class it drops is a lineage hole ({@code LineageScan}).
-     */
+    /** Whether a call, read off bytecode without a hierarchy, may be a start or
+     *  queue handoff. Deliberately wide: a kept class only goes to the weave,
+     *  which asks the exact shapes; a dropped class is a lineage hole ({@code
+     *  LineageScan}). */
     public static boolean mayHandOffWork(String ownerInternalName,
                                          String calleeName,
                                          int argumentCount) {
@@ -273,11 +192,8 @@ public final class WorkStartSites {
                         && QUEUE_SUBMISSIONS.contains(calleeName)));
     }
 
-    /**
-     * Whether a method, read off bytecode, may be the entry of started work:
-     * a no-argument method named as one of {@link #WORK_ENTRIES}' entries.
-     * Wide for the same reason as {@link #mayHandOffWork}.
-     */
+    /** Bytecode-level {@link #WORK_ENTRIES} test, wide like {@link
+     *  #mayHandOffWork}. */
     public static boolean mayEnterWork(String methodName, int argumentCount) {
         if (argumentCount != 0 || methodName == null) return false;
         for (Set<String> entries : WORK_ENTRIES.values()) {
@@ -286,31 +202,22 @@ public final class WorkStartSites {
         return false;
     }
 
-    // ---- timed waits -----------------------------------------------------
 
     /**
-     * One timed-wait shape: the call a service loop waits with, and the
-     * method of {@code runtime.TimedWaits} that stands in for it.
+     * One wait shape and the {@code runtime.TimedWaits} method that replaces
+     * it.
      *
-     * <p>The WAKE of the schedule: a timed wait that returns hands its thread
-     * the loop's next turn.  The weave replaces the call -- the receiver, when
-     * there is one, becomes the first argument and the call site the last --
-     * because under a schedule prefix the wait must not read the wall clock
-     * at all, and a hook placed around the call could not stop it doing
-     * so.</p>
-     *
-     * <p>The same list names the notifiers of those primitives and their
-     * untimed waits, replaced the same way: a held wait leaves the wait set
-     * between two asks for its turn, so a signal must be state the wait can
-     * read afterwards, which only a replaced notifier can write.</p>
+     * <p>Timed waits are the schedule's WAKE. The weave replaces the call
+     * (receiver first, call site last) because under a schedule prefix the wait
+     * must not read the wall clock, which a surrounding hook could not stop.
+     * Notifiers and untimed waits are replaced too: a held wait is out of the
+     * wait set between turns, so a signal must be state it can read later.</p>
      */
     public static final class TimedWait {
-        /** The type the callee is declared on, or that the receiver is. */
         public final String owner;
         public final String name;
         public final List<String> parameters;
         public final boolean isStatic;
-        /** The {@code TimedWaits} method, and what it returns. */
         public final String replacement;
         public final String returns;
 
@@ -326,10 +233,8 @@ public final class WorkStartSites {
                     Arrays.asList(parameters));
         }
 
-        /**
-         * The replacement's parameters: the receiver's declared shape type
-         * first when the call has one, then the call's own, then the site.
-         */
+        /** Replacement parameters: receiver type (if any), the call's own, then
+         *  the site. */
         public List<String> replacementParameters() {
             List<String> all = new java.util.ArrayList<>();
             if (!isStatic) all.add(owner);
@@ -342,7 +247,6 @@ public final class WorkStartSites {
     private static final String CONDITION_TYPE =
             "java.util.concurrent.locks.Condition";
 
-    /** The owner of every replacement. */
     public static final String TIMED_WAITS_CLASS =
             "edu.uva.liftlab.graphchecker.runtime.TimedWaits";
 
@@ -368,10 +272,8 @@ public final class WorkStartSites {
                     "long", "java.util.concurrent.TimeUnit"),
             new TimedWait(QUEUE_TYPE, "poll", false, "java.lang.Object",
                     "poll", "long", "java.util.concurrent.TimeUnit"),
-            // A signal is state (TimedWaits): the notifiers of the same
-            // primitives, and their untimed waits, so a held wait -- out of
-            // the wait set between two asks for its turn -- still reads a
-            // signal sent in that gap.  None of these is an event.
+            // Signals as state (see TimedWait): notifiers and untimed waits;
+            // not events.
             new TimedWait("java.lang.Object", "wait", false, "void",
                     "waitOn"),
             new TimedWait("java.lang.Object", "notify", false, "void",
@@ -385,14 +287,8 @@ public final class WorkStartSites {
             new TimedWait(CONDITION_TYPE, "signalAll", false, "void",
                     "signalAll"));
 
-    /**
-     * The timed-wait shape this call is, or null.
-     *
-     * @param calleeName     the callee's own name
-     * @param parameterTypes the callee's declared parameter types, by name
-     * @param isStatic       whether the call is a static invocation
-     * @param declaringType  the type the call's reference is declared on
-     */
+    /** The timed-wait shape of this call (declared parameter types,
+     *  static-ness, reference type), or null. */
     public static TimedWait timedWait(String calleeName,
                                       List<String> parameterTypes,
                                       boolean isStatic, Types declaringType) {
@@ -410,12 +306,8 @@ public final class WorkStartSites {
         return null;
     }
 
-    /**
-     * Whether a call, read off bytecode, may be one of {@link #TIMED_WAITS}:
-     * its name alone, since a wait or a notify on an application object is
-     * owned by that object's class.  Wide for the reason {@link
-     * #mayHandOffWork} is; the weave asks {@link #timedWait}.
-     */
+    /** Bytecode-level {@link #TIMED_WAITS} test by name; wide like {@link
+     *  #mayHandOffWork}. */
     public static boolean mayWait(String calleeName) {
         if (calleeName == null) return false;
         for (TimedWait shape : TIMED_WAITS) {
@@ -424,7 +316,6 @@ public final class WorkStartSites {
         return false;
     }
 
-    /** Every timed-wait shape, for the runtime ABI check. */
     public static List<TimedWait> timedWaits() {
         return TIMED_WAITS;
     }
@@ -440,14 +331,7 @@ public final class WorkStartSites {
         };
     }
 
-    /**
-     * The callee's name in a Soot method signature, or {@code ""}.
-     *
-     * <p>{@code <java.util.concurrent.ThreadPoolExecutor: void
-     * execute(java.lang.Runnable)>} names {@code execute}.  The recorder
-     * holds its callees as these signatures, so the parse lives with the
-     * list rather than in the recorder.</p>
-     */
+    /** The callee's name in a Soot method signature, or {@code ""}. */
     public static String calleeName(String declaredCallee) {
         String signature = declaredCallee == null ? "" : declaredCallee;
         int open = signature.indexOf('(');
@@ -457,7 +341,6 @@ public final class WorkStartSites {
         return signature.substring(space + 1, open);
     }
 
-    /** How many arguments the callee of a Soot method signature takes. */
     public static int argumentCount(String declaredCallee) {
         String signature = declaredCallee == null ? "" : declaredCallee;
         int open = signature.indexOf('(');

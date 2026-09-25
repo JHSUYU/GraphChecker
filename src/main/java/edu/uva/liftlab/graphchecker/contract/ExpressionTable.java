@@ -7,12 +7,9 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * CONTRACT-SPEC 2: the session's {@code expressions.json}.
- *
- * <p>{@code ref -> expression JSON}: the VM's expression objects,
- * unchanged.  Rows carry references, not
- * trees: the VM propagates values as a shared DAG and a row that inlined its
- * expression would restate its whole upstream history at every handoff.</p>
+ * CONTRACT-SPEC 2: the session's {@code expressions.json}, ref to the VM's
+ * expression object unchanged.  Rows carry refs into this shared DAG, never
+ * inlined trees.
  */
 public final class ExpressionTable {
     private final Map<String, JsonObject> expressions;

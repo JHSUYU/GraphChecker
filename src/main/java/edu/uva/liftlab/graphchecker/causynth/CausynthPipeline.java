@@ -98,16 +98,8 @@ public final class CausynthPipeline {
     /** Every local a weave adds is named for the weave that added it. */
     private static final String TRACE_LOCAL_PREFIX = "$causynth";
     /**
-     * Soot's own body rules, run on every woven body by {@link
-     * #validateWovenBodies}.  {@code CheckInitValidator} is the one that
-     * answers the woven-trap rule of {@link #afterWovenPrologue}: it runs
-     * Soot's {@code InitAnalysis} over an {@code ExceptionalUnitGraph} built
-     * with the pedantic throw analysis, so every unit of a trap range has an
-     * edge into the handler and a woven local the handler reads is reported
-     * unless it is stored on every one of them -- which is the JVM's own
-     * stackmap merge, one pass earlier and by name.  The other three are the
-     * structural claims a weave can break: a local it used but did not
-     * declare, a trap or a branch whose units it left out of the body.
+     * Soot body rules run on every woven body ({@link #validateWovenBodies});
+     * {@code CheckInitValidator} enforces {@link #afterWovenPrologue}.
      */
     private static final BodyValidator[] WOVEN_BODY_RULES = {
         CheckInitValidator.v(),
@@ -123,9 +115,7 @@ public final class CausynthPipeline {
     public void run() throws IOException {
         try {
             analyze();
-            // Before Soot writes one class file: no woven body leaves this
-            // JVM unless it satisfies the rules the JVM's verifier will
-            // apply to it.
+            // Before Soot writes any class file.
             validateWovenBodies();
         } finally {
             // The loop CFGs are this run's, not this JVM's.
@@ -166,22 +156,12 @@ public final class CausynthPipeline {
                 new SeedBackwardStaticAnalyzer(target).analyze();
         long seedAnalysisMillis = elapsedMillis(seedAnalysisStart);
         long skeletonPlanningStart = System.nanoTime();
-        // The graph is already resident here.
         SymbolicRegionPlanner.planSelectedSkeleton(result,
                 result.traceMethods);
-        // A shared helper may declare the same logical source fields for
-        // several RPC handlers.
         StaticSymbolicSourceDiscovery.discover(result);
         long skeletonPlanningMillis = elapsedMillis(skeletonPlanningStart);
-        // CLOSURE-V2 SS4, before ANY weaving: the sites of the static scope
-        // map are named in original unit indices (the graph's own numbering),
-        // and its guard sets are read off the same bodies the graph was built
-        // from.  Computing them after a discovery weave read the
-        // guards off a body with hooks in it, which shifted every index past
-        // the first hook -- 17960's target guard came out #u63 for a branch
-        // INSTRUMENT wove as #u61 -- so no published guard id was a site any
-        // replay could decide at.  SiteControlDependence also reads the
-        // original-unit tags, so the two answers cannot drift apart again.
+        // CLOSURE-V2 SS4: before ANY weaving, so site and guard ids are the
+        // original unit indices a replay decides at.
         List<StaticScopeMap.Site> scopeSites = StaticScopeMap.sites(
                 result.edges, result.regions);
         List<JsonObject> scopeMap = StaticScopeMap.rows(scopeSites,
@@ -205,18 +185,9 @@ public final class CausynthPipeline {
     }
 
     /**
-     * The weave's own verifier gate: every body this run wove obeys Soot's
-     * body rules, definite assignment included, or the run is refused by
-     * name before a class file is written.
-     *
-     * <p>This is what makes {@link #afterWovenPrologue} a rule of the class
-     * rather than a comment on one construct: a woven local read in a
-     * handler or at a return that its store does not dominate is reported
-     * here, whichever construct wove it.  The JVM used to report it
-     * instead -- as a {@code VerifyError} inside a replay, hours into a
-     * campaign, at a method the campaign never mentions.  Soot runs these
-     * validators only under {@code -validate} or {@code -debug}, which is
-     * why this states them itself.</p>
+     * Verifier gate: every woven body obeys {@link #WOVEN_BODY_RULES} before
+     * any class file is written, rather than a {@code VerifyError} deep in a
+     * replay (Soot validates only under {@code -validate}).
      */
     private void validateWovenBodies() {
         List<ValidationException> failures = new ArrayList<>();
@@ -267,16 +238,12 @@ public final class CausynthPipeline {
     }
 
     /**
-     * The one method walk every instrumentation mode takes: resolve, gate,
-     * load the body, freeze its original unit indices, find the one entry a
-     * rewrite may start at, and hand the emitter a frame it does not rebuild.
-     * <p>A named refusal the emitter raises -- an {@link IllegalStateException}
-     * whose message opens with an upper-case refusal code -- is the emitter
-     * stating that a selected site cannot be rewritten, so it is rethrown.
-     * Anything else a Soot rewrite throws leaves that one method alone.</p>
-     * @param scopeFailure refusal prefix for a signature outside production
-     *                     application scope; empty means skip it instead
-     * @return the signatures the emitter rewrote, in walk order
+     * The one method walk of every mode: resolve, gate, freeze original
+     * indices, find the safe entry, emit.  A {@link #namedRefusal} is
+     * rethrown; any other failure leaves that method unwoven.
+     * @param scopeFailure refusal prefix for an out-of-scope signature;
+     *                     empty skips it instead
+     * @return the signatures rewritten, in walk order
      */
     private Set<String> instrumentMethods(Collection<String> signatures,
                                           String scopeFailure,
@@ -295,9 +262,7 @@ public final class CausynthPipeline {
                 List<Unit> originalUnits = snapshotUnits(body);
                 tagOriginalUnits(originalUnits);
                 Unit entry = safeInstrumentationEntry(body, method);
-                // A constructor may not be rewritten before its own
-                // initialization, and one without a safe entry has no site
-                // at all.
+                // A constructor without a safe entry has no site at all.
                 if (method.isConstructor() && entry == null) continue;
                 emitter.emit(body, method, originalUnits, entry,
                         method.isConstructor() ? entry : null,
@@ -305,9 +270,6 @@ public final class CausynthPipeline {
                 rewritten.add(signature);
             } catch (RuntimeException exception) {
                 if (namedRefusal(exception)) throw exception;
-                // Not a named refusal: a Soot rewrite failed on this body.
-                // Said at WARN with the exception, so a body the weave left
-                // alone is visible in the stage's log rather than silent.
                 LOG.warn("Skipping instrumentation for {}", signature,
                         exception);
             }
@@ -330,12 +292,7 @@ public final class CausynthPipeline {
                   Unit entry, Unit lowerBound, Value receiver);
     }
 
-    /**
-     * Index of the first original unit a rewrite may touch: the whole body
-     * outside a constructor, everything at or after the initialization
-     * boundary inside one, and {@code -1} when that boundary is not a unit of
-     * this body, which is the body no site may be rewritten in.
-     */
+    /** First original index a rewrite may touch (after init), or -1. */
     private static int instrumentableFrom(List<Unit> originalUnits,
                                           Unit lowerBound) {
         if (lowerBound == null) return 0;
@@ -349,10 +306,7 @@ public final class CausynthPipeline {
     private void instrumentRuntimeState(StaticProgram result) {
         HookCatalog refs = HookCatalog.trace();
         SootMethodRef recordFieldRef = refs.ref(Hook.RECORD_FIELD);
-        // Which of the traced methods opens a region, read from the same
-        // skeleton file the concolic pass reads its roots from: the
-        // recording's execution index then has a frame exactly where the
-        // replay's does (IDENTITY-IMPL B).
+        // Same skeleton file as the concolic pass (IDENTITY-IMPL B).
         Map<String, String> regionRoots =
                 RegionSkeletonInstrumentationSelection
                         .regionRootsFromEnvironment();
@@ -367,12 +321,7 @@ public final class CausynthPipeline {
                     instrumentFieldTrace(body, method, recordFieldRef,
                             units, lowerBound);
                 });
-        // The same hooks, over the same scope, as the replay weaves: the
-        // calling-context frame of every application method, the frame of
-        // every work start and the claim of every work entry.  Last, so the
-        // level of an activation is standing before anything woven inside
-        // it reads an address, and one walk, so a scope one pass frames and
-        // the other does not cannot exist.
+        // Same scope as the replay, woven last.
         instrumentApplicationScope(refs);
         LOG.info("Instrumented {} of {} candidate methods for "
                 + "REGION_STATE trace; {} of them open a region",
@@ -387,20 +336,12 @@ public final class CausynthPipeline {
         private final Set<String> loopBoundMethods = new LinkedHashSet<>();
         private final Set<String> fixedCountLoopSites =
                 new LinkedHashSet<>();
-        /**
-         * The closure a field write may be recorded in. It stays the union of
-         * the tasks' own execution scopes rather than the whole envelope: a
-         * write hook mints a writer, and a writer the relation did not ask
-         * for is not a cheaper envelope, it is a different model.
-         */
         /** Exact configured-source call sites, deduplicated across tasks. */
         private final Map<String, ConfiguredSourcePhaseContract.Occurrence>
                 configuredSourcePhaseSites = new LinkedHashMap<>();
         private final ConcolicMaterializationSelection materializations =
                 new ConcolicMaterializationSelection();
-        // Keyed by the plan itself, not by its root method: a campaign may
-        // hold several tasks rooted at one method - a path flip is exactly
-        // that - and each keeps its own replay entry and engine arm.
+        // By plan identity: tasks (path flips) may share one root method.
         private final Map<InstrumentationPlan, SootMethod> replayEntries =
                 new IdentityHashMap<>();
         /** Loop proofs frozen before any symbolic-region bridge is inserted. */
@@ -444,8 +385,7 @@ public final class CausynthPipeline {
                 fixedCountLoopSites.addAll(plan.fixedCountLoopSites());
                 if (loopBound != null && !loopBound.identity()
                         .equals(plan.loopBound().identity())) {
-                    // One union tree installs one policy on every shared
-                    // method.
+                    // One union tree admits one policy.
                     throw new IllegalStateException(
                             "CAMPAIGN_LOOP_BOUND_CONFLICT: "
                                     + loopBound.identity()
@@ -467,21 +407,8 @@ public final class CausynthPipeline {
         }
 
         /**
-         * Freezes original unit indices for every body the campaign may
-         * rewrite, before the first rewrite moves one.
-         */
-        /**
-         * Numbers the original units of every body this campaign weaves.
-         *
-         * <p>The numbering IS the site vocabulary: `static_scope_map`'s
-         * guard ids, the plan's `unitIndex` and the replay's decision sites
-         * are all original-unit indices of these bodies, so a body whose
-         * tagging fails is a body whose sites no replay can decide at --
-         * the `#u63`/`#u61` defect class, where 17960's target guard was
-         * published for one numbering and woven at another.  It used to be
-         * swallowed with "unresolvable bodies are dropped by every later
-         * pass too", which is true of a body with no active body and false
-         * of one whose tagging threw: that one is still woven.</p>
+         * Numbers original units of every body woven here, before any rewrite.
+         * The numbering IS the site vocabulary, so a tagging failure is fatal.
          */
         private void tagSelectedBodies() {
             Set<String> tagged = new LinkedHashSet<>(methods);
@@ -492,8 +419,7 @@ public final class CausynthPipeline {
                     body = CausynthStaticFacts.activeBody(
                             CausynthStaticFacts.method(signature));
                 } catch (RuntimeException unresolvable) {
-                    // No body to number: every later pass skips it too, and
-                    // it is named rather than counted silently.
+                    // No body: every later pass skips it too.
                     LOG.warn("ORIGINAL_UNIT_TAGGING_SKIPPED: {} has no "
                             + "active body to number", signature);
                     continue;
@@ -525,11 +451,7 @@ public final class CausynthPipeline {
             return replayEntries.get(plan);
         }
 
-        /**
-         * Freezes each logical LOOP_BODY_ROOT once. Several path tasks may
-         * instrument that same loop, and their synthetic traps and bridges
-         * must not redefine the loop for the next task.
-         */
+        /** Freezes each LOOP_BODY_ROOT once, before tasks' bridges alter it. */
         private void freezeRootLoops() {
             for (InstrumentationPlan plan : campaign) {
                 if (!plan.loopBodyRoot()) continue;
@@ -565,11 +487,7 @@ public final class CausynthPipeline {
 
     }
 
-    /**
-     * Rewrites one campaign's one deduplicated instrumentation envelope.
-     * README section 1: the envelope is the union of the per-task envelopes,
-     * deduplicated, and each selected site is rewritten once.
-     */
+    /** Rewrites one campaign's deduplicated envelope once (README s.1). */
     void instrumentConcolicCampaign(List<InstrumentationPlan> campaign) {
         HookCatalog refs = HookCatalog.concolic();
         CampaignEnvelope envelope = new CampaignEnvelope(campaign);
@@ -580,11 +498,7 @@ public final class CausynthPipeline {
         for (InstrumentationPlan plan : campaign) {
             instrumentConcolicRegion(plan, refs, envelope);
         }
-        // Every skeleton root, campaign roots included: ONE entry hook per
-        // root method, which owns that activation's index frame and the
-        // region it opens.  The plan rows' own hooks push nothing, so a
-        // second row at one entry cannot add a frame and a recursive entry
-        // cannot be mistaken for a second row.
+        // ONE entry hook per skeleton root owns the index frame.
         instrumentSkeletonRegions(refs);
         instrumentConcolicConfiguredSourceCallContexts(
                 envelope.configuredSourcePhaseSites.values(), refs);
@@ -595,28 +509,11 @@ public final class CausynthPipeline {
         instrumentConcolicMethodArguments(envelope.materializations, refs);
         instrumentConcolicMaterializations(envelope, refs);
         instrumentConcolicBranches(envelope.methods, refs);
-        // The same scope the recording weaves (instrumentRuntimeState), and
-        // LAST: every application method's calling-context level, every
-        // work start and every work entry claim, whatever this campaign
-        // selected.  A level, a start frame or a claim one pass has and the
-        // other does not names two different occurrences for one execution
-        // point; woven last, the level opens ahead of every hook woven
-        // inside it and closes after them.
+        // Same scope as the recording; LAST, to bracket every inner hook.
         instrumentApplicationScope(refs);
     }
 
-    /**
-     * Opens the execution-index region of every skeleton root the campaign
-     * did NOT select.
-     *
-     * <p>The recording opens one at every skeleton root, so a replay that
-     * opened them only at its own task roots stood on a different frame
-     * stack: {@code Identity.currentOccurrence} then named a different
-     * occurrence for the same event, and every endpoint and every causal
-     * anchor computed from it drifted.  Same file, same rule, same
-     * one-region-per-activation: the campaign's own roots keep their rich
-     * hooks and are excluded here, so a root that is both opens once.</p>
-     */
+    /** Opens every skeleton root's index region, as the recording does. */
     private void instrumentSkeletonRegions(HookCatalog refs) {
         Map<String, String> roots = RegionSkeletonInstrumentationSelection
                 .regionRootsFromEnvironment();
@@ -624,11 +521,7 @@ public final class CausynthPipeline {
         Set<String> rewritten = instrumentMethods(
                 new ArrayList<>(roots.keySet()), "",
                 (body, method, units, entry, lowerBound, receiver) -> {
-                    // Fail closed: one entry hook per root method.  Two of
-                    // them push two frames at one entry, and an index with
-                    // a frame the recording does not have addresses a
-                    // different occurrence -- silently, which is how 33 of
-                    // 81 planned tasks came to be refused.
+                    // A second entry hook pushes a frame the recording lacks.
                     if (!entered.add(method)) {
                         throw new IllegalStateException(
                                 "one method would receive two region entry "
@@ -644,12 +537,8 @@ public final class CausynthPipeline {
     }
 
     /**
-     * The index frame and the occurrence of ONE region activation, owned by
-     * the token the workload frame holds.
-     *
-     * <p>The token is a local of this method, so every ENTRY has its own --
-     * recursion included -- and the exit hooks close the entry that token
-     * owns rather than whatever the runtime finds innermost.</p>
+     * One region activation's index frame, owned by a local token so each
+     * entry (recursion included) closes its own frame.
      */
     private void instrumentRegionEntry(Body body, SootMethod method,
                                        List<Unit> originalUnits,
@@ -658,9 +547,7 @@ public final class CausynthPipeline {
                                        String regionId) {
         Local entryToken = newTraceLocal(body, LongType.v(),
                 "$causynthRegionEntry");
-        // The entry hook IS the token's store, and the trap opens after it,
-        // so there is nothing for a `= 0L` ahead of it to make safe: it was
-        // the false comfort that let the trap open at it.
+        // The entry hook IS the token's store; no `= 0L` pre-store.
         List<Unit> entry = new ArrayList<>();
         refs.bracket(entry, entryToken, Hook.ENTER_REGION_ENTRY,
                 StringConstant.v(regionId),
@@ -677,17 +564,13 @@ public final class CausynthPipeline {
             refs.bracket(exit, Hook.EXIT_REGION_ENTRY, entryToken);
             insertBeforeSequence(body, unit, exit);
         }
-        // The handler reads the token, so the trap opens after the store:
-        // afterWovenPrologue, not the prologue's own first unit.
+        // The handler reads the token: the trap opens after its store.
         addThrowHandler(body, afterWovenPrologue(body, entry), refs,
                 Hook.THROW_REGION_ENTRY, "$causynthRegionEntryThrown",
                 entryToken);
     }
 
-    /**
-     * Inserts region hooks at the roots selected by one campaign task's
-     * runtime activation plan.
-     */
+    /** Inserts region hooks at one campaign task's selected root. */
     private void instrumentConcolicRegion(InstrumentationPlan plan,
                                           HookCatalog refs,
                                           CampaignEnvelope envelope) {
@@ -695,9 +578,7 @@ public final class CausynthPipeline {
         SootMethod replayEntry = envelope.replayEntry(plan);
         String replayEntrySignature = replayEntry.getSignature();
         try {
-            // The once-only-root rule: a region rooted on a service loop is
-            // entered once per iteration, so its frame is the loop body of
-            // the loop's own method, not the entry above it.
+            // Once-only-root: a loop-rooted region's frame is one iteration.
             SootMethod method = plan.loopBodyRoot()
                     ? CausynthStaticFacts.method(plan.rootLoopMethod())
                     : replayEntry;
@@ -738,9 +619,7 @@ public final class CausynthPipeline {
                     RefType.v("java.lang.Object"), 1);
             Local rootArguments = newTraceLocal(body, objectArrayType,
                     "$causynthRootArguments");
-            // A loop body binds no parameters: they were bound once at the
-            // method entry above it, so the per-iteration activation carries
-            // an empty argument array rather than a stale one.
+            // A loop body binds no parameters: empty argument array.
             int rootArgumentCount = rootLoop == null
                     ? method.getParameterCount() : 0;
             activation.add(Jimple.v().newAssignStmt(rootArguments,
@@ -760,10 +639,7 @@ public final class CausynthPipeline {
                                 IntConstant.v(index)),
                         objectArg(body, parameter, activation)));
             }
-            // The entry hook decides admission, and that decision is this
-            // bridge's own control flow over the workload's own objects: it
-            // compares the root receiver against null and against a declared
-            // class.
+            // Admission compares workload objects: not observed.
             emit(activation, refs.ref(Hook.PAUSE_OBSERVATION));
             Unit enterRegion = invokeTo(token,
                     refs.ref(Hook.ENTER_REGION_FRAME),
@@ -789,9 +665,7 @@ public final class CausynthPipeline {
             }
 
             if (rootLoop != null) {
-                // One iteration is one activation: the frame closes on every
-                // edge that leaves the body, the backedge into the next
-                // iteration included.
+                // One iteration is one activation; backedges close it too.
                 insertLoopBodyRegionExits(body, method, rootLoop, plan,
                         signature, refs);
             } else {
@@ -829,10 +703,9 @@ public final class CausynthPipeline {
     }
 
     /**
-     * Instruments the real enclosing method invocation of a LOOP_BODY_ROOT.
-     * Its request-local ordinal is stable when replay changes the number of
-     * loop iterations; the body hook later opens one symbolic activation per
-     * iteration only while this exact outer call is current.
+     * Frames the enclosing invocation of a LOOP_BODY_ROOT, whose ordinal is
+     * stable when replay changes the iteration count; per-iteration
+     * activations open only inside this call.
      */
     private void instrumentLoopRootInvocationContext(
             InstrumentationPlan plan, SootMethod method, HookCatalog refs) {
@@ -900,29 +773,22 @@ public final class CausynthPipeline {
     }
 
     /**
-     * The natural loop this region is rooted at: the one whose dominance-proved
-     * header is the plan's {@code headerUnitIndex}. A plan that names a header
-     * this body no longer has is a refusal, not a silent fall back to the
-     * method entry -- rooting the region one frame too high is exactly the
-     * once-only-root bug the rule exists to fix.
+     * The natural loop whose header is the plan's {@code headerUnitIndex}.
+     * A missing header is a refusal, never a fall back to the method entry
+     * (one frame too high).
      */
     private static CfgLoopControl.NaturalLoop rootedLoop(
             Body body, SootMethod method, InstrumentationPlan plan) {
         int headerIndex = plan.rootLoopHeaderUnitIndex();
-        // An earlier pass may have inserted a unit before the header (a loop
-        // counter), and PatchingChain re-targets the backedges to it: the
-        // dominance-proved header is then that inserted unit, which carries
-        // no original index.  The loop is therefore found as the innermost
-        // natural loop whose members hold the original header unit.
+        // An inserted loop counter may now be the dominance header, so take
+        // the innermost loop whose members hold the original header unit.
         Unit original = originalUnit(body, headerIndex);
         CfgLoopControl.NaturalLoop found = null;
         int foundPosition = -1;
         if (original != null) {
             List<Unit> order = snapshotUnits(body);
-            // Loops are proved on the CURRENT body: a backedge the bound pass
-            // routed through an inserted bridge has no original index, and
-            // dropping it would dissolve the loop.  Position order is enough
-            // for the proof; identities are matched on units, not indices.
+            // Proved on the CURRENT body: bridged backedges have no original
+            // index, so units are matched by identity, not index.
             final Map<Unit, Integer> positions = new IdentityHashMap<>();
             for (int i = 0; i < order.size(); i++) {
                 positions.put(order.get(i), i);
@@ -951,20 +817,11 @@ public final class CausynthPipeline {
     }
 
     /**
-     * Where a loop-body region's frame opens: the outermost declared
-     * iteration-control edge whose body successor dominates the unit the
-     * region needs.
-     *
-     * <p>An enhanced-for loop commonly has a dominance header that computes
-     * {@code Iterator.hasNext()}, followed by the {@link IfStmt} that chooses
-     * between its body and exit.  The header's lexical successor is therefore
-     * the guard itself, not the body.  Treating that successor as the entry
-     * opens an activation even for the terminal false check.  Resolve the
-     * declared control sites instead. A natural loop may have several exits;
-     * only the body edge on every path to the demanded unit can open its
-     * activation. Nested guards can also dominate that unit, so the earliest
-     * such edge is the unique candidate not dominated by another candidate.
-     * Refuse a shape for which the CFG cannot prove that edge.</p>
+     * Where a loop-body frame opens: the outermost declared control edge
+     * whose body successor dominates the demanded unit.  Trap: the header's
+     * lexical successor is often the guard itself ({@code hasNext()}), and
+     * opening there counts the terminal false check.  Other shapes are
+     * refused.
      */
     static CfgLoopControl.Edge loopBodyEntry(
             Body body, CfgLoopControl.NaturalLoop loop,
@@ -1082,10 +939,8 @@ public final class CausynthPipeline {
         }
         Collections.sort(planned);
 
-        // Unit indices describe one lowering of the bytecode. Soot can split
-        // an expression into an extra Jimple assignment when the same frozen
-        // class is loaded under a different application-class union. Branch
-        // order and CFG role remain stable, so they are the durable anchors.
+        // Unit indices can shift between Soot lowerings of one class; branch
+        // order and CFG role are the durable anchors.
         Set<Unit> exits = Collections.newSetFromMap(
                 new IdentityHashMap<Unit, Boolean>());
         for (CfgLoopControl.Edge edge : loop.exitEdges()) {
@@ -1211,10 +1066,8 @@ public final class CausynthPipeline {
         Unit first = entry.get(0);
         boolean headerEntry = edge.target == loop.header;
         if (headerEntry) {
-            // A latch-controlled loop reaches the same header from its method
-            // preheader on the first iteration and from one or more latches on
-            // later iterations. All normal header entries open an activation;
-            // UnitBoxes owned by traps are deliberately not rewritten.
+            // Preheader and latches all enter the header: every normal entry
+            // opens an activation; trap UnitBoxes are not rewritten.
             matchingTargets.clear();
             for (Unit source : body.getUnits()) {
                 for (UnitBox targetBox : source.getUnitBoxes()) {
@@ -1229,9 +1082,8 @@ public final class CausynthPipeline {
                     && lexicalPredecessor.fallsThrough()
                     && body.getUnits().getSuccOf(lexicalPredecessor)
                     == edge.target) {
-                // The selected edge is an explicit target. Keep an unrelated
-                // lexical fallthrough into the same block on its old path;
-                // only the selected UnitBox may enter this activation.
+                // Only the selected UnitBox enters the activation; an
+                // unrelated fallthrough keeps its old path.
                 body.getUnits().insertBeforeNoRedirect(
                         Jimple.v().newGotoStmt(edge.target), edge.target);
             }
@@ -1265,19 +1117,9 @@ public final class CausynthPipeline {
     }
 
     /**
-     * Every edge that ends one iteration of a loop-body root: the loop's
-     * backedges and its normal exits.
-     *
-     * <p>A backedge is the iteration boundary itself, so it always closes the
-     * frame. The plan's iteration control sites select among the loop's normal
-     * exits only, so the frame closes exactly where the loop's own guard
-     * decided it: the bound pass has already routed each backedge through an
-     * inserted bridge, so its source carries no original unit index and no
-     * control site can name it. Filtering a backedge out would leave the frame
-     * open for the whole loop, and {@code enterRegionFrame} would then answer
-     * every later iteration from the frame the first one pushed - one
-     * activation per thread instead of README {@code OCC-1}'s one activation
-     * per iteration.</p>
+     * Every edge ending one iteration: all backedges, plus the normal exits
+     * the control sites select.  A dropped backedge yields one activation
+     * per thread, not README {@code OCC-1}'s one per iteration.
      */
     static List<CfgLoopControl.Edge> loopBodyClosingEdges(
             SootMethod method, CfgLoopControl.NaturalLoop loop,
@@ -1322,9 +1164,7 @@ public final class CausynthPipeline {
         return deduplicateEdges(closing);
     }
 
-    /**
-     * Closes a loop-body region on every edge that ends one iteration.
-     */
+    /** Closes a loop-body region on every edge that ends one iteration. */
     private void insertLoopBodyRegionExits(
             Body body, SootMethod method, CfgLoopControl.NaturalLoop loop,
             InstrumentationPlan plan, String rootMethod, HookCatalog refs) {
@@ -1346,9 +1186,8 @@ public final class CausynthPipeline {
     }
 
     /**
-     * Inserts a close on the current first edge of one frozen boundary.
-     * Resolving that first edge for every task prepends later closes and keeps
-     * the activation stack in strict LIFO order.
+     * Inserts a close on the current first edge of one frozen boundary, so
+     * later tasks' closes prepend and the activation stack stays LIFO.
      */
     static void insertLoopBodyExit(
             Body body, SootMethod method, CfgLoopControl.Edge edge,
@@ -1426,16 +1265,9 @@ public final class CausynthPipeline {
     }
 
     /**
-     * Brackets the one call that builds one message instance.
-     *
-     * <p>A declared port is one pair of bytecode sites, and a protocol sends
-     * many unrelated values of that shape through it: without a frame the
-     * receiver can only address a leaf by its position in the whole message,
-     * and two groups of the same shape run together.  The frame method is the
-     * one whose single call builds one instance of the value the port belongs
-     * to, and its mirror on the other side decodes that same instance, so the
-     * k-th frame means the same thing on both sides.  A port that declares no
-     * frame keeps being addressed within its RPC message.</p>
+     * Brackets the one call that builds (or, mirrored, decodes) one message
+     * instance, so the k-th frame means the same on both sides and
+     * same-shaped groups do not run together.
      */
     private void instrumentCommunicationFrame(String frameMethod,
                                               boolean outgoing,
@@ -1468,10 +1300,8 @@ public final class CausynthPipeline {
             emit(exit, refs.ref(close));
             insertBeforeSequence(body, unit, exit);
         }
-        // A frame left open by a throw would swallow every later message of
-        // this thread into it, so the close is on both ways out.  The close
-        // hook takes no argument, so the trap is written here rather than
-        // through addThrowHandler, which hands the caught throwable on.
+        // Close on throw too, or the frame swallows later messages.  Written
+        // inline: addThrowHandler passes the throwable, this hook takes none.
         Local caught = newTraceLocal(body, RefType.v("java.lang.Throwable"),
                 "$causynthMessageFrameThrown");
         List<Unit> trap = new ArrayList<>();
@@ -1674,10 +1504,7 @@ public final class CausynthPipeline {
                 Jimple.v().newCastExpr(attached, valueType)));
     }
 
-    /**
-     * Restores the rich trace's exact call-site identity around manual source
-     * hooks that execute during concolic replay.
-     */
+    /** Restores the recording's exact call-site identity around sources. */
     private void instrumentConcolicConfiguredSourceCallContexts(
             Collection<ConfiguredSourcePhaseContract.Occurrence> phases,
             HookCatalog refs) {
@@ -1745,10 +1572,8 @@ public final class CausynthPipeline {
             after.add(Jimple.v().newThrowStmt(caught));
             after.add(continuation);
             insertAfterSequence(body, selected, after);
-            // The source declaration itself is instrumentation bookkeeping:
-            // its explicit native symbolize call must execute, but its Java
-            // helper branches, maps and reflection must not enter the workload
-            // path condition.
+            // The source declaration is bookkeeping: its helper branches must
+            // not enter the workload path condition.
             SootClass throwable = Scene.v().getSootClass(
                     "java.lang.Throwable");
             body.getTraps().addFirst(Jimple.v().newTrap(throwable, selected,
@@ -1757,49 +1582,15 @@ public final class CausynthPipeline {
     }
 
     /**
-     * Files the start-site frame of every work start the analysis can see.
+     * Files the start-site frame of every work start (IDENTITY-V3 SS1
+     * "scope transfer") and claims it at the work's own entry.
      *
-     * <p>A thread inherits its creator's execution index when it is
-     * CONSTRUCTED, which is before the start that made it run; and a pool
-     * thread inherits it from whatever created the pool, which has nothing
-     * to do with the work.  So the start itself is the frame: the site the
-     * work was started at and the iteration of that start inside the
-     * starter's activation, filed here for the work to take when it runs
-     * (IDENTITY-V3 SS1 "scope transfer: Thread.start / executor ...").
-     * Without it two siblings started from one site in one loop -- the two
-     * {@code FSImageSaver} threads of hdfs-17960 -- stand on the same frames
-     * and mint one address for two occurrences.</p>
-     *
-     * <p>One hook per started carrier, and no frame on the starter: a start
-     * is an event of the starter, not a call it returns from.  Woven by BOTH
-     * passes over the WHOLE application scope -- every class the analysis
-     * loads, region selection included or not -- because an index computed
-     * with the start frame on one side and without it on the other names two
-     * different occurrences for one execution point, and a thread started
-     * from a method no region selected is exactly the thread whose frames
-     * begin nowhere (G9: hdfs-11741's two balancer pool threads, started by
-     * {@code Dispatcher.dispatchBlockMoves}, shared one anchor).  The shapes
-     * are {@link WorkStartSites}', which the recording's own call hooks read
-     * too.</p>
-     *
-     * <p>And the other half of the same rule: the work CLAIMS that frame at
-     * its own first instruction.  A start is filed under the object that
-     * carries the work, and the thread that runs it never sees that object
-     * through a hook of its own -- a pool worker is handed a task by {@code
-     * ThreadPoolExecutor}, which is JDK code no weave touches -- so a claim
-     * that waits for a region entry never happens at all on a pool thread
-     * whose task enters no selected region.  On hdfs-11741 the two mover
-     * threads {@code pool-57-thread-1/2} send the balancer's HDFS_SASL
-     * request before any region entry: both stood on an empty index under
-     * one degraded {@code ROLE.HDFS_SASL} occurrence, each counted its site
-     * events from 0 in its own thread-local state, and the two messages
-     * carried ONE producer endpoint id -- {@code Anchor:a496e8cab387ae3c},
-     * which is the anchor dn1's {@code retrieveDataEncryptionKey} target
-     * runs under.  Claimed at the entry of the functional method the start
-     * named ({@link WorkStartSites#entersWork}), the frame is standing
-     * before the first send, so two mover tasks are two occurrences with
-     * their own counters and their own k (G8: the k of an occurrence's own
-     * events, never a cross-thread counter).</p>
+     * <p>A thread inherits its creator's index at construction, not at the
+     * start, so the start itself is the frame; without it sibling starts
+     * mint one address.  Woven by BOTH passes over the WHOLE application
+     * scope (G9), shapes from {@link WorkStartSites}.  The claim sits at
+     * {@link WorkStartSites#entersWork}: a pool worker may send before any
+     * region entry, and each task needs its own k (G8).</p>
      */
     private void instrumentApplicationScope(HookCatalog refs) {
         int filed = 0;
@@ -1810,8 +1601,7 @@ public final class CausynthPipeline {
         int lineage = 0;
         for (SootClass type : new ArrayList<>(
                 Scene.v().getApplicationClasses())) {
-            // A class the lineage scope alone brought in carries its work
-            // starts, claims and timed waits and nothing else (LineageScope).
+            // A lineage-only class gets starts, claims and waits only.
             boolean lineageOnly = LineageScope.lineageOnly(type.getName());
             if (lineageOnly) lineage++;
             for (SootMethod method : new ArrayList<>(type.getMethods())) {
@@ -1820,9 +1610,7 @@ public final class CausynthPipeline {
                 walked++;
                 List<Unit> originalUnits = snapshotUnits(body);
                 tagOriginalUnits(originalUnits);
-                // A constructor may not be rewritten before its own
-                // initialization, and one whose boundary this body does not
-                // name has no site a weave may touch.
+                // Constructors: only after initialization.
                 int from = 0;
                 if (method.isConstructor()) {
                     Unit entry = safeInstrumentationEntry(body, method);
@@ -1849,10 +1637,8 @@ public final class CausynthPipeline {
                         insertBeforeSequence(body, stmt, before);
                         filed += started;
                     }
-                    // The consumer half of a queue handoff: what the call
-                    // returns is the work a producer put, and the consumer
-                    // claims it where it takes it -- the element may be a
-                    // lambda no weave reaches, so its own entry cannot.
+                    // Queue consumer claims the taken element here: it may
+                    // be a lambda whose entry no weave reaches.
                     boolean claims = claimsFromQueue(stmt.getInvokeExpr());
                     Unit last = replaceTimedWait(body, stmt, site);
                     if (last != null) waited++;
@@ -1869,11 +1655,7 @@ public final class CausynthPipeline {
                         claimed++;
                     }
                 }
-                // The claim first and the level second, at one entry, in this
-                // order: the claim inserts the start frame at the boundary
-                // between the starter's levels and the work's own, so a
-                // level of the work opened ahead of it would put the start
-                // frame above what the work has already entered.
+                // Claim before level: start frame below the work's levels.
                 Unit entry = safeInstrumentationEntry(body, method);
                 if (claimWorkEntry(body, method, entry, refs)) claimed++;
                 if (!lineageOnly && openMethodLevel(body, method,
@@ -1890,17 +1672,11 @@ public final class CausynthPipeline {
     }
 
     /**
-     * Replaces one timed wait with its {@code TimedWaits} stand-in, in place.
+     * Replaces one timed wait (the schedule's WAKE, {@link
+     * WorkStartSites.TimedWait}) with its stand-in, swapping only the invoke
+     * expression so branch and trap targets survive.
      *
-     * <p>The WAKE of the schedule ({@link WorkStartSites.TimedWait}).  The
-     * statement keeps its identity -- the invoke expression is swapped inside
-     * it -- so every branch and trap that names it still does.  The receiver,
-     * when there is one, becomes the first argument and the call site the
-     * last.  A stand-in that returns {@code Object} where the call returned a
-     * narrower type is followed by the cast the call's own bridge made.</p>
-     *
-     * @return the unit the call's result is final after -- the statement, or
-     *         the cast that follows it -- or null when this is no timed wait
+     * @return the unit the result is final after, or null if no timed wait
      */
     private static Unit replaceTimedWait(Body body, Stmt stmt, String site) {
         InvokeExpr invoke = stmt.getInvokeExpr();
@@ -1967,35 +1743,10 @@ public final class CausynthPipeline {
     /**
      * Opens the execution-index level of ONE application-scope method.
      *
-     * <p>THE frame rule (G11, IDENTITY-V3 §1): a calling context is the
-     * application methods an event is inside, so every method of the
-     * application scope opens a level at its entry and closes it at every
-     * exit -- the normal returns and the exceptional edge -- in BOTH passes
-     * from this one walk.  The region roots additionally open their region
-     * where they always did, on top of the level this opens; nothing else
-     * pushes a frame any more.</p>
-     *
-     * <p>What this replaces: frames at region roots, work starts and loop
-     * roots only.  A thread outside every region then had an EMPTY calling
-     * context -- hdfs-11741's balancer {@code main} addressed its whole
-     * process as one degraded occurrence -- so the k of an event at a site
-     * was a run-length ordinal over the process, which IDENTITY-V3 §1
-     * forbids: the recording's declared {@code balance-block} request sent
-     * at {@code HADOOP_IPC#REQUEST@18} and the replay's at {@code @22},
-     * four polling requests later, and dn1's target was refused on the
-     * causal anchor alone.</p>
-     *
-     * <p>Woven LAST, which is what puts the level's entry at the HEAD of a
-     * method's woven prologue and its exits at the TAIL of every woven
-     * epilogue: {@code safeInstrumentationEntry} answers the first
-     * non-identity unit of the body as it now stands, so units another
-     * weave already put at this entry come after this one, and the level is
-     * standing before any region entry or materialization reads an address.
-     * Its trap is registered last for the same reason and in the opposite
-     * direction -- the exception table is searched in registration order,
-     * so the level's handler runs after the handlers of everything woven
-     * inside it, and the region closes before the frame it stood on
-     * goes.</p>
+     * <p>THE frame rule (G11, IDENTITY-V3 §1): every application-scope
+     * method opens a level at entry and closes it at every exit, in BOTH
+     * passes; only region roots push more.  Woven LAST, so it brackets every
+     * other woven hook and its trap runs after every inner handler.</p>
      *
      * @return whether this method received a level
      */
@@ -2006,14 +1757,8 @@ public final class CausynthPipeline {
         Local token = newTraceLocal(body, LongType.v(),
                 "$causynthFrameToken");
         List<Unit> opening = new ArrayList<>();
-        // The entry hook IS the token's store and the trap opens after it,
-        // so there is nothing for a `= 0L` ahead of it to make safe: it was
-        // the false comfort that let the trap open at it
-        // (#instrumentRegionEntry, the woven-trap rule).
-        // The receiver rides on the level: the attribution rule asks whether
-        // the innermost frame's receiver is registered (runtime.Attribution,
-        // rule 2).  None for a constructor -- an object being built is
-        // nobody's registration yet.
+        // The entry hook IS the token's store.  Receiver for Attribution
+        // rule 2; none for a constructor.
         refs.bracket(opening, token, Hook.ENTER_METHOD_FRAME,
                 StringConstant.v(method.getSignature()),
                 method.isConstructor() ? NullConstant.v()
@@ -2030,22 +1775,15 @@ public final class CausynthPipeline {
             refs.bracket(closing, Hook.EXIT_METHOD_FRAME, token);
             insertBeforeSequence(body, unit, closing);
         }
-        // The handler reads the token, so the trap opens after the store:
-        // afterWovenPrologue, not the prologue's own first unit.
+        // The handler reads the token: the trap opens after its store.
         addThrowHandler(body, afterWovenPrologue(body, opening), refs,
                 Hook.THROW_METHOD_FRAME, "$causynthFrameThrown", token);
         return true;
     }
 
     /**
-     * Claims the start frame of the work this method IS, at its entry.
-     *
-     * <p>The receiver is the carrier the start was filed under, so the
-     * claim takes {@code this} and nothing else; a start nobody filed for
-     * it is a no-op ({@code Identity.claimStart}).  At the entry, because
-     * "the work's first identity event" is the rule and the entry precedes
-     * every send, read, write and region entry the work makes.</p>
-     *
+     * Claims the start frame filed under {@code this} at the entry of the
+     * work it carries ({@code Identity.claimStart}; no-op if none).
      * @return whether this method received the claim
      */
     private boolean claimWorkEntry(Body body, SootMethod method, Unit entry,
@@ -2066,13 +1804,8 @@ public final class CausynthPipeline {
     }
 
     /**
-     * The objects that carry the work one invocation starts, in call order.
-     *
-     * <p>{@link WorkStartSites} owns which shapes those are; this is its
-     * Soot projection: the declaring class answers the receiver's type and
-     * the declared type of each argument answers whether it can be work.
-     * One invocation can start several -- {@code invokeAll(t1, t2)} -- and
-     * each start is its own event at this one site.</p>
+     * The work carriers one invocation starts, in call order (the Soot
+     * projection of {@link WorkStartSites}).
      */
     private static List<Value> startedWork(InvokeExpr invoke) {
         SootMethodRef callee = invoke.getMethodRef();
@@ -2142,10 +1875,7 @@ public final class CausynthPipeline {
         return false;
     }
 
-    /**
-     * Wraps only activation-selected accessor invocations with a tiny thread-
-     * local runtime context.
-     */
+    /** Wraps selected accessor calls in a thread-local call context. */
     private void instrumentConcolicAccessorCallContexts(
             ConcolicMaterializationSelection selection,
             HookCatalog refs) {
@@ -2204,8 +1934,6 @@ public final class CausynthPipeline {
                     LongConstant.v(0L)));
             Value receiver = objectArg(body,
                     ((InstanceInvokeExpr) invocation).getBase(), before);
-            // One bracket over the whole context, not only over the
-            // materialization inside it.
             emit(before, refs.ref(Hook.PAUSE_OBSERVATION));
             emit(before, contextToken,
                     refs.ref(Hook.ENTER_ACCESSOR_CALL_CONTEXT),
@@ -2213,11 +1941,8 @@ public final class CausynthPipeline {
                     IntConstant.v(target.callUnitIndex),
                     StringConstant.v(target.callSiteId),
                     StringConstant.v(target.declaredCallee), receiver);
-            // The accessor implementation may live in a platform/JDK class
-            // which is deliberately outside Soot's application-class set.
-            // Materialize its exact backing field on the selected receiver
-            // while the exact-call context is active, before the unmodified
-            // getter consumes the field.
+            // The accessor may be JDK code no weave reaches: materialize its
+            // backing field here, inside the call context.
             emit(before, refs.ref(Hook.MATERIALIZE_FIELD),
                     StringConstant.v(target.implementationMethod),
                     IntConstant.v(-1), receiver,
@@ -2226,8 +1951,6 @@ public final class CausynthPipeline {
             emit(before, refs.ref(Hook.RESUME_OBSERVATION));
             insertBeforeSequence(body, selected, before);
 
-            // Closing the context is the same bookkeeping as opening it and
-            // carries the same bracket on both edges.
             Unit normalPause = invoke(refs.ref(Hook.PAUSE_OBSERVATION));
             Unit normalExit = invoke(refs.ref(Hook.EXIT_ACCESSOR_CALL_CONTEXT),
                     contextToken);
@@ -2256,21 +1979,9 @@ public final class CausynthPipeline {
     }
 
     /**
-     * Observes the stores of a declared input's cell that the plan selected.
-     *
-     * <p>Two hooks around one call: BEFORE it the cell is observed, which is
-     * what starts the location's version log (the VM retains a location by
-     * value, so an unobserved cell's stores publish nothing); AFTER a normal
-     * return the version the store produced is asked for and stamped with
-     * the execution index the store stood on -- the write log names the
-     * location and the value, never the bytecode, and the row is published
-     * when the activation ends, by which point those frames are gone.</p>
-     *
-     * <p>An atomic RMW runs inside the JDK and has no application
-     * {@code putfield} for the ordinary carrier hook to stand at, which is
-     * why the receiver has to be selected at the invocation.  An
-     * exceptional return stamps nothing: a store that threw published no
-     * version to name.</p>
+     * Observes a selected declared-input cell before the call, starting its
+     * version log; hooked at the invocation because an atomic RMW has no
+     * application {@code putfield}.
      */
     private void instrumentConcolicObservedWriteSites(
             ConcolicMaterializationSelection selection, HookCatalog refs) {
@@ -2366,11 +2077,8 @@ public final class CausynthPipeline {
                             selection.staticMaterializationRefusal(
                                     method.getSignature(), unitIndex,
                                     fieldRef);
-                    // A shape the instrumenter has no hook for leaves the
-                    // read concrete under its own named verdict
-                    // (ConcolicMaterializationSelection): refusing is plan
-                    // content, and throwing here killed a whole campaign
-                    // over one static final byte[] constant.
+                    // An unhookable shape stays concrete under its named
+                    // verdict; throwing would kill the whole campaign.
                     if (!staticRefusal.isEmpty()) continue;
                     if (!selection.matches(method.getSignature(),
                             unitIndex, fieldRef)) {
@@ -2447,8 +2155,7 @@ public final class CausynthPipeline {
     private void instrumentConcolicMethodArguments(
             ConcolicMaterializationSelection selection,
             HookCatalog refs) {
-        // Every selected owner must be rewritten: the walk skips what it
-        // cannot rewrite, so anything it did not return is a refusal here.
+        // Every selected owner must be rewritten; a skipped one is refused.
         Collection<String> owners = selection.methodArgumentMethods();
         Set<String> rewritten = instrumentMethods(owners, "",
                 (body, method, units, entry, lowerBound, receiver) -> {
@@ -2480,10 +2187,7 @@ public final class CausynthPipeline {
         }
     }
 
-    /**
-     * Materializes a primitive {@code getstatic} on the exact local that
-     * consumed it.
-     */
+    /** Materializes a primitive {@code getstatic} on its consuming local. */
     private static void instrumentConsumedStaticPrimitiveFieldRead(
             Body body, SootMethod method, Stmt stmt, int unitIndex,
             StaticFieldRef field, HookCatalog refs) {
@@ -2555,12 +2259,8 @@ public final class CausynthPipeline {
     }
 
     /**
-     * The index this unit had before any weaving, or -1 for a woven one.
-     *
-     * <p>Package-private because it is the ONE numbering every published
-     * site id is in: {@link SiteControlDependence} names a guard by it for
-     * the same reason {@link #instrumentConcolicBranches} finds a branch by
-     * it.</p>
+     * Pre-weave index of this unit, or -1 if woven: the ONE numbering of
+     * every published site id (shared with {@link SiteControlDependence}).
      */
     static int originalUnitIndex(Unit unit) {
         for (Tag tag : unit.getTags()) {
@@ -2572,20 +2272,9 @@ public final class CausynthPipeline {
     }
 
     /**
-     * Bounds the loops of one selected method set.
-     *
-     * <p>Bounds natural-loop body entries rather than eagerly cutting at a
-     * latch: a guarded loop may return to its header after body {@code K} and
-     * is cut only if the header chooses the edge into body {@code K+1}, so a
-     * concrete K-element iterator exhausted exactly at the bound still exits
-     * normally.</p>
-     *
-     * <p>Every loop of a method comes from that method's one
-     * {@link CfgLoopControl.LoopCfg}, which is also what the static analyzer
-     * and the region planner prove iteration guards on.  Cycles a body has
-     * only over trap edges are not loops of that model and carry no bound:
-     * no bound can be installed on an abrupt transfer out of a protected
-     * range.</p>
+     * Bounds loops at body entries, not latches, so an iterator exhausted
+     * exactly at the bound still exits normally.  Loops come from the one
+     * {@link CfgLoopControl.LoopCfg}; trap-only cycles get no bound.
      */
     void instrumentConcolicLoopBounds(
             Set<String> methods, LoopBoundPolicy policy,
@@ -2606,10 +2295,7 @@ public final class CausynthPipeline {
             Body body = method.retrieveActiveBody();
             List<Unit> original = snapshotUnits(body);
             tagOriginalUnits(original);
-            // One loop-CFG decision per body, shared with every other loop
-            // consumer of this phase: backedge discovery, natural-loop
-            // grouping, the continuation-guard search, and the loop-control
-            // guards the static analyzer proves.
+            // One loop CFG per body, shared by every loop consumer.
             CfgLoopControl.LoopCfg loopCfg = CfgLoopControl.loopCfg(body);
             Unit safeEntry = safeInstrumentationEntry(body, method);
             for (CfgLoopControl.NaturalLoop loop
@@ -2628,11 +2314,8 @@ public final class CausynthPipeline {
                         ? loop.terminals()
                         : Collections.<Unit>emptyList();
                 if (fixedCount) {
-                    // One dynamic invocation of an indexed loop opens where
-                    // its array length is computed, which is once per
-                    // invocation and before the first body hook.  The length
-                    // itself is no longer recorded: only the invocation the
-                    // replay body budget is scoped to.
+                    // An indexed loop's invocation opens where its array
+                    // length is computed: once, before the first body hook.
                     List<Unit> guards = new ArrayList<>();
                     for (CfgLoopControl.Edge edge : loopExits) {
                         guards.add(edge.source);
@@ -2711,13 +2394,9 @@ public final class CausynthPipeline {
                 method, loop, continuations));
         Integer declared = null;
         String declaredSite = "";
-        // The catalog and runtime plan name one multi-guard loop by the
-        // composite loopSiteId built from its retained iteration guards.  The
-        // policy therefore carries L(site+site+...), not one entry per member.
-        // Resolve that canonical key before the edge-level fallback below;
-        // otherwise a non-default declaration silently instruments at the
-        // inherited bound even though every later stage reads the declared
-        // K_L from the plan.
+        // A multi-guard loop is declared under its composite loopSiteId
+        // L(site+site+...); resolve it first, or a declared K_L is silently
+        // replaced by the default here while later stages read the plan's.
         String retainedSite = retainedLoopSiteId(method, loop);
         Integer retainedBound = policy.declaredBounds().get(retainedSite);
         if (retainedBound != null) {
@@ -2787,14 +2466,11 @@ public final class CausynthPipeline {
             CfgLoopControl.NaturalLoop loop) {
         List<CfgLoopControl.Edge> result = new ArrayList<>();
         for (CfgLoopControl.Backedge backedge : loop.backedges) {
-            // CfgLoopControl proves iteration guards per dominance-proved
-            // latch. Keep the instrumentation on that exact same natural loop.
             Set<Unit> members = loop.members(backedge);
             List<CfgLoopControl.Edge> latchEdges = continuationEdgesFrom(
                     body, loop.header, members);
             if (latchEdges.isEmpty()) {
-                // The dominance header is often the expression immediately
-                // before the IfStmt.
+                // The dominance header often precedes the IfStmt.
                 for (Unit candidate : original) {
                     if (!members.contains(candidate)
                             || !loopCfg.isDominatedBy(
@@ -2900,8 +2576,7 @@ public final class CausynthPipeline {
                     + " in " + method.getSignature());
         }
         Unit first = bridge.get(0);
-        // Appending keeps the throwing hook outside every pre-existing
-        // application trap.
+        // Appended: outside every application trap.
         for (Unit hook : bridge) {
             body.getUnits().add(hook);
         }
@@ -2917,23 +2592,9 @@ public final class CausynthPipeline {
     }
 
     /**
-     * Weaves the decision marker at EVERY conditional branch of every
-     * instrumented method.
-     *
-     * <p>LEAN section 1: any decision whose term has a symbolic operand is
-     * recorded, so there is nothing to select per branch and no plan member
-     * to honour.  This used to weave only the sites the task's
-     * {@code branches[]} array named, which made the recorded decision set a
-     * function of an offline branch classification -- and a decision at a
-     * site the plan had not named was dropped at the hook
-     * ({@code ConcolicTaskPlan.declaresBranch}).  The plan still says which
-     * METHODS are instrumented; which branches inside them exist is the
-     * body's answer.</p>
-     *
-     * <p>A woven unit has no original index and is skipped: a hook's own
-     * conditional is not a program decision, and no published site id could
-     * name it.</p>
-     *
+     * Weaves the decision marker at EVERY original conditional branch of
+     * every instrumented method (LEAN section 1: the plan picks methods, not
+     * branches).
      * @return the number of branch sites woven
      */
     private int instrumentConcolicBranches(
@@ -2993,8 +2654,6 @@ public final class CausynthPipeline {
         insertExactBranchMarkerPrefix(body, method, branch, unitIndex,
                 expression, prepared, vmEvent, vmOccurrence, refs);
 
-        // Both arms resolve the same site; only the observed outcome and the
-        // fallback transfer differ.
         List<Unit> falsePath = new ArrayList<>();
         refs.bracket(falsePath, decision, Hook.RESOLVE_BRANCH, prepared,
                 vmEvent, StringConstant.v(method.getSignature()),
@@ -3060,8 +2719,7 @@ public final class CausynthPipeline {
                                 IntConstant.v(targetIndex)),
                         shape.successors.get(targetIndex)));
             }
-            // A malformed runtime result must retain the concrete Java
-            // execution rather than jumping to an unrelated arm.
+            // A malformed result keeps the concrete arm.
             body.getUnits().add(Jimple.v().newGotoStmt(
                     shape.successors.get(observed)));
         }
@@ -3078,8 +2736,7 @@ public final class CausynthPipeline {
             Body body, SootMethod method, Unit branch, int unitIndex,
             String expression, Local prepared, Local vmEvent,
             Local vmOccurrence, HookCatalog refs) {
-        // Keep the native marker as the final invocation before the original
-        // branch.
+        // The native marker must be the last invocation before the branch.
         Unit noMarkerPath = Jimple.v().newNopStmt();
         List<Unit> beforeBranch = new ArrayList<>();
         emit(beforeBranch, refs.ref(Hook.PAUSE_VM_PATH_CONDITION));
@@ -3120,9 +2777,7 @@ public final class CausynthPipeline {
                 }
             }
         }
-        // Once any pass has established the original-index namespace, an
-        // untagged unit belongs to instrumentation inserted by that or a later
-        // pass.
+        // Once tags exist, an untagged unit is woven.
         if (hasAuthoritativeOriginalTags) {
             return null;
         }
@@ -3149,8 +2804,7 @@ public final class CausynthPipeline {
         return units;
     }
 
-    /** Freezes one body's original numbering; see {@link
-     *  #originalUnitIndex}. */
+    /** Freezes one body's numbering ({@link #originalUnitIndex}). */
     static void tagOriginalUnits(List<Unit> units) {
         // Trace and concolic instrumentation may run in the same transform.
         for (Unit unit : units) {
@@ -3234,7 +2888,6 @@ public final class CausynthPipeline {
             HookCatalog refs, String openedRegionId) {
         Local callId = newTraceLocal(body, LongType.v(), "$causynthCallId");
         List<Unit> entryUnits = new ArrayList<>();
-        // Keep the initialization as a defensive verifier-visible value.
         entryUnits.add(Jimple.v().newAssignStmt(callId, LongConstant.v(0L)));
         emit(entryUnits, callId, refs.ref(Hook.ENTER_METHOD),
                 StringConstant.v(method.getSignature()), receiver,
@@ -3328,11 +2981,7 @@ public final class CausynthPipeline {
         return ((InstanceInvokeExpr) invoke).getBase();
     }
 
-    /**
-     * The receiver of a successful constructor call is initialized when the
-     * after-call hook runs, so it is both verifier-safe and the exact object
-     * produced by that invocation.
-     */
+    /** The call's result; for a constructor, its initialized receiver. */
     static Value runtimeCallSiteReturnValue(Stmt stmt, InvokeExpr invoke) {
         if (invoke instanceof InstanceInvokeExpr
                 && "<init>".equals(invoke.getMethodRef().name())) {
@@ -3410,56 +3059,25 @@ public final class CausynthPipeline {
     }
 
     /**
-     * Appends a catch-all whose incoming verifier frame reads only the caught
-     * throwable, reports the exceptional exit and rethrows.  {@code identity}
-     * is the argument list the hook takes ahead of the throwable: empty is the
-     * method-activation form, and a region identity additionally brackets the
-     * report with paused observation.
+     * THE WOVEN-TRAP RULE: a woven catch-all opens after the construct's
+     * prologue, never inside it.  The JVM merges every range unit's frame
+     * into the handler's, so a range covering the store of a local the
+     * handler reads fails verification.  The prologue is entered by
+     * fall-through only, so its stores dominate the range.
      *
-     * <p>{@code start} obeys the woven-trap rule of {@link
-     * #afterWovenPrologue}: it is a unit the construct's prologue -- every
-     * store of every woven local this handler reads through {@code identity}
-     * -- has already fallen through to.  {@link #validateWovenBodies} is
-     * what enforces that on the finished body.</p>
-     */
-    /**
-     * THE WOVEN-TRAP RULE: a woven catch-all opens at the first unit the
-     * construct's own prologue falls through to -- never at a unit of the
-     * prologue itself.
-     *
-     * <p>Every woven local a handler reads (a region token, an invocation
-     * id) is stored by that prologue, and the JVM merges the frame of EVERY
-     * unit in the trap range into the handler's incoming frame.  A range
-     * that opened at the store therefore merges the frame from before it, in
-     * which the local is not assigned, and the handler's read of it cannot
-     * be verified.  hdfs-17960's woven {@code FSNamesystem.allowSnapshot}
-     * was refused exactly so -- {@code @142: lload_2, Local index 2 is
-     * invalid}, "get long/double overflows locals", with the stackmap at the
-     * handler carrying {@code {Object, Object}} and no {@code Long} because
-     * the trap opened at bci 0 while the token's {@code lstore_2} is bci 1.
-     * A long or double local owns two slots, so a partially assigned one
-     * does not merely lose its type: the read overflows the frame.</p>
-     *
-     * <p>Nothing is owed on the excluded prefix: an exception raised before
-     * the frame was opened has no frame to close.  And the prologue is
-     * entered by fall-through only ({@code insertBeforeNoRedirect} keeps
-     * every branch on its old target, and a loop-body entry moves the whole
-     * prologue together), so the store dominates every unit from here on --
-     * which is what makes the local assigned on every path into the range,
-     * at every return the exit hooks read it at, and on every exception edge
-     * into the handler.  Soot's {@code LocalPacker} cannot pack the local
-     * into a slot shared with another type either: a local the handler reads
-     * is live across the whole range.</p>
-     *
-     * @return the unit after {@code prologue}, or null when the prologue
-     *         ends the body -- a construct with no unit to guard opens no
-     *         trap rather than guarding its own store
+     * @return the unit after {@code prologue}, or null (no trap) at body end
      */
     private static Unit afterWovenPrologue(Body body, List<Unit> prologue) {
         if (prologue == null || prologue.isEmpty()) return null;
         return body.getUnits().getSuccOf(prologue.get(prologue.size() - 1));
     }
 
+    /**
+     * Appends a catch-all that reports the exceptional exit and rethrows.
+     * {@code identity} precedes the throwable in the hook's arguments; a
+     * non-empty one brackets the report with paused observation.
+     * {@code start} must obey {@link #afterWovenPrologue}.
+     */
     private void addThrowHandler(Body body, Unit start, HookCatalog refs,
                                  Hook throwHook, String localName,
                                  Value... identity) {
@@ -3837,15 +3455,7 @@ public final class CausynthPipeline {
             return refs.get(hook);
         }
 
-        /**
-         * THE hooks both passes weave, declared once: the work start and its
-         * claim, and the calling-context frame (which carries its receiver
-         * for the attribution rule).  Each pass binds them to its own runtime
-         * class; the shapes, and so the index and the schedule both passes
-         * compute from them, are one declaration.  Scope capture rides on the
-         * start hook itself -- it used to ride on the recording's BEGIN_CALL
-         * alone, which the replay never weaves.
-         */
+        /** THE hooks both passes weave, declared once for one index. */
         private HookCatalog shared(SootClass owner) {
             Type string = RefType.v("java.lang.String");
             Type object = RefType.v("java.lang.Object");
@@ -3862,17 +3472,7 @@ public final class CausynthPipeline {
                             RefType.v("java.lang.Throwable"));
         }
 
-        /**
-         * Appends {@code hook(args)} with observation paused across it.
-         *
-         * <p>Paused where there is symbolic observation to pause: the
-         * recording pass registers no such hook, and this is the one place
-         * that decides it rather than every caller asking
-         * {@code ref(PAUSE_OBSERVATION) != null} for itself -- which is what
-         * the work-start walk did and what the frame trio's throw handler
-         * did not, so the recording's weave of it raised a
-         * NullPointerException inside Soot's invoke builder.</p>
-         */
+        /** Appends {@code hook(args)}, paused if this pass has a pause hook. */
         private void bracket(Collection<Unit> units, Hook hook,
                              Value... args) {
             boolean observed = ref(Hook.PAUSE_OBSERVATION) != null;

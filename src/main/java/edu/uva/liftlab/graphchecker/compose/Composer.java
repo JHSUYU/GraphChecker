@@ -48,16 +48,11 @@ import static edu.uva.liftlab.graphchecker.compose.VmTermLowering.smtName;
 import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.integralLiteral;
 
 /**
- * One composed query per anchor, factorized per path.
- *
- * <p>The composition is a merge and not a reconstruction.  Every value in
- * it was propagated symbolically inside some replay and published as that
- * replay's own expression; nothing here finds a writer through a graph,
- * links an arm to a producer by a request family, or picks a version for a
- * read.  What this class does is ALIGN (the anchor's occurrence across
- * sessions), MERGE (one disjunct per admitted path), LOWER (through the one
- * {@link SmtLowering}) and GATE (fail closed on what the recording does not
- * state).</p>
+ * One composed query per anchor, factorized per path.  A MERGE, not a
+ * reconstruction: every value was propagated inside some replay; nothing
+ * here finds writers, links arms by request family, or picks versions.  It
+ * ALIGNs the anchor across sessions, MERGEs one disjunct per admitted path,
+ * LOWERs through {@link SmtLowering} and GATEs (fail closed).
  *
  * <p>The shape, for anchor A:</p>
  * <pre>
@@ -67,15 +62,11 @@ import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.integra
  *   root domains, clock floors, identity axioms
  * </pre>
  *
- * <p>Three things are deliberately NOT global.  A path's own arrivals, its
- * clock readings and its replay's valuation are per-session facts, and one
- * session's value asserted for all of them closed every other path (the
- * measured R-PIN defect).  A family binds a symbol one session minted, so
- * it is conjoined under that session's selector: a family with no available
- * arm then kills its own disjunct instead of the whole formula, which is
- * what a globally asserted family did at every flipped-marker valuation.
- * And an arm is guarded by the delivering replay's valuation of ONLY the
- * roots its own delivered expression depends on (R-GUARD).</p>
+ * <p>Deliberately NOT global: a path's arrivals, clock readings and
+ * valuation are per session (R-PIN); a family sits under its session's
+ * selector, so an arm-less family kills only its disjunct; an arm is
+ * guarded by its replay's valuation of only the roots its expression
+ * depends on (R-GUARD).</p>
  */
 public final class Composer {
 
@@ -217,18 +208,10 @@ public final class Composer {
         }
 
         /**
-         * One question's text: this body with those assertions conjoined.
-         *
-         * <p>The body is the program and the extra assertions are the
-         * question, so the body is rendered once and every valuation, probe
-         * and pairing test appends only its own lines: re-rendering per
-         * question would put a copy of one formula in the solver for each.
-         * Legal spelling is applied here because a pin names recorded
-         * symbols -- a clock cell is spelled {@code CLOCK/...#...} -- and
-         * {@code #} opens a bit-vector literal, so a pin written bare makes
-         * z3 answer the whole query "invalid bit-vector literal" instead of
-         * a verdict.  {@link SmtLowering#legalSymbols} is idempotent, so a
-         * body that already passed through it is the text it was.</p>
+         * One question's text: the body (rendered once) plus these
+         * assertions.  Legal spelling is reapplied because pins name raw
+         * symbols such as {@code CLOCK/...#...}, and a bare {@code #} is a
+         * bit-vector literal to z3; the pass is idempotent.
          */
         public String query(List<String> assertions) {
             StringBuilder text = new StringBuilder(body);
@@ -294,18 +277,10 @@ public final class Composer {
         }
 
         /**
-         * Every path held to the pairing its own run had: under its
-         * selector, the versions its reads observed and the values its
-         * attaches received.
-         *
-         * <p>Part of "the run as it happened" beside the recorded roots and
-         * the clocks at their readings: a family offers a read or an attach
-         * every attested delivery of its slot, so without these a healthy
-         * path reaches the fatal arm at the recorded valuation through a
-         * delivery its own run never took -- hdfs-17967 path B's proxy paired
-         * with a heartbeat answer that exported no key the target presented.
-         * Guarded per path, because the symbols are shared and each run
-         * received its own values.</p>
+         * Every path held, under its selector, to the pairing its own run
+         * had (observed reads and received arrivals).  Part of "the run as
+         * it happened": without it a healthy path can reach the fatal arm at
+         * the recorded valuation through a delivery its run never took.
          */
         public List<String> recordedPairings() {
             List<String> held = new ArrayList<String>();
@@ -335,14 +310,8 @@ public final class Composer {
         }
 
         /**
-         * Every family ARM selector, for reading which delivery a model
-         * rested on.
-         *
-         * <p>A family is a case split (one selector per arm), so a sat
-         * model answers WHICH arm it took -- and a claim that names a
-         * mechanism over a slot has to be able to say which delivery of
-         * that slot the witness used, not merely that the slot had
-         * alternatives.</p>
+         * Every family ARM selector, so a claim can say which delivery of a
+         * slot the witness model used.
          */
         public List<String> armSelectors() {
             return new ArrayList<String>(armChoices.keySet());
@@ -386,29 +355,22 @@ public final class Composer {
     private final Arms arms;
     /**
      * Interaction -> the declared roots an UNATTESTED arm of it mentions.
-     *
-     * <p>An arm from a replay that ran the producer concretely states what
-     * was delivered and nothing about what else could have been: there is
-     * no producer path condition behind it.  So a witness may state it, and
-     * may not move a root that occurs inside it (R-I5).</p>
+     * Such an arm has no producer path condition, so a witness may not move
+     * a root inside it (R-I5).
      */
     private final Map<String, Set<String>> unattestedRoots =
             new LinkedHashMap<String, Set<String>>();
     /** Path id -> what its reads observed, one term per symbol. */
     private final Map<String, List<String>> observedReads =
             new LinkedHashMap<String, List<String>>();
-    /** Path id -> the arrivals its attaches actually received. */
     /**
      * Path id -> what every attach a family binds received, anchor and
-     * upstream: the pairing the run had, which the run as it happened holds
-     * ({@link Composition#recordedPairings}).  Not what a mechanism is
-     * named by: an upstream arrival is a CONSEQUENCE of its producer's roots
-     * and clocks, so pinning it refutes a clock witness for the clock's own
-     * reason -- hdfs-11741 v25 was published MESSAGE_PAIRING_FLIPPED because
-     * the expiry dates dn1's heartbeat carried are the rotation clock's.
+     * upstream ({@link Composition#recordedPairings}).  Not what a mechanism
+     * is named by: upstream arrivals are consequences of roots and clocks.
      */
     private final Map<String, List<String>> heldArrivals =
             new LinkedHashMap<String, List<String>>();
+    /** Path id -> what the anchor's attaches received. */
     private final Map<String, List<String>> observedArrivals =
             new LinkedHashMap<String, List<String>>();
     /** Attaches already named as unpaired; one row per attach, not per path. */
@@ -458,10 +420,7 @@ public final class Composer {
     }
 
     private Composition run() {
-        // A root symbol naming two roots makes one term carry two
-        // quantities, and every path that read them both is then
-        // unsatisfiable at its own valuation.  It is the runtime's to fix,
-        // and the composition refuses rather than composing the collision.
+        // One symbol for two roots makes paths unsat; refuse it.
         for (Map.Entry<String, Set<String>> collision
                 : corpus.collidingRootSymbols().entrySet()) {
             gap(GapKind.UNSTATED_VALUE, GapClass.BLOCKING,
@@ -470,10 +429,7 @@ public final class Composer {
                             + collision.getValue());
         }
 
-        // A session this stage could not read whole states less than it
-        // ran, and a short kind reads downstream as "this run had none": the
-        // paths composed over it would be missing decisions nobody can see
-        // are missing.  IMPORT names it too; the claim refuses on it.
+        // A session read short would hide missing decisions.
         for (edu.uva.liftlab.graphchecker.contract.SessionReader session
                 : corpus.sessions()) {
             if (session.incomplete().isEmpty()) continue;
@@ -482,14 +438,8 @@ public final class Composer {
                             + "whole: " + session.incomplete());
         }
 
-        // A VERDICT IS THE SESSION'S OWN ROW, and the wave's aggregate copy
-        // of it is checked against that row rather than believed.  The
-        // campaign shell stamped ADMITTED onto the aggregate after every
-        // replay that merely finished, so on hdfs-11741 campaign #3 six of
-        // eleven obligations were aggregated ADMITTED while their own
-        // sessions said NOT_ADMITTED, and the composition took all eleven
-        // as paths.  A corpus that states one verdict twice and differently
-        // says nothing about that obligation at all.
+        // A verdict is the session's own row; the wave's aggregate copy is
+        // checked against it, and a disagreement is BLOCKING.
         for (edu.uva.liftlab.graphchecker.contract.SessionReader session
                 : corpus.sessions()) {
             for (ObligationResult settled : session.obligations()) {
@@ -508,14 +458,8 @@ public final class Composer {
             }
         }
 
-        // Which recording a claim is about has to have one answer, and the
-        // sessions STATE it (manifest.json, role: SEED | FOCUSED).  It used
-        // to be inferred -- "the session that focused nothing" -- and the
-        // 11741 campaign #2 corpus has nine of those: the seed, seven
-        // replays the kill cut before their focused occurrence activated,
-        // and one NOT_ADMITTED focused replay whose occurrence never ran.
-        // RECORDED_FAILURE_EXPLAINED and MESSAGE_PAIRING_FLIPPED would each
-        // have picked whichever came first.
+        // Exactly one session must STATE role SEED (manifest.json); never
+        // infer it from "focused nothing".
         List<String> seeds = corpus.seedSessionIds();
         if (seeds.size() != 1 && !corpus.sessions().isEmpty()) {
             gap(GapKind.UNSTATED_VALUE, GapClass.BLOCKING, seeds.toString(),
@@ -527,16 +471,12 @@ public final class Composer {
                             + "no answer");
         }
 
-        // The skeleton, and what contradicts it.  Asked before any path is
-        // composed, because a replacing session's rows must not reach a
-        // family: the two pairings cannot both be this epoch's.
+        // The skeleton first: a replacing session's rows must not reach a
+        // family.
         try {
             slots = SlotTable.read(corpus.iteration());
         } catch (java.io.IOException | RuntimeException unreadable) {
-            // The strict codec REFUSES a row it cannot read, and a refusal
-            // that reached a caller as a stack trace told the reader
-            // nothing: a skeleton this stage cannot state is named, and the
-            // composition closes fail-closed over it.
+            // Unreadable skeleton: named, and composition fails closed.
             slots = null;
             gap(GapKind.TOPOLOGY_DIVERGENCE, GapClass.BLOCKING,
                     SlotTable.FILE, "this epoch's slot table could not be "
@@ -545,14 +485,9 @@ public final class Composer {
         if (slots != null) {
             for (SlotTable.Replacement replacement
                     : slots.replacements(corpus)) {
-                // FAIL CLOSED ON THE ARMS, OPEN ON THE CLAIM.  The session
-                // goes into `replacing` either way -- two pairings of one
-                // consumer cannot both be this epoch's, so neither set of
-                // arms may reach a family -- and only an ADMITTED replay's
-                // replacement STOPS the composition ({@link
-                // SessionReader#admitted}).  One that did not run the world
-                // it was asked for states no topology, so its row is a
-                // DIAGNOSTIC and the claim is still made.
+                // FAIL CLOSED ON THE ARMS, OPEN ON THE CLAIM: its arms never
+                // reach a family, but only an ADMITTED replay's replacement
+                // blocks ({@link SessionReader#admitted}).
                 replacing.add(replacement.sessionId);
                 gaps.add(GapRow.of(replacement.sessionId,
                         GapKind.TOPOLOGY_DIVERGENCE, replacement.cls(),
@@ -575,10 +510,7 @@ public final class Composer {
             }
         }
         if (disjuncts.isEmpty()) {
-            // Two different absences, and the row says which.  "Nothing
-            // reached the anchor" and "everything that reached it was
-            // refused" send a reader to opposite ends of the pipeline, and
-            // the second one was reported as the first.
+            // Say which absence: nothing reached, or all were refused.
             gap(GapKind.ADMISSION_GAP, GapClass.BLOCKING, anchor.render(),
                     admitted.isEmpty()
                             ? "no session of this corpus published a path "
@@ -594,10 +526,8 @@ public final class Composer {
             }
             lowering.assertNamed("target_path_partition",
                     Arms.exactlyOne(selectors));
-            // The disjunction is over the SELECTORS: each path already
-            // asserts "selector => (pi and phi)", so asserting that some
-            // selector holds says exactly OR_p (pi_p and phi_p), without
-            // writing every path's formula into the artifact twice.
+            // OR over selectors = OR_p (pi_p and phi_p), since each path
+            // asserts selector => its conjunction.
             lowering.assertNamed("fatal_target",
                     VmTermLowering.or(selectors));
         }
@@ -609,12 +539,8 @@ public final class Composer {
         clocks(clockCells, clockReadings);
         domains();
         lowering.assertIdentitiesDistinct();
-        // What the corpus states inconsistently, named and BLOCKING: one
-        // solver name at two sorts, and one truncated name for two
-        // identities.  Both make the query say something no execution
-        // said, so the composition closes fail-closed rather than
-        // answering over them -- and rather than throwing, which told a
-        // reader nothing at all.
+        // Corpus inconsistencies (one name, two sorts; one truncated name,
+        // two identities) are BLOCKING gaps, not exceptions.
         for (Map.Entry<String, String> conflict
                 : lowering.sortConflicts().entrySet()) {
             gap(GapKind.UNSTATED_VALUE, GapClass.BLOCKING,
@@ -635,9 +561,7 @@ public final class Composer {
                             : "the propagation did not carry this value");
         }
 
-        // The valuations first, then the body: a pin names a declared root
-        // the body's own assertions need not mention, and the body declares
-        // only what a text it will be asked with reaches.
+        // Valuations before the body: the body declares what pins reach.
         List<Valuation> valuations = valuations();
         List<String> pins = new ArrayList<String>();
         for (Valuation valuation : valuations) {
@@ -656,12 +580,9 @@ public final class Composer {
     // ------------------------------------------------------------------
 
     /**
-     * Every session's path that reached the anchor.
-     *
-     * <p>The declared occurrence is the anchor, always.  A session that
-     * published no target row for it did not reach it, and that is an
-     * admission gap about that session -- never a reason to elect a
-     * different occurrence.</p>
+     * Every session's path that reached the anchor.  The declared occurrence
+     * is always the anchor; a session without a target row is an admission
+     * gap, never a reason to elect another occurrence.
      */
     private List<Corpus.RecordedPath> admit() {
         List<Corpus.RecordedPath> admitted =
@@ -695,29 +616,17 @@ public final class Composer {
     }
 
     /**
-     * Whether this session's OWN rows admit the obligation it ran.
-     *
-     * <p>The session's manifest names the obligations it was handed and its
-     * {@code obligations.jsonl} states what each of them settled; the
-     * replay owns that verdict, because whether the focused prefix
-     * reproduced and the flipped decision was taken is a fact of the run.
-     * A replay that refused its obligation collected no arm the seed lacks,
-     * so its path is not a disjunct of this composition: it is the
-     * recording again, under a valuation the wave asked for and the run did
-     * not take.</p>
-     *
-     * <p>A SEED session is asked nothing and admits itself.  An obligation
-     * the manifest names and the rows do not settle is BLOCKING: the
-     * session ran it and cannot say what happened, which is not the same as
-     * a refusal.</p>
+     * Whether this session's OWN rows admit the obligation it ran (the
+     * replay owns the verdict).  A refused obligation's path is the
+     * recording again under a valuation the run did not take, so it is no
+     * disjunct.  A SEED admits itself; an obligation the manifest names and
+     * no row settles is BLOCKING.
      */
     private boolean settled(String session) {
         SessionReader reader = corpus.session(session);
         if (reader == null || reader.seed()) return true;
         Set<String> stated = new LinkedHashSet<String>();
-        // ONE PREDICATE, ONE PLACE ({@link SessionReader#admitted}): this
-        // stage names each refusal below, and does not keep a second
-        // opinion about what "admitted" means.
+        // {@link SessionReader#admitted} decides; this only names refusals.
         boolean admitted = reader.admitted();
         for (ObligationResult result : reader.obligations()) {
             stated.add(result.obligationId());
@@ -752,9 +661,6 @@ public final class Composer {
         String selector = "path_selector__" + ordinal + "__"
                 + ArtifactIO.digest(path.pathId, 10);
         lowering.declare(selector, Sort.BOOL);
-        // The rows of this path's session: a reader and the placeholder
-        // that answers it are matched by the MINT VERSION, which is
-        // session-unique, so the view needs no narrower scope.
         SmtLowering.SessionJoin rows =
                 SmtLowering.joinOf(corpus.session(session));
         lowering.begin(session, rows, corpus.expressions(session));
@@ -765,80 +671,45 @@ public final class Composer {
         List<String> observed = new ArrayList<String>();
         Map<String, String> joins = new LinkedHashMap<String, String>();
 
-        // (0a) THE CLOSURE (P3).  Which occurrences of THIS session this
-        //      path's joins reach, and the seq each one's prefix is a
-        //      reason up to.  A row-level fixed point, computed before
-        //      anything is lowered, because it is a fact about the join
-        //      graph and not about SMT.
+        // (0a) THE CLOSURE (P3): the occurrences of this session the joins
+        //      reach, and the seq each prefix runs to.  Row-level, before
+        //      any lowering.
         Map<String, Long> reached = closure(session, anchor, target.seq(),
                 null);
 
-        // (0b) Every read of the reached occurrences whose value the ROW
-        //     states outright, bound BEFORE any expression of this path is
-        //     lowered.  A read symbol is a declared symbol of its session,
-        //     so a leaf naming it -- in phi, in a decision's term, in an
-        //     arm, or inside the write expression another read joined to
-        //     -- must be this path's binding for it wherever it appears.
-        //     Declared as each row was met instead, it resolved only for
-        //     the leaves that happened to come after its own row.
+        // (0b) Reads whose value the row states outright, bound BEFORE any
+        //      lowering so every leaf naming them resolves, not just later
+        //      ones.
         Set<String> answered = new LinkedHashSet<String>();
         statedReads(session, reached.keySet(), refusals, joins, answered);
 
-        // (1) The valuation this replay ran under, for every VARIED root.
-        //     A replay's assignments are not all visible as decisions -- a
-        //     root can be written and never branched on -- and the
-        //     execution still happened under that value.  A root every
-        //     session read the same way is pinned by its own domain and is
-        //     not repeated here.
-        //
-        //     A declared root this session did NOT mint is collected here
-        //     and answered in (1b), once this path's own terms are what
-        //     they will be: whether the path states anything about such a
-        //     root is a fact about its terms, and none of them is lowered
-        //     yet.
+        // (1) The valuation this replay ran under, for every VARIED root
+        //     (a root may be written and never branched on).  Declared roots
+        //     this session did NOT mint are answered in (1b), once the
+        //     path's terms are whole.
         Map<String, Set<String>> unminted =
                 new LinkedHashMap<String, Set<String>>();
         terms.addAll(valuationOf(session, refusals, unminted));
 
-        // (2) What this path read at each handoff of the anchor: the
-        //     obligation's answer where one answered the mint, and
-        //     otherwise NOTHING -- the arrival is bound by its family
-        //     alone, and the attach is collected for it (`bound`).  Never
-        //     a literal, this session's or any other's.
+        // (2) Each anchor handoff: the obligation's answer if any, else
+        //     nothing (its family binds it; collected in `bound`).  Never a
+        //     recorded literal.
         Set<String> interactionIds = new LinkedHashSet<String>();
         Set<String> handoffs = new LinkedHashSet<String>();
         List<AttachRow> bound = new ArrayList<AttachRow>();
         terms.addAll(handoffReads(session, interactionIds, handoffs,
                 refusals, bound));
 
-        // (3) The state joins: read := the expression of the write version
-        //     it observed, within this session.  Kept by symbol, because a
-        //     read with ALTERNATIVES takes its value from the family and
-        //     not from a conjunct of the path -- asserting both would make
-        //     the family redundant and the alternatives unreachable.
+        // (3) State joins, read := observed write's expression, kept by
+        //     symbol: a read with family alternatives must not also be
+        //     asserted here.
         stateJoins(session, reached.keySet(), rows, refusals, joined,
                 observed, joins, answered);
 
-        // (4) pi_p: THE PREFIX STRICTLY BEFORE THE TARGET OBSERVATION,
-        //     through the one routine that applies each decision's
-        //     polarity -- a published term is the site's PREDICATE, and
-        //     which arm this run took is the row's outcome.
-        //
-        //     `before` is the target row's own seq, and that is what makes
-        //     the conjunction a question rather than a contradiction: the
-        //     anchor's decision and the target row share a seq in every
-        //     session, so a pi taken over ALL of the occurrence's
-        //     decisions carries the anchor's own RECORDED polarity while
-        //     phi below asserts its complement.  Every path whose session
-        //     did not observe the fatal arm was then unsat before any root
-        //     was considered -- all 7 paths of hdfs-11741 campaign #4 and
-        //     all 11 of #3, with z3's core `path_fatal__* + fatal_target`
-        //     and no valuation assertion in it, and 17960's own third
-        //     path, the one with fatalObserved=false.  The composer could
-        //     only ever witness from a replay that had already failed.
-        //     `Arms.wireArms` applies exactly this rule at an export
-        //     (`Arms.arm`, `pathCondition(decisions, deliveredAt)`): what
-        //     a run had decided BY THE TIME of the event, never after it.
+        // (4) pi_p: decisions STRICTLY BEFORE the target's seq, polarity
+        //     applied by {@link Arms#pathCondition}.  The anchor decision
+        //     shares the target's seq; including it would contradict phi on
+        //     every healthy path.  Same rule as {@link Arms#wireArms}.
         List<String> pi = Arms.pathCondition(path.decisions, target.seq());
         List<DecisionRow> inPi = new ArrayList<DecisionRow>();
         for (DecisionRow decision : path.decisions) {
@@ -848,9 +719,6 @@ public final class Composer {
             DecisionRow decision = inPi.get(index);
             String subject = "decision " + decision.siteId() + "#"
                     + decision.ordinal();
-            // The published term names the session's EXPRESSIONS by
-            // reference; the one lowering resolves them, and what is left
-            // has to be a name something declares.
             String conjunct = lowering.statedTerm(pi.get(index),
                     "pi:" + subject);
             if (!Arms.predicate(conjunct)) continue;
@@ -858,32 +726,16 @@ public final class Composer {
             terms.add(conjunct);
         }
 
-        // (4b) P3: AND THE PREFIX OF EVERY OTHER OCCURRENCE THIS PATH'S
-        //      JOINS REACH, each strictly before the write that reached
-        //      it.  A read bound to the expression of a write version is
-        //      bound to a value that occurrence PRODUCED, and what it
-        //      produced it produced under the decisions it had taken by
-        //      then: without them the join states the value and not the
-        //      reason for it, and every conjunct that carries a clock
-        //      reading is in one of these prefixes and in no other place.
-        //      On hdfs-11741 the anchor's allKeys read joins to a write by
-        //      dn1 REGION.ba3902cd -- the refresh that reads the DN clock,
-        //      10 to 13 decisions in every session -- and pi_p named none
-        //      of them, so Composer.clocks() found 0 cells and CLOCK_SKEW
-        //      was unreachable in every manifest published so far.
-        //
-        //      Per session, never global: these are the reached
-        //      occurrence's decisions AS THIS SESSION RECORDED THEM, so
-        //      they are already under this path's own valuation (step 1)
-        //      and need no second guard.  A handoff arm's producer is the
-        //      other half of the same rule and states its prefix in its
-        //      own session's scope inside the family ({@link #prefix}).
+        // (4b) P3: the prefix of every OTHER occurrence the joins reach,
+        //      strictly before the write that reached it: a joined value
+        //      without its producer's decisions has no reason (and clock
+        //      readings live only there).  Per session, already under this
+        //      path's valuation; a handoff producer's prefix is stated inside
+        //      its family ({@link #prefix}).
         terms.addAll(closureConditions(session, reached, refusals));
 
-        // (5) phi_p is the FATAL arm as published; the composer never
-        //     re-derives the polarity.  Re-deriving it negated a term that
-        //     was already the complement, and every healthy-observed path
-        //     was handed its own observation back.
+        // (5) phi_p is the FATAL arm as published; never re-derive its
+        //     polarity.
         String subject = "phi of " + anchor.render();
         if (target.phiTerm() != null && !target.phiTerm().isEmpty()) {
             String phi = lowering.statedTerm(target.phiTerm(),
@@ -893,33 +745,21 @@ public final class Composer {
             }
         }
 
-        // (5b) Every OTHER handoff this conjunction reaches, by the same
-        //      three rules: the state joins are what carry them, so this is
-        //      asked once the joins, pi and phi are lowered and the text is
-        //      what it will be.
+        // (5b) Every OTHER handoff the conjunction reaches (via joins, pi,
+        //      phi), by the same rules as (2).
         List<String> reaching = new ArrayList<String>(terms);
         reaching.addAll(joins.values());
         terms.addAll(reachedHandoffs(session, reaching, interactionIds,
                 handoffs, refusals, bound));
 
-        // BEFORE end(), which closes the conjunction and forgets them: a
-        // refusal raised while this path was lowered is the reason the
-        // path is not in the disjunction, and a path that kept the rest of
-        // its conjunction would rest on the free constant the refusal
-        // left behind.
+        // Read BEFORE end() forgets them: any refusal drops the whole path
+        // (it would otherwise rest on a free constant).
         List<String> refused = new ArrayList<String>(
                 lowering.openRefusals());
         terms.addAll(lowering.end());
 
-        // (1b) THE OTHER HALF OF (1), asked here because here is where
-        //      this path's own terms are whole: a declared root this
-        //      session minted no value for, whose SYMBOL this path's own
-        //      terms name.  Such a path rests on a quantity it states
-        //      nothing about, and the only value the corpus could give it
-        //      is another execution's reading -- so it is refused.  A root
-        //      NO term of this path names is simply not stated by this
-        //      path, and refusing it was a refusal for something the path
-        //      never asked about (see {@link #valuationOf}).
+        // (1b) Refuse the path only if its own terms name a declared root
+        //      this session never minted ({@link #unstatedRoots}).
         unstatedRoots(session, unminted, terms, joins, refusals);
         for (String refusal : refused) {
             refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
@@ -935,13 +775,10 @@ public final class Composer {
             return null;
         }
 
-        // (6) One selector per (producer occurrence, session) for every
-        //     interaction this path's chain reaches, under this path's
-        //     selector.  A producer for which NO session of this corpus
-        //     could have made every delivery this path took from it (R3c)
-        //     leaves the path out of the disjunction: a witness that mixed
-        //     two runs' deliveries of one occurrence would rest on an
-        //     export no execution produced.
+        // (6) Families: one selector per (producer occurrence, session) for
+        //     every interaction reached, under this path's selector.  If no
+        //     single session could make all deliveries the path took (R3c),
+        //     the path is dropped.
         List<String> familyTerms = new ArrayList<String>();
         List<GapRow> unproducible = new ArrayList<GapRow>();
         if (!composedFamilies.closeFamilies(ordinal, selector, session,
@@ -970,43 +807,18 @@ public final class Composer {
     }
 
     /**
-     * The state joins THIS CONJUNCTION ASKS ABOUT, to a fixed point.
-     *
-     * <p>A join is {@code read := the expression of the write version it
-     * observed}.  Where no other term of the path names that read symbol,
-     * the equation binds a variable the question never asks: it is
-     * satisfiable for every value of everything it mentions, so it
-     * constrains nothing -- and it drags the whole theory its right-hand
-     * side is written in into the query.  The same reachability rule the
-     * preamble is already emitted under ({@link SmtLowering#body}), one
-     * level up, applied to the assertions instead of the declarations.</p>
-     *
-     * <p>MEASURED on hdfs-11741 campaign #4.  Seven paths each carried
-     * {@code (= |MAP_STATE/321#-3@v1337| (assoc_put ...))} -- the DataNode's
-     * {@code allKeys} map as an {@code AssocState}, joined to the refresh
-     * that put the last key in.  The anchor's own lookup does not read that
-     * variable: it reads the container DAG, an eight-deep {@code ite} over
-     * key equality, and {@code MAP_STATE/321} is named by nothing else in
-     * the file.  With every arrival pinned to a literal the equation was
-     * cheap; with the arrivals bound by their families instead (item 1) the
-     * keys became symbolic and z3 spent the whole 1800 s budget on the
-     * array-and-lambda theory {@code assoc_put} and {@code assoc_remove}
-     * are written in -- all four valuations UNDECIDED.  Dropping that one
-     * unreached join and nothing else: valuation 0 decided in 0.16 s.</p>
-     *
-     * <p>To a fixed point, and seeded by the FAMILIES as well as the path's
-     * own terms: one join's right-hand side names another join's symbol,
-     * and a family arm names symbols the path's own conjunction need
-     * not.</p>
+     * The state joins THIS CONJUNCTION ASKS ABOUT, to a fixed point seeded
+     * by the path's terms and its family terms.  An unreached join
+     * constrains nothing but drags its theory (e.g. {@code assoc_put}) into
+     * the query, which can cost z3 its whole budget.  Same rule as
+     * {@link SmtLowering#body}, applied to assertions.
      */
     List<String> statedJoins(Map<String, String> joins,
                                      Set<String> chosen, List<String> terms,
                                      List<String> familyTerms) {
         Map<String, String> pending = new LinkedHashMap<String, String>();
         for (Map.Entry<String, String> join : joins.entrySet()) {
-            // A read a family gives alternatives to takes its value there;
-            // asserting both would make the family redundant and its
-            // alternatives unreachable.
+            // A family-chosen read takes its value from the family.
             if (chosen.contains(join.getKey())) continue;
             pending.put(join.getKey(), join.getValue());
         }
@@ -1027,9 +839,7 @@ public final class Composer {
                 reaching.add(join);
             }
         }
-        // In the ROWS' own order, not the order the fixed point met them:
-        // the conjunction a reader compares between two runs is the one the
-        // recording is read in.
+        // In row order, so runs compare stably.
         List<String> stated = new ArrayList<String>();
         for (Map.Entry<String, String> join : joins.entrySet()) {
             if (asked.contains(join.getKey())) stated.add(join.getValue());
@@ -1038,16 +848,9 @@ public final class Composer {
     }
 
     /**
-     * What this replay ran every varied root at.
-     *
-     * <p>The value is {@link Corpus#rootValue}, the ONE notion: the mint's
-     * reading where the replay read the root, the obligation's assignment
-     * where the replay PLANTED it.  Reading the mint alone left a flip
-     * replay's own valuation stated nowhere -- its mint states no
-     * recordedValue by rule, because a counterfactual is not a recording --
-     * so no path's formula named the marker, no valuation of it was asked,
-     * and 17960 published a finding at the recorded valuation with no root
-     * moved.</p>
+     * What this replay ran every varied root at: {@link Corpus#rootValue}
+     * (the mint's reading, or the obligation's assignment where the replay
+     * PLANTED it; a flip mint states no recorded value).
      */
     private List<String> valuationOf(String session,
                                      List<GapRow> refusals,
@@ -1059,28 +862,10 @@ public final class Composer {
             RootMintRow row = corpus.root(entry.getKey(), session);
             if (any == null || any.kind() == RootKind.CLOCK) continue;
             if (row == null) {
-                // A root the case declares and THIS replay did not mint:
-                // the path states nothing about it, and pinning it to some
-                // other session's reading would state a fact about an
-                // execution that never read it.  Whether that silence is a
-                // REFUSAL is a question about this path's own terms, and it
-                // is asked once they are whole ({@link #unstatedRoots}):
-                // the symbols of every mint of the root are collected here
-                // and looked for there.
-                //
-                // It used to be asked of `lowering.declared(any.symbol())`,
-                // which is "this QUERY names the symbol" -- and the query
-                // is every path composed before this one, over a registry
-                // seeded with every symbol EVERY session of the corpus
-                // declared ({@link Corpus#declaredSymbols}).  So a root one
-                // session minted refused every other session's path,
-                // whether or not its terms had ever heard of it: on the
-                // hdfs-11741 campaign #4 corpus the three hook-minted
-                // BLOCK_KEY.EXPIRY_DATE roots -- minted only by the twelve
-                // focused replays of nn0's KEY_MANAGER_TICK, and by neither
-                // the seed nor any other replay -- filed 288 of the
-                // composition's 290 BLOCKING UNSTATED_VALUE rows, 96 per
-                // root, and every path of the corpus was refused.
+                // Not minted here: never pin another session's reading.
+                // Collect its symbols; {@link #unstatedRoots} refuses only
+                // if this path's own terms name one.  Do not ask
+                // `lowering.declared`: the query spans earlier paths.
                 if (any.declared()) {
                     Set<String> symbols = new LinkedHashSet<String>();
                     for (RootMintRow mint : entry.getValue()) {
@@ -1095,15 +880,9 @@ public final class Composer {
                 continue;
             }
             String ran = corpus.rootValue(session, row.rootId());
-            // Neither half states it, and this replay DID mint the root:
-            // the path would be satisfiable at every valuation of it, which
-            // is a disjunct that decides nothing and reads as one that
-            // does.  Not gated on the symbol being declared already -- that
-            // gate is circular, because the only thing that declares a
-            // marker's symbol is the pin this refusal replaces: on the
-            // 05f4bf265 17960 corpus the two flip sessions state no value,
-            // nothing named the marker, and the composition published
-            // MESSAGE_PAIRING_FLIPPED at the recorded valuation instead.
+            // Minted but no value stated: the disjunct would decide
+            // nothing.  Not gated on the symbol being declared (circular:
+            // only this pin declares a marker).
             if (ran.isEmpty() && row.declared()) {
                 refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
                         GapClass.BLOCKING, any.rootId(),
@@ -1113,9 +892,7 @@ public final class Composer {
                                 + "it"));
                 continue;
             }
-            // Both halves state it and they disagree: one replay ran the
-            // root at one value, so a corpus that names two is not a
-            // recording this path can carry.
+            // Mint and obligation disagree: refuse.
             String read = corpus.rootReading(session, row.rootId());
             if (!read.isEmpty() && !read.equals(ran)) {
                 refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
@@ -1129,12 +906,8 @@ public final class Composer {
             if (!corpus.varied(row.rootId())) continue;
             lowering.declareStated(row.symbol(),
                     row.kind() == RootKind.MARKER ? Sort.BOOL : Sort.INT);
-            // A DECLARED domain is relative to what THIS replay read, and
-            // what each replay read is its own fact: the NameNode's serial
-            // advances between sessions, so one session's window is not
-            // another's.  The path carries its own window; pinning it to
-            // the value it happened to read would answer the case's own
-            // question before the solver is asked.
+            // A declared domain is a window around THIS replay's reading;
+            // pinning the exact value would answer the question in advance.
             String window = windowOf(row);
             if (!window.isEmpty()) {
                 valuation.add(window);
@@ -1148,30 +921,13 @@ public final class Composer {
     }
 
     /**
-     * The declared roots this path NAMES and its session never minted.
+     * Refuses the path for each declared root it did not mint whose symbol
+     * its OWN terms (and joins) name; otherwise that quantity would be free.
+     * Roots it never names are not refused.
      *
-     * <p>The other half of {@link #valuationOf}, and the whole of the rule
-     * a path is refused by: a path states a valuation for every varied root
-     * IT minted, and it is refused for a root it did not mint exactly when
-     * its OWN terms name that root's symbol.  A term of this path naming a
-     * symbol no row of this session states leaves the quantity free -- or,
-     * worse, joined to a pin some other session's path wrote -- and a free
-     * constant is how a model answers a question the execution never asked.
-     * A root no term of this path names is not a quantity this path is
-     * about at all, and its silence about it says nothing that needs
-     * refusing.</p>
-     *
-     * <p>"Names" is asked of the text this path will be asserted with --
-     * pi, phi, the handoff reads, the closure prefixes, the side conditions
-     * and the state joins this session published -- through the one walk
-     * that follows a named container subterm into its body
-     * ({@link SmtLowering#reachedSymbols}), and, beside it, the one
-     * tokenizer ({@link SmtLowering#names}), because a ROOT symbol reaches
-     * a term in two ways: lowered from a recorded leaf, which
-     * {@code reachedSymbols} reports, and written into a published term as
-     * text, which it reads as a name the lowering itself minted.  Whole
-     * tokens either way; a substring of a longer name is a different
-     * name.</p>
+     * <p>"Names" uses both {@link SmtLowering#reachedSymbols} (leaves, through
+     * container bodies) and {@link SmtNames#names} (symbols written into
+     * published text), whole tokens only.</p>
      */
     private void unstatedRoots(String session,
                                Map<String, Set<String>> unminted,
@@ -1219,25 +975,13 @@ public final class Composer {
     }
 
     /**
-     * What this path read at each of the anchor's handoffs.
-     *
-     * <p>Three rules, in order, and all three are this path's OWN fact:</p>
+     * What this path read at each of the anchor's handoffs, in order:
      * <ol>
      *   <li>an obligation answered the mint: that value;</li>
-     *   <li>otherwise, where the recording states which producer endpoint
-     *       delivered it and that producer's arm is ATTESTED: NOTHING is
-     *       conjoined here at all.  The attach joins its handoff's FAMILY
-     *       and nothing else (CLOSURE-V2) -- the arm this session's run
-     *       recorded is one of that family's arms and is selected by the
-     *       family's guard, not asserted as a fact.  What the path takes
-     *       from the delivery is the SORT its variable is declared at
-     *       ({@link #attestedArrival});</li>
-     *   <li>otherwise the read is REFUSED BY NAME and the path leaves the
-     *       disjunction.  MEASURED UNREACHABLE on both frozen corpora:
-     *       hdfs-17960 campaign #8 states no attach row at all, and every
-     *       one of hdfs-11741 campaign #4's 616 attach rows names a
-     *       producer endpoint the seed exported at, so {@code
-     *       attestedExports} is non-empty for all of them.</li>
+     *   <li>an ATTESTED producer delivered it: nothing is conjoined; the
+     *       attach joins its FAMILY only (CLOSURE-V2) and takes just its
+     *       sort from the delivery ({@link #attestedArrival});</li>
+     *   <li>otherwise refused by name.</li>
      * </ol>
      */
     private List<String> handoffReads(String session,
@@ -1254,22 +998,10 @@ public final class Composer {
     }
 
     /**
-     * Every OTHER handoff this path's own conjunction reaches.
-     *
-     * <p>The same three rules, on the set the formula actually names.  A
-     * handoff variable is not the anchor's business alone: the anchor's
-     * read of a container joins to the write that PUT a delivered value
-     * into it, so what the anchor read is itself a delivery, one occurrence
-     * further back, and its variable stands in this path's formula.  Bound
-     * by nothing it is a free constant -- on hdfs-11741 campaign #3 dn1's
-     * {@code addKeys} arrival {@code M_I_field_HOFF.29a470e4...} is
-     * declared twelve times inside the {@code allKeys} dag and stated by no
-     * assertion at all -- and a free constant is how a model answers a
-     * question the execution never asked.</p>
-     *
-     * <p>To a fixed point, because an arm's own expression names the
-     * handoffs its producer was itself handed: the same closure {@link
-     * Arms#wireArms} takes over a family, taken here over the path.</p>
+     * Every OTHER handoff this path's conjunction reaches (e.g. a delivered
+     * value a joined write put into a container), by the same rules, to a
+     * fixed point as in {@link Arms#wireArms}.  Unbound, each would be a free
+     * constant.
      */
     private List<String> reachedHandoffs(String session, List<String> terms,
                                          Set<String> interactionIds,
@@ -1300,12 +1032,8 @@ public final class Composer {
     }
 
     /**
-     * One attach, by the three rules, stated once per symbol.
-     *
-     * <p>{@code handoffs} is the set of symbols this path has already
-     * bound: one attach row per symbol reaches the formula, whichever
-     * occurrence of the path named it first, and a symbol stated twice is
-     * two assertions about one variable.</p>
+     * One attach, by the three rules, stated once per symbol
+     * ({@code handoffs} holds the symbols already bound).
      */
     private void handoffRead(String session, AttachRow attach,
                              List<String> reads, Set<String> interactionIds,
@@ -1316,11 +1044,7 @@ public final class Composer {
         if (interaction != null) {
             interactionIds.add(interaction.id());
         } else {
-            // The wire delivered something and the recording cannot say
-            // from where, so there is no interaction to build a family on
-            // -- and a variable no family constrains is the one thing a
-            // witness must not rest on unremarked.  The read below refuses
-            // it by name for exactly that reason.
+            // No known source, so no family: named, and refused below.
             composedFamilies.unpaired(session, attach);
         }
         if (attach.answered()) {
@@ -1340,21 +1064,8 @@ public final class Composer {
             bound.add(attach);
             return;
         }
-        // AND NOTHING ELSE.  There used to be a third rule here -- bind
-        // the read to the literal this session happened to receive -- and
-        // an arrival is not a statement about why the delivery was that
-        // value: it is the value, pinned, on a path whose whole question
-        // is whether the producer could have delivered another one.  A
-        // read no attested arm delivers is refused BY NAME, so the path
-        // leaves the disjunction and the reason is in the ledger, which is
-        // the fail-closed answer; a path that kept the rest of its
-        // conjunction would rest on a pin the rows do not state for it.
-        //
-        // MEASURED unreachable on both frozen corpora before deleting it:
-        // hdfs-17960 campaign #8 states no attach row at all, and all 616
-        // of hdfs-11741 campaign #4's attach rows name a producer endpoint
-        // the seed exported at, so attestedExports is non-empty for every
-        // one of them (0 answered, 0 without a producer).
+        // Never pin the received literal: the question is whether the
+        // producer could have delivered another value.  Refuse by name.
         refusals.add(GapRow.of(session, GapKind.UNATTESTED_ARM,
                 GapClass.DIAGNOSTIC, attach.symbol(),
                 "no session of this corpus states the rows of the producer "
@@ -1365,11 +1076,8 @@ public final class Composer {
     }
 
     /**
-     * One handoff read, at the sort the MINT declared.
-     *
-     * <p>Never at the sort the value's spelling suggests: "0" is an int, a
-     * long, a char and a false all at once, and a variable whose sort came
-     * from one reading of it is a variable two paths can declare twice.</p>
+     * One handoff read, at the sort the MINT declared, never the one the
+     * value's spelling suggests ("0" fits many sorts).
      */
     private String bind(String symbol, String literal, AttachRow attach,
                         List<GapRow> refusals) {
@@ -1381,15 +1089,8 @@ public final class Composer {
     }
 
     /**
-     * The scalar sort one JVM descriptor denotes, or a named refusal.
-     *
-     * <p>A descriptor this lowering cannot place falls through to a
-     * reference, and a reference is not a wrong answer -- it is a DIFFERENT
-     * question: a numeric value declared {@code Ref} is compared with
-     * nothing the rest of the formula says, and the solver answers freely.
-     * A handoff variable and a read symbol are scalars by construction, so
-     * anything else is refused by the name of the spelling that caused
-     * it.</p>
+     * The scalar sort one JVM descriptor denotes, or a named refusal; never
+     * a fallback to {@code Ref}, which would leave the value unconstrained.
      */
     private Sort scalarSort(String javaType, String session, String subject,
                             List<GapRow> refusals) {
@@ -1409,43 +1110,15 @@ public final class Composer {
     }
 
     /**
-     * Whether an ATTESTED arm delivers this arrival, and at what sort.
+     * Whether an ATTESTED arm delivers this arrival; if so, declares the
+     * symbol at the arm's sort. States NOTHING about the value: the
+     * family ({@link ComposedFamilies#closeFamilies}) binds it, and pinning
+     * the recorded delivery here too made paths self-contradictory.
      *
-     * <p>It states NOTHING about the value.  The arrival is bound by the
-     * handoff's FAMILY and by nothing else ({@link
-     * ComposedFamilies#closeFamilies}): the arm this session's own run
-     * recorded is one of that family's arms and is selected by the family's
-     * guard, not asserted as a fact of every path.  This used to return the
-     * first attested delivery as a conjunct of the path -- so every one of
-     * hdfs-11741 campaign #4's seven paths carried the SEED's delivery
-     * {@code (= HOFF.836a0f0e... 182905)} and {@code (= HOFF.2fb7f999...
-     * 182905)}, which put the key the token names back into the array the
-     * anchor looks it up in and made all seven unsatisfiable with every
-     * root free (PATH_SELF_CONTRADICTORY, the measured blocker).  The
-     * family already said the same thing as a disjunction over thirteen
-     * arms, so what the pin added was exactly the contradiction.</p>
-     *
-     * <p>What is still asked here is what only a delivery can answer: that
-     * SOME attested arm exists at all -- a read no attested arm delivers is
-     * refused by name below -- and the SORT the variable is declared at.
-     * The arm's own sort, never the arrival's spelling: the arrival says
-     * what the value looked like, the delivery says what it is, and one
-     * variable has one sort.  The declaration has to happen HERE, while the
-     * path is being lowered, because a leaf naming this symbol in phi or in
-     * a join is cut as a free symbol otherwise, and the families are
-     * emitted once the path's own conjunction is closed.</p>
-     *
-     * <p>ATTESTED IS THE PRODUCER'S PROPERTY, and {@link
-     * Arms#attestedExports} is the one rule for it: any session of the
-     * corpus that ran the producer occurrence symbolically can say under
-     * what the delivery happened, and the pairing then uses THAT session's
-     * export at this same endpoint -- lowered in its own session's scope,
-     * because the identities inside it are that execution's.  Asking
-     * whether the CONSUMER's session attests the producer asks a question
-     * about the wrong run: on hdfs-11741 campaign #3 nn0's export
-     * occurrence was nobody's focus, so all eleven focused paths fell back
-     * to the arrival literal 182905/182907 and nn0's symbols reached no
-     * dn1 formula at all.</p>
+     * <p>Declared HERE, during the path's lowering, or leaves naming it in
+     * phi or a join are cut as free.  Attested is the PRODUCER's property
+     * ({@link Arms#attestedExports}), from any session that ran it, lowered
+     * in that session's scope; never ask the consumer's session.</p>
      */
     private boolean attestedArrival(AttachRow attach) {
         Endpoint producer = attach.producer();
@@ -1461,44 +1134,18 @@ public final class Composer {
     }
 
     /**
-     * Read := the expression of the write version it observed.
-     *
-     * <p>JOIN, then PIN to what the recording says the read returned, then
-     * REFUSE by name.  There is no "latest write" and no choice between
-     * writers: the version the read observed is a recorded fact of one
-     * session's own counter.</p>
-     */
-    /**
      * Every row of this session that states a value a symbol of this path
-     * may be.
-     *
-     * <p>The anchor's own reads, and every MINT ROW this session published,
-     * wherever it published it.  A mint's identity in a session is the
-     * version it installed -- the key {@link
-     * SmtLowering#mintedReadSymbol} resolves by, and the key the runtime
-     * publishes one row per (location, version) by -- and the occurrence the
-     * row was published AT is not part of it.  The two disagree whenever a
-     * sibling activation publishes first: the anchor region's two
-     * FSImageSaver activations race on one {@code AtomicInteger}, the one
-     * that mints installs the VM symbol (labelled with its own planned
-     * occurrence) and the one that CLOSES first wins the session-wide
-     * per-(location, version) claim and publishes the row, under its own
-     * address and the other's symbol.  On hdfs-17960 session
-     * e03c7d5b... that is mint v177 -- the ANCHOR's own declared input --
-     * published at {@code saveFSImageInAllDirs#u36@1}, so a loop over the
-     * anchor's rows alone bound nothing for it, the leaf naming it was cut
-     * {@code UndeclaredFreeSymbol}, and the whole flip path left the
-     * disjunction (2 paths where the corpus has 3).</p>
+     * may be: every MINT ROW of the session wherever published (a mint is
+     * identified by its version, see {@link SmtLowering#mintedReadSymbol};
+     * a sibling activation may publish it under its own address), then the
+     * reads of the reached occurrences.
      */
     private List<ReadRow> statedRows(String session,
                                      Set<String> occurrences) {
         List<ReadRow> rows = new ArrayList<ReadRow>();
         Set<String> stated = new LinkedHashSet<String>();
         SessionReader reader = corpus.session(session);
-        // THE MINT ROWS FIRST, wherever they were published: every other
-        // read of a version a mint installed resolves to the symbol one of
-        // these rows states, so a row bound after them would be asked about
-        // a symbol nothing had stated yet.
+        // Mint rows first: other reads resolve to the symbols they state.
         if (reader != null) {
             for (ReadRow read : reader.reads()) {
                 if (read.mintVersion() >= 0L && read.symbol() != null
@@ -1508,10 +1155,8 @@ public final class Composer {
                 }
             }
         }
-        // THE ANCHOR FIRST, then the occurrences its joins reach, in the
-        // order the closure met them (P3): a symbol two occurrences read
-        // is stated once, by the row of whichever of them this path
-        // reached first, and the anchor is always first.
+        // Then the anchor, then reached occurrences in closure order (P3);
+        // a symbol is stated by the first row met.
         for (String occurrenceId : occurrences) {
             OccurrenceAddress at = corpus.occurrence(occurrenceId);
             if (at == null) continue;
@@ -1525,41 +1170,18 @@ public final class Composer {
     }
 
     /**
-     * The occurrences this path's joins reach, and each one's cutoff seq.
+     * The occurrences this path's joins reach, and each one's cutoff seq:
+     * P3, a row-level fixed point over ONE session's log.
      *
-     * <p>P3, as a row-level fixed point over ONE session's own log.  The
-     * anchor is reached at {@code target.seq()} -- P1's bound, and nothing
-     * widens it, because the anchor's own decision at that seq is the one
-     * phi asserts the complement of.  Every other occurrence is reached
-     * because a read this path binds joined to a WRITE of it, and the
-     * cutoff is that write's seq: what the writer had decided by the time
-     * it produced the value.  A second read joining to a LATER write of the
-     * same occurrence widens the cutoff to that write's seq and the
-     * occurrence is walked again, so the prefix the path carries is the one
-     * that covers every delivery it rests on.</p>
+     * <p>The start keeps its cutoff (the target observation; widening it
+     * would include the anchor decision phi negates).  Any other occurrence
+     * is reached at the seq of the write a read joined to, widened by later
+     * writes; its reads before the cutoff are joined in turn.</p>
      *
-     * <p>The reached occurrence's own reads are then joined too, which is
-     * what makes this a closure rather than one step: dn1's refresh read
-     * the value nn0 exported, and nn0's export is a reason the refresh
-     * wrote what it wrote.  A read of a reached occurrence counts only
-     * where it happened BEFORE that occurrence's cutoff; the anchor's reads
-     * are all of them, because they are its declared inputs and the target
-     * row is one of them.</p>
-     *
-     * <p>P3c, the second edge: the EARLIER VERSIONS of a reached write's own
-     * location are reached with it.  The state of an object at version v is
-     * the result of every earlier mutation of that object in that run, so
-     * each earlier writer's prefix is a reason the value is what it is --
-     * not only the prefix of whichever occurrence made the last change.
-     * 11741's anchor joined the version its DataNode's put loop produced,
-     * and what the map LACKS at that version is what another occurrence
-     * removed from it earlier, under a comparison against the clock it read;
-     * no row of the session joins the two, so without this the composed
-     * query stated "the map lacks the key" as a bare fact of the recording
-     * and declared no cell of that clock.  An earlier write is reached
-     * exactly as a joined one is -- its writer at that write's seq, widening
-     * as ever -- and its own earlier versions are covered by construction,
-     * being earlier still; each (location, version) is handled once.</p>
+     * <p>P3c: EARLIER VERSIONS of a reached write's location are reached
+     * too, since a state is the result of every earlier mutation (e.g. what
+     * a map lacks was removed earlier under a clock comparison).  Each
+     * (location, version) is handled once.</p>
      */
     Map<String, Long> closure(String session, OccurrenceAddress start,
                               long cutoff, List<WriteRow> seeds) {
@@ -1604,24 +1226,15 @@ public final class Composer {
     }
 
     /**
-     * One write this path rests on: its writer is reached, its state swept.
-     *
-     * <p>The same rule whether the write was joined by a read row or is an
-     * earlier version of a location already reached, because it is the same
-     * fact either way -- the value this path rests on came out of that
-     * write.  The ANCHOR is never reached and no write of its own is swept:
-     * its cutoff is the target observation, and a write of its own is not a
-     * reason to widen it.</p>
+     * One write this path rests on (joined or an earlier version): its
+     * writer is reached and its location's earlier versions queued.
      */
     private void reach(WriteRow write, OccurrenceAddress start,
                        Map<String, Long> reached,
                        List<String> pending, List<WriteRow> versions,
                        Set<String> handled) {
         String writer = write.endpoint().occurrence().id();
-        // NEVER THE ANCHOR, and never the occurrence this closure starts
-        // from: the start's cutoff is the event the closure is about -- the
-        // target observation, or the export an arm delivered -- and a write
-        // of its own is not a reason to widen it past that.
+        // Never the anchor or the start: their cutoff is fixed.
         if (anchor.id().equals(writer) || start.id().equals(writer)) return;
         if (handled.add(SmtLowering.locationKey(write.location()) + "#"
                 + write.version())) {
@@ -1634,15 +1247,8 @@ public final class Composer {
     }
 
     /**
-     * The decision prefix of every reached occurrence but the anchor's.
-     *
-     * <p>Through the same one routine the anchor's prefix goes through, so
-     * a decision means the same thing wherever it stands: the published
-     * term is the site's PREDICATE and the row's outcome says which arm the
-     * run took.  A conjunct that names something nothing declares is
-     * refused by name, exactly as in the anchor's own prefix -- a path that
-     * kept the rest of its conjunction would rest on the free constant the
-     * refusal left behind.</p>
+     * The decision prefix of every reached occurrence but the anchor's,
+     * by the same rule as the anchor's pi; undeclared names are refused.
      */
     List<String> closureConditions(String session,
                                            Map<String, Long> reached,
@@ -1674,24 +1280,11 @@ public final class Composer {
     }
 
     /**
-     * Read := the value the ROW states it returned, before any lowering.
-     *
-     * <p>The PIN half of {@link #stateJoins}, hoisted: it needs no
-     * expression, so it can bind every symbol the rows state outright
-     * before the first leaf of this path is lowered.  That is what makes a
-     * read symbol a DECLARED symbol of its session rather than one that
-     * happened to be declared in time -- a leaf of it inside another
-     * read's joined write expression was cut as free because that read's
-     * row came first (the 17960 anchor's AtomicInteger placeholder, 18
-     * rows, reached through write v172's expression).</p>
-     *
-     * <p>Only the reads the JOIN half does not own: a read the write log
-     * covers takes its value from the write's expression, which is the
-     * chain, and is bound there.  A read whose row states NO value is left
-     * to the JOIN half, which asks the version's own row for it and names
-     * the refusal if nothing states that either; a row whose stated value
-     * this lowering places nowhere is named here.  Either way one refusal
-     * per row: {@code answered} is what the two halves say it by.</p>
+     * Read := the value the ROW states, bound before any lowering: the PIN
+     * half of {@link #stateJoins}, hoisted so every leaf naming the symbol
+     * resolves.  Only for reads the write log does not cover; rows stating
+     * no value are left to the join half.  {@code answered} keeps one
+     * refusal per row across both halves.
      */
     void statedReads(String session, Set<String> occurrences,
                              List<GapRow> refusals,
@@ -1706,16 +1299,9 @@ public final class Composer {
     }
 
     /**
-     * Read := the value its own row states, through the one lowering.
-     *
-     * <p>Answers whether the row states a value this places: a scalar is
-     * its literal, and a REFERENCE is the identity the VM spelled -- the
-     * same {@code identity__} name every other leaf of that object gets,
-     * or null for {@code "N"} -- because a row and a
-     * {@code FieldAccess concreteValue} state a recorded reference the
-     * same way and there is one place that reads that spelling.  A row
-     * whose stated value this places nowhere is named by the caller, never
-     * skipped in silence.</p>
+     * Read := the value its own row states, via
+     * {@link SmtLowering#statedValue}.  Answers whether the row states a
+     * value at all; an unplaceable one is refused by name.
      */
     private boolean pin(String session, ReadRow read,
                         List<GapRow> refusals, Map<String, String> joins,
@@ -1749,6 +1335,10 @@ public final class Composer {
                 read.observedVersion()) != null;
     }
 
+    /**
+     * Read := the expression of the write version it observed; then PIN;
+     * then REFUSE.  No "latest write", no choice between writers.
+     */
     void stateJoins(String session, Set<String> occurrences,
                             SmtLowering.SessionJoin join,
                             List<GapRow> refusals,
@@ -1759,9 +1349,7 @@ public final class Composer {
         Map<String, String> statedOnce = new LinkedHashMap<String, String>();
         for (ReadRow read : statedRows(session, occurrences)) {
             if (read.symbol() == null || read.symbol().isEmpty()) continue;
-            // WHAT this row states is session-wide; WHICH reads of the
-            // anchor a family may offer another writer to, and what the
-            // anchor's own reads returned, are the anchor's.
+            // Family alternatives and observed values are the anchor's only.
             boolean atAnchor = anchor.id().equals(
                     read.endpoint().occurrence().id());
             String key = SmtLowering.locationKey(read.location());
@@ -1771,15 +1359,7 @@ public final class Composer {
             if (write != null) {
                 JsonObject expression = corpus.session(session).expressions()
                         .expression(write.expressionRef());
-                // A row that cites a ref its own session's table does not
-                // hold is an inconsistency the CORPUS states, and the join
-                // is the chain: composed over the sort an absent
-                // expression refuses at, it declared this read's symbol as
-                // a reference while another session's row declared the
-                // same symbol Int -- which is how the first three-session
-                // 17960 corpus (two sessions with an empty table and 28
-                // cited refs each) came out of the composer as a stack
-                // trace instead of a claim.
+                // A cited ref missing from its own table: BLOCKING.
                 if (expression == null) {
                     refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
                             GapClass.BLOCKING, write.expressionRef(),
@@ -1790,10 +1370,8 @@ public final class Composer {
                                     + "joins to is not in this corpus"));
                     continue;
                 }
-                // And a join whose lowering REFUSED is not a join: the
-                // term it hands back is the free constant the refusal left
-                // behind, and binding a read row's symbol to it declares
-                // that symbol at the refusal's sort.
+                // A refused lowering is no join (its term is a free
+                // constant at the refusal's sort).
                 int refusedBefore = lowering.openRefusals().size();
                 Term value = lowering.term(expression, null,
                         "state-join:" + key + "@" + read.observedVersion());
@@ -1806,17 +1384,9 @@ public final class Composer {
                     String literal = atAnchor ? smtLiteral(
                             read.concreteValue()) : "";
                     if (!literal.isEmpty()) {
-                        // What the read RETURNED, kept beside the join: the
-                        // join is the chain and moves with the roots, this
-                        // is the interleaving the run actually took, and the
-                        // claim policy asks for it when it needs to know
-                        // whether a witness rests on another writer.
-                        //
-                        // ONE statement per symbol: an occurrence publishes
-                        // one row per read of its declared input -- two
-                        // activations of the anchor, two rows, one symbol --
-                        // and two rows that state different values for it
-                        // are a refusal, not two pins.
+                        // What the read RETURNED (the interleaving the run
+                        // took), kept beside the join for the claim policy.
+                        // One statement per symbol; conflicting rows refuse.
                         String name = "observed_read__"
                                 + ArtifactIO.digest(read.symbol(), 10);
                         String statement = "(= " + read.symbol() + " "
@@ -1838,21 +1408,14 @@ public final class Composer {
                 }
             }
             if (joins.containsKey(read.symbol())) continue;
-            // The row's own stated value.  Every row that is not joinable
-            // was already asked this at step 0; a joinable one whose write
-            // expression lowered to nothing is asked here.
+            // The row's own value (non-joinable rows were asked at step 0).
             if (!answered.contains(read.symbol())
                     && pin(session, read, refusals, joins, answered)) {
                 continue;
             }
             if (answered.contains(read.symbol())) continue;
-            // What the MINT at the version this read observed gave it: no
-            // write made that version, and a placeholder row of this
-            // session states it under `mintVersion` (CONTRACT v2.4).  That
-            // is the VM's primitive at a declared region input, keyed by
-            // the version it created and by nothing else -- unique by
-            // construction, where (occurrence, location) could not choose
-            // between two ports of one occurrence.
+            // What the MINT that created this version gave it, keyed by
+            // `mintVersion` alone (CONTRACT v2.4).
             String minted = SmtLowering.mintedReadSymbol(join,
                     read.observedVersion());
             if (minted == null) {
@@ -1867,30 +1430,15 @@ public final class Composer {
                 continue;
             }
             if (minted.equals(read.symbol())) {
-                // This row IS the one that states the version: its own
-                // pin bound it at step 0, and there is nothing to add.
+                // This row states the version; bound at step 0.
                 continue;
             }
             if (!minted.isEmpty()) {
                 Sort sort = lowering.declarations().get(minted);
                 // A DECLARED ROOT IS BOUND BY ITS DOMAIN, NOT BY A VALUE.
-                // Requiring a stated value here is right for an ordinary
-                // read -- binding to a symbol the recording never valued
-                // would invent freedom the run did not have.  A clock is
-                // the opposite case: its mint stated a symbol and
-                // DELIBERATELY no value, because a value on that row is a
-                // pin, and a composition that pins a clock to the instant
-                // the run read can never answer "this needed a skew"
-                // ({@code ClaimPolicy#clocksNeeded} re-asks with exactly
-                // that pin and never reaches unsat).  Its freedom is stated
-                // once, as a domain, by {@link #clocks}.
-                //
-                // hdfs-11741 campaign #6: every one of the 116 paths that
-                // reached the anchor was refused here, on the DataNode
-                // clock the case turns on, with 27144 diagnostics of this
-                // one kind -- the row the runtime had just been taught to
-                // publish, rejected for stating no value it was never
-                // supposed to state.
+                // An ordinary read needs a stated value; a clock mint
+                // deliberately states none (pinning it could never show a
+                // skew), and {@link #clocks} states its domain.
                 RootMintRow root = corpus.rootBySymbol(session, minted);
                 if (sort == null && root != null) {
                     sort = corpus.declaredSymbols().get(minted);
@@ -1906,9 +1454,7 @@ public final class Composer {
                     continue;
                 }
                 if (root != null && !lowering.stated(minted)) {
-                    // The root's own name, declared at the sort its mint
-                    // states, so the domain this composition emits for it
-                    // lands on the same symbol the read is joined to.
+                    // So the root's domain lands on the joined symbol.
                     lowering.declareStated(minted, sort);
                 }
                 lowering.declareStated(read.symbol(), sort);
@@ -1925,14 +1471,9 @@ public final class Composer {
     }
 
     /**
-     * What this session received at each of these attaches, one term per
-     * symbol: the anchor's for the mechanism a witness is named by, every
-     * family-bound one of the path for the run as it happened.
-     *
-     * <p>Kept beside the path rather than inside it: where a read binds to
-     * the paired producer's expression (R-READ) the arrival is a
-     * CONSEQUENCE of that producer's roots, so pinning it would pin them --
-     * but it is still the pairing the run had.</p>
+     * What this session received at these attaches, one term per symbol.
+     * Kept beside the path, not in it: an arrival is a consequence of its
+     * producer's roots (R-READ), so pinning it would pin them.
      */
     private List<String> arrivals(List<AttachRow> attaches) {
         List<String> stated = new ArrayList<String>();
@@ -1963,18 +1504,11 @@ public final class Composer {
             roots.put(row.rootId(), domain);
             if (!lowering.declared(row.symbol())) continue;
             if (row.kind() == RootKind.MARKER) {
-                // A declared marker is free in {recorded, flipped}, which
-                // for a Boolean is every value it has: nothing to assert.
+                // A declared marker is free: nothing to assert.
                 if (row.declared()) continue;
             }
-            // FIRST: is "the" recorded value one thing at all?  A root two
-            // sessions recorded differently has no corpus-wide reading, so
-            // it has no corpus-wide window either: a declared domain is
-            // RELATIVE to a reading, and resolving it against the seed's
-            // would exclude another session from its own legal window and
-            // close that session's disjunct for a reason nothing states.
-            // Each path carries its own (valuationOf); nothing is asserted
-            // here.
+            // A root sessions recorded differently has no corpus-wide
+            // window; each path carries its own ({@link #valuationOf}).
             if (corpus.varied(row.rootId())) {
                 gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                         row.rootId(), "sessions of this corpus recorded "
@@ -1993,12 +1527,8 @@ public final class Composer {
                                 + integralLiteral(max) + "))");
                 continue;
             }
-            // A root with no domain is pinned to what the recording read
-            // -- UNLESS the same symbol is also a READ of its own session,
-            // in which case the mint is a region INPUT published twice and
-            // the read's join is the truth about it.  Pinning it here
-            // would fix a value the join is free to move, and the two
-            // statements about one symbol would close the path.
+            // No domain: pin to the recording, unless the symbol is also a
+            // read (a region input published twice; the join decides).
             if (placeholder(row)) {
                 gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
                         row.rootId(), "placeholder published as root: this "
@@ -2015,15 +1545,8 @@ public final class Composer {
     }
 
     /**
-     * Whether a mint is a declared region INPUT wearing a root's clothes.
-     *
-     * <p>A region's declared inputs are published as symbols the region
-     * READS; publishing the same symbol as a RootMintRow as well states it
-     * twice, and the two statements are not the same -- a root is pinned
-     * to its recording, a read joins to whatever wrote it.  Where both
-     * rows exist the read is the truth and the mint pins nothing; the row
-     * is named so the double publication is visible rather than
-     * arbitrated in silence.</p>
+     * Whether a mint is a declared region INPUT also published as a root.
+     * The read wins (it joins to its writer) and the mint pins nothing.
      */
     private boolean placeholder(RootMintRow row) {
         if (row.declared()) return false;
@@ -2038,31 +1561,18 @@ public final class Composer {
     }
 
     /**
-     * Every declared CLOCK cell the formula names: its domain, its
-     * recorded reading, and its place in its node's order.
+     * Every declared CLOCK cell the formula names: its domain, its recorded
+     * reading, and its place in its node's order.
      *
-     * <p>A CELL is the symbol the mint published -- one per (root,
-     * occurrence), the same in every session that read it -- and the
-     * reading a claim about the recording rests on is the SEED's: every
-     * execution reads a clock fresh, so there is no corpus-wide "the
-     * reading".  The domain is stated against that reading, once per cell
-     * ({@link JavaPrimitiveSmtSemantics#clockDomain}): the floor is the
-     * reading itself, since a clock turned back is no run of anything,
-     * and the ceiling is the reading plus the window -- unless the case
-     * declares the clock root's bounds in {@code root-domains.jsonl},
-     * which is the one way to ask for a backward move.  A cell the seed
-     * did not read gets the domain of the mint that read it and no
-     * reading, so no claim is made about where it sat.</p>
+     * <p>A cell is one per (root, occurrence); its reading is the SEED's.
+     * Domain ({@link JavaPrimitiveSmtSemantics#clockDomain}): floor = the
+     * reading, ceiling = reading + window, unless {@code root-domains.jsonl}
+     * declares bounds (the only way to ask for a backward move).  A cell
+     * the seed did not read is domained but has no reading.  EVERY cell is
+     * domained, or it is left free.</p>
      *
-     * <p>THE NODE'S CLOCK IS ONE CLOCK.  The seed's mints on one node,
-     * in event order, are readings of the same counter, so each is at or
-     * after the one before it: {@code c_i <= c_{i+1}}, asserted per
-     * consecutive declared pair.  Without it a model skewed nn0's second
-     * rotation and left its first at the recording, which is not a node
-     * whose clock is ahead but two clocks on one node.  Every cell is
-     * domained: a declared cell that entered the query through a family
-     * arm or a state join and no decision read was left free, and
-     * re-solving bug1's query put three of them at {@code -9.22e18}.</p>
+     * <p>ONE CLOCK PER NODE: the seed's cells on a node are ordered by seq,
+     * {@code c_i <= c_{i+1}}.</p>
      */
     private void clocks(List<String> cells, Map<String, Long> readings) {
         String seed = seed();
@@ -2134,13 +1644,8 @@ public final class Composer {
     }
 
     /**
-     * The session that recorded the run, or null when that has no answer.
-     *
-     * <p>One spelling for "no answer", and it is the contract's: the corpus
-     * answers {@code ""} to a caller that asks for a name to print, and
-     * every claim that turns on WHICH session is the recording asks this,
-     * because {@code ""} equals no session id and would silently read as
-     * "not the seed" instead of "the corpus does not say".</p>
+     * The session that recorded the run, or null when that has no answer
+     * (the corpus's {@code ""} would silently read as "not the seed").
      */
     private String seed() {
         String stated = corpus.seedSessionId();
@@ -2163,18 +1668,11 @@ public final class Composer {
     }
 
     /**
-     * One question per declared root, ordinal 0 being the run as it
-     * happened.
-     *
-     * <p>Assignment-major: the recorded valuation first, then single moves
-     * ordered by the distance moved (one rotation before three), then
-     * pairs.  What a root may be is its KIND and the case's declaration: a
-     * declared MARKER is free in {recorded, flipped} by kind and needs no
-     * declared domain, an INTEGRAL without one is pinned to what the
-     * recording read and is not enumerated, and a CLOCK has its Java-long
-     * domain and no
-     * window.  Every root this skips is named, because which valuations
-     * were asked is what the claim's polarity gate is about.</p>
+     * One question per declared root; ordinal 0 is the run as it happened,
+     * then single moves by distance, then pairs.  A declared MARKER flips;
+     * an INTEGRAL without a domain is pinned, not enumerated; CLOCKs are not
+     * enumerated.  Every skipped root is named: the claim's polarity gate
+     * reads which valuations were asked.
      */
     private List<Valuation> valuations() {
         List<String> declared = new ArrayList<String>();
@@ -2186,13 +1684,8 @@ public final class Composer {
             RootMintRow row = corpus.anyRoot(entry.getKey());
             if (row == null || !row.declared()) continue;
             if (!lowering.declared(row.symbol())) {
-                // No admitted path's formula names this root, so moving it
-                // would produce the same query twice and decide nothing --
-                // and the pin would name a constant the query never
-                // declares, which z3 answers with an error instead of a
-                // verdict.  Named rather than skipped in silence: on the
-                // 17960 seed this is the whole reason one valuation was
-                // asked, and reading it took a dig through the corpus.
+                // Unnamed by any path: moving it decides nothing, and the pin
+                // would name an undeclared constant (a z3 error).
                 gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
                         entry.getKey(), "the case declares this root and no "
                                 + "admitted path's formula names it, so no "
@@ -2265,17 +1758,8 @@ public final class Composer {
     }
 
     /**
-     * How far one move is from the recording, for the ordering.
-     *
-     * <p>A root whose domain is NUMERIC has a distance, and the ordering
-     * asks the nearest counterfactual first.  A root whose domain is not --
-     * 17960's own {@code HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED} is
-     * {@code true}/{@code false} -- has no metric at all: a move either is
-     * the recorded value or is not, so it counts one.  That is stated here
-     * as the rule it is, rather than as a {@code NumberFormatException}
-     * caught around the numeric case, because "this domain is not numeric"
-     * and "this row is malformed" are two different facts and an exception
-     * handler answered both with the same number.</p>
+     * How far one move is from the recording: |delta| for numeric domains,
+     * 1 per moved root otherwise (e.g. a boolean config).
      */
     private long distance(Map<String, String> move) {
         long total = 0L;
@@ -2365,29 +1849,20 @@ public final class Composer {
     // ------------------------------------------------------------------
 
     /**
-     * Whether a published term names something nothing declares.
-     *
-     * <p>A term the runtime writes is written over the symbols the runtime
-     * declared.  One that names anything else would either fail to parse or
-     * put a free constant in the formula, and a free constant is how a
-     * model answers a question the execution never asked -- so the path
-     * that carries it is refused, by the name of what is missing.</p>
+     * Whether a published term names something nothing declares; if so the
+     * path is refused by the missing names (a free constant would answer a
+     * question the execution never asked).
      */
     boolean unknown(String term, List<GapRow> refusals,
                             String subject) {
         List<String> free = new ArrayList<String>();
-        // A name the term BINDS is not free.  The associative size model
-        // writes `(let ((previous_size ...)) ...)`, and reading its body
-        // without its binder refused every path of hdfs-11741 campaign #6
-        // that reached the anchor.
+        // let-bound names are not free.
         Set<String> bound = SmtNames.letBound(term);
         for (String token : SmtNames.names(term)) {
             if (SmtNames.BUILTIN.contains(token)) continue;
             if (bound.contains(token)) continue;
             if (lowering.defined(token)) continue;
-            // The one registry says whether the recording states it, and
-            // at what sort: a published term can name a recorded symbol
-            // as text, without a leaf of it ever being lowered.
+            // A recorded symbol may appear only as text.
             if (lowering.declareStated(token)) continue;
             free.add(token);
         }
@@ -2400,13 +1875,7 @@ public final class Composer {
         return true;
     }
 
-    /**
-     * A gap the COMPOSITION raised, as against one a session published.
-     *
-     * <p>Every row carries a session id, and a composition is not a
-     * session, so the rows it raises say so in that field rather than
-     * borrowing some session's name for a fact that is not about it.</p>
-     */
+    /** The session-id field of a gap the COMPOSITION raised. */
     static final String COMPOSITION = "composition";
 
     void gap(GapKind kind, GapClass cls, String subject,

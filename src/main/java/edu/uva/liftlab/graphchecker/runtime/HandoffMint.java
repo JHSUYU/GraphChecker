@@ -25,37 +25,24 @@ import java.util.UUID;
  * R4's far half: v_H, the consumer's boundary variable, minted on the value
  * that arrived.
  *
- * <p>The producer's expression e_p has just been attached by
- * {@link WireExport}; the element's shadow then becomes a FRESH variable
- * instead, so the consumer's formula has a free variable at the boundary
- * rather than the producer's whole expression inlined into it.  That is
- * what lets the two sides be explored independently and joined offline at
- * H: e_p travels on the row as one member of H's family, never as a
- * substitution.</p>
+ * <p>After {@link WireExport} attaches the producer's e_p, the element's
+ * shadow becomes a FRESH variable, so the two sides are explored
+ * independently and joined offline at H; e_p travels on the row, never as a
+ * substitution.  Entries: {@link #mintDelivered} (element carried),
+ * {@link #mintArrived} (none; row states {@code elementAbsent}) and
+ * {@link #mintAmbient} (outside every selected occurrence -- selection
+ * decides whose paths are explored, never whether a value crossed).</p>
  *
- * <p>Three entries, one rule.  {@link #mintDelivered} for a delivery whose
- * message carried an element, {@link #mintArrived} for one that carried
- * none -- v_H is the CONSUMER's, so it is minted from what arrived and the
- * row states {@code elementAbsent} -- and {@link #mintAmbient} for a
- * declared port that arrived outside every selected occurrence, because
- * selection decides whose paths are explored and never whether a value
- * crossed.</p>
- *
- * <p>The identity is {@code (port, consumer occurrence, k-th attach of this
- * element, element path)} and nothing else, so the same attach in two
- * replays mints the same variable and an answer written for one is found by
- * the other.  The consumer occurrence is the one the PLAN declares the IN
- * site on, not whichever activation happened to be live when the value
- * arrived.</p>
+ * <p>Identity is {@code (port, consumer occurrence, k-th attach, element
+ * path)} only, so the same attach in two replays mints the same variable.
+ * The consumer occurrence is the one the PLAN declares the IN site on, not
+ * the live one.</p>
  */
 final class HandoffMint {
     private HandoffMint() {
     }
 
-    /**
-     * Files one case-local reference into the VM's own handoff ledger and the
-     * exact expression now held by the attached destination.
-     */
+    /** Mints v_H for a delivery whose message carried an element. */
     static void mintDelivered(CommunicationHandoffSpec site,
                               WireExport.HandoffResult result,
                                              Object owner,
@@ -65,7 +52,6 @@ final class HandoffMint {
         if (site == null) return;
         ActiveRegion active = attachConsumerRegion(site);
         if (active == null) {
-            // Same rule on the element-present side: the delivery happened.
             ConcolicRegionRuntime.beginBookkeeping();
             try {
                 mintAmbient(site, owner, declaringClass,
@@ -80,7 +66,7 @@ final class HandoffMint {
         if (exportEvent <= 0L) {
             return;
         }
-        // README RPC-1: the reference carries both endpoints of the edge.
+        // README RPC-1: both endpoints of the edge.
         long attachEvent = result.ok()
                 ? optionalLongInteger(result.record, "attachEventId", 0L) : 0L;
         if (attachEvent <= 0L) {
@@ -112,13 +98,9 @@ final class HandoffMint {
     }
 
     /**
-     * Mints v_H at a declared capture whose message carried no element.
-     *
-     * <p>The consumer's boundary variable is the consumer's, so it is minted
-     * from what arrived: the row states {@code elementAbsent}, the delivered
-     * value, and no producer -- and an assignment for this H answers the
-     * mint exactly as it does when the element is there, because the answer
-     * is written on the carrier leaf the receiving frame reads back.</p>
+     * Mints v_H at a declared capture whose message carried no element: the
+     * row states {@code elementAbsent} and no producer; an answer is written
+     * on the carrier leaf as usual.
      */
     static void mintArrived(
             CommunicationHandoffSpec site, Object carrier, String field,
@@ -127,9 +109,6 @@ final class HandoffMint {
         try {
             ActiveRegion active = attachConsumerRegion(site);
             if (active == null) {
-                // The entry rule: the port is declared and the value
-                // arrived, so v_H is minted on the ambient activation and
-                // the row states the degraded occurrence it arrived in.
                 mintAmbient(site, carrier, ConcolicRegionRuntime.CARRIER_CLASS, field,
                         descriptor);
                 return;
@@ -143,21 +122,10 @@ final class HandoffMint {
 
     /**
      * The activation this attach belongs to: the innermost live region whose
-     * own plan declares this port as an IN site.
-     *
-     * <p>An attach happens inside whichever regions are live, and the
-     * innermost of them is not always the one whose slice owns the attach
-     * site: a loop-body region's activation spans one turn, and the same
-     * decode site also runs outside the loop.  Filing on the innermost live
-     * region regardless published the row under a region that never
-     * declared the port -- on hdfs-17899 bug2, REGION.b7266d53, the caller,
-     * carried both rows while REGION.16ba41cf, which declares them IN,
-     * published none, so one attach was reported twice: unplanned there and
-     * unreproduced here.</p>
-     *
-     * <p>When no live region declares it, the innermost live one still
-     * carries the row: the replay is exact about what it did, and R5 then
-     * says truthfully that a region ran a handoff nobody planned there.</p>
+     * plan declares this port IN.  Trap: the innermost live region may not
+     * own the site, and filing there reports one attach twice.  When none
+     * declares it the innermost live one carries the row, and R5 reports it
+     * unplanned; null only when no region is live.
      */
     private static ActiveRegion attachConsumerRegion(
             CommunicationHandoffSpec site) {
@@ -166,22 +134,9 @@ final class HandoffMint {
     }
 
     /**
-     * Mints the handoff variable v_H on the element this attach landed on.
-     *
-     * <p>The producer's expression {@code e_p} has just been attached and is
-     * in {@code expression}; the element's shadow now becomes a fresh
-     * variable instead, so the consumer's formula has a free variable at the
-     * boundary rather than the producer's whole expression inlined into it.
-     * That is what lets the two sides be explored independently and joined
-     * offline at H: {@code e_p} travels on the row as one member of H's
-     * family, never as a substitution.</p>
-     *
-     * <p>One variable per handoff occurrence per replay. A loop attaching the
-     * same element on each turn gets one per turn, because k is part of H.
-     * The mint is the configured-source mint -- same broker call, same model
-     * answering, same "a mint the VM did not accept publishes no row" rule --
-     * under a label that says handoff so nothing downstream mistakes it for a
-     * configured source.</p>
+     * Mints v_H on each primitive leaf this attach landed on: one variable per
+     * handoff occurrence (k is part of H), by the configured-source mint
+     * mechanism under a handoff label.
      */
     private static void mintHandoffVariable(
             ActiveRegion active, CommunicationHandoffSpec site,
@@ -193,11 +148,7 @@ final class HandoffMint {
                 fieldName, descriptor);
         List<HandoffLeaf> leaves = handoffLeaves(portId, owner, element);
         if (leaves.isEmpty()) {
-            // Never silence: a port whose delivered value exposes no
-            // primitive leaf the VM can mint on has no v_H, and a row
-            // without one names no occurrence two replays could be joined
-            // at, so the loss is named -- in the same words the ambient
-            // sibling uses, so one fact is stated once.
+            // No leaf, no v_H: name the loss (same words as mintAmbient).
             RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.UNSTATED_VALUE,
                     edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC, portId,
                     "the delivered element exposes no primitive leaf to mint"
@@ -211,34 +162,20 @@ final class HandoffMint {
     }
 
     /**
-     * Mints v_H at one primitive leaf of one attach.
-     *
-     * <p>A port that crosses on a reference or an array is one attach and
-     * several variables: {@code exportAllKeys} delivers a {@code BlockKey[]}
-     * and what the consumer's formula reads are the leaves --
-     * {@code [i].keyId}, {@code [i].expiryDate}.  One row per leaf, the leaf
-     * in the element path, so each is its own handoff occurrence and R3
-     * joins each to its own family.</p>
+     * Mints v_H at one primitive leaf of one attach.  A reference or array
+     * port is one attach and several variables (e.g. {@code [i].keyId}), each
+     * its own handoff occurrence for R3.
      */
     private static void mintHandoffLeaf(
             ActiveRegion active, String portId, long exportEvent,
             long attachEvent, JsonElement producerExpression,
             HandoffLeaf leaf, boolean elementAbsent) {
         String elementPath = leaf.path;
-        // H belongs to the occurrence the plan declares this IN site on,
-        // not to whichever activation is live when the value arrives.  A
-        // CALL_RETURN attach runs in the CALLER's frame -- the callee has
-        // returned, so its activation has closed and published -- and the
-        // row therefore rides on the caller while the handoff is the
-        // callee's.  On hdfs-17899 bug2 that is REGION.16ba41cf's decode:
-        // its rows landed on REGION.b7266d53, its caller, so one attach was
-        // reported twice, unplanned there and unreproduced here.
+        // H belongs to the declared IN occurrence, not the live one (a
+        // CALL_RETURN attach runs in the caller's frame).
         String consumerOccurrenceId = declaredConsumerOccurrence(portId,
                 active);
-        // k is the OCCURRENCE's count (I3: ordinals belong to the performer),
-        // not the activation's: every element of one message converted in a
-        // call of its own is an activation of its own, all folding into one
-        // occurrence, and a per-activation k restarted at 1 for each.
+        // k is the OCCURRENCE's count (I3), not the activation's.
         String phaseId = handoffMintKey(portId,
                 consumerOccurrenceId,
                 nextAttach(consumerOccurrenceId, portId, elementPath),
@@ -253,21 +190,11 @@ final class HandoffMint {
         try {
             ConcolicVmBroker api = engine();
             String recordedValue = ConcolicRegionRuntime.recordedScalar(element.get(owner));
-            // Answering is the configured source's, by construction: a
-            // handoff assignment IS a configured-source assignment whose
-            // phase id is this one, so the solver emits one row shape and
-            // the runtime runs one mechanism.
-            // The identity is the leaf's indexed path; what the VM
-            // resolves on the owner is the field signature itself.
+            // Identity is the indexed path; the VM resolves the bare
+            // field signature.
             String signature = leaf.signature();
-            // The phase id IS the identity of H -- it hashes the port, the
-            // consumer occurrence, k and the element path -- so the answer
-            // is looked up by it alone.  Naming the port and the element
-            // path again beside it was a second spelling of the same fact,
-            // and the solver emits the phase.
-            // The endpoint first: an obligation answers an attach BY its
-            // endpoint id (INTERACTION-ID), so the consumer endpoint has to
-            // be named before the answer is written into the leaf.
+            // Name the endpoint first: an obligation answers an attach by
+            // its endpoint id (INTERACTION-ID).
             edu.uva.liftlab.graphchecker.contract.Endpoint consumer =
                     RowRuntime.nextEndpoint(active.d3Address, portId,
                             WireExport.attemptOf(
@@ -277,12 +204,8 @@ final class HandoffMint {
                             .answer(consumer.id());
             if (!answer.isEmpty() && !RootMint.writeModeledField(owner, signature,
                     descriptor, answer)) {
-                // The obligation's answer for this H was not written, so
-                // this replay ran the value that arrived where the wave
-                // asked for another one.  The same refusal a root mint
-                // states (#applyFocusedRootAssignment), by name, instead of
-                // an exception the catch below would have flattened into
-                // "the mint failed".
+                // The answer was not written: the same named refusal a
+                // root mint states (#applyFocusedRootAssignment).
                 RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.ASSIGNMENT_UNPLANTED,
                         edu.uva.liftlab.graphchecker.contract.GapClass.BLOCKING, portId,
                         "the wave's answer for this handoff could not be"
@@ -311,18 +234,13 @@ final class HandoffMint {
         }
     }
 
-    /**
-     * The identity this attach mints v_H under, and the key an obligation's
-     * answer for it is looked up by.
-     *
-     * <p>{@code (port, consumer occurrence, k-th attach of this element,
-     * element path)} and nothing else, so the same attach in two replays
-     * mints the same variable and an answer written for one is found by the
-     * other.  Empty when any part is missing, which is an attach no replay
-     * could be joined at.</p>
-     */
     private static final String HANDOFF_MINT_PREFIX = "HANDOFF_PHASE.";
 
+    /**
+     * The identity v_H is minted under and its answer looked up by:
+     * {@code (port, consumer occurrence, k, element path)}; empty when any
+     * part is missing.
+     */
     private static String handoffMintKey(String portId,
                                          String consumerAddress,
                                          int attachOrdinal,
@@ -338,12 +256,9 @@ final class HandoffMint {
     }
 
     /**
-     * The label the VM mints v_H under.
-     *
-     * <p>Deliberately not the configured source's {@code SRC.} label: a
-     * handoff root and a configured-source root are told apart by name
-     * alone, because the importer recognises a configured-source mint by the
-     * {@code _field_SRC.<label>_} marker inside the root it reads back.</p>
+     * The label the VM mints v_H under.  Never {@code SRC.}: the importer
+     * tells a configured-source root by its {@code _field_SRC.<label>_}
+     * marker.
      */
     static String mintLabel(String mintKey, String portId) {
         return "HOFF." + ArtifactIO.sha256(mintKey + "\n"
@@ -351,39 +266,21 @@ final class HandoffMint {
     }
 
     /**
-     * The occurrence this port's IN site is declared on.
-     *
-     * <p>The plan names it, so it is the same string on both sides and in
-     * every replay; the live activation is whatever the value happened to
-     * arrive under.  Falls back to the carrying activation when no task
-     * declares the port, which is the case R5 names UNPLANNED_HANDOFF.</p>
+     * The occurrence this port's IN site is declared on (stable across
+     * replays), else the carrying activation -- R5's UNPLANNED_HANDOFF.
      */
     private static String declaredConsumerOccurrence(String portId,
                                                      ActiveRegion carrying) {
-        // The live activation that declares it, innermost first.  Several
-        // occurrences of one region declare the same port -- bug2's
-        // REGION.1f6914ec has five -- so "the first task in the plan that
-        // declares this port" names one of them for every attach: in lane
-        // B2e every handoff row came out with consumerOccurrenceId
-        // REGION.1f6914ec…#5 and ONE handoff phase id, which is one
-        // variable for what are several handoffs, and left the occurrence
-        // that did attach reported as not having reproduced its port.
+        // The LIVE declaring activation, not the first declaring task in
+        // the plan: several occurrences may declare one port.
         ActiveRegion declaring = ConcolicRegionRuntime.declaringRegion(new ConcolicRegionRuntime.Declares.Port(portId));
-        // None live declares it: the attach is where it is, and the row
-        // says so rather than borrowing another occurrence's address.  A
-        // CALL_RETURN attach whose callee has already closed and published
-        // lands here, and R5 then reports it against the carrier.
         return declaring == null ? carrying.activation.occurrenceId
                 : declaring.activation.occurrenceId;
     }
 
     /**
-     * States one delivered v_H as the consumer endpoint of an interaction.
-     *
-     * <p>The row carries both endpoints: this consumer, and the producer
-     * the run paired it with -- by the VM handle the producer staged, which
-     * is the pairing evidence the run itself recorded.  A delivery nothing
-     * paired says so rather than naming a producer it guessed.</p>
+     * States one delivered v_H as the consumer endpoint of an interaction,
+     * paired to its producer by the staged VM handle, never by a guess.
      */
     private static void publishAttachRow(
             edu.uva.liftlab.graphchecker.contract.Endpoint consumer,
@@ -397,9 +294,6 @@ final class HandoffMint {
                     view.exchangeCorrelationId, symbol, javaType, arrival,
                     answered, answeredValue);
         } catch (Throwable unstated) {
-            // The same rule as the export side: the delivery happened, and
-            // a consumer endpoint nothing published is a handoff no arm can
-            // be keyed by.
             RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.UNSTATED_VALUE,
                     edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC, portId,
                     "this delivery published no consumer endpoint row, so no"
@@ -410,15 +304,8 @@ final class HandoffMint {
 
     /**
      * Mints v_H at a declared port that arrived outside every selected
-     * occurrence -- the entry rule.
-     *
-     * <p>Every declared port mints on arrival, whatever is selected: the
-     * value crossed the boundary and the consumer's formula needs a free
-     * variable there, and which occurrence it happened in is what the row
-     * says about itself rather than a condition on saying it.  Selection
-     * decides only whose paths are explored (REPORT-ENTRY §2).  Path
-     * recording is deliberately NOT started: an unselected activation
-     * records no path, which is precisely what not selecting it means.</p>
+     * occurrence (the entry rule, REPORT-ENTRY §2).  Path recording is
+     * deliberately NOT started: an unselected activation records no path.
      */
     private static void mintAmbient(
             CommunicationHandoffSpec site, Object owner,
@@ -483,23 +370,14 @@ final class HandoffMint {
         }
     }
 
-    /**
-     * The attaches of each element so far at each consumer occurrence, by
-     * {@code (occurrence, port, element path)}: k of a handoff's identity,
-     * selected or ambient.  Guarded by itself.
-     */
+    /** k per {@code (occurrence, port, element path)}.  Guarded by itself. */
     private static final Map<String, Integer> ATTACHES =
             new HashMap<String, Integer>();
 
     /**
      * k for the next attach of one element at one consumer occurrence.
-     *
-     * <p>Counted per OCCURRENCE, as every ordinal a row carries is (I3): a
-     * count kept on the activation restarts in each activation that folds
-     * into the occurrence.  hdfs-17967 path A, after the ambient fix: the
-     * mirror's heartbeat delivered four block keys, each converted by a
-     * {@code convert(BlockKeyProto)} activation of its own, and each
-     * activation counted its attach as the first -- four keys, one symbol.</p>
+     * Counted per OCCURRENCE (I3): a per-activation count restarts in each
+     * activation folding into it, merging distinct elements into one symbol.
      */
     static int nextAttach(String consumer, String portId,
                           String elementPath) {
@@ -514,20 +392,9 @@ final class HandoffMint {
     }
 
     /**
-     * The identity an ambient attach mints v_H under: THE SAME
-     * {@code (port, consumer occurrence, k-th attach of this element,
-     * element path)} a selected attach is keyed by, k counted by
-     * {@link #nextAttach} for both.
-     *
-     * <p>k was the constant 1, so every element one occurrence received on
-     * one port was ONE variable.  hdfs-17899 bug1: target-dn's heartbeat
-     * delivered four block keys, 119979, 119978, 119981 and 119980, one
-     * {@code convert(BlockKeyProto)} each, each paired to its own producer
-     * on the NameNode -- and all four arrived on one symbol, so the formula
-     * put every key under one key id and never put back the key the clock
-     * move had just expired.  The witness that followed moved a DataNode
-     * clock the real program would have survived: the review of the v9
-     * passes rejected bug1 and 17967 A, B and C on it.</p>
+     * The identity an ambient attach mints v_H under: the same key a selected
+     * attach uses, k from {@link #nextAttach}.  Trap: a constant k makes every
+     * element on one port one variable.
      */
     static String ambientMintKey(String portId, String consumer,
                                  String elementPath) {
@@ -564,22 +431,11 @@ final class HandoffMint {
     private static final int HANDOFF_LEAF_LIMIT = 64;
 
     /**
-     * The primitive leaves one attach delivered.
-     *
-     * <p>A primitive destination is one leaf, itself.  A reference or array
-     * destination is the leaves reachable through it that the VM can mint
-     * on: each element's declared primitive instance fields, index-qualified
-     * so two elements are two handoff occurrences.  An array of primitives
-     * has no field to address and yields none, which the caller names rather
-     * than passes over.</p>
-     *
-     * <p>The cap is named too.  A leaf above it is a boundary variable the
-     * run never minted, so no later stage can join that half of the
-     * delivery at all -- and an unnamed cap reads from the corpus exactly
-     * like a delivery that carried nothing there.  The row states the port,
-     * the cap, and what was left out, counted exactly and without a second
-     * walk: the delivered array elements never visited, and the declared
-     * primitive fields of the elements that were.</p>
+     * The primitive leaves one attach delivered: the field itself if
+     * primitive, else each element's declared primitive instance fields,
+     * index-qualified.  An array of primitives yields none.  Hitting the cap
+     * is named as a gap, since an unminted leaf is otherwise indistinguishable
+     * from nothing delivered.
      */
     private static List<HandoffLeaf> handoffLeaves(String portId,
                                                    Object owner,
@@ -636,11 +492,8 @@ final class HandoffMint {
     /** @return how many qualifying leaves the cap left out */
     private static int addPrimitiveLeaves(Object owner, String prefix,
                                           List<HandoffLeaf> leaves) {
-        // Only the application's own objects.  An array of primitives boxes
-        // each element on the way out of reflection, and java.lang.Integer's
-        // own private "value" is not a leaf the workload addresses -- it is
-        // the box the array element already is, and minting into it would
-        // publish a handoff at a field no decode ever reads.
+        // Only application objects: a boxed primitive's "value" is a field
+        // no decode reads.
         if (owner.getClass().getName().startsWith("java.")) return 0;
         int dropped = 0;
         for (Field field : owner.getClass().getDeclaredFields()) {
@@ -649,7 +502,6 @@ final class HandoffMint {
                 continue;
             }
             if (leaves.size() >= HANDOFF_LEAF_LIMIT) {
-                // Counted, not minted: the caller names how many.
                 dropped++;
                 continue;
             }

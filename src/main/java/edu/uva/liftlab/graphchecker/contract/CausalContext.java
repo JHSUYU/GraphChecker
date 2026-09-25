@@ -3,20 +3,11 @@ package edu.uva.liftlab.graphchecker.contract;
 import java.util.Objects;
 
 /**
- * IDENTITY-IMPL A: why an occurrence ran, in exactly three forms.
- *
- * <p>{@link Anchor} -- a message started it, and the incoming anchor is the
- * producer's {@link Endpoint} id (which recursively carries the producer's own
- * context) together with the RPC static site.  {@link Root} -- a workload
- * action or a daemon tick with no incoming message, numbered by the k-th such
- * root of its role AND api inside the recording window, both of which it
- * carries because the k is counted per (node, role, api).  {@link Lost} --
- * the scope could not be attributed: degraded, and still an identity rather
- * than a guess.</p>
- *
- * <p>Sealed by construction: the constructor is private, so the three nested
- * forms are the only ones there are and a reader may switch on {@link #form()}
- * exhaustively.</p>
+ * IDENTITY-IMPL A: why an occurrence ran, in exactly three forms (sealed by
+ * the private constructor; switch on {@link #form()} exhaustively):
+ * {@link Anchor} (producer {@link Endpoint} id plus RPC site), {@link Root}
+ * (k-th workload action or daemon tick per (node, role, api) in the window),
+ * {@link Lost} (unattributable; degraded but still an identity).
  */
 public abstract class CausalContext {
     /** Which of the three forms a context is. */
@@ -43,20 +34,11 @@ public abstract class CausalContext {
     }
 
     /**
-     * The w-th root of that role and api inside the recording window.
-     *
-     * <p>The api is what the w was counted under
-     * ({@code Lineage.push} counts per (node, role, api)), so it is part of
-     * the context: without it dn1's {@code refresh-block-keys} request and
-     * its {@code offer-service} tick both rendered {@code Root:CLIENT#1}
-     * and one occurrence answered for two.  {@code ""} is a root whose api
-     * nothing declared -- a daemon tick -- and renders without the
-     * segment, which is also what reads back an address written before the
-     * api was carried.</p>
+     * The w-th root of that role and api in the window.  The api is part of
+     * the context because {@code Lineage.push} counts per (node, role, api);
+     * {@code ""} (undeclared, a daemon tick) renders without the segment.
      */
     public static Root of(Role role, String api, int windowIndex) {
-        // The api may carry '/' (it names the caller and the api) and the
-        // window index is rendered last, so the render parses back whole.
         String declared = Fields.optional(api);
         return new Root(Fields.required(role, "role"),
                 declared == null ? "" : declared,
@@ -85,8 +67,7 @@ public abstract class CausalContext {
             if (marker <= 0 || marker + 1 >= body.length()) {
                 throw malformed(rendered);
             }
-            // A role is spelled over [A-Z0-9_] alone, so the first '/' of
-            // the head is the api separator and the api may carry its own.
+            // Roles are [A-Z0-9_], so the first '/' separates the api.
             String head = body.substring(0, marker);
             int api = head.indexOf(API_MARKER);
             try {

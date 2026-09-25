@@ -17,15 +17,11 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
 /** Execution goals for one causal-skeleton region occurrence. */
 public final class RegionInstancePlan extends PlanRow {
-    /** Task members the runtime stamped on one coarse region occurrence, in a
-     *  fixed order.  A field with no direct evidence stays absent. */
+    /** Occurrence members the runtime stamped, copied to the task; absent when
+     *  unevidenced. */
     private static final String[] OCCURRENCE_FIELDS = {
-            // The recorded root call this occurrence ran in.
             "activationId",
-            // Exact dynamic executions of configured-source hook sites in
-            // this coarse occurrence.
             ConfiguredSourcePhaseContract.PLAN_FIELD,
-            // Declared communication ports this occurrence exports/attaches.
             CommunicationHandoffSpec.FIELD,
             LoopBoundPolicy.PLAN_FIELD
     };
@@ -49,9 +45,7 @@ public final class RegionInstancePlan extends PlanRow {
             }
             decoded.add(goal);
         }
-        // README REGION-1: one local occurrence is one coarse task and one
-        // guarded summary.  Bounded write versions of one port belong inside
-        // the single closure, not in a second goal.
+        // README REGION-1: one occurrence = one task = one guarded summary.
         if (decoded.size() != 1) {
             throw new IllegalArgumentException(
                     "region occurrence requires exactly one closure goal, "
@@ -80,9 +74,8 @@ public final class RegionInstancePlan extends PlanRow {
         }
         copyIfPresent(encoded, target, "rootSelector");
         copyIfPresent(encoded, target, "targetMethod");
-        // The once-only-root rule travels to the task row under the names the
-        // region row published: instrumentation and the runtime see the task,
-        // never the region plan it came from.
+        // The task row, not the region plan, is what instrumentation and
+        // runtime read.
         copyIfPresent(encoded, target, LoopBoundPolicy.ROOT_AUTHORITY);
         copyIfPresent(encoded, target, LoopBoundPolicy.ROOT_LOOP);
     }

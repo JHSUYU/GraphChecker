@@ -25,65 +25,32 @@ import java.util.TreeSet;
 import static edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.firstNonBlank;
 
 /**
- * The {@code K_L} a campaign declares for the retained loops of its own
- * workload.
- *
- * <p>README section 5 makes {@code K_L} per loop: "every loop {@code L}
- * retained by an accepted model must declare {@code K_L}".  A declaration is
- * a statement about the workload, not a measurement of it - the planner has
- * no trip counts and must never acquire any - so it is read from campaign
- * configuration and keyed by the loop control site the planner already
- * computes.</p>
- *
- * <h2>The file</h2>
- *
- * <p>One JSONL row per declared loop, named by
- * {@code -D}{@value #SOURCE_PROPERTY} or
- * {@code $}{@value #SOURCE_ENVIRONMENT}, in the same idiom as the protocol
- * stub declarations beside it:</p>
+ * README section 5's per-loop {@code K_L}, declared (never measured: the
+ * planner has no trip counts) in a JSONL file named by {@code
+ * -D}{@value #SOURCE_PROPERTY} or {@code $}{@value #SOURCE_ENVIRONMENT}:
  *
  * <pre>
  * {"loopSiteId": "&lt;a.B: void poll()&gt;#u7", "loopBodyBound": 32,
  *  "reason": "measured 20-29 body executions in the recorded pass"}
  * </pre>
  *
- * <p>{@code loopSiteId} is exactly one entry of the retained loop row's
- * {@link LoopBoundPolicy#LOOP_CONTROL_SITE_IDS} -
- * {@code &lt;method signature&gt;#u&lt;unitIndex&gt;} - so a declaration is
- * greppable against the artifact it applies to, in both directions.  The
- * {@code reason} travels beside the value because a bound with no stated
- * reason is a number nobody can re-derive.</p>
- *
- * <h2>Why a typo cannot be inherited silently</h2>
- *
- * <p>A key is not a hint.  A row naming a field this schema does not define,
- * or naming one loop twice, is refused when the file is read; a row whose
- * site no retained loop claims is refused by {@link #refuseUnclaimed()} once
- * planning has settled, naming {@link
- * LoopBoundPolicy#DECLARED_BOUND_SITE_UNDECLARED}.  Both matter because a
- * unit index moves when the workload is recompiled: without the refusal, a
- * stale key would leave its loop quietly inheriting {@link
- * LoopBoundPolicy#declaredDefault()} and the campaign would model a
- * prefix nobody asked for.  A value outside
- * {@code 1..}{@link LoopBoundPolicy#MAX_DECLARED_LOOP_BODY_ITERATIONS} is
- * refused where it is emitted, naming the key that stated it - mint time
- * refuses it anyway, and refusing here names the file instead of the row.</p>
+ * <p>{@code loopSiteId} is one entry of {@link
+ * LoopBoundPolicy#LOOP_CONTROL_SITE_IDS}.  A key is not a hint: an unknown
+ * field, a duplicate site, a site no retained loop claims ({@link
+ * #refuseUnclaimed()}) and a value outside {@code 1..}{@link
+ * LoopBoundPolicy#MAX_DECLARED_LOOP_BODY_ITERATIONS} are all refused, since a
+ * stale unit index would otherwise silently inherit {@link
+ * LoopBoundPolicy#declaredDefault()}.</p>
  */
 final class DeclaredLoopBodyBounds {
-    /** System property naming the declarations file. */
     static final String SOURCE_PROPERTY = "causynth.loop.bounds";
-    /** Environment variable naming the declarations file. */
     static final String SOURCE_ENVIRONMENT = "CAUSYNTH_LOOP_BOUNDS";
-    /** Declaration field: the loop control site this bound is stated for. */
     static final String SITE_FIELD = LoopBoundPolicy.LOOP_SITE_ID;
-    /** Declaration field: {@code K_L}. */
     static final String BOUND_FIELD =
             LoopBoundPolicy.LOOP_BODY_BOUND;
-    /** Declaration field: why this workload holds that many body executions. */
     static final String REASON_FIELD = "reason";
     /** The greppable key one declaration is named by in every refusal. */
     static final String KEY_PREFIX = BOUND_FIELD + ".";
-    /** A declaration row naming a field this schema does not define. */
     static final String FIELD_UNKNOWN = "BOUNDED_LOOP_BODY_BOUND_KEY_UNKNOWN";
 
     private static final Set<String> FIELDS = Collections.unmodifiableSet(
@@ -109,7 +76,6 @@ final class DeclaredLoopBodyBounds {
             this.origin = origin;
         }
 
-        /** The greppable key this declaration is named by. */
         private String key() {
             return KEY_PREFIX + site;
         }
@@ -137,7 +103,6 @@ final class DeclaredLoopBodyBounds {
         return read(path);
     }
 
-    /** Reads one declarations file. */
     static DeclaredLoopBodyBounds read(Path path) throws IOException {
         SortedMap<String, Declaration> bySite =
                 new TreeMap<String, Declaration>();
@@ -155,10 +120,6 @@ final class DeclaredLoopBodyBounds {
                 Declaration declaration = parse(trimmed, origin);
                 Declaration existing = bySite.get(declaration.site);
                 if (existing != null) {
-                    // One loop has one prefix, so one loop has one
-                    // declaration: two rows for one site state two, and
-                    // picking either would be this file choosing for the
-                    // reader.
                     throw new IOException(
                             LoopBoundPolicy.LOOP_BODY_BOUND_DISAGREES
                                     + ": " + declaration.key()
@@ -209,11 +170,9 @@ final class DeclaredLoopBodyBounds {
     }
 
     /**
-     * {@code K_L} for the retained loop one row's loop control sites name, or
-     * {@code 0} when that loop declares none of its own. One loop has one
-     * prefix, so every member site must declare the same bound; members that
-     * state different bounds - or a member that declares one while another
-     * inherits - are refused by name rather than resolved by picking either.
+     * {@code K_L} for the loop these control sites name, or {@code 0} when
+     * undeclared.  One loop has one prefix: members declaring different
+     * bounds, or one declaring while another inherits, are refused.
      * @throws IllegalArgumentException naming {@link
      *         LoopBoundPolicy#LOOP_BODY_BOUND_DISAGREES} or {@link
      *         LoopBoundPolicy#DECLARED_BOUND_OUT_OF_RANGE}, in both cases
@@ -224,8 +183,7 @@ final class DeclaredLoopBodyBounds {
                 || loopControlSiteIds.isEmpty()) {
             return 0;
         }
-        // Sorted, so what one nest is refused or accepted for is a fact about
-        // the CFG rather than about the order a reader walked its guards in.
+        // Sorted: the verdict must not depend on guard walk order.
         Set<String> sites = new TreeSet<String>(loopControlSiteIds);
         Declaration declared = null;
         int bound = 0;
@@ -250,8 +208,7 @@ final class DeclaredLoopBodyBounds {
             return 0;
         }
         if (!undeclared.isEmpty()) {
-            // An undeclared member is not silence: it inherits, and a nest
-            // whose members hold two different prefixes has no one prefix.
+            // An undeclared member inherits: two prefixes in one nest.
             throw disagreement(sites, declared, bound, KEY_PREFIX + undeclared,
                     "absent, inheriting "
                             + LoopBoundPolicy.declaredDefault());

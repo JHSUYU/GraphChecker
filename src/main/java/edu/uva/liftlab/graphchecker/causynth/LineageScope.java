@@ -15,21 +15,13 @@ import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 /**
- * The classes a weave run holds for their lineage alone
- * ({@code plan.LineageScan}): the process dirs {@value #PROPERTY} names.
- *
- * <p>They are application classes of the run, so the weave writes them, and
- * {@code CausynthPipeline.instrumentApplicationScope} gives them the
- * work-start, work-claim, queue-claim and timed-wait hooks and nothing else:
- * no calling-context level, so every occurrence of the analysis scope keeps
- * its index.  The timed waits are theirs because a daemon takes part in what
- * a case is about, and a daemon's turn is paced by its waits: under the
- * schedule they wake where the recording's woke, not where a slower replay's
- * wall clock says.  Discovery never names the property, so no static
- * analysis sees them.</p>
+ * The classes a weave run holds for their lineage alone ({@code
+ * plan.LineageScan}), from the dirs {@value #PROPERTY} names.  They get only
+ * work-start, work-claim, queue-claim and timed-wait hooks (no context level,
+ * so analysis-scope indices are unchanged); static analysis never sees them.
  */
 public final class LineageScope {
-    /** The system property run_engine.sh sets on the two weave runs. */
+    /** Set by run_engine.sh on the two weave runs. */
     public static final String PROPERTY = "causynth.lineage.dirs";
 
     private static Set<String> classes;
@@ -37,7 +29,6 @@ public final class LineageScope {
     private LineageScope() {
     }
 
-    /** The lineage dirs of this run, or none. */
     public static List<String> dirs() {
         String configured = System.getProperty(PROPERTY);
         List<String> dirs = new ArrayList<>();

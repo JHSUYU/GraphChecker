@@ -84,14 +84,9 @@ public final class ArtifactIO {
     }
 
     /**
-     * One artifact write: a temporary sibling, the caller's bytes, then one
-     * atomic move onto the name.  A reader of the artifact never sees a
-     * partial write, and a write that fails leaves the previous artifact
-     * where it was rather than truncating it.
-     *
-     * <p>Public because the runtime trace recorder stages a streamed
-     * artifact the same way; it is the one staging envelope in this
-     * repository.</p>
+     * One artifact write: a temporary sibling, then one atomic move, so no
+     * reader sees a partial write and a failure keeps the old artifact.  The
+     * one staging envelope in the repository.
      */
     public static void atomicReplace(Path path, Body body)
             throws IOException {
@@ -114,9 +109,7 @@ public final class ArtifactIO {
                         StandardCopyOption.REPLACE_EXISTING);
             }
         } catch (IOException | RuntimeException | Error failure) {
-            // A successful move consumed the staged file, so this runs only
-            // on the failing path -- and removing the staging is cleanup:
-            // it must never replace what actually went wrong.
+            // Failure path only: cleanup must not mask the real error.
             try {
                 Files.deleteIfExists(temporary);
             } catch (IOException cleanup) {
@@ -168,14 +161,9 @@ public final class ArtifactIO {
     }
 
     /**
-     * The one id spelling: lowercase hex sha256, truncated to {@code length}
-     * characters ({@code <= 0} or past the end means untruncated).
-     *
-     * <p>CONTRACT-SPEC: "Ids are lowercase hex sha256 truncated to 16 chars
-     * unless stated."  An id computed two ways is two ids, so every stage
-     * that mints one -- the contract's addresses, exploration's tasks and
-     * obligations, the composer's path and symbol names, the runtime's
-     * expression refs -- truncates the same hash here.</p>
+     * The one id spelling (CONTRACT-SPEC): lowercase hex sha256, truncated
+     * to {@code length} characters ({@code <= 0} or past the end means
+     * untruncated).  Every stage mints ids here.
      */
     public static String digest(String value, int length) {
         String full = sha256(value);

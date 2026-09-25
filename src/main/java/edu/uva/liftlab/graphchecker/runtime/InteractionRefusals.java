@@ -6,42 +6,22 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * What a refusal about a WIRE interaction has to be able to say, and
- * nothing a pairing needs.
- *
- * <p>Split out of {@link Interactions} because it is the other notion in
- * that file: pairing answers "which export did this attach take its value
- * from" on every delivery, and this answers "what were the components
- * behind that anchor" and "did one producer endpoint id name two messages"
- * -- questions asked only where a refusal is printed.  It also holds the
- * one O(n) scan: {@link #endpoint} walks the filed producers rather than
- * keeping a second index of them, which is affordable exactly because
- * nothing on the delivery path calls it.</p>
+ * What a refusal about a WIRE interaction must be able to say; nothing a
+ * pairing ({@link Interactions}) needs.  Off the delivery path, so
+ * {@link #endpoint} may scan.
  *
  * <p>LOCK ORDER: {@link Interactions} then {@code InteractionRefusals},
- * NEVER the reverse.  This class is the LOWER one: it may be entered by a
- * thread already holding the {@code Interactions} monitor (which is how
- * {@link Interactions#sent} and {@link Interactions#sharedProducer} reach
- * {@link #noteMessage} and {@link #otherMessageOf}), so it must never hold
- * its own monitor while it takes that one.  A method here that calls into
- * {@code Interactions} is therefore not {@code synchronized}: it guards
- * nothing of its own, because {@link #MESSAGE_OF_ENDPOINT} is untouched on
- * that path and the store it reads is guarded over there.  {@link
- * #filedProducers} used to be {@code synchronized} and that single reverse
- * edge deadlocked a focused replay against a DataNode heartbeat (thread
- * dump deadlock-21177cdb).</p>
+ * NEVER the reverse.  A method here that calls into {@code Interactions}
+ * must not be {@code synchronized}; that reverse edge once deadlocked a
+ * replay against a heartbeat.</p>
  */
 final class InteractionRefusals {
     private InteractionRefusals() {
     }
 
     /**
-     * The first message each producer endpoint id was minted for.
-     *
-     * <p>Bounded and evicted with {@link Interactions}'s own store: a run
-     * that has forgotten a message has forgotten the endpoint that sent
-     * it.  Not a second store of producers -- it is an index over that one,
-     * keyed the other way round, and it never answers a pairing.</p>
+     * The first message each producer endpoint id was minted for; bounded
+     * like {@link Interactions}'s store, and never answers a pairing.
      */
     private static final Map<String, String> MESSAGE_OF_ENDPOINT =
             new LinkedHashMap<String, String>(64, 0.75f, false) {
@@ -52,7 +32,6 @@ final class InteractionRefusals {
                 }
             };
 
-    /** Files the first message one producer endpoint id was minted for. */
     static synchronized void noteMessage(String messageKey,
                                          Endpoint producer) {
         if (!MESSAGE_OF_ENDPOINT.containsKey(producer.id())) {
@@ -62,13 +41,8 @@ final class InteractionRefusals {
 
     /**
      * The OTHER message this producer endpoint already named, or {@code ""}.
-     *
-     * <p>An endpoint id is (occurrence, site, the k-th event of that
-     * occurrence there, attempt), and one event sends one message: a second
-     * message under the same id means the identity did not separate two
-     * events, so both messages' consumers state one causal anchor.  Called
-     * right after the mint files it, so the id's own message is the one
-     * passed in and anything else under it is the collision.</p>
+     * One event sends one message, so a second one means the identity failed
+     * to separate two events.
      */
     static synchronized String otherMessageOf(String endpointId,
                                               String mine) {
@@ -85,60 +59,31 @@ final class InteractionRefusals {
     }
 
     /**
-     * The components behind one producer endpoint id, as this run minted
-     * them, or {@code ""}.
-     *
-     * <p>An anchor travels as a digest, so a refusal naming two of them
-     * names nothing a reader can act on: on hdfs-17960 the endpoints behind
-     * {@code Anchor:81d0aa0dbdd84d73} and {@code Anchor:5cd4981c9a67d41e}
-     * agreed on their occurrence, their transport site and their attempt
-     * and differed in one number, and finding that out took a brute-force
-     * search over candidate components.  What comes back here is the filed
-     * {@link Endpoint} itself -- the very object {@link
-     * Identity#endpointAt} built from its four inputs -- so the components
-     * are stated rather than computed a second time.</p>
+     * The components behind one producer endpoint id, or {@code ""}: an
+     * anchor digest alone tells a reader nothing.  Renders the filed
+     * {@link Endpoint} from {@link Identity#endpointAt}, not a recomputation.
      */
     static String components(String endpointId) {
         Endpoint producer = endpoint(endpointId);
         return producer == null ? "" : producer.render();
     }
 
-    /**
-     * The endpoint {@code endpointId} was minted from, or {@code null}.
-     *
-     * <p>The filed object, so a reader comparing two anchors compares the
-     * four inputs themselves -- occurrence, site, site index, attempt --
-     * instead of two renders of them.</p>
-     */
+    /** The filed endpoint {@code endpointId} was minted from, or null. */
     static Endpoint endpoint(String endpointId) {
         String id = Text.safe(endpointId);
         if (id.isEmpty()) return null;
-        // Over the filed endpoints rather than a second index of them: one
-        // store of producers, read on the path that prints a refusal.
         for (Endpoint producer : filedProducers()) {
             if (id.equals(producer.id())) return producer;
         }
         return null;
     }
 
-    /**
-     * The producers {@link Interactions} has filed, as its own snapshot.
-     *
-     * <p>NOT {@code synchronized}, and that is the lock order stated above,
-     * not an oversight: this guards nothing of this class -- it reads no
-     * field here -- and {@link Interactions#filedProducers} is itself
-     * {@code synchronized} and hands back a fresh list.  Holding this
-     * class's monitor across that call is the reverse edge that deadlocked
-     * a replay's refusal rendering against a live heartbeat.</p>
-     */
+    /** NOT {@code synchronized}: the lock order above. */
     private static Collection<Endpoint> filedProducers() {
         return Interactions.filedProducers();
     }
 
-    /**
-     * Clears this index.  Called by {@link Interactions#resetForTests} with
-     * that class's monitor held, which is the declared order.
-     */
+    /** Called with the {@link Interactions} monitor held: declared order. */
     static synchronized void resetForTests() {
         MESSAGE_OF_ENDPOINT.clear();
     }

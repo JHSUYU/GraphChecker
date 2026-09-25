@@ -12,75 +12,37 @@ import java.util.Map;
 /**
  * Message-carried symbolic values shared by every request/response transport.
  *
- * <p>A transport drains the producer thread before sending a message and
- * installs that exact string on the receiver thread.  Consumers only take
- * entries from the installed message; correlation ids are deliberately not
- * an expression lookup mechanism.</p>
+ * <p>A transport drains the producer thread before sending and installs that
+ * exact string on the receiver thread; correlation ids are never an
+ * expression lookup.</p>
  *
- * <p>An expression belongs to a <em>value inside the message</em>, not to a
- * queue.  A port is declared on one pair of bytecode sites and a protocol
- * routes every value of that shape through them, so one message serializes
- * many unrelated values through one port: a receiver that took the head of a
- * shared queue paired whichever leaf happened to be first with whichever
- * decode happened to run first, and any asymmetry between the two sides
- * silently shifted every pairing after it.  Each leaf is therefore addressed
- * by {@code (message, port, element ordinal within that message)} -- the
- * ordinal travels on the wire -- and a decode looks its element up rather
- * than consuming a head.</p>
+ * <p>Each leaf is addressed by {@code (frame, port, ordinal)}, and a decode
+ * looks its element up rather than consuming a queue head: one port carries
+ * many unrelated values, so head-of-queue pairing shifts every pairing after
+ * the first asymmetry.  A frame is one construction of the port's value; the
+ * k-th frame the sender opens is the k-th the receiver opens.  Frame 0 is the
+ * message itself.  Ordinals approximate field paths and agree while both sides
+ * walk a frame in the same order; a disagreement is reported (a leaf nothing
+ * looked up, a lookup with no leaf), never absorbed.</p>
  *
- * <p>A message is divided into <em>frames</em>, and the ordinal counts within
- * one frame: the key is {@code (frame, port, ordinal)}.  A frame is the thing
- * whose single construction builds one instance of the value the port belongs
- * to -- the mapping names the method on each side, and the two are mirrors, so
- * the k-th frame the sender opens is the k-th the receiver opens.  Framing is
- * what keeps two unrelated groups of the same shape apart inside one message.
- * A port that declares no frame uses frame 0, which is the RPC message itself,
- * and behaves exactly as it did before frames existed.</p>
- *
- * <p>Within a frame the ordinal is the honest approximation of the value's
- * field path.  The exact key would be the repeated field and index the value
- * was set on, but a declared port names a bytecode site, not a proto field.
- * Ordinals agree with field paths whenever both sides walk one frame's
- * elements in the same order, which is what a generated serializer and its
- * generated parser do; they disagree exactly when one side visits a value the
- * other does not, and that disagreement is reported rather than absorbed: a
- * leaf nothing looked up, and a lookup with no leaf, are both named.</p>
- *
- * <p>The wire carries only what the receiver cannot derive: the expression
- * handle and the occurrence that staged it, keyed by {@code (frame, port,
- * ordinal)}.  Plan data does not travel -- both sides load the same
- * execution task plan, so a field restating it is weight the transport pays
- * for and nothing reads.</p>
- *
- * <p>Refusing a wire is a named row, not an exception: every door here
- * leaves the workload running and lets the claim fail on the values.</p>
+ * <p>The wire carries only what the receiver cannot derive: handle and
+ * position.  Plan data does not travel; both sides load the same plan.
+ * Refusing a wire is a named row, never an exception into the workload.</p>
  */
 public final class SymbolicMessageEnvelope {
     private static final String SCHEMA = "CSE5";
     /**
-     * How many values one message may carry.
-     *
-     * <p>The only bound on a wire: the entry count IS what a message
-     * carries, and every field of every entry is checked structurally, so a
-     * second bound on the serialized length was a second authority over the
-     * same thing -- and the one that fired.  A registration response
-     * carrying five block-key leaves built a 68,674-character wire and the
-     * receiving DataNode refused its own peer's envelope on every retry
-     * (lane11741d).</p>
+     * How many values one message may carry: the only bound on a wire.  Do
+     * not add a length bound; it would be a second authority over the same
+     * thing.
      */
     private static final int MAX_ENTRIES = 64;
     private static final Base64.Encoder ENCODER =
             Base64.getUrlEncoder().withoutPadding();
     private static final Base64.Decoder DECODER = Base64.getUrlDecoder();
     /**
-     * How many frames one message may open, on either side.
-     *
-     * <p>Named when it is reached, in both directions: the frame ordinal is
-     * half the pairing key, so a frame the sender or the receiver did not
-     * open leaves {@code frame()} answering the enclosing frame and every
-     * element staged or looked up inside it collides with the parent's.
-     * Dropping it silently made that collision read as a message that
-     * carried different values.</p>
+     * How many frames one message may open, on either side.  Reaching it is
+     * named: an unopened frame makes its elements collide with the parent's.
      */
     private static final int MAX_FRAMES = 64;
 
@@ -104,16 +66,10 @@ public final class SymbolicMessageEnvelope {
     /**
      * Adds one declared port to the next message sent by this thread.
      *
-     * <p>The entry carries what only the run knows: which VM expression the
-     * producer staged, and where in the message it stands.  Which
-     * occurrences the plan names for the port -- the producer's or the
-     * consumers' -- is not carried, because it is not the run's fact and no
-     * receiver reads it from here: the plan is the authority, both sides
-     * hold the same plan, the attach pairs with the export by the VM's own
-     * event ids, and the attach names the live activation that declares the
-     * port ({@code ConcolicRegionRuntime.declaredConsumerOccurrence}).
-     * Carried, one 19-occurrence consumer set was 12,944 of the 13,738
-     * characters of every entry and five entries overran the wire.</p>
+     * <p>Only the staged handle and its position travel; the plan's
+     * occurrences for the port do not, since both sides hold the plan and
+     * the attach names its own activation
+     * ({@code ConcolicRegionRuntime.declaredConsumerOccurrence}).</p>
      */
     public static boolean stage(String portId, long handle) {
         if (empty(portId) || handle < 0L) return false;
@@ -126,11 +82,8 @@ public final class SymbolicMessageEnvelope {
     }
 
     /**
-     * Opens a frame around the value this thread is about to serialize.
-     *
-     * <p>Frames are numbered in the order they open, and the receiver numbers
-     * its own the same way, so the k-th frame of a message means the same
-     * thing on both sides without either naming the other.</p>
+     * Opens a frame around the value this thread is about to serialize;
+     * frames are numbered in open order on both sides.
      */
     public static void pushOutboundFrame() {
         Outbound message = OUTBOUND.get();
@@ -167,14 +120,9 @@ public final class SymbolicMessageEnvelope {
     /**
      * Replaces the receiver thread's current message with this exact wire.
      *
-     * <p>A different message displacing this one ends it as surely as a
-     * close does, and on the client half of an exchange it is the only
-     * ending there is: the caller installs the response it is about to
-     * decode and nothing closes it until the next call.  So a displaced
-     * message reports what nothing looked up, exactly as a closed one does
-     * -- unless the same wire is being reinstalled, which is a transport
-     * carrying one message across several legs rather than a new message,
-     * and which has not finished with its values.</p>
+     * <p>A displaced message ends like a closed one and reports what nothing
+     * looked up (on a client half nothing else closes it), unless the same
+     * wire is reinstalled: that is one message crossing several legs.</p>
      */
     public static void installInbound(String wire) {
         Inbound displaced = INBOUND.get();
@@ -183,17 +131,9 @@ public final class SymbolicMessageEnvelope {
         try {
             entries = decode(wire);
         } catch (IllegalArgumentException refused) {
-            // A wire this side will not decode is a refusal, and a refusal
-            // is a named row -- never an exception the workload has to
-            // survive.  This one threw out of Hadoop's IPC client on every
-            // DataNode registration: the peer's response envelope was
-            // refused, ProtobufRpcEngine2 wrapped it as a plain IOException,
-            // BPServiceActor logged "Problem connecting to server" and
-            // retried for 51 minutes while MiniDFSCluster.waitActive waited
-            // for a DataNode that could never register (lane11741d).
-            // Nothing is installed, so every decode of this message answers
-            // MISSING and each attach states elementAbsent: the claim is
-            // fail-closed on the values, the process carries on.
+            // A refused wire is a named row, never an exception: thrown, it
+            // breaks the workload's IPC.  Nothing is installed, so every
+            // decode answers MISSING and the claim fails on the values.
             if (displaced != null) displaced.reportUnattached();
             RowRuntime.messageContextRefused(
                     "inbound symbolic message envelope",
@@ -210,12 +150,8 @@ public final class SymbolicMessageEnvelope {
     }
 
     /**
-     * Clears a receiver when the concrete message has no envelope header.
-     *
-     * <p>Closing a message is the moment its unclaimed leaves become
-     * findings: the sender put a value in the message and no decode on this
-     * side asked for it, so whatever that value fed is not connected to its
-     * producer any more.  They are reported here, once, with the message.</p>
+     * Clears a receiver when the concrete message has no envelope header;
+     * its unclaimed leaves are reported here, once.
      */
     public static void clearInbound() {
         Inbound message = INBOUND.get();
@@ -223,13 +159,7 @@ public final class SymbolicMessageEnvelope {
         if (message != null) message.reportUnattached();
     }
 
-    /**
-     * Opens the next frame of the message being decoded.
-     *
-     * <p>The receiver counts its frames the way the sender counted theirs, so
-     * this needs no name from the wire.  A message that declares no such
-     * frame leaves the decode in frame 0, which is the message itself.</p>
-     */
+    /** Opens the next frame of the message being decoded, counted as the sender counted. */
     public static void pushInboundFrame() {
         Inbound message = INBOUND.get();
         if (message != null) message.push();
@@ -242,11 +172,8 @@ public final class SymbolicMessageEnvelope {
     }
 
     /**
-     * Takes the element of this message this port is decoding next.
-     *
-     * <p>The lookup is by ordinal, not by position: an element already
-     * looked up is not handed out again, and an element the sender never
-     * staged answers absent instead of borrowing the next value along.</p>
+     * Takes the element this port is decoding next, by ordinal: an element
+     * never staged answers absent rather than borrowing the next value.
      */
     public static Entry take(String portId) {
         Inbound message = INBOUND.get();
@@ -254,13 +181,7 @@ public final class SymbolicMessageEnvelope {
         return message.take(portId);
     }
 
-    /**
-     * Clears test/workload thread state without retaining a sent message.
-     *
-     * <p>A session boundary, not a message boundary: nothing is reported,
-     * because what a session drops was never a message this side agreed to
-     * decode.</p>
-     */
+    /** Clears thread state at a session boundary; nothing is reported. */
     public static void clear() {
         OUTBOUND.remove();
         INBOUND.remove();
@@ -319,14 +240,8 @@ public final class SymbolicMessageEnvelope {
         }
 
         /**
-         * Names every element nothing looked up; each is seen once.
-         *
-         * <p>The sender put a value in this message and no decode on this
-         * side asked for it, so whatever that value fed stands on no
-         * producer: the consumer that would have attached it published no
-         * attach row, and the export it came from is paired to nothing.
-         * Stated per port -- one row however many messages of that port
-         * lose an element -- because the fix is the port's decode.</p>
+         * Names every element nothing looked up, once each: what it fed
+         * names no producer, and the fix is the port's decode.
          */
         void reportUnattached() {
             for (int index = 0; index < entries.size(); index++) {

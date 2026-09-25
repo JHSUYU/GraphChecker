@@ -16,13 +16,8 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
 /**
- * The one SMT lowering vocabulary shared by {@code PathMergeLowering}
- * and {@code ConcolicConstraintSolver.Encoder}.  They differ only
- * in the three policies {@link SmtLowering} names: an unsupported construct
- * becomes a fresh unconstrained symbol in the composer and a {@code null}
- * term in the solver; the composer threads Java evaluation definedness
- * through {@link Term#precondition} while the solver asserts it eagerly;
- * and the solver tags every refusal with an {@code origin} string.
+ * The SMT lowering vocabulary ({@link Sort}, {@link Term}, {@link Reason},
+ * the preamble) and the static helpers {@link SmtLowering} lowers with.
  */
 public final class VmTermLowering {
     private VmTermLowering() {
@@ -119,7 +114,7 @@ public final class VmTermLowering {
                 : Sort.MAP;
     }
 
-    /** A refusal, in the composer's spelling beside the solver's. */
+    /** A named refusal reason. */
     public enum Reason {
         UNSUPPORTED_JAVA_NUMERIC_PROMOTION(
                 "UnsupportedJavaNumericPromotion", true),
@@ -161,7 +156,7 @@ public final class VmTermLowering {
         // Expression dispatch.
         ABSENT_EXPRESSION("ABSENT_EXPRESSION", false),
         MALFORMED_NOT("MalformedNot", false),
-        /** The composer names the type alone; the solver names it too. */
+        /** Named by the expression type alone. */
         UNKNOWN_EXPRESSION_TYPE("", false);
 
         private final String composed;
@@ -172,7 +167,7 @@ public final class VmTermLowering {
             this.composedNamesOrigin = composedNamesOrigin;
         }
 
-        /** The composer names the reason first, the solver the position. */
+        /** The refusal subject: reason, origin if asked for, detail. */
         public String composedSubject(String origin, String detail) {
             return join(composed, composedNamesOrigin ? origin : "", detail);
         }
@@ -224,8 +219,7 @@ public final class VmTermLowering {
                         optionalString(expression, "_java_type")));
         Sort sourceSort = policy.castSort(sourceType);
         Sort targetSort = policy.castSort(targetType);
-        // A VALUE target says nothing about the cast; a reference is the
-        // one thing every non-primitive cast produces.
+        // Every non-primitive cast produces a reference.
         Sort refused = targetSort == Sort.VALUE ? Sort.REF : targetSort;
         boolean primitivePair = JavaPrimitiveSmtSemantics
                 .primitiveNumericDescriptor(sourceType)
@@ -278,15 +272,8 @@ public final class VmTermLowering {
     /** The declarations every lowered query opens with. */
     public static List<String> preamble() {
         List<String> lines = new ArrayList<>();
-        // Both lowerers spell Java integral arithmetic as two's-complement
-        // wrapping, so either query is dense in nested Int
-        // "mod 4294967296" terms over container sizes and indices.  Z3's
-        // default arithmetic engine does not close those, while its
-        // simplex-based one does, so a query names the engine it is meant
-        // to be read with rather than leaving a plain "z3 query.smt2" to
-        // diverge.  This selects a strategy; it does not change what the
-        // query says, and it belongs beside the encoding that provokes it
-        // rather than in one caller.
+        // Wrapping arithmetic yields nested "mod 2^32" terms that only z3's
+        // simplex arithmetic closes; a strategy choice, not a meaning change.
         lines.add("(set-option :smt.arith.solver 2)");
         lines.add("(declare-sort Ref 0)");
         lines.add(ContainerStateModel.valueDatatypeDeclaration());
@@ -297,24 +284,11 @@ public final class VmTermLowering {
 
 
     /**
-     * {@code Integer.parseInt} -- a REFUSAL, by name, once.
-     *
-     * <p>A parse is the inverse of a rendering only on an element that is
-     * that rendering and nothing else, in decimal, and in Java's int
-     * range.  Nothing in this lowering shows that an argument is one: the
-     * one {@code SmtLowering} there is answered every such question with the gap
-     * {@code ROUNDTRIP_NOT_PROVED_NO_SPLIT_EVIDENCE}, so the round-trip
-     * half of this routine -- {@code RenderedInteger}, {@code
-     * SmtLowering.renderedInteger}, the {@code ROUNDTRIP_SOURCE_NOT_INT} branch
-     * and the int-range assertion -- was an interface no implementation
-     * ever came back through.  The arity and radix gaps stay ahead of it,
-     * because they name a different thing about the call.</p>
+     * {@code Integer.parseInt}: always one named refusal, since nothing
+     * proves the argument is exactly a decimal int rendering.
      */
     public static Term parseIntTerm(SmtLowering policy, JsonObject expression,
                              String origin) {
-        // Not lowered at all: no round trip from the parsed int back to its
-        // digits is proved, whatever the arity or radix, so there is one
-        // refusal and not three spellings of it.
         return codecGap(policy, "java/lang/Integer.parseInt",
                 "PARSE_INT_NOT_LOWERED", origin, Sort.INT);
     }

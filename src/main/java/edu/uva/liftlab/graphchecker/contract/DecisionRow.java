@@ -4,17 +4,10 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * CONTRACT-SPEC 2: one branch the focused region decided, as it decided it.
- *
- * <p>{@code term} is the predicate in SMT-LIB over the symbols this session
- * declared, {@code outcome} the arm the run took, and {@code clockReadings} the
- * clock values read while deciding it -- stated inside the path's own
- * conjunction, never as a global assertion about a per-session fact.</p>
- *
- * <p>{@code seq} is the session-monotonic event sequence number.  It is what
- * lets a producer's path condition be cut at its export -- the decisions with
- * {@code seq} below the export's -- so a consumer never conditions on a branch
- * the producer took after it had already sent the value.</p>
+ * CONTRACT-SPEC 2: one branch the focused region decided.  {@code
+ * clockReadings} belong inside the path's own conjunction, never a global
+ * assertion.  {@code seq} cuts a producer's path condition at its export, so a
+ * consumer never conditions on a branch taken after the send.
  */
 public final class DecisionRow {
     private final String sessionId;
@@ -56,7 +49,6 @@ public final class DecisionRow {
         return sessionId;
     }
 
-    /** Where this decision falls in its session's event order. */
     public long seq() {
         return seq;
     }

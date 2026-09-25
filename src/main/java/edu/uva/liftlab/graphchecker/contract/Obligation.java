@@ -6,14 +6,9 @@ import java.util.Objects;
 
 /**
  * CONTRACT-SPEC 3: one path prefix plus one flipped decision, with the
- * valuation that is supposed to produce it.
- *
- * <p>The runtime applies {@code rootAssignments} at the mints and
- * {@code answers} at the attaches of the focused occurrence -- keyed by attach
- * {@link Endpoint#id()}, because an answer belongs to one attach of one
- * occurrence and not to a port.  {@code unproducible} names the attaches whose
- * answer no producer arm can state; they are answered anyway and reported, so a
- * later stage refuses on named evidence rather than on a missing row.</p>
+ * valuation meant to produce it: {@code rootAssignments} at the mints,
+ * {@code answers} keyed by attach {@link Endpoint#id()} (one attach, not a
+ * port).  {@code unproducible} attaches are answered anyway and reported.
  */
 public final class Obligation {
     private final String obligationId;
@@ -56,13 +51,8 @@ public final class Obligation {
     }
 
     /**
-     * The same prefix and valuation, flipping NOTHING: a CONFIRM run.
-     *
-     * <p>A SAT claim's model is planted and the selected path's schedule
-     * held exactly as for a flip, but no decision is owed the other arm --
-     * the values drive every decision, and whether the run agrees with the
-     * model is read off the rows it publishes.  {@link #flips()} is false,
-     * {@link #siteId()} is empty and {@link #ordinal()} is 0.</p>
+     * A CONFIRM run: plants a SAT model and holds the schedule but flips
+     * nothing ({@link #flips()} false, empty site, ordinal 0).
      */
     public static Obligation confirming(String obligationId, String taskId,
                                         String pathId,

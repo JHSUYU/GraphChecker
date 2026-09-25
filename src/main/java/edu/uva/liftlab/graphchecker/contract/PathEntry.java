@@ -3,12 +3,9 @@ package edu.uva.liftlab.graphchecker.contract;
 import java.util.Objects;
 
 /**
- * CONTRACT-SPEC 4: one consumer path in the composition, with its selector.
- *
- * <p>The selector is the Boolean the composed formula implies from:
- * {@code selector_p => pi_p and phi_fatal and reads_p}.  Arrivals, clock
- * readings and valuations are stated inside that implication, never as a global
- * assertion about one session's facts.</p>
+ * CONTRACT-SPEC 4: one composed consumer path and its selector,
+ * {@code selector_p => pi_p and phi_fatal and reads_p}; per-session facts go
+ * inside the implication, never global.
  */
 public final class PathEntry {
     private final String pathId;

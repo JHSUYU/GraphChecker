@@ -2,28 +2,13 @@ package edu.uva.liftlab.graphchecker.plan;
 
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
 
-/**
- * {@code <method>#u<unitIndex>}: the project-wide name of one bytecode
- * site, shared by the static analysis, the instrumented recorder, the
- * concolic runtime and every artifact that keys on a site.
- *
- * <p>A site is a real unit of a real method, so a blank method or a
- * negative unit index is refused rather than rendered: {@code #u7} and
- * {@code m#u-1} are not sites, and a caller that cannot name one has to
- * say so itself -- the callers that may not have a unit index already test
- * for that before asking for a site id.  {@link #render} spells the same
- * form for the private keys and diagnostics that legitimately carry the
- * instrumentation's {@code -1} "no unit of its own" sentinel.</p>
+/** {@code <method>#u<unitIndex>}: the project-wide name of one bytecode site.
+ *  {@link #of} refuses a blank method or negative unit; {@link #render} allows
+ *  the {@code -1} "no unit of its own" sentinel for private keys and messages.
  */
 public final class SiteId {
     private static final String UNIT_MARKER = "#u";
-    /**
-     * The member every row publishes a site under.
-     *
-     * <p>Defined once, here, with the grammar it spells.  Two contracts held
-     * their own {@code = "siteId"} constant, which is the drift this class
-     * exists to prevent.</p>
-     */
+    /** The member every row publishes a site under (defined only here). */
     public static final String MEMBER = "siteId";
 
     private SiteId() {
@@ -39,29 +24,14 @@ public final class SiteId {
                 + UNIT_MARKER + unitIndex;
     }
 
-    /**
-     * The same spelling as {@link #of} for a <em>private</em> key or a
-     * diagnostic message, tolerating the {@code -1} "this hook has no unit
-     * of its own" sentinel the instrumentation passes for a materialization
-     * whose accessor body lives outside the application classes.
-     *
-     * <p>Never use this for a site id an artifact publishes or another
-     * stage keys on: those must name a real unit, and {@link #of} is the
-     * rule that says so.  A blank method names nothing either way and is
-     * refused here too.</p>
-     */
+    /** {@link #of} tolerating the {@code -1} sentinel; never for a published
+     *  site id. */
     public static String render(String method, int unitIndex) {
         return JsonFields.requireText(method, "method")
                 + UNIT_MARKER + unitIndex;
     }
 
-    /**
-     * The method one site id names, or "" when it names no unit.
-     *
-     * <p>The one parse of the other half of this grammar: two files used to
-     * spell it themselves, one with {@code lastIndexOf} and one with a
-     * regex.</p>
-     */
+    /** The method one site id names, or "" when it names no unit. */
     public static String methodOf(String siteId) {
         int marker = siteId == null ? -1 : siteId.lastIndexOf(UNIT_MARKER);
         return marker < 0 || unitIndexOf(siteId) < 0 ? ""

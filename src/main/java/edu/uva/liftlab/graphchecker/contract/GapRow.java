@@ -3,11 +3,8 @@ package edu.uva.liftlab.graphchecker.contract;
 import java.util.Objects;
 
 /**
- * CONTRACT-SPEC 2: one refusal or one diagnostic, naming its subject.
- *
- * <p>{@code subject} is the thing the gap is about -- an endpoint id, a root, a
- * location, an address -- so that a refusal always names what it refused on
- * rather than reporting a category.</p>
+ * CONTRACT-SPEC 2: one refusal or diagnostic, always naming its
+ * {@code subject} (endpoint id, root, location, address), never a category.
  */
 public final class GapRow {
     private final String sessionId;
@@ -54,7 +51,6 @@ public final class GapRow {
         return detail;
     }
 
-    /** Whether this gap stops a claim. */
     public boolean blocking() {
         return cls == GapClass.BLOCKING;
     }

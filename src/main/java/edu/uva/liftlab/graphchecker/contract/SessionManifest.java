@@ -9,23 +9,10 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * CONTRACT-SPEC 2: the role one session STATES it ran as.
- *
- * <p>{@code manifest.json}, written by the runtime at the moment the session
- * is opened, and the only answer to "which session is the recording".  It
- * used to be inferred -- the seed was the session whose activations focused
- * nothing -- and the inference is wrong for two runs that nobody focused for
- * different reasons.  On the 11741 campaign #2 corpus nine of eighty-one
- * sessions focused nothing: the seed, seven replays the kill cut before their
- * focused occurrence activated, and one legitimately NOT_ADMITTED focused
- * replay whose focused occurrence never ran.  COMPOSE then refused "more than
- * one session of this corpus focused nothing, so which one is the recording
- * has no answer" and the anchor degraded to {@code Lost:UNKNOWN}.</p>
- *
- * <p>So every session states its role.  A FOCUSED replay that activated
- * nothing is still a FOCUSED replay -- what it settled is its result row's to
- * say, not the seed rule's -- and a corpus with no SEED session, or with two,
- * is a named refusal instead of a coin toss.</p>
+ * CONTRACT-SPEC 2: the role one session states it ran as ({@code
+ * manifest.json}, written when the session opens) -- the only answer to
+ * "which session is the recording".  Never inferred from activations: a
+ * FOCUSED replay that activated nothing is still FOCUSED.
  */
 public final class SessionManifest {
     /** What a session ran as: the recording, or one counterfactual of it. */
@@ -44,14 +31,7 @@ public final class SessionManifest {
         this.obligationIds = Collections.unmodifiableList(obligationIds);
     }
 
-    /**
-     * One session's statement.
-     *
-     * <p>The obligation ids are the FOCUSED replay's own: the worker reads
-     * them out of its {@code focused_task.jsonl}, so the manifest and the
-     * result row name the same obligations and no reader has to guess a
-     * worker from a directory name.</p>
-     */
+    /** Obligation ids come from the worker's {@code focused_task.jsonl}. */
     public static SessionManifest of(String sessionId, Role role,
                                      List<String> obligationIds) {
         List<String> ids = new ArrayList<String>();
@@ -97,13 +77,7 @@ public final class SessionManifest {
         return json;
     }
 
-    /**
-     * Reads one manifest, refusing a document that states no role.
-     *
-     * <p>Fail-closed by name: a manifest whose {@code role} is absent or is
-     * a word this contract does not have states nothing, and reading it as
-     * SEED is how an exploration replay becomes the recording.</p>
-     */
+    /** Reads one manifest; an absent or unknown role is refused, never SEED. */
     public static SessionManifest fromJson(JsonObject json) {
         if (json == null) {
             throw new IllegalArgumentException("manifest states no role");

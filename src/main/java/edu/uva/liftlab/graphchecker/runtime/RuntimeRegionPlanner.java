@@ -64,9 +64,6 @@ public final class RuntimeRegionPlanner {
                                     List<RuntimeEvent> runtimeEvents,
                                     List<ProtocolEvent> protocolEvents,
                                     Set<String> declaredSites) {
-        // The recorded call sites are part of this index, not an extra: the
-        // across-cut attribution below asks which call site opened a frame,
-        // and that answer lives in the CALL_SITE_ENTER events.
         TraceIndex trace = new TraceIndex(methods, runtimeEvents == null
                 ? Collections.<RuntimeEvent>emptyList() : runtimeEvents,
                 Collections.emptyList(), protocolEvents);
@@ -92,20 +89,15 @@ public final class RuntimeRegionPlanner {
         }
         Map<Long, Map<String, Object>> activationByCall =
                 new LinkedHashMap<>();
-        // The region entries this run FOLDED, in recorded order: they are no
-        // activations, and the occurrence each of them belongs to is only
-        // known once every activation has been planned, so they are held
-        // here and named below (#stampFoldedRegionEntries).
+        // FOLDED region entries: no activations; their owner is known only
+        // once every root is planned (#stampFoldedRegionEntries).
         Map<Long, StaticProgram.RegionRow> foldedRoots =
                 new LinkedHashMap<>();
-        // The roots this run publishes an activation for, chosen before any
-        // of them is built: which occurrence owns a folded entry is a
-        // question about the whole set, and an activation has to own its
-        // folded calls from the moment its call set is computed.
+        // All roots are chosen before any is built: fold ownership is a
+        // question about the whole set.
         List<PlannedRoot> plannedRoots = new ArrayList<>();
-        // The communication endpoints are bound after the execution-context
-        // roots, so a receiver nested in one of them sees its owner already
-        // claimed.
+        // Endpoints after execution-context roots, so a nested receiver sees
+        // its owner already claimed.
         for (boolean endpoints : new boolean[]{false, true}) {
             for (StaticProgram.RegionRow skeleton : skeletons) {
                 if (endpoints != COMMUNICATION_ENTRY.equals(
@@ -113,20 +105,8 @@ public final class RuntimeRegionPlanner {
                     continue;
                 }
                 for (MethodEvent root : trace.methods(skeleton.rootMethod)) {
-                    // F1: an entry FOLDED into the occurrence already
-                    // running on its thread opened none of its own, so it is
-                    // a method call inside that occurrence and not an
-                    // activation of this region.  One activation per
-                    // occurrence, which is what lets
-                    // RuntimeSelectedRegionFinalizer#readOccurrences keep
-                    // reading a shared address as the identity failure it
-                    // names.
-                    //
-                    // Skipped as an activation, NOT dropped as an event: the
-                    // declared method was entered, and the occurrence it
-                    // folded into owns its sites.  That fact is the plan's
-                    // to state, and it is stated below rather than left for
-                    // a later stage to read back out of the trace.
+                    // F1: a FOLDED entry is a call inside its thread's
+                    // occurrence, not an activation; its owner is stated below.
                     if (root.regionFolded) {
                         foldedRoots.put(root.callId, skeleton);
                         continue;
@@ -141,9 +121,8 @@ public final class RuntimeRegionPlanner {
                 }
             }
         }
-        // Which occurrence each folded entry belongs to: the INNERMOST
-        // planned root it is inside, by the recorded call stack and nothing
-        // else -- the same stack the fold itself was taken on.
+        // A folded entry belongs to the INNERMOST planned root on its
+        // recorded call stack -- the stack the fold was taken on.
         Set<Long> plannedRootCalls = new LinkedHashSet<>();
         for (PlannedRoot planned : plannedRoots) {
             plannedRootCalls.add(planned.root.callId);
@@ -185,26 +164,10 @@ public final class RuntimeRegionPlanner {
     }
 
     /**
-     * Names the occurrence every FOLDED region entry belongs to.
-     *
-     * <p>A folded entry opened no occurrence ({@code Identity#fold}), so it
-     * is no activation and this plan carries no row for it.  What it IS, is
-     * a call inside the occurrence already running on its thread -- and that
-     * occurrence performed its reads, its decisions, its writes and its
-     * mints.  One {@link RuntimeSelectedRegionFinalizer#REGION_FOLD_KIND}
-     * row per folded entry says so, and the enclosing occurrence carries the
-     * same statement as {@link
-     * RuntimeSelectedRegionFinalizer#FOLDED_REGION_IDS}, so a reader of
-     * either side of the plan can answer "where did this declared region
-     * run" without going back to the trace.</p>
-     *
-     * <p>The enclosing occurrence is the INNERMOST planned activation this
-     * entry is inside: the recorded call stack and nothing else, which is
-     * the same rule the fold itself was taken by.  An entry whose enclosing
-     * frames were all skipped -- an activation the anchor test dropped --
-     * gets a row with no occurrence on it: the entry still happened, and
-     * saying nothing about where would be the silence this row exists to
-     * remove.</p>
+     * Names the occurrence every FOLDED entry ({@code Identity#fold}) belongs
+     * to, as a {@link RuntimeSelectedRegionFinalizer#REGION_FOLD_KIND} row and
+     * on the owner's {@link RuntimeSelectedRegionFinalizer#FOLDED_REGION_IDS}.
+     * An entry with no planned owner still gets a row.
      */
     private static void stampFoldedRegionEntries(
             Result result, Map<Long, StaticProgram.RegionRow> foldedRoots,
@@ -249,8 +212,7 @@ public final class RuntimeRegionPlanner {
 
 
 
-    /** Stamps every planned activation with the exchanges its own transport
-     * hooks recorded. */
+    /** Stamps each activation with its transport hooks' exchanges. */
     private static void stampRecordedExchanges(
             Result result, TraceIndex trace,
             List<ProtocolEvent> protocolEvents) {
@@ -278,8 +240,7 @@ public final class RuntimeRegionPlanner {
         retainInnermostCommunicationCaptureOwners(result.runtimeInstances);
     }
 
-    /** The retained loops of one occurrence: the region's declared rows whose
-     * enclosing method this occurrence actually holds. */
+    /** Retained loops whose enclosing method this occurrence holds. */
     private static List<Map<String, Object>> retainedLoops(
             StaticProgram.RegionRow region, Set<String> occurrenceMethods) {
         List<Map<String, Object>> retained = new ArrayList<>();
@@ -292,14 +253,8 @@ public final class RuntimeRegionPlanner {
         return retained;
     }
 
-    /**
-     * Exact executions of configured-source hook sites inside one occurrence.
-     *
-     * <p>Evidence of where the recording observed each declared site, in
-     * event order.  It numbers nothing: a declared source is ONE symbol, so
-     * the rows say WHERE the sites are and how often the recording reached
-     * them, never how often a replay may.</p>
-     */
+    /** Configured-source hook executions in one occurrence; evidence only (a
+     * declared source is ONE symbol, however often it is reached). */
     private static List<JsonObject> configuredSourcePhases(
             StaticProgram.RegionRow region, String occurrenceId,
             long activationRootCallId, TraceIndex trace) {
@@ -486,14 +441,8 @@ public final class RuntimeRegionPlanner {
             Map<Long, Long> foldOwners) {
         Set<Long> subtree = trace.subtree(root.callId);
         Set<String> allowed = new LinkedHashSet<>(skeleton.methods);
-        // F1, forwards: a region entry FOLDED inside this occurrence opened
-        // none of its own, so EVERY site executed below it -- its decisions,
-        // its reads, its writes, its declared-site captures -- is an event
-        // of this occurrence and belongs in this call set.  Without it the
-        // frames of a folded region belong to no occurrence at all: on
-        // hdfs-11741 the annotated target's region folds into the DataNode's
-        // SASL handler, whose skeleton does not list the target method, and
-        // the fatal branch the recording decided was bound to nothing.
+        // F1, forwards: calls of regions FOLDED here join this call set, or
+        // they would belong to no occurrence.
         Set<Long> foldedCalls = new LinkedHashSet<>();
         List<StaticProgram.RegionRow> foldedHere = new ArrayList<>();
         for (Long call : subtree) {
@@ -545,8 +494,7 @@ public final class RuntimeRegionPlanner {
         activation.put("anchorMethods", observedAnchors);
         activation.put("selection", skeleton.selection);
         activation.put("test", root.test);
-        // Identity v3: the address the recording computed at this entry,
-        // carried verbatim.  Nothing offline re-derives it.
+        // Identity v3: the recorded address, verbatim; never re-derived.
         activation.put("occurrenceAddress", root.occurrenceAddress);
         putTraceContext(activation, root,
                 activationSource(root, stampedSources(calls, trace)));
@@ -558,11 +506,8 @@ public final class RuntimeRegionPlanner {
                         .OBSERVED_COMMUNICATION_CAPTURES,
                 observedCommunicationCaptures(skeleton, foldedHere, calls,
                         trace));
-        // What the recording states at the sites the scope map named
-        // DECLARED_SITE.  Computed once, here, where the activation's call
-        // set is first known: the region finalizer reads it to learn which
-        // activations hold a declared input, and the plan republishes these
-        // same rows.
+        // DECLARED_SITE captures, computed once where the call set is known;
+        // the finalizer and the plan both read these rows.
         List<Map<String, Object>> declared = declaredSiteCaptures(
                 declaredSites, trace, calls, root);
         if (!declared.isEmpty()) {
@@ -578,9 +523,7 @@ public final class RuntimeRegionPlanner {
             TraceIndex trace) {
         List<RuntimeEvent> events = trace.runtime(calls);
         List<Map<String, Object>> observed = new ArrayList<>();
-        // The cuts this occurrence DECLARES: its own region's and those of
-        // every region folded into it.  The capture happened here either
-        // way -- the folded entry opened no occurrence to record it in.
+        // Its own region's cuts plus those of every region folded into it.
         List<Map<String, Object>> ports =
                 new ArrayList<>(skeleton.communicationPorts);
         for (StaticProgram.RegionRow inside : folded) {
@@ -696,9 +639,8 @@ public final class RuntimeRegionPlanner {
                     }
                 }
                 if ("IN".equals(side) && boundary != null) {
-                    // A logical exchange may use several physical frames.
-                    // Rewind from the adjacent frame to that exchange's
-                    // first frame, where its carried values entered.
+                    // Rewind to the exchange's first physical frame, where
+                    // its carried values entered.
                     String exchange = boundary.exchangeLeg();
                     for (ProtocolEvent event : protocol) {
                         if (transport.equals(event.transport)
@@ -728,10 +670,8 @@ public final class RuntimeRegionPlanner {
     }
 
     /**
-     * A capture executed inside every enclosing region, but the propagated
-     * value belongs to the smallest selected activation that contains the
-     * exact capture event. Keeping an enclosing activation as a second owner
-     * would give one receive two producers for the same transport event.
+     * A capture belongs to the smallest activation containing its event; an
+     * enclosing second owner would give one receive two producers.
      */
     private static void retainInnermostCommunicationCaptureOwners(
             Collection<Map<String, Object>> activations) {
@@ -802,36 +742,10 @@ public final class RuntimeRegionPlanner {
     }
 
     /**
-     * Gives one exact runtime event to the smallest planned activation that
-     * contains it.  Region discovery can select both a dynamic child and its
-     * enclosing activation, so both goals can otherwise ask the VM to
-     * materialize the same value or record the same branch.  Containment is
-     * taken from the finalized activation seed; equal static sites in two
-     * sequential activations therefore remain independent.
-     */
-    /**
-     * Declares each IN capture site on exactly one consumer region.
-     *
-     * <p>A capture site inside a helper lies inside every selected region
-     * whose code reaches it, and each of them declared the port.  The value
-     * crosses the wire once, so the attach can only file it on one of them
-     * -- {@code ConcolicRegionRuntime.attachConsumerRegion} names the
-     * innermost live occurrence that declares it -- and every other
-     * declaring occurrence was then reported at IMPORT as
-     * PLANNED_HANDOFF_NOT_REPRODUCED.  On hdfs-17899 bug2 that is
-     * resp.block-key-id and resp.block-key-expiry-date, declared both by
-     * the per-call region rooted at
-     * {@code PBHelper.convert(BlockKeyProto)} and by the loop-body region
-     * rooted at the enclosing {@code convert(ExportedBlockKeysProto)}: 18
-     * handoff events, all naming the per-call region, and 12
-     * not-reproduced rows, all on the loop-body one.</p>
-     *
-     * <p>The plan now states the same rule the attach applies: the site
-     * belongs to the innermost selected region containing it, which is the
-     * region whose own root method IS the capture's method when one is
-     * selected.  H is (portId, consumer occurrence, k-th attach, element
-     * path), so two consumers for one wire value would be two variables for
-     * one value; this keeps it one.</p>
+     * Declares each IN capture site on exactly one consumer: the innermost
+     * selected region, as {@code ConcolicRegionRuntime.attachConsumerRegion}
+     * does.  A second declaring region would be a second H variable for one
+     * wire value.
      */
     private static void retainInnermostCommunicationConsumers(
             List<Map<String, Object>> plans) {
@@ -877,6 +791,10 @@ public final class RuntimeRegionPlanner {
                 ? stringValue(((Map<?, ?>) selector).get("method")) : "";
     }
 
+    /**
+     * Gives each exact runtime event to the smallest planned activation
+     * containing it, so a child and its encloser never both own it.
+     */
     private static void retainInnermostExactGoalEventOwners(
             List<Map<String, Object>> plans, TraceIndex trace) {
         retainInnermostExactGoalEventOwners(plans, trace,
@@ -885,21 +803,8 @@ public final class RuntimeRegionPlanner {
                 "branches", true);
     }
 
-    /**
-     * Re-spells every row's {@code enclosingActivationIds} in the published
-     * namespace.
-     *
-     * <p>Containment is stamped over the recorded activations, before any
-     * retention decision, so it is carried through planning as the recorded
-     * correlation key.  The published name of an activation is a function of
-     * its own planned occurrence, which only exists for an activation this
-     * wave retained: an enclosing activation the wave dropped has no
-     * published name at all, and is dropped from the list rather than named
-     * in a namespace no other row uses.  That loses nothing -- the only
-     * reader, {@link #retainInnermostExactGoalEventOwners}, matches these
-     * names against the {@code activationId} of other plan rows, which an
-     * unretained activation never has.</p>
-     */
+    /** Re-spells {@code enclosingActivationIds} in the published namespace;
+     * unretained enclosers have no name and are dropped. */
     private static void republishEnclosingActivationIds(
             List<Map<String, Object>> plans,
             Map<String, String> publishedActivationIds) {
@@ -1005,11 +910,8 @@ public final class RuntimeRegionPlanner {
         return eventSeq + "\n" + recordedCall + "\n" + site;
     }
 
-    /**
-     * Exact materialization occurrence and the value slot selected at it.
-     * The slot excludes region-local port/symbol ids, which are different
-     * names for the same value in overlapping regions.
-     */
+    /** Exact materialization occurrence and slot, without region-local ids
+     * (overlapping regions name one value differently). */
     private static String exactMaterializationEventIdentity(
             Map<String, Object> action, TraceIndex trace) {
         long eventSeq = longNumber(action.get("eventSeq"), -1L);
@@ -1048,8 +950,8 @@ public final class RuntimeRegionPlanner {
                 || "TASK_ENTRY".equals(authority)
                 || "MAIN_ENTRY".equals(authority)
                 || "EXPLICIT_FAULT_ENTRY".equals(authority)
-                // The annotated target's own activation, planned as a root
-                // because no execution-context entry statically reaches it.
+                // The annotated target, when no execution-context entry
+                // statically reaches it.
                 || "FAILURE_TARGET_ENTRY".equals(authority);
     }
 
@@ -1062,9 +964,7 @@ public final class RuntimeRegionPlanner {
             for (Map<String, Object> loop : rows(region.get(
                     RuntimeSelectedRegionFinalizer.RETAINED_LOOPS))) {
                 Object stated = loop.get(LoopBoundPolicy.LOOP_BODY_BOUND);
-                // Absent is not zero and not the default: a row that states
-                // no bound declares nothing, and reading the default out of
-                // it would turn silence into a declaration.
+                // Absent declares nothing; it is not the default.
                 if (stated == null) continue;
                 String site = LoopBoundPolicy.loopSiteId(strings(
                         loop.get(LoopBoundPolicy.LOOP_CONTROL_SITE_IDS)));
@@ -1080,15 +980,13 @@ public final class RuntimeRegionPlanner {
                 }
             }
         }
-        // README LOOP-1: a declared bound that happens to equal the inherited
-        // default is still a declaration.
+        // README LOOP-1: a bound equal to the default is still declared.
         return LoopBoundPolicy.cfgBackedges(
                 LoopBoundPolicy.declaredDefault(), declared);
     }
 
-    /** In-memory planning entry point. {@code regionSource} and {@code
-     * regionEdgeSource} only label diagnostics; rows must already be in the
-     * exact JSONL value domain the file readers would produce. */
+    /** In-memory planning entry point; rows must be in the JSONL value
+     * domain, {@code regionSource} only labels diagnostics. */
     static Result plan(List<Map<String, Object>> regions,
                        String regionSource,
                        Collection<Map<String, Object>> runtimeSeeds,
@@ -1097,15 +995,12 @@ public final class RuntimeRegionPlanner {
                        List<FieldAccessEvent> fieldEvents,
                        List<ProtocolEvent> protocolEvents,
                        Collection<Map<String, Object>> planGaps) {
-        // One loop has one prefix: region rows that disagree on a loop's K_L
-        // are refused here, before anything is planned over them.
+        // One loop has one prefix: refuse disagreeing K_L up front.
         declaredLoopBounds(regions);
         TraceIndex trace = new TraceIndex(methods, runtimeEvents,
                 fieldEvents, protocolEvents);
         Result result = new Result();
-        // The finalizer's own gaps ride the plan artifact: they are about the
-        // ports these plans were built from and no later artifact carries the
-        // accesses they say were dropped.
+        // The finalizer's gaps ride the plan: no later artifact carries them.
         if (planGaps != null) result.planGaps.addAll(planGaps);
         Map<String, StaticProgram.RegionRow> regionById =
                 new LinkedHashMap<>();
@@ -1114,24 +1009,16 @@ public final class RuntimeRegionPlanner {
             declareCutPortCells(region);
             regionById.put(region.regionId, region);
         }
-        // The entry activation's goal - an activation planned as one
-        // relation has one answer, so nothing is chosen there.
         Map<String, Map<String, Object>> goalByOccurrence =
                 new LinkedHashMap<>();
         Map<String, Map<String, Object>> planByOccurrence =
                 new LinkedHashMap<>();
-        // occurrenceId is frozen evidence identity, not a replay address.
-        // Replay therefore carries its own ordinal inside the exact stable
-        // root/request scope.  Reserve ordinals for every observed activation
-        // before retention, just as OccurrenceBinding does for evidence ids.
+        // Replay ordinals, reserved for every observed activation before
+        // retention: occurrenceId is evidence, not a replay address.
         Map<String, Integer> replayInvocationOrdinals =
                 new LinkedHashMap<>();
-        // The recorded correlation key of every planned activation, against
-        // the content-addressed name the plan publishes for it.  An
-        // activation's own name is spelled from its own occurrence, so the
-        // enclosing names a row carries can only be re-spelled once every
-        // planned activation has been named -- see
-        // republishEnclosingActivationIds below.
+        // Recorded key -> published name; enclosing names are re-spelled
+        // once all are named (republishEnclosingActivationIds).
         Map<String, String> publishedActivationIds = new LinkedHashMap<>();
         Set<String> publishedActivationNames = new LinkedHashSet<>();
         for (Map<String, Object> seed : runtimeSeeds == null
@@ -1163,16 +1050,8 @@ public final class RuntimeRegionPlanner {
             observedMethods.retainAll(allowedMethods);
             List<Map<String, Object>> branches = branches(
                     region.branchPolicies, trace.runtime(calls));
-            // The occurrence the case's failure happened in, as the region
-            // finalizer decided it (README TARGET-1: target existence binds
-            // to a selected concrete branch event).  Read off the seed
-            // first, because under the fold rule the region whose static
-            // selection says EXCEPTION is not always the region this
-            // occurrence is an activation of -- hdfs-11741's annotated
-            // target region folds into the DataNode's SASL handler, which
-            // is a STATE_CONTEXT region and is where the fatal branch was
-            // decided.  The static test stands behind it for every caller
-            // that builds a plan without that closure.
+            // README TARGET-1: the finalizer's seed wins (the EXCEPTION
+            // region may fold elsewhere); the static test is the fallback.
             boolean target = Boolean.TRUE.equals(MapFields.booleanValue(
                     seed.get(RuntimeSelectedRegionFinalizer
                             .FAILURE_TARGET_OCCURRENCE)))
@@ -1181,8 +1060,7 @@ public final class RuntimeRegionPlanner {
             MethodEvent semanticContext = target
                     ? trace.selectedTargetContext(root, calls, branches)
                     : root;
-            // The same upgrade the activation seed was stamped with,
-            // applied to the same call set.
+            // Same source upgrade as the seed, same call set.
             List<SourceRef> stamped = stampedSources(calls, trace);
             SourceRef rootSource = activationSource(root, stamped);
             SourceRef source = semanticContext.source != null
@@ -1190,22 +1068,13 @@ public final class RuntimeRegionPlanner {
             int replayInvocationOrdinal = replayInvocationOrdinals.merge(
                     replayInvocationScope(regionId, root, rootSource),
                     1, Integer::sum);
-            // The region finalizer mints the one activation identity of
-            // the pipeline and stamps it onto this seed; an activation it
-            // did not retain carries none.
+            // Minted by the finalizer; an unretained activation has none.
             String occurrenceId = stringValue(seed.get("occurrenceId"));
             if (occurrenceId.isEmpty()) continue;
-            // One coarse occurrence is one row (README REGION-1).  A second
-            // activation that landed on this address is refused where the
-            // address is minted -- RuntimeSelectedRegionFinalizer states
-            // OCCURRENCE_ADDRESS_SHARED as a BLOCKING plan gap and retains
-            // the first -- so publishing it here would put the same
-            // contradiction in the artifact, where PLAN meets it as
-            // "duplicate region occurrence" and says nothing about why.
+            // One coarse occurrence is one row (README REGION-1); a shared
+            // address is already a BLOCKING OCCURRENCE_ADDRESS_SHARED gap.
             if (planByOccurrence.containsKey(occurrenceId)) continue;
-            // planSkeletonGraph mints the recorded call identity once and
-            // stamps it on the seed; this stage reads it rather than
-            // spelling a second one to check the first against.
+            // Minted once by planSkeletonGraph; read, never re-spelled.
             String exactActivationId = stringValue(seed.get("activationId"));
             if (exactActivationId.isEmpty()) {
                 throw new IllegalArgumentException("runtime activation seed "
@@ -1231,9 +1100,7 @@ public final class RuntimeRegionPlanner {
             List<Map<String, Object>> occurrenceSymbolize = symbolize(
                     region.symbolicInputs, occurrenceId);
             List<Map<String, Object>> occurrenceBranches = branches;
-            // Static discovery supplies the candidate region; this concrete
-            // activation supplies the methods worth slicing in the current
-            // wave.
+            // The concrete activation picks the methods worth slicing.
             Set<String> occurrenceMethods =
                     new LinkedHashSet<>(observedMethods);
             if (allowedMethods.contains(root.method)) {
@@ -1249,10 +1116,7 @@ public final class RuntimeRegionPlanner {
                     : "REGION_PATH_CLOSURE");
             goal.put("runtimeDefinitionMethods",
                     new ArrayList<>(occurrenceMethods));
-            // A planned occurrence is ready: which of its reads and
-            // branches the failure needs is EXPLORE's frontier, not a cut
-            // this stage may take, so there is no state here but READY and
-            // no blocker for this stage to raise.
+            // Always READY: which reads/branches matter is EXPLORE's call.
             goal.put("admission", object("state", "READY",
                     "mode", "RUNTIME_FAILURE_CLOSURE",
                     "blockers", Collections.emptyList()));
@@ -1261,33 +1125,24 @@ public final class RuntimeRegionPlanner {
             Map<String, Object> plan = new LinkedHashMap<>();
             plan.put("schemaVersion", 3);
             plan.put("kind", "CONCOLIC_REGION_PLAN");
-            // The semantic source of this activation - sourceKey, sourceKind,
-            // sourceRole, sourceId and sourceEpoch - is published once, by
-            // putTraceContext below.
+            // The semantic source fields are published by putTraceContext.
             plan.put("occurrenceId", occurrenceId);
             plan.put("regionId", region.regionId);
-            // The once-only-root rule (README "Loops"): a region rooted on a
-            // service loop is one occurrence per iteration, addressed by the
-            // per-iteration source epoch, and replay enters the loop BODY at
-            // headerUnitIndex rather than the entry frame above it.  Both
-            // names travel only when the rule fired.
+            // README "Loops": a service-loop root is one occurrence per
+            // iteration.
             if (!region.rootAuthority.isEmpty()) {
                 plan.put(LoopBoundPolicy.ROOT_AUTHORITY, region.rootAuthority);
             }
             if (region.rootLoop != null) {
                 plan.put(LoopBoundPolicy.ROOT_LOOP, region.rootLoop);
             }
-            // The selector is minted once: it is both this row's replay
-            // address and half of the content the published activation name
-            // is taken over.
+            // Minted once: replay address and input to the published name.
             Map<String, Object> plannedRootSelector = rootSelector(root,
                     rootSource, semanticContext.requestKey,
                     semanticContext.requestApi, replayInvocationOrdinal);
             String plannedActivationId = activationId(occurrenceId,
                     plannedRootSelector);
-            // One occurrence is one activation, so one published name is
-            // too.  Two activations answering to one name would silently
-            // merge two occurrences downstream, which fails closed here.
+            // One published name per activation, or occurrences merge.
             if (!publishedActivationNames.add(plannedActivationId)) {
                 throw new IllegalStateException("two planned activations "
                         + "claimed one published activation identity: "
@@ -1296,25 +1151,18 @@ public final class RuntimeRegionPlanner {
             publishedActivationIds.put(exactActivationId,
                     plannedActivationId);
             plan.put("activationId", plannedActivationId);
-            // Still the recorded keys; re-spelled after the loop, once every
-            // enclosing activation has a published name of its own.
+            // Recorded keys; re-spelled after the loop.
             if (!enclosingActivationIds.isEmpty()) {
                 plan.put("enclosingActivationIds",
                         new ArrayList<>(enclosingActivationIds));
             }
-            // The regions this occurrence RAN without opening an occurrence
-            // for them (F1).  Published so a reader of the frozen plan can
-            // answer "where did region R run" for a region the plan carries
-            // no row for at all -- the only place that question is answered
-            // once the trace is gone.
+            // Regions folded into this occurrence (F1): where they ran.
             List<String> folded = strings(seed.get(
                     RuntimeSelectedRegionFinalizer.FOLDED_REGION_IDS));
             if (!folded.isEmpty()) {
                 plan.put(RuntimeSelectedRegionFinalizer.FOLDED_REGION_IDS,
                         new ArrayList<>(folded));
             }
-            // The retained loops this occurrence's selected methods hold, with
-            // their kind and K_L.
             List<Map<String, Object>> retainedLoops =
                     retainedLoops(region, occurrenceMethods);
             if (!retainedLoops.isEmpty()) {
@@ -1326,17 +1174,12 @@ public final class RuntimeRegionPlanner {
                 plan.put(ConfiguredSourcePhaseContract.PLAN_FIELD,
                         sourcePhases);
             }
-            // What the recording states at the sites the static scope map
-            // named DECLARED_SITE: the dynamic half of every port a
-            // declaration could mint in this occurrence.  Stamped on the
-            // activation seed by planSkeletonGraph, republished here.
+            // DECLARED_SITE captures stamped by planSkeletonGraph.
             List<Map<String, Object>> captures = rows(
                     seed.get(DeclaredSiteCapture.PLAN_FIELD));
             if (!captures.isEmpty()) {
                 plan.put(DeclaredSiteCapture.PLAN_FIELD, captures);
             }
-            // Where this occurrence hands a declared communication port to the
-            // VM, or takes one from it.
             List<Map<String, Object>> handoffSites =
                     communicationHandoffSites(region);
             if (!handoffSites.isEmpty()) {
@@ -1346,17 +1189,11 @@ public final class RuntimeRegionPlanner {
             plan.put("relationKey", plannedRelationKey);
             putTraceContext(plan, semanticContext, source);
             plan.put("rootSelector", plannedRootSelector);
-            // A region with no anchor states no target method rather than
-            // an empty one.
             if (!region.anchorMethod.isEmpty()) {
                 plan.put("targetMethod", region.anchorMethod);
             }
-            // Why this activation was admitted, when it was admitted by
-            // anything other than reaching the target, and how many
-            // shared-location demand hops that took.  The region finalizer
-            // stamps both on the seed; neither is derivable from the
-            // retained edges, which carry port demand and protocol closure
-            // in the same rows.
+            // Non-target admission basis and demand depth, from the seed;
+            // not derivable from the retained edges.
             if (seed.containsKey(ADMISSION_BASIS)) {
                 plan.put(ADMISSION_BASIS, seed.get(ADMISSION_BASIS));
                 if (seed.containsKey(DEMAND_DEPTH)) {
@@ -1373,28 +1210,20 @@ public final class RuntimeRegionPlanner {
         retainInnermostDeclaredSiteCaptures(result.regionPlans);
         retainInnermostExactGoalEventOwners(result.regionPlans, trace);
         retainInnermostCommunicationConsumers(result.regionPlans);
-        // The plan catalog names the planned regions, the static symbolic
-        // sources a scheduler admits inside them, and the declared roots
-        // this plan honoured.  Ports, methods, branch policies and access
-        // history stay in the refined graph, which is the artifact that
-        // owns them.
+        // Catalog: regions, their static symbolic sources and declared
+        // roots.  Ports, methods and branches stay in the refined graph.
         for (StaticProgram.RegionRow region : regionById.values()) {
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("schemaVersion", 3);
             row.put("kind", "SYMBOLIC_REGION");
             row.put("regionId", region.regionId);
-            // A declared symbolic input's method is a region root by
-            // declaration, so the scheduler resolves the case's rows
-            // against these two members; without them it could not tell a
-            // declaration this plan never saw from a site the recording
-            // never entered.
+            // Lets the scheduler tell an unseen declaration from a site the
+            // recording never entered.
             if (region.declaredInputRoot) {
                 row.put("rootMethod", region.rootMethod);
                 row.put(DeclaredSymbolicInputs.ROOT_FIELD, true);
             }
-            // Copied, not aliased: the catalog row is published on its own
-            // and must not share mutable structure with the graph row that
-            // later passes normalize in place.
+            // Copied, not aliased: later passes normalize graph rows in place.
             Object declaredSources = region.json.get(
                     StaticSymbolicSourceDeclaration.FIELD);
             if (declaredSources != null) {
@@ -1406,9 +1235,8 @@ public final class RuntimeRegionPlanner {
         return result;
     }
 
-    /** Structural copy with the value domain of the JSONL round trip:
-     * null-valued map entries are dropped, integral numbers become Long,
-     * list nulls survive. */
+    /** Structural copy in the JSONL round-trip domain: null map entries
+     * dropped, integers as Long, list nulls kept. */
     @SuppressWarnings("unchecked")
     private static Object deepCopyValue(Object value) {
         if (value instanceof Map<?, ?>) {
@@ -1443,9 +1271,8 @@ public final class RuntimeRegionPlanner {
         return value;
     }
 
-    /** Structural replacement for {@code GSON.toJsonTree} over the plain
-     * Map/List/scalar rows this planner manipulates; mirrors Gson exactly,
-     * including dropped null map entries and JsonNull list members. */
+    /** {@code GSON.toJsonTree} for plain Map/List/scalar rows, exactly
+     * (null map entries dropped, JsonNull list members kept). */
     private static JsonElement toJsonTreeFast(Object value) {
         if (value == null) {
             return com.google.gson.JsonNull.INSTANCE;
@@ -1574,13 +1401,8 @@ public final class RuntimeRegionPlanner {
     private static void putTraceContext(Map<String, Object> target,
                                         MethodEvent event,
                                         SourceRef resolved) {
-        // sourceKey, and nothing that re-spells it.  The row carried
-        // sourceKind, sourceRole, sourceId and sourceEpoch beside it: the
-        // node and its epoch are already in sourceKey, which
-        // OccurrenceAddress parses both out of, and no reader of a plan or
-        // activation row ever asked for the other three -- the readers of
-        // those member NAMES are port, edge and mint rows, which are other
-        // shapes entirely.
+        // sourceKey only: node and epoch are parsed out of it
+        // (OccurrenceAddress); nothing re-spells it.
         target.put("sourceKey", sourceOf(resolved).key());
         if (!event.requestKey.isEmpty()) {
             target.put("requestKey", event.requestKey);
@@ -1590,43 +1412,16 @@ public final class RuntimeRegionPlanner {
         }
     }
 
-    /**
-     * The recorded lane and span this frame ran in.
-     *
-     * <p>These are one recording's own trace ids: consecutive tickets from
-     * {@code RuntimeTraceContext}'s process-global counter, so their values
-     * depend on how many requests, spans and threads happened to be
-     * allocated first.  They address a row of {@code runtime_trace.jsonl} in
-     * the recording that minted them, which is exactly the scope the
-     * activation seeds need them in -- {@link
-     * #bindObservedCommunicationCaptures} pairs a protocol event with its
-     * activation by lane.  They say nothing outside it, so a frozen plan,
-     * which is compared across recordings, does not carry them.</p>
-     */
+    /** The recorded lane, for {@link #bindObservedCommunicationCaptures};
+     * per-recording, so never in the frozen plan. */
     private static void putRecordedTraceIds(Map<String, Object> target,
                                             MethodEvent event) {
-        // The lane, and only the lane.  It is read back off a published row
-        // (the shadowing pass asks which activations share one lane); the
-        // three span ids were published beside it and read by nothing -- the
-        // span correlation they serve happens over the TRACE rows, inside
-        // this planner, before any row is published.
+        // Only the lane: span correlation happens over the trace rows.
         if (event.laneId > 0L) target.put("laneId", event.laneId);
     }
 
-    /**
-     * One recorded call is ONE occurrence's read: the innermost planned
-     * activation that ran it.
-     *
-     * <p>Every planned activation enclosing the call holds it in its own
-     * call subtree, so the pass above states the capture on each of them.
-     * An enclosing activation's copy is the same recorded return under a
-     * second name, and a port minted from it would give one value two
-     * authorities -- the same rule {@link
-     * #retainInnermostExactGoalEventOwners} applies to the goals, applied
-     * to the evidence they are built from, and keyed on the recorded
-     * invocation, which is exactly one call site invocation of one
-     * frame.</p>
-     */
+    /** One recorded invocation is the innermost activation's read only (the
+     * {@link #retainInnermostExactGoalEventOwners} rule, on evidence). */
     private static void retainInnermostDeclaredSiteCaptures(
             List<Map<String, Object>> plans) {
         Map<Long, Set<String>> ownersByInvocation = new LinkedHashMap<>();
@@ -1679,20 +1474,10 @@ public final class RuntimeRegionPlanner {
     }
 
     /**
-     * What the recording states at the sites the scope map named
-     * DECLARED_SITE, for ONE occurrence: one row per completed call there,
-     * with the value it returned and the receiver it ran on.
-     *
-     * <p>The ordinal counts every completed call of the occurrence at that
-     * (site, callee), whether or not the site is declared, so a declared
-     * site's ordinal is the same number whichever sites a later declaration
-     * adds or drops.  It is the port's replay address, so it is counted from
-     * the recording's own order and never from a per-run call id.</p>
-     *
-     * <p>No admission is taken here.  A capture is published for every
-     * declared site this occurrence entered; whether any of them mints is
-     * {@code ConcolicScheduler.SymbolicInputSelection}'s decision, and the
-     * value a capture states is evidence either way.</p>
+     * One row per completed call at a DECLARED_SITE in ONE occurrence.  The
+     * ordinal (the replay address) counts every completed call at that
+     * (site, callee), declared or not, so it survives declaration changes.
+     * Admission is {@code ConcolicScheduler.SymbolicInputSelection}'s.
      */
     private static List<Map<String, Object>> declaredSiteCaptures(
             Set<String> declaredSites, TraceIndex trace, Set<Long> calls,
@@ -1738,18 +1523,8 @@ public final class RuntimeRegionPlanner {
         return captures;
     }
 
-    /**
-     * The symbolic inputs one activation of a region is planned over: its
-     * declared cut ports -- README section 3's {@code Req_in}, {@code
-     * Resp_in}, {@code Live_in} -- whose site the declaration carries.  A
-     * region row holds nothing else ({@code RuntimeSelectedRegionFinalizer
-     * #declareCommunicationPorts}); every other root is minted at PLAN from
-     * the scope map's DECLARED_SITE rows.
-     *
-     * <p>A declared cut port can appear twice: the region-level declaration
-     * and, once a recorded delivery named it, this occurrence's own stamped
-     * copy of it.  The copy wins.</p>
-     */
+    /** One activation's declared cut ports (README §3 {@code Req_in},
+     * {@code Resp_in}, {@code Live_in}); an occurrence's stamped copy wins. */
     public static List<Map<String, Object>> symbolize(
             List<Map<String, Object>> ports, String occurrenceId) {
         Set<String> occurrenceOwnedCutPorts =
@@ -1823,8 +1598,7 @@ public final class RuntimeRegionPlanner {
         action.put("symbol", portId);
         action.put("observed", true);
         action.put("javaType", javaType);
-        // Both names for the same fact, because the two readers differ: an
-        // action's defining frame is "method", while a root-entry action reads
+        // Both names: action readers use "method", root-entry readers
         // "rootMethod".
         action.put("method", definitionMethod);
         action.put("rootMethod", definitionMethod);
@@ -1835,9 +1609,7 @@ public final class RuntimeRegionPlanner {
             if (argumentIndex < 0) {
                 return null;
             }
-            // Req_in is parameter <n> of the resolved server entry, one frame
-            // above the delivery and inside the server fragment by
-            // construction.
+            // Req_in: parameter <n> of the resolved server entry.
             action.put("location", "ARGUMENT");
             action.put(CommunicationCatalogContract.PORT_ARGUMENT_INDEX,
                     argumentIndex);
@@ -1851,30 +1623,20 @@ public final class RuntimeRegionPlanner {
             if (declaredCallee.isEmpty() || unitIndex < 0) {
                 return null;
             }
-            // Resp_in is the value the cut call returned, read at the cut
-            // unit in the client's own frame - one frame above the transport
-            // and inside the client region by construction.
+            // Resp_in: the cut call's return, in the client's own frame.
             action.put("location", "CALL_RETURN");
             action.put("cell", RuntimeSelectedRegionFinalizer
                     .declaredCutPortCell(port));
             action.put("unitIndex", unitIndex);
         } else {
-            // CALL_ARGUMENT and METHOD_RETURN describe where a fragment
-            // *writes* a value at its boundary.
+            // CALL_ARGUMENT / METHOD_RETURN are writes, not inputs.
             return null;
         }
         return action;
     }
 
 
-    /**
-     * Whether the VM can present this port's value as a symbol at all.
-     *
-     * <p>A type question and a statement the port already carries, not a
-     * role: a value whose type the SMT layer has no term for cannot be a
-     * solver leaf however it is declared, and a port the plan has already
-     * marked concrete says so about itself.</p>
-     */
+    /** Whether the port's type has an SMT term and is not marked concrete. */
     static boolean symbolicLeafPort(Map<String, Object> port,
                                     String javaType) {
         if (port != null && !port.isEmpty()) {
@@ -1931,20 +1693,14 @@ public final class RuntimeRegionPlanner {
                         "outcome", event.outcome,
                         "eventSeq", event.seq));
             }
-            // The FIRST decision the recording made at this site in this
-            // activation.  It used to be the first one whose outcome equalled
-            // a required outcome the region plan carried -- an election over
-            // recorded evidence, and the polarity it elected on is now stated
-            // once, by the static scope map's TARGET_SITE row.
+            // The FIRST recorded decision here; polarity is stated only by
+            // the scope map's TARGET_SITE row, never elected from evidence.
             int selectedIndex = 0;
             RuntimeEvent selected = occurrences.isEmpty() ? null
                     : occurrences.get(selectedIndex);
             Map<String, Object> branch = new LinkedHashMap<>(policy);
-            // "observed" is, and stays, "this site executed in the
-            // recording".  It is not "it took the required outcome": a
-            // required outcome the recording never took is the normal state
-            // of a guard the search intends to flip, and reading the two as
-            // one answer would make every flip target ineligible.
+            // "observed" means "executed", not "took the required outcome":
+            // conflating them would make every flip target ineligible.
             branch.put("observed", selected != null);
             branch.put("observedOutcome",
                     selected == null ? null : selected.outcome);
@@ -1961,9 +1717,7 @@ public final class RuntimeRegionPlanner {
     }
 
 
-    /** The replay address of one activation: its stable selected source and
-     * region root, plus the causal anchor that activation was entered under.
-     */
+    /** The replay address of one activation: root, receiver, causal anchor. */
     static Map<String, Object> rootSelector(
             MethodEvent root, SourceRef source, String requestKey,
             String requestApi, int invocationOrdinal) {
@@ -1990,11 +1744,7 @@ public final class RuntimeRegionPlanner {
     static final String ANCHOR_REGISTERED_SOURCE = "REGISTERED_SOURCE";
     /** The activation registered no source and ran under the default. */
     public static final String ANCHOR_UNREGISTERED_SOURCE = "UNREGISTERED_SOURCE";
-    /**
-     * The activation inherited a registered source from its creating thread,
-     * while its own receiver had no source alias. Replay therefore uses the
-     * thread context as the anchor.
-     */
+    /** The source was inherited from the creating thread's context. */
     public static final String ANCHOR_INHERITED_CONTEXT = "INHERITED_CONTEXT";
 
     /** What causally produced this activation, named rather than counted. */
@@ -2006,11 +1756,9 @@ public final class RuntimeRegionPlanner {
         anchor.put("sourceKey", source.key());
         anchor.put("kind", UNREGISTERED_SOURCE.key().equals(source.key())
                 ? ANCHOR_UNREGISTERED_SOURCE
-                // Only the receiver's own registration may be re-checked by
-                // object identity at replay.  Claiming it for a source the
-                // context named would address an occurrence replay can never
-                // answer -- and claiming the context for a registered receiver
-                // would collapse distinct source or epoch aliases.
+                // Only a receiver's own registration is re-checkable by
+                // object identity at replay; the other way round collapses
+                // source/epoch aliases.
                 : root != null && root.receiverAttributed
                 ? ANCHOR_REGISTERED_SOURCE : ANCHOR_INHERITED_CONTEXT);
         if (requestKey != null && !requestKey.isEmpty()) {
@@ -2022,24 +1770,8 @@ public final class RuntimeRegionPlanner {
         return anchor;
     }
 
-    /**
-     * The bucket this region's activations are counted in.
-     *
-     * <p>An occurrence is the k-th activation of this region on this node
-     * and epoch, over every activation the recording holds.  Counting and
-     * matching have to use one scope or the ordinal means one thing when it
-     * is written and another when it is checked, so this is not merely the
-     * same shape as the replay's bucket -- it is literally the same
-     * function, which {@code
-     * ConcolicTaskPlan.RuntimeTask.invocationCounterKey} also calls.  Two
-     * spellings of one rule is how the ordinal drifted before.</p>
-     *
-     * <p>A grouping key for a local count, not an identity: an occurrence is
-     * its address, and the address is minted from where the activation was.
-     * This only says which invocations of one region on one component and
-     * one root method are being numbered together, for the selector the
-     * replay matches its root call on.</p>
-     */
+    /** Grouping key for the replay ordinal, shared with {@code
+     * ConcolicTaskPlan.RuntimeTask.invocationCounterKey}; not an identity. */
     private static String replayInvocationScope(
             String regionId, MethodEvent root, SourceRef source) {
         return source.key() + "\n" + safe(regionId) + "\n"
@@ -2048,12 +1780,8 @@ public final class RuntimeRegionPlanner {
 
 
     /** Every distinct logical source the frames of one activation carry, in
-     * recorded order.
-     *
-     * <p>Taking the region root's stamp therefore published {@code
-     * workload/unregistered} for an activation whose very next frame names
-     * its node - which is a fallback presented as an attribution, the thing
-     * README Step 4 replaces with direct stamping.</p> */
+     * recorded order (README Step 4: the root's stamp alone may be
+     * unregistered while its next frame names the node). */
     private static List<SourceRef> stampedSources(Set<Long> calls,
                                                   TraceIndex trace) {
         List<MethodEvent> frames = new ArrayList<>();
@@ -2070,27 +1798,16 @@ public final class RuntimeRegionPlanner {
         return sources;
     }
 
-    /** The source that owns one activation: its root frame's stamp, or the
-     * unique stamp its own frames carry when the root has none. */
-    /**
-     * One activation's source, by the rule both ends run.
-     *
-     * <p>{@link RuntimeTraceContext#attributedActivationSource} is that rule:
-     * the activation's own stamp, else the unique stamp among its frames,
-     * else the unregistered source.  The replay evaluates the same function
-     * over the same three inputs, so a population counted here is the
-     * population counted there.</p>
-     */
+    /** One activation's source by {@link
+     * RuntimeTraceContext#attributedActivationSource}, the rule replay runs. */
     private static SourceRef activationSource(MethodEvent root,
                                               List<SourceRef> stamped) {
         return RuntimeTraceContext.attributedActivationSource(
                 root == null ? null : root.source, stamped);
     }
 
-    /** Total logical scope of one traced event. A workload that never
-     * registered a stable source is one logical source: correlation must
-     * never merge two registered sources, and must never split a baseline run
-     * that carries no source registration at all. */
+    /** Total logical scope of one traced event; an unregistered workload is
+     * one logical source. */
     static SourceRef sourceOf(SourceRef source) {
         return source == null ? UNREGISTERED_SOURCE : source;
     }
@@ -2101,11 +1818,7 @@ public final class RuntimeRegionPlanner {
         return source.id() + "/relation/" + regionId;
     }
 
-    /**
-     * Plan-row fields naming why the admission half selected this region and
-     * how far from the fatal target that demand travelled.  One spelling,
-     * owned by the finalizer that writes them onto the seed.
-     */
+    /** Admission basis and demand depth; spelled by the finalizer. */
     static final String ADMISSION_BASIS =
             RuntimeSelectedRegionFinalizer.ADMISSION_BASIS;
     static final String DEMAND_DEPTH =
@@ -2115,40 +1828,16 @@ public final class RuntimeRegionPlanner {
     static final String RETAINED_LOOPS_FIELD =
             edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy.PLAN_FIELD;
 
-    /**
-     * The recorded call one activation seed names.
-     *
-     * <p>This is an aggregation-internal key, not published identity: {@code
-     * tid} is the recording JVM's thread id and {@code callId} the recorder's
-     * global event counter, so both address one frame of one recording and
-     * neither means anything in the next.  It is the correlation key the
-     * activation seeds, their {@code enclosingActivationIds} and the recorded
-     * occurrence links share inside a single aggregation, and it never leaves
-     * it; the name the plan publishes is spelled from content by {@link
-     * #activationId(String, Map)}.</p>
-     */
+    /** Per-recording correlation key of a seed, never published (see
+     * {@link #activationId(String, Map)}). */
     static String recordedActivationKey(MethodEvent root) {
         return "ACT." + UUID.nameUUIDFromBytes((root.test + "\n"
                 + root.sourceKey + "\n" + root.tid + "\n" + root.callId)
                 .getBytes(StandardCharsets.UTF_8));
     }
 
-    /**
-     * The published identity of one planned activation, spelled from the
-     * content that names it.
-     *
-     * <p>Both inputs are already content-addressed.  {@code occurrenceId} is
-     * {@code <semantic source>/region/<regionId>#<ordinal>}, whose ordinal
-     * counts the observed activations of that source and region in recorded
-     * order ({@link OccurrenceBinding}).  {@code rootSelector} is the address
-     * replay itself uses: the root method, its receiver context, the causal
-     * anchor and the invocation ordinal inside that anchor's scope.  Neither
-     * carries a per-run address, so two independent recordings of one
-     * workload publish the same name for the same activation.</p>
-     *
-     * <p>The {@code ACT.} prefix and the UUID shape are the ones consumers
-     * already parse; only what the UUID is taken over changes.</p>
-     */
+    /** Published activation identity over content only ({@link
+     * OccurrenceBinding} id + replay selector): stable across recordings. */
     public static String activationId(String occurrenceId,
                                Map<String, Object> rootSelector) {
         return "ACT." + UUID.nameUUIDFromBytes((safe(occurrenceId) + "\n"
@@ -2156,14 +1845,8 @@ public final class RuntimeRegionPlanner {
                 .getBytes(StandardCharsets.UTF_8));
     }
 
-    /**
-     * Order-independent spelling of one identity-bearing plan value.
-     *
-     * <p>A selector is a map of maps and lists whose emission order is a
-     * presentation choice.  Sorting the members here keeps the published name
-     * a function of what the selector says rather than of the order a later
-     * refactor happens to write it in.</p>
-     */
+    /** Order-independent spelling of one identity-bearing plan value: map
+     * members sorted, so emission order never changes a name. */
     private static String canonicalIdentity(Object value) {
         StringBuilder text = new StringBuilder();
         appendCanonicalIdentity(text, value);
@@ -2228,14 +1911,8 @@ public final class RuntimeRegionPlanner {
         /** Gaps the region finalizer raised while building these ports. */
         final List<Map<String, Object>> planGaps = new ArrayList<>();
         final List<Map<String, Object>> runtimeInstances = new ArrayList<>();
-        /**
-         * The region entries this recording FOLDED: one row per entry that
-         * opened no occurrence of its own, naming the occurrence it folded
-         * into ({@link #stampFoldedRegionEntries}).  They are deliberately
-         * not activations and are kept out of {@link #runtimeInstances},
-         * which is the one list "one occurrence, one activation" is counted
-         * over.
-         */
+        /** FOLDED entries ({@link #stampFoldedRegionEntries}); never in
+         * {@link #runtimeInstances}. */
         final List<Map<String, Object>> regionFolds = new ArrayList<>();
         int staticRegionCount;
 
@@ -2263,9 +1940,7 @@ public final class RuntimeRegionPlanner {
         final String threadName;
         final long tid;
         final String method;
-        /** Not final: the recorded identity counter is renamed to its
-         * content-addressed name once the trace has loaded, so that no
-         * published artifact carries a per-run object number. */
+        /** Not final: renamed to its content-addressed name at load. */
         int objectId;
         final String receiverType;
         final long callId;
@@ -2274,45 +1949,22 @@ public final class RuntimeRegionPlanner {
         final long laneId;
         final long spanId;
         final long remoteParentSpanId;
-        /** Owner of this frame. Not final: a frame is stamped when it is
-         * entered, and a node builds its service objects before it declares
-         * which source they belong to, so a thread started during start-up
-         * carries whoever started it. */
+        /** Owner of this frame.  Not final: stamped at entry, it may be
+         * re-attributed once the node declares its source. */
         SourceRef source;
         /** Stable logical scope of this event; never a transient trace id. */
         String sourceKey;
-        /** Whether {@link #source} is this receiver's own registration.  A
-         *  frame the thread's inherited context named carries {@code false},
-         *  and replay can only reproduce that one by context.  Not final:
-         *  load-time re-attribution may find the alias row for a receiver the
-         *  run aliased only after this activation had started. */
+        /** Whether {@link #source} is this receiver's own registration
+         *  ({@code false}: inherited context).  Not final: load-time
+         *  re-attribution may find a late alias. */
         boolean receiverAttributed;
         final String requestKey;
         final String requestApi;
-        /**
-         * The occurrence address the RECORDING computed, or {@code ""}.
-         *
-         * <p>Identity v3, stated once, where the activation ran: {@code
-         * Identity.occurrence} on the recording's own frame stack and scope
-         * (IDENTITY-IMPL B).  Non-empty exactly on the entry of a method
-         * that opens a region.  PLAN reads it; PLAN does not re-derive it,
-         * because a second derivation is a second identity and the two
-         * disagreed -- the plan addressed {@code loadInternal} at a
-         * seven-frame path and the replay at {@code loadInternal@1}
-         * (REPORT-M2 §5).</p>
-         */
+        /** The RECORDING's occurrence address (IDENTITY-IMPL B) on a region
+         * entry, else {@code ""}; never re-derived (REPORT-M2 §5). */
         final String occurrenceAddress;
-        /**
-         * Whether this entry was FOLDED into the occurrence already running
-         * on its thread (F1).
-         *
-         * <p>Told apart from an empty {@link #occurrenceAddress} on purpose,
-         * because the two are different facts with different owners: a fold
-         * is an entry that IS no occurrence -- a method call inside one, and
-         * PLAN records no activation for it -- while an address the
-         * recording could not compute is a hole the finalizer refuses
-         * ({@code RuntimeSelectedRegionFinalizer#readOccurrences}).</p>
-         */
+        /** FOLDED into its thread's occurrence (F1); not the same as an
+         * empty {@link #occurrenceAddress}, which is a refused hole. */
         final boolean regionFolded;
         MethodEvent(long seq, String test, String threadName,
                     long tid, String method, int objectId, String receiverType,
@@ -2368,12 +2020,8 @@ public final class RuntimeRegionPlanner {
             this.requestApi = safe(requestApi);
         }
 
-        /**
-         * This entry as a pass with no region frames would have stated it:
-         * folded or not, the method was entered.  Which regions a recording
-         * EXERCISED is asked of entries, not of occurrences
-         * ({@code CausynthTraceRecorder#aggregateStateTrace}).
-         */
+        /** This entry with the fold cleared ({@code
+         * CausynthTraceRecorder#aggregateStateTrace} counts entries). */
         MethodEvent unfolded() {
             return new MethodEvent(seq, test, threadName, tid, method,
                     objectId, receiverType, callId, parentCallId,
@@ -2390,8 +2038,7 @@ public final class RuntimeRegionPlanner {
         final String correlationId;
         /** Retry/attempt identity stated at the application boundary. */
         final String attemptId;
-        /** The half of the exchange this leg belongs to, as the application
-         * stated it, or {@code ""} when it stated none. */
+        /** The exchange half the application stated, or {@code ""}. */
         final String half;
         final String threadName;
         final long tid;
@@ -2405,20 +2052,11 @@ public final class RuntimeRegionPlanner {
         final SourceRef source;
         final String requestKey;
         final String requestApi;
-        /**
-         * The {@link edu.uva.liftlab.graphchecker.contract.Endpoint} id this
-         * leg's sender minted, or {@code ""} on a delivery.  This is the
-         * digest an occurrence downstream of the message carries as its
-         * causal anchor.
-         */
+        /** Sender-minted {@link edu.uva.liftlab.graphchecker.contract.Endpoint}
+         * id, or {@code ""} on a delivery. */
         final String producerEndpointId;
-        /**
-         * The components behind that digest, as the sender stated them:
-         * which occurrence sent the message, at which transport site, the
-         * k-th event of that occurrence there, and the attempt.  Two
-         * anchors are told apart on these; the digest only says they
-         * differ.
-         */
+        /** The components behind that digest (occurrence, site, k,
+         * attempt), which tell two anchors apart. */
         final String producerEndpoint;
         ProtocolEvent(long seq, String direction, String transport,
                       String correlationId, String attemptId, String half,
@@ -2617,8 +2255,7 @@ public final class RuntimeRegionPlanner {
         private final Map<Long, List<Long>> children = new LinkedHashMap<>();
         private final Map<Long, List<RuntimeEvent>> runtimeByCall =
                 new LinkedHashMap<>();
-        /** seq -> unique owning callId, or the ambiguity sentinel when two
-         * events registered different call ids for one sequence number. */
+        /** seq -> unique owning callId, or the ambiguity sentinel. */
         private final LongLongMap eventCallIdBySeq = new LongLongMap();
 
         private TraceIndex(Collection<MethodEvent> methodEvents,

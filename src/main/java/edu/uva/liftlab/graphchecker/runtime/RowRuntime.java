@@ -37,11 +37,9 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * The one door between the replay and the row set.
  *
- * <p>Every call is total and silent about its own bookkeeping: the rows
- * describe a workload run, and a publisher that threw into the workload
- * would change the execution it is describing.  What it never does is stay
- * silent about the RUN -- a site that ran and could not be addressed files a
- * gap, which is why {@link #gap} sits beside every other method here.</p>
+ * <p>Never throws into the workload (that would change the run it
+ * describes), but never silent about the run: a site that ran and could not
+ * be addressed files a {@link #gap}.</p>
  */
 public final class RowRuntime {
     /** Where the campaign's REPLAY stage puts every worker's session. */
@@ -49,17 +47,12 @@ public final class RowRuntime {
 
     private static final Object LOCK = new Object();
     /**
-     * The clock cells this session has minted, by the VM symbol that names
-     * one: its root id and what the mint read.
+     * The clock cells this session minted, by the VM symbol that names one.
      *
-     * <p>I4 -- A DECISION ROW CARRIES EXACTLY THE CLOCK CELLS ITS TERM
-     * NAMES, so this is a lookup from a symbol a term mentions to the cell
-     * it is, and never the set of readings a row states.  Keyed by the
-     * SYMBOL because that is what an expression tree spells; filed at the
-     * MINT, because an activation nested inside the one that minted the
-     * clock publishes its own decisions first -- 11741's {@code
-     * removeExpiredKeys} closes before the {@code updateKeys} rotation that
-     * minted the clock it read.</p>
+     * <p>I4: a decision row carries exactly the clock cells its term names,
+     * so this is a symbol-to-cell lookup, never the set a row states.  Filed
+     * at the MINT, because an activation nested inside the minting one
+     * publishes its decisions first.</p>
      */
     private static final Map<String, ClockCell> CLOCK_CELLS =
             new ConcurrentHashMap<String, ClockCell>();
@@ -80,14 +73,7 @@ public final class RowRuntime {
     private RowRuntime() {
     }
 
-    /**
-     * Opens this JVM's session beside the result file the campaign named.
-     *
-     * <p>The session directory is the contract's {@code
-     * <iteration>/sessions/<sessionId>/}; the id is the wave's when the wave
-     * stated one, and otherwise this run's own, so two replays of one
-     * iteration never write into each other's rows.</p>
-     */
+    /** Opens {@code <iteration>/sessions/<sessionId>/} for this JVM. */
     public static void configure(Path resultFile) {
         if (resultFile == null) return;
         synchronized (LOCK) {
@@ -100,8 +86,8 @@ public final class RowRuntime {
                             == null ? sessions : sessions.getParent(),
                             sessionId));
         }
-        // The session's schedule goes where its rows go: the events this
-        // run made before the session opened are kept and written first.
+        // The schedule goes with the rows; events from before the open are
+        // kept and written first.
         final SessionPublisher opened = publisher;
         ScheduleLog.install(new ScheduleLog.Sink() {
             @Override
@@ -120,13 +106,7 @@ public final class RowRuntime {
         return sessionId;
     }
 
-    /**
-     * The sessions directory the campaign named, or null.
-     *
-     * <p>{@link #SESSIONS_ENV} is what REPLAY passes every worker, and it is
-     * the one spelling; deriving the directory from the result file is what
-     * a run nothing told does instead.</p>
-     */
+    /** The sessions directory {@link #SESSIONS_ENV} names, or null. */
     private static Path declaredSessionsRoot() {
         String declared = Text.safe(System.getenv(SESSIONS_ENV));
         return declared.isEmpty() ? null
@@ -148,13 +128,7 @@ public final class RowRuntime {
         return parent == null ? inside.toAbsolutePath() : parent;
     }
 
-    /**
-     * This session's id: where the campaign put it, and what ran it.
-     *
-     * <p>Derived and never declared -- a replay that was handed an id it
-     * shares with another worker of the same iteration writes into that
-     * worker's rows.</p>
-     */
+    /** Derived, never declared: two workers must never share an id. */
     private static String sessionId(Path resultFile) {
         Path parent = resultFile.toAbsolutePath().getParent();
         String where = parent == null || parent.getFileName() == null
@@ -170,7 +144,7 @@ public final class RowRuntime {
     // ------------------------------------------------------------------
 
     /**
-     * Mints and publishes the v2 address of one activation.
+     * Publishes the address of one activation.
      *
      * @return the address, or {@code null} when this run can name no node
      */
@@ -178,11 +152,8 @@ public final class RowRuntime {
                                                     String nodeKey,
                                                     String regionId,
                                                     String taskId) {
-        // The occurrence this ENTRY already opened
-        // (ConcolicRegionRuntime.enterRegionEntry, the one hook every
-        // skeleton root carries), not a second opening of the same
-        // activation: one entry, one region, one address -- the same one
-        // the recorder computed on the stock JDK.
+        // The occurrence the region ENTRY already opened, not a second one:
+        // one entry, one address, the same the recorder computed.
         OccurrenceAddress address = Identity.currentOccurrence(nodeKey);
         SessionPublisher session = publisher;
         if (address == null) {
@@ -196,9 +167,6 @@ public final class RowRuntime {
             return null;
         }
         if (session != null) {
-            // The contract's last member is the deleted intra-node
-            // thread-start edge: no producer of it is left in the runtime,
-            // and the argument goes with the member (contract owner).
             session.activation(ActivationRow.of(sessionId(), address,
                     Text.safe(taskId), FocusedReplay.focused(taskId,
                             address), true, threadKey()));
@@ -214,20 +182,14 @@ public final class RowRuntime {
     }
 
     /**
-     * States one activation that no plan selected.
-     *
-     * <p>Every activation of every region publishes a row, focused or not:
-     * the explorer reads "this occurrence ran, and these are its decisions"
-     * from the rows, so an activation with no row silently downgrades an
-     * arm that rests on it.  Once per occurrence per session -- an ambient
-     * occurrence publishes at its first delivery, not at every leaf.</p>
+     * States one unselected activation, once: an activation with no row
+     * silently downgrades an arm that rests on it.
      */
     public static void ambientActivation(OccurrenceAddress address) {
         SessionPublisher session = publisher;
         if (session == null || address == null) return;
         if (AMBIENT.putIfAbsent(address.id(), Boolean.TRUE) != null) return;
-        // A lightweight entry hook published this one: the region is not in
-        // the instrumented set, so it has no decisions to find.
+        // Not an instrumented region, so it has no decisions to find.
         session.activation(ActivationRow.of(sessionId(), address, "", false,
                 false, threadKey()));
     }
@@ -235,13 +197,7 @@ public final class RowRuntime {
     private static final Map<String, Boolean> AMBIENT =
             new ConcurrentHashMap<String, Boolean>();
 
-    /**
-     * The session's key for the thread this activation runs on.
-     *
-     * <p>Name plus JVM thread id: the name alone repeats across a pool, and
-     * the id alone says nothing to a reader.  Stable for the life of the
-     * session, which is all program order needs.</p>
-     */
+    /** Thread name plus id: the name repeats across a pool. */
     private static String threadKey() {
         Thread thread = Thread.currentThread();
         return thread.getName() + "#" + thread.getId();
@@ -259,8 +215,7 @@ public final class RowRuntime {
         SessionPublisher session = publisher;
         if (session != null) {
             String ref = expressionRef(condition);
-            // Polarity-free: the row states the predicate and the arm,
-            // and the composer conjoins (outcome ? term : (not term)).
+            // Polarity-free: the composer conjoins (outcome ? term : not term).
             session.decision(DecisionRow.of(sessionId(), sequence(seq),
                     occurrence, Text.safe(siteId), ordinal, outcome, ref,
                     clockReadings(condition)));
@@ -268,15 +223,7 @@ public final class RowRuntime {
         FocusedReplay.observeDecision(occurrence, siteId, ordinal, outcome);
     }
 
-    /**
-     * The term a row states for one arm of one condition.
-     *
-     * <p>The runtime does not lower to SMT -- one lowering exists and it is
-     * the composer's -- so the term names the expression the condition is,
-     * in the polarity the arm took.  {@code (not ref)} and {@code ref} are
-     * the two arms of the same condition and nothing downstream has to
-     * re-derive which is which.</p>
-     */
+    /** One arm's term: the ref in that polarity (the composer lowers). */
     static String term(String expressionRef, boolean arm) {
         String ref = Text.safe(expressionRef);
         if (ref.isEmpty()) return "";
@@ -306,13 +253,7 @@ public final class RowRuntime {
         return endpoint;
     }
 
-    /**
-     * The endpoint of the next event of one site in one occurrence.
-     *
-     * <p>Allocated before the mint where the mint needs its id -- an
-     * obligation answers an attach BY endpoint, so the endpoint has to
-     * exist before the value is written.</p>
-     */
+    /** Allocated before the mint: attaches are answered BY endpoint. */
     public static Endpoint nextEndpoint(OccurrenceAddress occurrence,
                                         String site, int attempt) {
         return occurrence == null ? null : endpoint(occurrence, site,
@@ -333,19 +274,15 @@ public final class RowRuntime {
         Endpoint producer = pairing.producer();
         if (producer != null && handle > 0L
                 && !"HANDLE".equals(pairing.key())) {
-            // The strongest evidence this delivery carried did not answer,
-            // and the pairing rests on the message it travelled in.  The
-            // class is every attach that states a handle and is paired by
-            // correlation+port: the producer named here is the one that sent
-            // the MESSAGE, not the one that staged this value.
+            // Paired by the message, not the handle: the producer is the
+            // message's sender, not the one that staged this value.
             gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC, endpoint.id(),
                     "this delivery states VM handle " + handle
                             + " and was paired by " + pairing.key()
                             + ", so the producer is the message's and not"
                             + " the staged expression's");
         }
-        // CONFIRM (b): is this the producer the model chose for this
-        // consumer?  Compared, never enforced; a difference is a gap.
+        // CONFIRM (b): compared with the model's producer, never enforced.
         String mismatch = Confirmation.attached(endpoint, producer);
         if (!mismatch.isEmpty()) {
             gap(GapKind.CONFIRM_MISMATCH, GapClass.DIAGNOSTIC, endpoint.id(),
@@ -356,12 +293,7 @@ public final class RowRuntime {
             String type = statedJavaType("attach", endpoint.id(), javaType,
                     null);
             if (!type.isEmpty()) {
-                // The row states WHICH key answered, so a reader does not
-                // have to re-derive it from the handle and the correlation
-                // and get "both were available" for an answer.  Blank when
-                // neither paired, which Fields.optional reads as unstated:
-                // the unpaired case is already stated by a null producer and
-                // the LINEAGE_LOST row below.
+                // The row states WHICH key paired; blank when none did.
                 session.attach(AttachRow.of(sessionId(), sequence(seq),
                         endpoint, Text.safe(symbol), type,
                         Text.safe(arrival), answered,
@@ -380,14 +312,11 @@ public final class RowRuntime {
 
 
     /**
-     * The occurrence an event on this thread belongs to, by the one door
-     * both passes mint producer and consumer addresses through
-     * ({@link Identity#currentOccurrence}): the region occurrence running
-     * here, else the ambient one of the thread's role on its node.
+     * The occurrence an event on this thread belongs to, through
+     * {@link Identity#currentOccurrence}.
      *
-     * <p>{@code nodeKey} is THE attribution rule's answer; when that rule
-     * names no node the address is the unregistered one, and saying so is a
-     * LINEAGE_LOST diagnostic at the site -- never a node guessed for it.</p>
+     * <p>When the attribution rule names no node, the address is the
+     * unregistered one plus a LINEAGE_LOST gap -- never a guessed node.</p>
      */
     public static OccurrenceAddress occurrenceHere(String nodeKey,
                                                    String site) {
@@ -406,15 +335,11 @@ public final class RowRuntime {
     }
 
     /**
-     * One write, at the site index the event itself stood on.
+     * One write, at the site index the event stood on WHEN it ran.
      *
-     * <p>{@code siteIndex} is the rendered execution index of the frames the
-     * writing thread stood on WHEN the write ran, not where the row is
-     * published: the write log is read out at the end of the activation, by
-     * which point the thread has returned to the region entry.  The frames
-     * come from that activation's {@link FrameJournal}, aligned to the
-     * version's own event id.  An empty index is an event the run could not
-     * place, and the caller names that gap -- nothing here fabricates one.</p>
+     * <p>The write log is read out at the activation's end, so the index
+     * comes from its {@link FrameJournal}, not the live frames.  An empty
+     * index is the caller's gap to name; nothing here fabricates one.</p>
      */
     public static void write(OccurrenceAddress occurrence, long seq,
                              String site, LocationId location, long version,
@@ -443,13 +368,7 @@ public final class RowRuntime {
                 ReadRow.UNKNOWN_VERSION);
     }
 
-    /**
-     * One read, also stating the version its mint's store published.
-     *
-     * <p>Only a placeholder has one: the term that consumes the read names
-     * the mint's version, and this is what a reader follows from that
-     * version back to this row (CONTRACT v2.4).</p>
-     */
+    /** One read, plus its placeholder mint's version (CONTRACT v2.4). */
     public static void read(OccurrenceAddress occurrence, long seq,
                             String site, LocationId location,
                             long observedVersion, String symbol,
@@ -470,16 +389,12 @@ public final class RowRuntime {
     }
 
     /**
-     * Names two events of one site that one occurrence cannot tell apart.
+     * Names two events of one site that stand on identical frames in one
+     * occurrence.
      *
-     * <p>An endpoint is {@code (occurrence, site, siteIndex, attempt)}.  Two
-     * events of one site whose frames are identical are two events of the
-     * same site in the same call path at the same loop iteration -- a genuine
-     * repeat inside one iteration, e.g. a field read twice in one basic
-     * block.  The identity states so rather than separating them by a
-     * counter: an ordinal moves when an unrelated earlier event is inserted,
-     * which is exactly what a branch flip does, and two replays would then
-     * disagree about which event is which (IDENTITY-V3 sec 1).</p>
+     * <p>They are stated, not separated by a counter: an ordinal moves when
+     * a branch flip inserts an earlier event, and two replays would then
+     * disagree which event is which (IDENTITY-V3 sec 1).</p>
      */
     private static void distinct(Endpoint at, String event) {
         if (at == null) return;
@@ -501,10 +416,8 @@ public final class RowRuntime {
                                 String recordedValue, String domainMin,
                                 String domainMax, boolean declared) {
         if (kind == RootKind.CLOCK) {
-            // The same cell the mint filed (ActiveRegion
-            // #recordManualSymbolization), stated again where the root row
-            // is: a session that published a CLOCK row nothing filed at the
-            // mint can still resolve the symbol its decisions name.
+            // The cell the mint already filed, restated so a CLOCK row
+            // nothing filed at the mint still resolves.
             clockCell(symbol, rootId, recordedValue);
         }
         SessionPublisher session = publisher;
@@ -517,10 +430,8 @@ public final class RowRuntime {
                 Text.safe(domainMin).isEmpty() ? null : Text.safe(domainMin),
                 Text.safe(domainMax).isEmpty() ? null : Text.safe(domainMax),
                 declared));
-        // The verdict is the session's own row (X17 R4b), so the one
-        // account of this replay is told that the mint is IN the session --
-        // a different fact from the plant, which happens earlier and
-        // survives an occurrence whose rows are then discarded.
+        // The mint is IN the session -- a different fact from the plant,
+        // which survives an occurrence whose rows are discarded.
         FocusedReplay.mintPublished(rootId);
     }
 
@@ -538,19 +449,11 @@ public final class RowRuntime {
     }
 
     /**
-     * One refusal on message-carried context: named, and the message goes
-     * on without it.
+     * One refusal on message-carried context: a row, never a throw, and the
+     * message goes on without it.
      *
-     * <p>The rule for every door the workload's own transport calls into:
-     * a header or an envelope this side will not install is a row, never a
-     * throw.  Fail-closed on the claim -- the values are not attributed and
-     * the rows that needed them say so -- and never on the process.</p>
-     *
-     * <p>{@code subject} is the flow, not the message: one correlation id
-     * is a fresh UUID per call, so keying the row by it published one row
-     * per RPC (62 of them in the first minute of hdfs-11741) and no two
-     * replays could be compared on them.  Stated once per transport, half
-     * and reason, as every other refusal here is.</p>
+     * <p>{@code subject} is the flow, not the message: a correlation id is a
+     * fresh UUID per call, so keying by it gives one row per RPC.</p>
      */
     public static void messageContextRefused(String subject, String detail) {
         gap(GapKind.MESSAGE_CONTEXT_REFUSED, GapClass.DIAGNOSTIC, subject,
@@ -558,19 +461,11 @@ public final class RowRuntime {
     }
 
     /**
-     * One refusal or diagnostic, naming its subject.
+     * One refusal or diagnostic, naming its subject, stated once.
      *
-     * <p>A GAP ROW NAMES WHAT IT IS ABOUT: {@code GapRow.of} puts {@code
-     * subject} through {@code Fields.text}, which REFUSES a blank one --
-     * correctly, a refusal that reports a category is not evidence.  That
-     * refusal is an {@code IllegalArgumentException} thrown out of a woven
-     * hook, and this class never throws into the workload (see the class
-     * javadoc): a publisher that did would change the execution it is
-     * describing.  So an unnamed subject is answered HERE, by the session
-     * that met it, with the kind and class the caller stated and a detail
-     * that says the caller named nothing.  Every caller in {@code runtime/}
-     * hands a subject that cannot be blank; this is the door holding the
-     * next one to it.</p>
+     * <p>{@code GapRow.of} throws on a blank subject, and this class never
+     * throws into the workload, so a blank subject is answered here with the
+     * session id and a detail saying the caller named nothing.</p>
      */
     public static void gap(GapKind kind, GapClass cls, String subject,
                            String detail) {
@@ -578,21 +473,17 @@ public final class RowRuntime {
         String named = Text.safe(subject).trim();
         String says = Text.safe(detail);
         if (named.isEmpty() && session != null) {
-            // A session is open, so sessionId() is not blank: configure()
-            // sets both under one lock.
+            // configure() sets publisher and sessionId under one lock.
             named = sessionId();
             says = "this " + kind + " names no subject, so the run cannot"
                     + " say what it refused on: " + says;
         }
-        // One statement, stated once: the same refusal is reached from every
-        // activation that met it, and a reader counts named gaps.
+        // Once: every activation that met the refusal reaches here.
         if (!claimEvent("gap", kind + "#" + cls + "#" + named + "#" + says)) {
             return;
         }
         if (session == null) {
-            // No session holds a row: the recording states its refusal
-            // through its trace, and the aggregation files it with the
-            // plan's gaps.
+            // No session: the recording states it through its trace.
             CausynthTraceRecorder.recordingGap(kind, cls, named, says);
             return;
         }
@@ -606,24 +497,11 @@ public final class RowRuntime {
     /**
      * Files one declared mint's label, BEFORE the VM makes its store.
      *
-     * <p>SESSION-WIDE.  A mint installs its symbol into a field the VM
-     * versions, and that version is no write -- nobody stored it, the mint
-     * made it ({@link RowPublication} suppresses it and the placeholder read
-     * states it instead).  Every activation that reads the same VM record
-     * out afterwards sees that version, so only a session-wide answer
-     * suppresses it: the per-activation one let hdfs-17960's version 173
-     * through on {@code REGION.f167c8f6}.</p>
-     *
-     * <p>BEFORE THE STORE, because every later filing point races it.  The
-     * version exists the moment the VM returns, and an activation that
-     * closes on another thread from then on reads it out of its write log:
-     * filed after the store, at the mint row (hdfs-17899-bug2 v20,
-     * {@code writes.jsonl} INSTANCE 204.24@855 published by
-     * {@code GeneratedMethodAccessor#invoke#40:WRITE}), or at publication
-     * (hdfs-11741 campaign #5b, 284 clock mint stores published as another
-     * activation's WriteRows), the answer depended on which thread got
-     * there first.  The label is what the runtime hands the VM, so it is
-     * known before the VM names anything ({@link #isDeclaredMint}).</p>
+     * <p>SESSION-WIDE: the version a mint installs is no write
+     * ({@link RowPublication} suppresses it), and every activation that
+     * later reads the VM record sees it.  BEFORE THE STORE: once the VM
+     * returns, an activation closing on another thread can publish it, so any
+     * later filing point races.  Read by {@link #isDeclaredMint}.</p>
      */
     public static void declaredMintLabel(String label) {
         String named = Text.safe(label);
@@ -633,16 +511,12 @@ public final class RowRuntime {
     /**
      * Whether one VM symbol names a declared mint's store.
      *
-     * <p>THE VM's spelling of a field it mints under a label:
-     * {@code M_<sort>_field_<label>_<owner class>} for one selected field
-     * ({@code FieldSymbolExp} over the symbolizer's prefix and the owner's
-     * internal class name), and {@code M_<sort>_field_<label>_<path>} for
-     * the fields a whole-object mint reaches.  So a symbol is a mint's store
-     * iff the name after {@code M_<sort>_field_} is a filed label, or begins
-     * with one followed by {@code _}.  A field later assigned a minted
-     * symbol (a legitimate copy) carries the same name, so this answers
-     * only which symbols are mints; which VERSION is the mint's own store is
-     * the store key's question ({@code RowPlaceholderMint#mintStores}).</p>
+     * <p>The VM spells a minted field {@code M_<sort>_field_<label>_<owner>}
+     * or {@code M_<sort>_field_<label>_<path>}, so the rest after
+     * {@code M_<sort>_field_} is a filed label or starts with one plus
+     * {@code _}.  A copy of a minted symbol carries the same name: which
+     * VERSION is the mint's own store is {@code RowPlaceholderMint#mintStores}'
+     * question.</p>
      */
     public static boolean isDeclaredMint(String symbol) {
         String name = Text.safe(symbol);
@@ -664,12 +538,9 @@ public final class RowRuntime {
     private static final int FIELD_SYMBOL_HEAD = "M_J_field_".length();
 
     /**
-     * Enters one level of the execution index: an application method's entry.
-     *
-     * <p>The frame's iteration is the k-th entry of this site in the level
-     * that encloses it, under the root hop that level is running in
-     * ({@code Identity.State#nextSiteEvent}).  No node is named: a level's
-     * counts are keyed by (level, root hop, site) and by nothing else.</p>
+     * Enters one execution-index level at an application method's entry;
+     * counts are keyed by (level, root hop, site) only
+     * ({@code Identity.State#nextSiteEvent}).
      *
      * @return the token that closes exactly this level
      */
@@ -682,26 +553,12 @@ public final class RowRuntime {
         Identity.exitFrame(token);
     }
 
-    /**
-     * The ordinal of one decision at {@code siteId} in the occurrence that
-     * is performing it, or {@code 0} when this thread runs none.
-     *
-     * <p>I3: a decision row is addressed by the occurrence that performed
-     * the branch and its ordinal is counted on that occurrence, which is
-     * what an obligation's {@code (siteId, ordinal)} flip is addressed
-     * by.</p>
-     */
+    /** I3: counted on the performing occurrence; 0 when none runs. */
     public static int nextBranchOrdinal(String siteId) {
         return Identity.nextBranchOrdinal(siteId);
     }
 
-    /**
-     * Files the frame of one work start, for the work it started.
-     *
-     * <p>The starter's own frames are unchanged: a start is an event, not a
-     * call, and what it leaves behind is the frame the STARTED work is
-     * indexed from (IDENTITY-V3 SS1, scope transfer).</p>
-     */
+    /** Files the STARTED work's frame (IDENTITY-V3 SS1). */
     public static void startWork(String startSiteId, Object carrier) {
         Identity.startWork(startSiteId, carrier);
     }
@@ -718,11 +575,8 @@ public final class RowRuntime {
             return "";
         }
         JsonObject object = expression.getAsJsonObject();
-        // One serialization per expression, not per row that names it.  A
-        // container's expression on hdfs-17960 is hundreds of nodes deep
-        // and every write of that location publishes the same tree; the
-        // replay spent longer serializing them again than running the
-        // workload.
+        // One serialization per tree: deep trees are republished by every
+        // write of their location.
         String ref = REFS.get(object);
         if (ref == null) {
             ref = "EXPR." + ArtifactIO.digest(
@@ -735,34 +589,21 @@ public final class RowRuntime {
     }
 
     /**
-     * The clock cells one decision's term NAMES, with what each one read.
+     * I4: the clock cells one decision's term NAMES, each at the instant its
+     * mint recorded ({@link #clockCell}); none for a concrete decision.
      *
-     * <p>I4, and the whole of it: the row states the cells the decision's
-     * own expression tree mentions, resolved to their root ids through this
-     * session's mints ({@link #clockCell}), each at the instant its mint
-     * recorded.  A decision that reads no clock states none, and a
-     * concrete decision -- no term at all -- states none either.</p>
-     *
-     * <p>It used to answer a JVM-WIDE map of every clock the process had
-     * ever minted, so a row listed cells its term never read and could miss
-     * the one it did: on the hdfs-11741 corpus 14 of 17 {@code
-     * removeExpiredKeys#u15} rows lack the cell their own term reads, and 15
-     * of 17 list other NODES' cells -- one MiniDFSCluster is one JVM.
-     * Downstream that membership IS the claim: {@code explore.Corpus#index}
-     * files a cell under every session whose decision "read" it, and {@code
-     * compose.ClaimPolicy#movedRoots}/{@code #clockNecessary} read it as
-     * "this session's decision read this cell".</p>
+     * <p>Trap: never a JVM-wide set of clocks -- one MiniDFSCluster is one
+     * JVM, and downstream ({@code explore.Corpus#index},
+     * {@code compose.ClaimPolicy#movedRoots}) reads membership as "this
+     * decision read this cell".</p>
      */
     static Map<String, Long> clockReadings(JsonObject term) {
         Map<String, Long> named = new java.util.LinkedHashMap<String, Long>();
         if (term == null || CLOCK_CELLS.isEmpty()) return named;
         java.util.Deque<JsonElement> pending =
                 new java.util.ArrayDeque<JsonElement>();
-        // Iteratively, over an explicit stack and a seen set: a container's
-        // expression nests one relation per recorded operation, and a walk
-        // that recursed would stack-overflow into the workload or be cut
-        // before the leaves -- and a cell dropped by a cut reads downstream
-        // exactly like a cell the term never named.
+        // Iterative and uncut: deep trees would overflow a recursion, and a
+        // cell dropped by a cut reads as one the term never named.
         java.util.Map<JsonElement, Boolean> seen =
                 new java.util.IdentityHashMap<JsonElement, Boolean>();
         pending.push(term);
@@ -782,9 +623,7 @@ public final class RowRuntime {
             JsonObject object = node.getAsJsonObject();
             JsonElement spelling = object.get("_exp");
             if (spelling != null && spelling.isJsonPrimitive()) {
-                // Only a symbol this session MINTED as a clock resolves, so
-                // matching on the VM's spelling wherever it stands cannot
-                // name a cell that is not one.
+                // Only a symbol this session minted as a clock resolves.
                 ClockCell cell = CLOCK_CELLS.get(spelling.getAsString());
                 if (cell != null) {
                     named.put(cell.rootId, Long.valueOf(cell.reading));
@@ -797,16 +636,7 @@ public final class RowRuntime {
         return named;
     }
 
-    /**
-     * Files one clock cell this session minted: the symbol that names it,
-     * the root it is, and the instant the mint read.
-     *
-     * <p>Called at the MINT ({@code ActiveRegion#recordManualSymbolization})
-     * and again when the root row is published, which are the same fact
-     * stated twice; the mint is the one that has to be first, because an
-     * activation nested inside the minting one publishes its decisions
-     * before the mint's own row exists.</p>
-     */
+    /** Filed at the mint first, then again at the root row. */
     static void clockCell(String symbol, String rootId,
                           String recordedValue) {
         String named = Text.safe(symbol);
@@ -819,48 +649,21 @@ public final class RowRuntime {
     /**
      * Where one row sits in the run: the VM's own event id, or 0.
      *
-     * <p>One counter for every kind, so a producer's prefix can be cut at
-     * its export and a read ordered against the write it saw.  The VM's
-     * ledger is that counter -- decisions carry its event id, versions are
-     * drawn from it -- so a row states the id it was produced at rather
-     * than a second numbering of the same events.</p>
-     *
-     * <p><b>{@code seq == 0} means THIS ROW CARRIES NO VM CLOCK.</b>  An
-     * ambient mint, a decision taken before path recording opened, an
-     * export the ledger did not number: the run cannot place it in the VM's
-     * event order and the row says so.  It is not a position at the start
-     * of the run and no reader may treat it as one.</p>
-     *
-     * <p>It used to answer the session's HIGH-WATER MARK instead, on the
-     * ground that such a row is "no earlier than anything already seen".
-     * That made two different statements one integer: "no VM clock" and
-     * "the latest VM event this session published" both came out as 345.
-     * On the 17960 corpus 46, 46 and 52 decision rows per session share a
-     * seq with another row, and in each group exactly ONE owns that VM
-     * event id and carries a term -- {@code
-     * FSImageFormatPBSnapshot$Saver.serializeSnapshotSection#u61#1} at 220,
-     * {@code FSImageFormatProtobuf$Saver.saveSnapshots#u13#1} at 345 -- the
-     * rest borrowed it and state no term at all.  A borrowed mark reads
-     * downstream as a real ordering: {@code Arms#pathCondition} keeps every
-     * decision {@code seq < before}, so a clockless decision was dropped
-     * from or kept in a prefix by the accident of where the mark stood when
-     * it was published.  Answering 0 states the one thing that is true.</p>
+     * <p>One counter for every kind, the VM's ledger, so rows order against
+     * each other.  <b>{@code seq == 0} means THIS ROW CARRIES NO VM
+     * CLOCK</b>, not "start of run".  Trap: never substitute a high-water
+     * mark -- {@code Arms#pathCondition} keeps {@code seq < before}, so a
+     * borrowed mark silently moves clockless decisions in or out of a
+     * prefix.</p>
      */
     private static long sequence(long vmEventId) {
         return vmEventId > 0L ? vmEventId : 0L;
     }
 
     /**
-     * The JVM descriptor a row states: the declaration where there is one,
-     * and otherwise the type the expression the VM published states.
-     *
-     * <p>An operator node states no type of its own -- the VM's
-     * {@code BinaryExpression} carries only its operands -- so the type of
-     * {@code Y_I_0 + Y_I_1} is read off the operands, which say {@code I}.
-     * The alternative was the unstated fallback, and the snapshot counter's
-     * RMW versions went out as {@code Ljava/lang/Object;} while the run knew
-     * they were ints (REPORT-P2CD follow-up).  Depth-first in the tree's own
-     * member order, so one tree always answers the same type.</p>
+     * The JVM descriptor a row states: the declaration, else the first
+     * {@code _java_type} in the expression tree, depth-first in member order
+     * (an operator node states none; its operands do).
      */
     private static String javaType(String declared, JsonObject expression,
                                    String walk) {
@@ -870,18 +673,10 @@ public final class RowRuntime {
 
     /**
      * Names a row whose java type neither the caller nor the VM stated, and
-     * publishes no row for it.
+     * publishes no row for it (UNSTATED_VALUE).
      *
-     * <p>It used to publish {@code Ljava/lang/Object;}, which is a type the
-     * run did not observe: on the 17960 clean corpus 2 of 100 write rows and
-     * on the 11741 corpus 419 of 25,206 went out that way, declaring a
-     * reference where the run knew nothing -- and the composer lowers a
-     * reference-sorted write against an integral read as two sorts for one
-     * location.  The class this covers is every row of every kind whose
-     * declared type is empty AND whose expression states no {@code
-     * _java_type} anywhere: the row is refused, and each read of that
-     * version then reaches the formula with no read-from arm, which is what
-     * {@code UNSTATED_VALUE} names.</p>
+     * <p>Trap: never default to {@code Ljava/lang/Object;} -- the composer
+     * would lower a reference-sorted write against an integral read.</p>
      *
      * @return the descriptor when the run stated one, else {@code ""}
      */
@@ -898,19 +693,7 @@ public final class RowRuntime {
         return "";
     }
 
-    /**
-     * The walk under {@link #javaType}, with its bound NAMED when it cuts.
-     *
-     * <p>The same silent-cut shape M-R2 closed for the four
-     * {@code RowPlaceholderMint} walks ({@code RowPublication#cut}): a walk
-     * that found no {@code _java_type} and a walk that was cut before it
-     * could look both answered {@code ""}, so a row refused
-     * UNSTATED_VALUE because its expression states no sort read exactly
-     * like one refused because this walk ran out of depth.  The bound stays
-     * -- a container's expression on hdfs-17960 nests one relation per
-     * recorded operation -- and the cut says so, once per walk and
-     * subject.</p>
-     */
+    /** The {@link #javaType} walk bound; a cut is named, never silent. */
     private static final int TYPE_WALK_DEPTH = 64;
 
     private static String statedType(JsonElement node, int depth,
@@ -952,35 +735,22 @@ public final class RowRuntime {
             java.util.Collections.synchronizedMap(
                     new java.util.IdentityHashMap<JsonObject, String>());
 
-    /** Read events already stated, so one read is one occurrence's. */
+    /** Events already stated (every kind), so one event is one occurrence's. */
     private static final Map<String, Boolean> CLAIMED_READS =
             new ConcurrentHashMap<String, Boolean>();
 
-    /**
-     * Claims one read event for the activation publishing it now.
-     *
-     * <p>A value read once is carried by the expression of everything
-     * built from it, so the same read node is reachable from several
-     * activations' trees.  It happened in one of them: the first to
-     * publish it, which is the innermost, since an activation finishes
-     * before the one it runs inside.</p>
-     */
+    /** Claims one read event for the activation publishing it now. */
     public static boolean claimRead(String identity) {
         return claimEvent("read", identity);
     }
 
     /**
-     * The same rule for every row kind: one event, one occurrence.
+     * One event, one occurrence: the first publisher wins.
      *
-     * <p>The VM's branch, write and read logs are read out per activation
-     * over overlapping event ranges, so one event is reachable from every
-     * activation it ran inside -- on hdfs-17960 each of the 53 write events
-     * was published by up to 42 occurrences.  A row per reachable
-     * activation states one event many times and, worse, attributes it to
-     * occurrences that did not perform it, which is exactly the identity a
-     * STATE family is keyed on (INTERACTION-ID R-I7.1).  The first
-     * publisher wins and that is the innermost, since an activation
-     * finishes before the one it runs inside.</p>
+     * <p>VM logs are read out per activation over overlapping ranges, so one
+     * event is reachable from every enclosing activation; the first to
+     * publish is the innermost, which performed it (INTERACTION-ID
+     * R-I7.1).</p>
      */
     public static boolean claimEvent(String kind, String identity) {
         return CLAIMED_READS.put(Text.safe(kind) + "\n"
@@ -989,20 +759,12 @@ public final class RowRuntime {
 
     private static Endpoint endpoint(OccurrenceAddress occurrence,
                                      String site, int attempt) {
-        // Identity's, so a row's endpoint and the endpoint a message files
-        // as its producer are one computation.
+        // Identity's, so a row's endpoint and a message's producer are one
+        // computation.
         return Identity.endpointAt(occurrence, site, attempt);
     }
 
-    /**
-     * The endpoint of an event whose site index was captured earlier.
-     *
-     * <p>Every endpoint the runtime mints AT its site takes the live index;
-     * an event the VM logged and the runtime publishes afterwards takes the
-     * index the journal states for it.  An index that was not stated is
-     * empty, never the live one: the publishing thread's frames are not the
-     * frames of an event some other activation performed.</p>
-     */
+    /** An unstated index stays empty, never the publisher's live one. */
     private static Endpoint endpoint(OccurrenceAddress occurrence,
                                      String site, int attempt,
                                      String siteIndex) {
@@ -1015,14 +777,7 @@ public final class RowRuntime {
         return Identity.siteIndex().render();
     }
 
-    /**
-     * Files this activation's frame journal under the VM's own key.
-     *
-     * <p>Called once the engine has stated the region-enter event id, which
-     * is what every version and read it logs from inside this activation
-     * carries.  Until then the activation journals nothing: an entry with no
-     * key could not be found again.</p>
-     */
+    /** Keys this activation's frame journal by the VM's enter id. */
     public static void journalRegion(long vmRegionEnterEventId,
                                      OccurrenceAddress occurrence) {
         Identity.regionKey(vmRegionEnterEventId);
@@ -1032,17 +787,12 @@ public final class RowRuntime {
     }
 
     /**
-     * The occurrence whose activation the VM named, or null.
+     * The occurrence that PERFORMED a logged event, by the VM's
+     * {@code regionEnterEventId}, or null.
      *
-     * <p>A logged read or write is an event of the activation that PERFORMED
-     * it, and the VM states which one on every record it keeps
-     * ({@code regionEnterEventId}).  The row used to name the innermost
-     * activation that happened to publish the location's log instead, which
-     * on hdfs-17960 put a read the deletion region made into the anchor's
-     * rows -- so the anchor's path carried a read it never performed, and
-     * "each path carries its own reads" was false of it.  One key, filed
-     * here and in {@link FrameJournal}, so the occurrence a row names and
-     * the frames it carries are the same activation's.</p>
+     * <p>Trap: not the innermost activation that published the log -- that
+     * puts other regions' reads on a path.  Same key as {@link FrameJournal},
+     * so a row's occurrence and frames are one activation's.</p>
      */
     public static OccurrenceAddress occurrenceAt(long vmRegionEnterEventId) {
         return vmRegionEnterEventId <= 0L ? null
@@ -1064,20 +814,11 @@ public final class RowRuntime {
     }
 
     /**
-     * The rendered site index of one event the VM logged, or null.
+     * The rendered site index of one VM-logged event, from the
+     * {@link FrameJournal}.
      *
-     * <p>{@code activationKey} is the {@code regionEnterEventId} the logged
-     * event states and {@code eventId} its version id or read event id; both
-     * are the VM's own statements, and the frames are the journal's
-     * (FrameJournal).</p>
-     *
-     * <p>Null is an event this run cannot place; {@code ""} is an event the
-     * journal DID place on no frames at all, which is where most stores are
-     * -- the region's own method, with no woven call between its entry and
-     * the store.  The two are different answers and the row would read the
-     * same for both, so the caller gets to tell them apart: an index that is
-     * empty because the event stood at the region entry is stated, and only
-     * an unplaced event is a gap.</p>
+     * <p>Null is an event this run cannot place (a gap); {@code ""} is one
+     * placed at the region entry on no frames (stated).</p>
      */
     public static String framesOf(long activationKey, long eventId) {
         ExecutionIndex index = FrameJournal.framesAt(activationKey, eventId);
@@ -1087,42 +828,30 @@ public final class RowRuntime {
     /**
      * Publishes what only the end of a replay can state, and closes.
      *
-     * <p>The verdict goes twice: into the session, which is the evidence,
-     * and into the worker's own {@code obligation_result.jsonl}, which is
-     * what the wave reads.  The replay owns the verdict -- whether the
-     * focused prefix reproduced and the flipped decision was taken is a
-     * fact of the run, not of the solve that proposed it.</p>
+     * <p>The replay owns the verdict and writes it twice: into the session
+     * (evidence) and the worker's {@code obligation_result.jsonl} (what the
+     * wave reads).</p>
      */
     public static void closeSession() {
         SessionPublisher session = publisher;
         if (session == null) return;
-        // What the replay RAN the obligation's roots at, stated by the
-        // replay.  A root the obligation assigns that no mint planted means
-        // this run read the recording's value where the wave asked for
-        // another one, so it did not run what was asked -- and the composer
-        // meeting that as "the mint states X and the obligation assigns Y"
-        // is the second statement of it, not the first.
+        // A root the obligation assigns that no mint planted: this run did
+        // not run what was asked.
         for (Map.Entry<String, String> unplanted
                 : FocusedReplay.unplantedAssignments().entrySet()) {
             gap(GapKind.ASSIGNMENT_UNPLANTED, GapClass.BLOCKING,
-                    // The focus row's own key for the root; JSON admits an
-                    // empty one, and this session is what is left to name.
+                    // JSON admits an empty key; the session names it then.
                     firstNonBlank(unplanted.getKey(), sessionId()),
                     "the obligation assigns this root \"" + unplanted
                             .getValue() + "\" and no mint of this replay"
                             + " planted it");
         }
-        // What this replay was handed and could not read.  A focus row the
-        // session could not read whole leaves it reporting role FOCUSED
-        // with however many obligations it parsed, so the shortfall is the
-        // session's own row rather than a line on stderr.
+        // What the focus row left unread, as the session's own rows.
         for (String shortfall : FocusedReplay.shortfalls()) {
             gap(GapKind.SESSION_INCOMPLETE, GapClass.BLOCKING,
                     sessionId(), shortfall);
         }
-        // CONFIRM (b), the edges only the whole run can answer for: the
-        // state joins, whose writers are published at their activation's
-        // end, and the consumers the model chose that never attached.
+        // CONFIRM (b) edges only the whole run can answer for.
         for (String mismatch : Confirmation.close()) {
             gap(GapKind.CONFIRM_MISMATCH, GapClass.DIAGNOSTIC,
                     mismatch.substring(0, mismatch.indexOf(':')), mismatch);

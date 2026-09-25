@@ -8,15 +8,9 @@ public final class StaticDataflowEdgeSchema {
     static final int VERSION = 3;
 
     /**
-     * The one kind for every edge that carries a value forward.
-     *
-     * <p>It used to be six: IDENTITY_BINDING, FUNCTION_RETURN, CONSTRUCT,
-     * MODEL_TRANSFORM, COMPUTE and HEAP_LOOKUP.  No reader tested one of them
-     * -- each reached exactly one accept list,
-     * {@code RuntimeRegionPlanner.returnValueTransfer}, which answered true
-     * for all six -- so a six-way distinction decided nothing.  The kinds a
-     * reader does ask about by name keep their own: GUARD, EXCEPTION,
-     * HEAP_WRITE, HEAP_READ, VALUE_PASS and DYNAMIC_DISPATCH.</p>
+     * The one kind for every edge that carries a value forward; only kinds a
+     * reader tests by name (GUARD, EXCEPTION, HEAP_WRITE, HEAP_READ,
+     * VALUE_PASS, DYNAMIC_DISPATCH) get their own.
      */
     public static final String VALUE_TRANSFER = "VALUE_TRANSFER";
 
@@ -45,8 +39,7 @@ public final class StaticDataflowEdgeSchema {
                 .find()) {
             return "HEAP_READ";
         }
-        // A map mutation is a heap write wherever it is spelled; a map read
-        // and a re-encoding carry the value forward like any call return.
+        // A map mutation is a heap write; a map read or re-encoding is not.
         if (mapOperation(text, "put", "putall", "remove", "clear", "replace",
                 "replaceall", "compute", "computeifabsent",
                 "computeifpresent", "merge")) {
@@ -60,7 +53,6 @@ public final class StaticDataflowEdgeSchema {
                 "integer: int parseint", "long: long parselong", "base64",
                 " encode", " decode", "serialize", "deserialize",
                 "readfields", "writefields")
-                // The explicit fault marker is a modeled call-return boundary.
                 || normalizedKind.contains("explicit_symbolic_fault")
                 || normalizedKind.contains("constructor")
                 || normalizedKind.contains("accessor")
@@ -72,9 +64,7 @@ public final class StaticDataflowEdgeSchema {
             return VALUE_TRANSFER;
         }
         if (normalizedKind.contains("local_def_use")) {
-            // An exact local copy is the one thing a reader asks about by
-            // name (RuntimeSelectedRegionFinalizer.exactLocalPass), so a call
-            // return and a computation stay distinct from it.
+            // VALUE_PASS is an exact copy only (read by exactLocalPass).
             return invoke != null && !invoke.trim().isEmpty()
                     || computation(unit) ? VALUE_TRANSFER : "VALUE_PASS";
         }

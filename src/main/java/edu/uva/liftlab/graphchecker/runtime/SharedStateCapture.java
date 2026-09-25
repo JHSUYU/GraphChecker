@@ -27,21 +27,10 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
 /**
  * The write log of one activation, read out by object.
  *
- * <p>A location is tracked because a symbolic value reached it, and the VM
- * files it under the identity of the object actually written.  So the runtime
- * does not name locations at all: it asks for every location the session
- * tracked at or after this activation's entry event, and publishes what comes
- * back.  {@code location#version -> expression}, keyed by
+ * <p>The runtime names no locations: it asks the VM for every location the
+ * session tracked at or after this activation's entry event and publishes
+ * {@code location#version -> expression}, keyed by
  * {@code (kind, ownerSymRid, slot)} -- the same key the read nodes carry.</p>
- *
- * <p>What this replaces is a whole layer.  The runtime used to declare which
- * locations were worth versioning, select each one in the VM by its declaring
- * class, field and descriptor, and then invent a receiver identity that would
- * survive into the next session, because the VM's own was session-local and
- * the declaration was the only thing both sides shared.  Every part of that
- * existed to answer "which program location is this a version of", and under
- * by-value retention nothing asks: the object is the answer, the VM states
- * it, and a read resolves inside the session that produced it.</p>
  */
 final class SharedStateCapture {
     /** Outcome of one recorded shared-state evidence call. */
@@ -75,20 +64,15 @@ final class SharedStateCapture {
 
     /**
      * Reads out every location this activation touched, paging until the VM
-     * says the answer is complete.
-     *
-     * <p>Called while the owner thread still holds the VM context; decoding
-     * happens afterwards, in {@link #assembleRecordedSharedState}.  A page
-     * that stops short states where to resume, and the loop resumes there; a
-     * page that stops short and does not say where is a gap, because a write
-     * log short of the truth reads as "the location was never written".</p>
+     * says the answer is complete.  Called while the owner thread holds the VM
+     * context; decoding is {@link #assembleRecordedSharedState}.  A short page
+     * that names no resume point is a gap: a short write log reads as "never
+     * written".
      */
     static RawSharedStateReadOut captureRecordedSharedStateRaw(
             ActiveRegion active, ConcolicVmBroker api) {
         java.util.List<String> pages = new java.util.ArrayList<>();
         String fault = "";
-        // The activation's own entry event scopes the read-out: every
-        // location tracked at or after it is one this activation touched.
         long after = active == null ? 0L : active.vmRegionEnterEventId;
         for (int page = 0; page < MAX_READ_OUT_PAGES; page++) {
             final String serialized;
@@ -126,12 +110,8 @@ final class SharedStateCapture {
     }
 
     /**
-     * The most pages one activation's read-out may take.
-     *
-     * <p>Not a cap on what is published: every page is published, and a
-     * read-out that has not finished by here is a stated gap rather than a
-     * silent truncation.  It exists so a VM that answers without advancing
-     * ends the loop instead of the run.</p>
+     * The most pages one read-out may take; hitting it is a stated gap, not a
+     * truncation.  It stops a VM that never advances from hanging the run.
      */
     private static final int MAX_READ_OUT_PAGES = 4096;
 
@@ -159,13 +139,8 @@ final class SharedStateCapture {
     }
 
     /**
-     * One page of the read-out: a document of envelopes over one expression
-     * table.
-     *
-     * <p>The table is per document, so the whole document is imported once
-     * and every envelope's references resolve against it.  Each envelope is
-     * then exactly the one the VM emits for a single location, and is
-     * admitted by the same contract that admitted it before.</p>
+     * One page of the read-out: envelopes over one per-document expression
+     * table, imported once so every envelope resolves against it.
      */
     private static void decodeTrackedLocations(String serialized,
                                                ActiveRegion active) {
@@ -231,35 +206,14 @@ final class SharedStateCapture {
     }
 
     /**
-     * One location's write log: {@code location#version -> expression}.
+     * One location's write log: {@code location#version -> expression}, the
+     * whole of what a replay says about shared state.
      *
-     * <p>This is the whole of what a replay says about shared state.  A read
-     * inside one replay is determined -- the location had one version when
-     * the read ran and one event wrote it -- so the reader needs the version
-     * and the expression written at it, and nothing else.</p>
-     *
-     * <p>The name is the object.  The VM files a version under the identity
-     * of the object it was written to, states that identity in the location
-     * key, and the read nodes carry the same one, so a read and a write meet
-     * without anything in between having to agree about a declaration.  The
-     * carrier block that used to travel with every record -- declaring class,
-     * field, descriptor, and a receiver identity synthesised to survive into
-     * the next session -- named a location for a reader that no longer
-     * exists.</p>
-     *
-     * <p>The version clock is {@code fieldVersionId}, drawn from the
-     * session-global event counter at the moment of publish, which is the
-     * counter the decisions' {@code vmEventId} is on.  So "the latest write
-     * whose event precedes this access" is a comparison between the two,
-     * within one {@code sessionId} -- the counter restarts at session
-     * teardown, which is why the session is stated.</p>
-     *
-     * <p>An INITIAL version stays, tagged as one: a value the recording did
-     * not watch being produced is still the value, and saying which kind it
-     * is keeps "the program computed this" apart from "the recording started
-     * after it".  Its content now arrives from the VM, which snapshots a
-     * container at the first symbolic write to it; the runtime used to offer
-     * that snapshot itself, one declared container at a time.</p>
+     * <p>{@code fieldVersionId} is on the same session-global counter as the
+     * decisions' {@code vmEventId}, so "latest write before this access" is a
+     * comparison within one {@code sessionId} (the counter restarts per
+     * session).  An INITIAL version stays, tagged, to keep "the program
+     * computed this" apart from "the recording started after it".</p>
      */
     static JsonObject writeLogRecord(JsonObject record) {
         JsonObject envelope = edu.uva.liftlab.graphchecker.smt.JsonFields
@@ -280,33 +234,21 @@ final class SharedStateCapture {
             JsonObject entry = new JsonObject();
             copyIfPresent(version, entry, "fieldVersionId");
             copyIfPresent(version, entry, "versionKind");
-            // Where the store stood, and which region activation it ran
-            // inside: the two halves of the WriteRow's endpoint identity
-            // (IDENTITY-V3 sec 1).  The reduction dropped both, so every
-            // write endpoint published its location as a site and the empty
-            // site index while the VM had stated the bytecode site
-            // (REPORT-VM21) and the entry event of the activation -- four
-            // reads of one location inside one occurrence were then one
-            // endpoint.  Small and bounded: four strings and a long.
+            // Site and activation: the two halves of the WriteRow's
+            // endpoint identity (IDENTITY-V3 sec 1); dropping them merges
+            // distinct writes into one endpoint.
             copyIfPresent(version, entry, "site");
             copyIfPresent(version, entry, "regionEnterEventId");
-            // A container's INITIAL states the contents tracking began from,
-            // and every relation over that container stands on them.  The
-            // reduction dropped it, so the corpus could not say whether a
-            // base was stated, enumerated or truncated -- and an offline
-            // re-drive of the admission that reads it
-            // (containerBaseFault) had nothing to read.
-            // It is one small object per container INITIAL.
+            // A container INITIAL's base contents; every relation over the
+            // container stands on it, and containerBaseFault re-reads it.
             copyIfPresent(version, entry, "initialSnapshot");
             copyIfPresent(version, entry, "expression");
             versions.add(entry);
         }
         publishedEnvelope.add("versions", versions);
-        // The read log, by event id.  A ReadFromExpression node names the
-        // read event it is and the site it stood at, but not the activation
-        // that ran it; the log record of the same event does, and that is
-        // what files the read under a frame journal.  No value travels with
-        // it -- the node already carries the version it observed.
+        // The read log, by event id: it supplies the activation a
+        // ReadFromExpression node does not name.  No value -- the node
+        // already carries the version it observed.
         JsonArray reads = new JsonArray();
         for (JsonElement element : array(envelope, "reads")) {
             if (!element.isJsonObject()) continue;
@@ -330,12 +272,9 @@ final class SharedStateCapture {
     }
 
     /**
-     * One refused location: it publishes no write version, and the refusal is
-     * stated through the one gap vocabulary rather than onto an artifact.
-     *
-     * <p>Every read of the location reaches the formula with no read-from
-     * arm, which is exactly what UNSTATED_VALUE names.  It is a diagnostic:
-     * the rows the run did publish still say what they observed.</p>
+     * One refused location: no write version, stated as an UNSTATED_VALUE
+     * diagnostic gap, since every read of it reaches the formula with no
+     * read-from arm.
      */
     private static SharedStateResult failedShared(String stage, int status,
                                                   String locationKey,
@@ -343,8 +282,7 @@ final class SharedStateCapture {
         RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
                         .UNSTATED_VALUE,
                 edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
-                // The location, else the stage that refused it; a row that
-                // named neither refuses inside Fields.text.
+                // A blank subject would refuse inside Fields.text.
                 edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank(
                         safe(locationKey), safe(stage),
                         RowRuntime.sessionId()),
@@ -353,10 +291,8 @@ final class SharedStateCapture {
     }
 
     /**
-     * Files one admitted write log with the active region.  A refusal named
-     * itself as a gap row when it was built, and publishes no record: a
-     * location with no version is a read the formula meets with no arm, not
-     * a location with a wrong one.
+     * Files one admitted write log with the active region; a refusal already
+     * filed its gap and publishes no record.
      */
     private static void fileShared(SharedStateResult result,
                                    ActiveRegion active) {
@@ -378,24 +314,15 @@ final class SharedStateCapture {
         }
     }
 
-    // ---- the VM's shared-state vocabulary ----------------------------
-    //
-    // It used to be plan/SharedStateEvidence, a published contract beside a
-    // published artifact.  R1 deleted the artifact; what the vocabulary
-    // describes is the envelope THIS decoder reads, and nothing outside it
-    // asks any of these questions, so it lives here with its one reader.
+    // ---- the VM's shared-state vocabulary (this decoder is its one reader)
 
     /** Schema of the VM envelopes and gap rows this vocabulary reads. */
     static final int SCHEMA_VERSION = 1;
 
-    /**
-     * Schema of the admitted record wrappers this vocabulary produces.
-     */
+    /** Schema of the admitted record wrappers this vocabulary produces. */
     private static final int RECORD_SCHEMA_VERSION = 2;
 
-    /**
-     * Envelope kind of one selected location's version store.
-     */
+    /** Envelope kind of one selected location's version store. */
     private static final String VERSIONS_ENVELOPE_KIND =
             "SHARED_FIELD_VERSIONS";
     /** Node type emitted where the VM serializer bounded one expression. */
@@ -417,23 +344,16 @@ final class SharedStateCapture {
     static final int OK = 0;
 
     /**
-     * The one refusal this decoder raises on its own: an envelope it will
-     * not admit.  The VM's carrier-selection statuses are not mirrored here
-     * -- no call in this file can produce one -- and any status this build
-     * does not declare reads as {@link #UNDECLARED_REASON}.
+     * The one refusal this decoder raises on its own: an envelope it will not
+     * admit.  Undeclared statuses read as {@link #UNDECLARED_REASON}.
      */
     static final int MALFORMED_ENVELOPE = -1002;
     /** One expression root was serialized only up to the VM's safety bound. */
     static final int EXPRESSION_SERIALIZATION_TRUNCATED = -1007;
     /**
-     * A container's INITIAL version does not state the contents tracking
-     * began from.
-     *
-     * <p>A container relation resolves as its base plus the mutation chain,
-     * so a base the VM could not state leaves every read of that container
-     * standing on nothing.  The VM walks a container at the first symbolic
-     * access to it; when it has no walker for the class it says so, and the
-     * class name travels in the gap because that is the fix.</p>
+     * A container's INITIAL version states no base contents, so every read of
+     * it (base plus mutation chain) stands on nothing.  The gap names the
+     * class the VM has no walker for, because that is the fix.
      */
     static final int CONTAINER_BASE_UNSTATED = -1012;
 
@@ -448,29 +368,16 @@ final class SharedStateCapture {
 
     /** Location kind of one selected map's whole immutable state. */
     static final String LOCATION_KIND_MAP_STATE = "MAP_STATE";
-    /**
-     * The reserved slot of a whole-state location.
-     */
+    /** The reserved slot of a whole-state location. */
     static final int MAP_STATE_SLOT = -3;
 
     private static final Set<String> LOCATION_KINDS = names("INSTANCE_FIELD",
             "STATIC_FIELD", "ARRAY_ELEMENT", LOCATION_KIND_MAP_STATE);
     /**
-     * Kinds of published version a location may carry.
-     *
-     * <p>This is the VM's vocabulary, not ours: a whole-state version reads
-     * as {@code STATE_<operation>} (SharedFieldVersions::version_label), and
-     * the operations are the ones the container support publishes -
-     * {@code PUT}, {@code REMOVE}, {@code REMOVE_IF}, {@code CLEAR},
-     * {@code REMOVE_AT} and {@code CLEAR_VIEW} for a map, {@code ADD},
-     * {@code REMOVE} and {@code CLEAR} for a set, and {@code APPEND},
-     * {@code INSERT}, {@code WRITE}, {@code REMOVE} and {@code CLEAR} for an
-     * indexed container.  An operation missing here is not a tolerated
-     * unknown: one unadmitted version fails the whole envelope, so the
-     * location loses every version it published and each read of it reaches
-     * the formula with no read-from arm.
-     * {@code REMOVE_IF} represents an iterator removal controlled by a
-     * recorded branch predicate.</p>
+     * Kinds of published version a location may carry: the VM's
+     * {@code STATE_<operation>} vocabulary (SharedFieldVersions::version_label).
+     * Trap: an operation missing here fails the whole envelope, so the
+     * location loses every version.
      */
     private static final Set<String> VERSION_KINDS = names("INITIAL", "WRITE",
             "RMW", "STATE", "STATE_PUT", "STATE_REMOVE", "STATE_REMOVE_IF",
@@ -494,9 +401,7 @@ final class SharedStateCapture {
         }
     }
 
-    /**
-     * Whether an expression tree recursively contains the VM's explicit
-     */
+    /** Whether an expression tree contains the VM's truncation marker. */
     static boolean containsVmSerializationTruncation(
             JsonElement expression) {
         if (expression == null) return false;
@@ -539,24 +444,16 @@ final class SharedStateCapture {
                 VM_EXPRESSION_SERIALIZATION_TRUNCATED + ":"));
     }
 
-    /**
-     * Names the location one version-store envelope describes, as the VM's
-     */
+    /** The location key one version-store envelope describes. */
     static String locationKey(JsonObject envelope) {
         return locationKeyOf(object(envelope, "location"));
     }
 
     /**
-     * The same key, for a location node anywhere the VM states one.
-     *
-     * <p>ONE spelling of a location and one admission of it: the write log's
-     * envelopes and the {@code location} member of every read node the
-     * expressions carry are the same statement by the same VM, and the row
-     * publication used to have a second reader of it that admitted any
-     * {@code locationKind} at all and defaulted an unknown one to
-     * {@code INSTANCE}.  A kind this build does not declare, an owner rid of
-     * zero, an absent slot, or a whole-state location at any slot but the
-     * reserved one, names no location -- and the caller refuses.</p>
+     * The same key for any VM location node: the one spelling and admission
+     * shared by write envelopes and read nodes.  An undeclared kind, a zero
+     * owner rid, an absent slot, or a whole-state location off the reserved
+     * slot names no location ({@code ""}).
      */
     static String locationKeyOf(JsonObject location) {
         if (location == null || location.size() == 0) return "";
@@ -572,12 +469,9 @@ final class SharedStateCapture {
     }
 
     /**
-     * The contract location one VM location key names, or {@code null}.
-     *
-     * <p>The kind is the VM's declared one, mapped member for member; there
-     * is no default, because an unrecognised kind published as
-     * {@code INSTANCE} is a location the write log spells differently and
-     * therefore a read that joins nothing.</p>
+     * The contract location one VM location key names, or {@code null}.  No
+     * default kind: defaulting to {@code INSTANCE} makes a read that joins
+     * nothing.
      */
     static edu.uva.liftlab.graphchecker.contract.LocationId locationId(
             String locationKey) {
@@ -626,9 +520,7 @@ final class SharedStateCapture {
                 || versionKind.startsWith("STATE_"));
     }
 
-    /**
-     * Admits one version-store envelope, answering "" or the exact reason it
-     */
+    /** Admits one version-store envelope: {@code ""} or the refusal reason. */
     static String versionsFault(JsonObject envelope) {
         if (envelope == null || envelope.size() == 0) {
             return "no version envelope";
@@ -653,8 +545,7 @@ final class SharedStateCapture {
         }
         JsonArray versions = array(envelope, "versions");
         if (versions.size() == 0) {
-            // Selecting publishes an INITIAL version, so an empty list means
-            // the envelope was not produced by a real selection.
+            // Selection publishes an INITIAL, so empty means no selection.
             return "selected location published no version";
         }
         if (!booleanMember(envelope, "serializationTruncated")) {
@@ -693,20 +584,9 @@ final class SharedStateCapture {
     }
 
     /**
-     * Admits one published version.
-     */
-
-    /**
-     * Why a container's INITIAL version states no base, or {@code ""}.
-     *
-     * <p>Only a container has one: a scalar's INITIAL is the value the field
-     * held, which the expression already carries.  A container's is the
-     * contents tracking began from, which the VM walks at the first symbolic
-     * access, and every relation over that container stands on it.  An
-     * INITIAL that carries no snapshot member at all is an older image; one
-     * that says {@code stated:false} is this image telling us it has no
-     * walker for the class, and the class name is in the gap because naming
-     * it is what gets it walked.</p>
+     * Why a container's INITIAL version states no base, or {@code ""}.  A
+     * missing snapshot is an older VM image; {@code stated:false} means no
+     * walker for the class.
      */
     private static String containerBaseFault(JsonObject version,
                                              String versionKind,
@@ -755,8 +635,7 @@ final class SharedStateCapture {
             return "version " + id + " names no writer case";
         }
         if (!version.has("pathGuard")) {
-            // Explicitly null means the empty conjunction.  An absent key
-            // means the guard was never captured, which is a different and
+            // Explicit null is the empty conjunction; absent is uncaptured.
             return "version " + id + " omits its writer path guard";
         }
         String base = containerBaseFault(version, versionKind, mapState);

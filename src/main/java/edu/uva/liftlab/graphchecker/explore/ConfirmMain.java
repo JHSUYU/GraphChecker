@@ -41,57 +41,33 @@ import java.util.Set;
  *   --output &lt;dir&gt;      the worker directory the replay is run from
  * </pre>
  *
- * <p>THE RULE (DESIGN4 §5).  SAT says the model satisfies our formula;
- * CONFIRM says the program agrees: re-run the world the selected path's own
- * session ran -- the root values, clock skews and answers its obligation
- * planted, proven in an execution -- with no flip forced, hold that
- * session's schedule (strict prefix to the anchor, timeouts after, exactly
- * what an obligation replay does), run once, and require (a) every edge the
- * model chose is the edge the run took and (b) the fatal observed at the
- * anchor.  The schedule is how the replay reproduces the session, not what
- * the claim says; a divergence of the order stays a diagnostic.  The model's
- * own instants are the published witness, not what the run is held to: a
- * solver sits on the boundary of its constraints and a run's timeline moves
- * by more than that.  This writes what that replay is handed, in the shapes
- * the replay already reads:</p>
+ * <p>THE RULE (DESIGN4 §5). SAT says the model satisfies our formula; CONFIRM
+ * says the program agrees: re-run the world the selected path's own session ran
+ * (its planted roots, clock skews, answers) with no flip forced, hold that
+ * session's schedule (prefix to the anchor, timeouts after), and require (a)
+ * every edge the model chose is taken and (b) the fatal at the anchor. The
+ * model's instants are the published witness, not what the run is held to
+ * (solvers sit on boundaries). Written, in shapes the replay already reads:</p>
  * <ul>
- *   <li>{@code focused_task.jsonl}: an obligation focus row whose {@code
- *       flip} is {@code null}, focused on the anchor, with {@code
- *       rootAssignments}, {@code clockDeltas}, {@code answers} and {@code
- *       rootMints} copied from the focus row of the obligation whose replay
- *       is the selected session, no inherited flips -- flips are not
- *       forced, the values decide.  The recording's own session planted
- *       nothing, and nothing is planted for it;</li>
- *   <li>{@code schedule_prefix.jsonl} / {@code schedule_suffix.jsonl}: the
- *       selected session's schedule cut at the anchor;</li>
- *   <li>{@code expected_edges.jsonl}: the edges the model chose -- {@code
- *       WIRE} (consumer endpoint, producer endpoint) per selected message
- *       arm, {@code STATE} (reader endpoint, writer endpoint, version) per
- *       state join of the selected path (the session's own join, or the
- *       writer a selected {@code writer_arm__} names), {@code MARKER}
- *       (root, polarity) per marker that world planted, {@code ANCHOR}
- *       (occurrence, seq).</li>
+ *   <li>{@code focused_task.jsonl}: a focus row with {@code flip: null} on
+ *       the anchor, the selected session's obligation world, no inherited
+ *       flips;</li>
+ *   <li>{@code schedule_prefix.jsonl} / {@code schedule_suffix.jsonl};</li>
+ *   <li>{@code expected_edges.jsonl}: {@code WIRE} per selected message
+ *       arm, {@code STATE} per model-chosen writer, {@code MARKER} per planted
+ *       marker, {@code ANCHOR}.</li>
  * </ul>
  *
- * <p>WHICH PATH AND WHICH ARMS.  {@code claim.json} states the valuation
- * the claim rests on ({@code claim.valuationOrdinal}); that valuation's row
- * names {@code selectedPathId}, {@code selectedSessionId} and {@code
- * selectedArms} -- the arm selectors the sat model set true, which the
- * composer already reads off the model.  Nothing is re-solved.</p>
- *
- * <p>A confirmation nothing can run is refused by name (exit 1, the reason
- * on stderr and in the summary): a selected session without a target row
- * at the anchor, a selected arm no session attested.  The driver reads a refusal as
- * "unconfirmed, because ...".</p>
+ * <p>The path and arms come from the claim's valuation ({@code selectedPathId},
+ * {@code selectedSessionId}, {@code selectedArms}); nothing is re-solved. An
+ * unrunnable confirmation is refused by name (exit 1), which the driver reads
+ * as "unconfirmed, because ...".</p>
  */
 public final class ConfirmMain {
     /** The one obligation id a confirmation carries. */
     static final String OBLIGATION_ID = "CONFIRM";
-    /**
-     * The confirmation, when the selected session already realized the
-     * claim ({@link #realizedBy}): the driver publishes it and runs no
-     * replay.
-     */
+    /** Written instead of a replay when the selected session already realized
+     *  the claim ({@link #realizedBy}). */
     static final String REALIZED = "realized.json";
 
     private ConfirmMain() {
@@ -151,13 +127,8 @@ public final class ConfirmMain {
             throw new Refused("the claim states no parseable anchor");
         }
         String seedSessionId = text(claim, "seedSessionId");
-        // WHICH ARMS ARE THE SELECTED PATH'S.  A family's exactly-one holds
-        // under its path's selector, so the arm booleans of every OTHER
-        // path are free in the model and z3 may set any of them: the v15
-        // hdfs-17899 model sets message_arm__16 beside the selected path
-        // 35's own.  The composer names each arm by its path's ordinal
-        // (path_selector__N__ / message_arm__N__ / writer_arm__N__), and
-        // that ordinal is the join.
+        // Only the selected path's arms (others are free in the model),
+        // joined by the path ordinal in the composer's selector names.
         String ordinalOfPath = "";
         for (JsonElement element : array(manifest, "paths")) {
             JsonObject path = element.getAsJsonObject();
@@ -188,17 +159,10 @@ public final class ConfirmMain {
             throw new Refused("the selected session " + sessionId
                     + " states no target row at the anchor " + anchor.id());
         }
-        // AN EXECUTION THAT ALREADY REALIZED THE CLAIM IS THE CONFIRMATION.
-        // What CONFIRM asks is whether one run of the program takes every
-        // edge the model chose, with the moved roots at the model's values,
-        // and observes the fatal at the anchor.  When every arm the model
-        // chose is a delivery the selected session itself recorded, and
-        // that session ran each moved root at the model's value and
-        // observed the fatal, that session is the run: re-running its
-        // world tests only whether a race the order does not hold goes the
-        // same way twice (hdfs-17899 bug2, rounds v36 and v38).  A model
-        // that combines deliveries of different sessions has no such run,
-        // and the replay below is the one that makes it.
+        // A session that already took every chosen edge at the model's root
+        // values and observed the fatal IS the confirmation; re-running it only
+        // tests a race twice. A model mixing sessions' deliveries needs the
+        // replay below.
         String realized = realizedBy(decided, sessionId, arms, session,
                 target);
         if (!realized.isEmpty()) {
@@ -220,13 +184,7 @@ public final class ConfirmMain {
             return summary;
         }
 
-        // THE WORLD THE SELECTED PATH RAN IN, values only.  Its own session
-        // planted these roots and clocks and observed the fatal with its
-        // flips forced; the confirmation re-runs that world with nothing
-        // forced, so the values alone must drive every decision.  The
-        // model's re-solved instants are the published witness, not what a
-        // run is held to: a solver sits on the boundary of its constraints,
-        // and a run's own timeline moves by more than that.
+        // The selected path's world, values only, nothing forced.
         JsonObject world = obligationWorld(iteration, sessionId);
         Map<String, String> assignments = strings(world, "rootAssignments");
         Map<String, String> clockDeltas = strings(world, "clockDeltas");
@@ -259,8 +217,7 @@ public final class ConfirmMain {
                     armSession));
         }
 
-        // The schedule half: the selected session's order, cut at the
-        // anchor -- held event by event before it, in its timeouts after.
+        // The schedule half (SchedulePrefix).
         SchedulePrefix.Cut cut = SchedulePrefix.write(iteration, sessionId,
                 Collections.singletonList(anchor.id()), out);
         if (cut == null) {
@@ -284,9 +241,7 @@ public final class ConfirmMain {
 
         JsonObject focus = focusRow(anchor, seedSessionId, pathId,
                 assignments, clockDeltas, answers, mints, cut);
-        // {@code flip: null} IS the row's statement, so the null is written
-        // -- the codec's Gson drops nulls, and a row with no flip member is
-        // no obligation at all to the replay.
+        // {@code flip: null} is the statement: serialize nulls.
         Files.write(out.resolve(ObligationDir.FOCUSED_TASK),
                 (new GsonBuilder().serializeNulls().create().toJson(focus)
                         + "\n").getBytes(StandardCharsets.UTF_8));
@@ -304,16 +259,9 @@ public final class ConfirmMain {
         return summary;
     }
 
-    /**
-     * Why the selected session is itself the run that confirms the claim,
-     * or {@code ""} when a replay has to make one.
-     *
-     * <p>Every arm the model chose for the selected path is one of that
-     * session's own deliveries, the session's target row at the anchor
-     * observed the fatal, and every root the claim moved is one that
-     * session minted at the model's value -- named by root id or by the
-     * symbol the formula carries, as {@code movedRoots} names it.</p>
-     */
+    /** Why the selected session is itself the confirming run, or "": all chosen
+     *  arms are its own deliveries, it observed the fatal, and it minted every
+     *  moved root (by root id or symbol) at the model's value. */
     static String realizedBy(JsonObject decided, String sessionId,
                              List<JsonObject> arms, SessionReader session,
                              TargetRow target) {
@@ -344,11 +292,8 @@ public final class ConfirmMain {
                 + ", and observed the fatal at the anchor";
     }
 
-    /**
-     * The focus row of the obligation whose replay is {@code sessionId}:
-     * the world that session ran (roots planted, clock skews, answers,
-     * mints).  Empty for the recording's own session, which planted nothing.
-     */
+    /** The focus row of the obligation whose replay is {@code sessionId}; empty
+     *  for the recording. */
     static JsonObject obligationWorld(Path iteration, String sessionId)
             throws IOException {
         for (ObligationDir worker : ObligationDir.workersIn(iteration)) {
@@ -378,8 +323,7 @@ public final class ConfirmMain {
         task.add("factor", new JsonArray());
         task.addProperty("obligationId", OBLIGATION_ID);
         task.addProperty("pathId", pathId);
-        // NO FLIP: the values drive every decision, and the replay reads
-        // {@code flip: null} as "nothing is owed at any decision".
+        // No flip: the values drive every decision.
         task.add("flip", null);
         task.add("inheritedFlips", new JsonArray());
         task.add("rootAssignments", object(assignments));
@@ -391,11 +335,8 @@ public final class ConfirmMain {
         return task;
     }
 
-    /**
-     * One WIRE edge per consumer of every selected message arm: the
-     * producer is the export that arm's own session paired the consumer
-     * with, which its attach row states.
-     */
+    /** One WIRE edge per consumer of each selected message arm, paired as that
+     *  arm's session recorded. */
     private static List<JsonObject> wireEdges(
             List<JsonObject> arms, Map<String, SessionReader> armSessions) {
         List<JsonObject> edges = new ArrayList<JsonObject>();
@@ -427,13 +368,9 @@ public final class ConfirmMain {
         return edges;
     }
 
-    /**
-     * One STATE edge per state join of the selected path where the MODEL
-     * CHOSE the writer: the reads of the occurrences the anchor's joins
-     * reach (Composer's P3 closure, the same rule over the same rows) whose
-     * selected {@code writer_arm__} names their writer.  A join with no
-     * alternative is the recording's and is not an edge to confirm.
-     */
+    /** STATE edges where the MODEL CHOSE the writer: reads in the anchor's join
+     *  closure (the Composer's P3 rule) whose selected {@code writer_arm__}
+     *  names their writer. */
     private static List<JsonObject> stateEdges(SessionReader session,
                                                OccurrenceAddress anchor,
                                                long cutoff,
@@ -463,7 +400,7 @@ public final class ConfirmMain {
             }
             on.add(read);
         }
-        // The closure: occurrence id -> the seq its prefix reaches up to.
+        // Closure: occurrence id -> the seq its prefix reaches.
         Map<String, Long> reached = new LinkedHashMap<String, Long>();
         reached.put(anchor.id(), cutoff);
         List<String> pending = new ArrayList<String>();
@@ -502,12 +439,8 @@ public final class ConfirmMain {
                 reach(under, anchor, reached, pending, versions, handled);
             }
         }
-        // The model's own writer choices, where a location had
-        // alternatives: a selected {@code writer_arm__} names its writer
-        // ({@code groupId}) and the STATE interactions it fills, each the
-        // id of (writer endpoint, reader endpoint) -- the same id the arm
-        // was keyed by ({@code smt.Arms#stateArms}), recomputed here over
-        // this session's writers and the joined readers.
+        // The model's writer choices: a writer_arm__ names its writer (groupId)
+        // and the STATE interaction ids it fills ({@code smt.Arms#stateArms}).
         Map<String, Endpoint> writers = new LinkedHashMap<String, Endpoint>();
         for (WriteRow write : session.writes()) {
             writers.put(write.endpoint().id(), write.endpoint());
@@ -530,26 +463,15 @@ public final class ConfirmMain {
         }
         List<JsonObject> edges = new ArrayList<JsonObject>();
         for (Map.Entry<String, WriteRow> join : joined.entrySet()) {
-            // ONLY WHAT THE MODEL CHOSE.  A join with one candidate writer
-            // is the recording's, not the model's: the formula pinned it,
-            // and which iteration's write a read happens to observe in
-            // another run -- 17960's snapshot builders, serialized in the
-            // order a set yields them -- is not a choice the confirmation
-            // holds the program to.  Rule (c), the fatal at the anchor, is
-            // what checks that the recorded joins still lead there.
+            // Only model choices: single-writer joins are pinned by the
+            // formula, and rule (b) checks they still lead to the fatal.
             if (!chosen.containsKey(join.getKey())) continue;
             JsonObject edge = new JsonObject();
             edge.addProperty("kind", "STATE");
             edge.addProperty("reader", join.getKey());
-            // A PLACEHOLDER read is the mint of a declared cell, and the
-            // mint lands on whichever occurrence of the region reads the
-            // cell first: two occurrences racing for one cell -- 17960's
-            // two FSImageSaver threads, saveFSImageInAllDirs@0 and @1 --
-            // mint it at @0 in one run and at @1 in the next, while the
-            // version the placeholder stands for is the same.  So the
-            // edge is stated as what it is, a join of the CELL to the
-            // model's writer, and the run is held to it by the writer
-            // (runtime/Confirmation), not by the reader's occurrence.
+            // A mint read lands on whichever racing occurrence reads the cell
+            // first, so it is held by the writer (runtime/Confirmation), not
+            // the reader.
             edge.addProperty("mint", readers.get(join.getKey())
                     .mintVersion() != ReadRow.UNKNOWN_VERSION);
             String writer = chosen.get(join.getKey());
@@ -564,7 +486,7 @@ public final class ConfirmMain {
         return edges;
     }
 
-    /** One write the path rests on: its writer reached, its state swept. */
+    /** One write the path rests on: reach its writer, sweep older versions. */
     private static void reach(WriteRow write, OccurrenceAddress anchor,
                               Map<String, Long> reached, List<String> pending,
                               List<WriteRow> versions, Set<String> handled) {

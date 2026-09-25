@@ -19,11 +19,8 @@ public final class BranchPredicateAlgebra {
     private BranchPredicateAlgebra() {
     }
 
-    /**
-     * Immutable capture path for VM-owned predicates.  Canonical rendering
-     * already sorts object members, so capture only needs to remove null
-     * members.  Copy-on-write keeps every untouched expression identity tied
-     * to its decoder anchor.
+    /** Capture view of a VM-owned predicate with null members removed.
+     *  Copy-on-write: untouched subtrees keep their identity (decoder anchors).
      */
     static JsonElement canonicalView(JsonElement predicate) {
         return canonicalView(predicate,

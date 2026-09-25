@@ -114,19 +114,14 @@ final class RuntimeTraceContext {
         if (normalizedApi.isEmpty()) normalizedApi = "request";
         Frame activeFrame = state.frames.peek();
         ScopeFrame scope = new ScopeFrame(requestId, state, activeFrame);
-        // The workload's own action is the root of this lineage: every
-        // activation under it states which action it descends from, and
-        // which k-th one, instead of only which request key was in force.
+        // The workload's action roots this lineage.
         scope.lineageToken = Lineage.push(source.key(), Role.CLIENT,
                 normalizedApi);
-        // The key's ordinal is that lineage's k -- one counter -- and it
-        // addresses nothing: the trace and the wire header carry it as text.
+        // The key's ordinal is the lineage's k; it addresses nothing.
         String requestKey = source.key() + "/request/" + normalizedApi
                 + "#" + Lineage.rootWindowIndex();
-        // A root the thread opens for itself: the index of what runs inside
-        // begins at the request, and a start frame standing above it is the
-        // frame of the ROOT that carried this thread here, not of the
-        // request (Identity.Hop.SCOPE_ROOT).
+        // The index begins at the request; a start frame above it belongs
+        // to the root that carried the thread here (Identity.Hop.SCOPE_ROOT).
         scope.scopeBaseBefore = edu.uva.liftlab.graphchecker.runtime.Identity.scopeStart(
                 edu.uva.liftlab.graphchecker.runtime.Identity.Hop
                         .SCOPE_ROOT);
@@ -178,9 +173,7 @@ final class RuntimeTraceContext {
     static void captureAsync(Object carrier) {
         if (carrier == null) return;
         if (carrier instanceof java.util.Collection) {
-            // A batch submission is one submission per task: two subtasks
-            // of one invokeAll run under two endpoints, which is the only
-            // thing that tells their activations apart.
+            // A batch is one submission per task, so siblings stay distinct.
             for (Object element : (java.util.Collection<?>) carrier) {
                 captureAsync(element);
             }
@@ -188,14 +181,9 @@ final class RuntimeTraceContext {
         }
         State state = CURRENT.get();
         View view = state.view();
-        // The lineage travels with the work, exactly as the request scope
-        // does: a pool thread created before the scope existed inherits
-        // neither, and both are facts about the work rather than the thread.
-        // The node it carries EXPLICITLY is the starter's explicit scope and
-        // nothing weaker: a node the starter only resolved by its frames or
-        // its own starter is what the work's reference already states
-        // (Attribution, rule 3), and made explicit here it would outrank the
-        // work's own frames.
+        // Lineage and flow travel with the work, not the thread.  Only the
+        // starter's EXPLICIT node is carried: a weaker one made explicit here
+        // would outrank the work's own frames (Attribution, rule 3).
         Object lineage = Lineage.capture();
         synchronized (LOCK) {
             ASYNC_SEEDS.put(carrier, new Seed(
@@ -204,18 +192,11 @@ final class RuntimeTraceContext {
     }
 
     /**
-     * Enters, on the claiming thread, the scope a start carried.
+     * Enters, on the claiming thread, the scope a start carried: the CLAIM
+     * half of every handoff, in both passes; left by {@link #releaseCarried}.
      *
-     * <p>The CLAIM half of every handoff ({@code Identity}'s claim of a
-     * start), in both passes: the scope the starter stood in -- its explicit
-     * node, its request flow, its lineage -- comes with the work to whatever
-     * pool thread takes it, and is left when the work's start level goes
-     * ({@link #releaseCarried}).  This is what replaced the carried scopes
-     * hand-woven into each Hadoop tree's pool tasks.</p>
-     *
-     * <p>No scope START here: the index of the work begins at its start
-     * frame, which is what tells two siblings started from one site apart.
-     * </p>
+     * <p>No scope START here: the work's index begins at its start frame,
+     * which tells siblings from one site apart.</p>
      */
     static void claimCarried(Object carrier) {
         Seed seed = takeSeed(carrier);
@@ -252,10 +233,7 @@ final class RuntimeTraceContext {
     /** The token of the carried scope this thread's claimed work runs in. */
     private static final ThreadLocal<Long> CARRIED = new ThreadLocal<Long>();
 
-    /**
-     * Rule 1 of the attribution rule: the innermost explicit scope's node,
-     * or null.
-     */
+    /** Attribution rule 1: the innermost explicit scope's node, or null. */
     static SourceRef explicitSource() {
         State state = CURRENT.get();
         for (ScopeFrame scope : state.scopes) {
@@ -288,40 +266,23 @@ final class RuntimeTraceContext {
     /**
      * Starts one root activation; nested methods reuse its span.
      *
-     * <p>Opens no execution-index SCOPE.  This method is reached from the
-     * trace recorder's method hook and from nowhere else, so a scope opened
-     * here would exist in the recording and not in any replay, and the
-     * index of every occurrence under it would start at a different frame in
-     * the two passes -- which is a second identity.  A scope is opened where
-     * the workload says one begins (a request, a daemon tick, a carried
-     * scope, an inbound exchange), and those calls are the same code in both
-     * passes.  What this arm used to protect against -- a pool thread
-     * carrying the frames of whatever created it -- is answered by the start
-     * frame instead: {@link Identity#startWork} files the frame of the start
-     * that created the work, and {@link Identity} drops a finished task's
-     * start frame before the next one (REPORT-P2H).</p>
+     * <p>Opens no execution-index SCOPE: this is the recorder's hook alone,
+     * so a scope here would exist in the recording and not the replay.
+     * Scopes open only where the workload says one begins; pool threads are
+     * handled by {@link Identity#startWork}'s start frame (REPORT-P2H).</p>
      */
     static View enterRoot(Object receiver) {
         State state = CURRENT.get();
-        // A start's scope is taken back where the work CLAIMS it
-        // (#claimCarried), in both passes; this hook is the recording's alone.
         SourceRef registered = sourceFor(receiver);
-        // Which authority answered: the receiver's own registration, or the
-        // context this thread inherited.  Replay can reproduce the first by
-        // object identity and the second only by thread context, so the
-        // activation has to say which one named it.
+        // Which authority named it: replay reproduces a registration by
+        // identity, an inherited context only by thread context.
         boolean receiverAttributed = registered != null;
-        // THE attribution rule, the one the replay evaluates at the same
-        // entry (Attribution).
+        // The same rule the replay evaluates at this entry.
         SourceRef source = Attribution.resolve(receiver);
-        // A receiver that named no source of its own keeps the ambient stamp,
-        // which is the only answer available while the trace is being written.
         if (state.laneId == 0L) {
             state.laneId = nextId();
         }
         long spanId = nextId();
-        // A receive scope belongs to the server lane until the next receive
-        // replaces it.
         long remoteParentSpanId = state.pendingRemoteParentSpanId;
         Frame frame = new Frame(spanId, remoteParentSpanId,
                 state.source, source, receiverAttributed, state.flow);
@@ -349,18 +310,11 @@ final class RuntimeTraceContext {
     }
 
     /**
-     * The request scope of the thread that is calling, as a value.
+     * The calling thread's request scope, as a value to carry with work.
      *
-     * <p>A request scope belongs to the work, not to the thread: Hadoop's
-     * {@code Client} builds a {@code Call} on the caller's thread and writes
-     * it from a sender thread of its own pool, created once when the
-     * connection was set up.  This state is an
-     * {@link InheritableThreadLocal}, so it reaches a thread created inside
-     * a scope and never one created before it -- and which of the two the
-     * sender is, is an accident of when the connection happened to be
-     * opened.  Captured here at the moment the work is created and carried
-     * with it, the scope is the same in a recording and in a replay whatever
-     * the pool does.</p>
+     * <p>A scope belongs to the work, not the thread: an
+     * {@link InheritableThreadLocal} misses pool threads created before the
+     * scope, so it is captured at creation and carried.</p>
      */
     static Object captureScope() {
         View view = CURRENT.get().view();
@@ -369,17 +323,8 @@ final class RuntimeTraceContext {
     }
 
     /**
-     * Enters a scope captured where the work was created.
-     *
-     * <p>The dequeue half of a queue that outlives its enqueueing thread.
-     * Hadoop's IPC {@code Server.Call} is built on a reader thread and run
-     * on a handler thread of a pool created once at connection setup: an
-     * {@link InheritableThreadLocal} reaches a handler only if the handler
-     * happened to be created inside a scope, which is why on hdfs-17899
-     * bug3 two handlers of one pool carried the caller's scope and a third
-     * did not, varying run to run.  Carried at enqueue and restored here,
-     * the scope is the same in a recording and in a replay whatever the
-     * pool does.</p>
+     * Enters a scope captured where the work was created: the dequeue half
+     * of a queue that outlives its enqueueing thread ({@link #captureScope}).
      *
      * @return the token that leaves the scope again, or 0 when the carried
      *         value names none and nothing was entered
@@ -403,8 +348,7 @@ final class RuntimeTraceContext {
                 ? scope.requestApi : MapFields.safe(apiName);
         frame.lineageToken = Lineage.restore(scope.lineage,
                 scope.source.key(), Role.of(roleName), api);
-        // The same root: the carried scope is the work's, and the pool
-        // thread that dequeued it is not (Identity.Hop.SCOPE_ROOT).
+        // The carried scope is the work's, not the pool thread's.
         frame.scopeBaseBefore = edu.uva.liftlab.graphchecker.runtime.Identity.scopeStart(
                 edu.uva.liftlab.graphchecker.runtime.Identity.Hop
                         .SCOPE_ROOT);
@@ -418,27 +362,18 @@ final class RuntimeTraceContext {
     }
 
     /**
-     * Opens one daemon tick as a lineage root.
-     *
-     * <p>A timer thread is created by no request and serves none, so it has
-     * no scope to repair: {@code HeartbeatManager$Monitor}, {@code
-     * BPServiceActor} and the key-manager updater measured 0% scoped on
-     * every run.  The tick is its own root -- role plus a window-local k --
-     * which is what makes the NameNode's key rotation an addressable
-     * occurrence instead of a family-less one (REPORT-NNCHAIN §5).  It
-     * touches no request scope: v1 addresses are exactly what they were.</p>
+     * Opens one daemon tick as a lineage root (role plus a window-local k):
+     * a timer thread serves no request, so the tick is its own root
+     * (REPORT-NNCHAIN §5).
      *
      * @return the token that closes the tick
      */
     static long beginTick(Object owner, String roleName) {
         State state = CURRENT.get();
-        // The tick's OWNER is an explicit scope when it is registered
-        // (Attribution, rule 1); otherwise the tick is the thread's.
+        // A registered owner is an explicit scope (Attribution, rule 1).
         SourceRef owned = sourceFor(owner);
         SourceRef source = owned != null ? owned : Attribution.resolve(null);
-        // A root that IS the started work, so its index begins at the start
-        // frame the work claimed: the tick's own beginning
-        // (Identity.Hop.STARTED_ROOT).
+        // The tick IS the started work: index begins at its start frame.
         int scopeBaseBefore = edu.uva.liftlab.graphchecker.runtime.Identity.scopeStart(
                 edu.uva.liftlab.graphchecker.runtime.Identity.Hop
                         .STARTED_ROOT);
@@ -446,18 +381,13 @@ final class RuntimeTraceContext {
         ScopeFrame scope = new ScopeFrame(token, state, state.frames.peek());
         scope.scopeBaseBefore = scopeBaseBefore;
         scope.opened = owned;
-        // A ROOT hop, whatever this thread already stands in: a tick is
-        // started by no message and serves none, so it descends from
-        // nothing (Lineage#pushRoot).  A nested hop made
-        // KeyManager$BlockKeyUpdater's tick render the balance-block
-        // request's own Root:CLIENT#1.
+        // Always a ROOT hop: a nested one would inherit whatever request
+        // the thread stands in (Lineage#pushRoot).
         scope.lineageToken = Lineage.pushRoot(
                 source == null ? "" : source.key(), Role.of(roleName), "");
         state.scopes.push(scope);
-        // A tick is the special case of a service-loop turn (WakeScopes):
-        // what it sends is a request of its node's, so it carries a request
-        // flow the way a turn does, and a heartbeat sent inside it reaches
-        // its server anchored rather than Lost.  Put back when it closes.
+        // Like a service-loop turn it carries a request flow, so what it
+        // sends reaches its server anchored rather than Lost.
         if (source != null
                 && !UNREGISTERED_SOURCE.key().equals(source.key())) {
             String api = MapFields.safe(roleName).trim();
@@ -466,12 +396,9 @@ final class RuntimeTraceContext {
             state.flow = state.flow.withRequest(source.key() + "/tick/"
                     + api + "#" + Lineage.rootWindowIndex(), api);
         }
-        // A tick is a WAKE: the turn a daemon's loop hands its thread.
+        // A tick is a WAKE.  Only a turn whose WAKE was written states its
+        // END, so no END is left without a WAKE across the window opening.
         String site = "tick." + MapFields.safe(roleName);
-        // Only a turn whose WAKE was written states its END: one begun before
-        // the window is the set-up's, whichever side of the opening its work
-        // fell -- decided by the one write, so a window opening between two
-        // reads cannot leave an END with no WAKE.
         if (ScheduleLog.observe(
                 edu.uva.liftlab.graphchecker.contract.ScheduleEvent.Kind.WAKE,
                 site)) {
@@ -481,9 +408,9 @@ final class RuntimeTraceContext {
     }
 
     /**
-     * Closes the tick {@link #beginTick} opened, and states its END: the
-     * turn's writes are in the world from here, which is what orders them
-     * before the events that read them ({@code ScheduleEvent.Kind.END}).
+     * Closes the tick {@link #beginTick} opened and states its END, which
+     * orders the turn's writes before their readers
+     * ({@code ScheduleEvent.Kind.END}).
      */
     static void endTick(long token) {
         State state = CURRENT.get();
@@ -495,8 +422,7 @@ final class RuntimeTraceContext {
             }
         }
         if (tick != null && tick.tickSite != null) {
-            // What was opened inside the turn closes first, so the END
-            // stands in the turn's own context.
+            // Inner scopes close first, so END stands in the turn's context.
             while (state.scopes.peek() != null
                     && state.scopes.peek() != tick) {
                 restoreOne(state, state.scopes.peek());
@@ -509,24 +435,17 @@ final class RuntimeTraceContext {
     }
 
     /**
-     * Opens one turn of a service loop as a root scope ({@code WakeScopes}).
-     *
-     * <p>A root, like a tick: started by no message, descending from nothing
-     * ({@link Lineage#pushRoot}), its k the k-th turn of this loop on this node
-     * in the window.  Unlike a tick it carries a request flow -- source, key,
-     * api -- because what a turn sends is a request of that node's, and a
-     * message without one reaches its server as a {@code Lost} context.  The
-     * index of what runs inside begins here ({@code Identity.Hop.SCOPE_ROOT}).
-     * </p>
+     * Opens one turn of a service loop as a root scope ({@code WakeScopes},
+     * {@link Lineage#pushRoot}); k is the turn's ordinal on this node in the
+     * window.  It carries a request flow so what it sends is not
+     * {@code Lost}.
      *
      * @return the token that closes the turn, or 0 when the thread belongs to
      *         no node the run can name and nothing was opened
      */
     static long beginWake(String api) {
-        // A timed wait inside a request, a carried scope or a served message
-        // is a pause WITHIN that work -- a workload polling for its own
-        // result, a handler backing off -- and not the next turn of a
-        // daemon: the work it pauses stays the work that runs after it.
+        // A timed wait inside non-turn work is a pause within it, not a
+        // daemon's next turn.
         State current = CURRENT.get();
         for (ScopeFrame standing : current.scopes) {
             if (!standing.turn) return 0L;
@@ -559,12 +478,8 @@ final class RuntimeTraceContext {
     }
 
     /**
-     * Closes the turn {@code token} opened when it is the innermost scope, and
-     * says whether it did.
-     *
-     * <p>Only then: a scope opened inside the turn and still standing belongs
-     * to whoever opened it, and closing the turn under it would break the LIFO
-     * order every scope's own close relies on.</p>
+     * Closes the turn {@code token} opened only when it is innermost (scope
+     * closes are LIFO), and says whether it did.
      */
     static boolean endWakeIfInnermost(long token) {
         State state = CURRENT.get();
@@ -575,7 +490,6 @@ final class RuntimeTraceContext {
                 break;
             }
         }
-        // Closed already, by an outer scope's close: nothing left to do.
         if (!standing) return true;
         ScopeFrame innermost = state.scopes.peek();
         if (innermost == null || innermost.token != token) return false;
@@ -612,35 +526,17 @@ final class RuntimeTraceContext {
     }
 
     /**
-     * The same header, for work whose scope was captured where it was made.
-     *
-     * <p>The carried scope decides when it names one: the thread doing the
-     * write may be a pool thread that never saw the request.  Without one --
-     * every caller before this and every send the workload makes inline --
-     * the thread's own scope answers exactly as before.</p>
+     * The same header for work carrying its own scope, which wins when it
+     * names one; otherwise the thread's scope answers.
      */
     static String outboundHeader(Object localOwner, Object carriedScope) {
         State state = CURRENT.get();
         View view = scoped(owned(state.view(), localOwner), carriedScope);
         if (view.source == null || view.requestKey.isEmpty()
                 || view.requestApi.isEmpty()) {
-            // Named, because the refusal decides whether the workload's own
-            // fault marker runs: bug2 guards it with causynth.active(), and
-            // an envelope refused here is an empty Outbound, so the marker
-            // behind that guard is never called and mints nothing.  "It
-            // refused" is not a finding a reader can act on; which of the
-            // three was missing is.
-            //
-            // Both halves, separately: the carried scope is the scope of
-            // the send, and the thread's is only what answers when no scope
-            // was carried.  One combined list could not tell "the work
-            // carried nothing" from "the work carried a node and no
-            // request", and those have different owners -- the first is the
-            // carry, the second is where the work was created.
-            // The thread is not named: the refusal is published as a row,
-            // and a row a reader compares across replays cannot be keyed
-            // by which pool thread happened to perform the write -- that
-            // accident is the whole reason a scope is carried at all.
+            // Name what was missing, carried scope and thread separately:
+            // they have different owners.  Never name the thread; the row
+            // must compare across replays.
             throw new IllegalStateException(
                     "outbound message requires source and request flow;"
                             + " the call carried " + describe(carriedScope)
@@ -672,24 +568,11 @@ final class RuntimeTraceContext {
         long token = nextId();
         ScopeFrame scope = new ScopeFrame(token, state, activeFrame);
         state.scopes.push(scope);
-        // Execution context is set by execution-scope events only: a node's
-        // registration of its instances, or an async seed from a registered
-        // source.  A value arriving over the wire is provenance, and the
-        // propagated expression already carries it.
-        //
-        // The third arm of this used to be the SENDER's source, parsed out of
-        // the message header, and it wrote that node into the RECEIVING
-        // thread's ambient context whenever the local owner was unregistered
-        // and the thread had no source yet.  At record time a DataNode thread
-        // already carries the DN, so the arm never fired; at replay the
-        // thread may be fresh, so it did -- and on hdfs-17899 bug3 that is
-        // "matching root inherited hdfs-17899/nn0#epoch0 instead of
-        // hdfs-17899/target-dn#epoch0", an activation addressed to the node
-        // whose value it received rather than the node it ran on.  Same
-        // function on both sides, over inputs only the replay mutated.
+        // Execution context comes from execution-scope events only; the
+        // SENDER's source is provenance and must not become the receiver's
+        // context (it would differ between record and replay).  A registered
+        // local owner is this scope's explicit node (Attribution, rule 1).
         SourceRef localSource = sourceFor(localOwner);
-        // A registered local owner is this scope's EXPLICIT node
-        // (Attribution, rule 1), for exactly as long as the scope stands.
         scope.opened = localSource;
         if (localSource != null) {
             state.source = localSource;
@@ -701,36 +584,23 @@ final class RuntimeTraceContext {
             activeFrame.source = state.source;
             activeFrame.remoteParentSpanId = remote.parentSpanId;
         }
-        // The hop a served message opens: which role served it, for which
-        // remote family, and the k-th time this node served that family.
-        // The api is the remote family rather than the bare api because two
-        // callers of one api are two populations -- the v1 family suffix,
-        // stated as the hop it always was.
-        // The role a served message opens its scope under is the transport
-        // the WORKLOAD named at the exchange -- one string, carried.  A
-        // table here mapped IPC/RPC to one Hadoop role and
-        // SASL/DATA_TRANSFER/XCEIVER to another, which is a deployment's
-        // vocabulary in engine code and a guess for every transport it did
-        // not list.
+        // The served hop: role = the transport the workload named (no
+        // engine-side role table), api = the remote family, so two callers
+        // of one api count separately.
         scope.lineageToken = Lineage.push(
                 state.source == null ? "" : state.source.key(),
                 Role.of(state.flow.exchangeTransport),
                 inboundFamily(remote.requestKey, remote.requestApi));
-        // An anchored request: the index of what serves it begins at the
-        // inbound scope, and the frames above it -- the pooled handler's
-        // start frame, Server$Handler.run, RpcCall.run -- are the carrier
-        // thread's (Identity.Hop.ANCHOR).  Which handler serves a request
-        // is scheduling; the anchor below already identifies it.
+        // The index begins at the inbound scope; the handler frames above
+        // it are scheduling (Identity.Hop.ANCHOR).
         scope.scopeBaseBefore = edu.uva.liftlab.graphchecker.runtime.Identity.scopeStart(
                 edu.uva.liftlab.graphchecker.runtime.Identity.Hop.ANCHOR);
-        // The message that opened this scope names its producer; that
-        // endpoint IS this occurrence's causal context (IDENTITY-V3).
+        // The producer endpoint IS the causal context (IDENTITY-V3).
         Lineage.anchor(edu.uva.liftlab.graphchecker.runtime.Interactions
                         .sender(state.flow.exchangeTransport,
                                 state.flow.exchangeCorrelationId,
                                 state.flow.exchangeHalf),
-                // The api is the LAST path segment, which is how a case's
-                // selector is matched against it (ComposeMain.apiOf).
+                // Api is the last segment (ComposeMain.apiOf).
                 normalizedUpper(transport) + "/"
                         + MapFields.safe(remote.requestApi));
         publishCausalSource(state);
@@ -738,15 +608,9 @@ final class RuntimeTraceContext {
     }
 
     /**
-     * Who the served message belongs to: {@code <source>/<api>} of the
-     * request in force, else the bare api.
-     *
-     * <p>Not the whole request key: its trailing ordinal counts requests in
-     * the recording window, which is the one part a replay cannot be held
-     * to.  Not a request FAMILY either, in the deleted sense -- nothing is
-     * addressed by it.  It is the hop's api, and it carries the caller
-     * because two callers of one api are two populations and their hops
-     * must not share a k.</p>
+     * The served hop's api: {@code <source>/<api>} of the request in force,
+     * else the bare api.  The request key's ordinal is dropped: a replay
+     * cannot be held to it.
      */
     private static String inboundFamily(String requestKey, String requestApi) {
         String key = MapFields.safe(requestKey).trim();
@@ -765,11 +629,8 @@ final class RuntimeTraceContext {
     }
 
     /**
-     * The same leg, for work carrying the scope it was made in.
-     *
-     * <p>The node the send is filed under is the node the carried scope
-     * names, so the recorded row and the wire header agree and neither
-     * depends on which thread performed the write.</p>
+     * The exchange leg's view, under the carried scope when it names one, so
+     * row and wire header agree whatever thread writes.
      */
     static View exchange(Object localOwner, Object carriedScope) {
         State state = CURRENT.get();
@@ -778,7 +639,6 @@ final class RuntimeTraceContext {
         return view;
     }
 
-    /** The view this work speaks with: its carried scope when it names one. */
     /** Which of the three a view is missing, as " a b c" or "thing". */
     private static String missing(View view) {
         StringBuilder absent = new StringBuilder();
@@ -820,12 +680,7 @@ final class RuntimeTraceContext {
 
     /**
      * The view of one exchange leg made on behalf of a registered local
-     * owner: that owner's node, for this leg only.
-     *
-     * <p>A local owner used to be BOUND -- written into the thread's ambient
-     * source, where it stayed after the leg and named every later event of
-     * the thread.  It is a frame now: the leg speaks for the owner, and
-     * nothing it names outlives the leg.</p>
+     * owner: that owner's node, for this leg only; never bound to the thread.
      */
     static View owned(View view, Object localOwner) {
         SourceRef source = sourceFor(localOwner);
@@ -849,10 +704,7 @@ final class RuntimeTraceContext {
                 break;
             }
         }
-        // A scope that is not standing was already closed -- by an outer
-        // scope's close, which takes every scope opened inside it along --
-        // and closing it again is nothing.  A hook never throws into the
-        // workload for it.
+        // Already closed by an outer close: a no-op, never a throw.
         if (!standing) return;
         while (state.scopes.peek() != null
                 && state.scopes.peek().token != token) {
@@ -884,10 +736,7 @@ final class RuntimeTraceContext {
         }
     }
 
-    /**
-     * Hands the thread's freshly established source to the occurrence running
-     * on it.
-     */
+    /** Hands the thread's new source to the occurrence running on it. */
     private static void publishCausalSource(State state) {
         publishCausalSource(state.view());
     }
@@ -906,9 +755,7 @@ final class RuntimeTraceContext {
         }
         CURRENT.remove();
         IDS.set(1L);
-        // A fixture models a run that is recording: the workload under test
-        // has opened its window.  A test about the window itself says
-        // otherwise for itself.
+        // A fixture models an open recording window.
         RecordingWindow.reset();
         RecordingWindow.open();
     }
@@ -921,27 +768,12 @@ final class RuntimeTraceContext {
     }
 
     /**
-     * The source one root activation is attributed to, or {@code null}.
+     * The source one root activation is attributed to: where it RAN, by
+     * execution scope only.
      *
-     * <p>The receiver's own registration, then the async seed the thread or
-     * the receiver carries, then this thread's ambient execution context --
-     * and nothing else.  Every arm is execution scope: a node's registration
-     * of its own instances, and the context a registered node's thread
-     * carries.  Since a value arriving over the wire no longer writes the
-     * ambient context, the answer is where the activation RAN.</p>
-     *
-     * <p>It is one function because the recorder stamps every {@code
-     * METHOD_ENTER} with it ({@link #enterRoot}), the planner names and
-     * counts the occurrence by that stamp ({@code
-     * RuntimeRegionPlanner.activationSource}), and the replay has to ask the
-     * same question of the same inputs.  When the replay asked its own
-     * version -- the registration, else the ambient context only when it
-     * already named the planned node, else the plan's own key -- every
-     * activation of one region in a JVM running three nodes fell into the
-     * planned node's bucket, and on hdfs-17899 bug3 the planned first
-     * activation of {@code REGION.16ba41cf} on target-dn was answered by
-     * "invocation 2 instead of 1" while the NameNode's own activation of it,
-     * counted as target-dn's first, was published as source-dn's.</p>
+     * <p>One function for recorder ({@link #enterRoot}), planner
+     * ({@code RuntimeRegionPlanner.activationSource}) and replay; a
+     * replay-only variant miscounts occurrences per node.</p>
      */
     static SourceRef activationSource(Object receiver) {
         return activationSource(receiver,
@@ -949,25 +781,11 @@ final class RuntimeTraceContext {
     }
 
     /**
-     * The planner's own attribution rule, evaluated by the replay.
-     *
-     * <p>{@code RuntimeRegionPlanner.activationSource} reads an activation's
-     * own {@code METHOD_ENTER} stamp, and when there is none takes the
-     * <em>unique</em> stamp among the activation's own frames, and when there
-     * is not exactly one of those attributes the activation to the
-     * unregistered source.  This is that function, with the stamp computed
-     * live rather than read out of a trace, so the two ends cannot answer
-     * differently.</p>
-     *
-     * <p>The third arm used to be the replay's own: the PLANNED node.  That
-     * is what let an activation nothing had stamped count in the planned
-     * node's bucket -- on hdfs-17899 bug2 the DataNode heartbeats that run
-     * before the workload registers {@code dn.getDatanodeId()} carry no node
-     * at all, and each one's {@code PBHelper.convert} took a k in
-     * target-dn's count ahead of the heartbeat the plan addresses, which is
-     * "occurrence is activation 2, not 1" on a region whose own activation
-     * was there all along.  The planner never counted them there, because
-     * the planner puts them in the unregistered source's own population.</p>
+     * The planner's attribution rule
+     * ({@code RuntimeRegionPlanner.activationSource}) with the stamp computed
+     * live: own stamp, else the unique frame stamp, else unregistered.
+     * Trap: never fall back to the PLANNED node; unstamped activations
+     * belong to the unregistered population.
      *
      * @param frameStamps the sources the activation's own frames carry, in
      *                    recorded order; empty at a root entry, where no
@@ -981,17 +799,8 @@ final class RuntimeTraceContext {
 
     /**
      * One activation's source: its own stamp, else the unique stamp among
-     * its frames, else the unregistered source.  Never null.
-     *
-     * <p>The second arm is a refusal when it is not unique: two frames of
-     * one activation that name two components say the run cannot attribute
-     * the activation, and it goes to the unregistered population rather
-     * than to the first of the two.  That was already the answer and it was
-     * silent, so nothing downstream could tell it from an activation nothing
-     * had stamped at all -- and the two are different facts: one is missing
-     * evidence, the other is contradictory evidence about where an
-     * occurrence ran.  The class is every activation whose frames disagree,
-     * on either pass, since this is the one rule both evaluate.</p>
+     * its frames, else the unregistered source.  Never null.  Disagreeing
+     * frames are a named gap (contradictory, not missing, evidence).
      */
     static SourceRef attributedActivationSource(
             SourceRef stamp, Collection<SourceRef> frameStamps) {
@@ -1028,8 +837,7 @@ final class RuntimeTraceContext {
         return source == null ? "" : source.key();
     }
 
-    /** The source an activation nothing attributed belongs to: the
-     *  planner's own constant, so the two ends name one population. */
+    /** The planner's unattributed population, shared by both ends. */
     static final SourceRef UNREGISTERED_SOURCE =
             RuntimeRegionPlanner.UNREGISTERED_SOURCE;
 
@@ -1050,19 +858,10 @@ final class RuntimeTraceContext {
     }
 
     /**
-     * The source an anchor the workload named explicitly is registered as.
-     *
-     * <p>Object identity, and nothing else: identity is the only attribution
-     * a replay can reproduce.  A value-equal successor used to be matched
-     * here too -- HDFS swaps {@code DataNode.id} for a fresh {@code
-     * DatanodeRegistration} on every re-registration -- but matching an
-     * object the workload never registered against the ones it did is a
-     * tolerance for a second spelling of the source, and which predecessor
-     * it lands on is decided by an equals() the engine does not own.  A
-     * workload that replaces the object it handed over registers the
-     * successor explicitly -- {@code registerSource} for the same logical
-     * source, {@code restartSource} when the replacement IS a new lifecycle
-     * epoch -- which is a statement rather than a guess.</p>
+     * The source an explicitly named anchor is registered as, by object
+     * identity only: the only attribution a replay reproduces.  A workload
+     * that replaces the object registers the successor itself
+     * ({@code registerSource} / {@code restartSource}).
      */
     private static SourceRef resolveNamedAnchorLocked(Object anchor) {
         return SOURCE_ALIASES.get(anchor);
@@ -1076,22 +875,9 @@ final class RuntimeTraceContext {
     }
 
     /**
-     * Whether the recording window has opened in this run.
-     *
-     * <p>A workload starts its cluster, names its sources, and then opens
-     * the window over the thing being recorded.  Everything the process did
-     * before the window is outside it: the recording never wrote a line for
-     * it, so the plan counted none of it, and a replay that counts it is
-     * numbering a different population than the plan numbered.</p>
-     *
-     * <p>{@code startRecording()} is that moment, and it is the same moment
-     * in every replay of one recording because it is the workload that makes
-     * it, not the engine.  "A source has been registered" was a second
-     * implementation of the same notion: it coincided until a workload put a
-     * cluster restart between its first registration and its
-     * {@code startRecording()} -- hdfs-11741 does -- and then the replay
-     * counted a whole NameNode generation the recording never saw.
-     * Registration before the window is state, not the window.</p>
+     * Whether the workload's {@code startRecording()} has opened the window;
+     * nothing before it is counted by the plan.  Trap: source registration
+     * is not the window (a restart may sit between them).
      */
     static boolean recordingWindowOpen() {
         return RecordingWindow.opened();
@@ -1103,10 +889,7 @@ final class RuntimeTraceContext {
         return !value.isEmpty() && !sourceIdentity(value).equals(value);
     }
 
-    /**
-     * Whether this run registered the same logical source as {@code
-     * sourceKey}.
-     */
+    /** Whether this run registered the same logical source as {@code sourceKey}. */
     static boolean sourceIdentityRegistered(String sourceKey) {
         if (sourceKey == null || sourceKey.isEmpty()) return false;
         synchronized (LOCK) {
@@ -1150,8 +933,7 @@ final class RuntimeTraceContext {
     private static State inheritedState(State parent) {
         State child = initialState();
         if (parent == null) return child;
-        // The explicit scope the creator stood in, read off its state (no
-        // thread-local may be touched while a thread is being constructed).
+        // Read off parent state: no thread-local during construction.
         SourceRef creatorExplicit = null;
         for (ScopeFrame scope : parent.scopes) {
             if (scope.opened != null) {
@@ -1177,8 +959,7 @@ final class RuntimeTraceContext {
         final long spanId;
         final long remoteParentSpanId;
         final SourceRef source;
-        /** Whether {@link #source} is the root receiver's own registration
-         *  rather than the context this thread inherited. */
+        /** Whether {@link #source} is the receiver's own registration. */
         final boolean receiverAttributed;
         final String requestKey;
         final String requestApi;
@@ -1233,10 +1014,7 @@ final class RuntimeTraceContext {
             this.laneId = laneId;
         }
 
-        /**
-         * The thread's view, its source by THE attribution rule, resolved
-         * now ({@link Attribution}).
-         */
+        /** The thread's view, source resolved now ({@link Attribution}). */
         private View view() {
             Frame frame = frames.peek();
             return new View(
@@ -1261,7 +1039,6 @@ final class RuntimeTraceContext {
 
     private static final class Frame {
         private final long spanId;
-        /** The lineage hop this root opened, or 0 when it opened none. */
         private long remoteParentSpanId;
         private final SourceRef previousSource;
         private SourceRef source;
@@ -1295,10 +1072,8 @@ final class RuntimeTraceContext {
     }
 
     /**
-     * The request flow a thread carries: the request key and api the wire
-     * header states, and the exchange a served message came in by.  One
-     * value, normalized once, so a scope, a root, a seed and a thread's
-     * construction save and restore the same six fields the same way.
+     * The request flow a thread carries (request key/api plus the inbound
+     * exchange), normalized once and saved/restored as one value.
      */
     private static final class Flow {
         static final Flow NONE = new Flow("", "", "", "", "", "");
@@ -1333,18 +1108,11 @@ final class RuntimeTraceContext {
         private int scopeBaseBefore = -1;
         /** The lineage hop this scope opened, or 0 when it opened none. */
         private long lineageToken;
-        /**
-         * The node this scope names EXPLICITLY, or null: a request's source,
-         * a carried scope's, a registered local owner's, a tick owner's, a
-         * service-loop turn's ({@link Attribution}, rule 1).
-         */
+        /** The node this scope names EXPLICITLY, or null ({@link Attribution}, rule 1). */
         private SourceRef opened;
         /** Whether this scope is a service-loop turn ({@link #beginWake}). */
         private boolean turn;
-        /**
-         * The site of the daemon tick this scope is, when the window saw it
-         * begin; null otherwise.  Its END is stated under it.
-         */
+        /** The tick's site when its WAKE was written, else null. */
         private String tickSite;
         private final SourceRef source;
         private final Frame activeFrame;
@@ -1391,12 +1159,8 @@ final class RuntimeTraceContext {
     }
 
     /**
-     * What one message states about the exchange it belongs to.
-     *
-     * <p>The header also names the SENDER's source, and it is deliberately
-     * not kept: that is where the value came from, and execution context is
-     * set by execution-scope events only.  It is still parsed, because a
-     * header that cannot state it is malformed.</p>
+     * What one message states about its exchange.  The sender's source is
+     * validated but not kept: it is provenance, not execution context.
      */
     private static final class MessageContext {
         private final long parentSpanId;

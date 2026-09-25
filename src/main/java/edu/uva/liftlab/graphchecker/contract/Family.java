@@ -4,13 +4,9 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * CONTRACT-SPEC 4: everything one interaction's control could have carried.
- *
- * <p>Keyed by the interaction id -- BOTH endpoints -- and never by the consumer
- * phase: a producer path with the same port but another endpoint contributes
- * nothing here (INTERACTION-ID R-I2).  A family with no arm is a control
- * nothing in the corpus can produce, which is a row to report, not a
- * disjunction to invent.</p>
+ * CONTRACT-SPEC 4: every arm one interaction's control could have carried,
+ * keyed by interaction id (INTERACTION-ID R-I2).  An armless family is
+ * reported, never filled with an invented disjunct.
  */
 public final class Family {
     private final String interactionId;

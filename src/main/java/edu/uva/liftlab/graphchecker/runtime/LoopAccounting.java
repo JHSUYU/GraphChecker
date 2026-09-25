@@ -17,23 +17,14 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * R5 bounds: what a replay is allowed to run, and the terminal it takes
- * when it has run it.
+ * R5 bounds: what a replay may run, and the terminal it takes after.
  *
- * <p>Three things, one notion.  The declared unroll bound of an
- * instrumented backedge ({@link #checkBackedge}), the replay's own resource
- * ceiling per dynamic loop invocation ({@link #checkReplayBody}), and the
- * enclosing method call a LOOP_BODY_ROOT occurrence's k is counted against
- * ({@link #enterLoopRoot}).  The policy itself is not here: {@code
- * plan/LoopBoundPolicy} states it and {@code ConcolicTaskPlan} carries it
- * per task, so this class only accounts and cuts.</p>
- *
- * <p>What it needs back from {@link ConcolicRegionRuntime}: the innermost
- * unmuted activation, the bookkeeping mute, the activation terminal
- * ({@code finish}), the token counter, and {@code SiblingHookGroupEntry} --
- * the sibling-hook rule both root stacks share, which the region stack
- * still owns.  The woven hook names stay there as delegates; nothing here
- * is woven by name.</p>
+ * <p>The unroll bound of an instrumented backedge ({@link #checkBackedge}),
+ * the resource ceiling per loop invocation ({@link #checkReplayBody}), and
+ * the enclosing call a LOOP_BODY_ROOT occurrence's k counts against
+ * ({@link #enterLoopRoot}).  The policy lives in {@code plan/LoopBoundPolicy};
+ * this class only accounts and cuts.  Woven hook names stay in
+ * {@link ConcolicRegionRuntime} as delegates.</p>
  */
 final class LoopAccounting {
     private LoopAccounting() {
@@ -49,10 +40,7 @@ final class LoopAccounting {
                 }
             };
 
-    /**
-     * Accounts for one attempted traversal of an instrumented normal CFG
-     * backedge.
-     */
+    /** Accounts for one attempted traversal of an instrumented backedge. */
     static void checkBackedge(
             String backedgeId, int instrumentedMaxTraversals) {
         ActiveRegion active = ConcolicRegionRuntime.observingActiveRegion();
@@ -92,19 +80,11 @@ final class LoopAccounting {
     }
 
     /**
-     * Charges one loop body to the replay resource cap without consulting the
-     * unroll bound.
+     * Charges one loop body to the replay resource cap.
      *
-     * <p>ONE CONTROL FLOW WITH {@link #checkBackedge}.  A body past its
-     * bound is cut and NAMED, and so is one whose accounting could not be
-     * done: this arm used to be fail-OPEN where the sibling is fail-closed
-     * -- the same {@code Throwable} becomes a {@code BOUND_HOOK_FAILURE} cut
-     * there, while here the body went uncharged, the activation was not
-     * marked cut, and the resource ceiling silently stopped being enforced
-     * for that loop.  Both hooks now take their terminal through the
-     * activation ({@code ActiveRegion#loopBoundCut},
-     * {@code #replayBodyCut}) and both end at {@link #endAtCut}, which
-     * states the cut as one gap row.</p>
+     * <p>Same control flow as {@link #checkBackedge}, fail-CLOSED: a body
+     * whose accounting throws is cut and named too, or the ceiling silently
+     * stops being enforced.</p>
      */
     static void checkReplayBody(
             String loopId, int instrumentedMaxTraversals) {
@@ -120,8 +100,7 @@ final class LoopAccounting {
             String loop = safe(loopId);
             if (loop.isEmpty() || instrumentedMaxTraversals
                     != active.activation.loopBound.maxBackedgeTraversals()) {
-                // The class was instrumented under a different policy, so its
-                // loop identities cannot be trusted to account for anything.
+                // Instrumented under a different policy: loop ids untrusted.
                 cut = active.replayBodyCut(loop, 0, 0L,
                         "INSTRUMENTATION_POLICY_MISMATCH");
             } else {
@@ -166,10 +145,7 @@ final class LoopAccounting {
         }
     }
 
-    /**
-     * Restores the path condition a loop-accounting hook paused.  True when
-     * the resume was lost, leaving the workload's own observation muted.
-     */
+    /** Resumes the paused path condition; true when the resume failed. */
     private static boolean resumeLoopAccounting(
             ActiveRegion active, ConcolicVmBroker api, boolean paused) {
         if (!paused) return false;
@@ -182,18 +158,9 @@ final class LoopAccounting {
     }
 
     /**
-     * Publishes the bounded prefix, NAMES the cut, and detaches symbolic
-     * observation.
-     *
-     * <p>One place for both hooks' terminal, and the cut carries its own
-     * reason into one row.  It did not: the activation ended and the corpus
-     * said nothing about why, so a path cut at its declared unroll bound and
-     * a path cut because the accounting hook threw were the same silence.
-     * {@code BOUND_INSUFFICIENT} is the standing name for a bound that
-     * stopped a run short; the cut happens at most once per activation
-     * ({@code finish} is a compare-and-set) and {@code RowRuntime#gap}
-     * states one row per distinct reason, so this is bounded by
-     * activations.</p>
+     * Both hooks' terminal: publishes the bounded prefix, states the cut and
+     * its reason as one {@code BOUND_INSUFFICIENT} gap row, and detaches.
+     * At most once per activation ({@code finish} is a compare-and-set).
      */
     private static void endAtCut(ActiveRegion active, Error cut) {
         if (cut == null) return;
@@ -207,9 +174,8 @@ final class LoopAccounting {
     }
 
     /**
-     * Opens the lightweight enclosing call that addresses LOOP_BODY_ROOT
-     * iterations. The outer invocation is counted once; individual body
-     * entries only consult this context and never advance that address.
+     * Opens the enclosing call that addresses LOOP_BODY_ROOT iterations.  It
+     * is counted once; body entries only consult it.
      */
     static long enterLoopRoot(
             String instrumentationSelector, String rootMethod,
@@ -222,26 +188,14 @@ final class LoopAccounting {
         for (LoopRootInvocationContext existing : contexts) {
             if (existing.claimsSiblingHook(group.key)) return 0L;
         }
-        // The entry event of this enclosing invocation, minted before the
-        // plan is asked, because it is what the plan binds a loop task to:
-        // the bodies of one occurrence are the bodies of ONE enclosing
-        // activation, and a second one is a second k.
+        // Minted before the plan is asked: it is what a loop task binds to.
         long token = ConcolicRegionRuntime.TOKEN_COUNTER.incrementAndGet();
-        // No index frame: this hook is woven by the campaign and by nothing
-        // else, so a frame pushed here is a frame the recording never stands
-        // on.  The frame of this entry is the one its REGION hook pushes --
-        // the campaign's at a campaign root, the skeleton weave's at any
-        // other skeleton root -- which is exactly where the recording pushes
-        // one.
+        // No index frame: only the campaign weaves this hook, so the
+        // recording never stands on it; the REGION hook pushes the frame.
         Map<String, Integer> admittedTasks = config.addressLoopRootInvocation(
                 group.key, rootMethod, receiver, rootArguments, token);
-        // Whether the region entry at THIS same Java entry folded, asked
-        // here because here is the only place it is still the innermost
-        // marker: the region entry hook runs immediately before this one at
-        // the same entry.  A folded entry opened no occurrence, so it
-        // addresses no bodies, and #bodiesAddressedHere answers for the
-        // whole invocation rather than re-asking F1 deeper down where the
-        // innermost marker is some other region's fold.
+        // Asked here, the only place this entry's fold is still innermost:
+        // a folded entry addresses no bodies (#bodiesAddressedHere).
         contexts.push(new LoopRootInvocationContext(token, group.key,
                 Math.max(0, group.hookCount - 1), admittedTasks.keySet(),
                 edu.uva.liftlab.graphchecker.runtime.Identity
@@ -260,19 +214,13 @@ final class LoopAccounting {
             contexts.pop();
             if (contexts.isEmpty()) LOOP_ROOT_INVOCATIONS.remove();
         } catch (Throwable ignored) {
-            // Runtime bookkeeping must not alter a workload terminal.
+            // Bookkeeping must not alter a workload terminal.
         }
     }
 
     /**
      * The enclosing invocation on this thread that owns {@code task}, or
-     * {@code null}.
-     *
-     * <p>One loop task's bodies belong to exactly one of these -- the
-     * invocation it was admitted for -- and the row it publishes names
-     * which, so "two enclosing invocations, one occurrence" is a statement
-     * the corpus can contradict rather than an inference from thread
-     * names.</p>
+     * null: the one it was admitted for, which its row names.
      */
     static LoopRootInvocationContext enclosingLoopRoot(RuntimeTask task) {
         if (task == null || !task.loopBodyRoot) return null;
@@ -291,24 +239,12 @@ final class LoopAccounting {
      * Whether an enclosing invocation on this thread addresses the bodies of
      * {@code groupKey} with an occurrence of its own.
      *
-     * <p>What {@code ConcolicRegionRuntime#enterRegionFrame} asks instead of
-     * F1 at a loop body.  F1 gates region ENTRIES -- a declared region
-     * entered inside a running occurrence opens none of its own -- and a
-     * LOOP_BODY_ROOT's body is not an entry: the entry that addressed the
-     * occurrence already ran at the enclosing method, and each body is one
-     * ITERATION of it.  Asking F1 at the body asks about whatever region
-     * happens to stand innermost there, which on hdfs-17960 is
-     * {@code FSEditLogLoader.loadEditRecords} folding between the loop root
-     * in {@code FSNamesystem.loadFSImage} and the body hook inside it.  Every
-     * body was refused, so the edit-log replay occurrence -- the one whose
-     * {@code isSnapshotDeletionOrdered} hook mints the case's single root --
-     * never ran symbolically, no root was minted, and the run reported the
-     * root as never executing.</p>
-     *
-     * <p>It answers false for a loop root whose own entry folded, which is
-     * the case F1 is actually about: that invocation opened no occurrence,
-     * so its bodies would be a second activation of the occurrence it folded
-     * into.  Those stay refused exactly as before.</p>
+     * <p>Asked by {@code ConcolicRegionRuntime#enterRegionFrame} instead of
+     * F1 at a loop body.  F1 gates region ENTRIES; a body is an ITERATION of
+     * an entry that already ran, and F1 there would ask about whatever region
+     * folds innermost, refusing every body.  False when the loop root's own
+     * entry folded: its bodies would re-activate the occurrence it folded
+     * into.</p>
      */
     static boolean bodiesAddressedHere(String groupKey) {
         for (LoopRootInvocationContext context : LOOP_ROOT_INVOCATIONS.get()) {
@@ -319,7 +255,7 @@ final class LoopAccounting {
         return false;
     }
 
-    /** One real enclosing method invocation for bounded body activations. */
+    /** One enclosing method invocation for bounded body activations. */
     static final class LoopRootInvocationContext
             extends ConcolicRegionRuntime.SiblingHookGroupEntry {
         /** This invocation's entry event: what a loop task is bound to. */
@@ -360,8 +296,7 @@ final class LoopAccounting {
             Integer previous = traversals.get(backedgeId);
             int completed = previous == null ? 0 : previous;
             long attempted = (long) completed + 1L;
-            // Body one executes before this edge. Attempt K would enter body
-            // K+1, so only the first K-1 backedge transfers may complete.
+            // Attempt K would enter body K+1: only K-1 transfers complete.
             if (attempted < maxTraversals) {
                 traversals.put(backedgeId, (int) attempted);
             }
@@ -372,10 +307,7 @@ final class LoopAccounting {
             return safe(loopId) + SCOPE_SEPARATOR + invocation;
         }
 
-        /**
-         * Counts one body of this loop against the replay resource cap and
-         * returns the body number just entered.
-         */
+        /** Counts one body against the cap; returns the body number. */
         long recordBody(String loopId) {
             long entered = (long) bodies.getOrDefault(loopId, 0) + 1L;
             bodies.put(loopId, (int) Math.min(entered, Integer.MAX_VALUE));
@@ -384,10 +316,7 @@ final class LoopAccounting {
 
     }
 
-    /**
-     * Non-workload control signal aborting a replay that has spent its loop
-     * resource cap.
-     */
+    /** Control signal aborting a replay that spent its loop resource cap. */
     public static final class ReplayLoopResourceCut extends Error {
         private static final long serialVersionUID = 1L;
         static final String REASON = "REPLAY_LOOP_RESOURCE_CAP";

@@ -31,38 +31,26 @@ import java.util.concurrent.TimeUnit;
  * THE schedule of one run, and the one rule that holds a replay to another
  * run's.
  *
- * <p>RECORDER.  Every START, CLAIM, SEND, RECV, WAKE, END and INTERRUPT the
- * run makes inside its recording window is appended here, in the order the
- * run made them, by the hooks that stand at those points in BOTH passes.
- * Recording changes nothing the run does.</p>
+ * <p>RECORDER.  Every START, CLAIM, SEND, RECV, WAKE, END and INTERRUPT in
+ * the recording window is appended in run order, in BOTH passes, changing
+ * nothing the run does.</p>
  *
- * <p>ONE ORDER, ONE RULE.  A replay is handed the discovering session's
- * order: the prefix up to its task's cut ({@link #PREFIX_ENV}) and the rest
- * past it ({@link #SUFFIX_FILE}), read as one list of SLOTS.  An event takes
- * the earliest slot of its key {@code (kind, c, site)} that is still open or
- * was given up; an event with no such slot runs free at once -- the run made
- * something the discovering one did not, and holding it could only stall
- * whoever waits behind it.  A slot before the cut, and a WAKE slot
- * anywhere, is HELD: its event waits until every earlier slot is settled.
- * Any other slot past the cut is taken at once (past the cut only time is
- * held; the flip keeps what it changes).  An INTERRUPT is never held: the
- * interrupter's own events order it.</p>
+ * <p>ONE ORDER, ONE RULE.  A replay gets the discovering run's order as one
+ * list of SLOTS: prefix to the cut ({@link #PREFIX_ENV}), rest after
+ * ({@link #SUFFIX_FILE}).  An event takes the earliest open or given-up slot
+ * of its key {@code (kind, c, site)}; with none it runs free.  A slot before
+ * the cut, or a WAKE slot anywhere, is HELD until every earlier slot is
+ * settled; other slots past the cut are taken at once.  INTERRUPT is never
+ * held.</p>
  *
- * <p>WHAT DID NOT HAPPEN IS SETTLED, three ways, each stated.  An
- * occurrence that CLOSES makes no further event, so the slots the order
- * held for it and it did not make are dead ({@code schedule-settled#}); a
- * turn's END gives up what the turn did not do; and the WATCHDOG, when
- * nothing was settled for the timeout while some thread waits and the
- * threads that do not wait are not computing, gives up every open slot
- * before the earliest waiting one ({@code schedule#} before the cut,
- * {@code schedule-rest#} past it).  A given-up slot is still taken by its
- * event if it comes late, so the order stays aligned; a dead one is not.
- * After {@link #REST_STALLS} give-ups past the cut the rest is let go.  A
- * stall that outlasts {@link #CEILING} timeouts is given up whatever the
- * CPU does, so the order never holds a run for good.</p>
+ * <p>SETTLING what did not happen: a CLOSED occurrence's untaken slots are
+ * dead; a turn's END gives up what the turn did not do; the WATCHDOG, after
+ * a timeout with waiters and no computing, gives up every open slot before
+ * the earliest waiter.  A given-up slot is still taken if its event comes
+ * late; a dead one is not.  {@link #REST_STALLS} and {@link #CEILING} bound
+ * how long the order can hold a run.</p>
  *
- * <p>One lock for both halves, so the order this log writes IS the order
- * the rule admitted.</p>
+ * <p>One lock for both halves: the written order IS the admitted order.</p>
  */
 public final class ScheduleLog {
     /** How long nothing may be settled while a thread waits, in ms. */
@@ -72,34 +60,24 @@ public final class ScheduleLog {
     public static final String PREFIX_ENV = "CAUSYNTH_SCHEDULE_PREFIX";
     /** The same, as a system property; the property wins. */
     public static final String PREFIX_PROPERTY = "causynth.schedule.prefix";
-    /** The prefix beside a focused replay's focus row. */
     public static final String PREFIX_FILE = "schedule_prefix.jsonl";
-    /** The rest of the same order, beside the prefix. */
     public static final String SUFFIX_FILE = "schedule_suffix.jsonl";
     /** The rest, as a system property; else it stands beside the prefix. */
     public static final String SUFFIX_PROPERTY = "causynth.schedule.suffix";
 
-    /**
-     * Shorter than the waits a workload makes inside its window for its own
-     * results ({@code CausynthCluster.WINDOW_WAIT_MS}, 60 s).
-     */
+    /** Below the workload's own window waits (60 s). */
     static final long DEFAULT_TIMEOUT_MS = 15000L;
     /** Give-ups past the cut before the rest is let go as a whole. */
     static final int REST_STALLS = 2;
-    /**
-     * Where a wait no slot holds waits while the prefix stands: at the cut,
-     * for all of it ({@link #turn}).
-     */
+    /** Where a wait no slot holds waits while the prefix stands. */
     private static final int AT_THE_CUT = -1;
 
     /** A stall this many timeouts long is given up whatever the CPU does. */
     static final int CEILING = 8;
-    /** How often the watchdog samples the CPU of the threads not waiting. */
     private static final long CPU_SAMPLE_MS = 1000L;
 
     private static final Object LOCK = new Object();
 
-    /** Where one run's events go. */
     interface Sink {
         void write(JsonObject row);
     }
@@ -138,16 +116,9 @@ public final class ScheduleLog {
             new HashMap<Thread, Integer>();
     private static int firstOpen;
     /**
-     * The first open slot that stands in a later event's way: an open WAKE
-     * slot never does.  A WAKE is a daemon's turn, and the thread that
-     * makes it may be behind a lock a held thread holds -- hdfs-17960's
-     * NameNode restart held the namesystem lock at its slot 169 while the
-     * replication-queue daemon needed it to reach its WAKE at 168, an order
-     * no run under the schedule can make and the recording made by timing
-     * -- so nobody waits for a late WAKE; the WAKE, when it comes, still
-     * takes its slot.  A WAKE that comes EARLY is held to its slot as
-     * before, and one the recording did not make at all waits at the cut:
-     * a daemon's turn never comes sooner than recorded, and is never waited
+     * The first open slot in a later event's way; an open WAKE never is,
+     * since its daemon may be blocked behind a lock a held thread owns.  A
+     * daemon's turn never comes sooner than recorded, and is never waited
      * for.
      */
     private static int firstBlocking;
@@ -171,8 +142,7 @@ public final class ScheduleLog {
     // ---- recording -------------------------------------------------------
 
     /**
-     * One event at a hook: admitted by the order when there is one, then
-     * written.  Never throws into the workload.
+     * One event at a hook, admitted then written; never throws.
      *
      * @return whether the event was written
      */
@@ -180,11 +150,7 @@ public final class ScheduleLog {
         return observe(kind, site, "");
     }
 
-    /**
-     * The same, for a SEND: {@code endpoint} is the producer endpoint the
-     * message carries, stated on the event so the receiver's anchor names
-     * the sender in the rows.
-     */
+    /** For a SEND: {@code endpoint} is the producer endpoint it carries. */
     public static boolean observe(ScheduleEvent.Kind kind, String site,
                                   String endpoint) {
         if (kind == null || !RecordingWindow.opened()) return false;
@@ -203,12 +169,8 @@ public final class ScheduleLog {
     }
 
     /**
-     * Mutes the replay's symbolic observation across this class's own work.
-     *
-     * <p>Only in a replay, and only around the bookkeeping: the event is
-     * computed from identity state and written with Gson, none of which is
-     * the workload's control flow, while the wait a {@link TimedWaits} method
-     * performs IS the workload's and keeps whatever it recorded before.</p>
+     * Mutes replay observation around this class's bookkeeping, never around
+     * the workload's own wait ({@link TimedWaits}).
      */
     static void mute() {
         if (replay()) ConcolicRegionRuntime.pauseObservation();
@@ -232,10 +194,7 @@ public final class ScheduleLog {
 
     // ---- one timed wait's WAKE -------------------------------------------
 
-    /**
-     * The WAKE one timed wait would make, computed once: nothing the thread
-     * does while it waits changes its context.
-     */
+    /** The WAKE one timed wait would make, computed once. */
     static final class Wake {
         private final Pending event;
 
@@ -244,7 +203,6 @@ public final class ScheduleLog {
         }
     }
 
-    /** This thread's WAKE at {@code site}, or null when there is none. */
     static Wake wake(String site) {
         if (!RecordingWindow.opened()) return null;
         mute();
@@ -256,7 +214,6 @@ public final class ScheduleLog {
         }
     }
 
-    /** The wait no longer waits for a turn (a signal ended it, or more). */
     static void withdraw(Wake wake) {
         if (wake == null) return;
         synchronized (LOCK) {
@@ -270,25 +227,17 @@ public final class ScheduleLog {
     enum Turn {
         /** Its WAKE slot was due: taken and written. */
         ADMITTED,
-        /**
-         * An earlier slot is open, or no slot is left for this WAKE while
-         * the prefix still stands: the wait asks again after a quantum.
-         */
+        /** Not due yet (or unrecorded while the prefix stands): ask again. */
         NOT_YET,
-        /**
-         * No slot holds this wait's timeout -- the order names no such WAKE
-         * still to come -- and the prefix is settled, and nothing was
-         * written: the rest of the wait is on the wall clock.
-         */
+        /** No slot holds it and the prefix is settled: wall clock. */
         FREE,
         /** The wait has no event to make, so nothing can hold it. */
         NO_EVENT
     }
 
     /**
-     * Asks once, without blocking, whether the wait's timeout WAKE may take
-     * its turn: for a wait that holds a monitor or a lock, which waits on
-     * its own primitive between asks.
+     * Asks once, without blocking, whether the timeout WAKE may take its
+     * turn; for a wait that waits on its own primitive between asks.
      */
     static Turn turn(Wake wake) {
         if (wake == null) return Turn.NO_EVENT;
@@ -304,16 +253,9 @@ public final class ScheduleLog {
                         return Turn.FREE;
                     }
                     if (slot < 0) {
-                        // A WAKE THE RECORDING DID NOT MAKE IS SLEPT THROUGH
-                        // while the prefix stands: the recording's thread
-                        // slept past every event before the cut, and only a
-                        // slower replay's wall clock would end it sooner --
-                        // v28's seed replays had the DataNode actors heartbeat
-                        // ahead of the workload's own, which the recording's
-                        // window never saw.  So it waits AT THE CUT, as a
-                        // waiter the watchdog counts: a prefix nothing is
-                        // making is given up as any stall is, and then the
-                        // wait is the clock's.  A signal still ends it.
+                        // An unrecorded WAKE is slept through while the
+                        // prefix stands: it waits AT THE CUT, counted by the
+                        // watchdog.  A signal still ends it.
                         WAITERS.put(self, AT_THE_CUT);
                         if (!watchdogLocked()) return Turn.NOT_YET;
                         continue;
@@ -333,10 +275,7 @@ public final class ScheduleLog {
         }
     }
 
-    /**
-     * The wait's WAKE, written when the wall clock ended a wait no slot
-     * held ({@link Turn#FREE}): nothing holds it, so it is admitted at once.
-     */
+    /** The WAKE of a {@link Turn#FREE} wait the wall clock ended. */
     static void timedOut(Wake wake) {
         if (wake == null) return;
         mute();
@@ -350,7 +289,7 @@ public final class ScheduleLog {
         }
     }
 
-    /** One event about to be admitted: its parts, computed off the lock. */
+    /** One event about to be admitted, computed off the lock. */
     private static final class Pending {
         private final ScheduleEvent.Kind kind;
         private final String context;
@@ -375,18 +314,9 @@ public final class ScheduleLog {
     }
 
     /**
-     * The event this hook makes, or null when it makes none.
-     *
-     * <p>AN EVENT WITH NO IDENTITY HOLDS NO PLACE.  A thread whose context
-     * is {@code Lost} is one no scope reached, and every such thread shares
-     * that one context, so the k of its key would count all their events
-     * together -- a cross-thread counter, which an event's identity may
-     * never be (G8).  Ordered by it, the slower replay met the recording's
-     * k's in another interleaving and waited for them: hdfs-17967 path B
-     * v26, once the lineage weave put work starts on the NameNode's IPC
-     * reader threads, stalled five times and gave up 42 of 80 slots.  So it
-     * is neither written nor held, in the recording and in the replay alike,
-     * and runs free.</p>
+     * The event this hook makes, or null.  A {@code Lost} context makes none:
+     * all Lost threads share it, so its k would be a cross-thread counter
+     * (G8) and would stall the replay.
      */
     private static Pending pending(ScheduleEvent.Kind kind, String site,
                                    String endpoint) {
@@ -416,18 +346,12 @@ public final class ScheduleLog {
         }
     }
 
-    /** The occurrences this run has marked, so each is marked once. */
     private static final java.util.Set<String> MARKED =
             new java.util.HashSet<String>();
 
     /**
-     * Marks where one occurrence opened: the position of the next event.
-     *
-     * <p>Not an event -- nothing is admitted or held by it -- but the cut a
-     * task's prefix is taken at: the prefix of a replay that focuses this
-     * occurrence ends where it began.  An occurrence that sends, starts and
-     * waits nothing still has a beginning, which the events alone would not
-     * state.</p>
+     * Marks where one occurrence opened: not an event, but the cut of a
+     * prefix that focuses it.
      */
     static void mark(String occurrenceId) {
         String id = Text.safe(occurrenceId);
@@ -446,9 +370,8 @@ public final class ScheduleLog {
     }
 
     /**
-     * The event context: the attributed node, the causal context, and the
-     * thread handoffs inside it ({@link Identity#handoffs}) -- so the k of a
-     * key counts one thread's events, never two threads' interleaved.
+     * The event context: node, causal context and {@link Identity#handoffs},
+     * so a key's k never counts two threads interleaved.
      */
     static String contextHere() {
         String node = Text.safe(RuntimeTraceContext.nodeHere());
@@ -457,14 +380,7 @@ public final class ScheduleLog {
                 + (handoffs.isEmpty() ? "" : "|" + handoffs);
     }
 
-    /**
-     * Installs where this run's events go, and drains what came first.
-     *
-     * <p>A replay installs its session's publisher; the recording installs a
-     * file beside its trace.  Events the run made before either -- the window
-     * opens before the session does in some workloads -- are kept in order and
-     * written first.</p>
-     */
+    /** Installs where events go, draining those made before it. */
     static void install(Sink target) {
         synchronized (LOCK) {
             if (target == null || sink != null) return;
@@ -508,12 +424,7 @@ public final class ScheduleLog {
 
     // ---- the rule ---------------------------------------------------------
 
-    /**
-     * Admits one event and writes it: free when no slot holds it, at once
-     * when its slot is not held or already due, else when every earlier
-     * slot is settled.  The thread waits on the lock, which it releases
-     * while it waits; the watchdog runs from here.
-     */
+    /** Admits one event by THE rule and writes it; runs the watchdog. */
     private static void admitLocked(Pending event) {
         if (!holds) {
             appendLocked(event);
@@ -525,12 +436,7 @@ public final class ScheduleLog {
                 int slot = slotOf(event);
                 if (slot < 0 && event.kind == ScheduleEvent.Kind.WAKE
                         && prefixStandsLocked()) {
-                    // A daemon's turn the recording did not make waits at
-                    // the cut, as a timed wait no slot holds does (#turn):
-                    // hdfs-17967 path B's DataNode actors slept into the
-                    // window and, on the replay's slower clock, took their
-                    // turns -- and their heartbeats -- before the workload's
-                    // own, where the recording's slept through.
+                    // An unrecorded WAKE waits at the cut, as in #turn.
                     WAITERS.put(self, AT_THE_CUT);
                     if (watchdogLocked()) continue;
                     LOCK.wait(Math.max(1L, Math.min(timeoutMillis(), 1000L)));
@@ -552,9 +458,8 @@ public final class ScheduleLog {
                 LOCK.wait(Math.max(1L, Math.min(timeoutMillis(), 1000L)));
             }
         } catch (InterruptedException interrupted) {
-            // The workload interrupted its own thread: that is the
-            // workload's to see.  The event happened here, so it takes its
-            // slot here, and the order stands for everyone else.
+            // The workload's interrupt is its own; the event still takes
+            // its slot.
             Thread.currentThread().interrupt();
             int slot = slotOf(event);
             if (slot >= 0) takeLocked(slot);
@@ -565,14 +470,9 @@ public final class ScheduleLog {
     }
 
     /**
-     * The slot an event takes: of the slots of its key still open or given
-     * up, the earliest one its OWN occurrence made in the recording, else
-     * the earliest one; -1 when none is left.  Two threads under one
-     * context make events of one key -- two RPCs a request issues at once
-     * -- and which one comes first is the scheduler's; the occurrence is
-     * what the event IS, so it keeps its own slot and its message its own
-     * anchor (hdfs-17899-bug2, v22: two SPS sends swapped slots and every
-     * later event of both exchanges was unnamed).
+     * The slot an event takes: the earliest of its key made by its OWN
+     * occurrence, else the earliest; -1 when none.  Two concurrent RPCs under
+     * one context share a key, and must not swap slots (and anchors).
      */
     private static int slotOf(Pending event) {
         ArrayDeque<Integer> slots = SLOTS.get(event.key);
@@ -598,12 +498,11 @@ public final class ScheduleLog {
         return firstBlocking >= slot;
     }
 
-    /** Whether the prefix still stands: an open non-WAKE slot before the cut. */
+    /** Whether the prefix stands: an open non-WAKE slot before the cut. */
     private static boolean prefixStandsLocked() {
         return holds && firstBlocking < cut;
     }
 
-    /** An event took its slot. */
     private static void takeLocked(int slot) {
         ScheduleEvent event = order.get(slot);
         ArrayDeque<Integer> slots = SLOTS.get(event.key());
@@ -627,12 +526,7 @@ public final class ScheduleLog {
         givenUp++;
     }
 
-    /**
-     * A turn's END settles the turn: what the recording has between the
-     * turn's WAKE and its END and the run has not made -- other than another
-     * turn's WAKE -- is given up.  A daemon's turn decides on the wall clock
-     * whether its heartbeat is due, so a recorded turn's RPC need not recur.
-     */
+    /** A turn's END gives up what the turn did not make, WAKEs aside. */
     private static void settleTurnLocked(ScheduleEvent end, int endSlot) {
         Integer began = TAKEN_WAKES.get(ScheduleEvent.key(
                 ScheduleEvent.Kind.WAKE, end.context(), end.site()));
@@ -667,11 +561,7 @@ public final class ScheduleLog {
         LOCK.notifyAll();
     }
 
-    /**
-     * An occurrence closed: it makes no further event, so every slot the
-     * order held for it that it did not make is dead.  Stated before the
-     * cut, where the discovering run did more there than this one.
-     */
+    /** An occurrence closed: its untaken slots are dead. */
     static void closed(String occurrenceId) {
         if (!holds || occurrenceId == null) return;
         mute();
@@ -710,10 +600,7 @@ public final class ScheduleLog {
         }
     }
 
-    /**
-     * The watchdog, run by a waiting thread: true when it settled something
-     * and every waiter should look again.
-     */
+    /** The watchdog, run by a waiter: true when it settled something. */
     private static boolean watchdogLocked() {
         if (WAITERS.isEmpty()) return false;
         long now = System.currentTimeMillis();
@@ -721,8 +608,7 @@ public final class ScheduleLog {
         long idle = now - lastProgress;
         if (idle < timeout) return false;
         if (idle < CEILING * timeout && computingLocked(now)) return false;
-        // A wait no slot holds waits for the whole prefix: it bounds a
-        // give-up at the cut and is never a stall past it.
+        // An AT_THE_CUT waiter bounds a give-up at the cut.
         int earliest = Integer.MAX_VALUE;
         for (int slot : WAITERS.values()) {
             earliest = Math.min(earliest, slot == AT_THE_CUT ? cut : slot);
@@ -772,11 +658,8 @@ public final class ScheduleLog {
     }
 
     /**
-     * Whether the threads that do not wait for a turn used at least half a
-     * CPU since the last look: a run computing between two events -- the
-     * concolic VM is many times slower than the recording -- is progress,
-     * not a stall.  The first look after a settlement answers yes and takes
-     * the sample the next one is measured from.
+     * Whether non-waiting threads used at least half a CPU since the last
+     * look: the slow concolic VM computing is progress, not a stall.
      */
     private static boolean computingLocked(long now) {
         if (cpuSampledAt != 0L && now - cpuSampledAt < CPU_SAMPLE_MS) {
@@ -811,16 +694,11 @@ public final class ScheduleLog {
             RowRuntime.gap(GapKind.SCHEDULE_DIVERGED, GapClass.DIAGNOSTIC,
                     where, detail);
         } catch (Throwable unpublished) {
-            // stderr below is the statement then.
         }
         System.err.println("Causynth schedule: " + detail);
     }
 
-    /**
-     * Whether this replay is held to its order right now: inside the
-     * recording window, with an open slot that holds.  A wait begun before
-     * the window is the set-up's and runs on the wall clock.
-     */
+    /** Whether the replay is held right now: in the window, a slot holds. */
     public static boolean enforcing() {
         if (!RecordingWindow.opened()) return false;
         if (!loaded) {
@@ -842,11 +720,7 @@ public final class ScheduleLog {
         }
     }
 
-    /**
-     * Reads the order this replay was handed, once: its prefix, from the
-     * property, else the environment, else beside the focus row; the rest
-     * from its property, else beside the focus row.
-     */
+    /** Reads the order this replay was handed, once. */
     private static void loadOrderLocked() {
         if (loaded) return;
         loaded = true;
@@ -934,7 +808,7 @@ public final class ScheduleLog {
         return null;
     }
 
-    /** How the replay went through its order: its statement at exit. */
+    /** The replay's account of its order, at exit. */
     static String progress() {
         synchronized (LOCK) {
             if (order.isEmpty()) return "no order";
@@ -947,12 +821,10 @@ public final class ScheduleLog {
         }
     }
 
-    /** Test hook: installs a prefix directly and starts holding to it. */
     static void enforceForTests(List<ScheduleEvent> events) {
         enforceForTests(events, Collections.<ScheduleEvent>emptyList());
     }
 
-    /** Test hook: a prefix, and the rest of the order past it. */
     static void enforceForTests(List<ScheduleEvent> events,
                                 List<ScheduleEvent> after) {
         synchronized (LOCK) {

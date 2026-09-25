@@ -34,24 +34,11 @@ import java.util.Set;
 import static edu.uva.liftlab.graphchecker.compose.VmTermLowering.smtLiteral;
 
 /**
- * THE FAMILIES of one composition: which deliveries a slot had, in SMT.
- *
- * <p>Relocated out of {@link Composer} unchanged -- the same bodies, the
- * same order, no rule altered.  {@code Arms} decides what an arm IS; this
- * decides how the alternatives of one slot read in a query, which is all a
- * composer should own of them: the WIRE families of the interactions a path
- * reaches ({@link #closeFamilies}), the STATE families of the reads a
- * writer occurrence could have delivered otherwise
- * ({@link #stateFamilies}), the rendering of one arm with its prefix and
- * its guard ({@link #render}), and the rows that say which slots this
- * anchor had no use for.</p>
- *
- * <p>It holds the composition's own collections rather than copies: a
- * family registered here is a family of that composition's manifest, and
- * the gap rows it raises are that composition's ledger.  The three things
- * that stay with {@link Composer} are reached through it -- the gap
- * writer, the free-symbol test, and this epoch's slot table, which the
- * composer assigns while it runs.</p>
+ * The families of one composition: a slot's alternative deliveries in SMT
+ * ({@code Arms} decides what an arm IS).  WIRE families via {@link
+ * #closeFamilies}, STATE families via {@link #stateFamilies}.  It holds the
+ * composition's own collections, not copies, and reaches {@link Composer}
+ * for gaps, the free-symbol test and the epoch's slot table.
  */
 final class ComposedFamilies {
 
@@ -90,12 +77,8 @@ final class ComposedFamilies {
     }
 
     /**
-     * WHICH DELIVERY a family's selector stands for.
-     *
-     * <p>The manifest's answer to "which arm did the witness take": a
-     * selector the model set is one slot's one delivery, and without this
-     * the claim names a mechanism whose evidence is thirteen anonymous
-     * disjuncts.</p>
+     * Which delivery a family's selector stands for: the manifest's answer
+     * to "which arm did the witness take".
      */
     public static final class ArmChoice {
         private final String family;
@@ -160,9 +143,8 @@ final class ComposedFamilies {
         }
 
         /**
-         * WHAT this selector stands for having been produced by one run:
-         * the message, spelled by the leaves it was received at, or a
-         * writer occurrence for a state family.
+         * What this selector stands for as produced by one run: the message
+         * (spelled by its leaves) or, for a state family, a writer occurrence.
          */
         public String groupId() {
             return groupId;
@@ -213,37 +195,14 @@ final class ComposedFamilies {
     }
 
     /**
-     * ONE SELECTOR PER (MESSAGE, SESSION), for every arrival this path
-     * binds.
-     *
-     * <p>RULE 3 of the minimal delta, and the unit is THE MESSAGE THE PATH
-     * RECEIVED: the attaches of one arrival carry one correlation id, and
-     * every leaf of that arrival was produced by one run of the producer.
-     * So the arms of the interactions a message covers are grouped by that
-     * message and by the session that made it, the group's bindings, guard
-     * and closure are stated once under one selector, and exactly one of
-     * the ELIGIBLE sessions of that message holds.</p>
-     *
-     * <p>Grouping by PRODUCER OCCURRENCE instead is not enough, and 11741
-     * is why: {@code PBHelper.convert(ExportedBlockKeys)} converts each
-     * block key in a loop, the loop body's iteration is part of the
-     * occurrence's execution index, so the five exported leaves of ONE
-     * response are five occurrences.  Per occurrence they are five
-     * independent choices and a model answered them 182906, 182908,
-     * 182908, 182907 out of an export that held 182905, 182906, 182907,
-     * 182908 -- one id twice, and the id the target looks up nowhere.  Per
-     * MESSAGE they are one choice: one run made that response, and a
-     * witness reads the response that run made or another run's, never
-     * halves of both.</p>
-     *
-     * <p>A wire arrival is bound HERE and nowhere else (CLOSURE-V2): the
-     * path states no arrival of its own, so a message no session of this
-     * corpus could have sent leaves its {@code v_H} free, and that is
-     * refused by name rather than pinned to what this session happened to
-     * receive.</p>
+     * Rule 3: ONE SELECTOR PER (MESSAGE, SESSION), exactly one eligible
+     * session per message.  The unit is the MESSAGE (correlation id), not
+     * the producer occurrence: per-leaf choices let a witness mix halves of
+     * two runs' responses.  Wire arrivals are bound HERE only (CLOSURE-V2);
+     * a message no session could send is refused by name.
      *
      * @return whether every message this path binds has an eligible
-     *         session; a path with one that has none leaves the disjunction
+     *         session; if not, the path leaves the disjunction
      */
     boolean closeFamilies(int ordinal, String selector, String owner,
                           Set<String> reached,
@@ -257,15 +216,10 @@ final class ComposedFamilies {
     private static final int NESTING_LIMIT = 16;
 
     /**
-     * The message groups of one set of attaches, under one guard.
-     *
-     * <p>Called with the path's own selector for the attaches the path
-     * bound, and with a {@code (message, S)} selector's family guard for
-     * the attaches S's own delivery was itself handed (R3b iv) -- the same
-     * rule at every depth, grouped by the DELIVERING session's own
-     * correlation ids, because "which message did this rest on" is the same
-     * question one hop back.  A message already closed at an outer level is
-     * not closed again: its selector already binds every leaf of it.</p>
+     * The message groups of one set of attaches, under one guard: the path
+     * selector for its own attaches, or a family guard for the attaches a
+     * delivery was itself handed (R3b iv) -- the same rule at every depth.
+     * A message closed at an outer level is not closed again.
      */
     private boolean closeMessages(int ordinal, String guard, String owner,
                                   List<AttachRow> attaches,
@@ -279,10 +233,7 @@ final class ComposedFamilies {
                             + "no end to what it rests on");
             return false;
         }
-        // (1) THE MESSAGES: the path's attaches by correlation id, which is
-        //     the within-run pairing evidence one arrival carries on every
-        //     leaf of it.  An attach whose row states no correlation is a
-        //     message of its own -- nothing says it came in with another.
+        // (1) Messages by correlation id; an attach with none is its own.
         Map<String, List<AttachRow>> byMessage =
                 new LinkedHashMap<String, List<AttachRow>>();
         Set<String> seen = new LinkedHashSet<String>();
@@ -297,8 +248,7 @@ final class ComposedFamilies {
                 : byMessage.entrySet()) {
             List<AttachRow> leaves = message.getValue();
             if (!closedGroups.add(groupId(leaves))) continue;
-            // (2) The arms of each leaf, one hop deep, and which sessions
-            //     attest a delivery at it.
+            // (2) Each leaf's arms, one hop deep, and who attests them.
             Map<String, Interaction> slotOf =
                     new LinkedHashMap<String, Interaction>();
             Map<String, String> symbolOf =
@@ -354,19 +304,11 @@ final class ComposedFamilies {
     }
 
     /**
-     * R3c': the sessions that could have SENT this message.
+     * R3c': the sessions that could have SENT this message -- those with an
+     * attested arm at EVERY interaction it covers.  A per-leaf check would
+     * accept a run that sent only part of the response.
      *
-     * <p>A session is an option for a message only if it has an attested
-     * arm at every interaction the message covers.  A run that exported
-     * four entries is not an option for a path that attached five: taking
-     * it would leave the fifth arrival bound by a run that never sent it,
-     * which is the mixed response rule 3 exists to forbid.  This replaces
-     * the per-family "did any arm of this corpus fill the slot" check,
-     * which asked the question one leaf at a time and so answered yes for
-     * every leaf of a partial response.</p>
-     *
-     * @return the eligible sessions, or null when none is -- the path is
-     *         then refused by name and leaves the disjunction
+     * @return the eligible sessions, or null (refused by name) when none is
      */
     private List<String> eligibleSessions(
             String message, Set<String> slots,
@@ -399,15 +341,10 @@ final class ComposedFamilies {
     }
 
     /**
-     * ONE MESSAGE, as a finite case split over the runs that could have
-     * sent it.
-     *
-     * <p>{@code sel_{M,S} => (guard_S /\ closure_{M,S} /\ v_H_k = e_{k,S}
-     * for every leaf k)} and exactly-one over the eligible sessions: the
-     * same constraint a per-leaf split stated, and the one a solver can
-     * decide by CASES rather than by searching the union of every leaf's
-     * arms at once -- and the only one a model can be asked which RUN's
-     * response the witness rests on.</p>
+     * One message as a finite case split over the runs that could have sent
+     * it: {@code sel_{M,S} => (guard_S /\ closure_{M,S} /\ v_H_k = e_{k,S})}
+     * with exactly-one over the eligible sessions, so z3 decides by cases
+     * and the model names which RUN's response the witness rests on.
      */
     private boolean messageFamily(
             int ordinal, String guard, String owner, String message,
@@ -433,12 +370,8 @@ final class ComposedFamilies {
                 + ArtifactIO.digest(group, 12);
         List<String> selectors = new ArrayList<String>();
         List<String> cases = new ArrayList<String>();
-        // Arm body -> its selector.  ONE PRODUCER PATH IS ONE ARM however
-        // many runs recorded it: replays that flipped nothing upstream of
-        // the producer state its decisions, its delivery and its valuation
-        // letter for letter as the seed did, and a case split over copies
-        // is a symmetry the solver has to break -- 1391 selectors on
-        // hdfs-17899 bug1 where 248 differ.
+        // Arm body -> selector: one producer path is ONE arm however many
+        // runs recorded it; copies are a symmetry the solver must break.
         Map<String, String> selectorOf = new LinkedHashMap<String, String>();
         List<String> representatives = new ArrayList<String>();
         for (String session : senders) {
@@ -447,11 +380,9 @@ final class ComposedFamilies {
             if (held == null || held.isEmpty()) continue;
             String selector = "message_arm__" + ordinal + "__"
                     + ArtifactIO.digest(group + "|" + session, 12);
-            // Declared BEFORE the body is built: the nested families the
-            // body opens are asserted under this name, and they stay
-            // asserted even where the arm-set is then refused -- a name an
-            // assertion holds and nothing declares makes z3 answer the
-            // whole query with an error instead of a verdict.
+            // Declared BEFORE the body: nested families are asserted under
+            // this name even if the arm-set is then refused, and an
+            // undeclared name makes z3 answer with an error.
             lowering.declare(selector, VmTermLowering.Sort.BOOL);
             List<String> nested = new ArrayList<String>();
             String body = producerBody(ordinal, guard, message, session,
@@ -504,24 +435,11 @@ final class ComposedFamilies {
     }
 
     /**
-     * THE ARMS OF A MESSAGE: the eligible sessions whose WORLD is
-     * compatible with this path's (DESIGN4 3.4).
-     *
-     * <p>Two worlds are compatible when one's flip set contains the
-     * other's: the producer ran under the decisions this path was held
-     * to, or this path under the producer's.  Each such session's
-     * delivery is one arm under one selector, exactly one of which
-     * holds, so the value this path read is {@code ite} over the
-     * deliveries its world admits -- inside the path, where a flip of
-     * the producer becomes an alternative the path can take.</p>
-     *
-     * <p>This replaces R3d, which bound a message to the path's OWN
-     * session wherever that session was eligible and widened to every
-     * eligible one otherwise.  R3d's one arm realised the alternatives
-     * only across disjuncts, one per replay, so a producer flipped under
-     * this path's world never reached the path that read it; and its
-     * widening ignored worlds altogether.  The own session is the case
-     * of this rule where the two worlds are the same.</p>
+     * The eligible sessions whose WORLD is compatible with this path's
+     * (DESIGN4 3.4): one flip set contains the other.  Each is one arm, so
+     * the value read is an {@code ite} over the deliveries its world admits,
+     * and a producer flip becomes an alternative inside the path.  The own
+     * session is the case where the two worlds are equal.
      */
     private List<String> compatible(String owner, List<String> eligible) {
         Set<String> path = flips(owner);
@@ -557,17 +475,10 @@ final class ComposedFamilies {
     }
 
     /**
-     * ONE delivery per leaf, and a refusal when the rows state two.
-     *
-     * <p>The selector binds every leaf of this message at once, so two arms
-     * of one session at one leaf would be conjoined -- {@code v = e1} and
-     * {@code v = e2} -- and a witness would need the two expressions to be
-     * equal.  Identical rows are one delivery stated twice and are dropped;
-     * two DIFFERENT expressions at one leaf of one run are a thing the
-     * recording says and this cannot compose, so the whole {@code (message,
-     * S)} arm-set is refused by name.  (The text dedup this replaces was
-     * blind to which leaf an arm filled, so one session's arm could stand
-     * in for another's wherever the two rendered alike.)</p>
+     * ONE delivery per leaf.  The selector binds every leaf at once, so two
+     * different arms of one session at one leaf would force {@code e1 = e2};
+     * identical rows are deduplicated, different ones refuse the whole
+     * {@code (message, S)} arm-set by name.
      */
     private List<Arms.Arm> oneArmPerLeaf(List<Arms.Arm> group,
                                          String message, String session) {
@@ -613,39 +524,16 @@ final class ComposedFamilies {
     }
 
     /**
-     * R3b: AN ARM IS CLOSED LIKE A PATH.
+     * R3b: AN ARM IS CLOSED LIKE A PATH, under {@code sel_{P,S}} in S's
+     * scope: (i) P's decisions before the LAST delivery this path takes;
+     * (ii) P's closure at that cutoff plus the versions the delivered
+     * expressions read ({@link #expressionWrites}); (iii) the prefixes and
+     * the joins this arm's text reaches, by the path's own routines; (iv)
+     * P's own attaches as nested families.  Without (i)-(iii) an arm says
+     * WHAT was delivered, not why.
      *
-     * <p>Under {@code sel_{P,S}}, in S's own scope, four things and never
-     * the anchor's:</p>
-     *
-     * <ol>
-     *   <li>{@code pi_{P,S}}: P's decisions before the LAST of the
-     *       deliveries this path takes from it -- what that run had decided
-     *       by the time it produced them, never after.</li>
-     *   <li>the closure of P in S: the same row-level fixed point the
-     *       anchor gets, started at P at that cutoff, plus the container
-     *       VERSIONS the delivered expressions read
-     *       ({@link #expressionWrites}).  A delivery is what the producer
-     *       had in hand, and what it had in hand is every earlier mutation
-     *       of the state it read.</li>
-     *   <li>the prefixes of everything that closure reached, and the state
-     *       joins of their reads -- through the same routines the path
-     *       uses, so a decision and a join mean the same thing wherever
-     *       they stand.  Only the joins this arm's own text REACHES: an
-     *       unreached join binds a fresh variable, which constrains nothing
-     *       and drags its whole theory into the query.</li>
-     *   <li>P's own attaches, as nested families under this same selector
-     *       (R3b iv), recursively by this rule.</li>
-     * </ol>
-     *
-     * <p>Without (i)-(iii) an arm said WHAT was delivered and not why: on
-     * hdfs-11741 the NameNode's export of its key set rests on the removal
-     * scan of the previous tick, under a comparison against the clock that
-     * scan read, and no conjunct of any composed query named that clock.</p>
-     *
-     * @return the arm-set's conjunction, or null when a value it rests on
-     *         is not stated -- which refuses this {@code (P, S)} and not
-     *         the path
+     * @return the arm-set's conjunction, or null when a value it rests on is
+     *         not stated -- refusing this {@code (P, S)}, not the path
      */
     private String producerBody(int ordinal, String nestedGuard,
                                 String subject,
@@ -679,12 +567,8 @@ final class ComposedFamilies {
         for (Map.Entry<String, String> guard : guards.entrySet()) {
             String literal = smtLiteral(guard.getValue());
             if (literal.isEmpty()) continue;
-            // The name has to be IN the query.  A guard names a root the
-            // arm's own expression need not mention -- the delivering
-            // replay's valuation of every varied root is part of what the
-            // delivery happened under -- and asserting an equality over a
-            // constant nothing declares makes z3 answer the whole query
-            // with an error instead of a verdict.
+            // The guard's root must be declared: an arm need not mention
+            // it, and an undeclared constant makes z3 answer with an error.
             if (!lowering.declareStated(guard.getKey())) {
                 composer.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                         guard.getKey(), "an arm of " + subject
@@ -697,13 +581,8 @@ final class ComposedFamilies {
         List<String> nested = new ArrayList<String>();
         Map<String, String> joins = new LinkedHashMap<String, String>();
         if (stated) {
-            // THE CLOSURE OF EVERY OCCURRENCE THIS GROUP CAME OUT OF, each
-            // started at its OWN delivery: one message can be produced by
-            // several occurrences of one run -- five leaf occurrences of
-            // one convert(ExportedBlockKeys) loop -- and each of them had
-            // decided what it had decided by the time IT delivered.  The
-            // reached sets are merged at the widest cutoff per occurrence
-            // and the conditions are stated once.
+            // The closure of every producer occurrence of this group, each
+            // from its OWN delivery cutoff, merged at the widest cutoff.
             Map<String, Long> reached = new LinkedHashMap<String, Long>();
             for (Map.Entry<String, List<Out>> each
                     : byProducer(outs).entrySet()) {
@@ -731,14 +610,10 @@ final class ComposedFamilies {
                     joins, answered);
             conjuncts.addAll(composer.closureConditions(session, reached,
                     local));
-            // UNDER THIS FAMILY'S OWN GUARD, not under this one session's
-            // selector.  Several sessions of one occurrence can forward the
-            // SAME handoff variable -- the VM symbol is the leaf's, not the
-            // run's -- and a nested family opened under the first of them
-            // leaves that variable referenced by the others and bound by
-            // nothing: hdfs-11741 campaign #2 came back with the DataNode's
-            // `addKeys` arrival at 2, a value no session delivered, while
-            // its own family sat under a selector the model had set false.
+            // Nested families go under this FAMILY's guard, not this
+            // session's selector: sessions share the leaf's handoff symbol,
+            // so a nested family under one selector leaves it unbound for
+            // the others.
             stated = closeMessages(ordinal, nestedGuard, session,
                     nestedAttaches(session, outs), reachedSlots, nested,
                     local, closedProducers, depth + 1);
@@ -777,13 +652,9 @@ final class ComposedFamilies {
     }
 
     /**
-     * The attaches one delivery was itself handed (R3b iv).
-     *
-     * <p>{@link Arms.Arm#nested} names the handoff variables inside the
-     * delivered expression; the rows of the DELIVERING session say which
-     * attach each one came from, and those attaches are closed under this
-     * delivery's own selector, because they are only referenced when this
-     * delivery is the one taken.</p>
+     * The attaches one delivery was itself handed (R3b iv): the handoff
+     * variables {@link Arms.Arm#nested} names, resolved in the delivering
+     * session.
      */
     private List<AttachRow> nestedAttaches(String session, List<Out> outs) {
         List<AttachRow> attaches = new ArrayList<AttachRow>();
@@ -799,23 +670,11 @@ final class ComposedFamilies {
     }
 
     /**
-     * The container VERSIONS a delivered expression reads.
-     *
-     * <p>An expression that projects a value out of shared state names the
-     * read it made -- its location and the event id it read at -- and not
-     * the write that produced that state.  The closure needs the write: the
-     * latest version of that location at or before the read is the state
-     * the producer had in hand, and its writer's prefix is a reason the
-     * delivery is what it is.  On hdfs-11741 the NameNode's export reads
-     * its key map at event 599; the write it rests on is version 589, the
-     * last of the previous tick, and without this edge the removal scan
-     * that ran between the ticks is in no closure and the clock it read is
-     * declared nowhere.</p>
-     *
-     * <p>The resolution itself is {@link Corpus#expressionStateReads}: ONE
-     * implementation, because exploration grows its closure by the same
-     * edge (E2) and two answers to "what state is this delivery made of"
-     * would be an arm closed over writers the wave never explored.</p>
+     * The container VERSIONS a delivered expression reads: a projection
+     * names the read, but the closure needs the write the producer had in
+     * hand (latest version at or before the read).  Resolved only by
+     * {@link Corpus#expressionStateReads}, the edge exploration grows by
+     * too (E2), so arms and waves agree on what a delivery is made of.
      */
     private List<WriteRow> expressionWrites(String session, List<Out> outs) {
         List<WriteRow> writes = new ArrayList<WriteRow>();
@@ -861,13 +720,8 @@ final class ComposedFamilies {
     }
 
     /**
-     * Every arm {@link Arms} refused since the last drain (R4 item 3), filed
-     * as this composition's own gap.
-     *
-     * <p>{@code Arms} states WHICH arm it refused and why; the stage that
-     * asked for the arms is the stage that has a gap list, so the refusal is
-     * drained and filed here and never left to be counted twice by the next
-     * question.</p>
+     * Files every arm {@link Arms} refused since the last drain (R4 item 3)
+     * as this composition's gap, once.
      */
     private void fileRefusals() {
         for (String refusal : arms.drainRefusals()) {
@@ -912,13 +766,8 @@ final class ComposedFamilies {
     }
 
     /**
-     * Every interaction the corpus records that this anchor does not reach.
-     *
-     * <p>Recorded, never a refusal: an interaction outside the anchor's
-     * closure says nothing about this anchor's disjunction, and a run that
-     * exercised more of the system than this question needs has not gone
-     * wrong.  It is named so that a reader comparing the skeleton with the
-     * rows can see which pairs the composition had no use for.</p>
+     * Names every recorded interaction this anchor does not reach -- a
+     * diagnostic, never a refusal.
      */
     void outsideTheClosure(List<Composer.Disjunct> disjuncts) {
         Set<String> reached = new LinkedHashSet<String>();
@@ -936,13 +785,9 @@ final class ComposedFamilies {
     }
 
     /**
-     * An attach whose producer the recording does not name.
-     *
-     * <p>Two different absences, and the row says which.  A producer
-     * endpoint that exists but could not be addressed in full is
-     * LINEAGE_LOST -- the interaction is there and the naming failed.  An
-     * attach with no producer at all is an UNSTATED_VALUE: the recording
-     * does not say the delivery happened, only that a value arrived.</p>
+     * An attach whose producer is not named: LINEAGE_LOST when a producer
+     * endpoint exists but its address was lost, UNSTATED_VALUE when there is
+     * no producer at all.
      */
     void unpaired(String session, AttachRow attach) {
         if (!unpairedNamed.add(session + "|" + attach.endpoint().id())) {
@@ -963,20 +808,12 @@ final class ComposedFamilies {
     }
 
     /**
-     * THE STATE FAMILIES, by the same rule with the WRITER as P.
-     *
-     * <p>Rule 3 again: a writer occurrence's writes move as a BLOCK, so one
-     * selector stands for that occurrence having been the writer, and it
-     * binds every read of every location this path joins to it -- with that
-     * occurrence's prefix, closure and joins stated once beneath it.  Then
-     * one exactly-one PER LOCATION over the writers of that location: a
-     * location with a single writer says nothing a join has not said and
-     * gets none.</p>
-     *
-     * <p>A selector shared across two of one occurrence's locations is the
-     * point of the rule, not a side effect: choosing that occurrence as the
-     * writer of one location and not of the other is an interleaving in
-     * which half of a block moved.</p>
+     * THE STATE FAMILIES: rule 3 with the WRITER as P.  A writer
+     * occurrence's writes move as a BLOCK, so one selector per writer binds
+     * every joined read of every location it writes, its body stated once;
+     * then exactly-one PER LOCATION over its writers (none for a single
+     * writer).  Choosing a writer for one location and not another would
+     * be half a block moved.
      */
     Set<String> stateFamilies(Corpus.RecordedPath path,
                               int ordinal, String selector,
@@ -985,17 +822,13 @@ final class ComposedFamilies {
                               List<String> stated) {
         String session = path.sessionId;
         Set<String> chosen = new LinkedHashSet<String>();
-        // One choice per (reader occurrence, location): a writer's writes to
-        // it move as a BLOCK, and every read of that location inside this
-        // occurrence takes the same arm -- never a writer interposed between
-        // two reads of one occurrence.
+        // Reads grouped by location: every read of it takes the same arm.
         Map<String, List<ReadRow>> byLocation =
                 new LinkedHashMap<String, List<ReadRow>>();
         for (ReadRow read : joined) {
             add(byLocation, SmtLowering.locationKey(read.location()), read);
         }
-        // Which writer occurrences each location has, and what each one of
-        // them binds across ALL the locations it writes.
+        // Each location's writers, and each writer's outs across locations.
         Map<String, List<String>> writersOf =
                 new LinkedHashMap<String, List<String>>();
         Map<String, OccurrenceAddress> writerOf =
@@ -1005,11 +838,9 @@ final class ComposedFamilies {
         for (Map.Entry<String, List<ReadRow>> entry
                 : byLocation.entrySet()) {
             List<ReadRow> reads = entry.getValue();
-            // Alternatives need an owner that NAMES the storage
-            // ({@link Arms#namedOwner}).  A class on a heap location is
-            // every instance of it at once, which turns "another writer of
-            // L" into "a writer of something else", so such a read keeps
-            // the delivery its own run gave it and is named here.
+            // Alternatives need an owner naming the storage
+            // ({@link Arms#namedOwner}); a class owner aliases every
+            // instance, so such a read keeps its own run's delivery.
             if (!Arms.namedOwner(reads.get(0).location())) {
                 if (aliasingNamed.add(entry.getKey())) {
                     composer.gap(GapKind.DECLARATION_MISSING,
@@ -1032,25 +863,21 @@ final class ComposedFamilies {
                     reads.get(0).observedVersion())) {
                 if (replacing.contains(arm.sessionId())) continue;
                 if (arm.producer() == null) continue;
-                // The OBSERVED writer is stated whatever it is -- it is
-                // what the run did -- so an unattested one reaches the
-                // formula, and no witness may move a root inside it.
+                // The OBSERVED writer is stated even if unattested.
                 if (!arm.attested()) {
                     noteUnattested(arm, "the arm states what it wrote and "
                             + "not why, so no witness may move a root "
                             + "inside it");
                 }
-                // Reached and recorded whether or not a case split
-                // follows: WHICH writers a location had is what the rows
-                // state, and the unattested-arm gate reads this set.
+                // Recorded even without a case split: the unattested-arm
+                // gate reads this set.
                 reached.add(arm.slotId());
                 families.put(arm.slotId(), Family.of(arm.slotId(),
                         Collections.singletonList(row(arm))));
                 found.add(arm);
             }
             fileRefusals();
-            // One arm is the run's own interleaving and says nothing the
-            // join has not already said.
+            // One arm is the run's own interleaving: the join says it.
             if (found.size() < 2) continue;
             chosen.addAll(symbols);
             List<String> writers = new ArrayList<String>();
@@ -1111,12 +938,8 @@ final class ComposedFamilies {
     }
 
     /**
-     * One export's expression, lowered in its own session's scope.
-     *
-     * <p>Its own session: the identities inside it are that execution's
-     * objects, and the reads inside it join to that execution's write log.
-     * An arm lowered in the consumer's scope would state one replay's
-     * history of another replay's objects.</p>
+     * One export's expression, lowered in its OWN session's scope: its
+     * identities and reads belong to that execution, not the consumer's.
      */
     Term lower(String session, ExportRow export, String origin) {
         return lower(session, export.expressionRef(), origin);
@@ -1128,10 +951,7 @@ final class ComposedFamilies {
         JsonObject expression = reader.expressions()
                 .expression(expressionRef);
         if (expression == null) {
-            // Same inconsistency as the state join's, and the same class:
-            // a row of this corpus cites an expression the corpus does not
-            // contain, so what it stands for is not composable from these
-            // sessions at all.
+            // A row cites an expression the corpus does not hold.
             composer.gap(GapKind.UNSTATED_VALUE, GapClass.BLOCKING, expressionRef,
                     "a row of session " + session + " cites an expression "
                             + "its session's table does not hold");

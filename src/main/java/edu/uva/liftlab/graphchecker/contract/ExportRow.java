@@ -3,17 +3,10 @@ package edu.uva.liftlab.graphchecker.contract;
 import java.util.Objects;
 
 /**
- * CONTRACT-SPEC 2: a value a producer endpoint put on the wire.
- *
- * <p>{@code expressionRef} names the propagated expression {@code e_p} in the
- * session's {@link ExpressionTable}; {@code handle} and the exchange
- * correlation id are the within-run pairing evidence an attach joins on.</p>
- *
- * <p>{@code seq} places the export in its session's event order, which is where
- * the producer's path condition is cut; {@code javaType} is the JVM descriptor
- * of the exported value ({@code I}, {@code J}, {@code Z},
- * {@code Ljava/lang/String;}), so a solver takes the sort from the declaration
- * instead of inferring it from the recorded characters.</p>
+ * CONTRACT-SPEC 2: a value a producer endpoint put on the wire, {@code e_p}
+ * in the {@link ExpressionTable}.  {@code seq} is where the producer's path
+ * condition is cut; the sort comes from {@code javaType}, never from the
+ * recorded characters.
  */
 public final class ExportRow {
     private final String sessionId;
@@ -51,7 +44,6 @@ public final class ExportRow {
         return sessionId;
     }
 
-    /** Where this export falls in its session's event order. */
     public long seq() {
         return seq;
     }

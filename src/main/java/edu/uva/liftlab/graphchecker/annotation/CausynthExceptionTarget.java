@@ -7,18 +7,10 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
 /**
- * Marks the exact exception construction that starts a Causynth analysis.
- *
- * <p>Java does not permit annotations directly on a {@code throw} statement,
- * so this annotation targets the constructed exception type:</p>
- *
- * <pre>{@code
- * throw new @CausynthExceptionTarget("request-failure") RequestException();
- * }</pre>
- *
- * <p>The marker is retained in the class file and has no runtime behavior.
- * The optional value is only needed when one analyzed class tree contains
- * more than one marked target.</p>
+ * Marks the exception construction that starts a Causynth analysis (a
+ * {@code throw} cannot be annotated, so it goes on the type):
+ * {@code throw new @CausynthExceptionTarget("id") E();}.  Class-retained, no
+ * runtime behavior; the value is needed only with several targets.
  */
 @Documented
 @Retention(RetentionPolicy.CLASS)

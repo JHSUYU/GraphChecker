@@ -22,71 +22,39 @@ import java.util.Set;
 
 /**
  * What the static slice knows about the sites the target's demand can reach:
- * one artifact, one row shape (CLOSURE-V2 SS4).
- *
- * <p>The demand is DYNAMIC -- it starts at the values the fatal predicate
- * read in a replay -- so this side publishes only what a program text can
- * state and exploration joins the two:</p>
+ * one artifact, one row shape (CLOSURE-V2 SS4). The demand is dynamic, so this
+ * side publishes only what program text states; exploration joins the two.
  *
  * <ul>
- *   <li>{@code WRITE_SITE}: a site that stores into a declared field the
- *       slice named, with the field it stores into ({@code carrier}), the
- *       leaf the VM tracks versions of ({@code cell}), and the region that
- *       would run it.  This generalises {@code declaredInputCells ->
- *       observedWriteSites} (REPORT-P2N) from the cells an experiment
- *       declares to every cell the slice names: the slice is already the
- *       backward cone of the annotated target, so a cell it mentions is
- *       target-relevant by construction and nothing here re-decides
- *       that.</li>
- *   <li>{@code EXPORT_SITE}: a site that defines the value of a declared
- *       wire port, with that {@code portId} -- the producer half of an
- *       interaction whose consumer attaches the port.</li>
- *   <li>{@code DECLARED_SITE}: a site where a value enters the program from
- *       outside the slice's own text and the campaign may therefore have
- *       DECLARED it symbolic -- a structural field accessor's return
- *       ({@code declaredKind} {@code ACCESSOR_RETURN}) or an external
- *       call's return ({@code CALL_RETURN}), including the workload's own
- *       fault markers ({@code Debug.makeSymbolicBoolean}, declared by the
- *       program text).  It carries the whole static
- *       half of the port such a declaration mints: the {@code
- *       declaredCallee}, the {@code implementationMethod} that answers it,
- *       the {@code cell} the declaration names, the {@code dependencyCell}
- *       the value lands in after Soot's exact-copy renaming, the {@code
- *       javaType} and the candidate {@code edgeId} the row was read from.
- *       Scope, not admission: {@code ConcolicScheduler
- *       .SymbolicInputSelection} is the ONE rule that decides which of
- *       these the case declared, and a row here decides nothing.</li>
+ *   <li>{@code WRITE_SITE}: a store into a declared field the slice names,
+ *       with its {@code carrier} field, versioned leaf {@code cell} and region
+ *       (generalises REPORT-P2N's {@code observedWriteSites} to every cell of
+ *       the slice).</li>
+ *   <li>{@code EXPORT_SITE}: defines the value of a declared wire port
+ *       ({@code portId}), the producer half of an interaction.</li>
+ *   <li>{@code DECLARED_SITE}: a value entering from outside the slice's
+ *       text that a case may declare symbolic -- an {@code ACCESSOR_RETURN} or
+ *       a {@code CALL_RETURN} (incl. {@code Debug.makeSymbolicBoolean} fault
+ *       markers) -- with the static half of the port it would mint ({@link
+ *       Declared}). Scope only: {@code ConcolicScheduler
+ *       .SymbolicInputSelection} alone decides admission.</li>
  *   <li>{@code TARGET_SITE}: the annotated throw the slice starts at.</li>
- *   <li>{@code ROOT_SITE}: where a root cell is DEFINED -- for a
- *       {@code <callee>.return} cell, every call site of it the slice
- *       reaches, with the {@code local} the return lands in.  That is what
- *       INSTRUMENT binds a {@code LOCAL_DEFINITION} symbol at, and it
- *       replaces {@code ConcolicScheduler.DefinitionIndex.returnSites},
- *       which read the same static fact off the runtime-refined graph.  It
- *       names the REGION that would run it, like every other row and by
- *       the same rule ({@link #holders}, the innermost retained region
- *       holding the method): WHICH activation a root is minted at is what
- *       makes a mint address the same in the seed and in a replay, and a
- *       row that named no region left that to whichever activation happened
- *       to be innermost when the site ran.</li>
+ *   <li>{@code ROOT_SITE}: each reached call site defining a {@code
+ *       <callee>.return} cell, with the {@code local} it lands in (where
+ *       INSTRUMENT binds a {@code LOCAL_DEFINITION}). It names its region by
+ *       {@link #holders}, so a mint address is the same in seed and
+ *       replay.</li>
  * </ul>
  *
- * <p>Every row carries {@code guards}: the branch sites its own site is
- * control-dependent on, by post-dominance in the enclosing method's CFG
- * (CLOSURE-V2 SS1).  That is the set exploration may flip for the occurrence
- * the row names -- the target's guards for the anchor, a writer's own guards
- * for a writer -- and it is computed where the CFG is
- * ({@link edu.uva.liftlab.graphchecker.causynth} has Soot; this class takes
- * the answer through {@link Guards}).</p>
+ * <p>Every row carries {@code guards}: the branch sites it is control-dependent
+ * on by post-dominance (CLOSURE-V2 SS1), i.e. what exploration may flip;
+ * computed where Soot is, supplied via {@link Guards}.</p>
  *
- * <p>Scoping only.  No row here says what any site wrote, which value any
- * port carried, or which occurrence ran: those are the recording's to
- * state.</p>
+ * <p>Scoping only: never what a site wrote, a port carried, or which occurrence
+ * ran.</p>
  */
 public final class StaticScopeMap {
-    /** The file this map is published as, beside the other plan artifacts. */
     public static final String FILE = "static_scope_map.jsonl";
-    /** Kind of every other row: one site, one shape. */
     public static final String SITE_KIND = "STATIC_SCOPE_SITE";
     public static final int SCHEMA_VERSION = 1;
 
@@ -96,22 +64,20 @@ public final class StaticScopeMap {
     public static final String ROOT_SITE = "ROOT_SITE";
     public static final String DECLARED_SITE = "DECLARED_SITE";
 
-    /** {@code declaredKind} of a DECLARED_SITE: a structural field accessor's
-     *  return, whose cell is the field it reads. */
+    /** {@code declaredKind}: a field accessor's return; its cell is the field.
+     */
     public static final String ACCESSOR_RETURN = "ACCESSOR_RETURN";
-    /** {@code declaredKind} of a DECLARED_SITE: an external call's return,
-     *  whose cell is the callee's own {@code .return}. */
+    /** {@code declaredKind}: an external call's return; its cell is {@code
+     *  <callee>.return}. */
     public static final String CALL_RETURN = "CALL_RETURN";
 
     /** A Jimple local cell: {@code <method>::local[#suffix]}. */
     private static final java.util.regex.Pattern LOCAL_CELL =
             java.util.regex.Pattern.compile("^(<.+>)::([^#]+)(?:#.*)?$");
 
-    /** Graph edge kinds that store into a location. */
     private static final String[] WRITE_KINDS = {"field_write",
             "field_mutation", "container_mutation_argument",
             "container_call_mutation_effect", "container_array_store_value"};
-    /** The graph edge that names the annotated target. */
     private static final String THROW_KIND = "exception_throw";
 
     /** The guard set of one site, asked of the stage that has the CFG. */
@@ -120,16 +86,9 @@ public final class StaticScopeMap {
         List<Guard> of(String siteId);
     }
 
-    /**
-     * One branch a site is control-dependent on, with the arm that reaches
-     * the site.
-     *
-     * <p>The arm is the site's fatal polarity when the site is the annotated
-     * throw: post-dominance keeps a branch exactly when one of its arms makes
-     * the site unavoidable and another does not, so that arm is the one a
-     * replay must take to reach it.  {@code null} means the branch is not
-     * binary (a switch), where no single boolean names an arm.</p>
-     */
+    /** One branch a site is control-dependent on, with the arm that reaches it
+     *  (for the annotated throw, the fatal polarity). {@code null} outcome: not
+     *  binary (a switch). */
     public static final class Guard {
         private final String siteId;
         private final Boolean outcome;
@@ -139,12 +98,10 @@ public final class StaticScopeMap {
             this.outcome = outcome;
         }
 
-        /** The branch site. */
         public String siteId() {
             return siteId;
         }
 
-        /** The arm of this branch that reaches the guarded site, or null. */
         public Boolean outcome() {
             return outcome;
         }
@@ -160,25 +117,22 @@ public final class StaticScopeMap {
         public final String role;
         public final String regionId;
         public final String siteId;
-        /** The method half of the site as the VM spells an endpoint site. */
+        /** The method half of the site as the VM spells it. */
         public final String vmSite;
-        /** The cell the VM keeps versions of, for a WRITE_SITE. */
+        /** WRITE_SITE: the leaf the VM versions. */
         public final String cell;
         /** The declared field that owns {@link #cell}. */
         public final String carrier;
-        /** The declared wire port, for an EXPORT_SITE. */
         public final String portId;
-        /** The callee that performs the store, for a WRITE_SITE. */
+        /** WRITE_SITE: the callee that performs the store. */
         public final String declaredCallee;
-        /** The local the value lands in, for a ROOT_SITE. */
+        /** ROOT_SITE: the local the value lands in. */
         public final String local;
-        /** The static half of a DECLARED_SITE, or null for every other role. */
+        /** DECLARED_SITE's static half; null otherwise. */
         public final Declared declared;
         public final List<String> guards;
-        /**
-         * The arm of each {@link #guards} entry that reaches this site, in
-         * the same order; an entry is null when the branch is not binary.
-         */
+        /** Arm of each {@link #guards} entry reaching this site; null if not
+         *  binary. */
         public final List<Boolean> guardOutcomes;
 
         Site(String role, String regionId, String siteId, String vmSite,
@@ -238,23 +192,14 @@ public final class StaticScopeMap {
         }
     }
 
-    /**
-     * The static half of one DECLARED_SITE.
-     *
-     * <p>Every member is read off the candidate edge the row was published
-     * from, so a port minted at this site carries the same static values
-     * whichever stage assembles it.</p>
-     */
+    /** The static half of one DECLARED_SITE, read off its candidate edge. */
     public static final class Declared {
-        /** {@link #ACCESSOR_RETURN} or {@link #CALL_RETURN}. */
         public final String kind;
-        /** The candidate edge this site was read from. */
         public final String edgeId;
-        /** The cell the value lands in: the edge's {@code toCell}. */
+        /** The cell the value lands in (the edge's {@code toCell}). */
         public final String dependencyCell;
-        /** The method that answers the call, for an accessor. */
+        /** For an accessor: the method that answers the call. */
         public final String implementationMethod;
-        /** The declared type of the value the site produces. */
         public final String javaType;
 
         public Declared(String kind, String edgeId, String dependencyCell,
@@ -271,28 +216,14 @@ public final class StaticScopeMap {
         }
     }
 
-    /** Where PLAN publishes the region skeletons, beside {@link #FILE}. */
+    /** Region skeletons, published beside {@link #FILE}. */
     public static final String REGIONS = "region_skeletons.jsonl";
 
     private final List<Site> sites;
-    /**
-     * What each retained region HOLDS: its method set, as the skeleton row
-     * states it.
-     *
-     * <p>The same {@code Region} rows {@link #holders} reads, kept because a
-     * reader of the published map has to ask the other direction of the same
-     * relation: {@code holders} answers "which region runs this method,
-     * innermost first", and a stage joining a static site to an occurrence
-     * has the OCCURRENCE's region and needs to know whether it holds the
-     * site's method ({@code explore.ClosurePlanner#candidates}).  Under the
-     * fold rule a site of region R is recorded under an occurrence of the
-     * enclosing R' that holds it, and equality of region ids cannot see
-     * that.</p>
-     *
-     * <p>Empty when the map was read without its skeletons beside it, which
-     * is what makes the join fall back to equality rather than answer "this
-     * region holds nothing".</p>
-     */
+    /** Method set of each retained region: the reverse of {@link #holders}.
+     *  Needed because under the fold rule a site of region R is recorded under
+     *  an enclosing R' ({@code explore.ClosurePlanner#candidates}), which
+     *  region-id equality cannot see. Empty when skeletons were absent. */
     private final Map<String, Set<String>> regionMethods;
 
     private StaticScopeMap(List<Site> sites) {
@@ -305,14 +236,9 @@ public final class StaticScopeMap {
         this.regionMethods = Collections.unmodifiableMap(regionMethods);
     }
 
-    /**
-     * The methods one retained region holds, or an empty set.
-     *
-     * <p>Empty means "this map cannot say", never "this region holds
-     * nothing": a map read without its skeletons beside it knows no region
-     * at all, and a caller joining through this has to tell the two apart
-     * (it falls back to comparing region ids).</p>
-     */
+    /** Methods one retained region holds; empty means "cannot say" (no
+     *  skeletons), never "holds nothing" -- callers then fall back to comparing
+     *  region ids. */
     public Set<String> methodsOf(String regionId) {
         Set<String> methods = regionMethods.get(
                 regionId == null ? "" : regionId);
@@ -322,11 +248,10 @@ public final class StaticScopeMap {
     // ---- building (PLAN) ----------------------------------------------
 
     /**
-     * Every site the slice names, before its guards are computed.
+     * Every site the slice names, before guards are computed.
      *
      * @param edges   the candidate graph's rows
-     * @param regions the region skeletons: {@code regionId}, {@code methods}
-     *                and the declared ports of each
+     * @param regions region skeletons: {@code regionId}, {@code methods}, ports
      */
     public static List<Site> sites(List<Map<String, Object>> edges,
                                    List<Map<String, Object>> regions) {
@@ -335,22 +260,13 @@ public final class StaticScopeMap {
     }
 
     /**
-     * The same sites, with the declared callees stated rather than read from
-     * the configuration.
+     * As above with the declared callees stated.
      *
-     * @param declaredCallees the case's {@code symbolic-inputs.jsonl}
-     *                        callees, which is what bounds the
-     *                        {@code CALL_RETURN} half of DECLARED_SITE: a
-     *                        candidate graph has one {@code call_return}
-     *                        edge per call of the slice (692 on hdfs-17960)
-     *                        and only a callee the case names can ever be a
-     *                        root, so publishing the rest would be scope the
-     *                        admission rule has nothing to say about.  The
-     *                        {@code ACCESSOR_RETURN} half is bounded by the
-     *                        edge kind itself -- a structural field accessor
-     *                        of a primitive field, 96 and 39 edges -- and is
-     *                        published whole, because a cell declaration
-     *                        names no callee for this side to filter on.
+     * @param declaredCallees the case's declared
+     *                        callees; they bound the {@code CALL_RETURN} rows
+     *                        (only a named callee can be a root). {@code
+     *                        ACCESSOR_RETURN} rows are bounded by edge kind and
+     *                        published whole.
      */
     public static List<Site> sites(List<Map<String, Object>> edges,
                                    List<Map<String, Object>> regions,
@@ -409,7 +325,7 @@ public final class StaticScopeMap {
         return found;
     }
 
-    /** Every site id whose guard set the map states. */
+    /** Every site id in {@code sites}. */
     public static Set<String> siteIds(Collection<Site> sites) {
         Set<String> ids = new LinkedHashSet<String>();
         for (Site site : sites) ids.add(site.siteId);
@@ -475,15 +391,8 @@ public final class StaticScopeMap {
         return row;
     }
 
-    /**
-     * The ROOT_SITE row of one edge that DEFINES a local from a call return.
-     *
-     * <p>The rule {@code ConcolicScheduler.DefinitionIndex} applied to the
-     * refined graph, applied here to the candidate graph it was already a
-     * static fact of: the edge's target is a local of the edge's own method,
-     * the edge is that local's definition site, and its source is a
-     * {@code <callee>.return} cell.</p>
-     */
+    /** ROOT_SITE rows of an edge defining a local of its own method from a
+     *  {@code <callee>.return} cell. */
     private static void addRootSite(List<Site> into, Set<String> seen,
                                     List<Region> retained,
                                     Map<String, Object> edge, String method,
@@ -495,12 +404,8 @@ public final class StaticScopeMap {
                 text(edge.get("toCell")));
         if (!local.matches() || !local.group(1).equals(method)) return;
         String siteId = SiteId.of(method, unitIndex);
-        // One row per REGION that would run it, as every other role is
-        // published: two regions neither of which contains the other are
-        // both named, because nothing here may choose between them.  A
-        // method no retained region holds is a definition site outside
-        // every region, and it is published once with no region -- the
-        // fact is still about the method.
+        // One row per innermost holding region (never choose between siblings);
+        // a method no region holds is published once with region "".
         List<String> owners = new ArrayList<String>(
                 holders(retained, method));
         if (owners.isEmpty()) owners.add("");
@@ -516,25 +421,11 @@ public final class StaticScopeMap {
         }
     }
 
-    /**
-     * The DECLARED_SITE row of one candidate edge that produces a value from
-     * outside the slice's own text.
-     *
-     * <p>Three edge kinds, one row family.  An {@code accessor_field_return}
-     * edge is a closed-world structural getter of a declared field, so the
-     * cell a declaration would name is the field and the value lands in the
-     * edge's {@code toCell}.  A {@code call_return} edge of a DECLARED
-     * callee is the callee's own {@code .return} cell, and only when no
-     * retained region holds the callee: a callee that is itself a region
-     * publishes its own rows, and minting a call-result symbol beside them
-     * would give one value two authorities.  An {@code
-     * explicit_symbolic_fault} edge is the same call-return shape for the
-     * one callee the workload declares in its own text, the fault marker:
-     * its {@code boolean} return is the root the replay flips.</p>
-     *
-     * <p>Every value here is the program text's.  Whether the site ran, how
-     * often, and what it returned are the recording's to state, and no row
-     * of this map says any of it.</p>
+    /** DECLARED_SITE rows of one candidate edge producing a value from outside
+     *  the slice's text: {@code accessor_field_return} (cell = the field);
+     *  {@code call_return} of a declared callee no region holds (a region
+     *  callee already publishes rows; two authorities for one value is the
+     *  trap); and {@code explicit_symbolic_fault}, the workload's fault marker.
      */
     private static void addDeclaredSite(
             List<Site> into, Set<String> seen, List<Region> retained,
@@ -584,20 +475,9 @@ public final class StaticScopeMap {
         }
     }
 
-    /**
-     * The type of the value a DECLARED_SITE produces: the field's own type
-     * for an accessor, the callee's return type for a call.
-     *
-     * <p>A Soot signature spells both the same way -- {@code <owner: type
-     * rest>} -- so one read answers both, and a site whose type is not a
-     * primitive states none: a non-primitive return is not a leaf the SMT
-     * layer has a term for, and the admission rule refuses it anyway.</p>
-     */
-    /**
-     * Whether a marker is one of the case's fault points: a door fault
-     * ({@code FAULT:<TRANSPORT>:<DIRECTION>}) when the case maps that
-     * transport; any other name is the workload's own declaration.
-     */
+    /** Whether a marker is a case fault point: a door fault ({@code
+     *  FAULT:<TRANSPORT>:<DIRECTION>}) on a mapped transport; any other name is
+     *  the workload's own declaration. */
     static boolean declaredFault(String name) {
         if (!name.startsWith("FAULT:")) return true;
         String[] parts = name.split(":", -1);
@@ -605,6 +485,8 @@ public final class StaticScopeMap {
                 .WireFlowCatalog.declaredTransports().contains(parts[1]);
     }
 
+    /** Primitive type of a declared site's value (field or callee return), else
+     *  "". */
     private static String declaredType(String cell, String callee,
                                        String kind) {
         String signature = "accessor_field_return".equals(kind)
@@ -618,7 +500,6 @@ public final class StaticScopeMap {
         return PRIMITIVE_TYPES.contains(type) ? type : "";
     }
 
-    /** The value types the SMT layer has a term for at a declared site. */
     private static final Set<String> PRIMITIVE_TYPES =
             Collections.unmodifiableSet(new LinkedHashSet<String>(
                     java.util.Arrays.asList("boolean", "byte", "char",
@@ -653,7 +534,6 @@ public final class StaticScopeMap {
         return false;
     }
 
-    /** One region skeleton: what it is called and what it holds. */
     private static final class Region {
         private final String regionId;
         private final Set<String> methods;
@@ -691,19 +571,10 @@ public final class StaticScopeMap {
         return regions;
     }
 
-    /**
-     * The region that would run one method: the INNERMOST retained region
-     * holding it.
-     *
-     * <p>Regions nest -- the RPC handler's region holds every method the
-     * handler reaches -- and the recording attributes an event to the
-     * innermost activation that contains it, so a candidate published under
-     * an enclosing region would name every occurrence of the whole request
-     * as a writer of one field.  Innermost is minimality under set
-     * inclusion, which is a fact about the two method sets and not a
-     * ranking; two regions neither of which contains the other are both
-     * published, because nothing here may choose between them.</p>
-     */
+    /** The INNERMOST retained regions holding one method. The recording
+     *  attributes an event to the innermost activation, so an enclosing region
+     *  would name every occurrence of the request as a writer. Innermost is set
+     *  inclusion, not a ranking; incomparable regions are all returned. */
     private static List<String> holders(List<Region> retained, String method) {
         List<Region> holding = new ArrayList<Region>();
         for (Region region : retained) {
@@ -727,7 +598,7 @@ public final class StaticScopeMap {
 
     // ---- reading and joining (EXPLORE) --------------------------------
 
-    /** The published map, or an empty one when the epoch published none. */
+    /** The published map, or empty when the epoch published none. */
     public static StaticScopeMap read(Path file) throws IOException {
         if (file == null || !Files.isRegularFile(file)) return empty();
         List<Site> sites = new ArrayList<Site>();
@@ -763,17 +634,9 @@ public final class StaticScopeMap {
         return new StaticScopeMap(sites, readRegions(file));
     }
 
-    /**
-     * What each region holds, from the skeleton file PLAN writes beside the
-     * map.
-     *
-     * <p>Beside it, and not from a second option: {@link #FILE} and {@link
-     * #REGIONS} are written into one directory by one stage, so a map that
-     * was found has its skeletons unless the epoch published none -- and an
-     * epoch that published none answers the empty map, which is what makes
-     * the join fall back rather than refuse.  Both spellings are read, since
-     * the discovery pass gzips its copy.</p>
-     */
+    /** Region method sets from the skeletons PLAN wrote beside the map (plain
+     *  or gzipped). None beside it: empty, and the join falls back to region
+     *  ids. */
     private static Map<String, Set<String>> readRegions(Path map) {
         Path beside = map.toAbsolutePath().getParent();
         if (beside == null) return Collections.emptyMap();
@@ -796,21 +659,16 @@ public final class StaticScopeMap {
                     methods.put(regionId, Collections.unmodifiableSet(held));
                 }
             } catch (IOException | RuntimeException unreadable) {
-                // PLAN writes the skeleton file beside the map in the one
-                // stage: a file that is there and cannot be read is a
-                // defect of that stage, refused by name -- never a join
-                // quietly comparing region ids instead.
+                // Present but unreadable is a PLAN defect, refused by name.
                 throw new IllegalStateException(
                         "REGION_SKELETONS_UNREADABLE: " + file, unreadable);
             }
             break;
         }
-        // No skeleton beside the map states nothing about any region's
-        // methods; the join then compares region ids (ClosurePlanner.holds).
         return methods;
     }
 
-    /** No map: every join answers nothing, and says so by being empty. */
+    /** No map: every join answers nothing. */
     public static StaticScopeMap empty() {
         return new StaticScopeMap(new ArrayList<Site>());
     }
@@ -819,16 +677,8 @@ public final class StaticScopeMap {
         return !sites.isEmpty();
     }
 
-    /**
-     * The carriers the static slice says one RECORDED write site stores
-     * into.
-     *
-     * <p>The recording names a site the way the VM does -- {@code
-     * class#name(descriptor)ret#bci:WRITE} -- and this map names it the way
-     * Soot does, so the join is the method the two spellings share plus the
-     * type the row was published at: a write row of descriptor {@code I} does
-     * not match a site that stores a map.  A row whose type the recording did
-     * not state is matched on the method alone.</p>
+    /** The carriers the slice says one RECORDED write site stores into, joined
+     *  on the shared method (VM vs Soot spellings) plus the type, when stated.
      */
     public Set<String> carriersAt(String recordedSite, String javaType) {
         Set<String> carriers = new LinkedHashSet<String>();
@@ -849,12 +699,7 @@ public final class StaticScopeMap {
         return carriers;
     }
 
-    /**
-     * Every write site the map states IN THE METHOD of one recorded site.
-     *
-     * <p>The join is the method the two spellings share, so this answers
-     * about the method and not about the bytecode index inside it.</p>
-     */
+    /** Every write site in the METHOD of one recorded site (not the bci). */
     public List<Site> sitesAt(String recordedSite) {
         List<Site> found = new ArrayList<Site>();
         String site = recordedSite == null ? "" : recordedSite;
@@ -867,23 +712,11 @@ public final class StaticScopeMap {
         return found;
     }
 
-    /**
-     * The regions whose text STORES into each location the slice names.
-     *
-     * <p>This is the scoping half of the demand walk, and the only half the
-     * static side owns: a {@code WRITE_SITE} row says this region contains a
-     * store into that location, never that any activation of it stored
-     * anything, and never which of them a read observed.  WHICH activations
-     * ran is the recording's answer and the walk joins the two.</p>
-     *
-     * <p>Both names of a location are keys.  {@code cell} is the leaf the VM
-     * keeps versions of and {@code carrier} the declared field that owns it;
-     * a read reaches one or the other depending on how the slice spelled it,
-     * and one row answers for both.  The row is returned whole, because the
-     * join needs its METHOD as well as its region: an activation of a
-     * writer region that never entered the storing method wrote nothing
-     * there, and the recording says which methods it entered.</p>
-     */
+    /** Regions whose text STORES into each location the slice names, keyed by
+     *  both {@code cell} and {@code carrier}. Scoping only: which activations
+     *  stored is the recording's. Whole rows are returned because the join
+     *  needs the method too (an activation that never entered it wrote
+     *  nothing). */
     public Map<String, List<Site>> writeSitesByCell() {
         Map<String, List<Site>> byCell =
                 new java.util.LinkedHashMap<String, List<Site>>();
@@ -927,16 +760,7 @@ public final class StaticScopeMap {
         return found;
     }
 
-    /**
-     * The stores of a declared cell the replay must observe.
-     *
-     * <p>Scoping only: which sites store into a cell the campaign declared,
-     * never what any of them wrote.  It generalises {@code declaredInputCells
-     * -> observedWriteSites} (REPORT-P2N) to the map, which already names
-     * every write site of the slice with the cell it stores into and the
-     * callee that performs it -- the scheduler used to read the same rows off
-     * the runtime-refined graph's {@code field_mutation} edges.</p>
-     */
+    /** Stores into declared cells the replay must observe (REPORT-P2N). */
     public JsonArray writeSitesOf(Collection<String> declaredCells) {
         JsonArray found = new JsonArray();
         if (declaredCells == null || declaredCells.isEmpty()) return found;
@@ -959,17 +783,12 @@ public final class StaticScopeMap {
         return found;
     }
 
-    /**
-     * The definition sites of one root cell, restricted to the methods a
-     * task instruments.
-     */
+    /** Definition sites of one root cell, within the methods a task
+     *  instruments. */
     public JsonArray rootSitesOf(String cell, Set<String> allowedMethods) {
         JsonArray found = new JsonArray();
         String named = cell == null ? "" : cell;
-        // One row per SITE.  A site two regions both hold is two rows of
-        // this map -- the region is part of a row's identity -- and it is
-        // still one definition site, so a caller planning an action at it
-        // plans one.
+        // One row per site even when several regions hold it.
         Set<String> seen = new LinkedHashSet<String>();
         for (Site site : sites) {
             if (!ROOT_SITE.equals(site.role) || !named.equals(site.cell)) {
@@ -994,16 +813,8 @@ public final class StaticScopeMap {
         return SiteId.methodOf(site.siteId);
     }
 
-    /**
-     * Every site this map names as a place a declared value can enter, in
-     * publication order.
-     *
-     * <p>Role-typed, like every other accessor here: a row of any other role
-     * is not a declared site and can never be returned by this one.  A
-     * declaration is still what decides whether any of these mints -- see
-     * {@link ConcolicScheduler.SymbolicInputSelection} -- and a caller that
-     * wants the recording's side of one asks the recording.</p>
-     */
+    /** Every DECLARED_SITE, in publication order. Whether any mints is {@link
+     *  ConcolicScheduler.SymbolicInputSelection}'s decision. */
     public List<Site> declaredSites() {
         List<Site> found = new ArrayList<Site>();
         for (Site site : sites) {
@@ -1014,18 +825,9 @@ public final class StaticScopeMap {
         return found;
     }
 
-    /**
-     * The declarations of one recorded site and callee, one per candidate
-     * edge they were read from.
-     *
-     * <p>A site several regions hold is several rows of this map -- the
-     * region is part of a row's identity -- and it is still one
-     * declaration, so rows are deduped by the candidate edge they were read
-     * from and a caller minting a port at one site mints one.  WHICH
-     * occurrence owns the read is not this map's answer: the map states
-     * where a declared value can enter the text, and the recording states
-     * which activation actually entered it.</p>
-     */
+    /** The declarations at one site and callee, deduped by candidate edge (a
+     *  site several regions hold is still one declaration). Which occurrence
+     *  owns the read is the recording's answer. */
     public List<Site> declaredSitesAt(String siteId,
                                       String declaredCallee) {
         List<Site> found = new ArrayList<Site>();
@@ -1057,16 +859,10 @@ public final class StaticScopeMap {
         return found;
     }
 
-    // ---- spellings ----------------------------------------------------
 
-    /**
-     * The method half of a site as the VM spells one: {@code
-     * class#name(paramDescriptors)returnDescriptor}.
-     *
-     * <p>This is the whole of the join between a static site and a recorded
-     * endpoint: the runtime states a bytecode index inside that method and
-     * Soot states a unit index, which are two numberings of one method, so
-     * the method is what both sides name the same way.</p>
+    /** A site's method as the VM spells it, {@code
+     *  class#name(paramDescriptors)returnDescriptor}: the whole join between a
+     *  static site and a recorded endpoint (bci and unit index do not compare).
      */
     static String vmSite(String sootSignature) {
         String value = sootSignature == null ? "" : sootSignature.trim();
@@ -1093,40 +889,21 @@ public final class StaticScopeMap {
                 .toString();
     }
 
-    /**
-     * Whether the type a ROW states and the type this MAP states can be
-     * the same type.
-     *
-     * <p>Disagreement, not equality.  The map always spells the field's
-     * exact descriptor; a row spells whatever the VM had -- {@code I},
-     * {@code Lorg/…;}, the bare internal name, or {@code L}, which says
-     * "a reference" and names no class.  Read as equality, every MAP write
-     * row of 11741 -- all 36 of them are {@code L}, because the value a
-     * container store writes is the container -- disagreed with
-     * {@code java.util.Map allKeys}, {@code carriersAt} answered nothing,
-     * and the anchor's own map had no carrier and so no static writer:
-     * {@code DECLARATION_MISSING}, and nn0's expiry branch unreachable
-     * even once the read was demanded.  What two types really disagree
-     * about is the SORT, and the class where both sides name one.</p>
-     */
+    /** Whether a row's type and this map's type can be the same. Disagreement,
+     *  not equality: a row may state only the sort ({@code L} = "a reference"),
+     *  e.g. every container store; equality would drop those writers. Compare
+     *  the sort, and the class only where both name one. */
     private static boolean sameType(String stated, String javaType) {
         String row = rowDescriptor(javaType);
         if (stated.isEmpty() || row.isEmpty()) return true;
         if (stated.charAt(0) != row.charAt(0)) return false;
-        // "L" alone is a reference whose class the row did not state, and a
-        // class nothing names cannot be the wrong one.
+        // Bare "L": the row named no class.
         if (row.length() == 1 || stated.length() == 1) return true;
         return stated.equals(row);
     }
 
-    /**
-     * One ROW's Java type as a descriptor, keeping what it left unstated.
-     *
-     * <p>A descriptor stays one, a bare internal or source class name
-     * becomes one, and the bare sort letters -- {@code L} above all --
-     * stay themselves, because {@code L} is the row saying "a reference"
-     * and not the class {@code L}.</p>
-     */
+    /** A row's type as a descriptor; bare sort letters (notably {@code L}) stay
+     *  as-is. */
     private static String rowDescriptor(String javaType) {
         String type = javaType == null ? "" : javaType.trim();
         if (type.isEmpty() || type.length() == 1) return type;

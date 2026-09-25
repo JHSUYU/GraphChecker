@@ -4,14 +4,9 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * CONTRACT-SPEC 3: one unit of exploration -- one focused occurrence.
- *
- * <p>Everything else in the task's replay runs concretely with its exports
- * recorded and its attaches minting.  {@code factor} names the
- * state-connected co-occurrences that have to run symbolically together (the
- * writers and readers of one location on one node); it is empty for the common
- * case of a single focused region.  There are no companions and no linked
- * slice: the closure decides what is explored, one region at a time.</p>
+ * CONTRACT-SPEC 3: one unit of exploration, one focused occurrence (the rest
+ * runs concretely).  {@code factor}: state-connected co-occurrences run
+ * symbolically with it, usually empty.
  */
 public final class Task {
     private final String taskId;

@@ -50,18 +50,11 @@ public final class JavaPrimitiveSmtSemantics {
     public static final String JAVA_LONG_MAX = "9223372036854775807";
 
     /**
-     * A CLOCK cell's domain: {@code [floor, ceiling]}, a millisecond count
-     * in a Java {@code long}.
-     *
-     * <p>ONE RULE, ONE SPELLING, in both places a clock variable is
-     * declared: the flip query's root facts ({@code explore.FlipQuery}) and
-     * the composition's clock cells ({@code compose.Composer}).  The floor
-     * is what the cell's own execution read -- a clock turned back is no
-     * run of anything, and a replay plants {@code reading + (model -
-     * reading)} at the mint -- and the ceiling is {@link #clockSkewCeiling}.
-     * A floor alone let z3 put nn0's second rotation past {@code 2^63}
-     * (hdfs-11741 campaign #2); a floor of 0 parked 36 models near 1970
-     * (campaign #4).</p>
+     * A CLOCK cell's domain {@code [floor, ceiling]} in ms, the one spelling
+     * for {@code explore.FlipQuery} and {@code compose.Composer}.  The floor
+     * is the cell's own reading (a clock never turns back); the ceiling is
+     * {@link #clockSkewCeiling}.  Both bounds are needed: no ceiling lets z3
+     * pass {@code 2^63}, a floor of 0 lets it park models near 1970.
      */
     public static String clockDomain(String variable, String floor,
                                      String ceiling) {
@@ -69,39 +62,13 @@ public final class JavaPrimitiveSmtSemantics {
                 + " " + ceiling + "))";
     }
 
-    /**
-     * The forward window a clock may move in where the case declares
-     * none: 30 days, the hdfs-11741 owner's ruling ("clocks are flipped
-     * by brute force; no physical meaning is attached to the skew").  A
-     * case that wants another window, or a backward one, declares the
-     * clock root's bounds in its {@code root-domains.jsonl}.
-     */
+    /** Default forward clock window, 30 days; override in root-domains.jsonl. */
     public static final long CLOCK_SKEW_WINDOW_MS = 2592000000L;
 
     /**
-     * The highest instant a query may answer for a cell read at {@code
-     * reading}: {@code reading + } {@link #CLOCK_SKEW_WINDOW_MS}, clamped
-     * to {@code Long.MAX_VALUE}.
-     *
-     * <p>A CEILING OF {@code Long.MAX_VALUE} IS NOT A CEILING.  An expiry
-     * in this codebase is {@code clock + k * interval + lifetime} computed
-     * by the workload in a Java {@code long}, and the SMT lowering states
-     * that sum over the integers, where it cannot wrap.  So a solver handed
-     * {@code [reading, Long.MAX]} can satisfy "this key expired" by putting
-     * the clock close enough to the top that the JVM's own addition
-     * overflows to a negative instant -- and the focused replay then
-     * ADMITS the flip, because the key really was dropped, for a reason no
-     * clock skew ever produces.  hdfs-11741 campaign #5b has one: obligation
-     * {@code 5ad106c42fcf45f6} flips nn0's second rotation at {@code
-     * removeExpiredKeys#u15} ordinal 3 by planting a clock 71,759,447 ms
-     * below {@code Long.MAX_VALUE}, under an expiry of {@code 2 *
-     * keyUpdateInterval + tokenLifetime} = 72,600,000 ms.
-     *
-     * <p>No wall-clock instant moved forward by a month can overflow a
-     * {@code long}.  A reading no row states, or one no {@code long} can
-     * hold, leaves the ceiling at {@code Long.MAX_VALUE}: a window around
-     * an instant nothing states is not a window, and inventing one would
-     * forbid the instant the run actually read.</p>
+     * {@code reading + } {@link #CLOCK_SKEW_WINDOW_MS}.  Trap: never
+     * {@code Long.MAX_VALUE} when a reading exists -- the SMT sum cannot
+     * wrap but the JVM's does, so a flip would be admitted by overflow.
      */
     public static String clockSkewCeiling(String reading) {
         if (reading == null || reading.trim().isEmpty()) {
@@ -161,16 +128,8 @@ public final class JavaPrimitiveSmtSemantics {
     }
 
     /**
-     * One Java type with its descriptor shell removed: THE normalisation.
-     *
-     * <p>{@code Ljava/lang/Integer;} and {@code java/lang/Integer} and
-     * {@code java.lang.Integer} are three spellings of one class, and this
-     * is the one that answers with: the class's own name, dotted, or the
-     * one-character descriptor of a primitive, or an array spelling left as
-     * it was.  It replaces three private copies -- here, in
-     * {@link JavaPrimitiveBoxing} and in {@link JavaContainerTypes} -- whose
-     * callers all key tables by the dotted name, and which differed only in
-     * the order they stripped and dotted in.</p>
+     * THE type-name normalisation (shell removed, dotted), shared by
+     * {@link JavaPrimitiveBoxing} and {@link JavaContainerTypes}.
      */
     public static String typeName(String javaType) {
         String value = javaType == null ? "" : javaType.trim();
@@ -190,27 +149,13 @@ public final class JavaPrimitiveSmtSemantics {
                             "Ljava/lang/Long;", "Ljava/lang/Float;",
                             "Ljava/lang/Double;", "Ljava/lang/Object;")));
 
-    /**
-     * Whether one Java type name IS a primitive.
-     *
-     * <p>Asked where a declaration has to be primitive to be a root the VM
-     * can mint.  It is read off {@link #javaTypeDescriptor}, the one
-     * descriptor function, because "is it primitive" and "what is its
-     * descriptor" are one question asked twice; the runtime carried its own
-     * copy of this under the name {@code primitiveDescriptor}, which is
-     * also what {@link JavaPrimitiveBoxing#primitiveDescriptor} answers
-     * about a WRAPPER -- one name, two questions, three implementations.</p>
-     */
+    /** Whether one Java type name IS a primitive (not a wrapper). */
     public static boolean primitive(String javaType) {
         String descriptor = javaTypeDescriptor(javaType);
         return descriptor.length() == 1 && "ZBCSIJFD".contains(descriptor);
     }
 
-    /**
-     * The closed value range of one integral Java type, as {@code {minimum,
-     * maximum}}, or null when the type names no integral range.  A boolean
-     * is not one: two named values are not a span of values.
-     */
+    /** {@code {min, max}} of one integral type, or null (boolean too). */
     public static BigInteger[] integralRange(String javaType) {
         String descriptor = javaTypeDescriptor(javaType);
         if ("B".equals(descriptor)) {
@@ -253,21 +198,12 @@ public final class JavaPrimitiveSmtSemantics {
     }
 
     /**
-     * Encodes the VM's decimal F/D literal by first asking Java to perform
-     * exactly the same decimal-to-binary conversion used by replay, then
-     * supplying those raw IEEE bits to SMT.
-     */
-    /**
-     * One recorded decimal integer as SMT-LIB spells it, or "" when the text
-     * is not one.  SMT-LIB has no negative numerals, so a negative value is
-     * {@code (- N)}.
+     * One recorded decimal integer as SMT-LIB spells it ({@code (- N)} when
+     * negative), or "" when the text is not one.
      */
     public static String integralLiteral(String value) {
         String text = value == null ? "" : value.trim();
-        // The stricter of the two copies this replaced: a decimal run
-        // longer than any Java integral width could hold is not a literal,
-        // and lowering it would put a number no execution produced into a
-        // query.  Refused as every caller refuses an absent one.
+        // An absurdly long run is no value any execution produced.
         if (text.isEmpty() || text.length() > 1024) return "";
         try {
             java.math.BigInteger number = new java.math.BigInteger(text);
@@ -278,6 +214,7 @@ public final class JavaPrimitiveSmtSemantics {
         }
     }
 
+    /** The VM's F/D literal as raw IEEE bits, parsed exactly as replay does. */
     public static String floatingLiteral(String value, FloatingKind kind) {
         if (kind == null || kind == FloatingKind.NONE || value == null) {
             return null;
@@ -374,10 +311,7 @@ public final class JavaPrimitiveSmtSemantics {
         return null;
     }
 
-    /**
-     * Lowers one Java primitive conversion without introducing a fresh SMT
-     * value.
-     */
+    /** One Java primitive conversion, with no fresh SMT value. */
     public static String primitiveCast(String value, String sourceJavaType,
                                 String targetJavaType) {
         String source = javaTypeDescriptor(sourceJavaType);
@@ -603,14 +537,7 @@ public final class JavaPrimitiveSmtSemantics {
                 + right + " " + bits + "))))", width);
     }
 
-    /**
-     * Exact Java integral division (JLS 15.17.2): the quotient is truncated
-     * toward zero, not floored as SMT-LIB's Euclidean {@code div} is, so the
-     * negative dividend is reflected through zero.  {@code MIN_VALUE / -1}
-     * needs no special case: it produces the mathematical {@code 2^(n-1)},
-     * which the width's wrap turns back into {@code MIN_VALUE}, exactly as
-     * the JVM's overflow rule states.
-     */
+    /** Java {@code /} (JLS 15.17.2): truncates toward zero, unlike SMT div. */
     public static String integralDivision(String left, String right,
                                    IntegralWidth width) {
         return wrap("(let ((java_idiv_a " + left + ")"
@@ -619,13 +546,7 @@ public final class JavaPrimitiveSmtSemantics {
                 + " (- (div (- java_idiv_a) java_idiv_b))))", width);
     }
 
-    /**
-     * Exact Java integral remainder (JLS 15.17.3): {@code a % b} takes the
-     * sign of the dividend, where SMT-LIB's Euclidean {@code mod} is always
-     * non-negative.  Reflecting a negative dividend through zero gives Java's
-     * {@code a - (a / b) * b} for every pair, {@code MIN_VALUE % -1 == 0}
-     * included, and the result never leaves the width.
-     */
+    /** Java {@code %} (JLS 15.17.3): the dividend's sign, unlike SMT mod. */
     public static String integralRemainder(String left, String right,
                                     IntegralWidth width) {
         return wrap("(let ((java_irem_a " + left + ")"
@@ -635,10 +556,8 @@ public final class JavaPrimitiveSmtSemantics {
     }
 
     /**
-     * Definedness of one Java integral {@code /} or {@code %}: a zero divisor
-     * throws {@code ArithmeticException} instead of producing a value, while
-     * SMT-LIB leaves division by zero uninterpreted, so the divisor must be
-     * stated non-zero rather than left for the solver to choose.
+     * Definedness of Java {@code /} or {@code %}: the divisor is non-zero
+     * (SMT-LIB leaves division by zero uninterpreted; Java throws).
      */
     public static String integralDivisorDefined(String right) {
         BigInteger literal = integerLiteral(right);
@@ -662,11 +581,7 @@ public final class JavaPrimitiveSmtSemantics {
                 "cannot lower an ambiguous integral bit operation");
     }
 
-    /**
-     * Normalize the concolic VM's expression-IR spelling to Java's spelling.
-     * The VM deliberately serializes {@code iushr}/{@code lushr} as
-     * {@code >>u}; Java source and the SMT lowering use {@code >>>}.
-     */
+    /** The VM spells {@code iushr}/{@code lushr} as {@code >>u}; Java as {@code >>>}. */
     public static String canonicalVmOperator(String operator) {
         return ">>u".equals(operator) ? ">>>" : operator;
     }
@@ -722,7 +637,7 @@ public final class JavaPrimitiveSmtSemantics {
         }
     }
 
-    /** This class's question: the descriptor, with its shell removed. */
+    /** The descriptor, with its shell removed. */
     private static String normalize(String javaType) {
         return typeName(javaTypeDescriptor(javaType));
     }

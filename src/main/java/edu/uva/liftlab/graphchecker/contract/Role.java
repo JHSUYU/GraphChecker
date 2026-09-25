@@ -4,26 +4,10 @@ import java.util.Locale;
 import java.util.Objects;
 
 /**
- * CONTRACT-SPEC 1: the scope KIND a lineage hop ran under, as the workload
- * declares it.
- *
- * <p>One string, carried. It used to be a closed enum whose constants were
- * Hadoop concepts -- {@code IPC_HANDLER}, {@code DATA_XCEIVER}, {@code
- * BP_SERVICE_ACTOR}, {@code SPS}, {@code BALANCER}, {@code HEARTBEAT_TICK},
- * {@code KEY_MANAGER_TICK} -- which put a deployment's vocabulary in engine
- * code and forced every new kind through a mapping table. The workload
- * already says which kind a scope is: the transport it names at an exchange,
- * the role it names when it enters a carried scope, the role it names at a
- * daemon tick. That declaration IS the role.</p>
- *
- * <p>Three kinds are the engine's own and are named here because nothing
- * declares them: {@link #CLIENT}, the workload's own action at the root of a
- * request; {@link #EXECUTOR_TASK}, work a JDK executor ran; and {@link
- * #UNKNOWN}, what a hop degrades to when this run could attribute it to
- * nothing, published as {@link CausalContext.Lost} rather than guessed.</p>
- *
- * <p>Roles are never thread ids or thread names: those are timing facts no
- * replay can be held to (IDENTITY-V3 §1).</p>
+ * CONTRACT-SPEC 1: the scope kind a lineage hop ran under, as the workload
+ * declares it (no deployment vocabulary in engine code).  Only the engine's
+ * own kinds are constants.  Never a thread id or name: those are timing
+ * facts (IDENTITY-V3 §1).
  */
 public final class Role {
     /** A hop this run could not attribute; the address says so. */
@@ -40,15 +24,8 @@ public final class Role {
     }
 
     /**
-     * The role one declared name spells.
-     *
-     * <p>Total by construction, because this runs inside instrumentation: a
-     * refusal here would throw out of the engine into the workload. A name
-     * nothing declared is {@link #UNKNOWN}, and a declared name is spelled
-     * upper-case over {@code [A-Z0-9_]} so that it is one token of a
-     * rendered address ({@code Root:<role>#k}) whichever way the workload
-     * wrote it. The same normalisation runs in the recording and in every
-     * replay, which is what makes the address they compute the same one.</p>
+     * The role one declared name spells, upper-cased over {@code [A-Z0-9_]}.
+     * Total, since it runs inside instrumentation; empty is {@link #UNKNOWN}.
      */
     public static Role of(String declared) {
         String name = normalized(declared);

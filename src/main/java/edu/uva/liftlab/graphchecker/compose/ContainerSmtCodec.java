@@ -33,14 +33,8 @@ public final class ContainerSmtCodec {
     }
 
     /**
-     * The version a read node observed, as the one-element list the codec
-     * projects through.
-     *
-     * <p>A read names the version it saw and nothing about the versions it
-     * did not.  It used to name every version retained at it and leave the
-     * choice to a solver; that candidate set was the stitcher's, and the
-     * list here is one long because a read inside one replay has one
-     * answer.</p>
+     * The version a read node observed, as a one-element list: a read inside
+     * one replay has one answer.
      */
     private static JsonArray readVersions(JsonObject read) {
         JsonObject observed = JsonFields.object(read,
@@ -50,16 +44,7 @@ public final class ContainerSmtCodec {
         return versions;
     }
 
-    /**
-     * Writes the projected version back onto the read node.
-     *
-     * <p>A read names the one version it observed, so there is one to write
-     * back.  The member used to be chosen -- {@code observedVersion} for a
-     * node on this schema, {@code candidates} for one still carrying the
-     * alternatives -- and during the changeover both shapes were read.  The
-     * VM does not publish the older shape any more, so there is one member
-     * and no choice to make.</p>
-     */
+    /** Writes the projected version back as the read's observedVersion. */
     private static void putVersions(JsonObject projected,
                                     JsonArray versions) {
         projected.add(VmRows.OBSERVED_VERSION,
@@ -127,51 +112,32 @@ public final class ContainerSmtCodec {
      * One field projection, by the one rule both queries lower it under:
      * JOIN, then PIN, then REFUSE by name.
      *
-     * <p>JOIN is the read's own {@code observedVersion}, and the VM
-     * publishes it ON the value it states: {@code concreteValue} for a
+     * <p>JOIN: the read's {@code observedVersion}; {@code concreteValue} of a
      * primitive read is the read node itself, so the guarded-read lowering
-     * joins it to the version's expression -- which is what carries a value
-     * from a root, or from a handoff variable, through the object it was
-     * stored in and on to the branch that reads it.</p>
-     *
-     * <p>PIN is what that pair states when the log covers no version: the
-     * object read from and what its field then held.  A reference-typed
-     * read states the same pair as a primitive one -- {@code concreteOwner}
-     * and {@code concreteValue} in the VM's rid spelling, or {@code "N"} for
-     * null -- so the host mints the SAME identity name for the object read
-     * as it does for an owner of that identity, and one read's reference can
-     * be equated with another read's owner.  There is one step: a value the
-     * host refuses is refused, never replaced by a second guess.</p>
-     *
-     * <p>REFUSE is the rest.  Neither query may leave a projection free: an
-     * accessor over an uninterpreted Ref is a function the solver may define
-     * however it likes, which lets a model hold by a value no execution
-     * produced -- a composed query answered that way names no cause, and a
-     * flip model answered that way is not materializable.  So a projection
-     * with no stated value is refused by name, in the composition and in the
-     * flip query alike.</p>
+     * carries a root or handoff value through the object it was stored in.
+     * PIN: with no version logged, the stated pair {@code concreteOwner} /
+     * {@code concreteValue} (rid spelling, {@code "N"} for null), so a read's
+     * reference and another read's owner mint the same identity name; a
+     * value the host refuses is refused, never re-guessed.  REFUSE: anything
+     * else -- a free accessor over an uninterpreted Ref lets a model hold by
+     * a value no execution produced.</p>
      */
     public static Term field(JsonObject expression, Host host) {
         String ownerClass = optionalString(expression, "ownerClass");
         String javaType = optionalString(expression, "_java_type");
-        // The owner term is the projection in exactly one case, and is
-        // asked for in no other: lowering it would lower the whole read
-        // chain the owner came out of, and a refusal anywhere inside that
-        // chain refuses a projection this node states exactly.
+        // The owner term is lowered only for a boxed payload: lowering it
+        // otherwise drags in the owner's read chain and its refusals.
         Sort boxed = boxedPayloadSort(ownerClass, javaType);
         if (boxed != null) {
             Term owner = host.operand(expression.get("owner"), Sort.REF);
             if (owner == null) return null;
             if (owner.sort == boxed) return owner;
         }
-        // Both members are written together by the VM or not at all; a
-        // half-present pair is a payload this codec does not recognise and
-        // is refused rather than guessed at.
+        // The VM writes both members or neither; a half pair is refused.
         JsonElement concreteOwner = expression.get("concreteOwner");
         JsonElement concreteValue = expression.get("concreteValue");
         if (stated(concreteOwner) && stated(concreteValue)) {
-            // No expectation: the observed value carries its own Java type
-            // and the host's own table is the authority on its sort.
+            // No expectation: the host's table decides the value's sort.
             return host.operand(concreteValue, null);
         }
         host.unsupported(UNSTATED_FIELD_PROJECTION + ownerClass + "@"
@@ -186,12 +152,9 @@ public final class ContainerSmtCodec {
     }
 
     /**
-     * The sort a boxed primitive's payload field holds, or null.
-     *
-     * <p>{@code Integer.value} IS the int the box holds, so a read of it is
-     * the owner term itself -- the one field whose projection is the object
-     * it was read from.  The sort answered here is the sort that owner must
-     * already have lowered to; anything else is not that box.</p>
+     * The sort a boxed primitive's payload field holds, or null: a read of
+     * {@code Integer.value} IS the owner term, which must already have that
+     * sort.
      */
     private static Sort boxedPayloadSort(String ownerClass, String javaType) {
         if ("java/lang/Boolean".equals(ownerClass)) {
@@ -217,16 +180,10 @@ public final class ContainerSmtCodec {
     }
 
     /**
-     * Whether one container receiver carries identity that runtime evidence,
-     * not this encoder, is the authority for.
-     *
-     * <p>Select-over-store and the size-preserving receiver skip are exact
-     * on a state term this encoder built itself.  Applied to an evidenced
-     * carrier they are still exact in value, but they drop the published
-     * version chain out of the formula: the selected read then stands alone,
-     * constrained by no writer and by none of the carrier's state axioms.
-     * A host answers true here to keep the carrier's own state term - and so
-     * its read-from arms - in the formula the solver sees.</p>
+     * Whether a container receiver's identity is evidenced at runtime, not
+     * built by this encoder.  Select-over-store and the size receiver skip
+     * are exact in value but would drop the published version chain (and its
+     * read-from arms) out of the formula, so a host keeps such a carrier.
      */
     public static boolean evidencedContainerIdentity(JsonElement expression) {
         if (expression == null || !expression.isJsonObject()) return false;
@@ -255,17 +212,14 @@ public final class ContainerSmtCodec {
     }
 
     /**
-     * Projects one literal indexed read through value-propagation wrappers.
-     * The wrapper is retained because its selector and dynamic event remain
-     * the authority for the value even when select-over-store is exact.
+     * Projects one literal indexed read through value-propagation wrappers,
+     * which are kept: their selector and event stay the value's authority.
      */
     private static JsonElement storedIndexedWrite(
             JsonElement receiver, int wanted, String selectedJavaType,
             IdentityHashMap<JsonElement, JsonElement> memo) {
         if (receiver == null || !receiver.isJsonObject()) return null;
-        // The receiver is a decoder-owned DAG and this projection is a pure
-        // function of it once the wanted index and selected type are fixed,
-        // so one answer per node settles every path that reaches it.
+        // A pure function of a decoder-owned DAG: memoize per node.
         if (memo.containsKey(receiver)) return memo.get(receiver);
         JsonElement answer = storedIndexedWriteUncached(receiver, wanted,
                 selectedJavaType, memo);
@@ -338,13 +292,8 @@ public final class ContainerSmtCodec {
     }
 
     /**
-     * A fresh wrapper over one node's metadata, minus the payload member the
-     * caller is about to replace.
-     *
-     * <p>The retained members are decoder-owned expression graphs and nobody
-     * writes through them.  Cloning them restated each shared subtree once
-     * per arm and per path through the choice, which is the same defect
-     * {@link CanonicalJson#copy} used to have.</p>
+     * A fresh wrapper over one node's members minus the one being replaced.
+     * The kept members are shared, never cloned: nobody writes through them.
      */
     private static JsonObject copyWithout(JsonObject source, String omitted) {
         JsonObject result = new JsonObject();
@@ -593,14 +542,9 @@ public final class ContainerSmtCodec {
                 if (index == null) return null;
                 return shift(receiver, index, null, host);
             }
-            // CONTAINS over an indexed container is REFUSED, by name.
-            // There was one way to say it -- "(exists ((i Int)) ... (=
-            // (indexed_read s i) v))" -- and a quantifier over an element
-            // array is outside the fragment z3 decides: 17960's moved
-            // valuation sat for 141 s and came back "(incomplete
-            // quantifiers)", which states what the lowering wrote and
-            // nothing about the recording.  It is a gap the composition
-            // names.
+            // CONTAINS over an indexed container is REFUSED by name: its
+            // only spelling is a quantifier over the element array, outside
+            // the fragment z3 decides ("incomplete quantifiers").
             if ("IS_EMPTY".equals(operation) && arguments.size() == 0) {
                 return new Term("(= (indexed_size " + receiver.text + ") 0)",
                         Sort.BOOL);
@@ -665,9 +609,8 @@ public final class ContainerSmtCodec {
                         + key.text + ")", Sort.ASSOCIATIVE);
             }
             if ("REMOVE_IF".equals(operation) && arguments.size() == 1) {
-                // A conditional remove drops the key when its guard holds and
-                // otherwise preserves the map. Read/has short-circuit this via
-                // the mutation walk; this form handles a nested receiver.
+                // Drops the key when the guard holds; read/has short-circuit
+                // this via the mutation walk, this handles a nested receiver.
                 Term key = host.box(arguments.get(0));
                 Term guard = host.operand(expression.get("guard"), Sort.BOOL);
                 return key == null || guard == null ? null
@@ -700,26 +643,14 @@ public final class ContainerSmtCodec {
     }
 
     /**
-     * Refuses a read whose container the recording never walked.
+     * Refuses a read whose container chain does not end at a base the VM
+     * walked: an INITIAL's {@code SNAPSHOT_BASE} or a program {@code CLEAR}.
+     * Membership itself is the assoc model's ({@code assoc_put} /
+     * {@code assoc_remove}), decided by z3 for symbolic keys too.
      *
-     * <p>Membership is not decided here.  The assoc model decides it: the
-     * chain lowers to {@code assoc_put}/{@code assoc_remove} over the base,
-     * a key is present exactly when the store says so, and z3 answers that
-     * for a symbolic key as readily as for a constant one.  What this walk
-     * checks is the one thing the model cannot: that the chain ends at a
-     * base the VM actually walked -- an INITIAL's {@code SNAPSHOT_BASE},
-     * which is the exact empty container the PUTs above it refill, or a
-     * {@code CLEAR} the program itself did.  A chain that ends on an opaque
-     * state states no membership at all, and leaving that to the solver is
-     * leaving it to the witness.</p>
-     *
-     * <p>This used to publish an "absent-key default" instead: a Boolean
-     * defined by a syntactic list of the chain's CONSTANT PUT keys.  On bug3
-     * the PUT that stores key 119982 has a symbolic key -- the received
-     * BlockKey's id -- so the list said 119982 was absent while the chain,
-     * under the model, holds it, and seven recorded executions became
-     * unstatable.  A default that decides a value the propagation already
-     * states is the thing this design does not do.</p>
+     * <p>Trap: never replace this with an "absent-key default" over the
+     * chain's constant PUT keys -- a symbolic PUT key makes that default
+     * contradict the chain.</p>
      */
     private static void requireStatedContainerBase(
             JsonElement expression, Term key, Host host) {
@@ -737,10 +668,7 @@ public final class ContainerSmtCodec {
 
     private static final int CONTAINER_CHAIN_LIMIT = 512;
 
-    /**
-     * Refusal subject for a membership no recording decides: the same name
-     * the shared-state evidence gives an INITIAL that states no base.
-     */
+    /** Refusal subject for an unwalked base; same name as the VM rows use. */
     public static final String CONTAINER_BASE_UNSTATED =
             VmRows.CONTAINER_BASE_UNSTATED;
 
@@ -760,10 +688,7 @@ public final class ContainerSmtCodec {
         return javaContainerSize("(assoc_size " + state.text + ")", host);
     }
 
-    /**
-     * An indexed state's size: the length an array STATE records, else
-     * the model's.
-     */
+    /** An indexed size: the length an array STATE records, else the model's. */
     private static Term indexedSize(JsonElement stateIr, Term state,
                                     Host host) {
         if (stateIr != null && stateIr.isJsonObject()) {
@@ -778,10 +703,7 @@ public final class ContainerSmtCodec {
         return javaContainerSize("(indexed_size " + state.text + ")", host);
     }
 
-    /**
-     * Positional container projections are Java operations, not total SMT
-     * functions, so membership is required rather than assumed.
-     */
+    /** Positional projections are partial Java ops: require membership. */
     private static void requireIndexedMember(
             Term state, Term index, Host host) {
         host.require("(let ((s " + state.text + ") (i " + index.text
@@ -800,33 +722,17 @@ public final class ContainerSmtCodec {
                 + " (assoc_has s (assoc_key_at s i))))";
     }
 
-    /**
-     * Refusal subject for an indexed view whose size the recording does not
-     * state.  A view of a map whose size nothing states leaves the
-     * positions free, and free positions are the thing this states about.
-     */
+    /** Refusal subject for a view whose map size nothing bounds. */
     public static final String ASSOC_VIEW_SIZE_UNSTATED =
             "UNSTATED_VALUE:AssociativeViewSize";
 
     /**
-     * AN INDEXED VIEW OF AN ASSOCIATIVE STATE IS A BIJECTION between the
-     * positions {@code [0, n)} and the keys that state holds.
-     *
-     * <p>{@code values()}, {@code keySet()}, {@code entrySet()},
-     * {@code toArray} and an ITERATOR/NEXT walk are all one thing: the
-     * map's entries, each named once, at one position each.  Stated
-     * position by position -- "this position names a key that is present"
-     * -- and nothing more, a formula lets the solver answer every position
-     * with the SAME present key and leave another present key at no
-     * position at all.  That is how hdfs-11741's composed query delivered
-     * the four exported block-key ids 182906, 182908, 182908, 182907 out of
-     * a NameNode whose export really held 182905, 182906, 182907, 182908:
-     * one id twice, and the id the target looks up nowhere -- a formula
-     * stating "the exported set lacks G" with no producer decision having
-     * removed G.</p>
-     *
-     * <p>So the three facts, over the positions the recording bounds and
-     * under the size {@code n} the codec derives from the operations:</p>
+     * AN INDEXED VIEW OF AN ASSOCIATIVE STATE IS A BIJECTION between
+     * positions {@code [0, n)} and the keys the state holds.
+     * {@code values()}, {@code keySet()}, {@code entrySet()}, {@code toArray}
+     * and ITERATOR/NEXT all name each entry once at one position.  Stating
+     * only "this position names a present key" lets z3 repeat one key and
+     * drop another (hdfs-11741's exported block keys).
      *
      * <pre>
      *   (=&gt; (&lt; p n) (and (has k_p) (= (position k_p) p)))   p in [0, m)
@@ -834,28 +740,11 @@ public final class ContainerSmtCodec {
      *   (=&gt; (has K) (or_{p &lt; m} (and (&lt; p n) (= k_p K))))   K a put key
      * </pre>
      *
-     * <p>The first two say every live position names a present key, at
-     * that position, and that two positions never name one key; the third
-     * says no present key sits at no position -- from an empty base the
-     * keys a map can hold are exactly the ones put into it, so the
-     * disjunction over the chain's put keys is the whole of "every present
-     * key".  {@code m} is the number of puts the chain states, which
-     * bounds {@code n}: the recording says how many entries were added,
-     * so the facts are written out at CONCRETE positions and no quantifier
-     * is introduced -- the fragment z3 answers {@code (incomplete
-     * quantifiers)} on is the one the container lowering stays out of.</p>
-     *
-     * <p>What this does NOT state is Java's HashMap ITERATION ORDER.  A
-     * recording states which entries a map held, not that a traversal
-     * hands them back in ascending key order; the bijection is what
-     * soundness needs and the order is not a fact the recording states.</p>
-     *
-     * <p>A view whose state is not a chain the recording bounds -- an
-     * opaque {@code AssocState} the execution never built here, or a
-     * choice this codec cannot push the observation through -- has no
-     * {@code m} to write the facts out at, and is refused by name
-     * ({@link #ASSOC_VIEW_SIZE_UNSTATED}) rather than left with free
-     * positions.</p>
+     * <p>{@code m}, the chain's put count, bounds {@code n} (from an empty
+     * base the keys are exactly the ones put), so the facts are written at
+     * CONCRETE positions with no quantifier.  Java's iteration ORDER is not
+     * stated: the recording does not state it.  A state with no bounding
+     * chain is refused ({@link #ASSOC_VIEW_SIZE_UNSTATED}).</p>
      *
      * @return whether the view's positions are stated
      */
@@ -916,14 +805,8 @@ public final class ContainerSmtCodec {
     }
 
     /**
-     * The keys one view's state was built from, or null when the recording
-     * bounds no such set.
-     *
-     * <p>A chain that ends at the exact empty container holds exactly the
-     * keys put into it above that base, so the puts bound both how many
-     * entries the view can have and which keys they can be.  A chain that
-     * ends anywhere else -- an opaque state, a choice, a Java expression
-     * this codec does not read as a map -- bounds neither.</p>
+     * The keys a view's state was put with above an exact empty base, or
+     * null when the chain ends anywhere else and so bounds nothing.
      */
     private static List<JsonElement> associativeViewKeys(
             JsonElement state) {
@@ -954,11 +837,8 @@ public final class ContainerSmtCodec {
     }
 
     /**
-     * One Java container size.  {@code array.length} and
-     * {@code Collection.size()} are both {@code int} (JLS 10.7, 15.14), so
-     * the value carries that computational type; and a size is never negative
-     * and never exceeds {@code Integer.MAX_VALUE}, which the state the size is
-     * read from must satisfy for that type to be the one the JVM computed in.
+     * One Java container size: an {@code int} (JLS 10.7, 15.14) in
+     * {@code [0, Integer.MAX_VALUE]}.
      */
     private static Term javaContainerSize(String text, Host host) {
         JavaPrimitiveSmtSemantics.IntegralDomain domain =
@@ -985,8 +865,7 @@ public final class ContainerSmtCodec {
                 : "REMOVE_IF".equals(operation) ? 1
                 : "PUT".equals(operation) ? 2 : -1;
         if (arity < 0 || arguments.size() != arity) return null;
-        // A conditional remove must state its guard; without it the op is
-        // malformed and the codec refuses it rather than dropping the guard.
+        // REMOVE_IF without a guard is malformed: refused, never dropped.
         JsonElement guard = "REMOVE_IF".equals(operation)
                 ? relation.get("guard") : null;
         if ("REMOVE_IF".equals(operation)
@@ -1081,41 +960,20 @@ public final class ContainerSmtCodec {
     }
 
     /**
-     * One list insertion or removal, shifted WITHOUT a quantifier.
-     *
-     * <p>A whole-state insert or remove would state the shift as a
-     * {@code lambda} over every index, which puts the query in a fragment
-     * z3 answers {@code (incomplete quantifiers)}: 17960's moved valuation
-     * came back undecided after 141 s while the same query with the two
-     * lambdas gone was decided in 0.07 s.  The shift itself is finite --
-     * the recording states how many elements the list held -- so where the
-     * size is stated the result is written out as that many
-     * {@code store}s, each at a CONCRETE index:</p>
+     * One list insertion or removal, shifted WITHOUT a quantifier.  A
+     * whole-state {@code lambda} shift leaves z3 undecided ("incomplete
+     * quantifiers"); with the recorded size it is a finite store chain at
+     * CONCRETE indices, the index {@code i} kept symbolic:
      *
      * <pre>
      *   insert: a[k] = ite(k &lt; i, s[k], ite(k = i, v, s[k-1]))  k in [0, n]
      *   remove: a[k] = ite(k &lt; i, s[k], s[k+1])                 k in [0, n-2]
      * </pre>
      *
-     * <p>Exact, not approximate: every index the list has is written, and
-     * the index {@code i} stays symbolic -- no case split on it, so the
-     * term is linear in the size the recording stated.  The cells past the
-     * new size are not written because they are not in the list; the size
-     * is what says which they are.</p>
-     *
-     * <p>The operation's own DEFINEDNESS is stated beside it, as the
-     * division lowering states a non-zero divisor: {@code List.add(i, v)}
-     * requires {@code 0 <= i <= n} and {@code remove(i)} requires
-     * {@code 0 <= i < n}, and an index outside that throws rather than
-     * producing a list.  The recording shows the operation HAPPENED, so
-     * this is that execution's own fact, and no witness is lost by it: an
-     * out-of-range index is an execution that threw, which is not a path
-     * that reached the anchor.</p>
-     *
-     * <p>A state whose size the recording does not state keeps the
-     * quantified definition -- there is nothing here to invent a size
-     * from -- and an {@code unknown} the quantifiers leave behind is named
-     * by {@link Solver} rather than passed off as a verdict.</p>
+     * <p>Definedness is required beside it ({@code 0 <= i <= n} for insert,
+     * {@code < n} for remove): an out-of-range index throws, so it is not a
+     * path that reached the anchor.  With no stated size the quantified
+     * form is kept and refused by name.</p>
      *
      * @param value the element to insert, or null for a removal
      */
@@ -1124,8 +982,7 @@ public final class ContainerSmtCodec {
         long size = receiver.indexedSize;
         boolean insert = value != null;
         if (size < 0L) {
-            // No stated size: the shift stays the quantified relation it
-            // was, and the refusal is the solver's to name.
+            // No stated size: the quantified relation, refused by name.
             host.unsupported("ContainerRelation:INDEXED:"
                     + (insert ? "INSERT" : "REMOVE")
                     + ":unstated-size");
@@ -1241,10 +1098,8 @@ public final class ContainerSmtCodec {
     }
 
     /**
-     * Projects one common view through the wrappers that preserve a selected
-     * value.  Each returned arm or boundary payload denotes the underlying
-     * {@code AssocState}; selectors and provenance stay on their original
-     * wrappers.
+     * Projects a view through value-preserving wrappers down to its
+     * {@code AssocState}; selectors and provenance stay on the wrappers.
      */
     private static JsonElement selectedViewState(
             JsonElement expression, String kind) {
@@ -1314,27 +1169,19 @@ public final class ContainerSmtCodec {
 
 
     /**
-     * The one lowering of a boxed container {@code Value} back to the Java
-     * sort it holds.  The caller resolves the Java type to {@code cellSort}
-     * because the two encoders answer that question differently.
+     * The encoder a codec call lowers operands, boxes and requirements
+     * through; each encoder resolves Java types to sorts its own way.
      */
     public interface Host {
         Term state(JsonElement identity, Sort shape);
 
         Term operand(JsonElement expression, Sort expected);
 
-        /**
-         * Whether an externally evidenced container identity must survive
-         * local select-over-store simplification.
-         */
+        /** Whether an evidenced identity must survive select-over-store. */
         boolean preserveContainerIdentity(JsonElement expression,
                                                   Sort expected);
 
-        /**
-         * Returns an equivalent name for a pure term when the encoder keeps
-         * a definitional DAG.  The identity default preserves hosts that
-         * already bound large container terms at their operand boundary.
-         */
+        /** An equivalent name for a pure term, if the encoder shares a DAG. */
         Term share(Term value);
 
         Term box(JsonElement expression);
@@ -1357,17 +1204,9 @@ public final class ContainerSmtCodec {
         public final Sort sort;
         public final IntegralWidth integralWidth;
         /**
-         * How many elements this INDEXED state holds, or {@code -1}.
-         *
-         * <p>The RECORDING states it: a container the execution built from
-         * an empty one, or from a snapshot whose size the VM published as a
-         * literal, has a size this lowering can count along the chain of
-         * operations it is lowering.  It is what lets a shift be written as
-         * a finite store chain instead of a {@code lambda} -- the whole
-         * reason 17960's moved valuation came back
-         * {@code (incomplete quantifiers)} -- and it is never guessed: a
-         * state whose size the recording does not state carries
-         * {@code -1}.</p>
+         * How many elements this INDEXED state holds, counted along a chain
+         * from an empty or literal-size base, or {@code -1}: never guessed.
+         * It lets a shift be a finite store chain instead of a lambda.
          */
         public final long indexedSize;
 

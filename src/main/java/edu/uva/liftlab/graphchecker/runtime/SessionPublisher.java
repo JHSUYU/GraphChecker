@@ -27,12 +27,8 @@ import java.util.Map;
 
 /**
  * Writes one replay session's rows, one file per kind, through the
- * contract's own codec.
- *
- * <p>Every row is flushed as it is written.  A campaign halts the JVM
- * ({@code Runtime.halt}) as soon as the selected result settles, which runs
- * no shutdown hook: a buffered row is a lost row, and a lost row is
- * indistinguishable from a site that never ran.</p>
+ * contract's codec.  Every row is flushed at once: the JVM is halted with no
+ * shutdown hook, and a lost row reads as a site that never ran.
  */
 public final class SessionPublisher {
     private static final Object LOCK = new Object();
@@ -57,10 +53,7 @@ public final class SessionPublisher {
         return at(SessionDir.of(iteration, sessionId));
     }
 
-    /**
-     * The publisher of one session under the sessions root the campaign
-     * named, rather than one derived from the result file.
-     */
+    /** The publisher of one session under an explicit sessions root. */
     static SessionPublisher at(SessionDir layout) {
         String key = layout.dir().toAbsolutePath().toString();
         synchronized (LOCK) {
@@ -75,19 +68,9 @@ public final class SessionPublisher {
     }
 
     /**
-     * Creates every file of the layout, empty, and states this session's
-     * role.
-     *
-     * <p>A kind with no rows is still a kind this session published: IMPORT
-     * reads one file per kind and an absent file is a session that did not
-     * publish it, which is a different fact from "this run had none".</p>
-     *
-     * <p>The manifest is written HERE, at the open, and not at the close:
-     * a campaign halts the JVM the instant its result settles, and a role
-     * stated only at the end is a role the seven sessions the 11741 kill cut
-     * would never have stated.  What it says is what {@link FocusedReplay}
-     * was handed -- a replay with a focus row is FOCUSED, and the ids are
-     * the obligations that row named.</p>
+     * Creates every file empty (an absent file means "not published", not
+     * "none") and writes the manifest now, not at close, since a halted JVM
+     * never closes.  The role is what {@link FocusedReplay} was handed.
      */
     private void open() {
         synchronized (LOCK) {
@@ -140,12 +123,8 @@ public final class SessionPublisher {
     }
 
     /**
-     * One root, and its domain when the declaration resolved one.
-     *
-     * <p>One row, in {@code roots.jsonl}.  The domains a composer reads are
-     * the CASE's declaration ({@code --root-domains}, which
-     * {@code explore.Corpus} opens); a second per-session copy of the mint
-     * row was a write-only artifact and a second spelling of it.</p>
+     * One root mint row in {@code roots.jsonl}.  Domains come from the case's
+     * {@code --root-domains}, not from here.
      */
     public void rootMint(RootMintRow row) {
         if (row != null) append(layout.roots(),
@@ -179,16 +158,9 @@ public final class SessionPublisher {
         synchronized (LOCK) {
             if (expressions.containsKey(key)) return;
             expressions.put(key, expression);
-            // The table is one JSON object and rewriting it per expression
-            // rewrote every expression once per expression: on hdfs-17960,
-            // whose container expressions are hundreds of nodes deep, that
-            // was most of a replay's wall time.  It is written when the
-            // session closes, and every sixty-fourth expression so a
-            // killed replay still leaves a table a reader can use.
-            // A late expression -- a daemon publication that lands after the
-            // session was closed -- rewrites the table at once: a row that
-            // cites a ref the table does not hold is a row no reader can
-            // lower, and that is the one failure it cannot see.
+            // The table is one JSON object: rewrite it every 64th
+            // expression (quadratic otherwise; a killed replay keeps a usable
+            // table), at close, and at once for any expression after close.
             if (!closed && expressions.size() % 64 != 0) return;
         }
         writeExpressions();
@@ -199,9 +171,7 @@ public final class SessionPublisher {
             if (failed) return;
             try {
                 layout.create();
-                // Always written, empty or not: a session whose table is
-                // absent published no expressions, which is not the same as
-                // a session whose rows named none.
+                // Always written, even empty.
                 RowCodec.writeExpressions(layout.expressions(),
                         ExpressionTable.of(expressions));
             } catch (IOException unwritable) {
@@ -237,11 +207,8 @@ public final class SessionPublisher {
     }
 
     /**
-     * A session that cannot write says so once and stops.
-     *
-     * <p>Rule 5: a publisher that fails silently turns "the run did not
-     * write this" into "the site did not run", which is the one confusion
-     * no reader downstream is able to detect.</p>
+     * A session that cannot write says so once and stops (rule 5: silence
+     * would read as "the site did not run").
      */
     private void fail(IOException unwritable) {
         failed = true;
@@ -259,7 +226,7 @@ public final class SessionPublisher {
                     writer.flush();
                     writer.close();
                 } catch (IOException ignored) {
-                    // The rows are already flushed; closing adds nothing.
+                    // Rows are already flushed.
                 }
             }
             writers.clear();

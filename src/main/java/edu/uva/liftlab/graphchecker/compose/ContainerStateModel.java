@@ -12,17 +12,10 @@ import edu.uva.liftlab.graphchecker.compose.ContainerSmtCodec.Sort;
 import edu.uva.liftlab.graphchecker.compose.ContainerSmtCodec.Term;
 
 /**
- * THE CONTAINER STATE MODEL: the sorts a container state is written in, and
- * the one boxing between a Java cell and a {@code Value}.
- *
- * <p>Relocated out of {@link ContainerSmtCodec} unchanged.  Everything here
- * is a statement about the MODEL -- the {@code Value} datatype, the
- * {@code IndexedState}/{@code AssocState} datatypes and the functions over
- * them, which tag a Java value carries, and how a cell is boxed and
- * unboxed.  Nothing here reads a recorded expression: what a particular
- * container operation lowers to is {@link ContainerSmtCodec}'s, and the two
- * were one 2,466-line file in which the model and the walks over it read as
- * one subject.</p>
+ * THE CONTAINER STATE MODEL: the {@code Value}, {@code IndexedState} and
+ * {@code AssocState} datatypes and functions, and the one boxing between a
+ * Java cell and a {@code Value}.  It reads no recorded expression; lowering
+ * container operations is {@link ContainerSmtCodec}'s.
  */
 public final class ContainerStateModel {
     private ContainerStateModel() {
@@ -37,12 +30,8 @@ public final class ContainerStateModel {
     }
 
     /**
-     * The cell that holds Java null: one spelling for every caller.
-     *
-     * <p>It is the value an absent element denotes, the value a refused
-     * read leaves behind, and what a {@code null} leaf lowers to where the
-     * relation it stands in is written over cells rather than over
-     * references.</p>
+     * The cell that holds Java null: an absent element, a refused read's
+     * residue, and a {@code null} leaf compared against cells.
      */
     public static final String NULL_CELL = "(VRef nullRef)";
 
@@ -74,15 +63,9 @@ public final class ContainerStateModel {
     }
 
     /**
-     * The tag a boxed container cell of {@code javaType} may be unboxed by,
-     * or {@code ""} when it must stay boxed.
-     *
-     * <p>A cell whose declared type names a primitive sort is an ordinary
-     * Java value once unboxed, so arithmetic and ordering on it are exact.
-     * Two cases deliberately answer {@code ""}: a type that names no sort at
-     * all, and a reference cell.  {@code (VRef nullRef)} is also the value a
-     * refused read leaves behind, so unboxing a reference cell would turn a
-     * visible refusal into a formula built on a term that means nothing.</p>
+     * The tag a boxed cell of {@code javaType} may be unboxed by, or
+     * {@code ""} to stay boxed: unknown types and reference cells, since
+     * {@code (VRef nullRef)} is also a refused read's residue.
      */
     public static String unboxableCellKind(String javaType) {
         String kind = valueKind(javaType);

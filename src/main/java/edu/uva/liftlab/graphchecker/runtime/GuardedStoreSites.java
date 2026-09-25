@@ -18,48 +18,22 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * The static slice's control-dependence answer, as the VM's session table.
+ * PLAN's control-dependence answer ({@code static_scope_map.jsonl},
+ * REPORT-CLOSURE-V2 SS1) installed as the VM's session table: the VM logs a
+ * concrete store only inside a method named here, once one of its guard
+ * branches decided symbolically (REPORT-VM22 VM24).  Decides nothing itself.
  *
- * <p>A concrete store is evidence only where the program text makes it
- * control-dependent on a branch a replay may flip (REPORT-VM22 VM24): the
- * VM starts a location's log at a concrete store only inside a method this
- * table names, and only once one of that method's guard branches has decided
- * symbolically in the current region frame.  The dependence itself is PLAN's
- * answer -- {@code static_scope_map.jsonl}, post-dominance in the enclosing
- * method's CFG (REPORT-CLOSURE-V2 SS1) -- so this class decides nothing: it
- * selects the {@code WRITE_SITE} rows that state a guard, groups them by the
- * method the VM spells an endpoint site with, and hands the result to
- * {@code System.installGuardedStoreSites}.</p>
+ * <p>Store methods go to the VM with the owner's dots made slashes; guard
+ * site ids ({@link edu.uva.liftlab.graphchecker.plan.SiteId#of}) go
+ * verbatim, and contain commas, hence tab-separated fields (VM25).</p>
  *
- * <p>Two spellings meet here and neither is rewritten. The store side is a
- * method: the map states its owner dotted ({@code a.b.C#m(desc)ret}) and the
- * VM asks with the owner internal ({@code a/b/C#m(desc)ret}), so only the
- * owner's dots become slashes. The guard side is a branch site id and is
- * passed verbatim -- {@code <owner: ret name(params)>#u<unit>}, the string
- * the woven {@code markConcolicBranch} call passes
- * (CausynthPipeline:2730 renders it with {@link
- * edu.uva.liftlab.graphchecker.plan.SiteId#of}) and the string the map's
- * {@code guards} member carries.  Its parameter list contains commas, which
- * is why a line's guard sites are tab-separated fields (VM25) and not a
- * comma list: a comma list fragmented 15 of 17960's 27 guard ids and every
- * fragment matched nothing.</p>
- *
- * <p>Required since closure v2: the map is a PLAN artifact of the epoch the
- * replay belongs to, so a session that cannot read it is a broken campaign
- * and is refused by name -- an absent table is the pre-VM22 baseline, in
- * which no concrete store is ever evidence, and that is not something a
- * campaign may become by accident.</p>
+ * <p>Required: a missing table would silently mean no concrete store is
+ * ever evidence, so it is refused by name.</p>
  */
 final class GuardedStoreSites {
-    /** Where the epoch's static scope map is, as the campaign states it. */
     static final String PATH_ENVIRONMENT = "CAUSYNTH_STATIC_SCOPE_MAP";
 
-    /**
-     * The VM's grammar (VM25):
-     * {@code line ::= methodKey ( '\t' guardSite )*}, lines split on
-     * {@code '\n'} and fields on {@code '\t'} and on nothing else -- so a
-     * guard site id carries its parameter list's commas whole.
-     */
+    /** VM25: {@code line ::= methodKey ( '\t' guardSite )*}. */
     private static final char LINE = '\n';
     private static final char FIELD = '\t';
 
@@ -70,10 +44,9 @@ final class GuardedStoreSites {
     }
 
     /**
-     * Installs the epoch's table, or names why this session has none.
+     * Installs the epoch's table.
      *
-     * @return an empty string once the VM holds the table, otherwise a named
-     * diagnostic the caller fails the session with
+     * @return "" once installed, else the diagnostic the session fails with
      */
     static String install(ConcolicVmBroker api) {
         String declared = declaredPath();
@@ -100,8 +73,7 @@ final class GuardedStoreSites {
                     + failure.getClass().getName() + ": "
                     + failure.getMessage();
         }
-        // The VM drops a method with no guard site, and every method this
-        // table names has one, so the count it answers is the table's own.
+        // Every method here has a guard, so the VM must keep them all.
         if (installed != table.methods()) {
             return "GUARDED_STORE_SITES_INSTALL_REFUSED: the VM kept "
                     + installed + " of the " + table.methods()
@@ -112,12 +84,10 @@ final class GuardedStoreSites {
         return "";
     }
 
-    /** The path the campaign states, in the one spelling it sets. */
     static String declaredPath() {
         return value(System.getenv(PATH_ENVIRONMENT));
     }
 
-    /** The table one static scope map's rows state. */
     static GuardedStoreSites of(List<JsonObject> rows) {
         Map<String, Set<String>> guardsByMethod =
                 new LinkedHashMap<String, Set<String>>();
@@ -138,9 +108,7 @@ final class GuardedStoreSites {
             }
             for (String guard : guards) {
                 if (guard.indexOf(LINE) >= 0 || guard.indexOf(FIELD) >= 0) {
-                    // A guard that breaks the framing would make the VM read
-                    // some other string as a store method, which is an
-                    // admission this map never stated.
+                    // Would make the VM read another string as a method.
                     throw new IllegalStateException("guard site id contains "
                             + "the table's field framing: " + guard);
                 }
@@ -150,7 +118,6 @@ final class GuardedStoreSites {
         return new GuardedStoreSites(guardsByMethod);
     }
 
-    /** One line per store method, in the order the map states them. */
     String text() {
         StringBuilder table = new StringBuilder();
         for (Map.Entry<String, Set<String>> entry
@@ -164,12 +131,10 @@ final class GuardedStoreSites {
         return table.toString();
     }
 
-    /** How many store methods the table names. */
     int methods() {
         return guardsByMethod.size();
     }
 
-    /** How many distinct guard branch sites it names them by. */
     int guardSites() {
         Set<String> guards = new LinkedHashSet<String>();
         for (Set<String> stated : guardsByMethod.values()) {
@@ -178,10 +143,7 @@ final class GuardedStoreSites {
         return guards.size();
     }
 
-    /**
-     * One store method as the VM asks for it: the map's dotted owner with
-     * the internal separator, and the name and descriptor unchanged.
-     */
+    /** One store method as the VM asks for it: owner in internal form. */
     static String internalMethod(String vmSite, String siteId) {
         String stated = value(vmSite);
         int owner = stated.indexOf('#');
@@ -215,12 +177,10 @@ final class GuardedStoreSites {
         return text == null ? "" : text.trim();
     }
 
-    /** One line of the replay's session log, where the count is read. */
     private static void log(String detail) {
         try {
             System.err.println("CAUSYNTH-SESSION|" + detail);
         } catch (Throwable ignored) {
-            // A session is not failed by an unwritable log.
         }
     }
 }

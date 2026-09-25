@@ -5,28 +5,14 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * The within-run pairing evidence of a WIRE interaction: which export an
- * attach took its value from.
- *
- * <p>INTERACTION-ID §1: within one run the pairing is a recorded fact --
- * the exchange correlation id and the expression handle.  The producer
- * files its endpoint here when it stages the value; the consumer asks for
- * it when it mints, and a consumer that finds nothing publishes an unpaired
- * row rather than guessing a producer.</p>
+ * Within-run pairing evidence of a WIRE interaction: which export an attach
+ * took its value from.  Pairing is a recorded fact (INTERACTION-ID §1); a
+ * consumer that finds nothing publishes an unpaired row, never a guess.
  *
  * <p>LOCK ORDER: {@code Interactions} then {@link InteractionRefusals},
- * NEVER the reverse.  Both classes guard their store with their own class
- * monitor and each calls into the other, so the pair has exactly one safe
- * order and it is this one: a thread may hold the {@code Interactions}
- * monitor and take the {@code InteractionRefusals} monitor -- which is what
- * {@link #sent} and {@link #sharedProducer} do -- and a thread inside
- * {@code InteractionRefusals} must own nothing of its own when it calls back
- * here.  The reverse edge was real: {@code InteractionRefusals.filedProducers}
- * was {@code synchronized} and delegated to {@link #filedProducers}, so a
- * refusal being rendered on the main thread and a DataNode heartbeat inside
- * {@link #sharedProducer} deadlocked on the two class monitors (thread dump
- * deadlock-21177cdb: "Found one Java-level deadlock", 11741 campaign #4,
- * which held wave 1 open until the campaign's own wall clock ran out).</p>
+ * never the reverse.  A thread inside {@code InteractionRefusals} must hold
+ * nothing of its own when it calls back here; the reverse edge once
+ * deadlocked a replay.</p>
  */
 public final class Interactions {
     /** Bounded: a long run must not retain every message it ever sent. */
@@ -54,16 +40,9 @@ public final class Interactions {
     }
 
     /**
-     * The producer endpoint this delivery was paired with, or null, and the
-     * key that answered.
-     *
-     * <p>Two keys are recorded facts and they are not equal evidence: the VM
-     * handle is the export itself, the correlation with the port is the
-     * message the export travelled in.  Which of the two answered was not
-     * stated anywhere, so an attach row paired on the weaker key read
-     * exactly like one paired on the handle -- on the 11741 corpus all 3,554
-     * attaches had both available.  The pairing now carries its key; the
-     * attach row's own member for it belongs to the contract.</p>
+     * The producer this delivery was paired with (or null) and the key that
+     * answered: the handle (the export itself) is stronger evidence than the
+     * correlation-with-port (the message it travelled in).
      */
     public static synchronized Pairing pairing(String portId, long handle,
                                                String correlationId) {
@@ -99,17 +78,9 @@ public final class Interactions {
     }
 
     /**
-     * The keys one delivery is paired on: the VM expression handle, and the
-     * exchange correlation with the port.
-     *
-     * <p>Both are RECORDED facts of the run -- the VM handed out the handle
-     * and the workload named the correlation -- which is the whole rule
-     * (INTERACTION-ID SS1).  "The port's last producer" used to stand behind
-     * them, and it is a guess: two sends on one port with no handle and no
-     * correlation pair the second delivery to the first producer, and the
-     * row then states a chain nobody made.  A delivery these two do not
-     * pair publishes an unpaired row and LINEAGE_LOST beside it, which is
-     * what {@link RowRuntime#attachedAt} does.</p>
+     * The pairing keys: the VM handle and the correlation with the port, both
+     * recorded facts (INTERACTION-ID §1).  Never "the port's last producer",
+     * which is a guess; unpaired deliveries go to {@link RowRuntime#attachedAt}.
      */
     private static java.util.List<String> keys(String portId, long handle,
                                                String correlationId) {
@@ -124,13 +95,8 @@ public final class Interactions {
     }
 
     /**
-     * The delivery this thread is attaching, by the handle the producer
-     * staged.
-     *
-     * <p>The mint happens four frames below the decode that took the
-     * element, and the handle is the strongest pairing evidence there is
-     * (INTERACTION-ID §1).  Held here for the length of one attach instead
-     * of threaded through every signature between the two.</p>
+     * The delivery this thread is attaching ({handle, attach event id}), held
+     * for one attach because the mint runs frames below the decode.
      */
     private static final ThreadLocal<long[]> DELIVERY =
             new ThreadLocal<long[]>();
@@ -162,12 +128,8 @@ public final class Interactions {
     }
 
     /**
-     * Files the endpoint of one whole MESSAGE, for the anchor its receiver
-     * will state.
-     *
-     * <p>A declared port's leaf is paired by handle; a request's causal
-     * anchor is the message, which may carry no declared leaf at all.  Both
-     * are the producer's endpoint -- this one is the exchange itself.</p>
+     * Files the endpoint of one whole MESSAGE: a request's causal anchor,
+     * which may carry no declared leaf to pair by handle.
      */
     public static synchronized void sent(String transport,
                                          String correlationId, String half,
@@ -179,12 +141,8 @@ public final class Interactions {
     }
 
     /**
-     * The OTHER message this producer endpoint already named, or {@code ""}.
-     *
-     * <p>The key is this store's spelling, so it is built here; what a
-     * collision MEANS, and the index that answers it, are
-     * {@link InteractionRefusals}'s -- nothing on the delivery path asks
-     * this question.</p>
+     * The OTHER message this producer already named, or {@code ""}; the
+     * meaning of a collision is {@link InteractionRefusals}'s.
      */
     public static synchronized String sharedProducer(String transport,
                                                      String correlationId,
@@ -226,13 +184,7 @@ public final class Interactions {
                 }
             };
 
-    /**
-     * Clears both stores.
-     *
-     * <p>Takes the two monitors in the declared order -- this one, then
-     * {@link InteractionRefusals}'s -- so it is one more edge of the same
-     * direction and cannot close a cycle.</p>
-     */
+    /** Clears both stores, taking the monitors in the declared order. */
     public static synchronized void resetForTests() {
         MESSAGES.clear();
         InteractionRefusals.resetForTests();

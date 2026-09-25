@@ -132,14 +132,9 @@ public class GraphCheckerMain {
                     configuredTestDirs.size(),
                     productionProcessDirs.size());
         }
-        // ONE application scope, whatever this run is for: the case's own
-        // process dirs.  The concolic pass used to narrow it to the owners of
-        // the campaign envelope, which silently dropped every woven body
-        // outside them -- PackManager writes application classes and nothing
-        // else -- so a work start (G9) or a skeleton region entry in an
-        // unselected class was woven in the recording and absent from the
-        // replay's class tree, and every index below it drifted.  The scope
-        // is the same in both passes or the two passes are not comparable.
+        // ONE application scope for every pass: PackManager writes only
+        // application classes, so a narrower scope drops woven bodies and
+        // shifts every index below them (G9).
         Options.v().set_process_dir(productionProcessDirs);
         LOG.info("Soot application scope is the case's {} production "
                         + "root(s){}", productionProcessDirs.size(),
@@ -262,9 +257,7 @@ public class GraphCheckerMain {
         return String.join(File.pathSeparator, expanded);
     }
 
-    /** The input directories plus the roots {@code causynth.process.dirs}
-     *  names.  {@code run_engine.sh} resolves that list from the workflow
-     *  configuration, so this is the one place it is read. */
+    /** Input dirs plus {@code causynth.process.dirs} and the lineage dirs. */
     private List<String> expandProcessDirs(List<String> inputDirs) {
         LinkedHashSet<String> dirs = new LinkedHashSet<>();
         for (String inputDir : inputDirs) {
@@ -283,8 +276,6 @@ public class GraphCheckerMain {
                 dirs.add(file.getAbsolutePath());
             }
         }
-        // The lineage scope, on the two weave runs that name it: application
-        // classes of the run, woven for their lineage alone (LineageScope).
         dirs.addAll(LineageScope.dirs());
         if (dirs.size() > inputDirs.size()) {
             LOG.info("Expanded Soot process dirs to {}", dirs);

@@ -61,10 +61,7 @@ public final class JavaContainerTypes {
                     "java.lang.Object remove()",
                     "java.lang.Object remove(int)",
                     "java.lang.Object set(int,java.lang.Object)",
-                    // Positional insertion and truncation return nothing, so
-                    // they reach a signature parser that once rejected every
-                    // void return.  They are still exact state transitions
-                    // the container algebra publishes (INSERT and CLEAR).
+                    // Void, yet exact state transitions (INSERT and CLEAR).
                     "void add(int,java.lang.Object)",
                     "void clear()")));
     private static final Set<String> MAP_MUTATORS =
@@ -163,11 +160,8 @@ public final class JavaContainerTypes {
             if (separator <= 0 || separator + 1 >= subsignature.length()) {
                 return null;
             }
-            // A void return is not a parse failure.  Every result-bearing
-            // predicate matches against a set whose members all name their
-            // return type, so a void subsignature can only match an
-            // operation that is genuinely declared void - today the indexed
-            // mutators add(int,E) and clear().
+            // A void return is not a parse failure: it can only match a
+            // genuinely void operation (add(int,E), clear()).
             return new MethodSignature(
                     JavaPrimitiveSmtSemantics.typeName(
                             value.substring(1, ownerEnd)),

@@ -3,18 +3,10 @@ package edu.uva.liftlab.graphchecker.contract;
 import java.util.Objects;
 
 /**
- * CONTRACT-SPEC 2: a root the session minted, with its resolved domain.
- *
- * <p>Domains are declared relative to the recorded value and resolved to
- * absolute bounds here, so the composer and the flip solver read one number
- * rather than each applying the offset themselves.  A root with no domain
- * ({@code domainMin} and {@code domainMax} null) is pinned everywhere, and
- * {@code declared} says whether the case declared it at all -- an undeclared
- * root is evidence, not a degree of freedom.</p>
- *
- * <p>{@code seq} is the session-monotonic event sequence number: it places the
- * mint against the decisions and exports of its own session, so a root minted
- * after a value was already exported cannot be read as having carried it.</p>
+ * CONTRACT-SPEC 2: a root the session minted, with its domain already
+ * resolved to absolute bounds (both null: pinned).  An undeclared root is
+ * evidence, not a degree of freedom.  {@code seq} keeps a root minted after an
+ * export from being read as carried by it.
  */
 public final class RootMintRow {
     private final String sessionId;
@@ -63,7 +55,6 @@ public final class RootMintRow {
         return sessionId;
     }
 
-    /** Where this mint falls in its session's event order. */
     public long seq() {
         return seq;
     }

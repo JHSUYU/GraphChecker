@@ -13,84 +13,42 @@ import java.util.concurrent.locks.LockSupport;
 
 /**
  * THE timed waits of the application scope: where a service loop hands its
- * thread the next turn.
- *
- * <p>The weave replaces every call of a timed-wait shape
- * ({@code WorkStartSites.timedWait}) in an application method with the method
- * of the same shape here, in BOTH passes, from the one application-scope walk
- * that already files work starts and claims.  The receiver becomes the first
- * argument and the call site the last.  What each does:</p>
+ * thread the next turn.  The weave replaces every timed-wait call
+ * ({@code WorkStartSites.timedWait}) with the method of the same shape here,
+ * in BOTH passes; receiver first, call site last.
  *
  * <ul>
- *   <li>FREE (the recording, a replay with no order, a wait whose WAKE no
- *       slot of the order holds, anything before the recording window
- *       opens): the original wait's semantics, on the wall clock, and a
- *       WAKE event when its TIMEOUT ends it.  A wait a signal ends (a
- *       notify, a condition signal, an unpark) is no event: another thread
- *       ended it, and that thread's own events are the schedule's
- *       ({@link #takeTurn}).</li>
- *   <li>HELD, when a WAKE slot of the order holds its timeout: VIRTUAL
- *       TIME, which stands in for the CLOCK and never for the NOTIFIER.
- *       The wait ends when a real signal comes, or when its WAKE slot is
- *       due ({@code ScheduleLog.turn}).  An idle IPC connection the
- *       recording saw woken by the call it then served, woken by time
- *       instead, finds nothing to read and closes itself -- so a signal is
- *       never stood in for.  A wait that holds a monitor or a lock waits on
- *       its own primitive between asks, so whatever it holds is released
- *       and the thread whose event is due can run.</li>
+ *   <li>FREE (recording, no order, no WAKE slot, before the window): the
+ *       original semantics on the wall clock, and a WAKE only when the
+ *       TIMEOUT ends it ({@link #takeTurn}).</li>
+ *   <li>HELD (a WAKE slot holds its timeout): VIRTUAL TIME stands in for
+ *       the CLOCK, never for the NOTIFIER.  It ends at a real signal or when
+ *       its slot is due; between asks it waits on its own primitive, so what
+ *       it holds is released.</li>
  * </ul>
  *
- * <p>A wait already in progress when the window opens -- an idle IPC
- * connection, a daemon's first sleep -- converts: the window's opening wakes
- * it ({@link #windowOpened}), which is not a signal, and from there it is
- * held like any other.  The discovering session's schedule states when that
- * thread woke inside the window, and a replay that left it on the wall clock
- * would hold everything behind it for as long as its real timeout ran.</p>
+ * <p>A wait in progress when the window opens is woken ({@link
+ * #windowOpened}) and from then on held.  A poll's returned element is a
+ * CLAIM ({@code Identity.claimStart}), never a WAKE.</p>
  *
- * <p>An element a timed poll returns is not a WAKE: it is the CLAIM of the
- * work a producer handed over ({@code Identity.claimStart}), and it is
- * returned the moment it arrives.  A poll's WAKE is always its timeout.</p>
+ * <p>A SIGNAL IS STATE.  A held wait leaves the wait set every quantum, so a
+ * notify in that gap would be lost.  Hence notifiers are woven too and each
+ * monitor or condition wait registers for its whole length: a notify marks
+ * the longest-standing unmarked wait, a notifyAll every one, and the wait
+ * reads its mark.</p>
  *
- * <p>A SIGNAL IS STATE.  A notify or a condition signal reaches only a thread
- * that is in the wait set at that instant, and a real wait is there for its
- * whole length; a held wait is not -- it leaves at the end of every quantum
- * to ask for its turn, and the window's opening takes a free one out too.  A
- * notify that lands in such a gap finds nobody, and the waiter, which never
- * returns to its caller's own condition check, waits for a signal already
- * sent.  So the weave replaces the notifiers as well --
- * {@code notify}, {@code notifyAll}, {@code Condition.signal} and
- * {@code signalAll} -- and every wait on a monitor or a condition, timed or
- * not, registers for the whole of its length: a woven signal marks the wait
- * it chose, and the wait reads the mark whether or not it was in the wait
- * set when the signal came.  A notify marks the longest-standing unmarked
- * wait and a notifyAll every one; the monitor is then notified in full and
- * the waits that were not chosen go back to waiting, as the waits the JDK did
- * not choose never left.  A wait that returns early with no woven signal and
- * no window's wake behind it was ended by a notifier outside the weave, and
- * ends as it did before.</p>
+ * <p>AN INTERRUPT IS THE WORKLOAD'S: it writes an INTERRUPT where the wait
+ * stands, never held, and throws as the JDK would (a park returns).</p>
  *
- * <p>AN INTERRUPT IS THE WORKLOAD'S: a wait it ends writes an INTERRUPT
- * event where it stands, free or held, never held itself, and throws as the
- * JDK's wait would (a park returns).  A held wait is ended by virtual time
- * only at a WAKE slot, so a daemon the recording's workload stopped by an
- * interrupt is not handed a timeout it never had.  A park entered with its
- * interrupt pending writes nothing, since the JDK's park returns at once and
- * a loop around it spins.</p>
- *
- * <p>ONE LIMIT, stated: a notify from outside the weave that wakes a
- * registered wait is invisible to the registry, so a woven notify that
- * follows it on the same monitor may mark the wait it already woke.  Inside
- * the application scope every notifier is woven; it takes a notifier
- * outside it on an application monitor.</p>
+ * <p>LIMIT: an unwoven notify on an application monitor is invisible to the
+ * registry, so a later woven notify may mark the wait it already woke.</p>
  */
 public final class TimedWaits {
     /** How long a wait polls between asks for its turn, in ms. */
     private static final long QUANTUM_MS = 10L;
     /**
-     * A wait that ends at least this much before its time, with no woven
-     * signal or window's wake sent, was ended by a notifier outside the weave
-     * (or an unpark, for a park).  A woven signal needs no such guess: it is
-     * read from the wait's mark.
+     * Returning this early with no woven signal or window wake sent means a
+     * notifier outside the weave (or an unpark).
      */
     private static final long EARLY_NANOS = TimeUnit.MICROSECONDS.toNanos(50L);
 
@@ -104,9 +62,8 @@ public final class TimedWaits {
     private static final Object PARKED = new Object();
 
     /**
-     * The waits standing on each monitor or condition, and the signals sent
-     * to them.  Guarded by itself, and the innermost of every lock: taken
-     * with the application's monitor or lock held, never the other way.
+     * Waits and signals per monitor or condition.  Guarded by itself, the
+     * INNERMOST lock: never held while taking an application lock.
      */
     private static final Map<Object, Waits> WAITS =
             new IdentityHashMap<Object, Waits>();
@@ -119,10 +76,7 @@ public final class TimedWaits {
         volatile boolean onTheClock;
         volatile long deadline;
 
-        /**
-         * Whether the wall clock has already ended this wait: the JDK took
-         * it out of the wait set at its timeout, so no signal is its.
-         */
+        /** The JDK already took it out of the wait set at its timeout. */
         boolean expired() {
             return onTheClock && System.nanoTime() - deadline >= 0L;
         }
@@ -139,14 +93,9 @@ public final class TimedWaits {
     }
 
     /**
-     * The recording window opened under an order: every free wait in
-     * progress is woken, and converts to virtual time where it stands.
-     *
-     * <p>A monitor wait is woken by a notify on its monitor, which every
-     * waiter must already treat as possibly spurious; a sleep waits on a
-     * lock of its own for exactly this; a park is unparked.  Each is marked
-     * first, so the wait it ends does not read it as a signal.  Called with
-     * no lock of this runtime held.</p>
+     * The window opened under an order: every free wait is woken (marked first,
+     * so it is no signal) and converts to virtual time.  Called with no lock of
+     * this runtime held.
      */
     static void windowOpened() {
         for (Map.Entry<Thread, Object> waiting : WAITING.entrySet()) {
@@ -157,8 +106,7 @@ public final class TimedWaits {
                 continue;
             }
             synchronized (on) {
-                // Counted as sent, so no other wait on this monitor reads
-                // the wake as a notifier's.
+                // Counted as sent: no other wait reads it as a notifier's.
                 touch(on);
                 on.notifyAll();
             }
@@ -191,11 +139,8 @@ public final class TimedWaits {
     }
 
     /**
-     * A sleep: on the wall clock while free, on a lock of its own so the
-     * window's opening can wake it; held to its turn once enforced, and back
-     * on the wall clock, to its own deadline, when the run goes free before
-     * the turn came ({@code ScheduleLog.turn}).  Nothing signals a sleep, so
-     * its WAKE is always its timeout.
+     * A sleep: wall clock while free, held to its turn once enforced.  Nothing
+     * signals a sleep, so its WAKE is always its timeout.
      */
     private static void sleepFor(long millis, int nanos, String site)
             throws InterruptedException {
@@ -216,7 +161,7 @@ public final class TimedWaits {
         wake(site);
     }
 
-    /** A sleep's quantum: nothing signals a sleep, only time or an interrupt. */
+    /** A sleep's quantum: only time or an interrupt ends it. */
     private static Quantum sleepQuantum() {
         final Object lock = new Object();
         return new Quantum() {
@@ -230,10 +175,7 @@ public final class TimedWaits {
         };
     }
 
-    /**
-     * Sleeps on the wall clock to {@code deadline}.  True when the window
-     * opened under an order first, and the sleep is to take its turn.
-     */
+    /** Sleeps on the wall clock; true when the window opened first. */
     private static boolean freeSleep(long deadline, String site)
             throws InterruptedException {
         Object lock = new Object();
@@ -269,17 +211,12 @@ public final class TimedWaits {
         park(blocker, nanos, site);
     }
 
-    /**
-     * A park: free, on the wall clock, and signalled when it returned before
-     * its time (an unpark); held, until an unpark or its timeout turn.
-     */
+    /** A park: free on the wall clock, held until an unpark or its turn. */
     private static void park(Object blocker, long nanos, String site) {
         WakeScopes.waiting(site);
         if (Thread.currentThread().isInterrupted()) {
-            // The JDK's park returns at once for a thread already
-            // interrupted, and keeps the flag, so a loop that parks again
-            // spins: no event, held or free, or it would write one per spin
-            // and no two runs would write the same number.
+            // An interrupted park returns at once and its loop spins: no event,
+            // or no two runs would write the same number.
             WakeScopes.woke(site);
             return;
         }
@@ -297,9 +234,7 @@ public final class TimedWaits {
             }
             boolean byWindow = WINDOW_WOKEN.remove(self);
             if (self.isInterrupted()) {
-                // An interrupt ended it while it was parked: the held park
-                // writes its WAKE where it stands (takeTurn asks
-                // Quantum#endsNow before anything), and so does the free one.
+                // Interrupted while parked: its WAKE is written in place.
                 interruptedWake(site);
                 WakeScopes.woke(site);
                 return;
@@ -318,8 +253,7 @@ public final class TimedWaits {
         return new Quantum() {
             @Override
             boolean endsNow() {
-                // A park returns at once for an interrupted thread, and the
-                // caller reads the flag; so does this one, turn or no turn.
+                // An interrupted thread's park returns at once.
                 return Thread.currentThread().isInterrupted();
             }
 
@@ -358,10 +292,8 @@ public final class TimedWaits {
     }
 
     /**
-     * A notify: marks the longest-standing unmarked wait on the monitor, then
-     * notifies every wait there so the marked one sees it wherever it
-     * stands; the rest go back to waiting.  With no wait of the weave's on
-     * it, the plain notify.
+     * A notify: marks the longest-standing unmarked wait, then notifies all;
+     * the unchosen go back to waiting.
      */
     public static void notifyOn(Object monitor, String site) {
         if (!Thread.holdsLock(monitor)) {
@@ -392,8 +324,7 @@ public final class TimedWaits {
         }
         WakeScopes.waiting(site);
         if (millis == 0L && nanos == 0) {
-            // wait(0) waits for a signal and nothing else: no timeout, so no
-            // turn of time's, held or free.
+            // wait(0) has no timeout, so no turn of time's.
             untimedMonitorWait(monitor);
             WakeScopes.woke(site);
             return;
@@ -414,11 +345,7 @@ public final class TimedWaits {
         }
     }
 
-    /**
-     * An untimed wait: registered, so a woven notify meant for it is not
-     * lost, and a notifyAll's wake meant for another wait is not taken for
-     * one.  Held or free alike, since time never ends it.
-     */
+    /** An untimed wait, registered so a woven notify meant for it is kept. */
     private static void untimedMonitorWait(Object monitor)
             throws InterruptedException {
         Waiter self = enter(monitor);
@@ -427,8 +354,7 @@ public final class TimedWaits {
                 long seen = sent(monitor);
                 waitMarked(monitor, 0L, self);
                 if (!self.signalled && sent(monitor) == seen) {
-                    // A notifier outside the weave, or a spurious wakeup:
-                    // the caller checks its condition, as it must anyway.
+                    // Outside notifier or spurious wakeup: caller re-checks.
                     return;
                 }
             }
@@ -437,11 +363,7 @@ public final class TimedWaits {
         }
     }
 
-    /**
-     * One free timed monitor wait, on the wall clock, woken early by the
-     * window's opening.  True when a signal ended it; false at its timeout,
-     * or when the window opened first -- it then converts to virtual time.
-     */
+    /** One free timed monitor wait; true when a signal ended it. */
     private static boolean freeMonitorWait(Object monitor, Waiter self,
                                            long deadline, String site)
             throws InterruptedException {
@@ -453,8 +375,7 @@ public final class TimedWaits {
         try {
             while (true) {
                 if (self.signalled) return true;
-                // Asked after this wait stands in WAITING, so a window that
-                // opened without finding it there is seen here.
+                // Asked after entering WAITING: sees a window opened meanwhile.
                 if (WINDOW_WOKEN.remove(thread) || ScheduleLog.enforcing()) {
                     return false;
                 }
@@ -468,8 +389,7 @@ public final class TimedWaits {
                 if (sent(monitor) == seen && System.nanoTime() - before
                         < TimeUnit.MILLISECONDS.toNanos(asked)
                                 - EARLY_NANOS) {
-                    // Early, and no woven signal or window wake was sent: a
-                    // notifier outside the weave.
+                    // Early with nothing sent: a notifier outside the weave.
                     return true;
                 }
             }
@@ -486,12 +406,9 @@ public final class TimedWaits {
     }
 
     /**
-     * One physical wait of a registered monitor wait ({@code millis} 0 is
-     * untimed).  An interrupt that finds the wait already MARKED by a woven
-     * notify does not throw: the notify chose this wait, and a wait that
-     * threw would take the notify with it, which JLS 17.2.4 forbids -- the
-     * thread returns normally with its interrupt still pending, one of the
-     * two outcomes the JLS allows a thread both notified and interrupted.
+     * One physical wait ({@code millis} 0 is untimed).  A MARKED wait that is
+     * interrupted returns normally with the interrupt pending: throwing would
+     * lose the notify (JLS 17.2.4).
      */
     private static void waitMarked(Object monitor, long millis, Waiter self)
             throws InterruptedException {
@@ -504,11 +421,9 @@ public final class TimedWaits {
     }
 
     /**
-     * A timed wait entered with its interrupt pending throws at once, as the
-     * JDK's does ({@code Object.wait}, AQS {@code await}) -- held or free,
-     * and before any turn is asked for, so a held wait whose WAKE happens to
-     * be next is not taken for a timeout.  Its WAKE is written first, as any
-     * wait an interrupt ends writes it ({@link #interruptedWake}).
+     * A timed wait entered interrupted throws at once, as the JDK's does,
+     * before any turn is asked; its INTERRUPT is written first ({@link
+     * #interruptedWake}).
      */
     private static void interruptedAtEntry(String site)
             throws InterruptedException {
@@ -517,11 +432,7 @@ public final class TimedWaits {
         throw new InterruptedException();
     }
 
-    /**
-     * THE INTERRUPT OF A WAIT, one rule for free and held: the interrupt is
-     * the workload's, the wait ends where it stands, and its INTERRUPT is
-     * written there and never held -- the interrupter's own events order it.
-     */
+    /** THE INTERRUPT OF A WAIT, free or held: written in place, never held. */
     private static void interruptedWake(String site) {
         ScheduleLog.observe(ScheduleEvent.Kind.INTERRUPT, site);
     }
@@ -537,10 +448,7 @@ public final class TimedWaits {
         }
     }
 
-    /**
-     * {@link #waitMarked}'s rule for a condition's timed await; a marked
-     * wait that was interrupted states time left, as a signalled one does.
-     */
+    /** {@link #waitMarked}'s rule for a timed await; states time left. */
     private static long awaitNanosMarked(Condition condition, long nanos,
                                          Waiter self)
             throws InterruptedException {
@@ -592,9 +500,7 @@ public final class TimedWaits {
                     freeConditionWait(condition, self, deadline, site);
             boolean outcome = takeTurn(site, signalled,
                     conditionQuantum(condition, self), deadline);
-            // Virtual time: the turn came, by a signal or not as the order
-            // said; a caller that re-checks its condition -- every loop that
-            // waits this way does -- reads the rest.
+            // Virtual time: the caller re-checks its condition.
             return outcome ? Math.max(1L, deadline - System.nanoTime()) : 0L;
         } finally {
             leave(condition, self);
@@ -648,10 +554,8 @@ public final class TimedWaits {
     }
 
     /**
-     * A signal: {@link #notifyOn}'s rule.  The condition cannot say whether
-     * this thread holds its lock, so the real signal goes first and refuses
-     * a caller that does not; one that does holds every wait on the
-     * condition still, and the mark is set before any of them can look.
+     * A signal: {@link #notifyOn}'s rule.  The real signal goes first, so a
+     * caller without the lock is refused before any mark is set.
      */
     public static void signal(Condition condition, String site) {
         boolean registered = standing(condition);
@@ -669,11 +573,7 @@ public final class TimedWaits {
         if (registered) send(condition, true);
     }
 
-    /**
-     * The free part of a timed condition wait: in quanta, so the window's
-     * opening is seen within one.  True when a signal ended it; false at its
-     * deadline, or when the window opened first.
-     */
+    /** The free part of a timed condition wait, in quanta; true on a signal. */
     private static boolean freeConditionWait(Condition condition,
                                              Waiter self, long deadline,
                                              String site)
@@ -766,18 +666,14 @@ public final class TimedWaits {
         }
     }
 
-    /**
-     * Marks the longest-standing unmarked wait on {@code on}, or every wait
-     * when {@code all}.  True when any wait stood there.
-     */
+    /** Marks the longest-standing unmarked wait, or all; true if any stood. */
     private static boolean send(Object on, boolean all) {
         synchronized (WAITS) {
             Waits waits = WAITS.get(on);
             if (waits == null) return false;
             waits.sent++;
             for (Waiter waiter : waits.waiters) {
-                // A wait the wall clock already ended is out of the JDK's
-                // wait set: the signal goes to one still in it.
+                // A wait its clock already ended is out of the JDK's wait set.
                 if (waiter.signalled || waiter.expired()) continue;
                 waiter.signalled = true;
                 if (!all) break;
@@ -803,9 +699,7 @@ public final class TimedWaits {
         // The JDK's timed poll takes its lock interruptibly, even poll(0).
         interruptedAtEntry(site);
         long deadline = System.nanoTime() + unit.toNanos(timeout);
-        // Free: in quanta, so the window's opening is seen within one.  An
-        // element is returned the moment it arrives -- the consumer's CLAIM
-        // of it, which the weave states after the call returns.
+        // Free, in quanta.  A returned element is a CLAIM, not a WAKE.
         while (!ScheduleLog.enforcing()) {
             long left = deadline - System.nanoTime();
             if (left <= 0L) {
@@ -876,56 +770,36 @@ public final class TimedWaits {
             return false;
         }
 
-        /**
-         * The wait now stands on the wall clock to {@code deadline}: no
-         * slot holds it any more ({@link Waiter#expired}).
-         */
+        /** No slot holds the wait any more: it stands on the wall clock. */
         void onTheClock(long deadline) {
         }
 
-        /**
-         * Whether the wait must end now, whatever the order says: only an
-         * interrupted park, which cannot throw.  An interrupted monitor or
-         * condition wait ends by its quantum throwing, as the real one does.
-         */
+        /** Only an interrupted park, which cannot throw, must end now. */
         boolean endsNow() {
             return false;
         }
     }
 
     /**
-     * Ends one wait, and says how it ended: true by a signal.
+     * Ends one wait; true when a signal ended it.
      *
-     * <p>A WAKE is the turn TIME hands a thread, so only a wait its timeout
-     * ended is an event.  A wait a signal ended -- a notify, a condition
-     * signal, an unpark -- was ended by another thread, whose own events the
-     * schedule already orders; it is no turn of its own, and it is neither
-     * recorded nor held.  hdfs-17899-bug3 is why: an idle IPC connection the
-     * recording saw notified at one point was, in every replay, notified
-     * somewhere else or not at all -- what notifies it is the state the
-     * connection was left in before the window -- and a replay held to that
-     * wake waited for a signal that never came.</p>
+     * <p>Only a TIMEOUT is a WAKE.  A signal is another thread's doing, which
+     * the schedule already orders; holding a replay to a recorded signal waits
+     * for one that may never come.</p>
      *
-     * <p>Free, the wait already ended: a timeout is recorded, a signal is
-     * not.  Held, the wait waits in quanta on its own primitive for a
-     * signal -- which ends it at once, no event -- or for its WAKE slot to
-     * be due, which ends it at that turn without reading the clock (virtual
-     * time).  Asking every quantum is also what keeps the watchdog looking.
-     * When no slot holds its timeout, it waits on for a signal or to its own
-     * deadline on the wall clock, and its WAKE is written only if that
-     * deadline ends it ({@code ScheduleLog.turn}, {@code timedOut}).</p>
+     * <p>Held, the wait asks every quantum (which also drives the watchdog) and
+     * ends at a signal or when its WAKE slot is due.  With no slot left it
+     * waits to its own deadline on the wall clock ({@code ScheduleLog.turn},
+     * {@code timedOut}).</p>
      */
     private static boolean takeTurn(String site, boolean signalled,
                                     Quantum quantum, long deadline)
             throws InterruptedException {
-        // Null: the window is not open, or the event has no name.  The wait
-        // then has no turn to take, and ends as a free one does.
+        // Null: no window or no name; ends as a free wait.
         ScheduleLog.Wake wake = ScheduleLog.wake(site);
         try {
             return turns(site, signalled, quantum, deadline, wake);
         } finally {
-            // However it ended -- a signal above all -- it no longer waits
-            // at the position it asked at.
             ScheduleLog.withdraw(wake);
         }
     }
@@ -936,9 +810,7 @@ public final class TimedWaits {
             throws InterruptedException {
         while (true) {
             if (quantum.endsNow()) {
-                // An interrupt ended it: the INTERRUPT is written where it
-                // stands, and the order stands for the rest.  Asked first,
-                // as the free park asks: an interrupt beats an unpark.
+                // Interrupt first: it beats an unpark.
                 interruptedWake(site);
                 WakeScopes.woke(site);
                 return true;
@@ -968,8 +840,7 @@ public final class TimedWaits {
             try {
                 if (quantum.await(wait)) signalled = true;
             } catch (InterruptedException interrupted) {
-                // The wait ends where it is, held or free, and its
-                // INTERRUPT is written there.
+                // Interrupted: its INTERRUPT is written here.
                 interruptedWake(site);
                 throw interrupted;
             }

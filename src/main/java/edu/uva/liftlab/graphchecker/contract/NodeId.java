@@ -3,12 +3,8 @@ package edu.uva.liftlab.graphchecker.contract;
 import java.util.Objects;
 
 /**
- * CONTRACT-SPEC 1: a component instance and its topology epoch.
- *
- * <p>Rendered {@code <node>#epoch<N>}, e.g. {@code hdfs-17897/dn0#epoch0}.  The
- * node name itself carries slashes (the workload names a case and a role); the
- * epoch is the lifecycle the workload declared, so the same label means the
- * same lifecycle in a recording and in every replay of it.</p>
+ * CONTRACT-SPEC 1: a component instance and its declared topology epoch,
+ * rendered {@code <node>#epoch<N>} (the node name may carry slashes).
  */
 public final class NodeId {
     /** The one spelling of the epoch separator. */
@@ -27,13 +23,7 @@ public final class NodeId {
                 Fields.count(epoch, "epoch"));
     }
 
-    /**
-     * Reads {@code <node>#epoch<N>}.
-     *
-     * <p>A string that does not spell a node and an epoch is refused naming
-     * itself: an address nobody can read must not half-parse into one that
-     * matches something.</p>
-     */
+    /** Reads {@code <node>#epoch<N>}; refuses, never half-parses, the rest. */
     public static NodeId parse(String rendered) {
         String value = rendered == null ? "" : rendered.trim();
         int marker = value.lastIndexOf(EPOCH_MARKER);

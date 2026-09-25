@@ -6,15 +6,8 @@ import java.util.List;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
-/**
- * The one plan row shape.  {@link RegionInstancePlan} and {@link ExecutionTask}
- * are two views of it, so the region occurrence, its relation and the exact
- * mint sites it executed are decoded once, here, and consumers take the typed
- * values instead of re-reading the wire.
- *
- * <p>{@link #json()} is the live backing object, never a copy: a decoded row is
- * read-only, and the scheduler alone mutates a task row it has just created and
- * then drops the row it created it from.
+/** The one plan row shape; {@link RegionInstancePlan} and {@link ExecutionTask}
+ *  are views of it. {@link #json()} is the live object: read-only once decoded.
  */
 public abstract class PlanRow {
     final JsonObject encoded;
@@ -26,8 +19,8 @@ public abstract class PlanRow {
         this(source, label, null);
     }
 
-    /** {@code decoded} are the phases a caller that built this row already
-     *  holds: passing them keeps one decode per row. */
+    /** {@code decoded}: phases the caller already holds (one decode per row).
+     */
     PlanRow(JsonObject source, String label,
             List<ConfiguredSourcePhaseContract.Occurrence> decoded) {
         this.encoded = source;
@@ -61,7 +54,6 @@ public abstract class PlanRow {
 
     public String regionId() { return optionalString(encoded, "regionId"); }
 
-    /** This occurrence's catalog of executed mint sites, decoded once. */
     public List<ConfiguredSourcePhaseContract.Occurrence>
             configuredSourcePhases() {
         return phases;

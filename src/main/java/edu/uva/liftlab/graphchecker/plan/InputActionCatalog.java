@@ -10,28 +10,15 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.text;
  */
 public final class InputActionCatalog {
     public static final String FIELD = "inputActions";
-    /**
-     * Marks an input the experiment's {@code symbolic-inputs.jsonl} named by
-     * hand, as opposed to one an automatic mechanism proposed.
-     *
-     * <p>The replay reads it: a declared primitive source mints its root even
-     * when the value arrives wrapped in a carrier over a constant, which is
-     * the only way an experiment can say "the search starts at this field"
-     * about a field nothing symbolic has reached yet.</p>
-     */
+    /** Input the case named by hand in {@code symbolic-inputs.jsonl}. A
+     *  declared primitive source mints its root even when wrapped in a carrier
+     *  over a constant, so a case can start the search at a field nothing
+     *  symbolic reached. */
     public static final String DECLARED_SYMBOLIC_ROOT =
             "declaredSymbolicRoot";
-    /**
-     * Marks an input the case declared to be a wall-clock read.
-     *
-     * <p>A clock is the one root kind the composer moves differently -- it
-     * rides an offset from what the recording read rather than a value of its
-     * own -- so which reads are clocks has to be stated, not recognised.  The
-     * case says so on the {@code symbolic-inputs.jsonl} row that declares the
-     * cell; the planner copies the flag onto the action, the replay reads it
-     * off the action, and the mint row states it for the composer.  Nothing
-     * matches a callee name against a list.</p>
-     */
+    /** Input the case declared to be a wall-clock read. The composer moves a
+     *  clock by an offset from the recorded read, so clocks are declared on the
+     *  input row, never recognised by callee name. */
     public static final String DECLARED_WALL_CLOCK = "clock";
 
     public enum Mode {
@@ -78,9 +65,7 @@ public final class InputActionCatalog {
         return new InputActionCatalog(all, symbolic);
     }
 
-    /** The catalog's own rows, not a copy: {@code decode} already isolated
-     *  them from the task json and {@link #symbolic()} aliases the same
-     *  objects, so a consumer reads them and never writes. */
+    /** The catalog's own rows (read-only); {@link #symbolic()} aliases them. */
     public JsonArray all() { return all; }
 
     /** The {@code SYMBOLIC} rows of {@link #all()}, aliased, never copied. */

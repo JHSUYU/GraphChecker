@@ -5,14 +5,10 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * CONTRACT-SPEC 4: the conclusion, with what it took and what it stepped over.
- *
- * <p>{@code valuationOrdinal} is which enumerated valuation carried it (0 is
- * the recorded one); {@code movedRoots} names every root that had to move and
- * to what; {@code polarityDecides} says the seed disjunct is unsat at the
- * recorded valuation, which is what separates an explanation from a formula
- * that was always satisfiable.  The gaps travel with the claim so that a report
- * can never state the conclusion without the diagnostics it stands on.</p>
+ * CONTRACT-SPEC 4: the conclusion, with what it took and what it stepped
+ * over.  {@code polarityDecides} separates an explanation from a formula
+ * that was always satisfiable.  Gaps travel with the claim so no report
+ * states it without them.
  */
 public final class Claim {
     private final ClaimKind kind;
@@ -62,7 +58,6 @@ public final class Claim {
         return gaps;
     }
 
-    /** Whether any gap this claim carries blocks it. */
     public boolean blocked() {
         for (GapRow gap : gaps) {
             if (gap.blocking()) return true;

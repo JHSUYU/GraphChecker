@@ -3,25 +3,11 @@ package edu.uva.liftlab.graphchecker.contract;
 import java.util.Objects;
 
 /**
- * IDENTITY-IMPL A and D: what a case declaration selects, before resolution.
- *
- * <p>A human writes {@code node#epoch/region/REGION.x@src#epoch/api#k}, not an
- * execution index.  {@link OccurrenceAddress#parseSelector} reads that into
- * this: the component, the region, the api when one is given, and k.  The
- * scheduler resolves it against the SEED session -- the occurrences on that
- * component whose region matches and, when an api is given, whose
- * {@link CausalContext.Anchor} arrived on that api, taken in seed order, k-th.
- * That last step is the scheduler's: this type answers only "is this occurrence
- * one of the candidates".</p>
- *
- * <p>The component is optional because a selector may be written without one,
- * but it is read and kept when the declaration spells it: two components of one
- * session can run the same region, and a selector that dropped the node would
- * hand the k-th match on the wrong node to the campaign.</p>
- *
- * <p>A selector is deliberately not an address and never becomes one by
- * parsing.  A resolved id is published in the manifest; exploration and
- * composition use ids only.</p>
+ * IDENTITY-IMPL A and D: what a case declaration selects, before resolution
+ * ({@link OccurrenceAddress#parseSelector}).  This type answers only "is this
+ * occurrence a candidate"; the scheduler picks the k-th in seed order.  The
+ * node is optional but kept when spelled.  Never an address: only resolved
+ * ids reach exploration and composition.
  */
 public final class Selector {
     private final String regionId;
@@ -61,13 +47,9 @@ public final class Selector {
     }
 
     /**
-     * Whether {@code occurrence} is one of this selector's candidates.
-     *
-     * <p>{@code rpcSiteApi} is the api the caller read out of the occurrence's
-     * anchor -- the contract does not know how a deployment spells an RPC
-     * static site, so the one thing it will not do is guess the api out of it.
-     * A selector that names an api matches no occurrence that no message
-     * started, and one that names a component matches nothing on another.</p>
+     * Whether {@code occurrence} is a candidate.  {@code rpcSiteApi} comes
+     * from the caller, since the contract cannot parse an RPC site; an api
+     * selector matches only ANCHOR occurrences.
      */
     public boolean matches(OccurrenceAddress occurrence, String rpcSiteApi) {
         if (occurrence == null || !regionId.equals(occurrence.regionId())) {

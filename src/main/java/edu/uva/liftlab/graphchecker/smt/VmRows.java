@@ -13,15 +13,10 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
 /**
- * The spellings the VM uses inside a recorded expression.
- *
- * <p>These are members of the recording's own JSON, not of the Design 3
- * row contract: a read node's {@code observedVersion}, the tag a resolved
- * read carries its recorded value under, the {@code M_L'class'_rid} shape
- * of an object reference, and the truncation marker the serializer writes
- * when an expression was too deep to publish.  They live here, beside the
- * lowering that reads them, so that the whole of {@code compose} depends
- * on nothing but {@code contract} and the VM's own format.</p>
+ * The spellings the VM uses inside a recorded expression (not the row
+ * contract): read versions, recorded readings, object references and the
+ * truncation marker.  Kept here so {@code compose} depends only on
+ * {@code contract} and the VM's format.
  */
 public final class VmRows {
     private VmRows() {
@@ -43,15 +38,7 @@ public final class VmRows {
             "VM_SERIALIZATION_TRUNCATION_V1";
     private static final int MAX_DEPTH = 512;
 
-    /**
-     * The object id one reference symbol names, or -1.
-     *
-     * <p>{@code M_L'org/apache/hadoop/.../BlockKey'_42} is the VM's spelling
-     * for "the object the runtime gave rid 42".  Which object an execution
-     * ran on says nothing about the failure, but that it was an object, and
-     * a different one from its neighbours, are recorded facts the lowering
-     * states.</p>
-     */
+    /** The rid one {@code M_L'class'_rid} reference symbol names, or -1. */
     public static long referencedObjectRid(String symbol) {
         if (symbol == null) return -1L;
         int quoted = symbol.lastIndexOf("'_");
@@ -80,11 +67,8 @@ public final class VmRows {
     }
 
     /**
-     * Whether the serializer cut this expression short.
-     *
-     * <p>A truncated expression is not a value the composition may lower: it
-     * is the recording saying it did not publish one.  Lowering it anyway
-     * would put a free constant where a chain was.</p>
+     * Whether the serializer cut this expression short; such a value must
+     * not be lowered (it would become a free constant).
      */
     public static boolean truncated(JsonElement expression) {
         if (expression == null) return false;
@@ -94,12 +78,8 @@ public final class VmRows {
         pending.push(expression);
         int steps = 0;
         while (!pending.isEmpty()) {
-            // THE BUDGET IS A REFUSAL, NOT AN ANSWER.  "false" here means
-            // "the recording published this expression whole", and a walk
-            // that ran out of steps has established no such thing: it has
-            // only stopped looking.  Reading it as false let the lowering
-            // put a free constant where a cut chain was -- the same
-            // fail-open the truncation marker exists to close.
+            // THE BUDGET IS A REFUSAL, NOT AN ANSWER: "false" would claim
+            // the expression is whole, which is fail-open.
             if (steps++ >= MAX_DEPTH * MAX_DEPTH) {
                 throw new IllegalStateException("this expression could not"
                         + " be walked for the serializer's truncation"

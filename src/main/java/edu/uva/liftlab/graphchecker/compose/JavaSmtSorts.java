@@ -6,11 +6,8 @@ import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Sort;
 
 
 /**
- * The Java type vocabulary the SMT lowering names, in one place.
- *
- * <p>Which SMT sort a recorded Java type denotes is a property of Java and
- * of {@link VmTermLowering}'s sort set, not of any one composer, so every
- * caller reads it here rather than keeping a copy.</p>
+ * Which {@link VmTermLowering.Sort} a recorded Java type denotes; every
+ * caller reads it here.
  */
 public final class JavaSmtSorts {
     private JavaSmtSorts() {

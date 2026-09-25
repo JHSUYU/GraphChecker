@@ -67,39 +67,19 @@ final class ConcolicTaskPlan {
     final Path resultFile;
     final List<RuntimeTask> tasks;
     /**
-     * Tasks whose occurrence is running as a candidate right now, and
-     * tasks whose candidate confirmed its anchor and published.
-     *
-     * <p>Together they turn admission into what README {@code OCC-1} asks
-     * for: every compatible root invocation is a candidate for the
-     * address, one at a time, until one of them is the addressed
-     * occurrence.</p>
+     * Tasks with a candidate running now, and tasks whose candidate
+     * published: every compatible root invocation is a candidate, one at a
+     * time, until one is the addressed occurrence (README {@code OCC-1}).
      */
     final boolean[] candidateLive;
     final boolean[] occurrenceClaimed;
-    /**
-     * Each task's slot in {@link #candidateLive} and
-     * {@link #occurrenceClaimed}, by the task object itself.
-     *
-     * <p>A task is its own identity here -- it declares no {@code equals} --
-     * and the two arrays are addressed by position, so the position is looked
-     * up rather than searched for.  {@code tasks.indexOf} walked the whole
-     * plan under this monitor on every admitted occurrence and every released
-     * candidate.</p>
-     */
+    /** Each task's slot in the two arrays above, by task identity. */
     private final Map<RuntimeTask, Integer> slots =
             new IdentityHashMap<RuntimeTask, Integer>();
     /**
-     * The hook group of each {@code (instrumentationSelector, rootMethod)}
-     * this run has entered.
-     *
-     * <p>{@link #rootHookGroup} is a function of the pair and of
-     * {@link #tasks}, which is unmodifiable, so its answer is a property of
-     * the pair: computed on the first entry at that hook and read from here
-     * afterwards.  It scanned the plan twice at EVERY woven root entry --
-     * {@code ConcolicRegionRuntime.enterRegionFrame} asks before it knows
-     * whether the hook is even a sibling of one already open -- which is
-     * where hdfs-11741's replay threads were found blocked.</p>
+     * Memo of {@link #rootHookGroup} per {@code (instrumentationSelector,
+     * rootMethod)}; the plan is immutable, and scanning it at every woven
+     * root entry blocked replay threads.
      */
     private final Map<String, RootHookGroup> rootHookGroups =
             new LinkedHashMap<String, RootHookGroup>();
@@ -128,14 +108,8 @@ final class ConcolicTaskPlan {
     }
 
     /**
-     * States every selected address this run could not answer with exactly
-     * one occurrence, once each, now that the run is over and both "never
-     * registered in this run" and "several activations fit" are decidable
-     * rather than snapshots the same run can contradict.
-     *
-     * <p>An address nothing answered is a coverage statement about the
-     * replay; an address several activations answered is README {@code
-     * OCC-1}'s ambiguity, a statement about the address itself.</p>
+     * States every address this run did not answer, once each, at run end:
+     * only then are "never registered" and "several fit" decidable.
      */
     void publishUnansweredAddresses() {
         List<RuntimeTask> unanswered = new ArrayList<RuntimeTask>();
@@ -143,26 +117,15 @@ final class ConcolicTaskPlan {
             if (unansweredAddressesPublished) return;
             unansweredAddressesPublished = true;
             for (int index = 0; index < tasks.size(); index++) {
-                // An address that published at least one occurrence has been
-                // answered for end-of-run diagnostics. Goal completion owns
-                // the separate decision to admit another activation.
                 if (occurrenceClaimed[index]) continue;
                 unanswered.add(tasks.get(index));
             }
         }
-        // Rendering a refusal reads the endpoints this run filed and digests
-        // the addresses it names, and it happens here -- once per address
-        // nothing answered, with this monitor released.  It used to happen
-        // once per candidate COMPARISON, inside #select, and hdfs-11741's
-        // seed replay then spent 980 seconds with every woven thread blocked
-        // behind the one holding this monitor to hash.
+        // Render outside the monitor: rendering digests addresses, and doing
+        // it per comparison inside #select blocked every woven thread.
         for (RuntimeTask task : unanswered) {
             if (task.unaddressedCandidates == 0) {
-                // Nothing compatible ran at all -- not one activation the
-                // address could have been compared against.  That is a
-                // different statement from "several ran and none matched",
-                // and it used to be no statement: the task published neither
-                // an activation nor a skip, and the importer met silence.
+                // Nothing compatible ran: not the same as "none matched".
                 taskUnanswered(task, "ROOT_NEVER_EXECUTED: the planned root"
                         + " did not execute in this replay: no compatible"
                         + " activation was offered for "
@@ -178,27 +141,17 @@ final class ConcolicTaskPlan {
     }
 
     /**
-     * One candidate that ran and was not the addressed occurrence: the facts
-     * of the refusal, not a sentence about it.
-     *
-     * <p>A refusal is stated once, at {@code TASK_UNANSWERED}, and admission
-     * only files what the sentence is made of -- the prefix, the address the
-     * activation ran at, the node this run attributed it to and the thread it
-     * ran on.  All four are already in hand at the comparison; rendering them
-     * is what is not, because it digests two addresses and searches the
-     * endpoints this run filed for the two anchors behind them.</p>
-     *
-     * <p>Distinct refusals stay distinct: the four facts ARE the identity the
-     * rendered sentence had, so the set the run reports is the same set.</p>
+     * One candidate that ran and was not the addressed occurrence, as facts
+     * (prefix, observed address, attribution, thread); rendered once, at
+     * {@code TASK_UNANSWERED}, because rendering is expensive.  The four
+     * facts are the refusal's identity.
      */
     static final class RefusedCandidate {
         private final String said;
         /** The address the activation ran at, or null when {@code said} is
          * the whole reason. */
         private final OccurrenceAddress observed;
-        /** Which node this run attributed the candidate to, as the sentence
-         * states it, or {@code ""} where the refusal states no node.  Short
-         * enough to render where it is read; the address is not. */
+        /** The node this run attributed the candidate to, or {@code ""}. */
         private final String attribution;
         private final String thread;
 
@@ -233,18 +186,8 @@ final class ConcolicTaskPlan {
         }
 
         /**
-         * One refused candidate, as a sentence a reader can act on.
-         *
-         * <p>Two facts every refusal owes and neither of which it carried:
-         * the thread the candidate ran on -- filed when it ran -- and a
-         * difference that is actually stated.  A row whose difference was
-         * empty read as "matching root:  (attributed to X)", which is the
-         * shape 11741's balancer#3 and 17897's dn0#1 were reported in: the
-         * address matched and something else refused it, and the row said
-         * neither half out loud.  Both halves are always stated now --
-         * {@link #difference} names "the two addresses do not differ" rather
-         * than nothing, and every caller states a {@code said} -- so the
-         * arm that substituted a sentence for an empty one is gone.</p>
+         * One refused candidate as a sentence: always states the thread and
+         * a difference ({@link #difference} says so when there is none).
          */
         String render(RuntimeTask task) {
             String stated = (observed == null ? said
@@ -278,13 +221,9 @@ final class ConcolicTaskPlan {
     }
 
     /**
-     * Resolves an occurrence-specific instrumentation hook to the stable
-     * region entry shared by every sibling hook at that Java method.
-     *
-     * <p>An index lookup: the answer belongs to the {@code
-     * (instrumentationSelector, rootMethod)} pair, so it is computed on the
-     * first entry at that hook and read afterwards ({@link
-     * #rootHookGroups}).</p>
+     * Resolves an occurrence-specific hook to the region entry shared by
+     * every sibling hook at that Java method; memoized in
+     * {@link #rootHookGroups}.
      */
     synchronized RootHookGroup rootHookGroup(
             String instrumentationSelector, String rootMethod) {
@@ -376,40 +315,28 @@ final class ConcolicTaskPlan {
             long enclosingInvocationEvent) {
         SourceRef registeredReceiverSource =
                 RuntimeTraceContext.sourceFor(receiver);
-        // Where this activation ran, by the one function the recorder
-        // stamped it with and the planner counted it by.
+        // Where this activation ran, by the function the recorder and the
+        // planner used.
         SourceRef activationSource =
                 RuntimeTraceContext.activationSource(receiver);
         RuntimeTraceContext.View context = RuntimeTraceContext.current();
         Map<String, Integer> admitted = new LinkedHashMap<>();
-        // An activation the recording never saw is not a candidate here
-        // either.  The counting pass above skipped it, so looking its
-        // ordinal up would answer null and the run would report "invocation
-        // null instead of 1" -- a comparison against an ordinal nobody
-        // assigned, rather than the plain fact that this activation is
-        // outside the window.
+        // Outside the recording window nothing has an ordinal, so nothing is
+        // a candidate.
         if (!RuntimeTraceContext.recordingWindowOpen()) {
             return admitted;
         }
         ObservedAddresses observedAddresses = new ObservedAddresses();
         for (RuntimeTask task : tasks) {
-            // Not this hook's task at all: another region's enclosing root
-            // fired, and that is no statement about this address.  Stays
-            // silent, or every enclosing invocation in the run would file a
-            // refusal against every task in the plan.
+            // Another region's enclosing root: silent, or every enclosing
+            // invocation would file a refusal against every task.
             if (!task.loopBodyRoot
                     || !task.loopRootHookGroupKey().equals(
                     safe(loopRootHookGroupKey))) {
                 continue;
             }
-            // Past here THIS task's own enclosing hook is what ran, so a
-            // refusal is a fact about this address and is stated.  Refused
-            // in silence, the end of the run reported ROOT_NEVER_EXECUTED --
-            // "no compatible activation was offered" -- about a loop that
-            // certainly ran: on hdfs-17960 that is REGION.939f61b2, the
-            // edit-log replay body carrying the snapshotDeletionOrdered
-            // source hook, whose whole occurrence then went missing from the
-            // corpus with nothing said about why.
+            // From here this task's own hook ran, so every refusal is stated;
+            // a silent one is later misreported as ROOT_NEVER_EXECUTED.
             if (!compatibleRoot(task.rootMethod, rootMethod,
                     task.rootContextSelector,
                     task.enclosingRootArgumentSelector,
@@ -436,33 +363,17 @@ final class ConcolicTaskPlan {
             }
             OccurrenceAddress observed = observedAddresses.of(task,
                     activationSource);
-            // The whole address, and nothing standing in for it.  A
-            // non-loop root publishes one occurrence and its unique OUT
-            // anchor confirms the node before that publication, so entry may
-            // defer a missing registration to it; an enclosing loop root
-            // decides which occurrence a whole SEQUENCE of bodies belongs
-            // to, and there the deferral was not deferring the node, it was
-            // replacing k.  Any invocation under the planned request was
-            // admitted to any address, which is how one occurrence came to
-            // own two enclosing invocations.
+            // The whole address, nothing standing in for it: an enclosing
+            // loop root decides which occurrence a whole sequence of bodies
+            // belongs to.
             if (!task.acceptsRootInvocation(observed)) {
                 task.noteUnaddressedCandidate(RefusedCandidate.onAddress(
                         "matching enclosing root", observed,
                         activationSource));
                 continue;
             }
-            // One occurrence, one enclosing activation.  The bodies of
-            // occurrence k are the bodies of the invocation admitted for k;
-            // a later invocation of the same region on the same node is the
-            // next k and belongs to the task addressed there, never to this
-            // one.  Nothing said so, and on hdfs-11741 lane11741f
-            // REGION.2392e4b7...#5 published eight loop bodies -- #a1..#a6
-            // from an enclosing call on IPC Server handler 8 and #a7,#a8
-            // from another on handler 2 -- while the tasks addressed #1 and
-            // #4, the two other balancer-driven invocations, were never
-            // answered.  Same defect class as the provisional-admission
-            // bucket: bookkeeping that lets one occurrence absorb another
-            // activation.
+            // One occurrence, one enclosing activation: a later invocation
+            // is the next k and belongs to the task addressed there.
             if (!task.claimsEnclosingInvocation(enclosingInvocationEvent)) {
                 task.noteUnaddressedCandidate(RefusedCandidate.stated(
                         "a second enclosing invocation of this region: "
@@ -473,10 +384,7 @@ final class ConcolicTaskPlan {
                         activationSource));
                 continue;
             }
-            // Which of this invocation's admissions this task is, not an
-            // ordinal of its address: identity v3 has none, and what the
-            // enclosing loop root needs to know is that this task's bodies
-            // are charged here and in what order they were admitted.
+            // Admission order within this invocation, not an address ordinal.
             admitted.put(task.taskId, admitted.size() + 1);
         }
         return admitted;
@@ -487,19 +395,13 @@ final class ConcolicTaskPlan {
                                             String rootMethod,
                                             Object receiver,
                                             Object[] rootArguments) {
-        // A short-lived Runnable need not be registered as an alias
-        // itself: an exact inherited async/request/RPC context can still
-        // attribute its entry.
         SourceRef registeredReceiverSource =
                 RuntimeTraceContext.sourceFor(receiver);
-        // Where this activation ran, by the one function the recorder
-        // stamped it with and the planner counted it by.
         SourceRef activationSource =
                 RuntimeTraceContext.activationSource(receiver);
         RuntimeTraceContext.View context = RuntimeTraceContext.current();
 
-        // Same rule as the counting pass: outside the recording window
-        // there is no candidate to select.
+        // Outside the recording window there is no candidate.
         if (!RuntimeTraceContext.recordingWindowOpen()) return null;
         ObservedAddresses observedAddresses = new ObservedAddresses();
         for (int index = 0; index < tasks.size(); index++) {
@@ -509,11 +411,7 @@ final class ConcolicTaskPlan {
             if (task.blocksAdmissionAfterCompletedGoal()) continue;
             if (task.loopBodyRoot) {
                 if (!enclosingLoopRootAdmits(task)) {
-                    // A body of this loop ran, and no enclosing invocation
-                    // on this thread admitted this task for it.  Said out
-                    // loud for the same reason the address refusals are:
-                    // silence here is reported at the end of the run as the
-                    // root never executing.
+                    // Stated, or the run end reports ROOT_NEVER_EXECUTED.
                     task.noteUnaddressedCandidate(RefusedCandidate.stated(
                             "a body of this loop ran under no enclosing"
                                     + " invocation admitted for it: the"
@@ -552,15 +450,7 @@ final class ConcolicTaskPlan {
             OccurrenceAddress observed = observedAddresses.of(task,
                     activationSource);
             if (!task.acceptsRootInvocation(observed)) {
-                // Said out loud, as the loop-body path already says it.  A
-                // non-loop root that ran and was refused on its address was
-                // refused in silence, and the end of the run then reported
-                // the task as ROOT_NEVER_EXECUTED -- "no compatible
-                // activation was offered" -- which is a statement about the
-                // region never running.  On hdfs-17899 bug2 that is
-                // REGION.763d087e on target-dn: activations of
-                // Client$Connection.sendRpcRequest were offered and refused
-                // on the ordinal, and the row said the root never executed.
+                // Stated, or the run end reports ROOT_NEVER_EXECUTED.
                 task.noteUnaddressedCandidate(RefusedCandidate.onAddress(
                         "matching root", observed, activationSource));
                 continue;
@@ -573,42 +463,14 @@ final class ConcolicTaskPlan {
     }
 
     /**
-     * Why this run's evidence says the activation is another lifecycle of
-     * the planned node, or {@code ""}.
+     * Why this run's evidence says the activation is another lifecycle
+     * (epoch) of the planned node, or {@code ""}.
      *
-     * <p>An occurrence is (node, epoch, region, k-th activation).  Nothing
-     * compared the <em>epoch</em>: source evidence was matched with {@code
-     * sameSourceIdentity}, which strips {@code #epoch<n>} deliberately, so an
-     * activation of {@code nn0#epoch0} answered an address on
-     * {@code nn0#epoch1}.  On hdfs-17960 the flip replay threw inside the
-     * workload before it restarted the NameNode, so every activation it
-     * offered was epoch 0 -- and the flip's model, {@code root=false}, was
-     * written at the mint the recording made <em>before</em> the restart
-     * instead of at the epoch-1 mint the plan addresses.  The recorded
-     * execution was rewritten at a point the solver said nothing about.</p>
-     *
-     * <p>One fact refuses: evidence attributing this activation to the same
-     * node at a <em>different</em> epoch.  A workload declares its epochs
-     * literally ({@code registerSource(..., 0)} at start,
-     * {@code restartSource(..., 1)} across a restart), so the label means the
-     * same lifecycle in every run of it and an activation that ran under
-     * another one is another occurrence.  An activation nothing attributed
-     * anywhere is still the occurrence, as everywhere else here: absence of
-     * evidence is not evidence of another epoch.</p>
-     *
-     * <p>"This run never registered the planned epoch" was a second refusal
-     * here, and it was wrong in a way only a whole run shows.  It is a fact
-     * about a <em>moment</em> -- the epoch has not been registered YET -- and
-     * it was being read as a verdict about the run.  On hdfs-17960 the two
-     * activations of the {@code deleteSnapshot} region that precede the
-     * NameNode restart were refused by it, permanently, and the run then
-     * registered {@code nn0#epoch1} thirty lines of workload later and
-     * published epoch-1 occurrences for five other regions.  Both statements
-     * were in one seed replay's output: five regions answered at epoch 1, and
-     * eight tasks told that the run "never registered" it.  The activations
-     * that arm refused are refused anyway, by the arm that remains and for
-     * the reason that is actually true of them -- they ran at epoch 0 -- and
-     * the ones that come after the restart are now free to answer.</p>
+     * <p>Needed because {@code sameSourceIdentity} strips {@code #epoch<n>}.
+     * Only evidence naming the same node at a <em>different</em> epoch
+     * refuses; unattributed is not another epoch.  Trap: "the planned epoch
+     * is not registered" is a fact about a moment, not the run, and must not
+     * refuse.</p>
      */
     static String lifecycleMismatch(String plannedSourceKey,
                                     Collection<String> attributed) {
@@ -627,63 +489,28 @@ final class ConcolicTaskPlan {
     }
 
     /**
-     * The node and epoch this activation is counted in.
-     *
-     * <p>The one the run attributed to it -- {@link
-     * RuntimeTraceContext#activationSource}, the same function that stamped
-     * the recording's {@code METHOD_ENTER} and that the planner counted the
-     * recorded population by -- and the planned one only when the run
-     * attributed it nowhere.  Falling back to the plan then keeps an
-     * unattributed activation counting exactly where it counted before:
-     * absence of evidence moves nothing, and a replay that reconstructs a
-     * receiver without repeating its alias registration still answers.</p>
-     *
-     * <p>The fallback used to be wider: it also swallowed every activation
-     * the run attributed to <em>another node</em>, because an ambient
-     * context that did not already name the planned node was read as
-     * provenance.  One JVM running nn0, source-dn and target-dn then counted
-     * all three nodes' activations of one region in each planned node's
-     * bucket.  On hdfs-17899 bug3 that is REGION.16ba41cf's planned first
-     * activation on target-dn answered by "invocation 2 instead of 1", and
-     * REGION.763d087e's one target-dn activation published as source-dn's
-     * because it was ordinal 1 in source-dn's bucket too.</p>
-     *
-     * <p>Read at the moment the activation starts, from the same registry
-     * {@link #lifecycleMismatch} and the configured-source mint read, so the
-     * three cannot disagree about which lifecycle an activation belongs
-     * to.</p>
+     * The node and epoch this activation is counted in: {@link
+     * RuntimeTraceContext#activationSource}, the same function the recorder
+     * stamped {@code METHOD_ENTER} with and the planner counted by.  Read at
+     * activation start from the registry {@link #lifecycleMismatch} and the
+     * configured-source mint also read, so the three agree.
      */
     static String countedLifecycle(RuntimeTask task,
                                    SourceRef activationSource) {
         String planned = safe(task.sourceKey);
         if (!RuntimeTraceContext.declaresEpoch(planned)) return planned;
-        // Never the planned node.  RuntimeTraceContext.activationSource is
-        // the planner's own rule and its last arm is the unregistered
-        // source, so an activation nothing attributed counts in the
-        // population the planner counted it in.  It used to fall back to the
-        // plan's own key, and that is what let hdfs-17899 bug2's
-        // pre-registration heartbeats -- the DataNode's own loop runs before
-        // the workload registers dn.getDatanodeId(), so those activations
-        // carry no node at all -- take target-dn's k=1 ahead of the
-        // heartbeat the plan addresses.
+        // Never fall back to the planned node: an unattributed activation
+        // counts in the unregistered source, as the planner counted it, or
+        // it steals the planned node's k.
         return activationSource == null
                 ? RuntimeTraceContext.UNREGISTERED_SOURCE.key()
                 : activationSource.key();
     }
 
     /**
-     * The address one root entry ran at, computed once for that entry.
-     *
-     * <p>{@link RuntimeTask#observedAddress} is {@code Identity.occurrence}:
-     * it reads the frames standing on this thread, folds them into an
-     * execution index (one digest per frame) and digests the address.  Its
-     * answer depends on the entry -- the thread's frames and the causal
-     * context it stands in -- and on the (lifecycle, region) the task names,
-     * and admission asked it once per CANDIDATE.  The key is exactly what the
-     * answer depends on, so this is a memo and not a narrowing: {@link
-     * #select} has already matched the root hook group, which names the
-     * region, and {@link #countedLifecycle} answers the same lifecycle for
-     * every task whose planned node declares an epoch.</p>
+     * Per-entry memo of {@link RuntimeTask#observedAddress}, keyed by
+     * (lifecycle, region): exactly what the answer depends on within one
+     * entry, so it is a memo, not a narrowing.
      */
     static final class ObservedAddresses {
         private final Map<String, OccurrenceAddress> byTarget =
@@ -700,17 +527,8 @@ final class ConcolicTaskPlan {
     }
 
     /**
-     * What this run attributed the refused activation to, for the note.
-     *
-     * <p>An ordinal refusal says "occurrence is activation 2, not 1" and
-     * that reads the same whether the activation ran on the planned node and
-     * was genuinely its second, or ran on no node this run could name and
-     * was counted in the planned bucket by the fallback.  Those are two
-     * different findings with two different owners -- on hdfs-17899 bug2 the
-     * DataNode's heartbeat runs on its own BPServiceActor thread, whose
-     * stamp the workload opens with {@code beginRequestIfRegistered}, so
-     * whether a given heartbeat carries the node at all depends on when the
-     * workload registered it -- and the row could not tell them apart.</p>
+     * What this run attributed the refused activation to, so an ordinal
+     * refusal on the planned node reads differently from one on no node.
      */
     static String attribution(String activationSourceKey) {
         String key = safe(activationSourceKey);
@@ -741,8 +559,7 @@ final class ConcolicTaskPlan {
             RuntimeTask task, SourceRef registeredReceiverSource,
             RuntimeTraceContext.View context) {
         SourceRef inherited = context.source;
-        // The epoch is part of the address, so it is compared before any of
-        // the four evidence shapes below, all of which ignore it.
+        // Epoch first: the checks below ignore it.
         String lifecycle = lifecycleMismatch(task.sourceKey,
                 attributedSourceKeys(registeredReceiverSource, context));
         if (!lifecycle.isEmpty()) return lifecycle;
@@ -760,43 +577,17 @@ final class ConcolicTaskPlan {
                     ? inherited.key() : registeredReceiverSource.key())
                     + " instead of the unregistered source";
         }
-        // One rule for every anchor kind.  How the planned source was
-        // established -- registered on the receiver, or inherited from the
-        // thread -- says how the recording found it, not which source it is,
-        // so it decided nothing here and the three arms it selected between
-        // were three spellings of one question: does this run's evidence name
-        // ANOTHER source?
-        //
-        // The receiver's own registration, when there is one, is that
-        // evidence and is authoritative: a root entered on an object the
-        // application registered elsewhere is elsewhere's, whatever the
-        // thread was carrying.  With no registration, an inherited context
-        // that names another source still contradicts.  Nothing attributed at
-        // all does not: a replay reconstructs a receiver without repeating
-        // its alias registration and reaches a region by a path carrying no
-        // inherited context, and refusing it there withheld the occurrence
-        // over a fact nobody established -- on 17960 that was every target
-        // activation of the seed.  Node, epoch, region and ordinal have
-        // already agreed by the time this is asked.
+        // One rule for every anchor kind: does this run's evidence name
+        // ANOTHER source?  The receiver's own registration is authoritative.
         if (registeredReceiverSource != null) {
             return receiverMatches ? ""
                     : "matching root receiver belonged to "
                     + registeredReceiverSource.key() + " instead of "
                     + task.sourceKey;
         }
-        // An inherited context is not where the activation ran.  It is the
-        // node the thread was carrying -- on an RPC service that is the
-        // CALLER, and on a workload whose values cross nodes it is the node
-        // of the mint the value came from, which is value provenance.  An
-        // activation with no registration of its own has no evidence of
-        // where it ran, and absence of evidence is not evidence of another
-        // node, exactly as it is not for an absent inherited source.
-        //
-        // It refused, and on hdfs-17899 bug3 -- one JVM with nn0, source-dn
-        // and target-dn all registered -- that is five tasks refused with
-        // "matching root inherited hdfs-17899/nn0#epoch0 instead of
-        // hdfs-17899/source-dn#epoch0" and five
-        // PUBLICATION_TASK_ANSWERED_BY_NO_RUN behind them.
+        // Without one there is no evidence of where it ran.  Trap: an
+        // inherited context is not it -- on an RPC service it names the
+        // CALLER -- so it must not refuse.
         return "";
     }
 
@@ -886,14 +677,8 @@ final class ConcolicTaskPlan {
     }
 
     /**
-     * What a refusal may say about a receiver: its runtime class and nothing
-     * else.
-     *
-     * <p>A refusal is rendered while the workload runs, so it never calls
-     * {@code toString} on a live application object -- that is the
-     * workload's code, it may be expensive, it may throw, and on a
-     * half-constructed receiver it may observe state the recording never
-     * did.  The class name is the only thing the selector compared anyway.</p>
+     * A receiver's runtime class only: never {@code toString} a live
+     * application object mid-workload (it may throw or observe state).
      */
     static String describe(Object receiver) {
         return receiver == null ? "null" : receiver.getClass().getName();
@@ -912,29 +697,13 @@ final class ConcolicTaskPlan {
 
     static final class RootContextSelector {
         private final String sourceKey;
-        /**
-         * One-based invocation ordinal in this selector's stable runtime
-         * scope.  This is planner evidence and is deliberately independent
-         * of the trace occurrence id, which names evidence rather than a
-         * replay counter.
-         */
+        /** One-based planner invocation ordinal; independent of the trace
+         * occurrence id. */
         private final int invocationOrdinal;
         /**
          * The class a receiver-scoped root hook stands on, or {@code ""}.
-         *
-         * <p>The one thing about "what this activation was reached under"
-         * that selection reads, and it is a DECLARED fact of the plan's
-         * selector rather than a circumstance of the run.  It is not a
-         * matching rule either: it decides which invocations are offered as
-         * candidates at all, the way an instrumentation scope does, and it
-         * cannot distinguish two activations of one address.</p>
-         *
-         * <p>The RPC exchange, the request api, how the recording
-         * established the source, and the thread the activation ran on used
-         * to travel beside it and each grew its own rule for when it might
-         * veto.  They are gone: an occurrence IS its address
-         * (IDENTITY-V3 SS1), and a thread name in particular is a timing
-         * fact no replay can be held to.</p>
+         * A declared scope deciding which invocations are candidates, not a
+         * matching rule: an occurrence IS its address (IDENTITY-V3 SS1).
          */
         private final String receiverRuntimeClass;
 
@@ -1004,19 +773,8 @@ final class ConcolicTaskPlan {
          */
         String unconfirmed(Set<String> attributedSourceKeys) {
             if (attributedSourceKeys.isEmpty()) {
-                // Nothing attributed this activation to any node, so it is
-                // the UNREGISTERED source's -- the third arm of the one
-                // attribution function, which the planner runs too.  That
-                // is an occurrence, and it is addressed there; it is never
-                // the planned node's next k.
-                //
-                // Answering "" for every anchor was the planned-node
-                // fallback, deleted at entry and living on here: on
-                // lane11741d it let activations on IPC handler threads --
-                // threads the recording never attributes to dn0 -- take
-                // dn0's k, so the five genuine activations on main were
-                // numbered 1, 3, 5, 7 and the addressed activation 4 was
-                // consumed by an activation that was nobody's.
+                // Unattributed is the UNREGISTERED source's occurrence,
+                // never the planned node's next k.
                 return OccurrenceBinding.UNREGISTERED_SOURCE_KEY.equals(
                         sourceKey) ? ""
                         : "occurrence ran on "
@@ -1148,11 +906,7 @@ final class ConcolicTaskPlan {
         /** The activation this task is. */
         final String sourceKey;
         final String occurrenceId;
-        /**
-         * The one address this task plans: node, epoch, region, k-th
-         * activation.  Every comparison that decides whether a live
-         * activation is this occurrence goes through it.
-         */
+        /** The one address this task plans; every admission compares it. */
         final OccurrenceAddress address;
         final String rootMethod;
         final RootContextSelector rootContextSelector;
@@ -1165,43 +919,24 @@ final class ConcolicTaskPlan {
         final boolean capturesTargetReach;
         /** Whether this non-loop address has already completed its goal. */
         volatile boolean completedGoalReserved;
-        /**
-         * Result rows this address has published in this replay.
-         *
-         * <p>Every admitted activation that reaches a terminal is its own
-         * occurrence. This counts them so each row can name which one it is;
-         * non-loop admission stops after its goal has completed.</p>
-         */
+        /** Result rows this address has published in this replay. */
         int publishedActivations;
         /**
-         * Whether this region is rooted on a bounded loop body.  Its published
-         * occurrence set is unrolled at most {@code loopBound
-         * .maxBackedgeTraversals()} (K_L) times, exactly as an inner bounded
-         * loop is: the iterations past K_L run concretely and capture nothing.
+         * Whether this region is rooted on a bounded loop body: at most K_L
+         * occurrences publish; later iterations run concretely.
          */
         final boolean loopBodyRoot;
         final String rootLoopMethod;
         final int rootLoopHeaderUnitIndex;
         /**
-         * The occurrence budget of a loop-body region: its ROOT loop's own
-         * K_L, not the region's global max.  The root loop is what generates
-         * one occurrence per iteration; the region's inner loops (the {@code
-         * allKeys} walks) are unrolled WITHIN one occurrence and their larger
-         * bounds must not inflate the occurrence count.  Using the region max
-         * here published up to the inner-loop bound of occurrences, each
-         * re-snapshotting the growing {@code allKeys} map, which under a
-         * 600-min token lifetime (no physical expiry) explodes the symbolic
-         * session.
+         * A loop-body region's occurrence budget: its ROOT loop's K_L.  Trap:
+         * the region max includes inner loops unrolled within one occurrence
+         * and would inflate the occurrence count.
          */
         final int loopOccurrenceBudget;
         /**
-         * The one enclosing invocation whose loop bodies this occurrence is.
-         *
-         * <p>Its entry event, or {@code 0} before the first admission.  An
-         * occurrence is (node, epoch, region, k-th activation), and the
-         * activation is the enclosing call: its bodies are {@code #k#aN}.  A
-         * second enclosing invocation -- another thread, another entry event
-         * -- is the next k and belongs to the task addressed there.</p>
+         * Entry event of the one enclosing invocation whose bodies ({@code
+         * #k#aN}) this occurrence is, or {@code 0} before admission.
          */
         private long enclosingInvocationEvent;
         /** Whether the one bounded-cut marker for this region was written. */
@@ -1211,19 +946,13 @@ final class ConcolicTaskPlan {
         final int targetBranchOccurrence;
         /** Solver-selected outcome that reaches the annotated failure. */
         final boolean targetBranchRequiredOutcome;
-        /**
-         * Declared communication ports this occurrence hands to the VM, by
-         * port id.
-         */
+        /** Declared communication ports handed to the VM, by port role. */
         final Map<String, CommunicationHandoffSpec>
                 communicationHandoffs = new LinkedHashMap<>();
         /** Exact baseline hook executions, in recorded event order. */
         final List<ConfiguredSourcePhaseContract.Occurrence>
                 configuredSourcePhases;
-        /**
-         * Activations that ran as candidates for this address and were not the
-         * addressed occurrence, and every distinct reason they were not.
-         */
+        /** Candidates refused for this address, and each distinct reason. */
         int unaddressedCandidates;
         final Set<RefusedCandidate> unaddressedReasons = new LinkedHashSet<>();
 
@@ -1249,11 +978,8 @@ final class ConcolicTaskPlan {
                                 + rootContextSelector.sourceKey
                                 + " instead of task source " + this.sourceKey);
             }
-            // A region rooted at a loop body binds no arguments at its
-            // frame: the method's parameters were bound once, at the entry
-            // above the loop.  Its activation therefore carries an empty
-            // argument array, and a type predicate over arguments that do not
-            // exist there would refuse every iteration without saying so.
+            // A loop-body root binds no arguments, so an argument predicate
+            // would silently refuse every iteration.
             this.rootArgumentSelector =
                     LoopBoundPolicy.LOOP_BODY_ROOT.equals(task.rootAuthority())
                             ? new RootArgumentSelector(false,
@@ -1263,13 +989,8 @@ final class ConcolicTaskPlan {
             this.loopBound = task.loopBound();
             this.loopBodyRoot = LoopBoundPolicy.LOOP_BODY_ROOT.equals(
                     task.rootAuthority());
-            // A bounded loop publishes the activations some task addresses,
-            // so a loop-body task must say WHICH activation it is: k, in its
-            // occurrence id, like every other task.  Without it the replay
-            // would have to default to the first turn or to any turn, and
-            // neither is something the recording said.  Refused here, at the
-            // plan, because a plan that cannot be executed should not reach
-            // a replay.
+            // A loop-body task must name its k; refused at the plan, not
+            // guessed at replay.
             if (this.loopBodyRoot && this.address == null) {
                 throw new IllegalArgumentException(
                         "ROOT_LOOP_OCCURRENCE_UNADDRESSED: loop-body task "
@@ -1279,20 +1000,12 @@ final class ConcolicTaskPlan {
             }
             this.rootLoopMethod = task.rootLoopMethod();
             this.rootLoopHeaderUnitIndex = task.rootLoopHeaderUnitIndex();
-            // The root loop's declared K_L (its loopSiteId is the key its
-            // bound is under); an undeclared site inherits the default.
+            // An undeclared root loop site inherits the default K_L.
             this.loopOccurrenceBudget = this.loopBound
                     .maxBackedgeTraversals(task.rootLoopSiteId());
             this.capturesTargetReach =
                     task.goalKind().capturesTargetReach();
-            // The plan names the propagation ledger every task of this
-            // invocation shares: ConcolicScheduler stamps every row of the
-            // plan, and a flip replay links that same plan.  A row that
-            // names none is a plan no scheduler wrote, and the importer
-            // refuses its results by name (CONCOLIC_RESULT_REPLAY_GROUP_MISSING).
-            // The plan row decoded this catalog once; phase ids are already
-            // one strict ordered ledger by then, so this is an index, not a
-            // second admission.
+            // Already validated when the plan row was decoded.
             this.configuredSourcePhases = task.configuredSourcePhases();
             JsonObject targetBranch = object(task.json(), "targetBranch");
             this.targetBranchSite = optionalString(targetBranch, "siteId");
@@ -1310,8 +1023,8 @@ final class ConcolicTaskPlan {
             }
             for (CommunicationHandoffSpec site
                     : task.communicationHandoffs()) {
-                // A region that holds both sides of a cut declares the same
-                // port twice, once per role, and each role has its own site.
+                // A region holding both sides of a cut declares a port once
+                // per role.
                 if (communicationHandoffs.put(handoffKey(site.portId(),
                         site.outgoing()), site) != null) {
                     throw new IllegalArgumentException(
@@ -1332,10 +1045,7 @@ final class ConcolicTaskPlan {
             return (exporting ? "EXPORT\n" : "ATTACH\n") + safe(portId);
         }
 
-        /**
-         * Records that one candidate ran and was not this address, as the
-         * facts of the refusal rather than a sentence about them.
-         */
+        /** Files one refused candidate's facts. */
         synchronized void noteUnaddressedCandidate(
                 RefusedCandidate refusal) {
             unaddressedCandidates++;
@@ -1344,12 +1054,9 @@ final class ConcolicTaskPlan {
         }
 
         /**
-         * The run's one statement about an address nothing answered.
-         *
-         * <p>Where every refusal this address met is rendered, once: the
-         * facts were filed as each candidate ran ({@link RefusedCandidate}).
-         * Called with the plan's monitor released, because rendering digests
-         * addresses and reads the endpoints the run filed.</p>
+         * The run's one statement about an unanswered address, rendering
+         * every filed {@link RefusedCandidate}.  Call with the plan's monitor
+         * released.
          */
         synchronized String unansweredAddress() {
             boolean neverExisted = rootContextSelector
@@ -1372,12 +1079,8 @@ final class ConcolicTaskPlan {
         }
 
         /**
-         * Counts one activation of this address against its published set.
-         *
-         * <p>Not an identity: the occurrence an activation is IS its
-         * execution index (IDENTITY-V3).  This is the count a bounded
-         * loop-body region's occurrence budget is spent against, and
-         * nothing else reads it.</p>
+         * Counts one activation against the loop-body occurrence budget; not
+         * an identity (IDENTITY-V3: an occurrence IS its execution index).
          */
         synchronized void claimActivation() {
             publishedActivations++;
@@ -1385,27 +1088,13 @@ final class ConcolicTaskPlan {
 
         synchronized boolean cutsBoundedLoopOccurrence() {
             if (!loopBodyRoot) return false;
-            // A bounded-loop region publishes the activations whose k a task
-            // on it addresses, and every task names k.  The addressed k is
-            // therefore the whole rule: the turn that is the k-th publishes,
-            // and the rest of the loop runs unrecorded.
-            //
-            // No slots are reserved for anything.  They used to be, for
-            // turns carrying a "semantic anchor" -- which was a second
-            // admission condition deciding which activation mattered outside
-            // the address, and is gone with it.
             return publishedActivations >= loopOccurrenceBudget;
         }
 
         /**
-         * Binds this occurrence to one enclosing invocation, and answers
-         * whether {@code entryEvent} is it.
-         *
-         * <p>The first enclosing invocation admitted for this address owns
-         * it for the whole replay.  There is no releasing: an occurrence
-         * that ended is still the k-th activation, and a later invocation of
-         * the same region is the (k+1)-th, which some other task addresses
-         * -- or which nothing does, and then the row says so by name.</p>
+         * Binds this occurrence to its first admitted enclosing invocation,
+         * for the whole replay (never released), and answers whether
+         * {@code entryEvent} is it.
          */
         synchronized boolean claimsEnclosingInvocation(long entryEvent) {
             if (entryEvent <= 0L) return false;
@@ -1439,10 +1128,7 @@ final class ConcolicTaskPlan {
 
         /** Every injected hook that belongs to one physical Java entry. */
         String rootHookGroupKey() {
-            // Source is resolved from runtime evidence by the dispatcher. If
-            // it were part of this static hook group, the first hook for one
-            // source could not dispatch a sibling task for another source at
-            // the same region root.
+            // No source here: sibling tasks for other sources share the hook.
             return (loopBodyRoot ? "LOOP\n" : "METHOD\n")
                     + regionId + "\n" + rootMethod
                     + (loopBodyRoot ? "\n" + rootLoopMethod + "\n"
@@ -1455,48 +1141,18 @@ final class ConcolicTaskPlan {
         }
 
         /**
-         * The address this activation ran at: the lifecycle the run
-         * attributed to it and the k it took in that lifecycle's bucket.
-         *
-         * <p>Unnamed when the bucket handed out no ordinal, which is an
-         * activation outside the recording window; an unnamed address
-         * matches nothing rather than half-matching on the node.</p>
+         * The address this activation ran at, by {@code Identity.occurrence}
+         * -- the function the recorder ran.  Unnamed outside the recording
+         * window, and then it matches nothing.
          */
         OccurrenceAddress observedAddress(String lifecycle) {
-            // Identity.occurrence, and nothing of this class's own: the
-            // address a replay computes here is the same function, over the
-            // same frame stack and scope, that the recorder ran on the stock
-            // JDK and wrote onto the activation the plan was built from.
-            // `open` is false -- admission asks the question before the
-            // session publisher opens the region, and opening it twice would
-            // move the base every endpoint inside is indexed from.
-            //
-            // Nothing about the FOLD is asked here any more: a folded entry
-            // starts no activation at all (F1), so admission is never
-            // reached at one and there is no folded address for it to
-            // answer with (ConcolicRegionRuntime#enterRegionFrame).
+            // open=false: the session publisher opens the region later, and
+            // opening twice would move every endpoint's index base.
             return edu.uva.liftlab.graphchecker.runtime.Identity.occurrence(
                     safe(lifecycle).isEmpty() ? sourceKey : lifecycle,
                     regionId, false);
         }
 
-        /**
-         * Whether this activation is the addressed occurrence.
-         *
-         * <p>The whole address the occurrence id states -- node, epoch,
-         * region, request family and k -- against the whole address this
-         * activation ran at, read from the occurrence id every other stage
-         * reads it from.  Comparing the k alone let a task planned for one
-         * node answer another node's first activation of the same region.</p>
-         *
-         * <p>And nothing else.  Two arms stood here in turn and both
-         * replaced the address rather than refining it: the message an
-         * activation arrived on, which refused activations that agreed on
-         * every component (11741's balancer#3 and #7, 17897's dn0#1); and a
-         * unique planner-authored OUT anchor, which admitted any invocation
-         * under the planned request to any k of that region.  An occurrence
-         * is its address.</p>
-         */
         /** The planned address, or null when the id names no occurrence. */
         private static OccurrenceAddress parseAddress(String occurrenceId) {
             String value = safe(occurrenceId);
@@ -1508,56 +1164,22 @@ final class ConcolicTaskPlan {
             }
         }
 
+        /**
+         * Whether this activation is the addressed occurrence: the whole
+         * address, id against id, and nothing else -- an occurrence is its
+         * address.  Trap: loosening this (e.g. ignoring an unreproducible
+         * anchor digest) admits a sibling DataNode's activation; the fix for
+         * such anchors belongs in the identity model, not here.
+         */
         boolean acceptsRootInvocation(OccurrenceAddress observed) {
             return address != null && observed != null
                     && address.id().equals(observed.id());
         }
 
-        // TRIED AND REVERTED 2026-09-22, a THIRD arm here, recorded so it is
-        // not attempted a fourth time.  When the planned anchor's producer is
-        // UNRESOLVABLE in this run -- the id belongs to the recording's
-        // ledger and this run minted no such message, which is an absence and
-        // not a difference -- fall back to comparing node, epoch, region,
-        // execution index and the anchor's transport site, every one of them
-        // reproducible, and set only the unresolvable digest aside.  The
-        // exact comparison above stays first, so the passing cases, which
-        // reproduce their digests exactly, never reach it.
-        //
-        // It works, and it is still wrong.  hdfs-17899-bug1 went from "the
-        // concolic replay reached no TARGET_REACH occurrence" to composing a
-        // claim with one blocker -- so the anchor comparison IS what blocks
-        // that case, which this experiment establishes.  But hdfs-17897
-        // regressed from PASS to seven-plus BLOCKING TOPOLOGY_DIVERGENCE
-        // rows: with several DataNodes of one block group agreeing on node,
-        // region, index and transport site, the fallback admits an
-        // activation that is not the addressed one, and the wire pairing
-        // moves under it.  The shared-address rule does not catch that,
-        // contrary to what the arm assumed.
-        //
-        // So a correct fix may not loosen this comparison at all.  It has to
-        // make the anchor REPRODUCIBLE -- derived from something stable such
-        // as the request key plus a per-request ordinal rather than a
-        // recursive digest over the producer chain -- which is a change to
-        // the identity model, not to this predicate.
-
         /**
-         * Why {@code observed} is not this task's occurrence.
-         *
-         * <p>The one component that differs, then both addresses rendered.
-         * A v3 address is a node, a region, a causal context and an
-         * execution index; the refusal states which of the four parted and
-         * where ({@link #difference}), and still carries the two whole
-         * addresses behind it.</p>
-         *
-         * <p>And, when the two differ in their causal anchor, the
-         * COMPONENTS behind each anchor digest: which occurrence sent the
-         * message, at which transport site, the k-th event of that
-         * occurrence there, and the attempt -- the four inputs the one mint
-         * was given, read back from the producer it filed ({@link
-         * Interactions#components}).  Two digests that differ say only
-         * that; on hdfs-17960 they agreed on everything but one number and
-         * the row did not say so.  An anchor this run never minted is
-         * stated as that, which is itself the finding.</p>
+         * Why {@code observed} is not this task's occurrence: the differing
+         * component ({@link #difference}), both whole addresses, and each
+         * anchor's mint components ({@link Interactions#components}).
          */
         String addressDifference(OccurrenceAddress observed) {
             if (address == null) return "the task plans no occurrence";
@@ -1571,19 +1193,8 @@ final class ConcolicTaskPlan {
         }
 
         /**
-         * Which component of the address differs, said before the addresses.
-         *
-         * <p>A v3 address is a node, a region, a causal context and an
-         * execution index, and printing two of them leaves the reader to
-         * diff two multi-kilobyte strings: the 13 refusals of hdfs-17960
-         * verification #3 differed in ONE number -- frame 5 of 8, the
-         * {@code applyEditLogOp} call site, planned iteration 3 and ran 0 --
-         * inside ~2500 characters that were otherwise character-identical,
-         * and finding that out took a script. The components are compared
-         * outermost-first (node, region, context, index) and each differing
-         * one is named; an index names the frame's position, its call site,
-         * and the two iterations. Nothing is summarized away: the two whole
-         * addresses still follow.</p>
+         * Which components differ, outermost-first (node, region, context,
+         * index), so the reader need not diff two long addresses.
          */
         private static String difference(OccurrenceAddress planned,
                 OccurrenceAddress observed) {
@@ -1603,9 +1214,7 @@ final class ConcolicTaskPlan {
             String index = indexDifference(planned.index(), observed.index());
             if (!index.isEmpty()) differ.add(index);
             if (differ.isEmpty()) {
-                // Equal addresses reach here only when admission refused on
-                // something that is not the address; say that, do not invent
-                // a difference.
+                // Refused on something other than the address.
                 return "the two addresses do not differ; ";
             }
             StringBuilder said = new StringBuilder("differs in ");
@@ -1652,11 +1261,8 @@ final class ConcolicTaskPlan {
         }
 
         /**
-         * Which part of the causal context differs.
-         *
-         * <p>Two anchors are two digests, so the difference is stated over
-         * the four inputs the mint was given, read back from the producer
-         * this run filed ({@link Interactions#endpoint}).</p>
+         * Which part of the causal context differs, over the mint's inputs
+         * read back from the filed producer ({@link Interactions#endpoint}).
          */
         private static String contextDifference(CausalContext planned,
                 CausalContext observed) {
@@ -1722,12 +1328,8 @@ final class ConcolicTaskPlan {
 
 
         /**
-         * Reserves completed evidence before reopening task admission.
-         *
-         * <p>Loop-body roots remain governed exclusively by K_L. Every
-         * non-loop address denotes one dynamic occurrence and is complete
-         * after its first full terminal result; targetReached:false is that
-         * occurrence's seed case.</p>
+         * Closes admission for a non-loop address after its first terminal
+         * result; loop-body roots are governed by K_L alone.
          */
         void reserveCompletedEvidence(boolean targetReached) {
             if (!loopBodyRoot) {
@@ -1739,10 +1341,7 @@ final class ConcolicTaskPlan {
             return completedGoalReserved;
         }
 
-        /**
-         * Whether this occurrence directly witnessed the selected failure
-         * outcome, rather than merely deviating from its recorded seed path.
-         */
+        /** Whether this occurrence witnessed the selected failure outcome. */
         boolean reachedRequiredTargetOutcome(JsonObject reach) {
             return declaresTargetBranch()
                     && reach != null
@@ -1762,14 +1361,9 @@ final class ConcolicTaskPlan {
         }
 
         /**
-         * The arm of the declared target branch that reaches the annotated
-         * throw, as the task states it.
-         *
-         * <p>One authority, {@code causynth.SiteControlDependence}, computes
-         * it in ANALYZE, publishes it on the static scope map's TARGET_SITE
-         * row and the scheduler carries it onto {@code targetBranch}.  It
-         * used to be searched for again here, across the task's whole branch
-         * catalog, by matching the site and its selected occurrence.</p>
+         * The target branch arm that reaches the annotated throw, as computed
+         * by {@code causynth.SiteControlDependence} and carried on
+         * {@code targetBranch}; never recomputed here.
          */
         static boolean targetRequiredOutcome(JsonObject targetBranch,
                                              String targetSite) {

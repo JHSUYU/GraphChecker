@@ -4,27 +4,12 @@ import java.util.Objects;
 
 /**
  * CONTRACT-SPEC 2: a value a consumer endpoint took off the wire.
- *
- * <p>{@code symbol} is the handoff control {@code v_H} minted at this attach --
- * at EVERY declared port, whether or not the region was selected -- and
- * {@code arrival} what actually arrived.  {@code producer} is the endpoint the
- * run paired this attach with, by correlation id and handle; it is null only
- * when the arrival could not be paired at all, and carries
- * {@code lineageLost} when the exporter had no scope to name (INTERACTION-ID
- * R-I1).</p>
- *
- * <p>{@code seq} places the attach in its session's event order;{@code
- * javaType} is the JVM descriptor {@code v_H} is declared with, which must be
- * the descriptor of every arm's {@code e_q} in this interaction's family.</p>
- *
- * <p>{@code pairedBy} states WHICH of the two recorded keys answered:
- * {@code HANDLE}, the export itself, or {@code CORRELATION_PORT}, the
- * message the export travelled in.  They are not equal evidence
- * (INTERACTION-ID SS1) and which one paired an attach was stated nowhere, so
- * a row paired on the weaker key read exactly like one paired on the handle
- * -- on the 11741 corpus all 3,554 attaches had both keys available.  It is
- * OPTIONAL and {@code null} means UNSTATED, not unpaired: a corpus recorded
- * before this member simply does not say.</p>
+ * {@code symbol} is the handoff control {@code v_H}, minted at every declared
+ * port; {@code arrival} is what arrived; {@code producer} is null only when
+ * unpaired (INTERACTION-ID R-I1).  {@code javaType} must equal every arm's
+ * {@code e_q} descriptor in the family.  {@code pairedBy} names which key
+ * paired it (not equal evidence, INTERACTION-ID SS1); null means unstated,
+ * not unpaired.
  */
 public final class AttachRow {
     private final String sessionId;
@@ -76,7 +61,6 @@ public final class AttachRow {
         return sessionId;
     }
 
-    /** Where this attach falls in its session's event order. */
     public long seq() {
         return seq;
     }
@@ -120,12 +104,7 @@ public final class AttachRow {
         return correlationId;
     }
 
-    /**
-     * Which recorded key paired this attach, or {@code null} when unstated.
-     *
-     * <p>{@code HANDLE} or {@code CORRELATION_PORT}
-     * ({@code runtime/Interactions.Pairing#key}).</p>
-     */
+    /** {@code HANDLE}, {@code CORRELATION_PORT}, or {@code null} (unstated). */
     public String pairedBy() {
         return pairedBy;
     }

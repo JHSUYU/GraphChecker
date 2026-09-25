@@ -29,30 +29,12 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 
-/**
- * G_k, and what the wave's worlds grew it by (DESIGN4 SS3.1-SS3.3, SS3.5).
- *
- * <p>{@code graph.jsonl}, per wave: NODE rows, one per occurrence some
- * ADMITTED session activated (only an admitted replay states a topology),
- * carrying its node, whether it ran instrumented anywhere, and the worlds
- * ({@link ObligationFactory#worldDigest}) it was observed in; EDGE rows,
- * one per (kind, producer endpoint, consumer endpoint) -- WIRE from the
- * attaches' own pairings, STATE from a read to the write of the version it
- * observed -- carrying the worlds that state them.  No THREAD edge: the
- * schedule's START and CLAIM rows carry a context, a site and a count, and
- * no occurrence, so a thread edge between occurrences is not a fact the
- * rows state.  A FRONTIER row compares this wave's node and edge identity
- * sets with the previous wave's.</p>
- *
- * <p>{@code growth.jsonl}, per wave: an EXPOSED_REGION row per (region,
- * occurrence) that an admitted replay's OWN backward closure from the anchor
- * ({@link Corpus#upstreamOf(OccurrenceAddress, List, String)}) holds as an
- * ambient activation of a region the weave does not hold
- * ({@link Corpus#woven}).  The driver weaves those regions, plans them, and
- * re-runs the exposing obligation.  The seed exposes nothing: what it
- * reached ambient is the plan's own admission decision, not a world's
- * growth.</p>
- */
+/** G_k and its growth (DESIGN4 SS3.1-SS3.3, SS3.5). {@code graph.jsonl}: NODE
+ *  per activated occurrence, EDGE per WIRE pairing or STATE join, with worlds
+ *  ({@link ObligationFactory#worldDigest}), plus a FRONTIER diff; no THREAD
+ *  edge (schedule rows carry no occurrence). {@code growth.jsonl}: regions an
+ *  admitted replay's closure ({@link Corpus#upstreamOf(OccurrenceAddress, List,
+ *  String)}) reached ambient and the weave lacks ({@link Corpus#woven}). */
 final class WaveGraph {
     static final String GRAPH = "graph.jsonl";
     static final String GROWTH = "growth.jsonl";
@@ -71,7 +53,6 @@ final class WaveGraph {
     private WaveGraph() {
     }
 
-    /** G_k over the corpus's admitted sessions. */
     static WaveGraph of(Corpus corpus) {
         WaveGraph graph = new WaveGraph();
         for (SessionReader session : corpus.sessions()) {
@@ -137,10 +118,8 @@ final class WaveGraph {
         edgeWorlds.get(id).add(world);
     }
 
-    /**
-     * Writes {@code graph.jsonl} into the wave directory, its FRONTIER row
-     * against the previous wave's file beside it.
-     */
+    /** Writes {@code graph.jsonl} with its FRONTIER against the previous
+     *  wave's. */
     void write(Path waveDir, int wave) throws IOException {
         Set<String> before = new LinkedHashSet<String>();
         if (wave > 0) {
@@ -182,15 +161,8 @@ final class WaveGraph {
         RowCodec.writeJsonl(waveDir.resolve(GRAPH), rows);
     }
 
-    /**
-     * Writes {@code growth.jsonl}: the regions the wave's admitted replays
-     * exposed, one row per (region, occurrence), first exposing session
-     * named.
-     *
-     * @param anchor the anchor's task, whose focused occurrence and factor
-     *               root every session's closure; null plans no closure
-     * @return the number of rows written
-     */
+    /** Writes {@code growth.jsonl} (null {@code anchor}: none); returns the row
+     *  count. */
     static int writeGrowth(Corpus corpus, Task anchor, Path waveDir,
                            List<GapRow> gaps) throws IOException {
         List<JsonObject> rows = new ArrayList<JsonObject>();

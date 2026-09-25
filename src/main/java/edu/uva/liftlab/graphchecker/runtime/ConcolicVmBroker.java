@@ -12,24 +12,12 @@ import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.javaTyp
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
 
 /**
- * Reflective view of the concolic VM's static entry points.
- *
- * <p>Every name below is looked up by reflection so this class remains
- * loadable on a stock JDK. A replay plan requires the complete current
- * broker surface before its workload starts.</p>
+ * Reflective view of the concolic VM's static entry points, so this class
+ * loads on a stock JDK.  A replay plan requires the whole surface
+ * ({@link #requireCurrentCapabilities}) before its workload starts.
  */
 final class ConcolicVmBroker {
-    /**
-     * The broker's own status ABI (expressionBroker.hpp).
-     *
-     * <p>The numeric values are the VM's, not ours; they are mirrored here so
-     * a Java caller can name a failure without linking against the custom
-     * JDK.  They live with the broker that returns them -- they used to live
-     * beside the gap-row vocabulary that reported them, which is the half
-     * that is gone.  -7, -8, -10, -11 and -13..-15 were the identity, shape
-     * and fingerprint refusals of a deleted duplicate validation; the numbers
-     * stay unassigned because the codes are a shared ABI.</p>
-     */
+    /** Status ABI mirrored from expressionBroker.hpp; gaps stay unassigned. */
     static final int OK = 0;
     static final int NO_ACTIVE_REGION = -1;
     static final int MISSING_METADATA = -2;
@@ -156,16 +144,7 @@ final class ConcolicVmBroker {
         }
     }
 
-    /**
-     * The VM's own context id, or a negative status.
-     *
-     * <p>A VM answer that is not a number is {@link #MALFORMED_RESULT} and
-     * not {@code 0L}: zero is what a VM with no such notion would answer,
-     * and the two used to be one value.  Both readings are refused by the
-     * caller's {@code <= 0} check, so the answer only becomes nameable --
-     * which is the whole difference between "the engine has no context
-     * here" and "the engine answered something this bridge cannot read".</p>
-     */
+    /** The VM's context id, or a negative status (non-number: MALFORMED). */
     long currentContextId() throws Exception {
         Object value = currentContextId.invoke(null);
         return value instanceof Number
@@ -180,12 +159,8 @@ final class ConcolicVmBroker {
     }
 
     /**
-     * The id of the last event the VM's symbolic session published.
-     *
-     * <p>Versions, reads and region entries are numbered from one monotone
-     * session counter, so this reading brackets the events that happened
-     * while the caller stood where it stood -- which is what aligns the
-     * runtime's frame journal with the VM's log (FrameJournal).</p>
+     * The last event id of the VM's session: one monotone counter for
+     * versions, reads and region entries (aligns FrameJournal to the log).
      */
     long currentEventId() throws Exception {
         Object value = currentEventId.invoke(null);
@@ -217,17 +192,10 @@ final class ConcolicVmBroker {
     }
 
     /**
-     * Attaches the value one exact int/long field holds right now as that
-     * field's concrete expression.
-     *
-     * <p>Not a symbolic input: the leaf the VM installs is a
-     * {@code ConExpression} over the value the field already has
-     * ({@code concolicMngr.cpp:887}).  What it buys is that the location
-     * becomes one the VM will version -- retention is by value, so an
-     * untracked field's writes leave no version behind at all, and a write
-     * site the plan selected would publish nothing.  The write that follows
-     * is then a version like any other store's, carrying the expression the
-     * VM built from this observed value.</p>
+     * Attaches the current value of one exact int/long field as its concrete
+     * expression ({@code ConExpression}, not a symbolic input).  Its point:
+     * the VM versions only tracked locations, so without it a selected write
+     * site would publish nothing.
      */
     void observeExactPrimitiveField(Object owner, String fieldSignature)
             throws Exception {
@@ -280,15 +248,8 @@ final class ConcolicVmBroker {
     }
 
     /**
-     * Exports one field and reports its session-unique endpoint id.
-     *
-     * <p>A non-numeric answer is {@link #MALFORMED_RESULT}, which is what
-     * the caller's {@code exportStatus} already maps a zero to: the status
-     * is the same and the value now says which reading produced it.  A
-     * legal "no handle" is still 0 and still distinguishable -- it is what
-     * a NOT_SYMBOLIC leaf is staged on the wire with, and what
-     * {@code attachDeliveredLeaf} reads as "the delivery carried no producer
-     * expression".</p>
+     * Exports one field and returns its handle, or {@link #MALFORMED_RESULT}
+     * for a non-number.  0 is the legal "no handle" of a NOT_SYMBOLIC leaf.
      */
     long exportExpression(
             Object owner, String declaringClass, String fieldName,
@@ -299,10 +260,7 @@ final class ConcolicVmBroker {
                 ? ((Number) handle).longValue() : MALFORMED_RESULT;
     }
 
-    /**
-     * Attaches one live handle. The return value identifies the export;
-     * {@code eventOut} receives this attach's session-unique endpoint id.
-     */
+    /** Attaches one live handle; {@code eventOut} gets the endpoint id. */
     long attachExpression(
             Object owner, String declaringClass, String fieldName,
             String descriptor, long handle, long[] eventOut)
@@ -320,14 +278,10 @@ final class ConcolicVmBroker {
     }
 
     /**
-     * Every location a symbolic value reached, with its versions and reads.
-     *
-     * <p>The write log, read out by the object the VM filed it under rather
-     * than by a location Java declared.  {@code afterEventId} selects on the
-     * session clock over versions and reads, so an activation scopes itself
-     * by passing its own entry event and the VM needs no notion of a region;
-     * {@code maxBytes} bounds one answer, which then says {@code complete:
-     * false} and where to resume.  0 means "everything" and "no bound".</p>
+     * The write log: every location a symbolic value reached, with versions
+     * and reads after {@code afterEventId} (an activation passes its entry
+     * event).  {@code maxBytes} bounds one answer ({@code complete: false}
+     * then says where to resume); 0 means no bound.
      */
     String trackedLocationVersions(long afterEventId, int maxBytes)
             throws Exception {
@@ -336,14 +290,8 @@ final class ConcolicVmBroker {
     }
 
     /**
-     * Installs the session's guarded-store table and answers how many store
-     * methods the VM kept.
-     *
-     * <p>One line per method: {@code <internal/Class>#<name><descriptor>}
-     * followed by that method's guard branch sites, one tab-separated field
-     * each.  Installing replaces the table, and with no table no concrete
-     * store is ever evidence.  The table's content is
-     * {@link GuardedStoreSites}; this is only the call.</p>
+     * Installs (replaces) the guarded-store table built by
+     * {@link GuardedStoreSites} and answers how many methods the VM kept.
      */
     int installGuardedStoreSites(String table) throws Exception {
         Object kept = installGuardedStoreSites.invoke(null, table);

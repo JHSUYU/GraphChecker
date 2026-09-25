@@ -5,18 +5,12 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 import java.util.Locale;
 
 /**
- * Which pass this JVM is: the one key that says so.
+ * Which pass this JVM is.  Declared, never inferred from other keys.
  *
- * <p>The weaver reads it to choose the evidence level, and the recorder
- * reads it to know whether it publishes a trace at all.  {@link
- * #REPLAY_CONTEXT} is the concolic replay: it keeps the exact method and
- * call-site stacks every accessor invocation needs and writes no trace,
- * because the trace of that workload is the seed's.  Declared and never
- * inferred -- the pass is a fact about how the campaign started this JVM,
- * not something to read off which unrelated keys happen to be set.</p>
+ * <p>{@link #REPLAY_CONTEXT} keeps the exact stacks accessors need and
+ * writes no trace: that workload's trace is the seed's.</p>
  */
 public enum RuntimeTraceMode {
-    /** Static discovery: the weaver analyses and weaves nothing. */
     DISCOVERY,
     /** The recording: rich hooks over every candidate region. */
     REGION_STATE,

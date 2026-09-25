@@ -28,43 +28,24 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * THE family-arm rule, in one place, for the composer and the flip solver.
+ * THE family-arm rule, shared by the composer and the flip solver so the two
+ * cannot disagree about which deliveries a slot has and what guards them.
+ * Nothing here lowers to SMT: arms name expressions by ref and guards by root
+ * symbol and value.
  *
- * <p>The rule existed twice -- once here in spirit and once in each stage's
- * own spelling -- and the two disagreed about what guards an arm, which is a
- * way for a flip the explorer proved satisfiable to be refused by the
- * composition that reads the same rows.  So it lives here, and both stages
- * ask.</p>
- *
- * <p>Nothing here lowers anything.  An arm names the expression by its ref,
- * the producer path condition by the terms the runtime published, and the
- * guard by root symbol and value; the stage that wants SMT renders it with
- * the one lowering.  That is deliberate: the rule is about WHICH deliveries
- * a slot has and under what, and none of that is a question about SMT.</p>
- *
- * <p>The settled points, each measured or ruled on:</p>
  * <ul>
- *   <li><b>Selection (R-I2)</b> — the arms of a WIRE slot are the exports at
- *       its producer endpoint from the runs whose OWN pairing named this
- *       consumer endpoint.  Never every export at the endpoint: a producer
- *       replayed many times contributes only where its run paired with this
- *       consumer.</li>
- *   <li><b>Guard (R-GUARD)</b> — the declared roots the delivered expression
- *       mentions, and every root the corpus ran at more than one value, at
- *       the delivering replay's values; never a clock.  Not the prefix's
- *       roots: pi_q is conjoined as the arm's own prefix, so its root
- *       dependence is already inside the arm.</li>
+ *   <li><b>Selection (R-I2)</b> — a WIRE slot's arms are the producer
+ *       endpoint's exports from the runs whose OWN pairing named this
+ *       consumer, never every export at the endpoint.</li>
+ *   <li><b>Guard (R-GUARD)</b> — the delivering replay's values of the roots
+ *       the expression names and of every varied root; never a clock, never
+ *       the prefix's roots (the prefix is already conjoined).</li>
  *   <li><b>Prefix</b> — the producer's decisions with {@code seq} below the
- *       export's: what that replay had decided by the time it delivered.</li>
- *   <li><b>Attestation (R-I5)</b> — an arm is ATTESTED when the arm's
- *       session STATES the producer occurrence's rows: an activation row
- *       for it, instrumented, so its decisions are recorded.  An arm from
- *       a session that states no such row is UNATTESTED: it states what
- *       was delivered, and no witness may move a root inside it.  See
- *       {@link #attested}.</li>
- *   <li><b>Nested handoffs</b> — a producer forwards what it was handed, so
- *       an expression may mention another slot's variable; those slots are
- *       closed transitively, to a fixed point.</li>
+ *       export's.</li>
+ *   <li><b>Attestation (R-I5)</b> — see {@link #attested}; no witness may
+ *       move a root inside an unattested arm.</li>
+ *   <li><b>Nested handoffs</b> — slots an expression mentions are closed
+ *       transitively.</li>
  *   <li><b>STATE eligibility (R-I7.1)</b> — see {@link #stateArms}.</li>
  * </ul>
  */
@@ -98,26 +79,16 @@ public final class Arms {
         Map<String, List<RootMintRow>> roots();
 
         /**
-         * What one session RAN one root at, or {@code ""} when it states
-         * none.
-         *
-         * <p>Not the mint row's {@code recordedValue}: a replay the wave
-         * handed an assignment PLANTED the value and states no recorded
-         * one, so the value it ran under is stated by the obligation it ran
-         * under.  The corpus answers both halves in one place.</p>
+         * What one session RAN one root at, or {@code ""}.  Not the mint's
+         * {@code recordedValue}: a planted replay states its value only in
+         * its obligation.
          */
         String rootValue(String sessionId, String rootId);
 
         /**
-         * Whether the sessions of this corpus ran this root at more than
-         * one value.
-         *
-         * <p>One definition, because "varied" decides two things that must
-         * agree: what a PATH carries (its own replay's valuation of every
-         * varied root) and what an ARM is guarded by (the delivering
-         * replay's).  Read off {@link #rootValue}, so a stage cannot hold a
-         * second opinion about it -- and so a flip replay, whose mint
-         * states nothing by rule, still counts as a different value.</p>
+         * Whether the corpus ran this root at more than one value.  One
+         * definition because it decides both what a PATH carries and what an
+         * ARM is guarded by, which must agree.
          */
         default boolean varied(String rootId) {
             List<RootMintRow> minted = roots().get(rootId);
@@ -194,24 +165,17 @@ public final class Arms {
         }
 
         /**
-         * THE OCCURRENCE that produced it.
-         *
-         * <p>What rule 3 groups by: one producer occurrence binds ALL its
-         * outs on one selector, so the arm has to say which occurrence it
-         * came out of and not only which slot it fills.  A wire arm's is
-         * the interaction's producer; a state arm's is the writer.</p>
+         * The producer occurrence (wire: the interaction's producer; state:
+         * the writer).  Rule 3 binds all of one occurrence's outs on one
+         * selector, so the arm must name it.
          */
         public OccurrenceAddress producer() {
             return producer;
         }
 
         /**
-         * The seq of the event that delivered it.
-         *
-         * <p>The cutoff the prefix is taken to: what the producer had
-         * decided BY THE TIME of this delivery.  A selector shared by
-         * several of one occurrence's outs is taken to the LAST of
-         * them.</p>
+         * The delivering event's seq: the prefix cutoff.  A selector shared
+         * by several outs of one occurrence is taken to the LAST of them.
          */
         public long deliveredAt() {
             return deliveredAt;
@@ -266,21 +230,10 @@ public final class Arms {
     }
 
     /**
-     * The arms refused since the last drain, and clears them (R4 item 3).
-     *
-     * <p>An arm whose delivered expression NAMES a declared root that the
-     * delivering session states no {@code RootMintRow} for is refused rather
-     * than emitted with an empty guard: the arm would be available under
-     * every valuation of a quantity its own session cannot attribute, and
-     * that is how hdfs-11741 campaign #4 composed satisfiably at the
-     * recorded valuation.  A root the expression does NOT name is skipped as
-     * before -- the guard rule only ever asked about the roots the
-     * expression depends on.</p>
-     *
-     * <p>Drained rather than read, because the caller FILES it: the stage
-     * that asked for the arms is the stage that has a gap list, and a
-     * refusal left sitting here would be counted twice by the next
-     * question.</p>
+     * The arms refused since the last drain, and clears them (R4 item 3):
+     * those whose expression names a root the delivering session states no
+     * mint row for.  Drained, not read, so a caller's gap list never counts
+     * one twice.
      */
     public Set<String> drainRefusals() {
         Set<String> drained = new LinkedHashSet<String>(refusals);
@@ -293,17 +246,9 @@ public final class Arms {
     // ------------------------------------------------------------------
 
     /**
-     * EVERY ARM OF ONE WIRE SLOT, and of that slot alone.
-     *
-     * <p>A producer forwards what it was itself handed, so an arm's
-     * expression may mention another slot's variable ({@link Arm#nested}),
-     * and a variable no family constrains is the one thing a witness must
-     * not rest on.  Closing over those nested slots HERE, into one flat
-     * list, is what rule 3 replaces: their arms belong under the selector
-     * of the (producer occurrence, session) whose delivery names them, and
-     * only the caller that owns the case split knows what that is.  The
-     * closure is {@code ComposedFamilies}'s, by the same rule, one level at
-     * a time.</p>
+     * Every arm of ONE wire slot, not closed over {@link Arm#nested}: under
+     * rule 3 nested arms belong under the selector of the delivery that names
+     * them, which only the caller ({@code ComposedFamilies}) knows.
      *
      * @param symbol the consumer's own variable for this slot
      */
@@ -312,14 +257,8 @@ public final class Arms {
     }
 
     /**
-     * The same, closed transitively over the slots an arm was itself
-     * handed, as one flat list.
-     *
-     * <p>What a FLIP query wants: every delivery that could stand behind
-     * one arrival, whatever depth it came from, with no case split to
-     * place them under.  The composed query wants the other shape -- each
-     * nested slot under the selector of the delivery that names it -- and
-     * takes {@link #armsAt} one level at a time.</p>
+     * {@link #armsAt} closed transitively over nested slots, as one flat
+     * list: the shape a FLIP query wants (no case split).
      */
     public List<Arm> wireArms(Interaction slot, String symbol) {
         List<Arm> arms = new ArrayList<Arm>();
@@ -373,33 +312,12 @@ public final class Arms {
     // ------------------------------------------------------------------
 
     /**
-     * Whether a location's owner NAMES its storage.
-     *
-     * <p>ONE owner spelling, the one the runtime writes: the VM's symbolic
-     * rid of the object whose state this is
-     * ({@code RowPublication.locationKey}, {@code KIND/rid#slot}).  A rid
-     * is a per-run counter, and that is enough here because this is asked
-     * inside ONE session: alternatives (R-I7.1) are the writer occurrences
-     * of one session's write log ({@link #stateArms}), whose rows and read
-     * rows spell the location the same way, so inside that run a rid names
-     * exactly one object.  A STATIC field is owned by its class and that
-     * class owns exactly one cell, so there the class names the storage.
-     *
-     * <p>The other spelling the runtime writes is a CLASS on a heap
-     * location -- {@code runtime.SharedStateCapture} /
-     * {@code runtime.RowPlaceholderMint}, for a declared-field read whose
-     * VM location key is absent -- and a class aliases every instance of
-     * it at once.  Such a read keeps the delivery its own run gave it and is
-     * offered no alternative writers: choosing among "writers" that may be
-     * writes to a different object is how a witness is invented rather
-     * than found.
-     *
-     * <p>The allocation-endpoint form this gate admitted instead (a 16-hex
-     * {@code Endpoint} id, {@code contract.LocationId.allocated}) is
-     * produced by no main code, so the gate refused every row of both
-     * corpora: 128 {@code DECLARATION_MISSING} DIAGNOSTIC rows on the
-     * clean hdfs-17960 run, and not one read anywhere was ever offered an
-     * alternative writer.</p>
+     * Whether a location's owner NAMES one storage cell: a STATIC field, or a
+     * heap owner spelled as the VM's symbolic rid
+     * ({@code RowPublication.locationKey}).  A rid is per-run, which suffices
+     * because alternatives are asked inside one session.  A CLASS owner on a
+     * heap location ({@code runtime.SharedStateCapture}) aliases every
+     * instance, so such a read is offered no alternative writers.
      */
     public static boolean namedOwner(LocationId location) {
         if (location == null) return false;
@@ -417,30 +335,12 @@ public final class Arms {
     }
 
     /**
-     * The writer occurrences a read could have seen, as arms.
-     *
-     * <p>Not "versions earlier by seq": the alternatives for a reader
-     * occurrence R on location L are the writer OCCURRENCES that are
-     * HB-CONCURRENT with R -- not ordered against it by program order, by
-     * message causality along the causal-anchor chain, or by thread
-     * start/join.  Locks are not constraints: a lock orders the two
-     * executions that took it, not the two the checker is asking about.</p>
-     *
-     * <p>A writer's writes to L move as a BLOCK -- wholly before or wholly
-     * after R -- so there is one arm per writer occurrence, binding to that
-     * occurrence's last write of L, and every read of L inside R takes the
-     * same arm.  A writer interposed between two reads of one occurrence is
-     * not an interleaving this rule admits.</p>
-     *
-     * <p>Only ATTESTED writer occurrences are alternatives.  An unattested
-     * writer, or one whose causal context is Lost, states its delivery and
-     * no more: with no path condition behind it nothing says the delivery
-     * would survive a move, and with no context HB is unknown, which is not
-     * the same as concurrent.</p>
-     *
-     * <p>An arm carries no symbol: the caller binds every read of L in the
-     * reader occurrence to the arm's expression, which is what "the block"
-     * means in the formula.</p>
+     * The writer occurrences a read could have seen, as arms (R-I7.1): the
+     * observed writer plus every ATTESTED writer occurrence HB-concurrent with
+     * the reader.  Locks are not constraints.  A writer's writes move as a
+     * BLOCK, so there is one arm per writer at its last write of L, and the
+     * caller binds every read of L in the reader to it (the arm has no
+     * symbol).
      *
      * @param readerEndpoint one read of L in the reading occurrence
      * @param session        the reader's own session: eligibility is its
@@ -479,14 +379,9 @@ public final class Arms {
     }
 
     /**
-     * Whether two occurrences of one session are HB-concurrent.
-     *
-     * <p>The orderings the rows can state: program order (one occurrence is
-     * the other, or both ran on one thread -- {@code ActivationRow.threadKey})
-     * and message causality (one is an ancestor of the other along the
-     * causal-anchor chain).  Thread start/join the rows do not carry, and
-     * its absence is stated here rather than assumed away.  A Lost context
-     * answers "unknown", and unknown is not concurrent.</p>
+     * Whether two occurrences of one session are HB-concurrent: neither same
+     * thread nor causal-anchor ancestors.  Thread start/join is not in the
+     * rows.  Unknown (Lost, unfollowable chain) is NOT concurrent.
      */
     public boolean concurrent(OccurrenceAddress reader,
                               OccurrenceAddress writer, String session) {
@@ -495,10 +390,6 @@ public final class Arms {
         if (reader.context().isLost() || writer.context().isLost()) {
             return false;
         }
-        // Unknown is not concurrent.  A causal chain this corpus cannot
-        // follow to its root -- an anchor naming a producer endpoint no row
-        // places -- leaves the ordering unstated, and an unstated ordering
-        // is not permission to reorder.
         if (sameThread(session, reader, writer)) return false;
         if (!chainKnown(session, reader) || !chainKnown(session, writer)) {
             return false;
@@ -508,12 +399,8 @@ public final class Arms {
     }
 
     /**
-     * Whether this occurrence's causal chain is followable to its root.
-     *
-     * <p>Every anchor on the way must name a producer endpoint some row of
-     * this corpus places, and the chain must end at a Root -- a workload
-     * action or a daemon tick.  A chain that ends at a Lost context, or at
-     * an endpoint nothing places, states no ordering.</p>
+     * Whether this occurrence's anchor chain reaches a Root through
+     * endpoints some row places.
      */
     private boolean chainKnown(String session,
                                OccurrenceAddress occurrence) {
@@ -526,62 +413,30 @@ public final class Arms {
                         .producerEndpointId());
                 continue;
             }
-            // A context the chain cannot name places nothing.  The
-            // thread-creation edge would place it, and no recording
-            // states one (contract.ActivationRow), so this is where the
-            // walk ends.
+            // No row states a thread-creation edge (contract.ActivationRow).
             return false;
         }
         return false;
     }
 
     /**
-     * Whether EVENT {@code a} is causally before EVENT {@code b}.
+     * Whether EVENT {@code a} is causally before EVENT {@code b}: same thread
+     * by row seq, else along the causal-anchor chain.  Unstated ordering
+     * answers {@code false}.
      *
-     * <p>Three orderings, in the order they can be asked of the rows: inside
-     * one occurrence, the session's own event order (same-thread program
-     * order); across occurrences, the causal-anchor chain -- the occurrence
-     * that started the other's request is before it; and thread start/join,
-     * which the rows carry only as that chain today.  An ordering the rows
-     * do not state is UNKNOWN, and unknown is answered {@code false} here,
-     * so a caller asking "is a before b" never reads absence as order.</p>
-     *
-     * <p>An EVENT is a ROW, and the row carries its own {@code seq}, which
-     * is 0 when the runtime could not number it; the caller passes it,
-     * because an ENDPOINT is not an event.  An endpoint is
-     * {@code (occurrence, site, siteIndex, attempt)} and a site the runtime
-     * does not stand at carries no site index, so ONE endpoint id names every
-     * event of that site in that occurrence -- 11741's
-     * {@code GeneratedMethodAccessor#invoke:WRITE} names two writes of one
-     * {@code PBHelper.convert} activation.  Picking one seq for such an id
-     * answers program order about an event that is not the one asked about:
-     * the 11741 wave-0 skeleton read a v1197 written at seq 1197 and observed
-     * at seq 1198 as a read before its own writer, because the write
-     * endpoint's OTHER event stood at seq 1201.  The seq of the row is the
-     * only thing that states when the event happened, so it is what is
-     * compared.</p>
+     * <p>The caller passes each row's seq because an endpoint is not an
+     * event: a site without a site index shares one endpoint id across all
+     * its events in the occurrence, so no single seq per id is right.</p>
      */
     public boolean ancestor(Endpoint a, long aSeq, Endpoint b, long bSeq,
                             String session) {
         if (a == null || b == null) return false;
         OccurrenceAddress left = a.occurrence();
         OccurrenceAddress right = b.occurrence();
-        // One thread is one order, whether or not it is one occurrence: two
-        // activations the runtime ran on the same thread cannot interleave
-        // with each other, and the session's event order says which came
-        // first.
+        // One thread is one order, whether or not it is one occurrence.
         if (left.id().equals(right.id())
                 || sameThread(session, left, right)) {
-            // AN UNNUMBERED ROW IS NOT ORDERED.  A row the runtime could
-            // not number states seq 0 and never borrows the run's
-            // high-water mark (runtime.RowRuntime.sequence, M-R3), so 0
-            // means "this event has no place in the session's order", not
-            // "it happened first".  Compared with >= 0 it was an ancestor
-            // of every numbered row on its thread -- an ordering nothing
-            // states -- and unknown answered as ordered is how a reorder
-            // gets refused, or admitted, for a reason no recording gives.
-            // Both sides must be numbered; otherwise the answer is the
-            // same "not before" every other unstated ordering gets here.
+            // Seq 0 is UNNUMBERED (M-R3), not "first": both must be numbered.
             return aSeq > 0L && bSeq > 0L && aSeq < bSeq;
         }
         if (!chainKnown(session, left) || !chainKnown(session, right)) {
@@ -617,10 +472,7 @@ public final class Arms {
                         at.context()).producerEndpointId());
             }
             if (parent == null) {
-                // Nothing in the rows places this occurrence: the message
-                // chain does not reach it and no recording states a
-                // thread-creation edge (contract.ActivationRow), so no
-                // ordering is established and the answer is "not before".
+                // Unplaced: no ordering, so "not before".
                 return false;
             } else if (parent.id().equals(older.id())) {
                 return true;
@@ -641,9 +493,7 @@ public final class Arms {
         if (expression == null) return null;
         List<DecisionRow> decisions = rows.decisionsOf(session, producer);
         boolean attested = attested(session, producer);
-        // The prefix: what the replay had decided BY THE TIME it delivered.
-        // A decision it took afterwards is not a reason the delivery
-        // happened.
+        // The prefix: only decisions taken before the delivery.
         List<String> pi = attested
                 ? pathCondition(decisions, deliveredAt)
                 : new ArrayList<String>();
@@ -655,12 +505,8 @@ public final class Arms {
                 : rows.roots().entrySet()) {
             RootMintRow row = rows.root(entry.getKey(), session);
             if (row == null) {
-                // R4: the expression NAMES this root and the delivering
-                // session states no mint row for it, so nothing of that
-                // session attributes the quantity the arm carries.  The arm
-                // is REFUSED, not emitted with an empty guard: an arm
-                // guarded by nothing is available under every valuation of a
-                // root its own session cannot answer for.
+                // R4: refuse, never emit unguarded -- an empty guard would
+                // admit the arm under every valuation of this root.
                 if (names(symbols, entry.getValue())) {
                     refusals.add(slotId + "|" + session + "|"
                             + entry.getKey());
@@ -668,18 +514,11 @@ public final class Arms {
                 }
                 continue;
             }
-            // Never a clock: what a replay's clock read is already in the
-            // decisions its prefix carries, and pinning it here would
-            // close every skew witness that rests on this arm.
+            // Never a clock: its reads are in the prefix already, and pinning
+            // it would close every skew witness resting on this arm.
             if (row.kind() == RootKind.CLOCK) continue;
-            // The delivering replay's valuation of every VARIED root, and
-            // of every root this arm's own expression names.  The arm is
-            // what that replay delivered UNDER ITS OWN values, so it is
-            // available under them and not under another valuation --
-            // guarded by the expression's roots alone, an arm delivered by
-            // a replay that ran with the marker one way was available
-            // under a valuation that put it the other way, which is a
-            // delivery no execution produced.
+            // Varied roots too, not only the expression's: the arm exists
+            // only under the valuation its replay ran.
             if (!rows.varied(entry.getKey())
                     && !symbols.contains(row.symbol())) {
                 continue;
@@ -717,34 +556,11 @@ public final class Arms {
     }
 
     /**
-     * Whether this session STATES the rows of that occurrence.
-     *
-     * <p>ONE RULE, and it is about the rows and nothing else: the session
-     * has an activation row for the occurrence and that activation is
-     * INSTRUMENTED, so its decisions are recorded.  An instrumented
-     * occurrence with no decision has an EMPTY prefix, which is a stated
-     * pi that is trivially true -- not an absent one.</p>
-     *
-     * <p>The {@code focused() || seed} conjunct that used to stand here is
-     * gone, and it is the conjunct every unattested arm of both frozen
-     * corpora failed on: 616 of hdfs-11741 campaign #4's 668 arms and 2 of
-     * hdfs-17960 campaign #8's 12 state arms, with an activation row
-     * present and {@code instrumented=true} in every one of them.  What it
-     * asked was whether the occurrence was THE FOCUS of that replay, which
-     * is a fact about what the wave wanted explored, not about what the
-     * recording states.  A non-focused occurrence in an instrumented
-     * session RAN CONCRETELY AND WAS RECORDED: its decisions are in the
-     * rows, its prefix is a prefix over decisions whose outcomes are the
-     * ones it took, and the arm it gives is (that prefix, the delivered
-     * expression) guarded by that session's own valuation -- a legitimate
-     * arm, and the only thing that carries the clock-bearing occurrences
-     * of hdfs-11741 into a path at all.</p>
-     *
-     * <p>What is still NOT attested: an occurrence this session has no
-     * activation row for (the session did not run it, so it states
-     * nothing), and one whose activation is not instrumented (it ran
-     * outside the woven classes, so no decision of it was ever
-     * published).</p>
+     * Whether this session STATES the rows of that occurrence: it has an
+     * INSTRUMENTED activation row for it.  No decision then means an empty,
+     * trivially true prefix, not an absent one.  Trap: whether the occurrence
+     * was the replay's FOCUS is irrelevant -- a non-focused instrumented
+     * occurrence was still recorded.
      */
     public boolean attested(String session, OccurrenceAddress occurrence) {
         ActivationRow activation = rows.activationOf(session,
@@ -753,24 +569,9 @@ public final class Arms {
     }
 
     /**
-     * The exports at one producer endpoint that an ATTESTING session made.
-     *
-     * <p>Attestation is a property of the PRODUCER's run, not of the
-     * consumer's: what the recording can say about that occurrence it says
-     * in whichever session's rows state it, and every session of one
-     * corpus replays one workload.  So a consumer whose own replay focused
-     * elsewhere is not thereby left with the literal it happened to
-     * receive -- the corpus does state where that literal came from, in
-     * every session whose rows state that producer.  Requiring the
-     * CONSUMER's session to attest the producer is what kept nn0's
-     * expressions out of every dn1 path but the seed's on hdfs-11741
-     * campaign #3.</p>
-     *
-     * <p>The SEED's export first, then the corpus's own order: the seed is
-     * the recording, so its delivery is the fact a claim about the
-     * recording rests on, and the rest are ordered as the sessions were
-     * read.  Same rule, same spelling, as the composer's {@code seedRow}
-     * for a root that several sessions minted.</p>
+     * The exports at one producer endpoint made by any session that attests
+     * the PRODUCER (not the consumer's session), the seed's first -- the
+     * same order as the composer's {@code seedRow}.
      */
     public List<ExportRow> attestedExports(Endpoint producer) {
         List<ExportRow> attested = new ArrayList<ExportRow>();
@@ -790,17 +591,9 @@ public final class Arms {
     }
 
     /**
-     * Whether a published term states a predicate at all.
-     *
-     * <p>A CONCRETE branch is published with an empty term: the VM had no
-     * symbolic value at the site, so the arm the run took depends on no
-     * root and constrains no variable.  Omitting it is exact -- and the two
-     * spellings an empty term reaches a consumer in, {@code ""} and
-     * {@code "(not )"}, are not SMT, so conjoining either voids the whole
-     * query rather than adding a tautology to it.  Beside
-     * {@link #conjunct}, because the two questions a consumer asks of a
-     * recorded term -- is it a predicate, and in which polarity -- are one
-     * rule and were two copies.</p>
+     * Whether a published term states a predicate.  A CONCRETE branch
+     * publishes an empty term, reaching consumers as {@code ""} or
+     * {@code "(not )"}; neither is SMT, so both must be omitted.
      */
     public static boolean predicate(String term) {
         String text = term == null ? "" : term.trim();
@@ -808,14 +601,8 @@ public final class Arms {
     }
 
     /**
-     * One path condition, with each decision's polarity applied.
-     *
-     * <p>{@code DecisionRow.term} is the branch PREDICATE as written at the
-     * site, polarity-free: the same site in two replays publishes the same
-     * term and the two runs differ in {@code outcome}.  So the conjunct is
-     * the term when the run took it and its negation when it did not, and
-     * every consumer applies that -- here, once, because a consumer that
-     * forgot it would state a path that took the arm its run did not.</p>
+     * One path condition, polarity applied: {@code DecisionRow.term} is
+     * polarity-free and {@code outcome} says which arm the run took.
      *
      * @param before only decisions the session sequenced before this, or
      *               {@link Long#MAX_VALUE} for the whole path
@@ -837,28 +624,16 @@ public final class Arms {
     }
 
     /**
-     * The same rule for a term a caller has already rewritten: the taken arm
-     * IS the term, and the other arm is its negation.
-     *
-     * <p>One place applies the polarity.  A second copy is how the two runs
-     * of one site end up with terms that differ while {@code outcome} is
-     * true in both, which is a flip nobody can see (P2f').</p>
+     * The polarity rule for an already-rewritten term; the one place it is
+     * applied (P2f').
      */
     public static String conjunct(String term, boolean outcome) {
         return outcome ? term : "(not " + term + ")";
     }
 
     /**
-     * Exactly one of these alternatives is the one that happened.
-     *
-     * <p>Beside {@link #conjunct} for the same reason it is: a consumer of
-     * the arms of one slot -- or of the disjuncts of one anchor -- asks
-     * which ONE of them holds, and that was two encodings of one
-     * constraint.  The composer summed the indicators and the flip query
-     * wrote a disjunction plus a {@code (not (and a b))} for every pair,
-     * which is quadratic in the alternatives and states the same thing;
-     * the sum survives.  A single alternative is its own selector: "exactly
-     * one of {a}" is a, and wrapping it says nothing more.</p>
+     * Exactly one of these selectors holds, as a sum of indicators (linear,
+     * unlike pairwise exclusion); a single selector is itself.
      */
     public static String exactlyOne(List<String> selectors) {
         if (selectors.size() == 1) return selectors.get(0);
@@ -870,13 +645,8 @@ public final class Arms {
     }
 
     /**
-     * Every symbol a recorded expression names, whatever its depth.
-     *
-     * <p>Public because IMPORT asks the same question of a session's whole
-     * expression table (invariant 11, {@code RowInvariants#attributed}): the
-     * walk that decides which roots an arm's expression names is the walk
-     * that decides which roots a session references, and two spellings of it
-     * would be two answers.</p>
+     * Every symbol a recorded expression names, at any depth.  Also IMPORT's
+     * walk (invariant 11, {@code RowInvariants#attributed}).
      */
     public static void symbolsIn(JsonElement expression, Set<String> into,
                                  int depth) {

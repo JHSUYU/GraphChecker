@@ -5,16 +5,11 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
 import edu.uva.liftlab.graphchecker.plan.SmtModelValueCodec;
 
 /**
- * One model literal, read back as the Java value a mint can write.
+ * One model literal read back as the Java value a mint can write; the SMT
+ * grammar is {@code plan/SmtModelValueCodec}'s.
  *
- * <p>Support, not a notion.  {@code plan/SmtModelValueCodec} owns the SMT
- * literal grammar; this is the Java side of the same read -- which boxed
- * type the requested cell wants, and what an unsupported one answers.</p>
- *
- * <p>{@link UnsupportedReplayValue} is that answer, and it is not {@code
- * null}: a model that says "null" and a model this runtime cannot read as
- * the cell's type are different facts, and only the first may be written.
- * </p>
+ * <p>{@link UnsupportedReplayValue} is not {@code null}: a model "null" may
+ * be written, an unreadable literal may not.</p>
  */
 final class ModelValues {
     private ModelValues() {
@@ -27,8 +22,7 @@ final class ModelValues {
         String type = safe(valueType).toUpperCase();
         String raw = safe(value).trim();
         try {
-            // Reference null must be decided before type-specific String
-            // decoding.
+            // Reference null is decided before String decoding.
             if ((requestedType == null || !requestedType.isPrimitive())
                     && ("NULL".equals(type)
                     || "null".equalsIgnoreCase(raw))) {

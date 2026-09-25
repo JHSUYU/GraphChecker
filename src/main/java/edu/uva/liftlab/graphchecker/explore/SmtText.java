@@ -7,16 +7,9 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 
-/**
- * The two things a flip query needs beyond the one lowering: a recorded
- * value as a literal, and one unique variable name per quantity.
- *
- * <p>Tokenizing, free names and renaming are NOT here: they are one pass of
- * the one tokenizer ({@code SmtLowering.names}, {@code symbols},
- * {@code rename}), because a name ends where SMT-LIB says it ends and a
- * second answer to that is a symbol one stage binds and the other reports
- * undeclared.</p>
- */
+/** Recorded value as a literal, and one unique variable name per quantity.
+ *  Tokenizing and renaming live in the one tokenizer ({@code SmtLowering}): a
+ *  second tokenizer would disagree on where a symbol ends. */
 final class SmtText {
     private SmtText() {
     }
@@ -37,7 +30,6 @@ final class SmtText {
         return JavaPrimitiveSmtSemantics.integralLiteral(text);
     }
 
-    /** Allocates one unique variable name per keyed quantity. */
     static final class Names {
         private final Map<String, String> byKey =
                 new LinkedHashMap<String, String>();
@@ -46,9 +38,8 @@ final class SmtText {
         String name(String key, String preferred) {
             String existing = byKey.get(key);
             if (existing != null) return existing;
-            // One sanitizer (VmTermLowering.smtName); the cap is this
-            // allocator's own concern -- a name a reader can scan -- and a
-            // truncation collision is resolved by the suffix below.
+            // One sanitizer (smtName); the 48-char cap is for readability, the
+            // suffix resolves collisions.
             String legal = edu.uva.liftlab.graphchecker.compose
                     .VmTermLowering.smtName(preferred);
             String base = legal.length() > 48 ? legal.substring(0, 48)

@@ -13,30 +13,13 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * The schedule half of a task's world: the discovering session's schedule,
- * which a focused replay is held to -- strictly up to the cut, and in its
- * timeouts past it.
- *
- * <p>A task's world is (planted values, schedule).  The planted values are
- * the model and what the path's session was itself handed; the schedule is
- * that session's, CUT at the TARGET: the first event of the focused
- * occurrence, its factor, or the occurrence where the flip is.  Everything
- * before the cut is the discovering run, in its order, with the planted
- * values in it -- a value planted before the target changes what the run
- * computes, and its order only where the value takes another branch, which
- * the turnstile states and lets go.  From the cut on, the flip's effects
- * run free, but the clock does not: the rest of the schedule is handed too
- * ({@link #REST_FILE}), and a timeout WAKE it names takes its turn only
- * after the events it followed there ({@code runtime.ScheduleLog}).  Past
- * the cut on the wall clock, every daemon of a replay many times slower
- * than its recording was due at once.</p>
- *
- * <p>The cut is the earliest of each such occurrence's opening mark (where it
- * began, whether or not it made any event) and its first event.  A session
- * whose schedule names none of them -- an occurrence that never ran there --
- * hands its whole schedule as the prefix: the replay is then held to the run
- * it was cut from until its own events leave it, which the turnstile
- * states.</p>
+ * The schedule half of a task's world, cut at the target (first event or
+ * opening mark of the focused occurrence, its factor, or the flip's
+ * occurrence). Before the cut the replay follows the discovering run's order;
+ * past it the flip runs free, but each timeout WAKE in {@link #REST_FILE} still
+ * waits for the events it followed ({@code runtime.ScheduleLog}) -- on a slower
+ * replay's wall clock every daemon would be due at once. No cut found: whole
+ * schedule.
  */
 final class SchedulePrefix {
     /** The file the replay reads, beside its focus row. */
@@ -73,9 +56,8 @@ final class SchedulePrefix {
     }
 
     /**
-     * Writes {@code sessionId}'s schedule, cut before the first event of any
-     * of {@code occurrenceIds}: the prefix to {@code out/FILE}, the rest to
-     * {@code out/REST_FILE}.
+     * Writes the prefix before the first event/mark of any {@code
+     * occurrenceIds} to {@code out/FILE} and the rest to {@code out/REST_FILE}.
      *
      * @return what was written, or null when the session states no schedule
      */

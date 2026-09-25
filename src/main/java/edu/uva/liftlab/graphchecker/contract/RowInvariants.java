@@ -16,24 +16,13 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * The row contract, checked as a GATE over one epoch's recorded sessions.
- *
- * <p>Every rule here is one sentence of CONTRACT-SPEC SS2 or HANDOVER SS1.3,
- * cited in the gap it produces.  They are checked at IMPORT and nowhere else,
- * because a defect in a row is not one stage's problem: 17960 lost two whole
- * campaigns to rows that EXPLORE and COMPOSE each read as valid -- a decision
- * whose {@code outcome} was the complement of its term's truth value, and a
- * focused session whose expression table was empty -- and both are one line
- * of this class.  A row nobody can state cannot be a claim about anything, so
- * the stage fails closed on the BLOCKING ones and records the rest.</p>
- *
- * <p>Pure functions over rows: this class opens no file, runs no solver and
- * consults no plan.  Where a rule cannot be decided from the rows alone it
- * says so as a DIAGNOSTIC rather than guessing -- an invariant that reports a
- * violation it cannot substantiate is worse than one that reports nothing.</p>
+ * The row contract, checked at IMPORT as a gate over one epoch's sessions.
+ * Each rule is one sentence of CONTRACT-SPEC SS2 or HANDOVER SS1.3, cited in
+ * its gap; BLOCKING gaps fail the stage closed.  Pure functions over rows: a
+ * rule the rows cannot decide reports a DIAGNOSTIC rather than guess.
  */
 public final class RowInvariants {
-    /** {@code EXPR.} plus sixteen lower-case hex digits, and nothing else. */
+    /** {@code EXPR.} plus sixteen hex digits, and nothing else. */
     private static final Pattern REFERENCE =
             Pattern.compile("EXPR\\.[0-9a-fA-F]{16}");
     /** Any token that starts like a reference, well spelled or not. */
@@ -54,13 +43,9 @@ public final class RowInvariants {
     }
 
     /**
-     * Every violation one epoch's sessions state, in rule order.
-     *
-     * @param sessions the epoch's sessions
-     * @param asks     session id to the FOCUS ROW the wave drove that session
-     *                 with -- {@code rootAssignments} and {@code clockDeltas}
-     *                 -- which is what a FOCUSED session RAN under.  A SEED
-     *                 needs none: it read its roots and its mints state them.
+     * Every violation, in rule order.  {@code asks} maps session id to the
+     * focus row ({@code rootAssignments}, {@code clockDeltas}) a FOCUSED
+     * session ran under.
      */
     public static List<GapRow> check(List<SessionReader> sessions,
                                      Map<String, JsonObject> asks) {
@@ -83,10 +68,7 @@ public final class RowInvariants {
         references(session, gaps);
         onePerEvent(session, gaps);
         sorts(session, gaps);
-        // ONE VALUATION, read once: every rule that judges a term judges it
-        // at the values this session RAN the roots at, and two rules that
-        // resolved a symbol differently would be two answers to "what did
-        // this replay run under".
+        // One valuation, read once, for every rule that judges a term.
         Map<String, String> executed = executed(session, ask, gaps);
         decisions(session, executed, gaps);
         versions(session, gaps);
@@ -97,20 +79,9 @@ public final class RowInvariants {
     // ---- 1. the session set -------------------------------------------
 
     /**
-     * Exactly one session STATES it is the seed, and the seed states no
-     * obligation.
-     *
-     * <p>Read off {@code manifest.json}, never inferred.  The rule used to
-     * be "the seed is the session whose ActivationRows are all {@code
-     * focused=false}", and that has no answer for a focused replay whose
-     * occurrence never activated: on the 11741 campaign #2 corpus nine of
-     * eighty-one sessions focused nothing -- the seed, seven replays the kill
-     * cut, and one legitimately NOT_ADMITTED focused replay -- so COMPOSE
-     * refused and the anchor degraded to {@code Lost:UNKNOWN}.  With no SEED
-     * no declaration has a recording it was written about; with two, nothing
-     * says which; and a session that states SEED while naming the
-     * obligations it ran contradicts itself, because a replay handed an
-     * obligation is a counterfactual and not the recording.</p>
+     * Exactly one session states it is the seed, and the seed names no
+     * obligation.  Read off {@code manifest.json}, never inferred from
+     * activations: a focused replay that never activated looks like a seed.
      */
     private static void sessionSet(List<SessionReader> sessions,
                                    List<GapRow> gaps) {
@@ -140,15 +111,8 @@ public final class RowInvariants {
     }
 
     /**
-     * Every session was read whole (CONTRACT-SPEC SS2: one file per kind,
-     * and a manifest that states the role).
-     *
-     * <p>BLOCKING, and it has to be: a kind a reader could not parse comes
-     * back as no rows, which is indistinguishable from a kind this run had
-     * none of.  A replay the campaign's kill cut mid-row, or one with no
-     * manifest, therefore states less than it ran and every later stage
-     * reads the shortfall as fact.  Named with the file and the codec's own
-     * reason, so the fix is a re-run of that worker and not a hunt.</p>
+     * Every session was read whole (CONTRACT-SPEC SS2).  BLOCKING: an
+     * unparseable kind reads back as no rows, which later stages take as fact.
      */
     private static void complete(SessionReader session, List<GapRow> gaps) {
         if (session.incomplete().isEmpty()) return;
@@ -158,12 +122,7 @@ public final class RowInvariants {
                         + session.incomplete()));
     }
 
-    /**
-     * Every row's occurrence ran in its own session (CONTRACT-SPEC SS2: one
-     * ActivationRow per activation).  A decision, a read, a write or a target
-     * at an occurrence the session never activated is a row about an
-     * execution that session does not state.
-     */
+    /** Every row's occurrence ran in its session (CONTRACT-SPEC SS2). */
     private static void activated(SessionReader session, List<GapRow> gaps) {
         Set<String> ran = new LinkedHashSet<String>();
         for (ActivationRow row : session.activations()) {
@@ -205,9 +164,8 @@ public final class RowInvariants {
 
     /**
      * HANDOVER SS1.3, verbatim: every ReadRow must have an observedVersion or
-     * a plain decimal concreteValue, never neither.  A read with neither
-     * states that something was read and refuses to say what, which is the
-     * one thing a formula cannot work around.
+     * a plain decimal concreteValue, never neither.  An attach is paired by
+     * HANDLE or CORRELATION_PORT and nothing else.
      */
     private static void neverNeither(SessionReader session,
                                      List<GapRow> gaps) {
@@ -244,11 +202,7 @@ public final class RowInvariants {
     /**
      * Every {@code EXPR.<16hex>} a row cites exists in that session's
      * expression table, and no other reference spelling appears (HANDOVER
-     * SS1.3: one symbol spelling; the composer's single lowering resolves a
-     * reference through the session's ExpressionTable).  A row that names an
-     * expression its own session does not hold is unlowerable, and a focused
-     * replay that published rows with an EMPTY table -- laneA3 -- is exactly
-     * that, for every row it wrote.
+     * SS1.3).  A reference the session does not hold is unlowerable.
      */
     private static void references(SessionReader session, List<GapRow> gaps) {
         ExpressionTable table = session.expressions();
@@ -307,16 +261,10 @@ public final class RowInvariants {
     // ---- 4. one row per event -----------------------------------------
 
     /**
-     * One row per event (CONTRACT-SPEC SS2).  Two rows of one kind at one
-     * seq and one subject are one event stated twice, and two events under
-     * one endpoint id are one event two rows will be merged into: the
-     * skeleton keys slots by endpoint, so the second is invisible.
-     *
-     * <p>When two events collide under one endpoint id and that endpoint
-     * carries no site index, the cause is the identity and not the rows --
-     * IDENTITY-IMPL A: the site index is what distinguishes repeated events
-     * of one site -- so it is a DIAGNOSTIC naming the missing index rather
-     * than a refusal of the recording.</p>
+     * One row per event (CONTRACT-SPEC SS2): two rows of one kind at one seq
+     * and subject are one event stated twice (BLOCKING).  Two events under
+     * one endpoint id merge in the skeleton, which keys slots by endpoint;
+     * that is an identity defect (IDENTITY-IMPL A), so only a DIAGNOSTIC.
      */
     private static void onePerEvent(SessionReader session,
                                     List<GapRow> gaps) {
@@ -335,9 +283,7 @@ public final class RowInvariants {
                             + "|" + row.ordinal(),
                     row.siteId() + "#" + row.ordinal());
         }
-        // A target row that did not reach its anchor states no event -- its
-        // seq is 0, "no VM clock" -- only that one occurrence ran without
-        // reaching it, so it is one per occurrence and anchor.
+        // An unreached target has seq 0 (no VM clock): one per occurrence.
         for (TargetRow row : session.targets()) {
             twice(session, gaps, seen, "targets", row.seq(),
                     "seq/anchorSiteId", (row.reachedAnchor()
@@ -408,14 +354,8 @@ public final class RowInvariants {
             @SuppressWarnings("unchecked")
             Set<Long> seqs = (Set<Long>) entry.getValue()[1];
             if (seqs.size() < 2) continue;
-            // DIAGNOSTIC either way, and named either way.  An index that is
-            // absent and an index whose frames are equal for two events of
-            // one site are the same defect -- the identity cannot separate
-            // them -- and it is the identity's to fix (IDENTITY-V3 SS1.2:
-            // loop back edges count into the frames).  Refusing the
-            // recording for it would fail every campaign at IMPORT over
-            // something no row can state, and the cure is forbidden here: no
-            // ordinal, no counter.
+            // Absent index or equal frames: the identity's defect to fix
+            // (IDENTITY-V3 SS1.2), never cured here by an ordinal or counter.
             int frames = endpoint.siteIndex().frames().size();
             gaps.add(violation(session, GapKind.LINEAGE_LOST,
                     GapClass.DIAGNOSTIC, kind, seqs.iterator().next(),
@@ -433,13 +373,7 @@ public final class RowInvariants {
 
     // ---- 5. symbol sorts ----------------------------------------------
 
-    /**
-     * One name, one spelled sort (HANDOVER SS1.3: one symbol spelling), and a
-     * placeholder read's spelled sort is the sort its own row declares.  A
-     * name that appears as {@code M_I_x} in one row and {@code M_Z_x} in
-     * another is two sorts for one value, and the composer's declarations
-     * would disagree about which.
-     */
+    /** One name, one spelled sort, = a read's javaType (HANDOVER SS1.3). */
     private static void sorts(SessionReader session, List<GapRow> gaps) {
         Map<String, String[]> sortOfName = new LinkedHashMap<String, String[]>();
         for (RootMintRow row : session.roots()) {
@@ -491,28 +425,11 @@ public final class RowInvariants {
     // ---- 6. decisions: the recorded arm is the recorded arm ------------
 
     /**
-     * P2f, and CONTRACT-SPEC SS2's own words: {@code outcome} says whether the
-     * published term HELD, so the conjunct is {@code outcome ? term : (not
-     * term)} and the runtime never pre-applies the polarity.  Where a term
-     * rests on nothing but DECLARED roots and VM literals, the session states
-     * its own truth value, and the row must agree with it.
-     *
-     * <p>That is the whole of the first laneA2 defect: a term {@code marker !=
-     * false} with {@code outcome=false} beside a RootMintRow recording {@code
-     * true}.  Every flip cut from it asked for the value the seed already
-     * had.  A term whose leaves this cannot reach is not judged.</p>
-     *
-     * <p>AT THE VALUATION THE SESSION RAN UNDER, which is {@link #executed}'s
-     * one notion and NOT {@code recordedValue} on its own: a mint states
-     * what it OBSERVED, and in a focused replay what it observed is the
-     * recording's value, read before the wave's assignment is planted.  On
-     * the 39bedd768 HDFS-17960 wave 0 the focused session
-     * {@code cb67875d1d896d4d-73ab772f} ran {@code
-     * HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED=false} (its obligation's {@code
-     * rootAssignments}, and its {@code obligation_query.smt2} asserts it),
-     * minted {@code recordedValue="true"}, and this rule refused three of its
-     * decisions -- 79, 140 and 145 -- for stating the arm they actually took.
-     * All three verify at {@code false}.</p>
+     * CONTRACT-SPEC SS2: {@code outcome} says whether the published term
+     * HELD; the runtime never pre-applies the polarity.  A term resting only
+     * on declared roots and literals must agree with its row, judged at the
+     * valuation the session RAN under ({@link #executed}), not at
+     * {@code recordedValue}.
      */
     private static void decisions(SessionReader session,
                                   Map<String, String> executed,
@@ -534,32 +451,11 @@ public final class RowInvariants {
     }
 
     /**
-     * rootId-free: what this session RAN each declared root at, by SYMBOL --
-     * or null when it states no such valuation at all.
-     *
-     * <p>ONE NOTION, and it is a fact about an EXECUTION, not about a row.
-     * A SEED read its roots, so its mints state them.  A FOCUSED replay was
-     * HANDED them: the wave plants the value at the mint, and the mint
-     * states what it OBSERVED there -- the recording's own value, read
-     * before the plant, because after the plant the two quantities are no
-     * longer distinguishable off the heap (RootMint#focusedRootValue).  So
-     * for a FOCUSED session the valuation it ran is the ASK, its focus row's
-     * {@code rootAssignments} and {@code clockDeltas}, per kind:</p>
-     *
-     * <ul>
-     *   <li>MARKER and INTEGRAL: the assignment is the value, absolute.</li>
-     *   <li>CLOCK: the wave states a SKEW, never an instant -- every
-     *       execution reads a clock fresh -- so the value is the mint's own
-     *       reading plus the delta, exactly as the mint computed it.</li>
-     *   <li>any root the wave assigned nothing: the mint READ it, so its
-     *       {@code recordedValue} is what ran.</li>
-     * </ul>
-     *
-     * <p>A FOCUSED session whose ask no obligation worker of this epoch
-     * states is REFUSED by name here.  Reading its mints instead would judge
-     * a counterfactual at the recording's valuation, which is the defect
-     * this method exists to remove, and the gate would report it as a row
-     * violation of a session whose rows are fine.</p>
+     * What this session RAN each declared root at, by symbol, or null when
+     * unstated.  A FOCUSED replay's mints record the recording's value
+     * (RootMint#focusedRootValue), so its valuation is the ask: assignments
+     * are absolute, a CLOCK is reading plus delta, an unassigned root is its
+     * {@code recordedValue}.  A FOCUSED session with no ask is BLOCKING.
      */
     private static Map<String, String> executed(SessionReader session,
                                                 JsonObject ask,
@@ -590,15 +486,7 @@ public final class RowInvariants {
         return bySymbol;
     }
 
-    /**
-     * What one mint's root RAN at: the wave's ask where it states one, and
-     * the mint's own reading where it does not.
-     *
-     * <p>{@code ""} where the ask cannot be stated as a value -- an unstated
-     * reading under a skew -- because {@code ""} is the spelling every leaf
-     * this class cannot reach already has, and a rule that guessed one here
-     * would report violations it cannot substantiate.</p>
-     */
+    /** One mint's executed value; {@code ""} (unjudgeable) if unstatable. */
     private static String ran(RootMintRow row, Map<String, String> assigned,
                               Map<String, String> skews) {
         String recorded = row.recordedValue() == null ? ""
@@ -618,15 +506,7 @@ public final class RowInvariants {
         return planted.trim();
     }
 
-    /**
-     * The truth value a term has at the valuation the session ran under, or
-     * null.
-     *
-     * <p>Null is the answer whenever the term reaches a leaf this cannot
-     * state -- a read, a container, a cast, a shift over an unstated value.
-     * The invariant is conditional on purpose: a checker that guesses at a
-     * leaf reports violations it cannot substantiate.</p>
-     */
+    /** Truth of a term at the valuation; null at an unevaluable leaf. */
     private static Boolean truth(SessionReader session, String term,
                                  Map<String, String> declared) {
         String text = term.trim();
@@ -723,33 +603,19 @@ public final class RowInvariants {
     // ---- 7. versions ---------------------------------------------------
 
     /**
-     * A version a read observed is a version some row of that session STATES
-     * (HANDOVER SS1.4: a read joins the expression of the write version it
-     * observed).  Until contract v2.4's placeholder {@code mintVersion} lands
-     * (runtime P2l), a placeholder read can state a version no WriteRow
-     * carries, so a missing write is a DIAGNOSTIC naming the version -- not a
-     * refusal of a recording the contract has not caught up with.
-     *
-     * <p>A WriteRow that states the very version a placeholder read MINTED
-     * is the opposite failure and is BLOCKING: that version is the mint's own
-     * store, nobody wrote it, and publishing it as a write states one event
-     * twice -- the placeholder would join a write that exists only to be
-     * joined.  Keyed by the store, {@code location@mintVersion}, and never by
-     * the symbol: a field later assigned the minted value
-     * ({@code x.f = <mint symbol>}) is a real write of its own version whose
-     * whole expression is that same symbol.</p>
+     * An observed version is stated by a WriteRow or a read's
+     * {@code mintVersion} (HANDOVER SS1.4); missing is a DIAGNOSTIC.  A
+     * WriteRow at a placeholder's minted version is BLOCKING (nobody wrote
+     * it); keyed by {@code location@mintVersion}, never by symbol, since
+     * {@code x.f = <mint symbol>} is a real write.
      */
     private static void versions(SessionReader session, List<GapRow> gaps) {
         Set<String> stated = new LinkedHashSet<String>();
         for (WriteRow row : session.writes()) {
             stated.add(row.location() + "@" + row.version());
         }
-        // Contract v2.4: a placeholder read STATES a version of its own,
-        // which is NOT the version it observed -- seq 243 of laneA5 observed
-        // 77 and minted 177 -- so the two are added to the same set of
-        // stated versions and never compared with each other.  Keying the
-        // mint by the observed version is what made the gate refuse a row
-        // whose field was right there in it.
+        // A placeholder's mintVersion differs from its observedVersion;
+        // never key the mint by the observed one.
         Set<String> minted = new LinkedHashSet<String>();
         for (ReadRow row : session.reads()) {
             if (row.mintVersion() >= 0) {
@@ -801,10 +667,8 @@ public final class RowInvariants {
 
     /**
      * HANDOVER SS1.3: a RootMintRow is published only for a DECLARED root,
-     * and its recorded value is spelled the way its kind is read back -- a
-     * MARKER as a boolean, an INTEGRAL or CLOCK as a plain decimal.  One row
-     * per (occurrence, rootId): a root minted twice in one activation is two
-     * values for one source in one execution.
+     * MARKER spelled boolean, INTEGRAL/CLOCK plain decimal, one row per
+     * (occurrence, rootId).
      */
     private static void roots(SessionReader session, List<GapRow> gaps) {
         Set<String> minted = new LinkedHashSet<String>();
@@ -846,14 +710,10 @@ public final class RowInvariants {
     // ---- 9. targets ----------------------------------------------------
 
     /**
-     * CONTRACT-SPEC SS2: {@code phiTerm} is published in the FATAL polarity.
-     * An anchor that was reached and published no predicate took a concrete
-     * branch, which is legitimate and stated as a DIAGNOSTIC -- except where
-     * the run OBSERVED the fatal arm, because then there is a predicate and
-     * the row dropped it.  And where the recording's own roots decide it, an
-     * observed fatal must be a phi that HOLDS at those values: a fatal
-     * polarity that is false in the run that took it is the polarity stated
-     * backwards.
+     * CONTRACT-SPEC SS2: {@code phiTerm} is in the FATAL polarity.  A reached
+     * anchor with no predicate is a concrete branch (DIAGNOSTIC) unless the
+     * fatal arm was observed (BLOCKING).  An observed fatal's phi must HOLD
+     * at the session's valuation where the roots decide it.
      */
     private static void targets(SessionReader session,
                                 Map<String, String> executed,
@@ -894,14 +754,9 @@ public final class RowInvariants {
     // ---- 10. a focused session ran the flip it was given ---------------
 
     /**
-     * A focused replay's own session states the arm the obligation asked for
-     * (HANDOVER SS1.5: the verdict is ADMITTED when the prefix reproduced and
-     * the flip took the other arm).  DIAGNOSTIC: the obligation's result row
-     * already carries NOT_ADMITTED when it did not, so this names the row
-     * rather than deciding anything.
-     *
-     * @param flip     the focus row the worker wrote, as JSON
-     * @param session  the session that replay published
+     * A focused replay's session states the arm its focus row {@code flip}
+     * asked for (HANDOVER SS1.5).  DIAGNOSTIC: the result row carries the
+     * verdict.
      */
     public static List<GapRow> flipped(JsonObject flip,
                                        SessionReader session) {
@@ -935,35 +790,11 @@ public final class RowInvariants {
     // ---- 11. a root symbol without its RootMintRow ---------------------
 
     /**
-     * R4: every root symbol a session REFERENCES is a root that session
-     * itself MINTED a row for.
-     *
-     * <p>SET-level, the way invariant 1 is: which quantities are roots is a
-     * fact about the EPOCH -- a root is declared by the case and minted
-     * wherever the run reaches its site -- so the names are taken from every
-     * session's {@code RootMintRow}s together, and a root's symbol is the
-     * same name in every session that minted it.  What is then asked of each
-     * session on its own is whether it states the row for the roots it
-     * NAMES.</p>
-     *
-     * <p>BLOCKING, because a symbol with no row is not a gap in a report: it
-     * is a quantity the session carries and nothing of the session
-     * attributes.  The composer meets it as an arm it cannot guard and the
-     * claim meets it as a root free at every valuation, which is exactly how
-     * hdfs-11741 campaign #4 came out satisfiable at the recorded valuation
-     * and yielded no witness -- seven of thirteen sessions referenced a
-     * declared root they published no row for, {@code
-     * HDFS.BLOCK_KEY.SERIAL_NO} among them, carried out of an activation the
-     * run abandoned.  The runtime's half of the same rule is {@code
-     * RootMint#mintUnattributed}: a mint no admitted activation owns mints
-     * no symbol, and one that does is rowed.</p>
-     *
-     * <p>Referenced means named by the session's own tables: every {@code
-     * SymbolExpression} leaf of {@code expressions.json} -- the one walk
-     * {@link Arms#symbolsIn} makes, so COMPOSE and IMPORT decide "which
-     * roots does this expression name" the same way -- plus the terms the
-     * decision and target rows publish, which is where the citation comes
-     * from.</p>
+     * R4: every root symbol a session names has a RootMintRow in that
+     * session.  The root set is epoch-wide; BLOCKING, since an unrowed
+     * symbol is a root free at every valuation.  "Names" uses the same walk
+     * as COMPOSE ({@link Arms#symbolsIn}).  Runtime half:
+     * {@code RootMint#mintUnattributed}.
      */
     private static void attributed(List<SessionReader> sessions,
                                    List<GapRow> gaps) {
@@ -1001,12 +832,7 @@ public final class RowInvariants {
         }
     }
 
-    /**
-     * Every symbol one session names, each with ONE place it was referenced.
-     *
-     * <p>The published terms are read first so the citation is a ROW a
-     * reader can open, and the expression table fills in the rest.</p>
-     */
+    /** Every symbol one session names, with one citation (rows first). */
     private static Map<String, String> named(SessionReader session) {
         Map<String, String> where = new LinkedHashMap<String, String>();
         for (DecisionRow row : session.decisions()) {

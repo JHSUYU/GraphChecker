@@ -15,32 +15,11 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
 
-/**
- * IDENTITY-IMPL D: which occurrence a case's declaration names.
- *
- * <p>A case declares its target in the v1 spelling a human can write --
- * {@code node#epoch0/region/REGION.x@src#epoch0/api#k} -- because nobody
- * writes an execution index by hand. That string is a {@link Selector}, not
- * an address: which component, which region, optionally which api the message
- * that started the occurrence arrived on, and which match. Resolving it
- * happens once per campaign, against the SEED session, because the seed is
- * the recording the declaration was written about. Afterwards the anchor
- * travels as an id and no later stage sees the declaration again.</p>
- *
- * <p>Seed order is the resolution order: activation rows are in the order the
- * seed replay reached them, which is what a case author counted. Deliberately
- * not the execution index's order -- an index sorts by call path, and "the
- * second checksum" means the second one that ran.</p>
- *
- * <p>A selector that matches nothing is not an exception. It resolves to a
- * degraded address of the region it names, which no session's rows equal, so
- * the composition answers DECLARATION_MISSING and the campaign reads why out
- * of an artifact instead of a stack trace.</p>
- *
- * <p>One home for this: the composer asked the same question first, because
- * PLAN did not yet, and two implementations of "which occurrence did the case
- * mean" is exactly the disagreement an identity is supposed to end.</p>
- */
+/** IDENTITY-IMPL D: which occurrence a case's v1 {@link Selector} ({@code
+ *  node#epoch0/region/REGION.x@src#epoch0/api#k}) names; resolved once, against
+ *  the SEED, counting the k-th match in seed activation order. No match yields
+ *  a degraded address (composition: DECLARATION_MISSING). The only resolver of
+ *  "which occurrence did the case mean". */
 public final class SelectorResolution {
     /** What an already-resolved address carries and a selector never does. */
     private static final String RESOLVED_MARKER = "/ctx:";
@@ -48,18 +27,13 @@ public final class SelectorResolution {
     private SelectorResolution() {
     }
 
-    /**
-     * The occurrence {@code declared} names among {@code seed}'s activations.
-     *
-     * @param declared a full rendered address, or a v1 selector string
-     * @param seed     the seed session's activation rows, in write order
-     */
+    /** The occurrence {@code declared} (address or v1 selector) names among the
+     *  seed's activations, in write order. */
     public static OccurrenceAddress resolve(String declared,
                                             List<ActivationRow> seed) {
         String value = declared == null ? "" : declared.trim();
         if (value.contains(RESOLVED_MARKER)) {
-            // Already an id: PLAN resolved it, or a re-run passed back what a
-            // previous manifest published.
+            // Already an id (resolved by PLAN or a previous manifest).
             return OccurrenceAddress.parse(value);
         }
         Selector selector = OccurrenceAddress.parseSelector(value);
@@ -76,7 +50,6 @@ public final class SelectorResolution {
         return unresolved(selector);
     }
 
-    /** The same resolution, reading the seed session off the iteration. */
     public static OccurrenceAddress resolve(String declared, Path iteration,
                                             String seedSession)
             throws IOException {
@@ -98,19 +71,8 @@ public final class SelectorResolution {
                 ExecutionIndex.empty());
     }
 
-    /**
-     * The api of the message that started this occurrence, or {@code ""}.
-     *
-     * <p>The contract will not guess an api out of a deployment's RPC static
-     * site spelling, and is right not to; this is the rule for the spelling
-     * the cases meet. A v1 declaration writes the api as the tail of the
-     * source it came from, so the two are compared on their last path
-     * segment: {@code …/striped-file-checksum} selects the site whose last
-     * segment is {@code striped-file-checksum}, and an exact site spelling
-     * still matches itself. The selector's own spelling is handed back where
-     * the two name one api, so the contract's equality decides and this rule
-     * only says which spellings are the same api.</p>
-     */
+    /** The api of the message that started this occurrence, or ""; v1 apis
+     *  match on the last path segment. */
     public static String apiOf(Selector selector,
                                OccurrenceAddress occurrence) {
         if (occurrence.context().form() != CausalContext.Form.ANCHOR) {

@@ -4,24 +4,14 @@ import java.util.ArrayDeque;
 import java.util.Deque;
 
 /**
- * One turn of a service loop is one root scope.
+ * One turn of a service loop (heartbeat, monitor, key updater) is one root
+ * scope, so daemon traffic is not all addressed {@code Lost}.
  *
- * <p>A daemon loop -- a heartbeat, a monitor, a key updater -- is started by
- * no request and serves none, so what it sends carried no request flow and
- * everything that served it was addressed {@code Lost}: two heartbeats on one
- * NameNode handler shared one address.  The turn is the unit: the WAKE of a
- * timed wait hands the thread its next turn, so the turn is opened there as a
- * root of its own -- role {@code WAKE}, its api the loop's site, its k the
- * k-th turn of that loop on that node in the window -- with a request flow the
- * turn's messages carry, and closed when the loop waits again.  This is what
- * replaced the heartbeat scopes hand-woven into each Hadoop tree.</p>
- *
- * <p>Opened only on a thread the attribution rule names a node for: a turn of
- * a node the run does not know is not a request of anybody's, and stays what
- * it was.  A turn scope that is not the innermost scope when the loop waits
- * again -- something opened inside it and did not close -- is left standing
- * rather than torn out from under that scope's owner; it closes the next time
- * it is innermost.</p>
+ * <p>The WAKE of a timed wait opens the turn (role {@code WAKE}, api = the
+ * loop's site, k = the k-th turn of that loop on that node in the window);
+ * the next wait closes it.  Only on threads attributed to a node.  A turn
+ * scope that is not innermost at the wait is left standing and closes the
+ * next time it is.</p>
  */
 final class WakeScopes {
     private static final ThreadLocal<Deque<Long>> OPEN =
@@ -59,17 +49,12 @@ final class WakeScopes {
             long token = RuntimeTraceContext.beginWake(api(site));
             if (token > 0L) OPEN.get().push(token);
         } catch (Throwable ignored) {
-            // Same rule: the turn runs whether or not it could be named.
         } finally {
             ScheduleLog.unmute();
         }
     }
 
-    /**
-     * The api a turn is counted under: the loop's class and method, which is
-     * stable across runs and readable in an address; the unit index of the
-     * wait is left out so a loop with two waits is one loop.
-     */
+    /** {@code Class.method} of the wait: two waits of one loop are one loop. */
     static String api(String site) {
         String value = Text.safe(site);
         int open = value.indexOf('<');

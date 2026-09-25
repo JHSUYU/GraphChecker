@@ -16,30 +16,19 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
 /**
- * What the VM's log says about every event it numbered, and the endpoint
- * identity a row built from one of those events carries.
- *
- * <p>Split out of {@link RowPublication}: the row kinds there are about
- * what an activation observed, and this is about WHERE and BY WHOM one
- * logged event happened -- the bytecode site the VM states for it, the
- * activation the VM says performed it, and the frames that activation's
- * journal says its thread stood on at that point of the session's event
- * clock.  Session-wide and keyed by event id, which is one monotone counter
- * for versions and reads alike: a {@code ReadFromExpression} node names its
- * read event id but not the activation that ran it, and the log record of
- * the same event does.</p>
+ * WHERE and BY WHOM one VM-logged event happened: its bytecode site, its
+ * performing activation, and its frames ({@link FrameJournal}).  Keyed by
+ * the session-wide event id, because a {@code ReadFromExpression} names its
+ * read event id but not its activation.  {@link RowPublication} owns what
+ * an activation observed.
  */
 final class LoggedEventSites {
     private LoggedEventSites() {
     }
 
     /**
-     * Indexes every logged event of one location's read-out record.
-     *
-     * <p>Populated from the read-out every activation already performs --
-     * the VM returns each selected location's complete version and read log
-     * -- so nothing is asked of the engine twice and no event is looked up
-     * before its log is seen.</p>
+     * Indexes every logged event of one location's read-out record, the one
+     * every activation already performs.
      */
     static void index(JsonObject record) {
         JsonObject envelope = object(record, "envelope");
@@ -53,14 +42,7 @@ final class LoggedEventSites {
         }
     }
 
-    /**
-     * One logged event, by the id the VM numbered it with.
-     *
-     * <p>Populated from the read-out every activation already performs --
-     * the VM returns each selected location's complete version and read log
-     * -- so nothing is asked of the engine twice and no event is looked up
-     * before its log is seen.</p>
-     */
+    /** One logged event, by the id the VM numbered it with. */
     private static void index(JsonObject node, String idKey) {
         long id = optionalLongInteger(node, idKey, -1L);
         if (id < 0L) return;
@@ -68,13 +50,8 @@ final class LoggedEventSites {
     }
 
     /**
-     * What one logged event states about itself: where, and under which
-     * activation.
-     *
-     * <p>Only these fields, not the log record: a record carries the whole
-     * value expression of its version, and keeping every record of the
-     * session alive to answer "which activation ran event 77" would retain
-     * every expression tree the run ever published.</p>
+     * Where one logged event ran, and under which activation.  Only these
+     * fields: keeping the record would retain its whole value expression.
      */
     private static final class Logged {
         private final long activation;
@@ -107,25 +84,13 @@ final class LoggedEventSites {
             new java.util.concurrent.ConcurrentHashMap<Long, Logged>();
 
     /**
-     * The one spelling of a logged event's site.
-     *
-     * <p>The components are the VM's own ({@code site} on every version,
-     * read record and {@code ReadFromExpression}); the class is put in source
-     * form here, which is the one place a VM name is converted, and the
-     * descriptor travels because two overloads of one name are two methods.
-     * An event the VM states no site for is named as a gap and spelled by
-     * its location, which distinguishes nothing and says so.</p>
-     *
-     * <p>Converting the name is also where a name the JVM minted PER RUN
-     * stops being an identity ({@link JvmNames#stable}): a write inside an
-     * inflated reflective call stands in {@code
-     * sun.reflect.GeneratedMethodAccessor23} in one recording and {@code
-     * ...Accessor22} in the next, for no reason the exploration can act
-     * on.</p>
+     * The one spelling of a logged event's site, and the one place a VM class
+     * name is converted to source form.  The descriptor separates overloads;
+     * per-run JVM names are stabilised ({@link JvmNames#stable}).  An event
+     * with no stated site is a gap spelled by its location.
      */
     static String site(JsonObject node, String locationKey,
                                      long eventId, boolean write) {
-        // The site this event states: its own, or its log record's.
         Logged own = node == null ? null : new Logged(node);
         Logged record = eventId < 0L ? null
                 : LOGGED.get(Long.valueOf(eventId));
@@ -140,9 +105,8 @@ final class LoggedEventSites {
                             + " distinguishes no event of it");
             return Endpoint.stateSite(locationKey, "UNSTATED_SITE", 0, write);
         }
-        // The per-run number comes out BEFORE the slashes become dots: a
-        // lambda proxy's name is <Outer>$$Lambda$14/1234567890, and that
-        // slash is the VM's separator for the hash, not a package.
+        // Stabilise BEFORE slashes become dots: in <Outer>$$Lambda$14/123
+        // the slash separates the hash, not a package.
         return Endpoint.stateSite(
                 JvmNames.stable(site.className).replace('/', '.'),
                 site.method, site.descriptor, Math.max(0, site.bci), write);
@@ -150,14 +114,8 @@ final class LoggedEventSites {
 
     /**
      * The occurrence that performed one logged event, or null with a gap.
-     *
-     * <p>The VM names the activation on every record it keeps, and that
-     * activation is what the row is a row OF: a read the deletion region
-     * made is not a read of the occurrence that happened to publish the
-     * location's log first, and a path through the publisher would carry a
-     * read it never performed.  An event whose activation this session has
-     * no occurrence for states so and publishes no row -- attributing it to
-     * the publisher is the thing this replaces.</p>
+     * The VM-stated activation, never whichever occurrence published the
+     * location's log.
      */
     static OccurrenceAddress performer(JsonObject node,
                                                String locationKey,
@@ -183,22 +141,13 @@ final class LoggedEventSites {
         return record == null ? -1L : record.activation;
     }
 
-    /**
-     * The frames one logged event stood on, or {@code ""} with a gap.
-     *
-     * <p>The event states the activation it ran inside
-     * ({@code regionEnterEventId}) and its own id; the journal of that
-     * activation states the frames its thread stood on at that point of the
-     * session's event clock.  A node that carries no log record of its own
-     * takes the activation from the record of the same event id.</p>
-     */
+    /** The frames one logged event stood on, or {@code ""} with a gap. */
     static String frames(JsonObject node, String locationKey,
                                        long eventId, boolean write) {
         long activation = activationOf(node, eventId);
         String frames = RowRuntime.framesOf(activation, eventId);
-        // "" is placed on no frames -- the store or read is in the region's
-        // own method -- and the bci of the site is then what distinguishes
-        // it.  Only an event the journal could not place is a gap.
+        // "" (no frames: the region's own method) is placed; only null is
+        // a gap.
         if (frames != null) return frames;
         RowRuntime.gap(GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC,
                 locationKey + "#" + eventId,

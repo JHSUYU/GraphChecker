@@ -44,15 +44,12 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
+/** One live activation of a declared region, and what it records. */
 final class ActiveRegion {
     final long token;
     /** The one task whose region-local path this activation records. */
     final RuntimeTask activation;
-    /**
-     * This activation's address, or null when this run can name no node to
-     * put it on: the address every contract row of this activation is
-     * keyed by (IDENTITY-V3).
-     */
+    /** The address every row of this activation is keyed by (IDENTITY-V3), or null. */
     edu.uva.liftlab.graphchecker.contract.OccurrenceAddress d3Address;
     /** Whether this activation counts against its address's set. */
     private boolean activationClaimed;
@@ -62,14 +59,9 @@ final class ActiveRegion {
     long vmRegionEnterEventId;
     final Object receiver;
     final Thread thread;
-    /** Entry lacked local producer-source evidence; OUT must confirm it. */
-    /** Exact outgoing message leaves this provisional activation reached. */
     final AtomicBoolean finished = new AtomicBoolean();
     boolean prepared;
-    /**
-     * The declared target branch event this occurrence decided, or {@code
-     * null} while it has not decided one.
-     */
+    /** The declared target branch event this occurrence decided, or null. */
     JsonObject targetReach;
     /** Terminal outcome, frozen when the occurrence stops running. */
     boolean abandoned;
@@ -78,18 +70,9 @@ final class ActiveRegion {
     private boolean closed;
     /** Loop bodies this activation has charged. */
     volatile long chargedLoopBodies;
-    /**
-     * The stable causal context this candidate observed while it was live:
-     * the logical sources it ran on and the external request scopes it ran
-     * inside.
-     */
+    /** Logical sources and request scopes observed while this ran. */
     final Set<String> observedSourceKeys = new LinkedHashSet<>();
-    /**
-     * Every stable source this occurrence can be attributed to by the
-     * application's own registration.
-     *
-     * <p>Two kinds of evidence, both produced by the replay itself.</p>
-     */
+    /** Every source the observed context or the receiver's registration attributes this to. */
     Set<String> attributedSourceKeys() {
         Set<String> keys = new LinkedHashSet<>(observedSourceKeys);
         SourceRef registered = RuntimeTraceContext.sourceFor(receiver);
@@ -106,18 +89,6 @@ final class ActiveRegion {
     /** Exact configured-source and planned-action observations. */
     final List<JsonObject> symbolizedRows = new ArrayList<>();
     final List<JsonObject> branchMappings = new ArrayList<>();
-    /**
-     * Case-local references into the VM's own handoff ledger: the
-     * declared port an attach landed on and the export event the
-     * {@code VALUE_HANDOFF} edge relates it to.
-     */
-    /**
-     * VM export event most recently published at each declared port.
-     *
-     * <p>README {@code RPC-1}: written down from the VM's own export
-     * answer so the producer's interaction row can name it.</p>
-     */
-
     /** The write log this activation read out, and its gaps. */
     final Map<String, JsonObject> sharedStateRecords =
             new LinkedHashMap<>();
@@ -130,15 +101,8 @@ final class ActiveRegion {
             new LinkedHashMap<>();
     final LoopBackedgeBudget loopBackedges;
     /**
-     * The ordinal of the OPEN dynamic invocation of each fixed-count
-     * loop, by runtime natural-loop id.
-     *
-     * <p>Its only reader is {@link #chargeLoopBody}, which scopes the
-     * replay body budget to one dynamic invocation.  It used to also
-     * publish a {@code loopCardinalities} row per invocation carrying
-     * the exact array length, its ordinal and a cardinality authority;
-     * nothing read those rows once R1 deleted the result envelope they
-     * were written onto.</p>
+     * The ordinal of the open invocation of each fixed-count loop; read only
+     * by {@link #chargeLoopBody} to scope the body budget per invocation.
      */
     private final Map<String, Integer> activeLoopInvocations =
             new LinkedHashMap<>();
@@ -167,10 +131,7 @@ final class ActiveRegion {
     }
 
 
-    /**
-     * Counts this activation against the published set of its address,
-     * which is what bounds a loop-body region's occurrences.
-     */
+    /** Counts this activation against its address's set (bounds loop-body occurrences). */
     void claimActivation() {
         if (activationClaimed) return;
         activationClaimed = true;
@@ -197,12 +158,8 @@ final class ActiveRegion {
             String loopId) {
         int maxBodies = activation.maxLoopBodies(loopId);
         chargedLoopBodies++;
-        // A fixed-count loop may be invoked repeatedly inside one region
-        // activation.  Its resource ceiling applies to each dynamic
-        // invocation; accumulating all invocations under the static loop
-        // id cuts ordinary code after (for example) two 16-element array
-        // walks.  openLoopInvocation opens the exact invocation before
-        // the first body hook and closeLoopInvocation closes it.
+        // The ceiling is per dynamic invocation: keyed by the static loop
+        // id alone, repeated walks of one loop would share one budget.
         Integer invocation = activeLoopInvocations.get(loopId);
         String budgetKey = invocation == null ? loopId
                 : LoopBackedgeBudget.scoped(loopId,
@@ -214,14 +171,9 @@ final class ActiveRegion {
     }
 
     /**
-     * Records the terminal of this activation's spent body budget.
-     *
-     * <p>The sibling of {@link #loopBoundCut}, and now the same two
-     * statements: the activation IS cut ({@code loopBoundCut = true}), and
-     * the cut carries the REASON it was taken.  The body cut used to be
-     * built at its hook with neither -- so an activation cut for spending
-     * its budget did not read as cut, and a cut taken because the hook
-     * itself failed was indistinguishable from one taken at the bound.</p>
+     * Records the terminal of this activation's spent body budget.  Like
+     * {@link #loopBoundCut}: marks the activation cut and carries the reason,
+     * so a hook failure is told apart from the bound.
      */
     ReplayLoopResourceCut replayBodyCut(String loopId, int maxBodies,
                                         long attemptedBody, String reason) {
@@ -230,13 +182,7 @@ final class ActiveRegion {
                 reason);
     }
 
-    /**
-     * Opens one dynamic invocation of a fixed-count loop.
-     *
-     * <p>The resource ceiling applies per invocation, so the backedge
-     * budget is scoped by which invocation this is; that an invocation
-     * is open at all is the whole of what the hook states now.</p>
-     */
+    /** Opens one dynamic invocation of a fixed-count loop (scopes its budget). */
     synchronized void openLoopInvocation(String loopId) {
         if (loopId.isEmpty()
                 || activeLoopInvocations.containsKey(loopId)) {
@@ -265,9 +211,7 @@ final class ActiveRegion {
     int recordConcreteDecision(
             String method, int unitIndex, BranchDecision decision) {
         try {
-            // observeDecision is the only caller and it has already
-            // returned for every undeclared site, so the site here is
-            // always one the plan named.
+            // The only caller has filtered out undeclared sites.
             String site = SiteId.render(method, unitIndex);
             int occurrence = RowRuntime.nextBranchOrdinal(site);
             recordDecisionRow(method, unitIndex, occurrence,
@@ -297,12 +241,8 @@ final class ActiveRegion {
     }
 
     /**
-     * States one decision to the one prefix matcher.
-     *
-     * <p>{@code runtime/FocusedReplay} is the only account of
-     * whether a replay is following its obligation: it reads the
-     * obligation and the published decisions, and a second account of
-     * the same decisions is how two answers to one question appear.</p>
+     * States one decision to {@code FocusedReplay}, the only account of
+     * whether a replay follows its obligation; keep no second account here.
      */
     boolean observeReplayDecision(
             String siteId, int occurrence, BranchDecision decision) {
@@ -314,10 +254,7 @@ final class ActiveRegion {
                 .contradicted(d3Address);
     }
 
-    /**
-     * Whether this activation has already walked a branch its
-     * obligation forbids.
-     */
+    /** Whether this activation has walked a branch its obligation forbids. */
     boolean replayPrefixContradicted() {
         return d3Address != null
                 && edu.uva.liftlab.graphchecker.runtime.FocusedReplay
@@ -362,8 +299,7 @@ final class ActiveRegion {
         reach.addProperty("siteId", safe(siteId));
         reach.addProperty("occurrence", occurrence);
         reach.addProperty("outcome", outcome);
-        // The anchor is read on the same clock as the decisions, so a
-        // composer can say which of them were taken before it.
+        // Same clock as the decisions, so they can be ordered against it.
         if (vmEventId > 0L) reach.addProperty("vmEventId", vmEventId);
         targetReach = reach;
     }
@@ -371,40 +307,13 @@ final class ActiveRegion {
     /**
      * Whether a configured-source hook may mint where it just fired.
      *
-     * <p>A CONCRETELY RUN REGION CONTRIBUTES LITERALS, NEVER FREEDOM
-     * (README SS9 rule 1).  The hook fires wherever its site runs, and it
-     * used to mint on whatever activation was on the thread -- so an
-     * occurrence whose every read is a literal handed the export a FREE
-     * root the recording never had.  On hdfs-11741 that is {@code
-     * HDFS.BLOCK_KEY.EXPIRY_DATE{,.CURRENT,.RETIRED}}: in the seed the
-     * field arrives as {@code clock + k*keyUpdateInterval + tokenLifetime}
-     * and the mint is a no-op publishing {@code reused}; where {@code
-     * updateKeys} ran concrete the field was a literal and three fresh
-     * INTEGRAL roots were minted beside it, which decouples the expiry
-     * from the clock it is computed from -- twelve wave-1 obligations
-     * refused {@code ASSIGNMENT_UNMINTABLE} on roots no replay could
-     * plant, and a composer that cannot relate expiry to the clock.</p>
-     *
-     * <p>THE OCCURRENCE THAT OWNS THE SITE IS THE THREAD'S ACTIVE ONE.
-     * Occurrences do not nest: entering a declared region below an active
-     * occurrence opens none, so every site executed synchronously beneath
-     * it -- {@code updateKeys}, {@code removeExpiredKeys} -- belongs to
-     * that occurrence.  So the mint asks one question of it, the same one
-     * {@code FocusedReplay} answers everywhere else: is this occurrence
-     * one of the ones that run SYMBOLIC in this replay?  A replay handed
-     * no focus row is the seed, where every planned occurrence does; a
-     * focused replay runs its focused set and nothing else.</p>
-     *
-     * <p>A hook under no active occurrence at all, or under one that runs
-     * concretely, mints nothing, plants nothing and says so once: the row
-     * names the source and the occurrence that was active, or {@code
-     * none}.  DIAGNOSTIC, because nothing was rewritten -- the region
-     * reads the literal its own execution produced, which is what it read
-     * in the recording; what the row answers is why no root row stands
-     * here.  An activation this run could give no address is not focused
-     * either, so it refuses by the same rule: a mint is addressed at an
-     * occurrence, and one that cannot be named cannot be the focused
-     * one.</p>
+     * <p>A concretely run region contributes literals, never freedom (README
+     * SS9 rule 1): minting under a concrete occurrence adds a free root that
+     * is decoupled from what computed the value (e.g. an expiry from its
+     * clock).  The owning occurrence is the thread's active one (occurrences
+     * do not nest), and the question is {@code FocusedReplay}'s: does it run
+     * symbolic here?  Otherwise nothing is minted and a DIAGNOSTIC gap says
+     * why; an unaddressed activation is never focused.</p>
      */
     static boolean mintsUnderSymbolicOccurrence(
             ActiveRegion active, String sourceId, String fieldSignature) {
@@ -425,13 +334,8 @@ final class ActiveRegion {
     }
 
     /**
-     * Whether THIS occurrence is one of the ones that run symbolic.
-     *
-     * <p>One implementation of the notion, and it is {@code
-     * FocusedReplay}'s: the focused occurrence, a member of its
-     * state-connected factor, or the mint of a root the obligation
-     * assigns.  A replay handed no focus row is the recording, and every
-     * planned occurrence of it runs symbolic.</p>
+     * Whether this occurrence runs symbolic, per {@code FocusedReplay}; with
+     * no focus row (the recording) every planned occurrence does.
      */
     boolean symbolicallyActive() {
         if (!FocusedReplay.focusedSession()) return true;
@@ -447,14 +351,10 @@ final class ActiveRegion {
     }
 
     /**
-     * The declared mint site one hook execution stands at, or null.
-     *
-     * <p>The catalog is a list of mint SITES, not a selection and not a
-     * budget: any read at a known site binds to that site's symbol,
-     * however many reads there are and whichever occurrence makes them.
-     * A hook that fires at a site the catalog does not name is still a
-     * gap - that is a plan/instrumentation disagreement, not a free
-     * occurrence.</p>
+     * The declared mint site one hook execution stands at, or null.  The
+     * catalog lists SITES, not a budget: any read at a known site binds to
+     * its symbol.  An unnamed site is a plan/instrumentation disagreement
+     * and a gap.
      */
     synchronized RootMint.SourceSiteEntry observeConfiguredSourceEntry(
             String sourceId, String runtimeFieldSignature) {
@@ -489,11 +389,8 @@ final class ActiveRegion {
                             + " catalog, so nothing declares this mint");
             return null;
         }
-        // Every row of this list is one execution of ONE site, so they
-        // agree on everything the mint reads off a declaration - the
-        // phase id the symbol is derived from, the field and the callee.
-        // Which execution the recording made is evidence on the row, not
-        // a limit on the reads a replay may make.
+        // All rows are executions of one site and agree on phase id,
+        // field and callee, so the first stands for them.
         ConfiguredSourcePhaseContract.Occurrence matched =
                 declaration.get(0);
         if (!matched.fieldSignature().equals(
@@ -516,14 +413,9 @@ final class ActiveRegion {
             JsonElement expression, boolean reused,
             String recordedValue) {
         JsonObject row = new JsonObject();
-        // What the run read at the mint, whether or not a plant followed
-        // it: the mint hands the LIVE read here (RootMint#configuredSource
-        // asks for it before the assignment is written), so this is never
-        // the wave's own value.  A root whose row states no value has no
-        // centre for a relative domain to resolve against -- [+0,+3]
-        // around nothing -- so the composer cannot move it at all, and
-        // RowPlaceholderMint#roots names an unstatable one rather than
-        // letting the empty field pass.
+        // The live read, taken before any plant (RootMint#configuredSource),
+        // so never the wave's value.  Without it a relative domain has no
+        // centre; RowPlaceholderMint#roots names that case.
         if (recordedValue != null && !recordedValue.isEmpty()) {
             row.addProperty("observedValue", recordedValue);
             row.addProperty("recordedValue", recordedValue);
@@ -542,19 +434,10 @@ final class ActiveRegion {
     }
 
     /**
-     * The occurrence a mint of this root is ADDRESSED at, rendered.
-     *
-     * <p>The activation of the region whose plan owns the mint
-     * ({@link #declaringRegion}), which is the runtime counterpart of
-     * {@code StaticScopeMap.holders}.  Captured here because here is
-     * where the region stack is live: the row is published when the
-     * activation closes, and by then the nesting is gone.  It is what
-     * makes a mint address the same in the seed and in a replay -- the
-     * row used to carry whichever activation happened to be innermost,
-     * and hdfs-11741 campaign #3 has one session (e635d55d...) whose
-     * SERIAL_NO row landed on REGION.08ab84c9 at index depth 1 where
-     * every other session and the seed put it on REGION.aaa1cfd7 at
-     * depth 2, so the focus row's rootMints address matched nothing.</p>
+     * The occurrence a mint of this root is addressed at: the region whose
+     * plan owns it ({@code declaringRegion}, runtime counterpart of
+     * {@code StaticScopeMap.holders}), not the innermost one, so seed and
+     * replay agree.  Captured now, while the region stack is live.
      */
     private String mintOccurrence(String rootId) {
         ActiveRegion owner = ConcolicRegionRuntime.declaringRegion(
@@ -564,10 +447,9 @@ final class ActiveRegion {
     }
 
     /**
-     * Records what one exact frozen {@code SYMBOLIC} action observed after
-     * its runtime hook either minted a value or retained a propagated one.
-     * The requested VM label is descriptive only; downstream authority is
-     * derived from the exact expression, never from this label.
+     * Records what one frozen {@code SYMBOLIC} action observed after its hook
+     * minted or retained a value.  The VM label is descriptive only;
+     * authority comes from the exact expression.
      */
     synchronized void recordManualSymbolization(
             SymbolizeAction action, String requestedSymbol,
@@ -578,26 +460,13 @@ final class ActiveRegion {
     }
 
     /**
-     * The same row, with the concrete value the mint read.
+     * The same row, with the concrete value the mint read -- the same shape
+     * as a configured-source mint.
      *
-     * <p>One mint publication shape: a configured-source mint states
-     * what the field held
-     * and a manual one stated nothing, so a root the composer met
-     * through a manual input had no recorded value to lower -- on lane
-     * VM12 that is DelegationKey.expiryDate, minted as
-     * {@code M_J_field_REGION.aaa1cfd7...}, and
-     * RECORDED_ROOT_VALUE_UNSTATED was the anchor's last refusal.</p>
-     *
-     * <p>And it states it whether or not the replay planted at this mint.
-     * There WAS a suppression rule -- a replay that wrote a model read the
-     * model back, so calling that "recorded" makes a counterfactual the
-     * recording -- and the mistake in it is that the value a mint hands
-     * here is the one it read BEFORE the plant, which is the recording's.
-     * What the session planted is stated by the focus row and by nothing
-     * on this row.  Suppressing it left the one root each obligation
-     * moves with an empty {@code recordedValue} in every focused session
-     * of both kept corpora (hdfs-17960 {@code seq=121}, hdfs-11741's six
-     * CLOCK rows), which IMPORT refuses under invariant 8.</p>
+     * <p>Stated even when the replay planted here: the value is read before
+     * the plant, so it is the recording's; the plant is the focus row's
+     * statement.  Trap: suppressing it leaves the moved root with no
+     * {@code recordedValue}, which IMPORT refuses (invariant 8).</p>
      */
     synchronized void recordManualSymbolization(
             SymbolizeAction action, String requestedSymbol,
@@ -618,12 +487,8 @@ final class ActiveRegion {
         row.addProperty("actionDigest", action.actionDigest);
         row.addProperty("plannedOccurrenceId",
                 activation.occurrenceId);
-        // WHERE in the region this read stood, captured here because
-        // here is where it runs: the row is published at the end of the
-        // activation, and the frames are gone by then.  Two reads of one
-        // accessor site inside one occurrence differ by the site index's
-        // own innermost frame (Identity.eventSiteIndex), not by an
-        // ordinal and not by a frame only a replay stands on.
+        // Captured now: frames are gone at publish.  Two reads of one site
+        // differ by the innermost frame (Identity.eventSiteIndex).
         row.addProperty("siteIndex", RowRuntime.siteIndexHere());
         row.addProperty("symbol", safe(requestedSymbol));
         JsonArray encodedPath = new JsonArray();
@@ -643,31 +508,13 @@ final class ActiveRegion {
         row.addProperty("minted", minted);
         row.addProperty("reused", reused);
         if (recordedValue != null && !recordedValue.isEmpty()) {
-            // What THIS execution read at the mint, under both names.
-            // A clock is no exception: the seed replay IS the reference
-            // execution, so the instant it read is the one the composer's
-            // deltas are relative to, and a row that carried the PLAN's
-            // instant instead described an execution nobody ran.  A
-            // replay that planted `now + skew` still states the instant
-            // it READ -- the mint asks for it before the plant -- and the
-            // skew itself is the focus row's statement.
+            // What THIS execution read, clocks included: the seed replay is
+            // the reference the composer's deltas are relative to.
             row.addProperty("observedValue", recordedValue);
             row.addProperty("recordedValue", recordedValue);
         }
-        // The case declared this read a wall clock, so the mint row
-        // states it and no reader downstream has to guess a clock from a
-        // callee or a site name.  It states WHERE the plan observed the
-        // read and nothing about its value: the value is the one above,
-        // which is what THIS execution read.
-        //
-        // The plan's own instant used to be published here as
-        // recordedValue.  The seed replay is THE reference execution --
-        // the composer's clock deltas are relative to the recordedValue
-        // its rows state -- so a row that names the PLAN's instant makes
-        // every delta relative to an execution that is not the one the
-        // session describes.  A replay that planted `now + skew` states
-        // the instant its own mint READ, by the rule above, and the skew
-        // is stated by the focus row.
+        // A declared wall-clock read says so, so no reader guesses a clock
+        // from a name.  Trap: never publish the PLAN's instant as its value.
         if (action.declaresWallClockRead()) {
             row.addProperty(InputActionCatalog.DECLARED_WALL_CLOCK, true);
             row.addProperty("eventSeq", action.eventSeq);
@@ -675,18 +522,10 @@ final class ActiveRegion {
         row.addProperty("mintOccurrence",
                 mintOccurrence(safe(action.symbol)));
         symbolizedRows.add(row);
-        // I4: a decision row carries the clock cells its own term names, and
-        // a term names one by the VM SYMBOL this mint installed -- so the
-        // cell is filed HERE, where the mint runs, rather than where the
-        // root row is published: activations publish innermost first, and a
-        // decision of an activation nested inside this one is published
-        // before this row exists (11741's removeExpiredKeys closes before
-        // the updateKeys rotation whose clock its decisions read).
-        //
-        // The three statements the root row will carry, off this same row:
-        // only a MINT (a reused symbol is another mint's root), only a
-        // declared CLOCK, and the port id -- which is the root id of a
-        // manual mint, because it states no sourceId of its own.
+        // I4: file the clock cell at mint time, keyed by the installed VM
+        // symbol: nested activations publish their decisions before this
+        // row exists.  Only a fresh mint of a declared clock; the port id
+        // is a manual mint's root id.
         if (minted && action.declaresWallClockRead()) {
             String installed = optionalString(row, "rawSymbol");
             RowRuntime.clockCell(installed.isEmpty()
@@ -697,14 +536,8 @@ final class ActiveRegion {
     }
 
     /**
-     * Names one refusal at a configured source's mint, as a row.
-     *
-     * <p>One gap vocabulary: this used to build a second row shape into
-     * a list nothing downstream read, so a mint the replay refused was
-     * invisible to the claim.  Every one of these means the wave's value
-     * was NOT written at the mint the obligation is about, so they are
-     * BLOCKING for the session that met them and the subject is the
-     * phase the declaration names.</p>
+     * Names one refusal at a configured source's mint as a BLOCKING gap: the
+     * wave's value was not written at the mint the obligation is about.
      */
     private void refuseMint(
             edu.uva.liftlab.graphchecker.contract.GapKind kind,
@@ -712,12 +545,8 @@ final class ActiveRegion {
             String detail) {
         RowRuntime.gap(kind, edu.uva.liftlab.graphchecker.contract
                         .GapClass.BLOCKING,
-                // The declared phase, else this occurrence's address, else
-                // the activation's own token: a phaseId is read out of the
-                // plan with optionalString and an address may be unnamed,
-                // so either can be blank, and a blank subject refuses
-                // inside Fields.text -- out of the mint hook, into the
-                // workload.
+                // Never blank: a blank subject throws inside Fields.text,
+                // out of the mint hook into the workload.
                 edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank(
                         phase == null ? "" : phase.phaseId(),
                         address(), Long.toString(token)),
@@ -725,19 +554,9 @@ final class ActiveRegion {
     }
 
     /**
-     * Whether this run can place this mint at the node and epoch the
-     * plan addresses, filing the gap that says why not.
-     *
-     * <p>A configured source names one mint SITE, and the site is
-     * reached once per node lifecycle.  The site is not the address: the
-     * address is (node, epoch, region, k-th activation), and the epoch
-     * is the half nothing was checking.  On hdfs-17960 the flip replay
-     * threw inside the workload before it restarted the NameNode, so
-     * the only activation it offered was epoch 0 -- and root=false was
-     * written there, at the mint the recording made before the restart,
-     * instead of at the epoch-1 mint the plan addresses.  The recorded
-     * execution was rewritten at a point the wave said nothing
-     * about.</p>
+     * Whether this run can place this mint at the node and epoch the plan
+     * addresses, filing the gap that says why not.  The site is reached once
+     * per node lifecycle, so the epoch tells two mints of one site apart.
      */
     synchronized boolean mintIsPlaceable(Object mintOwner) {
         String unattributed = mintIsNotThePlannedNode(mintOwner);
@@ -751,13 +570,9 @@ final class ActiveRegion {
     }
 
     /**
-     * Every node this run can attribute this mint to, at mint time.
-     *
-     * <p>Three registrations, all the workload's own: the object whose
-     * field is being minted, the source this occurrence was entered
-     * under, and whatever the thread is carrying now.  The registry is
-     * the same one {@link ConcolicTaskPlan#lifecycleMismatch} reads, so
-     * the epoch here is the epoch admission compared.</p>
+     * Every node this mint is attributed to: the minted object's owner, this
+     * occurrence's sources, and the thread's current source -- the registry
+     * {@link ConcolicTaskPlan#lifecycleMismatch} reads.
      */
     private Set<String> mintAttribution(Object mintOwner) {
         Set<String> attributed = new LinkedHashSet<>(
@@ -772,26 +587,13 @@ final class ActiveRegion {
     }
 
     /**
-     * Why this mint cannot be shown to be the planned node and epoch,
-     * or {@code ""}.
+     * Why this mint cannot be shown to be the planned node and epoch, or
+     * {@code ""}.
      *
-     * <p>Deliberately stricter than root admission, and the asymmetry is
-     * the point.  Admission admits an activation nothing attributed --
-     * absence of evidence is not evidence of another occurrence, and a
-     * replay routinely reconstructs a receiver without repeating its
-     * alias registration.  A model is different in kind: it <em>rewrites
-     * the recorded execution</em>, and doing that at a mint the run
-     * cannot place is asserting an occurrence nobody established.  So a
-     * mint must be attributed positively, and an unattributed one
-     * refuses the model and keeps the value the recording made.</p>
-     *
-     * <p>This is the hdfs-17960 flip in its general form.  The address is
-     * (node, epoch, region, k-th activation); the mint site is reached
-     * once per node lifecycle, so the epoch is what tells two mints of
-     * one site apart, and root=false landing on the epoch-0 mint
-     * rewrote a value the solver had said nothing about.  Refusing on a
-     * different epoch closed that where the run attributes the mint;
-     * requiring attribution closes it where the run does not.</p>
+     * <p>Deliberately stricter than root admission: admission tolerates an
+     * unattributed activation, but a model rewrites the recorded execution,
+     * so a mint must be attributed positively or the recorded value
+     * stands.</p>
      */
     private String mintIsNotThePlannedNode(Object mintOwner) {
         String planned = safe(activation.sourceKey);

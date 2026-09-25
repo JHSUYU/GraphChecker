@@ -17,32 +17,17 @@ import java.util.Set;
 /**
  * The edges a CONFIRM run is expected to take, and whether it took them.
  *
- * <p>THE RULE.  SAT says the model satisfies the formula; CONFIRM says the
- * program agrees: the model's roots are planted, the selected path's
- * session schedule is held (strict prefix to the anchor, timeouts after --
- * an obligation replay), no flip is forced, and the run is required to (a)
- * take every edge the model chose and (b) observe the fatal at the anchor.
- * This class is (a):
- * {@code explore.ConfirmMain} writes {@value #FILE} beside the focus row --
- * one {@code WIRE} row per selected arm (consumer endpoint id, producer
- * endpoint id), one {@code STATE} row per state join of the selected path
- * (reader endpoint id, writer endpoint id, version), the {@code MARKER}
- * polarities and the {@code ANCHOR} -- and the existing hooks compare what
- * the run pairs and joins against it.  CHECKING, NOT ENFORCING: the run is
- * scheduled by the session's schedule as every focused replay is, and a
- * difference is filed as a {@code CONFIRM_MISMATCH} gap naming expected and
- * actual.  A replay handed no such file compares nothing.</p>
+ * <p>CONFIRM plants the model's roots, holds the path's schedule, forces no
+ * flip, and requires (a) every model edge taken and (b) the fatal at the
+ * anchor.  This class is (a), from {@value #FILE} written by
+ * {@code explore.ConfirmMain}.  CHECKING, NOT ENFORCING: a difference is a
+ * {@code CONFIRM_MISMATCH} gap.</p>
  *
- * <p>A WIRE edge is compared where the producer is known, at the attach
- * ({@code RowRuntime.attachedAt}).  A STATE edge is compared at the close:
- * a read's observed version names a write of the same run, and the write
- * log of an activation is read out at its end, so the writer of a version
- * may be published after the read that saw it.  Both kinds also mismatch
- * when the consumer, or the reader, never ran at all: an edge the model
- * chose that the run never took is not an edge the run agreed on.</p>
+ * <p>WIRE is compared at the attach, where the producer is known; STATE at
+ * the close, since a writer's log is read out after the read that saw it.
+ * An expected consumer or reader that never ran is a mismatch too.</p>
  */
 public final class Confirmation {
-    /** The file the worker hands the replay, beside the focus row. */
     public static final String FILE = "expected_edges.jsonl";
 
     private static final Object LOCK = new Object();
@@ -51,11 +36,9 @@ public final class Confirmation {
     private static final Map<String, String> WIRE =
             new LinkedHashMap<String, String>();
     /**
-     * Writer endpoint id -> version, for every join of a declared cell's
-     * PLACEHOLDER: the mint of a declared cell lands on whichever
-     * occurrence of the region reads it first (17960's two FSImageSaver
-     * threads), so the edge is held by the writer the mint observed and
-     * not by the reader's occurrence.
+     * Writer endpoint id -> version for a declared cell's PLACEHOLDER join;
+     * keyed by writer because the mint lands on whichever occurrence reads
+     * first.
      */
     private static final Map<String, String> MINT =
             new LinkedHashMap<String, String>();
@@ -81,7 +64,6 @@ public final class Confirmation {
     private Confirmation() {
     }
 
-    /** Whether this replay was handed expected edges at all. */
     static boolean expected() {
         load();
         synchronized (LOCK) {
@@ -89,13 +71,7 @@ public final class Confirmation {
         }
     }
 
-    /**
-     * One delivery this run paired: the mismatch to file, or {@code ""}.
-     *
-     * <p>Compared here and not at the close because the producer is known
-     * here; the consumer is remembered so the close can name the expected
-     * consumers that never attached.</p>
-     */
+    /** One delivery this run paired: the mismatch to file, or {@code ""}. */
     static String attached(Endpoint consumer, Endpoint producer) {
         if (!expected() || consumer == null) return "";
         String actual = producer == null ? "" : producer.id();
@@ -109,7 +85,6 @@ public final class Confirmation {
         }
     }
 
-    /** One write this run published, by the key a read's version names. */
     static void wrote(LocationId location, long version, Endpoint writer) {
         if (!expected() || location == null || writer == null) return;
         synchronized (LOCK) {
@@ -117,11 +92,7 @@ public final class Confirmation {
         }
     }
 
-    /**
-     * One read this run published, with the version it observed; a
-     * placeholder states its mint's version too ({@link
-     * ReadRow#mintVersion}) and is remembered by the cell it observed.
-     */
+    /** One read; a placeholder ({@link ReadRow#mintVersion}) is also kept. */
     static void read(Endpoint reader, LocationId location,
                      long observedVersion, long mintVersion) {
         if (!expected() || reader == null || location == null) return;
@@ -134,12 +105,7 @@ public final class Confirmation {
         }
     }
 
-    /**
-     * Every STATE and WIRE edge the run did not take, at the close.
-     *
-     * <p>A reader (or consumer) the run never published is a mismatch
-     * too: the model's edge starts at an event that did not happen.</p>
-     */
+    /** Every STATE and WIRE edge the run did not take, at the close. */
     static List<String> close() {
         List<String> mismatches = new ArrayList<String>();
         if (!expected()) return mismatches;
@@ -216,15 +182,11 @@ public final class Confirmation {
                         STATE.put(text(row, "reader"), text(row, "writer"));
                         VERSION.put(text(row, "reader"), text(row, "version"));
                     }
-                    // MARKER rows are the root assignments the focus row
-                    // already plants; ANCHOR is what the driver reads off
-                    // the target row.  Neither is compared here.
+                    // MARKER and ANCHOR are checked elsewhere.
                 }
             } catch (IOException | RuntimeException unreadable) {
-                // Stated by the file's absence of effect: nothing loaded
-                // compares nothing, and the driver reads the mismatch
-                // gaps, of which there are then none.  The reader of the
-                // confirmation sees the replay log line.
+                // Trap: an unreadable file compares nothing and files no
+                // gap; only this log line says so.
                 System.err.println("Causynth could not read " + file + ": "
                         + unreadable);
                 WIRE.clear();

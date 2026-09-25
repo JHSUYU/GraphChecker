@@ -19,25 +19,15 @@ import java.util.Map;
  * IMPORT's gate: the row contract, checked before any stage reads a row.
  *
  * <pre>
- *   --sessions &lt;dir&gt;         the epoch's sessions/ (or --iteration, its parent)
- *   --out &lt;file&gt;             campaign_gaps.jsonl, appended to
- *   --topology-epoch &lt;id&gt;    the epoch these sessions belong to
+ *   --sessions &lt;dir&gt;       the epoch's sessions/ (or --iteration, parent)
+ *   --out &lt;file&gt;           campaign_gaps.jsonl, appended to
+ *   --topology-epoch &lt;id&gt;  the epoch these sessions belong to
  * </pre>
  *
- * <p>Every violation {@link RowInvariants} states is appended as one GapRow,
- * in the campaign gap file's own spelling, and the summary this process
- * prints is what the stage acts on: a BLOCKING count above zero is a campaign
- * failure at IMPORT, naming the first subject, and the DIAGNOSTIC ones are
- * recorded while the campaign goes on.  The process itself exits 0 whatever
- * it found -- the gate reports, the stage decides -- and nonzero only when it
- * could not read the sessions at all.</p>
- *
- * <p>Why here and not in each reader: a row defect is not one stage's
- * problem.  17960 lost two campaigns to rows that EXPLORE and COMPOSE each
- * read as valid, and a gate at the one place every row passes through is the
- * only version of the fix that holds for the stages nobody has written yet.
- * Append-only, because a gap row that a later stage overwrites was never
- * evidence.</p>
+ * <p>Appends every {@link RowInvariants} violation and prints a summary; the
+ * stage fails on BLOCKING &gt; 0.  Exits 0 whatever it found (the gate
+ * reports, the stage decides), nonzero only if the sessions are unreadable.
+ * Append-only: an overwritten gap row was never evidence.</p>
  */
 public final class ImportGateMain {
     private ImportGateMain() {
@@ -120,18 +110,8 @@ public final class ImportGateMain {
     }
 
     /**
-     * The ASK each FOCUSED session of this epoch ran under, by session id.
-     *
-     * <p>The focus row, because it is the one row that states BOTH halves of
-     * a wave's valuation: {@code rootAssignments}, the absolute values
-     * planted at the mints, and {@code clockDeltas}, the skew a clock's mint
-     * adds to its own reading.  {@link RowInvariants} judges every term at
-     * it: a focused replay's mints state what they OBSERVED before the plant
-     * -- the recording's value -- so the rows and the ask together are what
-     * says what that replay actually ran.</p>
-     *
-     * <p>Joined by the worker's own result row, like {@link #flips}, and one
-     * worker drives one replay with one focus row.</p>
+     * The focus row ({@code rootAssignments}, {@code clockDeltas}) each
+     * FOCUSED session ran under, by session id; one worker, one replay.
      */
     private static Map<String, JsonObject> asks(List<ObligationDir> workers)
             throws IOException {
@@ -147,12 +127,8 @@ public final class ImportGateMain {
     }
 
     /**
-     * Invariant 10, over every obligation worker this epoch has finished.
-     *
-     * <p>The link from a focus row to the session its replay published is the
-     * worker's own result row: the focus row names the SEED session it was
-     * cut from, and {@code obligation_result.jsonl} names the session the
-     * replay wrote.  Nothing is inferred from a directory name.</p>
+     * Invariant 10 over every finished worker, joined to its session by the
+     * worker's own result row, never by a directory name.
      */
     private static List<GapRow> flips(List<ObligationDir> workers,
                                       List<SessionReader> sessions)
@@ -181,18 +157,7 @@ public final class ImportGateMain {
         return gaps;
     }
 
-    /**
-     * One gap row, in the one spelling a gap row has.
-     *
-     * <p>This file used to carry {@code gapKind}/{@code gapClass} while the
-     * session files carried the contract's {@code kind}/{@code cls}, and the
-     * reader of both read only the campaign spelling: every session row's
-     * code defaulted to {@code ADMISSION_GAP} and its class to
-     * {@code BLOCKING}, which is how the accepted HDFS-17960 run published
-     * 262 blocking gaps that were all DIAGNOSTIC in their own rows.  One
-     * spelling, {@link RowCodec#writeGap}'s, plus the epoch this file is
-     * selected on.</p>
-     */
+    /** One gap row, spelled by {@link RowCodec#writeGap}, plus the epoch. */
     private static JsonObject campaignGap(GapRow gap, String topologyEpoch) {
         JsonObject row = RowCodec.writeGap(gap);
         row.addProperty("topologyEpoch", topologyEpoch);

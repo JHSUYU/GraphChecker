@@ -4,17 +4,11 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * CONTRACT-SPEC 4: one producer path's contribution to a family.
- *
- * <p>{@code pi_q and guard_q and v_H(I) = e_q}: {@code piRef} names the
- * producer path's condition, {@code expressionRef} the value it would export,
- * and {@code guardRoots} ONLY the roots {@code e_q} depends on -- a guard over
- * every root of the producer's run would make one arm contradict another for
- * reasons the exported value does not depend on.</p>
- *
- * <p>{@code attested} is INTERACTION-ID R-I5: an arm from a run that recorded
- * a path condition may carry a root move; an arm from a run that only ran
- * concretely states what was delivered and no more.</p>
+ * CONTRACT-SPEC 4: one producer path's arm of a family,
+ * {@code pi_q and guard_q and v_H(I) = e_q}.  {@code guardRoots} is only the
+ * roots {@code e_q} depends on, else unrelated arms contradict.
+ * {@code attested} (INTERACTION-ID R-I5): only a run with a recorded path
+ * condition may carry a root move.
  */
 public final class Arm {
     private final String producerPathId;

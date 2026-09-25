@@ -4,33 +4,14 @@ import java.util.Objects;
 
 /**
  * CONTRACT-SPEC 2: one activation a replay session entered, with its address.
+ * {@code focused}: ran symbolically as the task's region (others run
+ * concretely).  {@code instrumented=false}: entry hook only, so "no decisions"
+ * is a hole, not evidence (INTERACTION-ID sec 8).  {@code threadKey}: same key
+ * means program order (sec 7.1).
  *
- * <p>{@code focused} says the activation ran symbolically as the task's focused
- * region; every other activation of the session ran concretely with its exports
- * recorded and its attaches minting (the entry rule).</p>
- *
- * <p>{@code instrumented} is false when the row comes from a lightweight entry
- * hook alone -- the region is not in the retained/instrumented set, so no
- * decision, export or attach row can exist for this occurrence.  A reader that
- * finds no decisions for an activation must be able to tell "this region was
- * not instrumented" from "this region decided nothing", because the second is
- * evidence and the first is a hole (INTERACTION-ID sec 8).</p>
- *
- * <p>{@code threadKey} is the recording's stable key for the executing thread
- * inside this session: two rows with the same key ran in program order, which
- * is the same-thread half of happens-before (sec 7.1).</p>
- *
- * <p>The OTHER half of happens-before -- the intra-node thread-creation
- * edge, a {@code startedBy} {@link Endpoint} whose frame the activation's
- * thread inherited -- is NOT a member of this row.  It was, and no runtime
- * ever published one: every producer passed a literal null, so the walks in
- * {@code smt.Arms} that followed it could only ever return "unordered", and
- * a member the recording never states is a relation the engine does not
- * have.  What the rows do carry is {@code threadKey} (same-thread program
- * order) and the occurrence's {@link CausalContext.Anchor} (message
- * causality); an occurrence a message did not start and a thread key does
- * not place is CONCURRENT with everything, which is the honest answer.
- * When the thread-start edge comes back it comes back with a producer.</p>
+ * <p>No thread-start edge: happens-before is {@code threadKey} plus the
+ * {@link CausalContext.Anchor}; anything else is concurrent.  Re-add the edge
+ * only with a producer that publishes it.</p>
  */
 public final class ActivationRow {
     private final String sessionId;

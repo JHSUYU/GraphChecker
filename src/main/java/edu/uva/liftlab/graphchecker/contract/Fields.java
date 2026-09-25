@@ -9,13 +9,8 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Field checks and defensive copies shared by every contract value class.
- *
- * <p>The types in this package are immutable values that several modules mint
- * and several others read back out of JSON.  A field a producer leaves null is
- * a hole a consumer discovers much later, so construction refuses it here,
- * naming the field -- the fail-closed rule the design applies to evidence
- * applies to the evidence's own shape.</p>
+ * Field checks and defensive copies for the contract's immutable values;
+ * construction fails closed, naming the field.
  */
 final class Fields {
     private Fields() {

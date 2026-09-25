@@ -10,12 +10,8 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * CONTRACT-SPEC 2: the file layout of one replay session.
- *
- * <p>{@code <iteration>/sessions/<sessionId>/} with one JSONL file per row kind
- * and the session's {@code expressions.json}.  One kind per file is the whole
- * point: a reader of reads must never have to parse writes, and a stage that
- * only needs targets must not pay for the decisions.</p>
+ * CONTRACT-SPEC 2: the file layout of one replay session,
+ * {@code <iteration>/sessions/<sessionId>/}, one JSONL file per row kind.
  */
 public final class SessionDir {
     public static final String SESSIONS = "sessions";
@@ -29,27 +25,11 @@ public final class SessionDir {
     public static final String TARGETS = "targets.jsonl";
     public static final String GAPS = "gaps.jsonl";
     /**
-     * What each obligation this replay ran SETTLED -- the verdict.
-     *
-     * <p>Here with the other kinds because it is one: the replay owns
-     * whether the focused prefix reproduced and the flipped decision was
-     * taken, and the session is the evidence.  It used to be named in
-     * {@code runtime.SessionPublisher} alone, so a reader of the corpus had
-     * no spelling for it and the composition read the WAVE's aggregate copy
-     * instead -- which the campaign shell overwrote with ADMITTED after
-     * every replay that merely finished (hdfs-11741 campaign #3: 6 of 11).
-     * A SEED session states none, and none is not a verdict.</p>
+     * The replay's verdict per obligation run; the authority, never the
+     * wave's aggregate copy.  A SEED states none.
      */
     public static final String OBLIGATIONS = "obligations.jsonl";
-    /**
-     * The run's schedule: its START/CLAIM/SEND/RECV/WAKE events in the order
-     * they happened ({@link ScheduleEvent}).
-     *
-     * <p>Beside the rows, and not one of them: IMPORT reads it for the census
-     * and a task inherits its prefix, but no row invariant is stated over it
-     * -- an event is an ordering fact about a run, not a statement of what a
-     * site computed.</p>
-     */
+    /** The run's {@link ScheduleEvent}s in order; not a row kind. */
     public static final String SCHEDULE = "schedule.jsonl";
     public static final String EXPRESSIONS = "expressions.json";
     /** The role this session STATES it ran as ({@link SessionManifest}). */

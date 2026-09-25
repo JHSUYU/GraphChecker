@@ -28,36 +28,12 @@ import java.util.UUID;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
-/**
- * Execution-task rows for occurrences a replay EXPOSED in a region the
- * recording never planned (DESIGN4 section 3.3b).
- *
- * <pre>
- *   --iteration &lt;iteration dir&gt; --growth &lt;growth.jsonl&gt; --output &lt;jsonl&gt;
- * </pre>
- *
- * <p>A growth row is {@code {"kind":"EXPOSED_REGION", "regionId", "node",
- * "occurrence", "sessionId", "obligationId"}}, {@code occurrence} being the
- * address as {@link OccurrenceAddress#render} spells it; the task carries
- * it verbatim, so {@code ConcolicTaskPlan.select} admits exactly that
- * occurrence at replay.  Each row becomes one region-path task whose
- * inputs are the region's STATIC declarations: its declared cut ports
- * (the skeleton's, as the finalizer publishes them), and one port per
- * CALL_RETURN declared site of its text the case or the workload declares
- * (clocks, fault markers) -- bound, selected and identified by the
- * scheduler's own rules.  No recording states anything about such an
- * occurrence, so no port carries an observed value or an ordinal, and no
- * accessor return is minted.</p>
- *
- * <p>The iteration names its inputs: {@code iteration_manifest.json}'s
- * provenance gives the case's symbolic-input declarations and the static
- * catalog, whose directory is the static pass's output and holds
- * {@code static_scope_map.jsonl} beside it (run_engine.sh defines both
- * under {@code causynth_output_dir}); the campaign root holds the frozen
- * candidate skeletons under {@code seed-skeletons/}.  The rows carry the
- * iteration plan's {@code replayGroupId}: they join the plan the exposing
- * obligation is re-run against, so they share its ledger.</p>
- */
+/** Execution-task rows for occurrences a replay EXPOSED in a region the
+ *  recording never planned (DESIGN4 section 3.3b): {@code --iteration <dir>
+ *  --growth <growth.jsonl> --output <jsonl>}. Each growth row becomes one
+ *  region-path task on that exact address, with static inputs only (cut ports,
+ *  declared CALL_RETURN sites), sharing the iteration plan's {@code
+ *  replayGroupId}. */
 public final class ExposedRegionPlanMain {
     /** The growth row kind this main answers. */
     public static final String EXPOSED_REGION = "EXPOSED_REGION";
@@ -79,7 +55,6 @@ public final class ExposedRegionPlanMain {
                 ArtifactIO.readJsonl(growth)));
     }
 
-    /** One execution-task row per {@code EXPOSED_REGION} growth row. */
     static List<JsonObject> plan(Path iteration, List<JsonObject> growth)
             throws IOException {
         JsonObject provenance = object(GSON.fromJson(new String(
@@ -109,9 +84,8 @@ public final class ExposedRegionPlanMain {
         String replayGroupId = replayGroupId(
                 iteration.resolve("execution_task_plan.jsonl"));
 
-        // Every exposed occurrence is planned before any is selected: the
-        // selection rule scopes a callee declaration over the planned
-        // regions, and these are planned regions now.
+        // Plan all exposed occurrences before selecting: selection scopes over
+        // planned regions.
         List<JsonObject> regionCatalog = frozen.regions();
         List<RegionInstancePlan> regionPlans = new ArrayList<>(
                 frozen.regionPlans());
@@ -172,11 +146,8 @@ public final class ExposedRegionPlanMain {
         return rows;
     }
 
-    /**
-     * The region-plan row of one exposed occurrence, from the skeleton and
-     * the address alone: what {@code RuntimeRegionPlanner} publishes for a
-     * recorded one, less everything only a recording states.
-     */
+    /** The region-plan row of an exposed occurrence: RuntimeRegionPlanner's
+     *  shape minus recorded facts. */
     private static Map<String, Object> planRow(
             StaticProgram.RegionRow skeleton, OccurrenceAddress address,
             String sessionId) {
@@ -200,9 +171,7 @@ public final class ExposedRegionPlanMain {
                 .equals(sourceKey)
                 ? RuntimeRegionPlanner.ANCHOR_UNREGISTERED_SOURCE
                 : RuntimeRegionPlanner.ANCHOR_INHERITED_CONTEXT);
-        // An occurrence is its address: the selector names the root the
-        // replay hooks and the node the anchor was entered under, and
-        // claims no receiver class -- a replay-exposed entry states none.
+        // The selector names root method and anchor node, no receiver class.
         Map<String, Object> rootSelector = new LinkedHashMap<>();
         rootSelector.put("method", skeleton.rootMethod);
         rootSelector.put("kind", "GLOBAL_INVOCATION");

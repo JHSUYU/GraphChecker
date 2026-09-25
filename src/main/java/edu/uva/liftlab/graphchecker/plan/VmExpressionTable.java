@@ -17,16 +17,9 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
-/**
- * Converts one VM-session expression-id DAG into portable Merkle anchors.
- *
- * <p>The native VM can use {@code (sessionId, expressionId)} while a symbolic
- * session is alive.  Those ids are deliberately not persisted as semantic
- * identity: this adapter resolves them once, preserves node sharing, and lets
- * {@link SharedExpressionTable} assign content addresses.  Region/case/event
- * ownership remains in the surrounding evidence and is never inferred from
- * an expression id or anchor.</p>
- */
+/** Converts a VM-session expression-id DAG into portable Merkle anchors ({@link
+ *  SharedExpressionTable}), preserving node sharing. Session ids are never
+ *  persisted as identity, and ownership is never inferred from them. */
 public final class VmExpressionTable {
     public static final String FIELD = "vmExpressionTable";
     public static final String KIND = "VM_EXPRESSION_TABLE";
@@ -58,16 +51,11 @@ public final class VmExpressionTable {
         return false;
     }
 
-    /**
-     * Decodes several VM envelopes for one region while interning equal
-     * content-addressed nodes.  Runtime analysis receives the real expression
-     * objects, so its existing symbolic-expression checks keep working.  The
-     * completed result is compacted once at publication.
-     */
+    /** Decodes a region's VM envelopes, interning equal nodes; compacted once
+     *  at publication. */
     public static final class Store {
         private final SharedExpressionTable.Decoder decoder =
                 new SharedExpressionTable.Decoder();
-        /** Stable native ids are retained for the lifetime of this activation. */
         private final RawResolver rawResolver = new RawResolver();
 
         public synchronized JsonObject importEnvelope(String serialized) {
@@ -89,12 +77,8 @@ public final class VmExpressionTable {
         public synchronized JsonObject importEnvelope(JsonObject envelope) {
             JsonObject expanded;
             if (usesNativeDag(envelope)) {
-                // A runtime row can contain already-portable propagated
-                // values beside a fresh VM table.  Register those Merkle
-                // definitions before the raw decoder interns new nodes. Do
-                // not make the portable decoder walk the native definition
-                // table too; RawResolver owns that table and will visit it
-                // once below.
+                // Register portable tables beside the VM table first;
+                // RawResolver alone walks the native table.
                 collectPortableTables(envelope, decoder,
                         Collections.newSetFromMap(
                                 new IdentityHashMap<JsonElement, Boolean>()));
@@ -150,10 +134,8 @@ public final class VmExpressionTable {
                 new LinkedHashMap<>();
         private final Map<RawKey, JsonElement> expanded =
                 new LinkedHashMap<>();
-        /**
-         * Resolves one self-contained VM envelope through the persistent raw-id
-         * cache and interns each previously unseen definition exactly once.
-         */
+        /** Resolves one self-contained envelope, interning each new definition
+         *  once. */
         private JsonObject importEnvelope(
                 JsonObject artifact, SharedExpressionTable.Decoder decoder) {
             Set<RawKey> supplied = new LinkedHashSet<>();
@@ -167,12 +149,8 @@ public final class VmExpressionTable {
             return expandedArtifact.getAsJsonObject();
         }
 
-        /**
-         * Cached expansions must not let a later, incomplete envelope borrow
-         * definitions from an earlier envelope.  Native artifacts are
-         * self-contained, so validate the current table closure before using
-         * any raw-key cache hit.
-         */
+        /** Envelopes are self-contained: validate this table's closure before
+         *  any cache hit, so none borrows an earlier one's definitions. */
         private void validateDefinitions(JsonElement artifact,
                                          Set<RawKey> supplied) {
             Set<RawKey> visited = new LinkedHashSet<>();
@@ -288,8 +266,7 @@ public final class VmExpressionTable {
                 JsonObject definition = expression.getAsJsonObject();
                 JsonObject prior = definitions.get(key);
                 if (prior == null) {
-                    // Store accepts JsonObject callers as well as parsed text;
-                    // retain no mutable object owned by that caller.
+                    // Retain no caller-owned mutable object.
                     JsonObject stable = definition.deepCopy();
                     prior = definitions.putIfAbsent(key, stable);
                 }
@@ -402,13 +379,8 @@ public final class VmExpressionTable {
         }
     }
 
-    /**
-     * The explicit empty conjunction: a write that took no branch.
-     *
-     * <p>Explicitly null means the empty conjunction; an absent path guard
-     * means the guard was never captured, which is a different and worse
-     * fact, so the two are never spelled alike.</p>
-     */
+    /** Explicit empty conjunction (unguarded write); an absent guard means
+     *  "never captured". */
     static JsonObject emptyConjunction() {
         JsonObject guard = new JsonObject();
         guard.addProperty("kind", "EMPTY_CONJUNCTION");

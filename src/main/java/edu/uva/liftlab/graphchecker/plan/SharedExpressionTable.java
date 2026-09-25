@@ -26,21 +26,14 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 /**
  * Content-addressed storage for immutable symbolic-expression DAGs.
  *
- * <p>The VM propagates values as shared expression nodes, but JSON has no
- * object references.  Expanding every use as a tree made a downstream value
- * restate its complete upstream history at every handoff, summary field and
- * case dependency.  This codec restores the DAG at artifact boundaries: an
- * occurrence contains only an {@code EXPR.v1.<sha256>} reference and the
- * artifact carries each immutable node definition once.</p>
- *
- * <p>An anchor hashes one node whose expression children have already become
- * anchors.  It is therefore a Merkle identity: computing or comparing a
- * parent never serializes the full causal chain again.  Case ownership,
- * path-condition selectors and VM event ids remain in their existing evidence
- * records; this table deduplicates values and does not infer causality.</p>
+ * <p>JSON has no references, so expanding shared VM nodes as trees restated the
+ * whole upstream history at every use. At artifact boundaries a value is an
+ * {@code EXPR.v1.<sha256>} reference and each node is defined once. Anchors are
+ * Merkle identities (children hashed first). Deduplicates values only; never
+ * infers causality or ownership.</p>
  */
 public final class SharedExpressionTable {
-    /** The one member read outside this codec: the table's artifact name. */
+    /** The table's artifact member name. */
     public static final String FIELD = "sharedExpressionTable";
     private static final int SCHEMA_VERSION = 1;
     private static final String KIND = "CONTENT_ADDRESSED_EXPRESSION_TABLE";
@@ -90,15 +83,9 @@ public final class SharedExpressionTable {
             return expandArtifact(artifact, resolver);
         }
 
-        /**
-         * Interns one expression assembled from a validated VM-session DAG.
-         *
-         * <p>This is deliberately package-local: unlike {@link #expand}, it is
-         * not an artifact trust boundary.  The VM adapter has already checked
-         * every session/id reference and this method computes the Merkle anchor
-         * itself.  Existing child identities and equal content are reused, so
-         * a raw expression id is hashed only when it is first imported.</p>
-         */
+        /** Interns one expression from an already validated VM DAG.
+         *  Package-local: not a trust boundary like {@link #expand}; known
+         *  children are reused. */
         synchronized JsonElement internExpression(JsonObject expression) {
             return resolver.internExpression(expression);
         }
@@ -108,14 +95,7 @@ public final class SharedExpressionTable {
             if (artifact != null) resolver.collectTables(artifact);
         }
 
-        /**
-         * Compacts an object graph previously returned by this decoder.
-         *
-         * <p>The decoder remembers the anchor for every expanded expression
-         * identity. Reusing that map avoids hashing the same VM expression a
-         * second time when a runtime result is published. New wrapper nodes
-         * added after decoding are still content-addressed normally.</p>
-         */
+        /** Compacts a graph this decoder returned, reusing its anchors. */
         public synchronized JsonObject compact(JsonObject artifact) {
             if (artifact == null) return new JsonObject();
             return compactDecodedArtifact(artifact,
@@ -148,7 +128,7 @@ public final class SharedExpressionTable {
         return !type.isEmpty() && !REFERENCE_TYPE.equals(type);
     }
 
-    /** Artifact readers accept references, never old inline expression trees. */
+    /** Artifact readers accept references, never inline expression trees. */
     private static void requirePortableArtifact(JsonElement value) {
         if (value == null || value.isJsonNull() || value.isJsonPrimitive()) {
             return;
@@ -210,7 +190,7 @@ public final class SharedExpressionTable {
                 + CanonicalJson.render(definition));
     }
 
-    /** Parses and hash-checks only rows not already verified by a decoder. */
+    /** Parses and hash-checks rows not already verified. */
     private static void readTable(JsonElement encoded,
                                   Map<String, JsonObject> verified,
                                   Map<String, JsonObject> incoming) {
@@ -264,7 +244,7 @@ public final class SharedExpressionTable {
         }
     }
 
-    /** Matches the default Gson wire while retaining semantic null guards. */
+    /** Drops null members, except {@code pathGuard} (empty conjunction). */
     private static boolean portableMember(String name, JsonElement value) {
         return !FIELD.equals(name)
                 && ("pathGuard".equals(name)
@@ -292,11 +272,9 @@ public final class SharedExpressionTable {
                 new LinkedHashMap<>();
         private final Map<JsonElement, String> compactedExpressions =
                 new IdentityHashMap<>();
-        /** References reachable from the compacted artifact root. */
         private final Set<String> references = new LinkedHashSet<>();
         private Set<String> reachable = Collections.emptySet();
 
-        /** Direct view of definitions already verified by one Decoder. */
         private Builder(Map<String, JsonObject> verifiedDefinitions,
                         Map<JsonElement, String> verifiedAnchors) {
             definitions.putAll(verifiedDefinitions);
@@ -329,8 +307,8 @@ public final class SharedExpressionTable {
             }
             JsonObject result = new JsonObject();
             for (Map.Entry<String, JsonElement> field : source.entrySet()) {
-                // pathGuard:null means an observed empty conjunction, while
-                // an absent pathGuard means the guard was not captured.
+                // pathGuard:null = observed empty conjunction; absent = not
+                // captured.
                 if (portableMember(field.getKey(), field.getValue())) {
                     result.add(field.getKey(), compact(field.getValue(),
                             false));
@@ -429,7 +407,6 @@ public final class SharedExpressionTable {
         private final Map<String, JsonElement> expanded = new HashMap<>();
         private final Map<JsonElement, String> anchorsByExpanded =
                 new IdentityHashMap<>();
-        /** Decoder instances retain this across envelopes they intern. */
         private final Set<JsonElement> collected = Collections.newSetFromMap(
                 new IdentityHashMap<JsonElement, Boolean>());
 
@@ -440,8 +417,8 @@ public final class SharedExpressionTable {
             collectTables(value, incoming, scanned);
             validateIncoming(incoming);
             for (Map.Entry<String, JsonObject> entry : incoming.entrySet()) {
-                // Public callers retain their artifact object. Keep verified
-                // definitions immutable across later decoder calls.
+                // Copy: callers keep their artifact; verified definitions stay
+                // immutable.
                 definitions.put(entry.getKey(), entry.getValue().deepCopy());
             }
             collected.addAll(scanned);
@@ -469,7 +446,6 @@ public final class SharedExpressionTable {
             }
         }
 
-        /** Validates only new rows; old definitions already passed this check. */
         private void validateIncoming(Map<String, JsonObject> incoming) {
             Set<String> visited = new LinkedHashSet<>();
             Set<String> active = new LinkedHashSet<>();
@@ -501,7 +477,6 @@ public final class SharedExpressionTable {
             visited.add(anchor);
         }
 
-        /** Computes and interns only expression identities not seen before. */
         private JsonElement internExpression(JsonObject expression) {
             if (expression == null || !SharedExpressionTable.expression(
                     expression)) {

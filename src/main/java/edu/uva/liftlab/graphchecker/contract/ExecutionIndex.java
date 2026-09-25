@@ -7,16 +7,11 @@ import java.util.List;
 import java.util.Objects;
 
 /**
- * IDENTITY-IMPL A: where in a component's control structure a point is.
- *
- * <p>The frames from the scope root to the region entry (for an occurrence), or
- * from the region entry to the event (for an endpoint's site index), plus the
- * fold of those frames as one 16-hex {@code hash}:
- * {@code fold(h, f) = sha16(h + "/" + f.callSite + "@" + f.iteration)}.  Ids
- * are then constant-size however deep the path is, and the runtime maintains
- * the fold incrementally -- {@link #push} is that one step, so the stack of
- * prefix hashes it keeps and the hash a reader recomputes are the same
- * function.</p>
+ * IDENTITY-IMPL A: where in a component's control structure a point is --
+ * frames from scope root to region entry (occurrence) or region entry to
+ * event (site index), plus their 16-hex fold
+ * {@code fold(h, f) = sha16(h + "/" + f.callSite + "@" + f.iteration)}.  The
+ * runtime folds incrementally with the same function.
  */
 public final class ExecutionIndex {
     /** The fold's seed: the hash of the index with no frames at all. */
@@ -33,7 +28,6 @@ public final class ExecutionIndex {
         this.hash = hash;
     }
 
-    /** The index of a point with no frames on its path. */
     public static ExecutionIndex empty() {
         return EMPTY;
     }
@@ -78,7 +72,6 @@ public final class ExecutionIndex {
         return frames.size();
     }
 
-    /** Whether this index names no frame at all. */
     public boolean isEmpty() {
         return frames.isEmpty();
     }

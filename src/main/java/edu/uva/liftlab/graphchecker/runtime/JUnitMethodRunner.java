@@ -1,19 +1,10 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
 /**
- * The workload's symbolic lifetime, and this process's exit status.
- *
- * <p>The entry point every {@code execute.sh} launches.  The test method is
- * what "the workload" means for GraphChecker, so the workload-wide session
- * opens before the method starts and closes after it ends -- on every exit
- * path, including a failing test, which is also where the process's own
- * exit status is stated.  Region entry and exit no longer bound that
- * lifetime, which is what lets one producer's exported expression outlive
- * the producer's thread.</p>
- *
- * <p>Running the method is {@link JUnitLifecycle}'s: that is a reflective
- * JUnit lifecycle and it shares nothing with a session but this {@code
- * main}.</p>
+ * The entry point every {@code execute.sh} launches: the workload session
+ * opens before the test method and closes after it on every exit path, so
+ * an exported expression can outlive its producer's thread.  The method
+ * itself is run by {@link JUnitLifecycle}.
  */
 public final class JUnitMethodRunner {
     private JUnitMethodRunner() {
@@ -22,12 +13,8 @@ public final class JUnitMethodRunner {
     public static void main(String[] args) {
         String refusedOpen = ConcolicRegionRuntime.openWorkloadSession();
         if (!refusedOpen.isEmpty()) {
-            // A campaign whose session the VM refused would run with
-            // per-region symbolic lifetimes and quietly lose every
-            // cross-thread expression it exists to record.  Thrown rather
-            // than exited: no workload code has run yet, so there is no
-            // publication to make, nothing to close, and no workload thread
-            // to be held up by.
+            // Without a session every cross-thread expression is lost.
+            // Nothing has run yet, so throwing is enough.
             throw new IllegalStateException(refusedOpen);
         }
         int status = 0;
@@ -35,50 +22,31 @@ public final class JUnitMethodRunner {
             try {
                 JUnitLifecycle.run(args);
             } catch (Throwable failure) {
-                // The workload's own throwable, on stderr, where every
-                // replay's outcome has always been read from.
+                // The replay's outcome is read from stderr.
                 failure.printStackTrace(System.err);
                 status = 1;
             } finally {
-                // Publications first: a result still being appended belongs
-                // to a region that is still a session member, and closing
-                // under it would be refused anyway.
+                // Publications first: closing under a pending one is refused.
                 ConcolicResultPublisher.awaitSelectedResultPublications();
-                // And then what only the end of a run can state, on the one
-                // exit path every replay takes.  The shutdown hook that
-                // would have done it is registered only when some candidate
-                // went unaddressed -- so a focused session whose every
-                // candidate was addressed closed with no expression table
-                // at all (2 bytes, the "{}" written when the session dir
-                // was created) while its rows cited 28 refs.  One
-                // publication path for every session; publishRunTotals is
-                // once per JVM.
+                // Run totals here, on the one exit path every replay takes,
+                // not in a conditional shutdown hook (once per JVM).
                 ConcolicResultPublisher.publishRunTotals();
                 reportWorkloadSessionClose();
             }
         } catch (Throwable publicationFailure) {
-            // A publication or a close that threw while unwinding: named on
-            // stderr and failed, like any other refusal, but not allowed to
-            // skip the exit below.
+            // A failure while unwinding must not skip the exit below.
             publicationFailure.printStackTrace(System.err);
             status = 1;
         }
-        // Stated, not left to the JVM: the workload's teardown hands back a
-        // cluster whose non-daemon threads may outlive the test method, and
-        // a replay that never returns is not a fail-closed replay -- the
-        // campaign would wait on it instead of reading its outcome.  The
-        // status is the outcome the uncaught throwable used to carry: 0 when
-        // the workload method returned, 1 when it, a publication or the
-        // session close did not.
+        // Explicit exit: non-daemon cluster threads may outlive the test.
+        // 0 when the method returned, 1 when it, a publication or the close
+        // failed.
         System.exit(status);
     }
 
     /**
-     * Closes the workload session and names a refusal on stderr.
-     *
-     * <p>The refusal is reported rather than thrown: it is discovered while
-     * unwinding, possibly already on a failure path, and replacing the
-     * workload's own outcome with it would hide the original result.</p>
+     * Closes the workload session; a refusal is printed, not thrown, so it
+     * never hides the workload's own outcome.
      */
     private static void reportWorkloadSessionClose() {
         String refusedClose = ConcolicRegionRuntime.closeWorkloadSession();

@@ -26,16 +26,11 @@ final class CommunicationCatalogPlanner {
     private CommunicationCatalogPlanner() {
     }
 
-    /** Static discovery output for one analysis run. */
     static final class Result {
         final List<Map<String, Object>> callSites = new ArrayList<>();
-        /** One row per retained loop of a selected method. */
         final List<Map<String, Object>> loops = new ArrayList<>();
         final List<Map<String, Object>> gaps = new ArrayList<>();
-        /**
-         * Declared callees that are communication boundaries in the selected
-         * slice.  This is the authority for where a demand walk stops.
-         */
+        /** Communication-boundary callees: where a demand walk stops. */
         final Set<String> callSiteCallees = new LinkedHashSet<>();
     }
 
@@ -66,8 +61,7 @@ final class CommunicationCatalogPlanner {
             }
         }
 
-        // Loop discovery is independent of communication: every selected
-        // production method may retain loops whether or not it communicates.
+        // Loops of every selected method, communicating or not.
         for (String method : ordered) {
             Body body = body(bodies, method);
             if (body == null) continue;
@@ -76,11 +70,7 @@ final class CommunicationCatalogPlanner {
         return result;
     }
 
-    /**
-     * Publishes one row per retained loop of {@code method}: its stable {@code
-     * loopSiteId}, its control sites, its kind, the rule that decided the
-     * kind, and {@code K_L} where the campaign declared one.
-     */
+    /** Publishes one row per retained loop of {@code method}. */
     private static void catalogLoops(String method, Body body,
                                      DeclaredLoopBodyBounds bounds,
                                      Result result) {
@@ -117,8 +107,7 @@ final class CommunicationCatalogPlanner {
             }
             int declaredBound = bounds.bound(controlSites);
             if (!fixedCount && declaredBound == 0) {
-                // The loop still runs under the inherited K_L, and the model
-                // it produces is a prefix nobody stated for this workload.
+                // Runs under the inherited K_L: a prefix nobody stated.
                 result.gaps.add(gap(
                         GapKind.BOUNDED_LOOP_BODY_BOUND_UNDECLARED,
                         GapClass.DIAGNOSTIC,
@@ -126,19 +115,8 @@ final class CommunicationCatalogPlanner {
                                 + LoopBoundPolicy.declaredDefault(),
                         method, loopSiteId, controlSites.toString()));
             } else if (fixedCount && declaredBound == 0) {
-                // An array-indexed for was exempt from the row above and
-                // said nothing at all, so a loop resting on a count nobody
-                // had yet observed was indistinguishable from a loop with a
-                // declared bound: on hdfs-11741 that was 4 of 7 retained
-                // loops, every one at loopBodyBound NONE and none of them
-                // named anywhere.
-                //
-                // It is still not the same finding.  This loop's trip count
-                // is its array length, which the replay observes exactly,
-                // so demanding a declared K_L here would replace an exact
-                // count with a stated prefix -- what
-                // experiments/hadoop/hdfs-11741 argues in its own
-                // loop-bounds file.  Hence its own kind, DIAGNOSTIC.
+                // Named, not demanded: the trip count is the array length,
+                // observed exactly, so a declared K_L would only weaken it.
                 result.gaps.add(gap(
                         GapKind.BOUNDED_LOOP_FIXED_COUNT_BOUND_UNDECLARED,
                         GapClass.DIAGNOSTIC,
@@ -170,9 +148,7 @@ final class CommunicationCatalogPlanner {
                 if (position == null || shape == null) continue;
                 String site = SiteId.of(method,
                         position.intValue());
-                // One row per guard that leaves the loop, however many of
-                // its arms do: the row names the site, its consumer the
-                // method.
+                // One row per exiting guard.
                 if (loop.members.containsAll(shape.successors)) continue;
                 Map<String, Object> exit = newRow("LOOP_EXIT_DECISION");
                 exit.put("siteId", site);
@@ -231,14 +207,12 @@ final class CommunicationCatalogPlanner {
                     selected = candidate;
                 }
             }
-            // Equal or overlapping loop bodies have no unique innermost
-            // owner. Their branches retain exact ordinals.
+            // Equal or overlapping bodies: no unique innermost owner.
             if (selected != null) result.put(unit, selected);
         }
         return result;
     }
 
-    /** {@code kind} of one retained-loop catalog row. */
     static final String LOOP_ROW_KIND = "RETAINED_LOOP";
 
 
@@ -252,10 +226,8 @@ final class CommunicationCatalogPlanner {
     }
 
     /**
-     * One catalog gap, stating its own kind and class exactly like a
-     * {@link edu.uva.liftlab.graphchecker.contract.GapRow}: the stage that
-     * raised it knows what it could not do, and no later stage is in a
-     * position to overrule that.
+     * One catalog gap stating its own kind and class, like a {@link
+     * edu.uva.liftlab.graphchecker.contract.GapRow}; no later stage overrules.
      */
     static Map<String, Object> gap(GapKind kind, GapClass cls, String reason,
                                    String method, String siteId,

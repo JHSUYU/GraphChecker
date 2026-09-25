@@ -60,12 +60,9 @@ public final class ConcolicRegionRuntime {
             new AtomicLong();
     static final Map<Long, ActiveRegion> ACTIVE = new ConcurrentHashMap<>();
     /**
-     * Selected activations on this Java thread, innermost first.
-     *
-     * <p>The custom VM already keeps the matching native region stack.  The
-     * Java runtime must preserve that nesting as well: a selected helper can
-     * execute inside a selected caller while both share the same propagated
-     * expression universe and thread-local path condition.</p>
+     * Selected activations on this thread, innermost first; mirrors the VM's
+     * native region stack, since a selected helper can run inside a selected
+     * caller.
      */
     private static final ThreadLocal<Deque<Long>> CURRENT_TOKENS =
             new ThreadLocal<Deque<Long>>() {
@@ -76,10 +73,7 @@ public final class ConcolicRegionRuntime {
             };
     private static final ThreadLocal<Integer> OBSERVATION_PAUSE_DEPTH =
             ThreadLocal.withInitial(() -> 0);
-    /**
-     * Dynamic root-invocation ownership used only by injected entry/exit
-     * hooks.
-     */
+    /** Root-invocation frames of the injected entry/exit hooks. */
     private static final ThreadLocal<Deque<RootInvocationFrame>>
             ROOT_INVOCATION_FRAMES = new ThreadLocal<Deque<RootInvocationFrame>>() {
         @Override
@@ -92,10 +86,8 @@ public final class ConcolicRegionRuntime {
     /** Session this JVM opened for its workload, or zero when it opened none. */
     static volatile long workloadSessionId;
     /**
-     * Content-addressed expression universe of the current VM workload
-     * session.  Native expression ids are session-wide, so decoding them in
-     * one store per region needlessly rebuilt the same propagated DAG at every
-     * hop and every concurrent occurrence.
+     * Expression store of the current workload session; native expression
+     * ids are session-wide, so one store serves every region.
      */
     static volatile VmExpressionTable.Store workloadExpressionStore =
             new VmExpressionTable.Store();
@@ -103,10 +95,8 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * Starts an observation-only subtree before an instrumented method calls
-     * back into this runtime. Soot emits this boundary in the analyzed method
-     * so runtime/Gson frames are entered while symbolic propagation is muted.
-     * The VM still keeps structural shadow frames balanced.
+     * Mutes symbolic propagation before an instrumented method calls back
+     * into this runtime; the VM still balances its shadow frames.
      */
     public static void pauseObservation() {
         OBSERVATION_PAUSE_DEPTH.set(OBSERVATION_PAUSE_DEPTH.get() + 1);
@@ -129,9 +119,7 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    /**
-     * Opens the exact static call-site context for a configured-source hook.
-     */
+    /** Opens the static call-site context for a configured-source hook. */
     public static long enterConfiguredSourcePhaseCallSite(
             String method, int unitIndex, String declaredCallee) {
         try {
@@ -140,8 +128,7 @@ public final class ConcolicRegionRuntime {
             return CausynthTraceRecorder.beginCall(replayOwnerId, safe(method),
                     unitIndex, safe(declaredCallee), null);
         } catch (Throwable ignored) {
-            // Evidence bookkeeping must never change workload behavior.  A
-            // zero id makes both matching close hooks no-ops.
+            // Never perturb the workload; id 0 makes both close hooks no-ops.
             return 0L;
         }
     }
@@ -154,8 +141,7 @@ public final class ConcolicRegionRuntime {
             CausynthTraceRecorder.endCall(invocationId, returnValue,
                     safe(primitiveValue));
         } catch (Throwable ignored) {
-            // See enterConfiguredSourcePhaseCallSite: trace failure is not an
-            // application failure.
+            // A trace failure is not an application failure.
         }
     }
 
@@ -170,14 +156,9 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * Mutes this layer's own bookkeeping for the duration of one evidence
-     * call, and must be paired with {@link #endBookkeeping()} in a finally.
-     *
-     * <p>It has to be: this layer reflects, parses JSON, builds strings and
-     * walks collections holding the very objects the workload symbolized, and
-     * an unmuted call records hundreds of conditions of GraphChecker's own
-     * control flow into the workload's path condition and mints session
-     * expressions for GraphChecker's own strings.</p>
+     * Mutes this layer's own bookkeeping; pair with {@link #endBookkeeping()}
+     * in a finally.  Unmuted, GraphChecker's own control flow over symbolized
+     * objects lands in the workload's path condition.
      */
     static void beginBookkeeping() {
         pauseObservation();
@@ -197,43 +178,23 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * Opens the exact accessor invocation selected by one activation's
-     * symbolize action.
-     *
-     * <p>Soot initializes the token to zero and always invokes the exit hook,
-     * so disabled and unselected executions remain harmless.</p>
+     * Opens the accessor invocation selected by one activation's symbolize
+     * action.  The woven token starts at zero and the exit hook always runs,
+     * so unselected executions are harmless.
      */
     public static long enterAccessorCallContext(
             String callerMethod, int callUnitIndex, String callSiteId,
             String declaredCallee, Object receiver) {
-        // No index frame.  An accessor call context is woven by the
-        // campaign and by nothing else, so a frame pushed here is a frame
-        // the recording never stands on: the replay's execution index was
-        // five frames deeper than the recorded one for the same occurrence
-        // (planned 8 frames, ran 13), and every address below it drifted.
-        // What the frame was for -- telling two reads of one accessor site
-        // inside one occurrence apart -- is Identity.eventSiteIndex's job,
-        // which counts per occurrence and per site in both passes alike.
+        // No index frame: the recording weaves no accessor context, so a
+        // frame here would deepen the replay's execution index past the
+        // recorded one.  Repeated reads are told apart by
+        // Identity.eventSiteIndex instead.
         //
-        // The context itself is NOT redundant with the recorder's
-        // CausynthTraceRecorder.currentCallParentSiteMatches, and deleting
-        // it would leave every accessor-constrained action unmatchable in
-        // this pass.  That answer needs two recorder frames, and the
-        // concolic weave pushes neither: an ActiveCall (pushed by
-        // Hook.ENTER_METHOD -> CausynthTraceRecorder.enterMethod) and,
-        // under it, the ActiveCallSite its parentSiteId names (pushed by
-        // Hook.BEGIN_CALL -> beginCall).  Both hooks live in
-        // HookCatalog.trace() only -- HookCatalog.concolic() binds neither
-        // -- so in a replay ACTIVE_CALLS is empty and
-        // currentCallParentSiteMatches returns false at its first test.
-        // It could not answer even if the frames were woven: the hook this
-        // context brackets is MATERIALIZE_FIELD, emitted BEFORE the
-        // selected invoke in the CALLER's frame with the implementation
-        // method's name (CausynthPipeline.instrumentConcolicAccessor-
-        // CallContexts), so the accessor has not been entered yet, and on
-        // hdfs-17960 six of the accessor-constrained actions name
-        // <java.util.concurrent.atomic.AtomicInteger: int get()>, a JDK
-        // body Soot's application scope cannot instrument at all.
+        // Trap: this context is NOT redundant with
+        // CausynthTraceRecorder.currentCallParentSiteMatches -- the concolic
+        // weave (HookCatalog.concolic()) pushes no recorder call frames, and
+        // MATERIALIZE_FIELD runs in the caller before the accessor (possibly
+        // a JDK body) is entered.
         try {
             ActiveRegion active = activeRegion();
             String caller = safe(callerMethod);
@@ -284,8 +245,7 @@ public final class ConcolicRegionRuntime {
                 }
                 return;
             }
-            // Out-of-order close means malformed instrumentation or a missed
-            // exceptional edge.
+            // Out of order: malformed instrumentation or a missed throw edge.
             for (AccessorCallContext cursor = current; cursor != null;
                  cursor = cursor.previous) {
                 if (cursor.contextToken == contextToken) {
@@ -300,16 +260,14 @@ public final class ConcolicRegionRuntime {
 
 
     /**
-     * Opens the workload-wide symbolic session that outlives every individual
-     * region in this JVM.
+     * Opens the workload-wide symbolic session that outlives every region in
+     * this JVM.
      *
      * @return an empty string on success, otherwise a named diagnostic
      */
     public static String openWorkloadSession() {
-        // The session is open before the first region is admitted: an
-        // export can cross a declared port before anything is selected, and
-        // a row that is not published because nothing was live yet reads
-        // afterwards as a site that never ran.
+        // Before any admission: an export can cross a port before anything
+        // is selected, and an unpublished row reads as a site that never ran.
         RowRuntime.configure(configuration().resultFile);
         if (configuration().tasks.isEmpty()) {
             workloadExpressionStore = new VmExpressionTable.Store();
@@ -317,13 +275,8 @@ public final class ConcolicRegionRuntime {
         }
         ConcolicVmBroker api = engine();
         api.requireCurrentCapabilities();
-        // The static slice's control-dependence answer, before any region can
-        // store anything: a concrete store starts a location's log only in a
-        // method the map names and only under one of that method's guard
-        // decisions.  The artifact is this epoch's PLAN output and has been
-        // required since closure v2, so a session that cannot read it is
-        // refused by name rather than replaying as the pre-VM22 baseline in
-        // which no concrete store is evidence at all.
+        // Guarded store sites (a PLAN output) must be installed before any
+        // store; a session that cannot read them is refused by name.
         String guardedStores = GuardedStoreSites.install(api);
         if (!guardedStores.isEmpty()) {
             return guardedStores;
@@ -352,8 +305,7 @@ public final class ConcolicRegionRuntime {
      * a named diagnostic
      */
     public static String closeWorkloadSession() {
-        // Closing the workload is the general durability boundary, regardless
-        // of which launcher owns it.
+        // The durability boundary, whichever launcher owns it.
         awaitSelectedResultPublications();
         long sessionId = workloadSessionId;
         if (sessionId == 0L) {
@@ -380,14 +332,9 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * Waits until every selected activation has durably closed its result
-     * record or reported a write failure.
-     *
-     * <p>Called from outside this class: a launcher that owns no workload
-     * session drives the durability barrier directly, the way the workload
-     * checkouts call {@link #symbolizeConfiguredSourceField}.  The work
-     * itself belongs to {@code ConcolicResultPublisher}; this is the driver
-     * entry point that names it.</p>
+     * Waits until every selected activation has durably published or
+     * reported a write failure.  Public driver entry point for launchers
+     * that own no workload session.
      */
     public static void awaitSelectedResultPublications() {
         ConcolicResultPublisher.awaitSelectedResultPublications();
@@ -418,9 +365,8 @@ public final class ConcolicRegionRuntime {
                 rootMethod, receiver, rootArguments);
         if (admitted == null) return null;
         if (boundedLoopOccurrenceCut(admitted)) {
-            // The bounded loop's captured occurrence set is full: release the
-            // candidate so the next iteration re-selects and re-caps, and run
-            // this iteration concretely.
+            // Occurrence set full: release so the next iteration re-selects;
+            // this one runs concretely.
             config.releaseCandidate(admitted);
             return null;
         }
@@ -428,14 +374,8 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * Decides which planned occurrence this root invocation admits, muted.
-     *
-     * <p>The decision itself is this bridge's own control flow over the
-     * workload's own objects: {@code RootContextSelector.matches} compares the
-     * root receiver against {@code null} and against a declared class, and a
-     * campaign instruments one entry hook per plan row, so every later hook on
-     * a thread that already holds a selected symbolic object evaluates that
-     * comparison again.</p>
+     * Decides which planned occurrence this root invocation admits, muted:
+     * the selection is GraphChecker control flow over workload objects.
      */
     private static RuntimeTask selectTask(ConcolicTaskPlan config,
                                           String rootHookGroupKey,
@@ -452,21 +392,12 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * Whether this admission is a bounded cut of a loop-body region whose
-     * captured occurrence set is already full.
-     *
-     * <p>When it is, the one region marker is written once and the caller
-     * runs the iteration concretely: no VM region, no symbolization, no
-     * capture, no occurrence row -- the fast path a bounded inner loop takes
-     * past {@code checkLoopBackedge}.  Hadoop still runs every heartbeat; we
-     * only stop capturing after K_L.</p>
+     * Whether this admission is a loop-body region whose captured occurrence
+     * set is already full (K_L).  If so the marker row is written once and
+     * the iteration runs concretely, with no VM region or capture.
      */
     private static boolean boundedLoopOccurrenceCut(RuntimeTask admitted) {
         if (!admitted.cutsBoundedLoopOccurrence()) return false;
-        // The "k past the bound" gap went with the ordinal: identity v3
-        // addresses a loop body by the execution index it ran at, and
-        // whether that index is reachable inside K_L is not a comparison of
-        // two numbers.  The bound itself still cuts, below.
         if (admitted.claimLoopBoundCutMarker()) {
             taskUnanswered(admitted, "LOOP_OCCURRENCES_BOUNDED: the"
                     + " occurrence set of loop-body region "
@@ -491,27 +422,22 @@ public final class ConcolicRegionRuntime {
         try {
             api.start(admitted.regionId, admitted.taskId);
             engineStarted = true;
-            // Region setup performs reflection, collection lookups and JSON-
-            // safe bookkeeping.
+            // Setup is bookkeeping.
             api.pausePathCondition();
             pathConditionPaused = true;
             ActiveRegion enclosing = activeRegion();
             active = new ActiveRegion(TOKEN_COUNTER.incrementAndGet(),
                     admitted, receiver, Thread.currentThread());
-            // A nested region starts with the symbolic state already carried
-            // by its caller.  Its local branches must therefore open
-            // immediately even when it mints no new task-local root.
+            // A nested region inherits its caller's symbolic state, so its
+            // branches record even if it mints no root of its own.
             if (enclosing != null && enclosing.pathRecordingStarted) {
                 active.pathRecordingStarted = true;
             }
             active.claimActivation();
-            // Identity v2, minted from the lineage this activation entered
-            // under.  The session it publishes into is this replay's own.
             edu.uva.liftlab.graphchecker.runtime.RowRuntime.configure(
                     configuration().resultFile);
-            // The node it RAN on, by the planner's own attribution rule --
-            // not the node the plan addressed, which is what an activation
-            // is being checked against.
+            // The node it RAN on (planner's attribution rule), not the node
+            // the plan addressed -- that is what it is checked against.
             SourceRef ranOn = RuntimeTraceContext.activationSource(receiver);
             active.d3Address = edu.uva.liftlab.graphchecker.runtime
                     .RowRuntime.beginActivation(active.token,
@@ -532,28 +458,13 @@ public final class ConcolicRegionRuntime {
                         "custom concolic engine returned no region-entry "
                                 + "event id");
             }
-            // The execution-index frame this activation opened is now
-            // addressable by the id every version and read the VM logs from
-            // inside it carries, so a logged event can be given the frames
-            // it stood on (FrameJournal).
-            //
-            // This journal is never evicted, and this class cannot be the
-            // one that evicts it: the activation's rows are written by the
-            // publication pool (#closeOccurrence ->
-            // submitCompletedResultPublication), which returns before they
-            // are, and an ENCLOSING activation may publish a read performed
-            // inside this one under this regionEnterEventId -- so neither
-            // #closeOccurrence nor #popActiveRegion is a point at which the
-            // journal is provably dead.  The only barrier that is,
-            // awaitSelectedResultPublications, is workload-wide, i.e. it
-            // comes at the moment the process ends anyway.  A bounded leak
-            // (7,266 journals on 11741, 266 on 17960), not a correctness
-            // defect; the owner of the eviction is whoever owns the
-            // publication's completion, not the region hook.
+            // Journals this activation's frame under its region-entry id so
+            // logged events get their frames (FrameJournal).  Never evicted
+            // here: publication is asynchronous and an enclosing activation
+            // may still publish under this id -- a bounded leak.
             edu.uva.liftlab.graphchecker.runtime.RowRuntime.journalRegion(
                     active.vmRegionEnterEventId, active.d3Address);
-            // A delivery can establish the causal request immediately before
-            // the selected handler entry.
+            // A delivery may have set the causal source just before entry.
             RuntimeTraceContext.View context = RuntimeTraceContext.current();
             SourceRef receiverSource = RuntimeTraceContext.sourceFor(receiver);
             if (receiverSource != null) {
@@ -570,11 +481,8 @@ public final class ConcolicRegionRuntime {
         } catch (Throwable throwable) {
             if (active != null) {
                 ACTIVE.remove(active.token);
-                // The index region is not unwound here either: the entry
-                // hook that pushed it brackets this whole body, so its own
-                // throw handler closes it (Hook.THROW_REGION_ENTRY ->
-                // #closeRegionEntry).  Unwinding it here popped a region
-                // this method never pushed.
+                // The index region is the entry hook's to unwind
+                // (#closeRegionEntry), not this method's.
                 if (javaRegionPushed) {
                     popActiveRegion(active);
                 }
@@ -582,12 +490,10 @@ public final class ConcolicRegionRuntime {
             }
             if (engineStarted) {
                 if (pathConditionPaused) {
-                    // Best effort only: cleanupAfterFailure is also valid while recording
-                    // is paused, but balancing the API keeps diagnostics clear.
+                    // Best effort; cleanupAfterFailure owns the real cleanup.
                     try {
                         api.resumePathCondition();
                     } catch (Throwable ignored) {
-                        // cleanupAfterFailure below owns the definitive cleanup.
                     }
                 }
                 api.cleanupAfterFailure();
@@ -608,35 +514,19 @@ public final class ConcolicRegionRuntime {
         RootMint.symbolizeReceiverFields(active, task, engine());
     }
     /**
-     * Files the execution-index frame of one work start.
-     *
-     * <p>Woven at every {@code Thread.start}, executor submission and
-     * fork-join fork inside the campaign's selected methods.  It pushes
-     * nothing on the starter: the frame belongs to the work that was
-     * started, which takes it when it runs.</p>
-     */
-    /**
      * Takes the execution-index frame filed for the work running here.
-     *
-     * <p>Woven at the entry of every functional method a start hands to a
-     * thread ({@code WorkStartSites.entersWork}), in this pass and in the
-     * recording alike.  The receiver IS the carrier the start was filed
-     * under, so a pool worker -- handed its task by JDK code no weave
-     * touches -- claims its own start frame at its own first instruction,
-     * before the first send it makes.</p>
+     * Woven at the entry of every functional method a start hands to a
+     * thread ({@code WorkStartSites.entersWork}) in both passes; the receiver
+     * is the carrier the start was filed under.
      */
     public static void claimStart(Object carrier) {
-        // The carrier IS the work, so with none there is no frame to claim
-        // and nothing for a refusal below to be ABOUT.  Answered here
-        // rather than by passing "" as the subject of a gap row -- which
-        // Fields.text refuses, out of a woven hook, into the workload.
+        // No carrier, no frame; and a gap row with an empty subject would
+        // throw into the workload.
         if (carrier == null) return;
         try {
             RowRuntime.claimStart(carrier);
         } catch (Throwable unnamed) {
-            // The work runs either way, and the hole is stated: the
-            // occurrences this work publishes will be missing the
-            // start-site frame that tells two siblings apart.
+            // The work runs either way; the missing frame is stated.
             RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
                             .LINEAGE_LOST,
                     edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
@@ -649,15 +539,10 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * Enters the execution-index level of ONE application-scope method.
-     *
-     * <p>The replay's half of the one frame rule: the same hook, over the
-     * same scope, that the recording weaves
-     * ({@code CausynthTraceRecorder.enterMethodFrame}), from the one walk
-     * ({@code CausynthPipeline.instrumentApplicationScope}).  The node is
-     * not read here -- reading it costs a lock and this runs at every
-     * application call -- because an event of a thread that names no node
-     * of its own belongs to the node of the start that created its work.</p>
+     * Enters the execution-index level of one application-scope method: the
+     * replay's half of the one frame rule, same hook and scope as
+     * {@code CausynthTraceRecorder.enterMethodFrame}.  The node is not read
+     * here (a lock per call); a thread's events inherit its start's node.
      *
      * @return the token that closes exactly the level this opened
      */
@@ -675,20 +560,20 @@ public final class ConcolicRegionRuntime {
         RowRuntime.exitFrame(token);
     }
 
+    /**
+     * Files the execution-index frame of one work start (thread start,
+     * executor submit, fork).  Nothing is pushed on the starter; the started
+     * work claims the frame ({@link #claimStart}).
+     */
     public static void startWork(String startSiteId, Object carrier) {
         String site = safe(startSiteId);
         try {
             RowRuntime.startWork(site, carrier);
         } catch (Throwable unnamed) {
-            // The start happens either way -- a hook may not turn it into a
-            // failure -- and the hole is stated rather than swallowed: the
-            // work this start created will publish an occurrence whose
-            // index is missing the start-site frame.
+            // The start happens either way; the missing frame is stated.
             RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
                             .LINEAGE_LOST,
                     edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
-                    // The woven start site, else the work it was filed
-                    // for: one of the two is always spelled.
                     firstNonBlank(site, carrier == null ? ""
                             : carrier.getClass().getName()),
                     "the frame of this work start could not be filed, "
@@ -698,48 +583,25 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * Opens the execution-index region of one skeleton root the campaign did
-     * not select.
+     * Opens the execution-index region of every skeleton root, selected or
+     * not, exactly as the recording does ({@code
+     * CausynthTraceRecorder#enterMethod}); otherwise the replay stands on a
+     * different frame stack and names a different occurrence.  Frames and
+     * address only -- activation rows belong to planned occurrences.
      *
-     * <p>The recording opens a region at EVERY skeleton root
-     * (CausynthTraceRecorder.enterMethod), and an occurrence's execution
-     * index is the frames from its scope root while every endpoint inside
-     * it is indexed from its entry.  A replay that opened regions only at
-     * its own task roots therefore stood on a different frame stack and
-     * named a different occurrence for the same event -- the drift this
-     * branch exists to remove.  So the same rule is woven here, over the
-     * same skeleton file the recording read: frames and the occurrence
-     * address, and no row -- an activation row belongs to the planned
-     * occurrences alone.</p>
-     *
-     * <p>Whether this entry OPENS an occurrence is {@code Identity#fold}'s to
-     * decide and not this hook's: a declared region entered synchronously
-     * inside another region's occurrence is folded into it, and only an entry
-     * on a thread running no occurrence opens one (paper SS3.1.2).  The one
-     * function decides it here and in the recording alike
-     * ({@code CausynthTraceRecorder#enterMethod}), so the occurrence the plan
-     * names is the occurrence this pass opens.  The push is unconditional
-     * either way -- a folded entry pushes the marker its own exit pops -- so
-     * the balance check below is over the same two stacks as before.</p>
+     * <p>Whether the entry opens an occurrence or folds into the running one
+     * is {@code Identity#fold}'s decision in both passes (paper SS3.1.2).
+     * The push is unconditional, so the balance check sees the same
+     * stacks.</p>
      */
     public static long enterRegionEntry(String regionId, String rootMethod,
                                         Object receiver) {
-        // No claim here: a started work claims its start frame at its FIRST
-        // identity event, which is the entry of the functional method the
-        // start named (#claimStart) -- strictly earlier than any region
-        // entry inside the work, and reached on a pool thread whose task
-        // enters no region at all.
+        // No claim here: work claims its start frame earlier (#claimStart).
         long entry = TOKEN_COUNTER.incrementAndGet();
         int depth = edu.uva.liftlab.graphchecker.runtime.Identity.depth();
-        // The other stack this entry is the one push of, read before the
-        // push for the same reason the frame depth is.
         int regions = edu.uva.liftlab.graphchecker.runtime.Identity
                 .regionDepth();
-        // No frame here.  The level of this activation was opened by the
-        // frame hook at this same entry (RowRuntime.enterFrame, woven at
-        // every application-scope method in both passes), and it is
-        // standing before the address is minted -- as it is in the
-        // recording (CausynthTraceRecorder.enterMethod).
+        // No frame here: the frame hook at this same entry already opened it.
         String node = RuntimeTraceContext.activationSource(receiver).key();
         edu.uva.liftlab.graphchecker.runtime.Identity.occurrence(
                 node, safe(regionId), true);
@@ -758,10 +620,7 @@ public final class ConcolicRegionRuntime {
         closeRegionEntry(entry);
     }
 
-    /**
-     * One open region entry: the token the workload frame holds, the index
-     * depth it opened at, and the root it is the entry of.
-     */
+    /** One open region entry: its token, the depths it opened at, its root. */
     private static final class RegionEntry {
         private final long token;
         private final int depthAtOpen;
@@ -786,18 +645,10 @@ public final class ConcolicRegionRuntime {
             };
 
     /**
-     * Closes the entry the token owns: its region, its index frame, and
-     * every entry that a missing exit left above it.
-     *
-     * <p>The token is a local of the workload frame the entry hook ran in,
-     * so recursion holds a different one at every depth and several hooks
-     * at ONE entry hold the same one -- which is what makes the push and
-     * the pop pair without guessing at ownership.  An entry still open
-     * above this one is an exit that did not run: its frames are dropped
-     * here (the stack cannot stay deeper than the entry that is closing)
-     * and the depth check below states it, fail-closed, because every row
-     * published after a leaked frame is addressed by the wrong
-     * occurrence.</p>
+     * Closes the entry the token owns and every entry a missing exit left
+     * above it.  The token is a local of the entry's workload frame, so push
+     * and pop pair without guessing.  A leaked entry is refused BLOCKING:
+     * every later row would carry the wrong occurrence.
      */
     private static void closeRegionEntry(long entry) {
         if (entry <= 0L) return;
@@ -819,14 +670,9 @@ public final class ConcolicRegionRuntime {
         int depth = edu.uva.liftlab.graphchecker.runtime.Identity.depth();
         int regions = edu.uva.liftlab.graphchecker.runtime.Identity
                 .regionDepth();
-        // Both stacks of the execution index, under one rule: an activation
-        // closes where it opened or it is refused.  The region stack needs
-        // the same check as the frames because it decides which occurrence
-        // an event belongs to and which frame its endpoints' site index is
-        // measured from, so a region popped without a push does not break an
-        // address -- it silently REBASES the next ones (see
-        // #popActiveRegion).  One row, naming the stack that is off and what
-        // it left standing.
+        // Both index stacks must close where they opened.  An unbalanced
+        // region stack silently rebases later addresses rather than breaking
+        // one.
         if (depth != mine.depthAtOpen) {
             RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
                             .FRAME_UNBALANCED,
@@ -867,11 +713,8 @@ public final class ConcolicRegionRuntime {
         RootHookGroup group = config.rootHookGroup(
                 instrumentationSelector, rootMethod);
         Deque<RootInvocationFrame> frames = ROOT_INVOCATION_FRAMES.get();
-        // A plan may contain several dynamic occurrences rooted at the same
-        // Java method.  Instrumentation emits one hook for each plan row, but
-        // one concrete method invocation is one logical activation.  The
-        // first physical hook dispatches the whole group even when no task is
-        // admitted; every remaining hook at that same entry is transparent.
+        // One hook per plan row, one activation per invocation: the first
+        // hook dispatches the group, its siblings are transparent.
         for (RootInvocationFrame existing : frames) {
             if (existing.claimsSiblingHook(group.key)) {
                 frames.push(new RootInvocationFrame(instrumentationSelector,
@@ -883,37 +726,15 @@ public final class ConcolicRegionRuntime {
                 instrumentationSelector, rootMethod, group.key,
                 Math.max(0, group.hookCount - 1), 0L);
         frames.push(frame);
-        // No index frame here.  The ENTRY owns it -- one per Java frame,
-        // keyed by the token that frame holds (#enterRegionEntry) -- so a
-        // second plan row at one entry cannot push a second frame and a
-        // recursive entry cannot be mistaken for one.
+        // No index frame here: the entry hook owns it (#enterRegionEntry).
         //
-        // F1 -- A FOLDED ENTRY STARTS NO ACTIVATION.  The entry hook at this
-        // same Java entry has already run, and when it folded (I1: a
-        // declared region entered synchronously inside another region's
-        // occurrence opens none of its own) this call is a method call
-        // INSIDE the occurrence already running, not the entry of one.  An
-        // activation here would be a second activation of that occurrence --
-        // two ActivationRows for one address, two branch-ordinal counters to
-        // reconcile, and a candidate consumed for an occurrence nothing
-        // addressed.  The frame above is still pushed, with no token, so the
-        // root exit hook pairs with this entry exactly as it does for every
-        // other unadmitted one.
-        // ...except at a LOOP_BODY_ROOT's body, which is not a region entry
-        // at all: the entry that addressed this occurrence ran at the
-        // enclosing method and opened the loop-root invocation this hook
-        // stands inside, and each body is one ITERATION of that occurrence.
-        // F1 asked here answers about whatever region stands innermost at
-        // the body, which need not be this one -- see
-        // LoopAccounting#bodiesAddressedHere for what it cost on hdfs-17960.
-        // A loop root whose OWN entry folded still addresses nothing, so
-        // those bodies stay refused by the same rule as before.
-        // The loop-root contexts are keyed by loopRootHookGroupKey, which is
-        // NOT the key #rootHookGroup resolves this same selector to, so the
-        // question is asked with the loop key for this selector.  For a hook
-        // that roots no loop task that resolves to UNPLANNED_LOOP_ROOT, which
-        // no context carries, and F1 decides as before.  Consulted only when
-        // the entry folded, so the ordinary path does not resolve it.
+        // F1 -- a folded entry (I1) starts no activation: it is a call
+        // inside the running occurrence, and a second activation would give
+        // one address two rows.  The tokenless frame still pairs the exit.
+        // Exception: a LOOP_BODY_ROOT body is an iteration of the loop-root
+        // occurrence, not a region entry (LoopAccounting#bodiesAddressedHere).
+        // Trap: loop contexts are keyed by the LOOP hook-group key, not the
+        // one #rootHookGroup gives this selector.
         ActiveRegion active = edu.uva.liftlab.graphchecker.runtime.Identity
                 .foldedEntry()
                 && !LoopAccounting.bodiesAddressedHere(
@@ -955,10 +776,7 @@ public final class ConcolicRegionRuntime {
         LoopAccounting.closeInvocation(loopId);
     }
 
-    /**
-     * Opens the lightweight enclosing call that addresses LOOP_BODY_ROOT
-     * iterations.
-     */
+    /** Opens the enclosing call that addresses LOOP_BODY_ROOT iterations. */
     public static long enterLoopRootInvocationFrame(
             String instrumentationSelector, String rootMethod,
             Object receiver, Object[] rootArguments) {
@@ -977,11 +795,7 @@ public final class ConcolicRegionRuntime {
         LoopAccounting.exitLoopRoot(token);
     }
 
-    /**
-     * Whether the nearest matching outer call owns this loop task.
-     *
-     * <p>Stays here: {@code ConcolicTaskPlan} static-imports this name.</p>
-     */
+    /** Whether the nearest matching outer call owns this loop task. */
     static boolean enclosingLoopRootAdmits(RuntimeTask task) {
         return LoopAccounting.enclosingLoopRoot(task) != null;
     }
@@ -992,15 +806,10 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * The value a fault marker ({@code Debug.makeSymbolicBoolean}) is handed
-     * at its call: the recorded polarity, which is {@code false} -- a
-     * recording injects no fault, and the marker mints unconditionally.
-     * The marker becomes a root where the plan binds the local it defines
-     * ({@code LOCAL_DEFINITION}, {@link RootMint#materializePrimitive}), and
-     * that mint plants the wave's polarity; nothing is decided here.
-     *
-     * <p>Called from outside this repository (the workload trees, through
-     * {@code annotation.Debug}), so the name stays.</p>
+     * A fault marker's ({@code Debug.makeSymbolicBoolean}) recorded
+     * polarity: always {@code false}.  The wave's polarity is planted by the
+     * local-definition mint ({@link RootMint#materializePrimitive}), not
+     * here.  External caller (workload trees); keep the name.
      */
     public static boolean materializeSymbolicBoolean(String name) {
         return false;
@@ -1008,26 +817,13 @@ public final class ConcolicRegionRuntime {
 
 
     /**
-     * Tracks a declared region input's cell from this write onwards.
+     * Starts versioning a declared region input's cell at this write.
      *
-     * <p>The VM retains a location BY VALUE: its version log begins at the
-     * first symbolic value written to it, so a location nothing symbolic
-     * has reached yet has no log and a store to it leaves no version
-     * behind.  On hdfs-17960 that is why the snapshot counter's two
-     * decrements published nothing and the anchor's read of the same cell
-     * had no writer to join: the first symbolic value the cell ever saw was
-     * the anchor's own placeholder mint, AFTER both writes.</p>
-     *
-     * <p>{@code System.observeExactPrimitiveField} attaches the value the
-     * field holds right now as a concrete leaf -- a {@code ConExpression},
-     * not a symbol, so no input is invented -- which is enough for the VM
-     * to start versioning the location.  The Atomic RMW that follows is
-     * then linearized by the VM's own summary
-     * ({@code SymbolicAtomic::finish_method_helper} -&gt;
-     * {@code publish_linearization}) and published as a version like any
-     * other store's, carrying the expression the VM built.  The PLAN stage
-     * decides WHICH write sites are observed; this states what the write
-     * did.</p>
+     * <p>The VM logs a location only from its first symbolic value, so
+     * earlier concrete stores leave no writer for a later read to join.
+     * This attaches the current value as a concrete leaf (no new input),
+     * after which the store -- including an Atomic RMW, linearized by the
+     * VM -- publishes a version.  PLAN decides which sites are observed.</p>
      */
     public static void observeDeclaredWriteSite(String siteId,
                                                 String fieldSignature,
@@ -1041,10 +837,7 @@ public final class ConcolicRegionRuntime {
             engine().observeExactPrimitiveField(receiver, fieldSignature);
             ensurePathRecordingStarted(active);
         } catch (Throwable failure) {
-            // This call is what STARTS the location's version log, so a
-            // loss here is not one row: every later read of the same cell
-            // joins to no writer at all, which is the hdfs-17960 shape
-            // this hook exists to close.
+            // Not one lost row: every later read of the cell joins nothing.
             RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.UNSTATED_VALUE,
                     edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
                     firstNonBlank(safe(siteId), safe(fieldSignature)),
@@ -1122,12 +915,9 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * Mints one symbol for one entry of a declared mint site.
-     *
-     * <p>Called from outside this repository: the workload checkouts invoke
-     * it directly from {@code org.apache.hadoop.ipc.CausynthSymbolicSource},
-     * and it is the only symbolic root of HDFS-17960
-     * (src/test/resources/external-callers.txt).</p>
+     * Mints one symbol for one entry of a declared mint site.  External
+     * caller ({@code CausynthSymbolicSource}, see
+     * src/test/resources/external-callers.txt).
      */
     public static boolean symbolizeConfiguredSourceField(
             String sourceId, Object owner, String fieldSignature) {
@@ -1145,36 +935,19 @@ public final class ConcolicRegionRuntime {
 
 
     /**
-     * The name one unreadable propagated producer expression answers to.
+     * The name of an unreadable propagated producer expression.
      *
-     * <p>A malformed or unreadable import is not "nothing propagated".  The
-     * producer did deliver a value and it does carry an expression; what
-     * failed is this replay's ability to read it.  Reading those two answers
-     * as one is how a consumer whose producer expression could not be
-     * imported acquired a <em>fresh unconstrained root</em> in its place:
-     * {@link #carriesInputAuthority} was asked about a {@code null}, said
-     * "nothing propagated", and the caller minted.  That manufactures a
-     * freedom the recording never had, and a witness is free to exploit
-     * it.</p>
-     *
-     * <p>So the failure travels as its own exception.  Every caller either
-     * lets it reach a handler that files a named gap, or catches it here and
-     * keeps the consumer's value concrete-and-flagged; none of them mints.
-     * The row lands in {@code unresolvedInputs}, which {@code
-     * the importer turns into {@code UNRESOLVED_INPUT} and
-     * refuses the whole summary under, so the gap blocks rather than
-     * decorates.</p>
+     * <p>An import failure is not "nothing propagated": treating it so
+     * mints a fresh unconstrained root the recording never had.  It travels
+     * as its own exception; no caller mints on it, and the importer refuses
+     * the summary as {@code UNRESOLVED_INPUT}.</p>
      */
     static final String PROPAGATED_EXPRESSION_IMPORT_FAILED =
             "PROPAGATED_EXPRESSION_IMPORT_FAILED";
 
     /**
-     * A propagated producer expression this replay could not import.
-     *
-     * <p>Its own type, so the three call sites that legitimately read "the VM
-     * has no expression for this value" as {@code null} can keep doing that
-     * for an unsymbolized read while still refusing an import that failed.
-     * </p>
+     * A propagated producer expression this replay could not import; its own
+     * type so {@code null} keeps meaning "no expression".
      */
     static final class PropagatedExpressionImportFailure
             extends IllegalStateException {
@@ -1221,12 +994,8 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * Opens the frame around one message instance being serialized.
-     *
-     * <p>A declared port is one pair of bytecode sites, and a protocol
-     * sends many unrelated values of that shape through it.  The frame is
-     * the thing whose single construction builds one instance of the value
-     * the port belongs to.</p>
+     * Opens the frame around one message instance being serialized; it
+     * separates the many values that cross one declared port.
      */
     public static void pushOutboundMessageFrame() {
         WireExport.pushOutboundFrame();
@@ -1262,12 +1031,8 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * The one instance field a declared communication port crosses on.
-     *
-     * <p>Stays nested here: {@code CausynthPipeline} allocates it by the
-     * binary name {@code ...ConcolicRegionRuntime$HandoffLeafCarrier}
-     * ({@code CausynthPipeline:1714}), so this class name is woven
-     * bytecode.</p>
+     * The instance field a declared port crosses on.  Its binary name is
+     * woven by {@code CausynthPipeline}; do not move or rename.
      */
     public static final class HandoffLeafCarrier {
         public boolean z;
@@ -1284,31 +1049,14 @@ public final class ConcolicRegionRuntime {
     static final String CARRIER_CLASS =
             "edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime"
                     + "$HandoffLeafCarrier";
-    // ------------------------------------------------------------------
-    // Communication message flow
-    // ------------------------------------------------------------------
-
-    // ------------------------------------------------------------------
-    // Declared communication ports
-    // ------------------------------------------------------------------
-
-
 
     /**
-     * THE ONE RULE: the innermost live region whose own plan declares this.
+     * The innermost live region whose own plan declares {@code what}: the
+     * runtime counterpart of {@code StaticScopeMap.holders}, used for attach
+     * consumers, handoff rows and root mints alike.
      *
-     * <p>Three things are filed by it -- an attach's consumer region, the
-     * consumer occurrence a handoff row states, and the occurrence a ROOT
-     * MINT is addressed at -- and it was written twice and missing on the
-     * third.  What it answers is the runtime counterpart of {@code
-     * StaticScopeMap.holders}: regions nest, and the innermost one that
-     * DECLARES the site is the one whose slice owns it, which is a fact of
-     * the plan and not of which activation happened to be innermost when
-     * the site ran.</p>
-     *
-     * <p>When no live region declares it the innermost live one still
-     * carries the row: the replay is exact about what it did, and R5 then
-     * says truthfully that a region ran something nobody planned there.</p>
+     * <p>If none declares it, the innermost live region carries the row and
+     * R5 reports the unplanned execution.</p>
      */
     static ActiveRegion declaringRegion(Declares what) {
         ActiveRegion innermost = activeRegion();
@@ -1342,12 +1090,9 @@ public final class ConcolicRegionRuntime {
         }
 
         /**
-         * A root the plan names as a symbolic input of this region.
-         *
-         * <p>Both spellings a root arrives under: a frozen SYMBOLIC action,
-         * whose {@code symbol} IS the root id, and a CONFIGURED SOURCE,
-         * whose publish phase names it.  One predicate, because "the region
-         * that owns this mint" must not answer differently for the two.</p>
+         * A root the plan names as a symbolic input of this region, under
+         * either spelling: a SYMBOLIC action's symbol or a configured
+         * source's PUBLISH phase.
          */
         final class Root implements Declares {
             private final String rootId;
@@ -1376,23 +1121,9 @@ public final class ConcolicRegionRuntime {
 
     /**
      * Whether this decision is the declared target event of the addressed
-     * occurrence.
-     *
-     * <p>The site the plan named, at the activation of it the plan
-     * addressed, decided.  Nothing else: not whether the predicate there was
-     * symbolic, not whether this activation followed a replay prefix, not
-     * what the outcome was.  An anchor is the fatal predicate when the
-     * branch has one and the concrete outcome when it has not, and which of
-     * the two it is lives in the branch row beside the reach, where the
-     * composer reads it to decide a propagation cut.</p>
-     *
-     * <p>It was gated on a solver witness.  On hdfs-17960 the target branch
-     * compares two concrete ints -- {@code i != sm.getNumSnapshots()},
-     * reached by control dependence because the flip skips a decrement -- so
-     * the same activation recorded the decision and was then named by
-     * {@code nameUnreachedTargetBranch} as never having decided it.  Those
-     * two statements cannot both be true of one activation, and the second
-     * one is the one that was wrong.</p>
+     * occurrence: the planned site decided at the planned activation.
+     * Nothing else -- not whether the predicate was symbolic nor the
+     * outcome; a concrete target branch is still reached.
      *
      * @param decided             whether the decision was recorded at all,
      *                            which is false only where the VM emitted no
@@ -1414,10 +1145,8 @@ public final class ConcolicRegionRuntime {
 
 
     /**
-     * Invocation-exact normal cleanup used by injected roots.  This method is
-     * intentionally no-throw: instrumentation bookkeeping must never turn a
-     * normal program return into an exception (or let the synthetic catch-all
-     * pop an enclosing frame a second time).
+     * Normal-return cleanup of an injected root.  No-throw: a hook must not
+     * turn a return into an exception.
      */
     public static void exitRegionFrame(String instrumentationSelector,
                                        String rootMethod) {
@@ -1428,21 +1157,13 @@ public final class ConcolicRegionRuntime {
                 finish(frame.token, "NORMAL", "", null);
             }
         } catch (Throwable ignored) {
-            // Runtime observation is fail-closed and cannot alter the
-            // return.  Deliberate, and the loss is bounded: every stage
-            // inside #finish states its own refusal (closeOccurrence files
-            // UNSTATED_VALUE for a read-out it could not invoke, and
-            // judgeFinishedOccurrence calls taskUnanswered), so what is
-            // left here is the unwinding -- and a row published from the
-            // workload's own return path could only be attempted through
-            // the same publisher the terminal has just failed on.
+            // Deliberate: every stage inside #finish states its own refusal.
         }
     }
 
     /**
-     * Invocation-exact exceptional cleanup used by the synthetic catch-all.
-     * The original throwable is rethrown by injected bytecode; consequently
-     * every runtime failure is swallowed here so it cannot replace it.
+     * Exceptional cleanup for the synthetic catch-all, which rethrows the
+     * original; failures here are swallowed so they cannot replace it.
      */
     public static void throwRegionFrame(String instrumentationSelector,
                                         String rootMethod,
@@ -1461,10 +1182,7 @@ public final class ConcolicRegionRuntime {
                 }
             }
         } catch (Throwable ignored) {
-            // Preserve the program's original throwable identity: the
-            // injected bytecode rethrows it, and a refusal raised here
-            // would replace it.  Bounded for the same reason as
-            // #exitRegionFrame's.
+            // Keep the program's throwable; see #exitRegionFrame.
         }
     }
 
@@ -1481,31 +1199,23 @@ public final class ConcolicRegionRuntime {
                 instrumentationSelector)
                 && sameHookIdentity(frame.rootMethod, rootMethod);
         if (!matches) {
-            // Never guess ownership.  In particular, do not expose or close
-            // an outer selected frame when instrumentation is malformed.
+            // Never guess ownership, never close an outer frame.
             return null;
         }
         frames.pop();
-        // The frame is returning, so an activation silenced for it (I3, see
-        // #silenceStillRunningFrame) is over with it and the occurrence
-        // enclosing this call is the thread's active one again.
+        // The frame returns, so its silenced activation (I3) is over.
         Deque<Long> silenced = SILENCED.get();
         silenced.remove(Long.valueOf(frame.token));
         if (frames.isEmpty()) {
             ROOT_INVOCATION_FRAMES.remove();
-            // No root frame is open, so nothing can still be running inside
-            // one: a token left here by a hook that never reached its exit
-            // would silence this thread for the rest of the run.
+            // A leaked token would silence this thread for good.
             silenced.clear();
         }
         if (silenced.isEmpty()) SILENCED.remove();
         return frame;
     }
 
-    /**
-     * The sibling-hook accounting both root stacks share: one physical entry
-     * emits one hook per plan row, and only the first is an activation.
-     */
+    /** Sibling-hook accounting of both root stacks: first hook activates. */
     static class SiblingHookGroupEntry {
         final String groupKey;
         private int remainingSiblingHooks;
@@ -1554,23 +1264,13 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    /**
-     * Exact-event overload carrying the id returned by the native marker that
-     * the instrumented class executes immediately before its original if.
-     */
-    /**
-     * Reserves a VM-attested branch event immediately before the original
-     * conditional executes.
-     */
+    /** Reserves a VM-attested branch event before the original conditional. */
     public static long prepareBranch(String method, int unitIndex,
                                      String expression) {
         return BranchObservation.prepare(method, unitIndex, expression);
     }
 
-    /**
-     * Exact-event overload carrying the id returned by the native marker that
-     * the instrumented class executes immediately before its original if.
-     */
+    /** Records a binary decision under the native marker's event id. */
     public static boolean resolveBranch(long preparedHandle, long vmEventId,
                                         String method, int unitIndex,
                                         String expression,
@@ -1613,14 +1313,10 @@ public final class ConcolicRegionRuntime {
         if (!active.finished.compareAndSet(false, true)) return;
         beginSelectedResultPublication();
         boolean publicationDeferred = false;
-        // Judgement and publication are bookkeeping, not workload control
-        // flow, so they remain muted until this occurrence's VM context is
-        // closed.
+        // Judgement and publication are bookkeeping: muted until VM close.
         beginBookkeeping();
         try {
             try {
-                // Exact call-site traps normally close every accessor scope
-                // first.
                 AccessorCallContext scope =
                         CURRENT_ACCESSOR_CALL_CONTEXT.get();
                 if (scope != null && scope.regionToken == active.token) {
@@ -1636,20 +1332,14 @@ public final class ConcolicRegionRuntime {
         }
     }
 
-    /**
-     * Applies the admission gates a finished occurrence must pass before its
-     * relation may be built.
-     */
+    /** The admission gates a finished occurrence must pass to publish. */
     private static void judgeFinishedOccurrence(ActiveRegion active) {
-        // First, because it is the only gate that asks whether this activation
-        // is the addressed occurrence at all.
+        // First: is this the addressed occurrence at all?
         String unaddressed =
                 active.activation.rootContextSelector.unconfirmed(
                         active.attributedSourceKeys());
         if (!unaddressed.isEmpty()) {
-            // A candidate that is not the addressed occurrence is the
-            // candidate loop working, not a finding, so it is released without
-            // a durable row.
+            // The candidate loop working, not a finding: no durable row.
             active.activation.noteUnaddressedCandidate(
                     ConcolicTaskPlan.RefusedCandidate.stated(unaddressed));
             active.releaseActivation();
@@ -1657,21 +1347,10 @@ public final class ConcolicRegionRuntime {
             endLiveSelectedRegion();
             return;
         }
-        // The source/address gate has now answered this planned occurrence.
-        // A later prefix or materialization rejection owns the sole durable
-        // diagnostic; do not also report the same activation as an unmatched
-        // occurrence when the workload terminates.
+        // Claimed: a later rejection owns the sole diagnostic, so it is not
+        // also reported as unmatched at termination.  An activation missing
+        // the target event still publishes, with targetReached:false.
         configuration().markOccurrenceClaimed(active.activation);
-        // A target address that several activations of one region on one
-        // source answer is separated by the only thing that distinguishes
-        // them: whether this activation reached the declared target event.
-        // One that did not has not answered the address, so it releases it by
-        // name and the next candidate is tried - which is what README OCC-1
-        // means by treating each target occurrence as a candidate.
-        // An activation that did not take the declared target event is not a
-        // rejected candidate: it is an occurrence of this address that did
-        // something else, and it publishes with targetReached:false so the
-        // importer never selects it as THE target case.
 
         if (active.replayPrefixContradicted()) {
             abandonOccurrence(active, "REPLAY_PREFIX_UNMATCHED: the"
@@ -1680,27 +1359,11 @@ public final class ConcolicRegionRuntime {
                             .refusal(active.d3Address));
             return;
         }
-        // The obligation is answered at this terminal, by the one matcher --
-        // for an occurrence this terminal ENDS.  A LOOP_BODY_ROOT's bodies
-        // all publish at one occurrence address, so this asks the same
-        // occurrence's question once per body and every body that finishes
-        // BEFORE the flipped ordinal answers "not yet" and is abandoned for
-        // it.  The abandonment is not local either: it files a
-        // REPLAY_PREFIX_UNMATCHED gap, that sets #unmatchedPrefix, and
-        // FocusedReplay#unstated returns it ahead of everything, so the
-        // session reports NOT_ADMITTED even after a later body DOES take
-        // the flip.  On hdfs-17960 that is the whole witness: the focused
-        // replay of the ordered-deletion flip printed the real fault
-        // ("post-restart snapshotListing=1 numSnapshots=0"), its decision
-        // rows show deleteSnapshot#u7 taking the other arm at both
-        // ordinals, and the obligation still came back NOT_ADMITTED with an
-        // EMPTY refusal -- nothing had contradicted anything.
-        //
-        // A body that takes the WRONG arm is a different statement and is
-        // still refused, by #replayPrefixContradicted above.  Whether the
-        // flip happened at all is a question about the whole occurrence,
-        // and FocusedReplay#results answers it fail-closed at the end of
-        // the run: no FLIPPED entry is NOT_ADMITTED there.
+        // Completeness is asked only of an occurrence this terminal ENDS.
+        // Trap: a LOOP_BODY_ROOT body is one iteration of a shared address;
+        // asking per body abandons every body before the flip, and that gap
+        // turns the whole session NOT_ADMITTED.  A wrong arm is still refused
+        // above; "no flip at all" is FocusedReplay#results' end-of-run check.
         if (active.d3Address != null
                 && !active.activation.loopBodyRoot
                 && !edu.uva.liftlab.graphchecker.runtime.FocusedReplay
@@ -1714,8 +1377,8 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * Reads one occurrence and closes its VM region on the owner thread, then
-     * transfers JSON decoding and durable publication to the daemon pool.
+     * Reads one occurrence and closes its VM region on the owner thread;
+     * decoding and publication go to the daemon pool.
      *
      * @return true only when the publication executor owns the in-flight
      *         publication counter
@@ -1732,7 +1395,6 @@ public final class ConcolicRegionRuntime {
         RawSharedStateReadOut rawSharedState = null;
         boolean publishRows = false;
         try {
-            // Everything below is observational bookkeeping.
             api.pausePathCondition();
             pathConditionPaused = true;
             if (!active.abandoned) {
@@ -1741,10 +1403,7 @@ public final class ConcolicRegionRuntime {
                     rawSharedState = captureRecordedSharedStateRaw(active,
                             api);
                 } catch (Throwable throwable) {
-                    // A write log this run could not read out leaves every
-                    // location it held with no version to join to, so the
-                    // refusal is stated the way the one gap vocabulary states
-                    // it rather than on an artifact nobody publishes.
+                    // An unread write log leaves its locations unjoinable.
                     RowRuntime.gap(
                             edu.uva.liftlab.graphchecker.contract.GapKind
                                     .UNSTATED_VALUE,
@@ -1759,48 +1418,35 @@ public final class ConcolicRegionRuntime {
             }
             api.finish();
             engineFinished = true;
-            // Symbolic state created or attached in a nested region remains
-            // on the VM values returned to its caller.  The native thread PC
-            // gate remains admitted as well, so open the caller's Java branch
-            // gate before its next selected conditional executes.
+            // Symbolic values flow back to the caller, so open its gate too.
             if (enclosingRegion != null && active.pathRecordingStarted) {
                 enclosingRegion.pathRecordingStarted = true;
             }
-            // Finishing an inner native region pops only that region.  Its
-            // caller continues in the same thread context, so undo the pause
-            // that protected this read-out before returning to application
-            // code.  An outermost finish detached the context and needs no
-            // balancing call.
+            // An inner finish leaves the caller's context paused; undo it.
+            // An outermost finish detached the context.
             if (hasEnclosingRegion) {
                 api.resumePathCondition();
                 pathConditionPaused = false;
             }
         } catch (Throwable ignored) {
-            // A read-out that threw is named by the gap the stage that threw
-            // filed; the rows this activation can still state are published
-            // below, and the native region is popped in the finally.
+            // The failing stage filed its own gap; the rest still publishes.
         } finally {
             if (pathConditionPaused && hasEnclosingRegion) {
                 try {
                     api.resumePathCondition();
                     pathConditionPaused = false;
                 } catch (Throwable ignored) {
-                    // A failed native close below is still popped explicitly.
                 }
             }
             if (!engineFinished) {
-                // A failing native finish used to be able to throw after it
-                // had already popped this region.  Never let recovery pop an
-                // enclosing activation: cleanup belongs only to the exact VM
-                // occurrence Java is closing.
+                // Trap: a failed finish may already have popped this region;
+                // clean up only if the VM's current region is still ours.
                 try {
                     if (api.currentRegionEnterEventId()
                             == active.vmRegionEnterEventId) {
                         api.cleanupAfterFailure();
                     }
                 } catch (Throwable ignored) {
-                    // Without an exact owner identity, destructive recovery
-                    // would be less safe than letting this run terminate.
                 }
             }
             ACTIVE.remove(active.token, active);
@@ -1808,12 +1454,8 @@ public final class ConcolicRegionRuntime {
             if (!active.abandoned) endLiveSelectedRegion();
         }
         if (!publishRows) {
-            // The path this activation ran is withheld; the SYMBOLS it put
-            // into the VM are not, because they are already in every other
-            // activation's expressions.  One of the two, always: a mint
-            // nothing admitted owned refused itself at the mint
-            // (RootMint#mintUnattributed) and minted no symbol, and one that
-            // did is rowed here whatever this activation's own fate.
+            // The path is withheld, but its mints are published: other
+            // activations' expressions already use those symbols.
             RowPublication.publishMints(active);
             configuration().releaseCandidate(active.activation);
             if (active.terminalGap && !active.activation.loopBodyRoot) {
@@ -1826,10 +1468,7 @@ public final class ConcolicRegionRuntime {
 
 
     static ActiveRegion activeRegion() {
-        // I3: an activation that ENDED while its own Java frame is still
-        // executing leaves no occurrence running on this thread, so what the
-        // rest of that frame does belongs to nobody -- see
-        // #silenceStillRunningFrame.
+        // I3: see #silenceStillRunningFrame.
         if (!SILENCED.get().isEmpty()) return null;
         Deque<Long> tokens = CURRENT_TOKENS.get();
         Long token = tokens.peek();
@@ -1837,12 +1476,8 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * The activations that ended while their own Java frame kept running.
-     *
-     * <p>One entry per such frame, dropped when that frame's root exit hook
-     * pops it ({@link #popRootInvocationFrame}), so the occurrence enclosing
-     * it resumes being the thread's active one exactly when the abandoned
-     * call returns.</p>
+     * Activations that ended while their Java frame kept running; each is
+     * dropped when that frame returns ({@link #popRootInvocationFrame}).
      */
     private static final ThreadLocal<Deque<Long>> SILENCED =
             new ThreadLocal<Deque<Long>>() {
@@ -1853,26 +1488,11 @@ public final class ConcolicRegionRuntime {
             };
 
     /**
-     * States that no occurrence is running here, when an activation closes
-     * with its own Java frame still on the stack.
-     *
-     * <p>I3 -- AN ABANDONED OCCURRENCE HANDS ITS LATER BRANCHES TO NOBODY.
-     * A prefix contradiction or a spent budget ends an activation from
-     * INSIDE the region method ({@code BranchObservation#observe} ->
-     * {@code #finish}), and the workload's call goes on running: the
-     * activation is popped off the region stack, so every branch the rest of
-     * that call takes used to be recorded on the ENCLOSING activation, under
-     * its address, with ordinals restarting at 1 and
-     * {@code RowPublication#decisions} publishing them under its {@code
-     * d3Address}.  10 of hdfs-11741's 40 nn0-focused sessions show that
-     * migration.  The occurrence that performed those branches is over, and
-     * the enclosing one did not perform them: after this, the decisions of
-     * that frame are concrete and unrecorded, and so is everything else
-     * {@link #activeRegion} gates -- mints, exports, attaches.</p>
-     *
-     * <p>Only while the frame is still open: an activation ended by its own
-     * root exit hook ({@code #exitRegionFrame}) has already been popped
-     * there, and silencing it would outlive the call it belongs to.</p>
+     * I3 -- an activation ended from inside its own frame (prefix
+     * contradiction, spent budget) hands the rest of that frame to nobody.
+     * Otherwise its later branches, mints and exports would be recorded on
+     * the enclosing activation, which did not perform them.  Only while the
+     * frame is still open.
      */
     private static void silenceStillRunningFrame(ActiveRegion active) {
         for (RootInvocationFrame open : ROOT_INVOCATION_FRAMES.get()) {
@@ -1919,31 +1539,14 @@ public final class ConcolicRegionRuntime {
                 "selected region stack does not own token " + active.token);
         tokens.pop();
         if (tokens.isEmpty()) CURRENT_TOKENS.remove();
-        // No index-region pop here.  The ENTRY hook owns the pair: it pushes
-        // the region (#enterRegionEntry) and #closeRegionEntry pops it, by
-        // the entry token.  This pop had no push left after beginActivation
-        // stopped opening one (RowRuntime.beginActivation reads
-        // currentOccurrence), so it closed the ENCLOSING region instead --
-        // and the region exit of the day deleted the closing occurrence's
-        // per-site counters, which were the counters that numbered the
-        // frames of everything the enclosing occurrence still had to run
-        // (counts live in the levels now, and a region holds none).  On
-        // hdfs-17960 verification #3 that renumbered the 10 applyEditLogOp
-        // entries of one loadEditRecords as 0 and then 0..8, so all 13 tasks
-        // addressed under the NameNode restart were refused
-        // OCCURRENCE_ANCHOR_UNMATCHED at one frame (planned @1/@2/@4/@6/@8,
-        // ran @0/@1/@3/@5/@6) and the tasks whose region ran at every record
-        // were answered by the WRONG record.  The frame stack stayed
-        // balanced throughout, which is why nothing said so.
+        // No index-region pop here: the entry hook owns that pair
+        // (#enterRegionEntry / #closeRegionEntry).  A pop here would close
+        // the ENCLOSING region and silently renumber its later frames.
     }
 
     /**
-     * Installs the VM's event clock the frame journal samples.
-     *
-     * <p>One reflective view of the engine exists ({@link ConcolicVmBroker});
-     * the identity package holds none, so the clock is handed to it from
-     * here.  Idempotent: a run installs the same clock at every region
-     * start.</p>
+     * Hands the VM event clock ({@link ConcolicVmBroker}) to the frame
+     * journal; idempotent, called at every region start.
      */
     private static void installEventClock(final ConcolicVmBroker api) {
         edu.uva.liftlab.graphchecker.runtime.RowRuntime.clock(
@@ -2031,14 +1634,8 @@ public final class ConcolicRegionRuntime {
 
 
     /**
-     * How a configured source's recorded value is spelled in the ledger.
-     *
-     * <p>The same spelling the recorded-root ledger already uses for a
-     * manual root's {@code primitiveValue}, so one reader can compare a
-     * witness against either: {@code "true"}/{@code "false"} for a Boolean,
-     * the decimal digits for an integral, the literal text for a String. A
-     * reference the runtime cannot spell as a scalar states nothing rather
-     * than a {@code toString()} nobody can compare against.</p>
+     * A configured source's recorded value, spelled as the ledger spells a
+     * manual root's {@code primitiveValue}; empty for a non-scalar.
      */
     static String recordedScalar(Object value) {
         if (value instanceof Boolean || value instanceof Character
@@ -2094,9 +1691,8 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
-     * Activation-local ordinals for repeated executions of one hook.  A new
-     * region activation owns a new counter, so no runtime event id or
-     * process-global invocation ordinal becomes replay identity.
+     * Activation-local ordinals of one hook's repeated executions, so no
+     * process-global counter becomes replay identity.
      */
     static final class OccurrenceCounter {
         private final Map<String, Integer> occurrences =
@@ -2119,12 +1715,8 @@ public final class ConcolicRegionRuntime {
         }
 
         /**
-         * One read site's occurrences.
-         *
-         * <p>{@code SiteId.render} and not {@code SiteId.of}: the
-         * instrumentation deliberately passes a {@code -1} unit index for an
-         * accessor implementation that has no unit of its own, and a strict
-         * parse of that sentinel throws inside the workload.</p>
+         * One read site's occurrences.  {@code SiteId.render}, not {@code
+         * SiteId.of}: an accessor site may carry unit index {@code -1}.
          */
         int field(String method, int unitIndex) {
             return observe("FIELD\u0000"

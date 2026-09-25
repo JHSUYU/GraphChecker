@@ -3,25 +3,12 @@ package edu.uva.liftlab.graphchecker.contract;
 import java.util.Objects;
 
 /**
- * One scheduling event of a run: {@code (kind, c, site, k)}.
- *
- * <p>The schedule of a run is the total order of these events, one file per
- * session ({@link SessionDir#SCHEDULE}).  A focused replay is held to the
- * prefix of the schedule of the session its task was cut from, so the
- * occurrences it re-runs before the flip are the ones that session ran, in
- * the same order, under the same addresses.</p>
- *
- * <p>Every component is a quantity the identity already has: {@code c} is the
- * causal context of the thread at the event -- the node the attribution rule
- * names, then the rendered {@link CausalContext} -- {@code site} the static
- * site, {@code k} the k-th event of that {@code (kind, c, site)} in the log.
- * No thread id and no time: two replays compare events by what they ARE,
- * never by which pool thread happened to make them or when.</p>
- *
- * <p>{@code occurrence} is where the event happened, the id of the region
- * occurrence open on the thread (or {@code ""} outside every region).  It is
- * not part of the event's key: it is what a task's prefix is cut at -- the
- * first event of the occurrence the task focuses.</p>
+ * One scheduling event {@code (kind, c, site, k)}; a session's schedule
+ * ({@link SessionDir#SCHEDULE}) is their order, and a focused replay is held
+ * to its source session's prefix.  {@code c} is node plus rendered
+ * {@link CausalContext}, {@code k} the k-th event of {@code (kind, c, site)}:
+ * no thread id, no time.  {@code occurrence} (open region id, or {@code ""})
+ * is not part of the key; it is where a prefix is cut.
  */
 public final class ScheduleEvent {
     /** What kind of handoff the event is. */
@@ -35,27 +22,20 @@ public final class ScheduleEvent {
         /** A message is installed on the thread that serves it. */
         RECV,
         /**
-         * A timed wait's TIMEOUT ended it: the next turn of a service loop
-         * begins.  A wait a signal ended is no event -- the notifier's own
-         * events order it.
+         * A timed wait's TIMEOUT ended it (a new service-loop turn).  A wait
+         * a signal ended is no event: the notifier's events order it.
          */
         WAKE,
         /**
-         * A daemon turn (a tick) the window saw begin has ended: what it
-         * wrote is in the world from here on.  A turn's writes are no
-         * message, so its WAKE alone ordered where it started and nothing
-         * of what it did -- hdfs-17899-bug2's NameNode monitor rotated the
-         * keys and marked every DataNode for a key update inside one tick,
-         * and a replay's heartbeat reached the NameNode before the marking
-         * that the recording's heartbeat had found done.
+         * A daemon tick the window saw begin has ended: its writes are
+         * visible from here.  Needed because WAKE orders only a tick's start,
+         * not the writes it made.
          */
         END,
         /**
-         * A timed wait the workload's INTERRUPT ended.  Not a turn time
-         * handed the thread: the interrupter's own events order it, so it is
-         * written where it happens and never held, and a held wait is ended
-         * by virtual time only at a WAKE -- a recording whose daemon was
-         * stopped by an interrupt does not hand its replay a timeout.
+         * A timed wait the workload's interrupt ended.  Never held (the
+         * interrupter's events order it) and never turned into a timeout in
+         * the replay; only a WAKE ends a held wait by virtual time.
          */
         INTERRUPT
     }
@@ -66,11 +46,7 @@ public final class ScheduleEvent {
     private final String site;
     private final int k;
     private final String occurrence;
-    /**
-     * The producer endpoint a SEND minted for its message ({@code ""} for
-     * every other event): what the message's receiver runs under as its
-     * ANCHOR, so the sender of a served message is a fact the rows state.
-     */
+    /** The producer endpoint a SEND minted (its receiver's ANCHOR), else "". */
     private final String endpoint;
 
     private ScheduleEvent(long seq, Kind kind, String context, String site,
@@ -105,12 +81,7 @@ public final class ScheduleEvent {
                 endpoint == null ? "" : endpoint);
     }
 
-    /**
-     * What two runs compare an event by: its kind, context and site.
-     *
-     * <p>Not {@code k}: the k-th event of a key is its position among the
-     * events of that key, which is what the order itself states.</p>
-     */
+    /** What two runs compare an event by: kind, context, site (not k). */
     public static String key(Kind kind, String context, String site) {
         return (kind == null ? "" : kind.name()) + "\n"
                 + (context == null ? "" : context) + "\n"

@@ -82,10 +82,7 @@ public final class SmtModelValueCodec {
         return new ArrayList<>(items.subList(1, items.size()));
     }
 
-    /**
-     * Splits one complete SMT application without interpreting its terms.
-     * Nested applications and doubled-quote strings stay intact.
-     */
+    /** Splits one SMT application; nested terms and "" strings stay intact. */
     static List<String> applicationItems(String expression) {
         if (expression == null || expression.length() < 2
                 || expression.charAt(0) != '('

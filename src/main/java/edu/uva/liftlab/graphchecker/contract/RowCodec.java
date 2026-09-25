@@ -20,24 +20,9 @@ import java.util.function.Function;
 
 /**
  * CONTRACT-SPEC 2: the one codec for the row kinds, one method pair per kind.
- *
- * <p>Rows are JSONL -- one object per line, one kind per file -- so a reader
- * never has to parse another kind's file and a producer can append while a
- * reader streams.  A field the spec marks nullable is omitted when it is null
- * and reads back as null; every other field is always written, because a row
- * that silently drops a false or a zero is a row whose absence means two
- * things.</p>
- *
- * <p>Contract v1.1 added {@code seq} (the session-monotonic event sequence
- * number) to the six event rows and {@code javaType} (the JVM descriptor) to
- * the four value-carrying ones; v1.2 added {@code seq} to the root mints.
- * Both are always written.</p>
- *
- * <p>v2.0 writes an occurrence structurally -- node, region, causal context,
- * execution index -- rather than as one rendered string.  The render exists and
- * round-trips, but a row that carries the parts needs no parser to be read by
- * anything else, and the degraded case is the context's own {@code LOST} form
- * rather than a flag beside it.</p>
+ * JSONL, one kind per file.  A nullable field is omitted when null; every
+ * other field is always written, so absence never means false or zero.
+ * Occurrences are written as parts, not as their render.
  */
 public final class RowCodec {
     private static final Gson GSON = new Gson();
@@ -95,10 +80,7 @@ public final class RowCodec {
             case ROOT:
                 CausalContext.Root root = (CausalContext.Root) context;
                 json.addProperty(ROLE, root.role().name());
-                // The api the window index was counted under, and only when
-                // there is one: a root nothing declared an api for (a daemon
-                // tick) states no api, which is also how a row written
-                // before the api was carried reads back unchanged.
+                // Omitted when undeclared (a daemon tick).
                 if (!root.api().isEmpty()) {
                     json.addProperty(ROOT_API, root.api());
                 }
@@ -256,10 +238,7 @@ public final class RowCodec {
             json.add("producer", writeEndpoint(row.producer()));
         }
         json.addProperty("correlationId", row.correlationId());
-        // Absent = unstated.  A corpus recorded before the member says
-        // nothing about which key paired its attaches, and a spelling
-        // written for every row would make "unstated" indistinguishable
-        // from one of the two answers.
+        // Absent = unstated, distinct from either answer.
         if (row.pairedBy() != null) {
             json.addProperty("pairedBy", row.pairedBy());
         }
@@ -382,15 +361,7 @@ public final class RowCodec {
                 string(json, "detail"));
     }
 
-    /**
-     * What one obligation SETTLED, as the one row shape for it.
-     *
-     * <p>One pair, because the row had three hand-written spellings -- the
-     * session's ({@code runtime.SessionPublisher}), the worker's ({@code
-     * runtime.RowRuntime}) and the reader's ({@code
-     * explore.ExploreCodec}) -- and a row written twice by hand is a row
-     * whose two writers can disagree about a field.</p>
-     */
+    /** What one obligation settled; every writer and reader uses this pair. */
     public static JsonObject writeObligationResult(ObligationResult row) {
         JsonObject json = row(row.sessionId());
         json.addProperty("schemaVersion", 1);
@@ -407,11 +378,7 @@ public final class RowCodec {
                 string(json, SESSION_ID), string(json, "detail"));
     }
 
-    /**
-     * One scheduling event.  No session id: a schedule is one run's order and
-     * travels between sessions -- a task carries the prefix of the session it
-     * was cut from -- so a row names what the event is and nothing else.
-     */
+    /** One scheduling event; no session id (prefixes cross sessions). */
     public static JsonObject writeScheduleEvent(ScheduleEvent event) {
         JsonObject json = new JsonObject();
         json.addProperty(SEQ, event.seq());
@@ -519,14 +486,7 @@ public final class RowCodec {
                 .getBytes(StandardCharsets.UTF_8));
     }
 
-    /**
-     * The role this session states; a session that states none is refused.
-     *
-     * <p>Never a default.  Which session is the recording is the one fact a
-     * whole claim turns on, so an absent or unreadable manifest is a session
-     * IMPORT names {@code SESSION_INCOMPLETE} rather than a session read as
-     * the seed.</p>
-     */
+    /** The role this session states; none is refused, never defaulted. */
     public static SessionManifest readManifest(Path file) throws IOException {
         if (file == null || !Files.isRegularFile(file)) {
             throw new IllegalArgumentException(

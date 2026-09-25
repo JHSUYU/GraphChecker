@@ -6,32 +6,15 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Mints the SMT names that end in a truncated content digest.
- *
- * <p>Truncation is what makes these names readable -- a full sha256 makes
- * a query no human can scan -- and it is also the one way two different
- * identities can end up sharing a name, which an SMT query states as one
- * symbol and silently equates.  Every mint is recorded here against the
- * identity it was minted from, so a truncation collision is a loud
- * failure at composition time instead of a wrong answer at solve time.
- * The prefix is part of the name and so part of the record: two families
- * that hash the same identity under different prefixes are two names.</p>
- *
- * <p>One table belongs to one emitter, because the names it guards live
- * in one query.</p>
+ * Mints SMT names ending in a truncated content digest, one table per query.
+ * Truncation can make two identities share (and silently equate) one name,
+ * so every mint is recorded against its identity to catch collisions.
  */
 public final class SmtSymbolTable {
     private final Map<String, String> minted = new HashMap<>();
     /**
-     * Names two identities of this query would both be truncated to.
-     *
-     * <p>Recorded rather than thrown: the identities are the recording's
-     * own (a session id, a sort and a recorded symbol, or an expression
-     * digest), so a collision is something the CORPUS states, and a
-     * composer that dies on its input has told the reader nothing.  Both
-     * identities would then share one solver name, which makes the query
-     * unsound, so the caller raises it as a BLOCKING gap and the
-     * composition closes fail-closed.</p>
+     * Names two identities would both be truncated to.  Recorded, not
+     * thrown; the caller raises a BLOCKING gap.
      */
     private final Map<String, String> collisions =
             new java.util.LinkedHashMap<String, String>();

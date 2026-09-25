@@ -14,21 +14,11 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * CONTRACT-SPEC 4: how far a root may move, absolutely.
- *
- * <p>Declared relative to the recorded value and resolved to absolute bounds by
- * the runtime ({@link RootMintRow}); a root with neither bound is pinned
- * everywhere -- in the composer and in the flip solver, which is the same rule
- * stated once.</p>
- *
- * <p>Both halves of that rule live here.  {@link #declared(Path)} is the ONE
- * reader of the case's {@code root-domains.jsonl} and {@link #resolved} is the
- * ONE join of that declaration with what a session minted: the composer and
- * the flip solver each had their own copy of both, and the copies disagreed
- * about the key to look a root up under, about what a malformed bound means,
- * and about whether a refused bound is {@code ""} or {@code null}.  A refused
- * bound is {@code null} -- a domain the case did not state is not a string --
- * and a root with neither bound does not move.</p>
+ * CONTRACT-SPEC 4: how far a root may move, as absolute bounds.  A root with
+ * neither bound is pinned, in the composer and the flip solver alike.
+ * {@link #declared(Path)} is the one reader of {@code root-domains.jsonl} and
+ * {@link #resolved} the one join with a mint, so the two consumers cannot
+ * disagree.  A refused bound is {@code null}, never {@code ""}.
  */
 public final class RootDomain {
     private final String rootId;
@@ -55,20 +45,10 @@ public final class RootDomain {
     }
 
     /**
-     * What the CASE declares each of its roots may be, by root id.
-     *
-     * <p>One JSONL row per root, in the one spelling the cases write:
-     * {@code sourceId} with {@code declaredDomainMin} and
-     * {@code declaredDomainMax}, each an absolute value or {@code +k}/{@code
-     * -k} steps from what the recording read.  A case declares nothing else:
-     * the KIND and the recorded value are the recording's own facts, read off
-     * the mint row in {@link #resolved}, so a declaration row carries
-     * {@link RootKind#INTEGRAL} and no recorded value because only an
-     * integral root has a window to declare.</p>
-     *
-     * <p>A file that is not there declares nothing, which is not the same as
-     * declaring that nothing moves: an undeclared root is pinned by
-     * {@link #resolved} for want of bounds, and says so by name.</p>
+     * The case's declared domains by root id: {@code sourceId},
+     * {@code declaredDomainMin/Max} (absolute or {@code +k}/{@code -k}).
+     * Kind and recorded value come from the mint in {@link #resolved}, so a
+     * declaration carries INTEGRAL and no value.  No file declares nothing.
      */
     public static Map<String, RootDomain> declared(Path file)
             throws IOException {
@@ -89,13 +69,8 @@ public final class RootDomain {
     }
 
     /**
-     * One minted root's domain, absolutely.
-     *
-     * <p>The case's declaration where there is one and the mint's own
-     * resolved bounds otherwise -- never both, because a window stated twice
-     * is two windows.  The kind and the recorded value are the mint's: what a
-     * root WAS is the recording's fact, and only the case can say what else
-     * it could have been.</p>
+     * One minted root's absolute domain: the case's declaration if any, else
+     * the mint's bounds, never both.  Kind and recorded value are the mint's.
      */
     public static RootDomain resolved(RootMintRow row,
                                       Map<String, RootDomain> declared) {
@@ -109,15 +84,8 @@ public final class RootDomain {
     }
 
     /**
-     * One declared bound as an absolute value, or {@code null}.
-     *
-     * <p>Two spellings, one notion: an absolute bound is the value itself,
-     * and a bound written {@code +k} or {@code -k} is that many steps from
-     * what the recording read -- the only way a case can state the domain of
-     * a counter whose zero nobody chose.  A bound that is not an integral
-     * literal, or a relative bound against a reading that is not one, states
-     * no bound at all: {@code null}, and the root does not move on account of
-     * it.</p>
+     * One bound as an absolute value: itself, or {@code +k}/{@code -k} from
+     * the recorded reading.  {@code null} when either is not integral.
      */
     public static String resolve(String bound, String recorded) {
         String stated = bound == null ? "" : bound.trim();

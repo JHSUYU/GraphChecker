@@ -4,18 +4,13 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 /**
- * Immutable authority for the one satisfied predicate of one observed branch.
+ * The one satisfied predicate (phi) of one observed branch, nothing else.
  *
- * <p>Phi and nothing else.  The decision row this witness travels on already
- * states the site, the occurrence, the VM event and the arm, and a second
- * copy of those inside the witness is a second answer to one question -- it
- * is what {@code RowPublication} joins on (the row's own siteId and
- * occurrence), never what the witness repeats.  Two readers take something
- * from a witness: the target row takes this predicate as the fatal arm's phi,
- * and the session's expression table interns the expressions inside it.</p>
+ * <p>Site, occurrence, event and arm live on the decision row; repeating them
+ * here would be a second answer. Readers: the target row (fatal arm's phi) and
+ * the session expression table.</p>
  */
 public final class BranchWitness {
-    /** The one member a witness publishes. */
     private static final String PREDICATE = "sourceSatisfiedPredicate";
 
     private final JsonElement sourceSatisfiedPredicate;
@@ -30,13 +25,8 @@ public final class BranchWitness {
                 sourceSatisfiedPredicate);
     }
 
-    /**
-     * Runtime capture path for an immutable decoder-owned predicate DAG.
-     *
-     * <p>Copy-on-write: every untouched expression keeps its decoder anchor,
-     * which is what lets a propagated container predicate hundreds of nodes
-     * deep be captured without being rebuilt.</p>
-     */
+    /** Copy-on-write capture: untouched nodes keep their decoder anchor, so
+     *  deep predicates are not rebuilt. */
     public static BranchWitness immutablePredicate(JsonElement predicate) {
         return new BranchWitness(predicate);
     }

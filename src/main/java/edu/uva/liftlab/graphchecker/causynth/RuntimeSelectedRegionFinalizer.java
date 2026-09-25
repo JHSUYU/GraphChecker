@@ -43,64 +43,32 @@ public final class RuntimeSelectedRegionFinalizer {
     /** An unanalyzed primitive call return that reaches an explored branch. */
     public static final String EXTERNAL_CALL_RETURN =
             "EXTERNAL_CALL_RETURN";
-    /**
-     * Skeleton field naming the methods reached from the anchors that admitted
-     * the region.
-     */
 
     /**
-     * Existing planner admission vocabulary for a bounded state writer.  Why
-     * this activation is in the plan at all, when it is there for anything
-     * other than reaching the fatal target: the planner publishes it on the
-     * occurrence's plan row so a reader of the frozen artifact can tell a
-     * demanded state writer from a target-reachable region.
+     * Plan-row member: why a bounded state writer is in the plan when it is
+     * there for anything other than reaching the fatal target.
      */
     public static final String ADMISSION_BASIS = "admissionBasis";
     private static final String SHARED_LOCATION_DEMAND_ADMISSION =
             "SHARED_LOCATION_DEMAND_V1";
     /**
-     * Which shared locations a demand admission was asked for.  Published on
-     * the plan row beside {@link #ADMISSION_BASIS} so a reader of the frozen
-     * artifact can tell which location bought each admission, rather than
-     * having to re-derive it from the retained edges.
-     */
-    /**
-     * How many shared-location demand hops separate this admission from the
-     * fatal target.  A writer the failure closure's own port demand asked for
-     * is one hop; a writer asked for only because an already admitted
-     * occurrence reads the location is one hop further out.  Published on
-     * the plan row beside {@link #ADMISSION_BASIS}: it is the only place the
-     * frozen artifact records how far a demand travelled, and it cannot be
-     * reconstructed from the retained edges, which carry port demand and
-     * protocol closure as well as this rule's hops.
-     *
-     * <p>It is the shortest demand chain that reached the admission, not a
-     * statement about the configured bound, and it can exceed that bound: an
-     * admission the failure closure's own port demand asked for is made
-     * whatever the bound says, and is then labelled with the chain it sits
-     * on.  Only {@code transitiveSharedLocationDemand} refuses a hop, so a
-     * row deeper than the bound is a first-order admission and not evidence
-     * that the bound leaked.
+     * Shared-location demand hops between this admission and the fatal target
+     * (a writer the failure closure's own port demand asked for is one hop).
+     * Published on the plan row because the retained edges cannot rebuild it.
+     * It is the shortest chain that reached the admission, not the configured
+     * bound: only {@code transitiveSharedLocationDemand} refuses a hop, so a
+     * row deeper than the bound is a first-order admission, not a leak.
      */
     public static final String DEMAND_DEPTH = "demandDepth";
     /** The fatal target is the origin of every shared-location demand. */
     private static final int TARGET_DEMAND_DEPTH = 0;
     /**
-     * {@code admissionBasis} of an activation the plan carries because its
-     * region declares a communication capture.
-     *
-     * <p>Same rule, same reason, as {@link DeclaredSymbolicInputs#ADMISSION}
-     * one authority further out: a capture site the case DECLARED in
-     * {@code communication-mappings.jsonl} is where a value leaves one
-     * component and arrives in another, and an export that runs outside
-     * every instrumented activation has no decision prefix, so its arm can
-     * never be attested -- which is how hdfs-11741 campaign #4 published
-     * all 13 arms of the key-id family as {@code attested:false} with the
-     * producing side {@code instrumented:false} in every session.  Nothing
-     * demands an export's outputs (the value's consumer is on another node,
-     * and the walk is over this node's recorded flows), so a demand-directed
-     * closure cannot arrive on it.  The declaration is what puts it in the
-     * plan.</p>
+     * {@code admissionBasis} of an activation carried because its region
+     * declares a communication capture.  Same rule as {@link
+     * DeclaredSymbolicInputs#ADMISSION}: nothing on this node demands an
+     * export's outputs, so no demand-directed closure arrives on it, and an
+     * export outside every instrumented activation has no decision prefix,
+     * so its arm can never be attested.
      */
     private static final String DECLARED_COMMUNICATION_ADMISSION =
             "DECLARED_COMMUNICATION_CAPTURE_V1";
@@ -121,42 +89,26 @@ public final class RuntimeSelectedRegionFinalizer {
     public static final int REGION_SCHEMA_VERSION = 3;
     /** {@code kind} of one planned region skeleton row. */
     public static final String SKELETON_KIND = "REGION_SKELETON";
-    /** Gap code: several activations, one occurrence address. */
     /** Activation member listing the root calls that share its address. */
     public static final String SHARED_ADDRESS_ROOT_CALLS =
             "sharedAddressRootCallIds";
     /**
-     * {@code kind} of one recorded region entry the run FOLDED.
-     *
-     * <p>F1 (paper SS3.1.2, {@code Identity#fold}): a declared region entered
-     * synchronously inside an occurrence already running opens NONE of its
-     * own, so the recording writes its entry with no occurrence address and
-     * {@code regionFolded}, and PLAN records no activation for it.  A row of
-     * this kind is what remains: the entry HAPPENED, and the occurrence it
-     * folded into is the one that performed everything below it.  The
-     * planner mints one per folded entry and names the enclosing occurrence
-     * on it; nothing offline re-derives either half.</p>
+     * {@code kind} of one recorded region entry the run FOLDED (F1, paper
+     * SS3.1.2, {@code Identity#fold}): a declared region entered synchronously
+     * inside a running occurrence opens none of its own; the row names the
+     * enclosing occurrence that performed everything below it.
      */
     public static final String REGION_FOLD_KIND = "RUNTIME_REGION_FOLD";
     /**
-     * Activation member: the regions whose roots FOLDED into this occurrence.
-     *
-     * <p>The region→occurrence table of the fold rule, published where the
-     * occurrence is: a declared region named here has no occurrence of its
-     * own anywhere in this plan, and this is the occurrence its mints, its
-     * sites and its tasks belong to.</p>
+     * Activation member: the regions whose roots FOLDED into this occurrence;
+     * a region named here has no occurrence of its own in this plan.
      */
     public static final String FOLDED_REGION_IDS = "foldedRegionIds";
     /**
-     * Activation member: this occurrence is the failure the case is about.
-     *
-     * <p>README TARGET-1 binds target existence to a selected concrete
-     * branch event, and this closure is where that binding is made -- over
-     * the regions the occurrence PERFORMED, which since the fold rule is no
-     * longer the same question as which region it is an activation of.  So
-     * the answer is stated on the row rather than re-derived by the plan
-     * builder from a static {@code selection} that names the region the
-     * failure is IN and not the occurrence that ran it.</p>
+     * Activation member: this occurrence is the failure the case is about
+     * (README TARGET-1).  Stated on the row because under the fold rule the
+     * static {@code selection} names the region the failure is in, not the
+     * occurrence that ran it.
      */
     public static final String FAILURE_TARGET_OCCURRENCE =
             "failureTargetOccurrence";
@@ -166,8 +118,7 @@ public final class RuntimeSelectedRegionFinalizer {
 
     /**
      * Finalizes the selected runtime graph.  Symbolic values cross
-     * occurrences only through VM VALUE_HANDOFF edges; no offline pairing
-     * is read here.
+     * occurrences only through VM VALUE_HANDOFF edges.
      */
     public static Result finalizeRegions(
             List<Map<String, Object>> graph,
@@ -203,18 +154,14 @@ public final class RuntimeSelectedRegionFinalizer {
         }
         List<Map<String, Object>> branchOrder = orderedBranchObservations(
                 runtimeObservations);
-        // The addresses several activations landed on, held until the closure
-        // is known: whether that ambiguity blocks is whether the region is
-        // inside it (see #stateSharedAddressClasses).
+        // Addresses several activations share; classed after the closure
+        // (see #stateSharedAddressClasses).
         List<Map<String, Object>> sharedAddresses = new ArrayList<>();
         Map<String, String> occurrenceByRecordedRootCall =
                 readOccurrences(program, runtimeInstances, skeletonSource,
                         sharedAddresses);
-        // The regions whose text this region's occurrences ran without
-        // opening an occurrence for it: the fold rule, lifted from one
-        // occurrence to the region row, because a region row is what the
-        // plan states branch policies on and a folded region has no row of
-        // its own to state them.
+        // The fold rule lifted to the region row: branch policies are stated
+        // per region row, and a folded region has none of its own.
         Map<String, List<String>> foldedIntoRegion = new LinkedHashMap<>();
         for (Map<String, Object> activation : program.activations.values()) {
             List<String> held = foldedIntoRegion.computeIfAbsent(
@@ -257,22 +204,14 @@ public final class RuntimeSelectedRegionFinalizer {
             region.put("selection", skeleton.selection);
             List<String> foldedHere = foldedIntoRegion.getOrDefault(regionId,
                     Collections.<String>emptyList());
-            // THE DECLARATION UNION: an occurrence declares its own region's
-            // declarations and those of every region folded into it.  Same
-            // rule as the fold, same rule as ClosurePlanner#holds -- the
-            // occurrence RAN those sites, so it owns what they declare, and
-            // a folded region has no row of its own left to own them.  The
-            // methods first, because every per-occurrence filter downstream
-            // (runtimeDefinitionMethods, retained loops, the scheduler's
-            // declared ports) asks whether this occurrence's region holds
-            // the site's method, and the enclosing skeleton need not name a
-            // folded region's methods at all.
+            // Declaration union: an occurrence owns the declarations of its
+            // own region and of every region folded into it (as
+            // ClosurePlanner#holds); every per-occurrence filter downstream
+            // asks whether its region holds the site's method.
             region.put("methods", declaredMethodUnion(program, skeleton,
                     foldedHere));
-            // The refined row is built fresh, so anything the skeleton carries
-            // has to be carried over by name.  The catalogs are unioned; the
-            // declared-root flag is not, because it pairs with THIS row's
-            // rootMethod and a folded declaration does not rename a root.
+            // Carried over by name.  Catalogs are unioned; the declared-root
+            // flag is not, since it pairs with THIS row's rootMethod.
             Object declaredRoot = skeleton.json.get(
                     DeclaredSymbolicInputs.ROOT_FIELD);
             if (declaredRoot != null) {
@@ -286,12 +225,8 @@ public final class RuntimeSelectedRegionFinalizer {
                 if (!declared.isEmpty()) region.put(carried, declared);
             }
 
-            // The region's PORTS are its declared ones and nothing else:
-            // the cut ports its case declared, added below, and -- at PLAN
-            // -- the ports SymbolicInputSelection mints from the scope map's
-            // DECLARED_SITE rows and the recording's own captures.  Both
-            // catalogs are published, so every stage after this one reads
-            // one shape whether or not the region declares anything.
+            // Ports are the declared ones only: cut ports below, DECLARED_SITE
+            // ports minted at PLAN.  Both catalogs are always published.
             region.put("symbolicInputs", new ArrayList<Map<String, Object>>());
             region.put("outputs", new ArrayList<Map<String, Object>>());
             region.put("branchPolicies", branches(program, regionId,
@@ -301,13 +236,11 @@ public final class RuntimeSelectedRegionFinalizer {
         }
         bindObservedFatalTargets(program.regions, runtimeInstances,
                 branchOrder);
-        // applyClosure drops every region the target-directed walk did not
-        // reach; the declaration pass after it restores the region-level
-        // catalog rows used downstream.
+        // applyClosure drops unreached regions; the declaration pass after
+        // it restores their catalog rows.
         Map<String, List<CutPort>> cutPorts = declaredCutPorts(program);
         declareCommunicationPorts(program, cutPorts, foldedIntoRegion);
-        // One index over the region catalog, so the fatal-prefix pass and
-        // the closure walk read the same declaration table.
+        // One index shared by the fatal-prefix pass and the closure walk.
         RegionDemandIndex demands = new RegionDemandIndex(program.regions,
                 program.activations, program.graph, program);
         ClosureWalk closure = failureDirectedClosure(program, demands,
@@ -336,9 +269,8 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * The cut ports every region declares, derived once.  The closure filter
-     * drops the region-level declarations it cannot reach, so the catalog is
-     * published again after it from this same table rather than rebuilt.
+     * The cut ports every region declares, derived once so the catalog can
+     * be republished after the closure filter drops it.
      */
     private static Map<String, List<CutPort>> declaredCutPorts(
             StaticProgram program) {
@@ -359,12 +291,10 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * The region-level rows of one skeleton's declared cut ports, by side
-     * ({@code IN} / {@code OUT}): the port as the mappings declare it, with
-     * the one value cell the region graph names for it when it names
-     * exactly one.  The static statement about the cut, so an occurrence a
-     * replay exposed ({@code ExposedRegionPlanMain}) holds the same rows a
-     * recorded one does.
+     * One skeleton's declared cut-port rows by side ({@code IN}/{@code OUT}),
+     * with the value cell the region graph names when it names exactly one.
+     * Static, so a replay-exposed occurrence ({@code ExposedRegionPlanMain})
+     * holds the same rows as a recorded one.
      */
     public static Map<String, List<Map<String, Object>>> cutPortRows(
             StaticProgram.RegionRow skeleton,
@@ -390,16 +320,10 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * Publishes the ports of every cut this region holds a side of.
-     *
-     * <p>Its own cuts and those of every region FOLDED into one of its
-     * occurrences.  A folded region opens no occurrence, so it has no plan
-     * row to hold its side of the cut, and the occurrence that ran its
-     * export or its attach is the only one that can: on hdfs-11741 the IN
-     * side of the data-encryption-key-id exchange is declared by {@code
-     * retrieveDataEncryptionKey}'s region alone, which folds into the
-     * DataNode's SASL handler, and without this the consumer side of the
-     * target's own exchange is in no plan at all.</p>
+     * Publishes the ports of every cut this region holds a side of: its own
+     * and those of every region FOLDED into its occurrences, since a folded
+     * region has no plan row and the occurrence that ran its export or attach
+     * is the only one that can hold that side.
      */
     private static void declareCommunicationPorts(StaticProgram program,
             Map<String, List<CutPort>> declaredByRegion,
@@ -467,9 +391,8 @@ public final class RuntimeSelectedRegionFinalizer {
         }
         if (CommunicationCatalogContract.CAPTURE_CALL_ARGUMENT.equals(
                 capture)) {
-            // The cut argument is the one client output never written to the
-            // heap, so the only cell that names it is the callee parameter the
-            // value is bound into at the cut unit.
+            // The cut argument is never written to the heap; only the callee
+            // parameter it binds to at the cut unit names it.
             int argumentIndex = (int) longNumber(port.get(
                     CommunicationCatalogContract.PORT_ARGUMENT_INDEX), -1L);
             return callee.isEmpty() || javaType.isEmpty()
@@ -480,25 +403,10 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * Adds the occurrence-owned instance of one declared cut port, so demand
-     * propagation can reach the exact activation that used it.
-     */
-    /**
-     * The structural key of one planned occurrence, or {@code ""} for none.
-     *
-     * <p>These joins decide which rows belong to one occurrence, and they did
-     * it by string equality on {@code occurrenceId}.  That is correct exactly
-     * while every id they see is a planned address; it silently merges two
-     * activations the moment one carries an {@code #a<n>} suffix, because the
-     * address deliberately drops the suffix and the string does not.  So the
-     * key is now parsed and re-rendered, and a value that does not spell one
-     * planned address is refused rather than joined on.</p>
-     *
-     * <p>Byte-neutral today: every {@code occurrenceId} the region graph
-     * carries is a planned address (505 of 505 in lane BC's
-     * {@code concolic_region_plan.jsonl}), so the rendered key is the string
-     * it parsed.  The value is that the two can no longer drift apart in
-     * silence.</p>
+     * The structural key of one planned occurrence, or {@code ""}.  Parsed and
+     * re-rendered rather than compared as a string, because an {@code #a<n>}
+     * suffix the address drops would silently merge two activations; a value
+     * that is not one planned address is refused.
      */
     static String occurrenceKey(Object encoded) {
         String occurrenceId = text(encoded);
@@ -531,13 +439,8 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * The node this activation ran on, as its own ADDRESS states it.
-     *
-     * <p>A component of the occurrence address the recording computed, read
-     * back out of it -- not a second reading of the trace rows.  Every
-     * activation in the program has an address ({@link #readOccurrences}
-     * refuses one that has none), so a string here that is not an address is
-     * a corrupt seed and says so by throwing.</p>
+     * The node this activation ran on, read from its occurrence address (not
+     * the trace rows).  Every activation has one, so a non-address throws.
      */
     private static String activationSourceKey(Map<String, Object> instance) {
         return instance == null
@@ -551,29 +454,16 @@ public final class RuntimeSelectedRegionFinalizer {
      * Reads the occurrence address of every observed region activation and
      * stamps it onto every row the recorded root call named.
      *
-     * <p>READS.  The address was computed once, by {@code
-     * Identity.occurrence}, at the entry the recording woved it at, and a
-     * replay of the same occurrence computes the same string with the same
-     * function; an offline re-derivation here would be a second identity,
-     * and the two disagreed on 44 activations of hdfs-17960 (REPORT-M2
-     * §5).</p>
+     * <p>READS, never re-derives: the address is {@code Identity.occurrence}'s,
+     * computed once at the recording and identically at replay; an offline
+     * derivation would be a second identity (REPORT-M2 §5).  Activations
+     * IDENTITY-V3 cannot separate may share one address; one occurrence is
+     * one plan row (README REGION-1), so only the first is published, and
+     * renumbering would reintroduce an ordinal.  The collision is classed
+     * after the closure walk ({@link #stateSharedAddressClasses}).</p>
      *
-     * <p>Two activations may still land on one address -- nothing IDENTITY-V3
-     * names separates them (same node, same region, same context, same
-     * index).  One occurrence is one plan row (README REGION-1): the first
-     * activation is published and the rest are not, so the artifact never
-     * states the contradiction and PLAN never meets it as a schema complaint
-     * (RuntimePlanArtifact.read, whose duplicate check stays as the second
-     * line).  Renumbering them would be an ordinal, which is what v3 exists
-     * to remove; the rule that separates them is the entry count of {@code
-     * Identity.enterFrame}, and a residual collision means that count could
-     * not.  The address is recorded here and CLASSED after the closure walk
-     * ({@link #stateSharedAddressClasses}), because whether the ambiguity
-     * can reach a claim is whether the kept slice holds its region.</p>
-     *
-     * @param sharedAddresses collects one row per address several activations
-     *     landed on: its {@code occurrenceId}, its {@code regionId} and the
-     *     recorded root calls that shared it
+     * @param sharedAddresses collects one row per shared address: its
+     *     {@code occurrenceId}, {@code regionId} and root calls
      * @return every recorded root call, by the occurrence it belongs to
      */
     private static Map<String, String> readOccurrences(
@@ -617,27 +507,12 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * States the class of every shared occurrence address, once.
-     *
-     * <p>A row states its own class (CONTRACT-SPEC SS2) and no later stage
-     * overrules it, so the class has to be the answer to the question the
-     * claim would ask: can this ambiguity reach the formula?  It can exactly
-     * when the region is a member of the closure this plan publishes -- the
-     * target-directed walk's own answer, {@code program.regions} after
-     * {@link #applyClosure}, which is the ONE closure notion this engine has
-     * and is not re-decided here.  Inside it, the shared address is an
-     * occurrence a task addresses and a session publishes rows for, and
-     * withholding is the only safe answer.  Outside it there is no plan row,
-     * no task and no session row that names the occurrence, so nothing the
-     * composer reads can rest on it: the row is DIAGNOSTIC and says so.</p>
-     *
-     * <p>Three rows of the reviewed hdfs-17960 run were the second case --
-     * {@code FSDirectory$InitQuotaTask} ForkJoin siblings, whose fork site is
-     * in the JDK and cannot be woven -- and they were published with no
-     * stated class, which {@code campaign_write_gaps} reads as BLOCKING.
-     * They withheld nothing that could be withheld and appeared in
-     * {@code result.json blockingGapCodes} beside a claim of
-     * SAT_CANDIDATE with zero blockers.</p>
+     * States the class of every shared occurrence address (CONTRACT-SPEC SS2).
+     * BLOCKING when the region is in the closure this plan publishes ({@code
+     * program.regions} after {@link #applyClosure}): a task addresses the
+     * occurrence.  DIAGNOSTIC otherwise: no plan row, task or session row
+     * names it.  Trap: an unstated class reads as BLOCKING downstream
+     * ({@code campaign_write_gaps}).
      */
     private static void stateSharedAddressClasses(StaticProgram program,
             List<Map<String, Object>> sharedAddresses) {
@@ -706,43 +581,14 @@ public final class RuntimeSelectedRegionFinalizer {
 
     /**
      * Refuses a declared symbolic input whose method the recording never
-     * entered.
+     * entered, either as its own occurrence ({@code RUNTIME_REGION_ACTIVATION})
+     * or as a FOLDED entry inside another ({@link #REGION_FOLD_KIND}, {@code
+     * Identity#fold}); the fold rule makes both the same event.
      *
-     * <p>THE RECORDING ACTIVATED IT means: the recording ENTERED the
-     * declared method.  Either way of entering counts, because the fold rule
-     * says they are the same event seen from two stacks --
-     * <ul>
-     *   <li>as an occurrence of its own: a {@code
-     *   RUNTIME_REGION_ACTIVATION} of the declared region, the entry that
-     *   found no occurrence running on its thread; or</li>
-     *   <li>as a FOLDED entry inside another occurrence: a {@code
-     *   RUNTIME_REGION_FOLD} of the declared region ({@code Identity#fold},
-     *   {@code regionFolded} on the recorded entry), the entry that was
-     *   called synchronously inside an occurrence already running and so
-     *   opened none of its own.  Its mints, its sites and its tasks belong
-     *   to the occurrence it folded into, which is exactly what the fold
-     *   means; the declaration is untouched by it -- the declared method's
-     *   sites are still roots by declaration, planned at that enclosing
-     *   occurrence.</li>
-     * </ul>
-     * A count of zero across BOTH is the one thing this refuses.</p>
-     *
-     * <p>Roots are manual, and every other stage of PLAN honours that: the
-     * static slice holds the declared method, the skeleton weave roots a
-     * region at it, the runtime selection keeps that region whether or not
-     * pass 1 entered it, and this closure retains its activations whether or
-     * not anything demands their outputs.  The one thing none of them will
-     * do is invent an entry.  So a declared method the recording entered
-     * nowhere is the workload's statement that it never reached the site --
-     * the case's rotation count, its clock flips or its test body, not the
-     * engine -- and it is named here, with the count, rather than reported
-     * downstream as a site the plan does not cover.</p>
-     *
-     * <p>Campaign #5 of hdfs-11741 is why the fold half is written down: on
-     * that recording every entry of {@code updateKeys()} (and of {@code
-     * removeExpiredKeys()}) ran inside the NameNode's key-manager tick, so
-     * the declared methods had entries, no activation, and this guard read
-     * "never activated" over a workload that had reached the site twice.</p>
+     * <p>Roots are manual and every PLAN stage keeps a declared region, but
+     * none invents an entry: zero entries means the workload never reached
+     * the site, named here rather than downstream as an uncovered site.
+     * Trap: counting activations alone misses entries that all ran folded.</p>
      *
      * @param runtimeRegionFolds the {@link #REGION_FOLD_KIND} rows of this
      *     recording: one per region entry that opened no occurrence
@@ -789,12 +635,10 @@ public final class RuntimeSelectedRegionFinalizer {
                 || !Collections.disjoint(skeleton.methods, observed));
     }
 
-    /**
-     * The failure-target guard sites of one region, in the order {@link
-     * #branches} would publish them.
-     */
+    /** Branch member: the exception cells a failure-target guard controls. */
     public static final String FAILURE_TARGET_CELLS = "failureTargetCells";
 
+    /** Failure-target guard sites of one region, in {@link #branches} order. */
     private static List<Map<String, Object>> failureTargetPolicies(
             List<Map<String, Object>> regionGraph) {
         Map<String, List<Map<String, Object>>> failureGuardsBySite =
@@ -857,9 +701,8 @@ public final class RuntimeSelectedRegionFinalizer {
         if (targets.isEmpty() || runtimeInstances == null) return;
 
         for (Map<String, Object> instance : runtimeInstances) {
-            // Of every region this occurrence PERFORMED: a target site
-            // inside a region that folded into this one was reached HERE,
-            // and this occurrence is the only one that can attest it.
+            // Over every region this occurrence PERFORMED: a folded region's
+            // target site was reached here and only here.
             Map<String, Map<String, Object>> regionTargets =
                     new LinkedHashMap<>();
             for (String regionId : performedRegionIds(instance)) {
@@ -909,25 +752,8 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * The regions one occurrence PERFORMED: its own, and every region that
-     * folded into it.
-     *
-     * <p>The fold rule read forwards ({@code Identity#fold}).  A region
-     * entered synchronously inside this occurrence opened none of its own,
-     * so its text ran here: its decisions were decided here, its reads were
-     * read here, its failure target -- if it has one -- was reached here.
-     * Every rule of this closure that used to ask "which region is this
-     * activation of" asks this instead, because under the fold rule the two
-     * questions stopped having one answer.  Own region first, so a rule that
-     * takes the first answer takes the occurrence's own.</p>
-     *
-     * <p>It is a list and not a set on purpose: the order is the order the
-     * plan states, and the plan states the occurrence before the calls it
-     * made.</p>
-     */
-    /**
-     * The same union read off the region table: this region and the ones
-     * folded into its occurrences, own first.
+     * The regions performed under one region: its own first, then those
+     * folded into its occurrences ({@code Identity#fold}).
      */
     private static List<String> performedRegionIds(
             String regionId, Map<String, List<String>> foldedIntoRegion) {
@@ -942,6 +768,10 @@ public final class RuntimeSelectedRegionFinalizer {
         return performed;
     }
 
+    /**
+     * The regions one occurrence PERFORMED: its own first, then every region
+     * folded into it, whose text ran here.  A list: plan order.
+     */
     private static List<String> performedRegionIds(
             Map<String, Object> activation) {
         List<String> performed = new ArrayList<>();
@@ -957,24 +787,13 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * The activations the failure's demand reaches, from the DECLARATIONS and
-     * the static scope map.
-     *
-     * <p>Two authorities and no third.  The declarations say where a value
-     * may enter the replay: the case's symbolic inputs (a declared region
-     * root, and every {@code DECLARED_SITE} the recording states a capture
-     * at), its communication mappings (the declared cut ports, with the
-     * captures an activation performed), and the annotated target itself.
-     * The static scope map says, for one location, WHICH regions' text
-     * stores into it -- scope, never a writer: which activation of such a
-     * region actually ran is the recording's answer, and this walk joins the
-     * two ({@link StaticScopeMap#writerRegionsByCell}, CLOSURE-V2 SS4).</p>
-     *
-     * <p>Nothing is discovered from the recording's field accesses.  A read
-     * the campaign never declared mints no symbol -- {@code
-     * ConcolicScheduler.SymbolicInputSelection} is the one admission rule --
-     * so an occurrence retained only because such a read paired with some
-     * recorded write bought the plan a task that can publish no arm.</p>
+     * The activations the failure's demand reaches, from two authorities
+     * only: the DECLARATIONS (symbolic inputs, communication mappings, the
+     * annotated target) and the static scope map, which names the regions
+     * storing a location, never the writer ({@link
+     * StaticScopeMap#writerRegionsByCell}, CLOSURE-V2 SS4).  Nothing is
+     * discovered from recorded field accesses: an undeclared read mints no
+     * symbol ({@code ConcolicScheduler.SymbolicInputSelection}).
      */
     private static ClosureWalk failureDirectedClosure(
             StaticProgram program, RegionDemandIndex demands, String source,
@@ -985,19 +804,9 @@ public final class RuntimeSelectedRegionFinalizer {
             throw new IOException("runtime failure closure requires concrete "
                     + "region activations: " + source);
         }
-        // `selection` describes the static region skeleton, so every
-        // activation of an exception-context region inherits it, including the
-        // concurrent activations that only produced inputs for the one that
-        // failed.
-        //
-        // And so does every occurrence an exception-context region FOLDED
-        // into, for the reason the fold rule states: that region opened no
-        // occurrence, so the failure it is the context of happened in THIS
-        // one, and no other occurrence can attest the target branch.  On
-        // hdfs-11741 the annotated target region (retrieveDataEncryptionKey)
-        // is entered only inside the DataNode's SASL handler occurrence, so
-        // the handler is the exception context -- which is exactly what the
-        // case's declared target occurrence names.
+        // Every activation of an exception-context region inherits its
+        // skeleton's `selection`, and so does every occurrence such a region
+        // FOLDED into: the failure happened there and nowhere else.
         Set<String> contexts = new LinkedHashSet<>();
         Set<String> targets = new LinkedHashSet<>();
         Set<String> policylessRegions = new LinkedHashSet<>();
@@ -1039,40 +848,18 @@ public final class RuntimeSelectedRegionFinalizer {
         Map<String, Integer> demandDepths = new LinkedHashMap<>();
         for (String target : targets) {
             demandDepths.put(target, TARGET_DEMAND_DEPTH);
-            // Stated on the row, once, by the rule that decided it: the
-            // plan builder publishes a TARGET_REACH goal for exactly these
-            // occurrences and does not ask the static selection a second
-            // time -- under the fold rule the region whose selection says
-            // EXCEPTION need not be the region this occurrence is an
-            // activation of.
+            // Stated once here; the plan builder publishes TARGET_REACH for
+            // exactly these and does not re-ask the static selection.
             Map<String, Object> activation = instances.get(target);
             if (activation != null) {
                 activation.put(FAILURE_TARGET_OCCURRENCE, true);
             }
         }
-        // Every activation of a declared symbolic input's method, admitted
-        // by declaration.  It is an occurrence retained although nothing
-        // demands one of its outputs, and it has to be, because a declared
-        // site typically has no output to demand: hdfs-11741's
-        // removeExpiredKeys reads the clock, decides an expiry, and in a
-        // healthy recording removes nothing, so it writes no field, exports
-        // no value, and no demand-directed walk can ever arrive on it.  The
-        // case declared it precisely because the arm it did not take is the
-        // failure.
-        //
-        // The DECLARED_SITE captures such an activation holds are what it
-        // READS, not why it is here: they seed the walk below, and an
-        // activation that holds one but was declared by nothing is left to
-        // the demand like any other.
-        //
-        // An occurrence a declared region FOLDED into is admitted by the
-        // same declaration, for the same reason one hop in: the fold rule
-        // says the declared method's entry opened no occurrence of its own,
-        // so this occurrence is the one that performed its reads, its
-        // decisions and its mints.  Refusing it would drop the declaration
-        // on the floor exactly where the recording honoured it -- hdfs-11741
-        // enters updateKeys() only inside the NameNode's key-manager tick,
-        // and the tick is where its clock read has to be planned.
+        // Declared-input occurrences, admitted by declaration although nothing
+        // demands their outputs: a declared site often writes nothing (an
+        // expiry check that removes nothing), so no demand walk arrives on it.
+        // Includes occurrences a declared region FOLDED into, which performed
+        // its reads.  Their DECLARED_SITE captures seed the walk.
         Set<String> declaredCallees =
                 DeclaredSymbolicInputs.configuredCallees().keySet();
         Set<String> declaredInputOccurrences = new LinkedHashSet<>();
@@ -1088,30 +875,13 @@ public final class RuntimeSelectedRegionFinalizer {
                 declaredInputOccurrences.add(entry.getKey());
             }
         }
-        // A fatal target is already the origin of the walk, and
-        // admissionBasis means "why this activation is in the plan at all,
-        // when it is there for anything other than reaching the fatal
-        // target" -- so a declared method that is itself the annotated
-        // target (hdfs-17960's serializeSnapshotSection) states nothing
-        // here and this rule leaves its rows untouched.
+        // A target is already the walk's origin and states no admissionBasis.
         declaredInputOccurrences.removeAll(targets);
-        // Every activation that PERFORMED a declared communication capture,
-        // admitted the same way and for the reason
-        // DECLARED_COMMUNICATION_ADMISSION states: the export or attach the
-        // declaration names happened in this activation, so the activation
-        // has to be one the replay instrumented.
-        //
-        // The recording's own statement, not the declaration's scope: a
-        // region that declares a port is entered once per value the workload
-        // converts, and admitting every one of those activations put 146 of
-        // hdfs-11741's occurrences in the plan (202 tasks against a declared
-        // cap of 128) for the 22 that carried a capture.  An activation
-        // states its own captures, so that is what is read.
-        //
-        // Over the regions the occurrence PERFORMED, for the same reason the
-        // ports themselves are: a cut declared by a region that folded into
-        // this occurrence is a cut this occurrence ran, and no other
-        // occurrence carries it.
+        // Occurrences that PERFORMED a declared communication capture (see
+        // DECLARED_COMMUNICATION_ADMISSION), over every region they
+        // performed.  Only those whose recording states a capture or attach:
+        // admitting every activation of a port-declaring region blows the
+        // task cap.
         Set<String> declaredCaptureOccurrences = new LinkedHashSet<>();
         for (Map.Entry<String, Map<String, Object>> entry
                 : instances.entrySet()) {
@@ -1185,11 +955,9 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * The hop count of one admitted occurrence.  A target is the origin.  An
-     * occurrence the closure reached on its own authority -- a fault entry, a
-     * communication entry, a protocol producer -- is a demand origin of the
-     * same standing as the target's own reads, and counts as one hop rather
-     * than zero.
+     * Hop count of one admitted occurrence.  An unknown one was reached on the
+     * closure's own authority (fault, communication, protocol producer) and
+     * counts as one hop.
      */
     private static int demandDepth(Map<String, Integer> demandDepths,
                                    String occurrenceId) {
@@ -1208,25 +976,13 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * One backward walk over the candidate graph, from the failure's own
-     * demand and from every declaration, crossing between activations only
-     * where the scope map says a location is stored.
-     *
-     * <p>A demand is one cell of one occurrence.  Inside the occurrence the
-     * walk moves on the candidate graph's own rows -- the static slice, whose
-     * region scope the skeletons decide -- and it stops at a cell the scope
-     * map names as stored: the value of such a cell did not come from this
-     * occurrence's text, so what is upstream of it are the activations of
-     * the regions that store it.  Those are reached on the node that holds
-     * the object, because a heap location is private to the node and epoch
-     * that holds it, and the walk continues from the same cell inside each
-     * of them.  Its guard still travels: whether the read runs at all is
-     * decided by this occurrence's own branches.</p>
-     *
-     * <p>Which of the reached activations actually wrote the value is not
-     * asked and is not this stage's to answer: every one of them is a replay
-     * arm of the read, and the VM's own GuardedRead expression carries the
-     * choice.</p>
+     * One backward walk over the candidate graph from the failure's demand
+     * and every declaration; a demand is one cell of one occurrence.  Inside
+     * an occurrence the walk follows the candidate graph; at a cell the scope
+     * map names as stored it crosses to the activations of the storing
+     * regions on the same node (heap is node-private), while the read's
+     * guards still travel locally.  Which of them wrote the value is not
+     * decided here: each is a replay arm, and the VM's GuardedRead chooses.
      */
     private static ClosureWalk walkFailureClosure(
             Collection<String> targets,
@@ -1308,20 +1064,10 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * Whether the case DECLARED one of the calls this activation made.
-     *
-     * <p>A callee declaration names no site of its own -- it is about every
-     * call of that method in the application scope -- so the activation that
-     * made the call is the one that holds the declared input, and the plan
-     * has to carry it whatever the failure's demand reaches.  That is
-     * hdfs-11741's three clock declarations: the value a replay would move
-     * is read in {@code PBHelper.convert} and in {@code generateKeys}, in
-     * activations no shared-location demand arrives on.</p>
-     *
-     * <p>The recording's half is the capture ({@code DeclaredSiteCapture}),
-     * the declaration's half is the case file or, for a fault marker, the
-     * workload's own text ({@code Debug.makeSymbolicBoolean}), and neither
-     * is re-decided here: a callee nothing declared admits nothing.</p>
+     * Whether the case DECLARED one of the calls this activation made (a
+     * callee declaration, or the {@code Debug.makeSymbolicBoolean} marker).
+     * A callee declaration names every call of that method, so the calling
+     * activation holds the input whatever the demand reaches.
      */
     private static boolean declaresACapturedCallee(
             Map<String, Object> activation, Set<String> declaredCallees) {
@@ -1338,18 +1084,10 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * The methods this region's occurrences ran: its own, and those of every
-     * region folded into one of them.
-     *
-     * <p>A folded region's methods are not in the enclosing skeleton -- the
-     * weave stops where a region roots another one, and hdfs-11741's SASL
-     * handler names the pool wrapper and not {@code
-     * retrieveDataEncryptionKey} itself.  Every per-occurrence filter
-     * downstream asks "does this occurrence's region hold the site's
-     * method", and under the fold rule the honest answer includes what it
-     * ran inside a folded entry.  The recording still decides which of these
-     * a given occurrence actually entered: the plan intersects this set with
-     * the methods that occurrence was observed in.</p>
+     * The methods this region's occurrences ran: its own and those of every
+     * folded region, which the enclosing skeleton does not name (the weave
+     * stops at a nested root).  The plan still intersects this with each
+     * occurrence's observed methods.
      */
     private static List<String> declaredMethodUnion(
             StaticProgram program, StaticProgram.RegionRow skeleton,
@@ -1366,13 +1104,8 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * One declaration catalog of this region, unioned with the catalogs of
-     * the regions folded into its occurrences.
-     *
-     * <p>Rows are carried verbatim and deduplicated whole: a declaration is
-     * the case's statement, and two regions naming one site state one
-     * declaration, not two.  Order is this region's own first, then the
-     * folded ones in the order the plan names them.</p>
+     * One declaration catalog of this region unioned with its folded
+     * regions', own first; rows deduplicated whole.
      */
     private static List<Map<String, Object>> declaredRowUnion(
             StaticProgram program, StaticProgram.RegionRow skeleton,
@@ -1392,14 +1125,9 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * The EXCEPTION-context region this occurrence ran, or {@code ""}.
-     *
-     * <p>Its own when its own skeleton is one, and otherwise the first
-     * exception-context region that folded into it: the selection is a
-     * statement about the static region, and the fold rule says which
-     * occurrence ran that region's text.  A folded region's own {@code
-     * selection} is read off the SKELETON, because the fold has no
-     * activation to inherit it onto.</p>
+     * The EXCEPTION-context region this occurrence ran, or {@code ""}: its
+     * own, else the first folded one (read off its SKELETON, a fold having
+     * no activation to inherit the selection onto).
      */
     private static String exceptionContextRegion(
             StaticProgram program, Map<String, Object> activation) {
@@ -1416,15 +1144,8 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * Whether a region the case DECLARED folded into this occurrence.
-     *
-     * <p>The other half of the declared-input admission, and the same rule:
-     * a declared method entered synchronously inside a running occurrence
-     * opens none of its own ({@code Identity#fold}), so THIS occurrence is
-     * where its sites ran and there is no other occurrence the declaration
-     * could be honoured at.  Read off {@link #FOLDED_REGION_IDS}, which the
-     * planner stamped from the recording's own {@code regionFolded} entries;
-     * nothing is re-derived here.</p>
+     * Whether a region the case DECLARED folded into this occurrence, which
+     * is then where its sites ran ({@link #FOLDED_REGION_IDS}).
      */
     private static boolean foldedADeclaredInputRoot(
             StaticProgram program, Map<String, Object> activation) {
@@ -1438,26 +1159,12 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * Whether the recording states this activation TOOK one of the declared
-     * cut values its region attaches.
-     *
-     * <p>{@link #OBSERVED_COMMUNICATION_CAPTURES} answers this for the
-     * activation the capture site's own frame belongs to.  The declaration
-     * also names the FRAME the attached value is built in -- {@code
-     * consumerFrameMethod} in the case's communication mapping, published on
-     * the port as {@code frameMethod} -- and that frame is a region of its
-     * own, one level out, holding the capture site in its method set.  It
-     * attaches the value as surely as the inner frame reads it: the leaf the
-     * producer minted is installed into the object the frame returns, and
-     * hdfs-11741's ten declared wire attaches are published on exactly that
-     * frame region and on no other.</p>
-     *
-     * <p>So the same question is asked of the frame, against the same
-     * recording: does it hold a DECLARED_SITE capture at the port's own call
-     * site and callee?  A frame activation that converted nothing states
-     * none and is not admitted.  Only the IN side is asked -- an export
-     * writes its value outward, and the capture rule above already names the
-     * activation that performed it.</p>
+     * Whether this activation TOOK a declared IN cut value its region
+     * attaches.  {@link #OBSERVED_COMMUNICATION_CAPTURES} covers the capture
+     * site's own frame; the declared consumer frame ({@code frameMethod}) is
+     * a region one level out that attaches the value into the object it
+     * returns, so it is asked whether it holds a DECLARED_SITE capture at
+     * the port's call site and callee.
      */
     private static boolean attachedADeclaredPort(
             StaticProgram.RegionRow skeleton,
@@ -1494,12 +1201,8 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * The cells one activation's DECLARED sites name.
-     *
-     * <p>The static half is the scope map's ({@code DECLARED_SITE#cell} --
-     * the field a structural accessor reads, or the callee's own return) and
-     * the dynamic half is the recording's: a site this activation never
-     * entered states no capture, so it names no cell here.</p>
+     * The cells one activation's DECLARED sites name: the scope map's
+     * {@code DECLARED_SITE#cell}, for the sites the recording captured.
      */
     private static List<String> declaredCells(Map<String, Object> activation,
                                               StaticScopeMap scopeMap) {
@@ -1519,12 +1222,8 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * Keeps the regions the walk reached, and names the activations of each
-     * that it retained.
-     *
-     * <p>The port catalogs are cleared here and re-declared after: a port is
-     * a declaration, and a region the closure kept states the ones its case
-     * declared, not the ones some earlier pass proposed for it.</p>
+     * Keeps the regions the walk reached and names their retained
+     * activations.  Port catalogs are cleared here and re-declared after.
      */
     private static void applyClosure(StaticProgram program,
                                      ClosureWalk walk) {
@@ -1554,9 +1253,8 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * Recorded root call of each activation, mapped to the identity minted
-     * for it: the one place a raw trace endpoint is resolved to an
-     * occurrence.
+     * Key of one recorded root call: the one place a raw trace endpoint is
+     * resolved to an occurrence.
      */
     private static String recordedRootCallKey(String regionId,
                                               long rootCallId) {
@@ -1589,25 +1287,11 @@ public final class RuntimeSelectedRegionFinalizer {
 
     /**
      * The region's branch catalog: which conditional sites the slice reaches
-     * and which cells decide them.
-     *
-     * <p>No policy and no guard set.  Every decision whose term has a
-     * symbolic operand is recorded (LEAN section 1), so a branch the slice
-     * names is a branch the replay records; and the guard set of a site is
-     * {@code static_scope_map}'s, computed once by
-     * {@link SiteControlDependence}.  This used to classify each site
-     * EXPLORE or PATH_ASSUMPTION from a second, may-reach control-dependence
-     * relation carried on the graph, and to re-derive the fatal polarity
-     * from it.</p>
-     *
-     * <p>Over the region's own text AND the text of every region that
-     * folded into one of its occurrences ({@code foldedRegionIds}).  A
-     * folded region opens no occurrence, so this plan publishes no row for
-     * it and there is no other row its decisions could be stated on -- and
-     * they have to be stated somewhere, because the decision the case is
-     * about can be one of them: on hdfs-11741 the annotated target's guard
-     * lives in {@code retrieveDataEncryptionKey}, which folds into the
-     * DataNode's SASL handler occurrence.</p>
+     * and which cells decide them, over its own text and that of every region
+     * folded into its occurrences (a folded region has no row of its own).
+     * No policy and no guard set: every decision with a symbolic operand is
+     * recorded (LEAN section 1), and guard sets are {@code
+     * static_scope_map}'s ({@link SiteControlDependence}).
      */
     private static List<Map<String, Object>> branches(
             StaticProgram program, String regionId,
@@ -1639,8 +1323,7 @@ public final class RuntimeSelectedRegionFinalizer {
             Collection<Map<String, Object>> decisiveGuards =
                     failureGuards.isEmpty() ? guards : failureGuards;
             branch.put("failureTarget", !failureGuards.isEmpty());
-            // Which throw this guard controls, not merely that it controls
-            // one.
+            // Which throw this guard controls, not merely that it controls one.
             List<String> guardedTargets = new ArrayList<>();
             for (Map<String, Object> guard : failureGuards) {
                 String cell = text(guard.get("toCell"));
@@ -1691,12 +1374,9 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * Records one finalizer gap, once per (kind, subject), stating its own
-     * class exactly like a {@link
-     * edu.uva.liftlab.graphchecker.contract.GapRow}.
-     *
-     * <p>{@code gaps} may be null where a caller builds ports outside a
-     * finalize pass; the truncation below runs inside one.</p>
+     * Records one finalizer gap once per (kind, subject), stating its own
+     * class like a {@link edu.uva.liftlab.graphchecker.contract.GapRow}.
+     * {@code gaps} may be null outside a finalize pass.
      */
     private static void planGap(List<Map<String, Object>> gaps, GapKind kind,
                                 GapClass cls, String subject, String detail) {
@@ -1723,25 +1403,13 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * The one index the demand walk reads: which cells decide each region's
-     * failure target, which of its branches this activation was observed to
-     * take, and the candidate graph's own backward adjacency inside a region.
-     *
-     * <p>No ports.  A region's ports are its DECLARED ones, and which of
-     * them mints is {@code ConcolicScheduler.SymbolicInputSelection}'s
-     * decision at PLAN; this stage decides only which occurrences the
-     * failure's demand reaches.</p>
+     * The one index the demand walk reads: each region's failure-target
+     * cells, the branches each activation was observed to take, and the
+     * candidate graph's backward adjacency inside a region.  No ports: which
+     * declared port mints is SymbolicInputSelection's decision at PLAN.
      */
     private static final class RegionDemandIndex {
-        /**
-         * Static region scope of every observed activation occurrence: the
-         * regions it PERFORMED ({@link #performedRegionIds}), own first.
-         *
-         * <p>More than one since the fold rule: a region that folded into an
-         * occurrence has no occurrence of its own, and its text was walked
-         * where it ran.  An occurrence that folded nothing has exactly one,
-         * which is what every rule here used to assume.</p>
-         */
+        /** Every observed occurrence's performed regions, own first. */
         private final Map<String, List<String>> regionsByOccurrence =
                 new LinkedHashMap<>();
         private final Map<String, List<String>> localIncoming =
@@ -1758,10 +1426,8 @@ public final class RuntimeSelectedRegionFinalizer {
                 List<Map<String, Object>> regions,
                 Map<String, Map<String, Object>> activations,
                 List<Map<String, Object>> graph, StaticProgram program) {
-            // The region scope of EVERY observed activation, not only of the
-            // ones that hold a port: the demand walk moves on the candidate
-            // graph inside an occurrence, and an occurrence whose region it
-            // could not name would have no text to walk.
+            // Every observed activation, not only port holders: the walk
+            // needs each occurrence's text.
             for (Map.Entry<String, Map<String, Object>> entry
                     : activations.entrySet()) {
                 regionsByOccurrence.put(entry.getKey(),
@@ -1814,8 +1480,8 @@ public final class RuntimeSelectedRegionFinalizer {
         }
 
         /**
-         * Activation-local evidence that this activation reached one of the
-         * explicit {@code failureTarget} sites of its region, grouped by site.
+         * Activation-local evidence for the explicit {@code failureTarget}
+         * sites of its performed regions, grouped by site.
          */
         private Map<String, List<Map<String, Object>>> observedFatalEvidence(
                 Map<String, Object> instance) {
@@ -1846,14 +1512,9 @@ public final class RuntimeSelectedRegionFinalizer {
         }
 
         /**
-         * Whether this activation qualifies as an exception-context closure
-         * target. README {@code TARGET-1} binds target existence to the
-         * selected concrete branch event, so this is one question about
-         * observed evidence and never about the shape of the plan: a region
-         * without an explicit {@code failureTarget} policy declares no site to
-         * attest, which makes every one of its activations a target with no
-         * branch evidence at all - exactly the freely-true target the item
-         * forbids.
+         * Whether this activation observed an explicit failure-target branch
+         * (README TARGET-1): a region with no {@code failureTarget} site has
+         * nothing to attest, so it never yields a freely-true target.
          */
         private boolean observedExplicitFatalTarget(
                 Map<String, Object> instance) {
@@ -1867,13 +1528,8 @@ public final class RuntimeSelectedRegionFinalizer {
         }
 
         /**
-         * The explicit {@code failureTarget} sites this occurrence could
-         * have reached, by site: the ones declared by every region it
-         * PERFORMED.
-         *
-         * <p>A target site inside a region that folded into this occurrence
-         * is a site this occurrence executed -- the fold gave it no
-         * occurrence of its own to be attested at.</p>
+         * The explicit {@code failureTarget} sites of every region this
+         * occurrence PERFORMED, by site.
          */
         private Map<String, List<String>> explicitFatalSeeds(
                 Map<String, Object> instance) {
@@ -1887,15 +1543,10 @@ public final class RuntimeSelectedRegionFinalizer {
         }
 
         /**
-         * The cells the failure's own decision reads: the operand cells of
-         * the {@code failureTarget} sites this activation was OBSERVED to
-         * decide, or -- for a region that names no explicit target site --
-         * the exception cell the slice ends at.
-         *
-         * <p>The observed decision is the FIRST the recording made at that
-         * site in this activation, and it has to carry an event sequence:
-         * an observation with none is a target the walk cannot order its
-         * demand against, and it is refused by name rather than walked.</p>
+         * The cells the failure's own decision reads: operand cells of the
+         * {@code failureTarget} sites this activation was OBSERVED to decide,
+         * or, with no explicit site, the exception cell the slice ends at.
+         * The first observation at a site must carry an eventSeq.
          */
         private List<String> targetSeedCells(Map<String, Object> instance)
                 throws IOException {
@@ -1912,10 +1563,8 @@ public final class RuntimeSelectedRegionFinalizer {
                     }
                 }
                 if (seeds.isEmpty()) {
-                    // Returning every observed input of the activation
-                    // instead made the target slice the whole occurrence,
-                    // which is the free target README TARGET-1 forbids:
-                    // nothing in it is bound to a decided branch event.
+                    // Seeding every observed input instead would be the free
+                    // target README TARGET-1 forbids.
                     throw new IOException("FATAL_TARGET_SEED_GAP: region "
                             + "names no failure target site and no exception "
                             + "cell: " + performed + " " + occurrenceId);
@@ -1960,13 +1609,8 @@ public final class RuntimeSelectedRegionFinalizer {
         }
 
         /**
-         * One occurrence's incoming cells, over the text of every region it
-         * performed.
-         *
-         * <p>The text of a region that folded into this occurrence is text
-         * this occurrence executed, so the demand walk crosses it here or
-         * nowhere: no other occurrence holds those cells.  The union is
-         * taken in the order {@link #performedRegionIds} states.</p>
+         * One occurrence's incoming cells over every region it performed:
+         * folded text ran here, so the walk crosses it here or nowhere.
          */
         private List<String> edgesInto(Map<String, List<String>> edges,
                                        String occurrenceId, String cell) {
@@ -2009,10 +1653,8 @@ public final class RuntimeSelectedRegionFinalizer {
         /** Finalized region rows exactly as written to the artifact. */
         public final List<Map<String, Object>> regions;
         /**
-         * Gaps this pass raised about its own ports: every one of them
-         * says a recorded access or a recorded container observation was
-         * dropped, which no later stage can see, so they travel into the
-         * runtime plan artifact stating their own kind and class.
+         * Gaps this pass raised; no later stage can see what they report, so
+         * they travel into the runtime plan artifact with their own class.
          */
         public final List<Map<String, Object>> gaps;
         private Result(List<Map<String, Object>> regions,

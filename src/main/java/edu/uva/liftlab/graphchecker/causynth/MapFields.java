@@ -23,9 +23,8 @@ import java.util.Set;
 import java.util.zip.GZIPInputStream;
 
 /**
- * The one JSONL-row coercion family. Every artifact row a static or runtime
- * reader decodes is coerced here, so a null, a JSON {@code null} literal and
- * a wrong-typed member mean the same thing everywhere they are read.
+ * The one JSONL-row coercion family: null, JSON {@code null} and a wrong-typed
+ * member mean the same thing everywhere.
  */
 public final class MapFields {
     private static final Type ROW =
@@ -38,11 +37,7 @@ public final class MapFields {
     private MapFields() {
     }
 
-    /**
-     * The one JSONL artifact byte source: UTF-8 lines, gzip decided by the
-     * file name.  The stream is closed rather than leaked when the gzip
-     * header refuses.
-     */
+    /** The one JSONL byte source: UTF-8 lines, gzip by file name. */
     public static BufferedReader rowReader(File file) throws IOException {
         InputStream bytes = Files.newInputStream(file.toPath());
         try {
@@ -57,10 +52,7 @@ public final class MapFields {
         }
     }
 
-    /**
-     * The one JSONL artifact reader: one row per non-blank line, gzip decided
-     * by the file name, a row that decodes to nothing refused by name.
-     */
+    /** The one JSONL reader: one row per non-blank line; null refused. */
     public static List<Map<String, Object>> readRows(File file)
             throws IOException {
         List<Map<String, Object>> result = new ArrayList<>();
@@ -78,11 +70,7 @@ public final class MapFields {
         return result;
     }
 
-    /**
-     * The long values of a decoded row member that holds a list of numbers.
-     * A member that is not a list, and any element that is not a number, is
-     * not a value: the set is what the row actually stated.
-     */
+    /** The numeric elements of a list member; anything else is dropped. */
     public static Set<Long> longValues(Object value) {
         Set<Long> result = new LinkedHashSet<>();
         if (value instanceof Collection<?>) {
@@ -147,7 +135,6 @@ public final class MapFields {
         return value == null ? "" : value;
     }
 
-    /** The left string when it states something, else the right one. */
     public static String firstNonEmpty(String left, String right) {
         return left == null || left.isEmpty() ? right : left;
     }

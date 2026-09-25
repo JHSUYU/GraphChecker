@@ -30,8 +30,7 @@ import java.util.Set;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.strings;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
 
-/** Discovers the PUBLISH sites of the explicit {@code symbolize} hook, one
- *  declaration per source id and one phase per hook site. */
+/** The {@code symbolize} hook's PUBLISH sites: one declaration per source. */
 final class StaticSymbolicSourceDiscovery {
     private static final String HOOK_CLASS_SIMPLE_NAME =
             "CausynthSymbolicSource";
@@ -148,7 +147,6 @@ final class StaticSymbolicSourceDiscovery {
                     "sourceId and fieldSignature must be string constants");
         }
         Value owner = invoke.getArg(1);
-        // The exact owner is selected by the application at this hook.
         if (!(owner instanceof Local)) {
             throw malformed(method, unitIndex,
                     "owner must be an explicit local object");

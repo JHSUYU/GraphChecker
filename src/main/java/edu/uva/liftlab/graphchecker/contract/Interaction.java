@@ -4,14 +4,9 @@ import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import java.util.Objects;
 
 /**
- * CONTRACT-SPEC 1: one edge of the causal graph, named by BOTH its endpoints.
- *
- * <p>INTERACTION-ID R-I2: a family is keyed by the interaction, not by the
- * consumer phase.  A producer path with the same port but another endpoint
- * (heartbeat #2 rather than #1, another node, another attempt) contributes
- * nothing to this interaction's family, and a consumer path reads this
- * interaction's control only if its run paired its attach with this
- * producer.</p>
+ * CONTRACT-SPEC 1: one causal-graph edge, named by both endpoints.  A family
+ * is keyed by the interaction (INTERACTION-ID R-I2): same port, other
+ * endpoint contributes nothing.
  */
 public final class Interaction {
     private final InteractionKind kind;

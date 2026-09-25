@@ -5,10 +5,9 @@ public final class SharedFieldFlow {
     private SharedFieldFlow() {
     }
 
-    /** Compiler-owned enum ordinal dispatch storage, not application state. */
+    /** javac/ECJ synthetic enum switch-map field, not application state. */
     public static boolean compilerSwitchDispatchField(String fieldName) {
         String name = fieldName == null ? "" : fieldName.trim();
-        // javac and Eclipse ECJ use these two synthetic-field conventions.
         return name.startsWith("$SwitchMap$")
                 || name.startsWith("$SWITCH_TABLE$");
     }

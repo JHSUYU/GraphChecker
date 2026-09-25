@@ -29,12 +29,9 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.ToIntFunction;
 
-/**
- * The one CFG a method's loop questions are answered on, and the branch units
- * that decide whether a natural loop continues.
- */
+/** The one loop CFG of a method and the branches that continue its loops. */
 final class CfgLoopControl {
-    /** One dominance proof per body, shared by every loop consumer. */
+    /** One dominance proof per body, shared. */
     private static final Map<Body, LoopCfg> BY_BODY =
             Collections.synchronizedMap(new IdentityHashMap<Body, LoopCfg>());
 
@@ -44,7 +41,6 @@ final class CfgLoopControl {
     private CfgLoopControl() {
     }
 
-    /** One method's loop CFG. */
     static final class LoopCfg {
         private final Body body;
         private final UnitGraph transfers;
@@ -60,9 +56,7 @@ final class CfgLoopControl {
             this.unitChainState = body.getUnits().getModificationCount();
         }
 
-        /** Whether this proof still describes {@code body}: Soot counts
-         *  every write to a unit chain, so a body an instrumenter touched
-         *  since the proof was taken is refused rather than reused. */
+        /** False once the unit chain was modified since the proof. */
         private boolean describes(Body candidate) {
             return unitChainState
                     == candidate.getUnits().getModificationCount();
@@ -76,20 +70,16 @@ final class CfgLoopControl {
             return transfers;
         }
 
-        /** The ordinary transfers out of {@code unit}: the only edges a
-         *  backedge can be, and the only ones a bound can sit on. */
+        /** Normal transfers: the only edges a backedge or bound can be. */
         List<Unit> succsOf(Unit unit) {
             return transfers.getSuccsOf(unit);
         }
 
-        /** True when {@code dominator} dominates {@code unit}. */
         boolean isDominatedBy(Unit unit, Unit dominator) {
             return dominators.isDominatedBy(unit, dominator);
         }
 
-        /** The natural loop of {@code header} closed by {@code latches}:
-         *  everything reaching a latch without passing the header, over the
-         *  same edges the dominance proof used. */
+        /** Everything reaching a latch without passing the header. */
         Set<Unit> naturalLoop(Unit header, Collection<Unit> latches) {
             Set<Unit> loop = StaticProgram.closure(latches,
                     unit -> unit == header
@@ -101,7 +91,6 @@ final class CfgLoopControl {
     }
 
 
-    /** One transfer between two units of a method's loop CFG. */
     static final class Edge {
         final Unit source;
         final Unit target;
@@ -112,8 +101,7 @@ final class CfgLoopControl {
         }
     }
 
-    /** One dominance-proved backedge, named by original unit index and
-     *  never by position in a rewritten body. */
+    /** A dominance-proved backedge, named by original unit index. */
     static final class Backedge {
         final Unit source;
         final int sourceIndex;
@@ -134,8 +122,7 @@ final class CfgLoopControl {
         }
     }
 
-    /** One natural loop: its dominance-proved header and the backedges that
-     *  close it, answered on the loop CFG the header was proved on. */
+    /** One natural loop: its proved header and closing backedges. */
     static final class NaturalLoop {
         private final LoopCfg cfg;
         final Unit header;
@@ -152,7 +139,6 @@ final class CfgLoopControl {
             return method.getSignature() + "#loop:u" + headerIndex;
         }
 
-        /** Every unit of the loop: the union over its latches. */
         Set<Unit> members() {
             Set<Unit> members = new LinkedHashSet<Unit>();
             for (Backedge backedge : backedges) {
@@ -162,19 +148,15 @@ final class CfgLoopControl {
             return members;
         }
 
-        /** The units this loop's own latch closes, for one backedge. */
         Set<Unit> members(Backedge backedge) {
             return cfg.naturalLoop(header,
                     Collections.singletonList(backedge.source));
         }
 
-        /** True when every structural CFG path to {@code unit} passes
-         *  {@code dominator}; this is the same proof used to form the loop. */
         boolean isDominatedBy(Unit unit, Unit dominator) {
             return cfg.isDominatedBy(unit, dominator);
         }
 
-        /** The normal successors recorded in this immutable CFG proof. */
         List<Unit> stableSuccessors(Unit unit) {
             return cfg.succsOf(unit);
         }
@@ -193,7 +175,7 @@ final class CfgLoopControl {
             return exits;
         }
 
-        /** Abrupt method terminals inside the loop have no normal exit. */
+        /** Returns and throws inside the loop (no normal exit edge). */
         List<Unit> terminals() {
             List<Unit> terminals = new ArrayList<Unit>();
             for (Unit unit : members()) {
@@ -208,13 +190,7 @@ final class CfgLoopControl {
         }
     }
 
-    /**
-     * The one natural-loop grouping: every dominance-proved header of {@code
-     * cfg} with the backedges that close it, in first-backedge order. A unit
-     * {@code unitIndex} cannot name -- one an earlier pass inserted -- closes
-     * no loop this pass may bound, so it is skipped rather than given a
-     * positional identity that moves on the next rewrite.
-     */
+    /** Natural loops in first-backedge order; units with no index skipped. */
     static List<NaturalLoop> naturalLoops(LoopCfg cfg,
                                           ToIntFunction<Unit> unitIndex) {
         List<NaturalLoop> loops = new ArrayList<NaturalLoop>();
@@ -242,13 +218,7 @@ final class CfgLoopControl {
         return loops;
     }
 
-    /**
-     * The one loop-CFG decision for {@code body}, taken on the transfer graph
-     * its caller already uses.
-     * @param transfers the method's unexceptional CFG.  One that already
-     *                  carries exception edges is rejected: its successors
-     *                  are not iteration edges.
-     */
+    /** The loop CFG over an unexceptional transfer graph (else refused). */
     static LoopCfg loopCfg(Body body, UnitGraph transfers) {
         if (body == null || transfers == null) {
             throw new IllegalArgumentException(
@@ -266,12 +236,11 @@ final class CfgLoopControl {
                         : new TrapUnitGraph(body));
     }
 
-    /** Releases every held loop CFG: one analysis run holds them, not one JVM. */
+    /** Releases every held loop CFG at the end of one analysis run. */
     static void forget() {
         BY_BODY.clear();
     }
 
-    /** The one loop CFG of {@code body}, built on first ask and shared. */
     static LoopCfg loopCfg(Body body) {
         LoopCfg held = BY_BODY.get(body);
         if (held != null && held.describes(body)) {
@@ -282,20 +251,17 @@ final class CfgLoopControl {
         return built;
     }
 
-    /** One retained loop: its iteration guards and the kind it classifies
-     *  as. */
+    /** One retained loop: its iteration guards and classification. */
     static final class RetainedLoop {
-        /** Dominance-proved natural-loop header used by runtime counters. */
         final Unit header;
-        /** Exiting branches of this natural loop, in CFG order. */
+        /** Exiting branches, in CFG order. */
         final List<Unit> guards;
         /** {@code FIXED_COUNT_INDEXED} or {@code CONDITION_BOUNDED}. */
         final String classification;
         /** The nest's guards do not all classify the same way. */
         final boolean guardsClassifyDifferently;
-        /** The latches (backedge sources) that close this loop. */
         final List<Unit> latches;
-        /** Exact CFG members, used to assign a branch to its innermost loop. */
+        /** Exact members: assign a branch to its innermost loop. */
         final Set<Unit> members;
 
         private RetainedLoop(Unit header, List<Unit> guards,
@@ -344,14 +310,12 @@ final class CfgLoopControl {
         return result;
     }
 
-    /** The rule one classification was produced by. */
     static String classificationAuthority(String classification) {
         return fixedCount(classification)
                 ? LoopBoundPolicy.LOOP_CLASSIFIED_ARRAY_INDEXED
                 : LoopBoundPolicy.LOOP_CLASSIFIED_CONDITION_CONTROLLED;
     }
 
-    /** True for the {@code FIXED_COUNT_INDEXED} classification. */
     static boolean fixedCount(String classification) {
         return LoopBoundPolicy.LOOP_FIXED_COUNT_INDEXED
                 .equals(classification);
@@ -363,11 +327,9 @@ final class CfgLoopControl {
     }
 
     /**
-     * Every iteration guard of {@code cfg}, with the classification of the
-     * loop it closes.  README's loop authority chain starts here: an
-     * array-backed indexed {@code for} is {@code FIXED_COUNT_INDEXED} and its
-     * slot count comes from the exact cardinality of the array; anything else
-     * is {@code CONDITION_BOUNDED} and runs under a declared {@code K_L}.
+     * Every iteration guard with its loop's classification: an array-length
+     * test is {@code FIXED_COUNT_INDEXED} (slots = array cardinality); anything
+     * else is {@code CONDITION_BOUNDED} under a declared {@code K_L}.
      */
     static Map<Unit, String> classify(LoopCfg cfg) {
         Map<Unit, String> result = new IdentityHashMap<Unit, String>();
@@ -376,8 +338,7 @@ final class CfgLoopControl {
         }
         Set<String> lengthLocals = arrayLengthLocals(cfg.body());
         for (NaturalLoop natural : naturalLoops(cfg, ANY_UNIT)) {
-            // One guard kind per latch: a nest closed by several backedges
-            // classifies each of its own iteration edges.
+            // Classified per latch.
             for (Backedge backedge : natural.backedges) {
                 Set<Unit> loop = natural.members(backedge);
                 List<Unit> exits = new ArrayList<Unit>();
@@ -393,7 +354,6 @@ final class CfgLoopControl {
                 for (Unit exit : exits) {
                     indexed |= testsArrayLength(exit, lengthLocals);
                 }
-                // The array cardinality fixes the available iteration slots.
                 for (Unit exit : exits) {
                     String held = result.get(exit);
                     result.put(exit, held == null ? classification(indexed)

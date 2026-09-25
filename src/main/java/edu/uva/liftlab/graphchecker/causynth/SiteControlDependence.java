@@ -25,56 +25,27 @@ import java.util.Set;
  * The guard set of a site: the branches it is control-dependent on.  The one
  * guard computation in the engine.
  *
- * <p>CLOSURE-V2 SS1 states the rule and this is it, textually: site {@code t}
- * is control-dependent on branch {@code b} when some successor of {@code b}
- * is post-dominated by {@code t} and {@code b} itself is not.  Under that
- * rule the counter decrement of 17960's {@code deleteSnapshot} is guarded by
- * BOTH the ordered-deletion marker branch (whose false arm runs it directly)
- * and the earliest-snapshot branch (whose other arm returns), which is what
- * makes the marker a flip candidate of that occurrence.</p>
+ * <p>CLOSURE-V2 SS1: site {@code t} is control-dependent on branch {@code b}
+ * when some successor of {@code b} is post-dominated by {@code t} and {@code
+ * b} is not.  Unlike a may-reach rule, this keeps a branch both of whose arms
+ * can reach the site but only one makes it unavoidable -- and so NAMES that
+ * arm ({@link StaticScopeMap.Guard#outcome()}).</p>
  *
- * <p>It replaced a second, MAY-reach rule -- keep a branch when SOME
- * successor reaches the site and not all do -- which the backward slice used
- * to compute for itself and publish as {@code path_guard_dependency},
- * {@code heap_mutation_path_guard}, {@code receiver_field_effect_path_guard}
- * and {@code activation_path_guard} edges.  The marker branch fails that test
- * -- both of its arms can reach the decrement -- while post-dominance keeps
- * it, because the decrement is unavoidable on one arm and avoidable on the
- * other.  There is now one rule, computed here, and its answer reaches the
- * slice, the static scope map and the task plan from this file alone.</p>
+ * <p>The CFG is {@link BriefUnitGraph} (no exception edges: they would leave
+ * almost nothing post-dominated, and a throw is no flippable branch).</p>
  *
- * <p>Because post-dominance keeps a branch only when exactly one arm makes
- * the site unavoidable, the kept branch also NAMES that arm: {@link
- * StaticScopeMap.Guard#outcome()} is the outcome a replay must decide to
- * reach the site, and for the annotated throw it is phi's fatal polarity.</p>
- *
- * <p>The CFG is {@link BriefUnitGraph}: normal control flow only.  Exception
- * edges leave almost nothing post-dominating anything, and an exception is
- * not a branch a flip can take -- the annotated throw is the target, not a
- * guard of it.</p>
- *
- * <p>Every index here is the ORIGINAL one
- * ({@link CausynthPipeline#originalUnitIndex}), which is the numbering every
- * published site id is in: the graph's write sites, the plan's branches and
- * the branch sites INSTRUMENT weaves are all {@code <method>#u<original>}.
- * Read off a woven body by POSITION instead, a guard id is shifted by
- * however many units the hooks before it added -- 17960's target guard came
- * out {@code #u63} for the branch the replay decides as {@code #u61}, and
- * nothing in the session was ever decided at a published guard id.  A woven
- * unit has no original index and so can never BE a guard: it is a CFG node
- * like any other, and no DecisionRow can stand at a site no plan named.</p>
+ * <p>Every index is the ORIGINAL one ({@link
+ * CausynthPipeline#originalUnitIndex}), the numbering of every published site
+ * id.  Trap: a woven body's POSITION is shifted by the inserted hooks; a woven
+ * unit has no original index and is never a guard.</p>
  */
 public final class SiteControlDependence {
     private SiteControlDependence() {
     }
 
     /**
-     * The guard sets of the given sites, computed from the live Scene.
-     *
-     * <p>A site whose method has no retrievable body, or whose unit index is
-     * not in it, answers with no guards: the map then publishes a site with
-     * an empty guard set, which exploration reads as "this map states no
-     * branch for it" rather than as "nothing guards it".</p>
+     * The guard sets of the given sites, from the live Scene.  A site with no
+     * body or unit answers empty, read as "no branch stated", not "unguarded".
      */
     public static StaticScopeMap.Guards over(Collection<String> siteIds) {
         Map<String, MethodGuards> byMethod =
@@ -103,17 +74,10 @@ public final class SiteControlDependence {
         };
     }
 
-    /**
-     * One method's post-dominance relation, built once and asked about any
-     * unit in it.
-     *
-     * <p>The relation costs a CFG and a post-dominator walk per method, and
-     * the backward slice asks about many sites of the same method, so the
-     * caller keeps this object rather than the answer.</p>
-     */
+    /** One method's post-dominance relation, built once; callers keep it. */
     public static final class MethodGuards {
         private final String method;
-        /** Branch unit -> the arm that makes each post-dominated unit run. */
+        /** The multi-successor units that have an original index. */
         private final List<Unit> branches;
         private final Map<Unit, Integer> original;
         private final Map<Integer, Unit> byIndex;
@@ -148,10 +112,7 @@ public final class SiteControlDependence {
                         Collections.<Integer, Unit>emptyMap());
             }
             List<Unit> units = new ArrayList<Unit>(body.getUnits());
-            // The original index of each unit, by which every site id is
-            // spelled.  An untagged body was never woven, and there its
-            // position IS its original index; a body with tags has them on
-            // exactly its original units.
+            // An untagged body was never woven: position is original index.
             boolean tagged = false;
             for (Unit unit : units) {
                 tagged |= CausynthPipeline.originalUnitIndex(unit) >= 0;
@@ -193,21 +154,11 @@ public final class SiteControlDependence {
 
         /**
          * Every branch from which the unit at this ORIGINAL index is
-         * reachable, as original indices.
-         *
-         * <p>SCOPE, not a guard set: it names no arm, is published as no
-         * edge member and decides nothing.  It is what the root-dependence
-         * slice is widened by, so that a value deciding a branch on SOME
-         * path to a demanded site is in the slice -- SiteControlDependence's
-         * own note says a may-reach set "is the right admission rule for
-         * instrumenting a path to a target and the wrong one for naming what
-         * decides a write", and these are those two answers, from one CFG
-         * and one owner.</p>
+         * reachable.  SCOPE for widening the slice, not a guard set: it
+         * names no arm and decides nothing.
          *
          * @param controllingOnly keep a branch only when a proper subset of
-         *                        its successors reaches the site, which is
-         *                        control dependence in the may-reach sense;
-         *                        false keeps every branch that can reach it
+         *                        its successors reaches the site
          */
         public List<Integer> reaching(int unitIndex,
                                       boolean controllingOnly) {
@@ -244,11 +195,7 @@ public final class SiteControlDependence {
             return Collections.unmodifiableList(found);
         }
 
-        /**
-         * Reachability within the current dynamic occurrence of the branch:
-         * the branch itself is a barrier, so a path that loops back through
-         * it is a later occurrence and not this one.
-         */
+        /** Reachability within one occurrence: the branch is a barrier. */
         private boolean reachesWithoutRevisiting(Unit start, Unit site,
                                                  Unit branch) {
             Set<Unit> seen = new LinkedHashSet<Unit>();
@@ -292,10 +239,7 @@ public final class SiteControlDependence {
             return false;
         }
 
-        /**
-         * Which arm of a binary branch makes {@code site} unavoidable, or
-         * null when the branch is not binary or both arms answer alike.
-         */
+        /** The arm of an if that makes {@code site} unavoidable, or null. */
         private Boolean reachingArm(Unit branch, Unit site) {
             if (!(branch instanceof IfStmt)) return null;
             IfStmt conditional = (IfStmt) branch;

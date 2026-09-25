@@ -12,46 +12,23 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Runs one workload test method by reflection, without a JUnit engine.
+ * Runs one workload test method by reflection, without a JUnit engine:
+ * class setup, test setup, the test, test teardown, class teardown.  Setup
+ * runs superclass first, teardown subclass first; an overridden method runs
+ * once.
  *
- * <p>This is the one runner of a lifecycle: it instantiates the workload
- * class and invokes the class-level setup, the per-test setup, the named
- * test method, the per-test teardown and the class-level teardown itself,
- * in the order an engine would. Setup runs superclass first and teardown
- * subclass first, and a method overridden further down the hierarchy runs
- * once, at the overriding declaration.</p>
- *
- * <p>A lifecycle role is a set of annotation names, not an engine: the
- * corpus's workload checkouts are annotated in both JUnit vocabularies --
- * most with Jupiter's {@code @BeforeEach}/{@code @Test}, one with JUnit 4's
- * {@code @Before}/{@code @Test} -- and the two describe the same lifecycle,
- * so one reflective driver covers both by naming both. A method the runner
- * does not recognize is refused by name rather than skipped: the alternative
- * is a session published for a workload that never ran.</p>
- *
- * <p>A failure surfaces as the workload's own throwable rather than as an
- * engine's wrapper, which is what a replay's outcome is read from. A
- * declared timeout ({@code @Timeout}, {@code @Test(timeout=...)}) is
- * deliberately not read: the campaign owns the wall clock, and a replay
- * stopped by the workload's own timer would publish a truncated expression
- * table.</p>
- *
- * <p>Nothing here knows about a session.  The workload's symbolic lifetime
- * and this process's exit status are {@link JUnitMethodRunner}'s, which is
- * the one caller of {@link #run}.</p>
+ * <p>Roles are annotation names from both JUnit 4 and Jupiter.  An
+ * unrecognized method is refused, never skipped (else a session is published
+ * for a workload that never ran).  The workload's own throwable surfaces
+ * unwrapped.  Declared timeouts are deliberately ignored: the caller owns the
+ * wall clock.  Sessions are {@link JUnitMethodRunner}'s concern.</p>
  */
 final class JUnitLifecycle {
     /** What marks the method the adapter names, in either vocabulary. */
     private static final String[] TEST = {
             "org.junit.jupiter.api.Test", "org.junit.Test"};
 
-    /**
-     * The four lifecycle roles, each with the annotations that name it.
-     *
-     * <p>{@code onTheClass} roles run once around the whole class and are
-     * static in both vocabularies; the per-test roles run on the instance.
-     * {@code superclassFirst} is setup's direction.</p>
-     */
+    /** The four roles; {@code onTheClass} roles are static. */
     private enum Lifecycle {
         BEFORE_ALL(true, true,
                 "org.junit.jupiter.api.BeforeAll", "org.junit.BeforeClass"),
@@ -101,9 +78,7 @@ final class JUnitLifecycle {
                         lifecycleMethods(testClass, Lifecycle.AFTER_EACH));
             }
         } catch (Throwable thrown) {
-            // Class-level setup, or constructing the test instance: no
-            // per-test teardown ran and none should, but the class-level
-            // teardown still owes its turn.
+            // Class setup or construction failed: class teardown still runs.
             failure = merge(failure, thrown);
         } finally {
             failure = alsoInvoke(failure, null,
@@ -113,12 +88,8 @@ final class JUnitLifecycle {
     }
 
     /**
-     * Finds the test method the adapter named.
-     *
-     * <p>Looked up over the whole hierarchy, most derived first, so that an
-     * override rather than the method it overrides is what runs. A name that
-     * matches nothing, a method that takes parameters, and a method no
-     * vocabulary marks as a test are each refused by name.</p>
+     * The named test method, most derived first so an override wins; refused
+     * if missing, parameterized or not marked a test.
      */
     private static Method testMethod(Class<?> testClass, String methodName)
             throws NoSuchMethodException {
@@ -145,10 +116,7 @@ final class JUnitLifecycle {
                 + testClass.getName() + "#" + methodName);
     }
 
-    /**
-     * Collects the methods that hold one lifecycle role, in the order the
-     * role runs them.
-     */
+    /** The methods of one role, in the order the role runs them. */
     private static List<Method> lifecycleMethods(Class<?> testClass,
                                                  Lifecycle role) {
         List<Method> methods = new ArrayList<>();
@@ -172,8 +140,7 @@ final class JUnitLifecycle {
                             : "lifecycle method is static: ") + role + " "
                             + type.getName() + "#" + method.getName());
                 }
-                // A name already collected is the overriding declaration of
-                // this one; invoking both would run the override twice.
+                // Already collected: this one is overridden.
                 if (!collected.add(method.getName())) {
                     continue;
                 }
@@ -233,9 +200,8 @@ final class JUnitLifecycle {
     }
 
     /**
-     * Runs teardown that owes its turn even on a failure path, and reports
-     * the failure that stands: the workload's own throwable if there is one,
-     * with a teardown throwable suppressed under it.
+     * Runs teardown even after a failure; the first throwable stands, later
+     * ones are suppressed under it.
      */
     private static Throwable alsoInvoke(Throwable failure, Object receiver,
                                         List<Method> methods) {

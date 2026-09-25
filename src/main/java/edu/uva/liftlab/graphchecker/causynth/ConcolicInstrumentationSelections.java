@@ -83,8 +83,7 @@ public final class ConcolicInstrumentationSelections {
         /** Array-indexed loops whose concrete cardinality is not a K_L. */
         private final Set<String> fixedCountLoopSites;
         /**
-         * The loop body this region is rooted at, empty when the region keeps
-         * its root method's own entry. Present only under
+         * The re-rooted loop body's method, or empty; see
          * {@link LoopBoundPolicy#LOOP_BODY_ROOT}.
          */
         private final String rootLoopMethod;
@@ -92,10 +91,7 @@ public final class ConcolicInstrumentationSelections {
         private final int rootLoopDemandedUnitIndex;
         private final Set<String> rootLoopControlSites;
         private final ConcolicMaterializationSelection materializations;
-        /**
-         * Where this occurrence hands a declared communication port to the VM,
-         * or takes one from it.
-         */
+        /** Where this occurrence hands a port to the VM or takes one. */
         private final List<CommunicationHandoffSpec> communicationHandoffs;
         /** Complete replay-call catalog, including unselected landmarks. */
         private final List<ConfiguredSourcePhaseContract.Occurrence>
@@ -133,19 +129,14 @@ public final class ConcolicInstrumentationSelections {
             LinkedHashSet<String> methods = new LinkedHashSet<>();
             methods.add(rootMethod);
             methods.addAll(branchMethods);
-            // A cut's own frame is where the port's value is presented and
-            // received.
             for (CommunicationHandoffSpec site : communicationHandoffs) {
                 methods.add(site.method());
-                // The frame is the one call that builds one instance of the
-                // value the port belongs to; without its own body woven the
-                // leaves inside it have nothing to be addressed within.
+                // The frame is woven too: its leaves are addressed within it.
                 if (!site.frameMethod().isEmpty()) {
                     methods.add(site.frameMethod());
                 }
             }
-            // A declaration may live in a small helper called by the region
-            // root.
+            // A declaration may live in a helper the root calls.
             for (ConfiguredSourcePhaseContract.Occurrence phase
                     : configuredSourcePhases) {
                 methods.add(phase.declarationMethod());
@@ -161,12 +152,7 @@ public final class ConcolicInstrumentationSelections {
             }
             Path normalized = taskPlan.toAbsolutePath().normalize();
             Set<String> selected = campaignTaskIds(selectedTasks);
-            // One bound, stated once: ConcolicTaskPlan owns the property
-            // name, the default and the parse, and this pass bounds the
-            // campaign it is about to rewrite by exactly the number the
-            // replay JVM will bound the same plan by.  Two copies of the
-            // same constant and the same parse is one place for them to
-            // drift apart.
+            // The same bound the replay JVM applies; never a second copy.
             int maxTasks = ExecutionTask.maxCampaignTasks();
             List<InstrumentationPlan> campaign = new ArrayList<>();
             Set<String> covered = new LinkedHashSet<>();
@@ -257,10 +243,8 @@ public final class ConcolicInstrumentationSelections {
         }
 
         /**
-         * The methods the plan says are instrumented for their decisions:
-         * the ones it names, plus the owners of every retained loop's exit
-         * decisions, which are replay-address boundaries even where they add
-         * no SMT predicate of their own.
+         * The named branch methods plus every retained loop's exit-decision
+         * owners (replay-address boundaries even without an SMT predicate).
          */
         private static Set<String> branchMethodsOf(ExecutionTask task) {
             Set<String> methods = new LinkedHashSet<>();
@@ -300,12 +284,10 @@ public final class ConcolicInstrumentationSelections {
             return fixedCountLoopSites;
         }
 
-        /** True when this region's activation is one loop iteration. */
         boolean loopBodyRoot() {
             return !rootLoopMethod.isEmpty();
         }
 
-        /** The method holding the loop body this region is rooted at. */
         String rootLoopMethod() {
             return rootLoopMethod;
         }
@@ -342,12 +324,7 @@ public final class ConcolicInstrumentationSelections {
             return instrumentationMethods;
         }
 
-        /**
-         * The methods this task's envelope may rewrite, before the replay
-         * entry Soot selects is added to it. This is README section 1's per-
-         * task envelope as the plan states it: the mandatory target, region,
-         * and communication anchors plus the exact sites this task names.
-         */
+        /** README section 1's per-task envelope, before the replay entry. */
         Set<String> envelopeMethods() {
             Set<String> methods = replayDemandMethods();
             methods.add(rootMethod);
@@ -380,10 +357,7 @@ public final class ConcolicInstrumentationSelections {
                 : new FieldTarget(field.owner(), field.name());
     }
 
-    /**
-     * The small set of concrete Jimple values that a scheduled activation asks
-     * Soot to expose to the VM.
-     */
+    /** The concrete Jimple values a scheduled activation exposes to the VM. */
     static final class ConcolicMaterializationSelection {
         /** Refusal verdict: a static final field is a replay-wide constant. */
         static final String STATIC_CONSTANT = "STATIC_CONSTANT";
@@ -399,13 +373,7 @@ public final class ConcolicInstrumentationSelections {
         private final Map<String, FieldTarget> fields = new LinkedHashMap<>();
         private final Map<String, AccessorCallTarget> accessorCallsBySite =
                 new LinkedHashMap<>();
-        /**
-         * Stores of a declared input's cell the replay must observe, by site.
-         *
-         * <p>The plan decides these ({@code ExecutionTask
-         * .observedWriteSites}); the pass rewrites each exactly once, and
-         * the runtime hook is a no-op outside an active region.</p>
-         */
+        /** Planned observed stores of a declared input's cell, by site. */
         private final Map<String, ObservedWriteTarget> observedWritesBySite =
                 new LinkedHashMap<>();
 
@@ -424,10 +392,7 @@ public final class ConcolicInstrumentationSelections {
             if (fieldTarget != null
                     && SharedFieldFlow.compilerSwitchDispatchField(
                     fieldTarget.name)) {
-                // javac/ECJ rebuild their synthetic enum dispatch table at
-                // class initialization. It is neither an application input
-                // nor replay state, so emitting a field materializer would
-                // incorrectly try to replace the compiler-owned int[].
+                // A compiler switch-map table is neither input nor state.
                 return;
             }
             addAccessorCallTarget(action);
@@ -485,14 +450,8 @@ public final class ConcolicInstrumentationSelections {
         }
 
         /**
-         * Registers the write sites the plan selected for observation.
-         *
-         * <p>A cell the VM retains by value has no version log until
-         * something symbolic reaches it, so a store the plan selected
-         * publishes nothing unless the location is observed first.  Each
-         * entry names one bytecode site; a second task naming the same site
-         * with a different cell is a plan the pass cannot execute and is
-         * refused rather than silently merged.</p>
+         * Registers the planned observed write sites (a by-value cell has no
+         * version log until observed).  One site naming two cells is refused.
          */
         void addObservedWriteSites(JsonArray sites) throws IOException {
             for (JsonElement element : sites == null
@@ -520,7 +479,6 @@ public final class ConcolicInstrumentationSelections {
             }
         }
 
-        /** The write sites this campaign observes, deduplicated. */
         Collection<ObservedWriteTarget> observedWrites() {
             return observedWritesBySite.values();
         }
@@ -565,7 +523,7 @@ public final class ConcolicInstrumentationSelections {
             }
         }
 
-        /** Records {@code target}, or reports a conflicting holder. */
+        /** Records {@code target}; true when a different one holds its site. */
         private boolean conflicts(AccessorCallTarget target) {
             AccessorCallTarget previous = accessorCallsBySite.get(
                     target.callSiteId);
@@ -633,14 +591,8 @@ public final class ConcolicInstrumentationSelections {
                     ? field.name() : declared.getName());
             boolean namedTarget = namedFieldTarget(owner, fieldName);
             if (field.isStatic()) {
-                // A getstatic has no receiver object, so MATERIALIZE_FIELD
-                // cannot stand at it: the only static read this pipeline can
-                // materialize is the primitive round trip on the local that
-                // consumed it. The rule governs BOTH authorities. Letting a
-                // field named by a plan action through here handed
-                // instrumentConsumedStaticPrimitiveFieldRead a site it could
-                // only refuse, and the refusal killed the campaign -- it is
-                // how a byte[] constant read reached the instrumenter at all.
+                // A getstatic has no receiver: only a primitive static read
+                // is materializable (on its consuming local).
                 return field.type() instanceof PrimType && namedTarget;
             }
             return namedTarget;
@@ -659,15 +611,9 @@ public final class ConcolicInstrumentationSelections {
         }
 
         /**
-         * The verdict for one selected static field read the instrumenter
-         * cannot materialize, or {@code ""} when there is nothing to refuse.
-         *
-         * <p>A {@code static final} field is a constant: nothing inside the
-         * replayed process writes it, so it carries no shared state and
-         * concretizing it deletes no evidence.  A static NON-final field is
-         * shared state, and refusing it is a real coverage gap over the
-         * dependency the plan selected it for -- so the two are reported
-         * apart rather than under one "unsupported" name.</p>
+         * Why a selected non-primitive static read cannot be materialized, or
+         * {@code ""}: {@link #STATIC_CONSTANT} (final: no evidence lost) is
+         * reported apart from {@link #STATIC_FIELD_UNSUPPORTED} (a real gap).
          */
         String staticMaterializationRefusal(
                 String method, int unitIndex, SootFieldRef field) {
@@ -690,13 +636,8 @@ public final class ConcolicInstrumentationSelections {
         }
 
         /**
-         * Unions another task's materialization selections into this one.
-         *
-         * <p>Every materialization hook the pipeline emits carries the site
-         * it stands at - method, unit index, local or field - and no task id;
-         * the runtime decides by which activation is admitted.  Two tasks
-         * that name one site therefore want one rewrite, and instrumenting
-         * per task inserted the same hook once per plan row.</p>
+         * Unions another task's selections: hooks are keyed by site, not task,
+         * so two tasks naming one site want one rewrite.
          */
         void mergeFrom(ConcolicMaterializationSelection other) {
             mergeNested(localsByMethod, other.localsByMethod);

@@ -104,10 +104,8 @@ public final class CommunicationHandoffSpec {
     public String captureKind() { return captureKind; }
     public String method() { return method; }
 
-    /**
-     * The method whose one call builds one instance of the value this port
-     * belongs to, or "" when the port is framed by its RPC message.
-     */
+    /** Method whose one call builds one value of this port; "" = framed by its
+     *  RPC. */
     public String frameMethod() { return frameMethod; }
     public String declaredCallee() { return declaredCallee; }
     public int unitIndex() { return unitIndex; }

@@ -19,18 +19,10 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.required;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.text;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
 
-/**
- * Static hook sites and their exact dynamic executions for configured sources.
- * A region occurrence may execute one source hook many times: the static
- * declaration names the hook site and the occurrence row names one execution
- * of it, as evidence of where the recording observed it.  A declared source
- * is ONE symbol either way -- {@link #phaseId} is the site's and nothing
- * else's -- so how many executions a row set holds bounds nothing a replay
- * may read.
- *
- * <p>One codec: a row is built, validated and carried as the {@link JsonObject}
- * the plan wire holds; no producer hands this contract another shape.
- */
+/** Static hook sites of configured sources and the executions a recording
+ *  observed. A declared source is ONE symbol ({@link #phaseId} is the site's
+ *  alone), so the number of executions bounds nothing a replay may read. One
+ *  codec: rows are the plan wire's {@link JsonObject}s. */
 public final class ConfiguredSourcePhaseContract {
     public static final int SCHEMA_VERSION = 1;
     public static final String DECLARATION_FIELD =
@@ -59,8 +51,7 @@ public final class ConfiguredSourcePhaseContract {
     private ConfiguredSourcePhaseContract() {
     }
 
-    /** Every phase is a mint SITE: a hook execution that publishes one
-     * fresh symbol for one declared field. */
+    /** Every phase is a mint site: one fresh symbol for one declared field. */
     public enum Phase {
         PUBLISH
     }
@@ -102,14 +93,8 @@ public final class ConfiguredSourcePhaseContract {
         return Collections.unmodifiableList(result);
     }
 
-    /**
-     * Decodes an ordered runtime phase catalog.
-     *
-     * <p>The catalog states WHERE the declared hook sites are and which
-     * executions of them the recording observed.  It is not sized and not a
-     * budget: a declared source is ONE symbol, so a replay that reads it
-     * more often than the recording did reads the same variable.</p>
-     */
+    /** Decodes an ordered runtime phase catalog: evidence of where, not a
+     *  budget. */
     public static List<Occurrence> occurrencesOf(JsonElement encoded) {
         if (encoded == null || encoded.isJsonNull()) {
             return Collections.emptyList();
@@ -135,9 +120,8 @@ public final class ConfiguredSourcePhaseContract {
         Set<Long> invocationIds = new LinkedHashSet<>();
         long previousSeq = -1L;
         for (Occurrence phase : phases) {
-            // The phase id is the VARIABLE and repeats across the executions
-            // of its site; what must be unique is the execution, and the VM
-            // event counter is what says so.
+            // The phase id repeats across executions; the execution (event seq)
+            // is unique.
             if (!eventSeqs.add(phase.runtimeEventSeq())
                     || !invocationIds.add(phase.runtimeInvocationId())
                     || phase.runtimeEventSeq() <= previousSeq) {
@@ -179,34 +163,19 @@ public final class ConfiguredSourcePhaseContract {
             for (Long callId : enclosingCallIds) ancestry.add(callId);
         }
         row.add("enclosingCallIds", ancestry);
-        // Not re-validated here: every member above was written from the
-        // typed declaration this builder was handed, and validateOccurrence
-        // exists for rows decoded back off disk.
+        // Built from a typed declaration; validateOccurrence is for decoded
+        // rows.
         return row;
     }
 
     /**
-     * The identity of one configured source: its site, and nothing else.
+     * The identity of one configured source: its site, nothing else.
      *
-     * <p>A configured source is declared by SITE, so it is <em>one variable
-     * per replay</em>: every execution of that site answers the same
-     * valuation, and a solver that flips it flips it everywhere.  The
-     * occurrence that happened to reach it first, and which execution of it
-     * that was, are facts about where it was observed, not about which
-     * variable it is; they stay on the row as evidence.</p>
-     *
-     * <p>They used to be in the identity, and it cost hdfs-17960 the bug.
-     * One mint site,
-     * {@code SnapshotManager.isSnapshotDeletionOrdered()#u1}, had twelve
-     * identities in one campaign -- two per region occurrence that reached
-     * it, across six regions.  The flip solved for exactly one of them
-     * ({@code SOURCE_PHASE.f2395415…}, occurrence {@code REGION.9492ec77…#1},
-     * value {@code false}); every other execution of the same site kept the
-     * recorded {@code true}, so the target region ran under the recorded
-     * root again and published {@code targetReach.outcome:false}.  The same
-     * splitting made ten <em>other</em> tasks wait on an anchor identity that
-     * never appeared, which is the fifteen
-     * anchor-not-observed rows, a gate since retired.</p>
+     * <p>One variable per replay: every execution of the site answers the same
+     * valuation, so a flip moves them all. Trap: putting the reaching
+     * occurrence or execution into the identity splits one site into many
+     * variables, and a flip moves only one of them (hdfs-17960 lost its bug
+     * this way).</p>
      */
     public static String phaseId(String sourceId, String siteId,
                                  Phase phase) {
@@ -217,13 +186,8 @@ public final class ConfiguredSourcePhaseContract {
                 identity.getBytes(StandardCharsets.UTF_8));
     }
 
-    /**
-     * The VM label one configured source asks the engine for.
-     *
-     * <p>Derived from the phase, so the same site asks for the same leaf in
-     * every replay of it; it used to live beside a row that published it,
-     * and that row had no reader left once the result envelope went.</p>
-     */
+    /** The VM label one configured source asks the engine for, derived from its
+     *  phase. */
     public static String engineLabelForPhase(String sourcePhaseId,
                                              String sourceId) {
         return "SRC." + ArtifactIO.sha256(
@@ -254,11 +218,7 @@ public final class ConfiguredSourcePhaseContract {
                 && Integer.toString(SCHEMA_VERSION).equals(value.getAsString());
     }
 
-    /**
-     * The exact-hook-site half every declaration and occurrence row shares.
-     * {@code field} names the member being decoded so one refusal message
-     * stays specific to it.
-     */
+    /** The hook-site half shared by declaration and occurrence rows. */
     private static Declaration validateHookSite(JsonObject row, String field) {
         Phase phase;
         try {

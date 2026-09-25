@@ -27,9 +27,7 @@ import java.util.function.Predicate;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/**
- * Immutable records and Soot decoding used by the static backward analysis.
- */
+/** Immutable records and Soot decoding of the static backward analysis. */
 public final class CausynthStaticFacts {
     private static final Pattern FIELD_OWNER = Pattern.compile("<([^:]+):");
     static final Pattern METHOD_SIGNATURE = Pattern.compile(
@@ -38,8 +36,7 @@ public final class CausynthStaticFacts {
     private CausynthStaticFacts() {
     }
 
-    /** Canonical Java field identity is the actual declaring field, not the
-     *  constant-pool owner inherited bytecode referred to it through. */
+    /** The declaring field, not the constant-pool owner it was named via. */
     static SootField declaredField(SootFieldRef reference) {
         if (reference == null) return null;
         try {
@@ -72,7 +69,6 @@ public final class CausynthStaticFacts {
         }
     }
 
-    /** The frame, unit and operands every recorded call site carries. */
     static final class Callsite {
         final String method;
         final int unitIndex;
@@ -222,7 +218,7 @@ public final class CausynthStaticFacts {
         }
     }
 
-    /** The scene's method for a signature, or null when it is absent. */
+    /** The scene's method for a signature, or null. */
     static SootMethod method(String signature) {
         try {
             return Scene.v().getMethod(signature);
@@ -247,9 +243,7 @@ public final class CausynthStaticFacts {
                 identity.getBytes(StandardCharsets.UTF_8));
     }
 
-    /** The one declared-field resolver: the first field {@code owner} itself
-     *  declares that {@code accepts} answers for.  Both call sites name the
-     *  declaring class, so this deliberately does not walk the hierarchy. */
+    /** The first field {@code owner} itself declares that {@code accepts}. */
     static SootField field(SootClass owner, Predicate<SootField> accepts) {
         if (owner == null) return null;
         for (SootField candidate : owner.getFields()) {
@@ -267,7 +261,6 @@ public final class CausynthStaticFacts {
         return matcher.find() ? matcher.group(1) : "";
     }
 
-    /** Whether one method signature names an initializer. */
     public static boolean constructor(String method) {
         return method != null && (method.contains(" <init>(")
                 || method.contains(" <clinit>("));

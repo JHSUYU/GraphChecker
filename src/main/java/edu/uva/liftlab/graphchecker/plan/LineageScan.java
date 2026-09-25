@@ -17,29 +17,12 @@ import java.util.List;
 import java.util.stream.Stream;
 
 /**
- * THE LINEAGE SCOPE: every class of the application that hands work to
- * another thread, runs work handed to it, or waits or signals, whatever the
- * case analyses.
- *
- * <p>The analysis scope says which regions a case executes symbolically.
- * Lineage is a different question -- which thread's execution is whose, and
- * which message caused it -- and a hole anywhere in it is a hole everywhere
- * after it: on hdfs-17967 path B the DataNode actor put a heartbeat answer's
- * KeyUpdateCommand on its command queue and the command processor ran
- * {@code addKeys} under {@code Lost:UNKNOWN}, because {@code BPServiceActor}
- * was outside the case's twelve analysed classes and neither its thread
- * start nor its queue handoff was woven.  And a daemon's turn is paced by
- * its waits: v27's seed replay met the DataNode actors' own heartbeats where
- * the recording had the workload's, because the actor's
- * {@code waitTillNextIBR} read the wall clock of a replay many times slower.
- * So the weave's work-start, work-claim, queue-claim and timed-wait hooks
- * cover this scope too, and nothing else of the weave does
- * ({@code CausynthPipeline.instrumentApplicationScope}).</p>
- *
- * <p>The scan reads bytecode with no class hierarchy, so it keeps a class on
- * the wide predicates of {@link WorkStartSites} and lets the weave decide the
- * exact shapes.  A class the analysis scope already holds is not copied: it
- * is woven whole.</p>
+ * The lineage scope: every application class that hands work to another thread,
+ * runs it, or waits/signals. A lineage hole puts everything after it under
+ * {@code Lost:UNKNOWN}, so the weave's work-start, claim and timed-wait hooks
+ * cover this scope ({@code CausynthPipeline.instrumentApplicationScope}).
+ * Bytecode only, no hierarchy: wide {@link WorkStartSites} predicates; classes
+ * already analysed are skipped.
  *
  * <p>Usage: {@code LineageScan <out-dir> <analysis-dir> <class-root>...}</p>
  */
@@ -88,7 +71,6 @@ public final class LineageScan {
         return files;
     }
 
-    /** Whether one class file starts, hands off, runs, waits or signals. */
     static boolean handsOffWork(Path file) throws IOException {
         try (InputStream in = Files.newInputStream(file)) {
             return handsOffWork(new ClassReader(in));

@@ -3,18 +3,10 @@ package edu.uva.liftlab.graphchecker.contract;
 import java.util.Objects;
 
 /**
- * IDENTITY-IMPL A: one frame of an execution index.
- *
- * <p>{@code callSite} is the static call site ({@code class#method#bci}) and
- * {@code iteration} the innermost enclosing loop's iteration count at that
- * frame (0 when the frame is not inside a loop).  This is the Execution
- * Indexing / PEPID form: a point is named by its dynamic control context, so an
- * unrelated extra call elsewhere does not move it while an extra iteration of a
- * loop ON the path does -- which is inherent, and what makes the occurrences
- * of two replays correspond.</p>
- *
- * <p>A call site carries neither {@code /} nor {@code @}, the two separators of
- * the canonical render, so an index parses back exactly as it was written.</p>
+ * IDENTITY-IMPL A: one execution-index frame -- static {@code callSite}
+ * ({@code class#method#bci}) and {@code iteration}, the k-th entry of that
+ * site in the enclosing frame ({@code runtime.Identity}).  A call site
+ * carries neither {@code /} nor {@code @}, so an index parses back exactly.
  */
 public final class Frame {
     private final String callSite;
@@ -57,7 +49,7 @@ public final class Frame {
         return callSite;
     }
 
-    /** The innermost enclosing loop's iteration, 0 outside a loop. */
+    /** The k-th entry of this site in the enclosing frame, from 0. */
     public int iteration() {
         return iteration;
     }

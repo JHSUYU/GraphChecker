@@ -28,16 +28,12 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.strings;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
 
 /**
- * The one catalog a static analysis run and its runtime finalization are both
- * indexed by: region skeleton rows, runtime occurrences, edges (typed
- * communication ports and leaves, dataflow edges) and loop sites.
+ * The one catalog the static analysis and its runtime finalization are both
+ * indexed by: region rows, activations, edges, ports and loop sites.
  *
- * <p>Every per-key index the planner and the finalizer used to rebuild in
- * place -- by occurrence, by region, by site, by edge endpoint, by port -- is
- * a method here, built once from the artifact lists and the frozen runtime
- * trace inputs.  A row list is only ever appended to or filtered, never
- * replaced element-wise, so its size together with the identity of its last
- * row is an exact staleness stamp for the indexes derived from it.</p>
+ * <p>Every per-key index is a method here, built once.  A row list is only
+ * appended to or filtered, so its size plus the identity of its last row is
+ * an exact staleness stamp for the indexes derived from it.</p>
  */
 public final class StaticProgram {
     /** How a retained-loop identity spells its header unit. */
@@ -50,34 +46,22 @@ public final class StaticProgram {
             new LinkedHashMap<>();
     final List<Map<String, Object>> regions = new ArrayList<>();
     final Map<String, Object> targetResolved = new LinkedHashMap<>();
-    /**
-     * Static communication discovery: one row per target-selected
-     * communication call site ({@code COMMUNICATION_CALL_SITE}) and one row
-     * per named gap.
-     */
+    /** One {@code COMMUNICATION_CALL_SITE} row per selected call site. */
     final List<Map<String, Object>> communicationCallSites =
             new ArrayList<>();
     /** One row per retained loop of a selected method. */
     final List<Map<String, Object>> retainedLoops = new ArrayList<>();
     final List<Map<String, Object>> communicationGaps = new ArrayList<>();
     /**
-     * Gaps the runtime-selected region finalizer raised while building this
-     * program's ports: a static site whose activation-local accesses were
-     * truncated, or an accessor-return stream that hit the container snapshot
-     * capacity.  Both used to be silent {@code continue}s.  These travel out
-     * of the finalizer on {@code Result.gaps} and into the runtime plan
-     * artifact, because a port built from a truncated access history is a
-     * chain element the later stages never see the whole of.
+     * Gaps the finalizer raised building ports (truncated activation-local
+     * accesses, an accessor stream at snapshot capacity).  They reach the
+     * runtime plan on {@code Result.gaps}: a port built from a truncated
+     * history is a chain element no later stage sees whole.
      */
     final List<Map<String, Object>> planGaps = new ArrayList<>();
-    /**
-     * Callee signatures that are communication boundaries in the selected
-     * slice.
-     */
+    /** Callees that are communication boundaries in the selected slice. */
     final Set<String> communicationCallSiteCallees = new LinkedHashSet<>();
-    // ------------------------------------------------------------------
     // Frozen runtime inputs of one finalization
-    // ------------------------------------------------------------------
 
     /** The runtime-refined dataflow rows this finalization reads. */
     List<Map<String, Object>> graph = Collections.emptyList();
@@ -87,9 +71,7 @@ public final class StaticProgram {
     final Map<String, Map<String, Object>> activations =
             new LinkedHashMap<>();
 
-    // ------------------------------------------------------------------
     // Indexes, each built once
-    // ------------------------------------------------------------------
 
     private Map<String, List<Map<String, Object>>> graphEdgesByRegion;
     private Map<String, List<String>> skeletonRegionIdsByMethod;
@@ -105,16 +87,9 @@ public final class StaticProgram {
     private int regionCount = -1;
 
     /**
-     * Graph rows indexed by every region that claims them.
-     *
-     * <p>Scoping is the one thing the static graph decides, and it decides
-     * it statically: the region an edge belongs to is read off the selected
-     * skeletons' own {@code methods} sets by {@link
-     * #skeletonRegionsHolding}, not off a {@code regionIds} annotation a
-     * recording carried onto the row.  The two answers are the same fact --
-     * the annotation was that same lookup, computed in the runtime pass and
-     * shipped on a runtime artifact -- so this is where the fact is
-     * computed, once, from the artifact that states it.</p>
+     * Graph rows indexed by every region that claims them.  Scoping is static:
+     * read off the skeletons' {@code methods} sets by {@link
+     * #skeletonRegionsHolding}, never off a recorded {@code regionIds}.
      */
     Map<String, List<Map<String, Object>>> edgesByRegion() {
         if (graphEdgesByRegion == null) {
@@ -131,12 +106,9 @@ public final class StaticProgram {
     }
 
     /**
-     * The selected skeletons whose method set holds {@code method}.
-     *
-     * <p>Not {@link #regionsHolding}: that one answers over {@link #regions},
-     * which during a finalization is the list being built and is empty when
-     * the graph is first indexed.  The skeletons are the frozen static
-     * regions and are complete before the first port exists.</p>
+     * The selected skeletons whose method set holds {@code method}.  Not
+     * {@link #regionsHolding}: {@link #regions} is still being built (empty)
+     * when the graph is first indexed; the skeletons are already complete.
      */
     List<String> skeletonRegionsHolding(String method) {
         if (skeletonRegionIdsByMethod == null) {
@@ -182,18 +154,12 @@ public final class StaticProgram {
         return activationsById;
     }
 
-    /** The graph rows one region claims, in first-seen order. */
     List<Map<String, Object>> regionGraph(String regionId) {
         return edgesByRegion().getOrDefault(regionId,
                 Collections.<Map<String, Object>>emptyList());
     }
 
-    /**
-     * One region's rows indexed by the cell they flow into.  Every consumer
-     * inside one region's stage asks for the same adjacency, so it is built
-     * once for the region being worked on rather than once per consumer, and
-     * released as soon as the next region starts.
-     */
+    /** One region's rows by the cell they flow into; caches one region. */
     Map<String, List<Map<String, Object>>> regionIncoming(String regionId) {
         if (!regionId.equals(incomingRegion)) {
             cellIncoming = index(regionGraph(regionId), "toCell");
@@ -224,7 +190,6 @@ public final class StaticProgram {
         return text(edge.get("invoke"));
     }
 
-    /** Region rows by their identity. */
     Map<String, Map<String, Object>> regionsById() {
         indexRegions();
         return regionsById;
@@ -280,13 +245,10 @@ public final class StaticProgram {
                 && cell.contains(":") && !cell.contains("(");
     }
 
-    /** The recorded call identities one row names. */
     /**
-     * The single breadth-first closure driver of the static planner and the
-     * runtime finalizer: FIFO from the seeds, every node visited once, so the
-     * visitation order a caller keys its result by is the order of first
-     * discovery.  An adjacency that answers {@code null} ends the whole walk,
-     * which is how a caller that only needs the first witness stops early.
+     * The one breadth-first closure driver: FIFO from the seeds, each node
+     * visited once, so result order is first-discovery order.  An adjacency
+     * answering {@code null} ends the whole walk (early stop on a witness).
      */
     static <T> Set<T> closure(Collection<? extends T> seeds,
                               Function<T, Collection<T>> adjacency) {
@@ -302,39 +264,19 @@ public final class StaticProgram {
         return visited;
     }
 
-    // ------------------------------------------------------------------
     // Root selection: the once-only-root rule
-    // ------------------------------------------------------------------
 
     /**
-     * Answers the loop body one region has to be rooted at instead of its
-     * skeleton root, or {@code null} when today's root stands.
+     * The loop body one region must be rooted at instead of its skeleton
+     * root, or {@code null} when the root stands.
      *
-     * <p>A root that is entered once per activation cannot admit a receiver
-     * alias that arrives later: VM frame tracking is push-time, so an address
-     * published after the root frame was pushed never reaches that activation.
-     * A service loop is exactly that shape -- one entry, many iterations, one
-     * unit of demanded work per iteration -- so the per-iteration boundary,
-     * not the entry, is the activation the region describes.</p>
-     *
-     * <p>The rule fires only on positive evidence of that shape:</p>
-     * <ul>
-     *   <li>a caller of the region's anchor issues the demanded call from
-     *       inside one of its own dominance-proved natural loops, within the
-     *       extent the retained-loop row publishes -- from the loop's header
-     *       to its last exiting branch;</li>
-     *   <li>that loop is {@code CONDITION_BOUNDED}: an indexed walk bounded by
-     *       an array cardinality is not a service loop;</li>
-     *   <li>the trace observed the loop deciding its own continuation more
-     *       than once inside a single activation, which is what makes the root
-     *       once-entered relative to the demanded work.</li>
-     * </ul>
-     *
-     * <p>The innermost such loop wins: the walk leaves the anchor and takes
-     * the first caller that answers, so a service loop nested inside another
-     * names the finer boundary.  Nothing here changes how the runtime admits
-     * addresses; it names the boundary the runtime planner and the
-     * instrumenter key on.</p>
+     * <p>A once-entered root cannot admit an alias published later (VM frame
+     * tracking is push-time), so for a service loop the iteration, not the
+     * entry, is the activation.  Fires only when a caller of the anchor issues
+     * the demanded call inside one of its retained loops ({@link
+     * #serviceLoopCandidate}) and the trace saw that loop decide its
+     * continuation more than once in one activation.  The innermost such loop
+     * wins.</p>
      */
     Map<String, Object> loopBodyRoot(
             RegionRow skeleton,
@@ -373,16 +315,14 @@ public final class StaticProgram {
                             return rootLoop(loop, caller, unitIndex);
                         }
                     }
-                    // The root bounds the walk: above it the region does not
-                    // reach.
+                    // The walk stops at the root.
                     if (!caller.equals(root)) next.add(caller);
                 }
             }
             next.removeAll(visited);
             frontier = new ArrayList<>(next);
         }
-        // The root method itself may be the once-entered service loop: then
-        // the body containing the region's own call sites is the root.
+        // The root method itself may hold the service loop.
         int demanded = Integer.MAX_VALUE;
         for (List<String> sites : callSites.values()) {
             for (String site : sites) {
@@ -425,39 +365,15 @@ public final class StaticProgram {
     /**
      * Whether one retained loop may be the region's service loop.
      *
-     * <p>A {@code CONDITION_BOUNDED} loop always may: it decides its own
-     * continuation, which is the shape the once-only-root rule is about.  An
-     * indexed walk over an array cardinality usually may not -- iterating a
-     * collection is not by itself a unit of demanded work -- but it is
-     * exactly that when the iteration is what the slice demands:</p>
-     * <ul>
-     *   <li>a declared wire port is defined inside the loop body, or by a
-     *       method the loop body calls, so one iteration produces or consumes
-     *       one wire value; or</li>
-     *   <li>the loop body writes a declared field, so one iteration is one
-     *       shared-location write the failure may read.</li>
-     * </ul>
-     * <p>The trip count of such a loop is exact and recorded, so naming the
-     * iteration adds no unbounded path space; and {@link #loopBodyRoot}
-     * still requires the demanded call to sit lexically inside the loop and
-     * the trace to have seen the loop iterate inside one activation.</p>
+     * <p>{@code CONDITION_BOUNDED}: always.  {@code FIXED_COUNT_INDEXED}: only
+     * when one iteration is one unit of demanded work -- the body (or a callee)
+     * defines a declared wire port, or the body writes a declared field.</p>
      *
-     * <p>A port that names a FRAME METHOD bounds the first arm: the frame is
-     * the one call that builds one instance of that port's value, and {@code
-     * SymbolicMessageEnvelope} addresses the value's leaves by {@code (frame,
-     * port, ordinal)} within it.  A loop in that very method therefore walks
-     * the leaves of ONE message, and an iteration produces part of a wire
-     * value rather than one -- so it is not the unit of demanded work and the
-     * region belongs at the frame.  Rooting it at the loop instead left every
-     * leaf the frame builds OUTSIDE the loop with no activation at all: on
-     * 11741 the {@code currentKey} of an {@code ExportedBlockKeys} (PBHelper
-     * line 262, before the {@code allKeys} loop) was exported under a
-     * degraded role occurrence, which the VM can only give a concrete typed
-     * constant, so its {@code ExportRow} carried no expression, {@code
-     * Arms.arm} refused the arm, and {@code ComposedFamilies.eligibleSessions}
-     * then emptied the whole message -- the four good leaves beside it
-     * included.  The region and the envelope have one answer for what the
-     * unit of a message is.</p>
+     * <p>Trap: a loop inside a port's FRAME METHOD walks the leaves of ONE
+     * message ({@code SymbolicMessageEnvelope} addresses leaves by {@code
+     * (frame, port, ordinal)}), so it never qualifies; rooting there leaves the
+     * frame's leaves outside the loop with no activation, and the whole
+     * message is dropped downstream.</p>
      */
     private boolean serviceLoopCandidate(RegionRow skeleton,
                                          Map<String, Object> loop,
@@ -487,10 +403,7 @@ public final class StaticProgram {
             String definition = text(port.get(CommunicationCatalogContract
                     .PORT_DEFINITION_METHOD));
             if (definition.isEmpty()) continue;
-            // The loop is inside this port's frame: it walks one message's
-            // leaves, so no iteration of it is one wire value.  The port says
-            // nothing about this loop being a service loop, and the region
-            // stays rooted at the frame that builds the whole message.
+            // A loop in the port's frame walks one message's leaves.
             if (owner.equals(text(port.get(CommunicationCatalogContract
                     .PORT_FRAME_METHOD)))) {
                 continue;
@@ -527,9 +440,7 @@ public final class StaticProgram {
         return row;
     }
 
-    /**
-     * Every call this region's rows name, as {@code callee -> [method#uN]}.
-     */
+    /** Every call this region's rows name, as {@code callee -> [method#uN]}. */
     private Map<String, List<String>> callSitesByCallee(String regionId) {
         Map<String, Set<String>> sites = new LinkedHashMap<>();
         for (Map<String, Object> edge : regionGraph(regionId)) {
@@ -550,12 +461,7 @@ public final class StaticProgram {
         return result;
     }
 
-    /**
-     * The candidate loops the trace observed deciding their own continuation
-     * more than once inside one activation.  A loop's continuation is decided
-     * once per iteration in the frame that runs it, so the recorded call the
-     * decision belongs to is the unit both counted and joined on.
-     */
+    /** Loops seen deciding continuation twice in one call of an activation. */
     private static Set<String> loopsIteratedWithinActivation(
             Map<String, List<Map<String, Object>>> loopsByMethod,
             Collection<Map<String, Object>> regionActivations,
@@ -610,19 +516,13 @@ public final class StaticProgram {
         }
     }
 
-    /**
-     * Whether {@code unitIndex} lies in the extent a retained-loop row
-     * publishes: from the loop's dominance-proved header to its last exiting
-     * branch.
-     */
+    /** Whether {@code unitIndex} lies between the loop's header and its end. */
     static boolean loopContains(Map<String, Object> loop,
                                 int unitIndex) {
         int header = loopHeaderUnitIndex(text(loop.get(
                 LoopBoundPolicy.RUNTIME_LOOP_ID)));
         if (header < 0 || unitIndex < header) return false;
-        // The body ends at the loop's latch; a while(true) service loop keeps
-        // its only guard at the header, so the guards alone would exclude
-        // the whole body.
+        // End at the latch too: a while(true) loop's only guard is the header.
         int last = number(loop.get(LoopBoundPolicy.LOOP_LATCH_UNIT_INDEX),
                 header);
         for (String site : strings(loop.get(
@@ -632,16 +532,9 @@ public final class StaticProgram {
         return unitIndex <= last;
     }
 
-    // ------------------------------------------------------------------
-    // RegionRow: the one decode of a region row
-    // ------------------------------------------------------------------
-
     /**
-     * One region row -- a static {@code REGION_SKELETON} or the runtime
-     * {@code SYMBOLIC_REGION} refined from it -- decoded once into typed
-     * members.  Consumers take this object; nobody re-reads the map behind
-     * it, and decode refuses a row of any other shape.  Members are final
-     * and read directly, as on the trace event rows.
+     * One {@code REGION_SKELETON} or {@code SYMBOLIC_REGION} row, decoded once
+     * into typed final members; decode refuses any other shape.
      */
     public static final class RegionRow {
         /** The undecoded row, for the writers that republish it verbatim. */
@@ -650,10 +543,8 @@ public final class StaticProgram {
         public final String rootMethod;
         public final String rootAuthority;
         /**
-         * Whether the case's {@code symbolic-inputs.jsonl} names this
-         * region's root method.  Stamped by the skeleton planner and read
-         * by every stage after it, so the declaration travels on the
-         * artifact rather than being re-read from the case file.
+         * Whether {@code symbolic-inputs.jsonl} names this root; stamped by
+         * the skeleton planner so no later stage re-reads the case file.
          */
         public final boolean declaredInputRoot;
         /** The loop body this region is re-rooted at, or {@code null}. */
@@ -683,8 +574,7 @@ public final class StaticProgram {
                         + " row in " + source);
             }
             json = row;
-            // The JSON null literal reads as absent, the way every consumer
-            // of these members compares them.
+            // JSON null reads as absent.
             regionId = stringValue(row.get("regionId"));
             rootMethod = stringValue(row.get("rootMethod"));
             rootAuthority = stringValue(row.get(
@@ -722,10 +612,8 @@ public final class StaticProgram {
         }
 
         /**
-         * The declared configured-source hook sites, by {@code siteId},
-         * decoded on first use.  A region no activation plans states a
-         * catalog no stage has to accept, so decoding it eagerly would
-         * refuse a run over a declaration nothing reads.
+         * Declared configured-source hook sites by {@code siteId}, decoded
+         * lazily so an unread malformed catalog never refuses a run.
          */
         public Map<String, ConfiguredSourcePhaseContract.Declaration>
                 sourcePhasesBySite() {

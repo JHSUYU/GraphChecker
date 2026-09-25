@@ -3,16 +3,9 @@ package edu.uva.liftlab.graphchecker.contract;
 import java.util.Objects;
 
 /**
- * CONTRACT-SPEC 2: one write, as the producer half of a STATE interaction.
- *
- * <p>The {@code version} it produced is what a read joins on within the run;
- * across runs the arm set is the writer paths whose endpoint equals this one
- * (INTERACTION-ID R-I4), which is why the endpoint and not the version number
- * is the identity.</p>
- *
- * <p>{@code seq} orders this write against the reads and writes of its own
- * session; {@code javaType} is the JVM descriptor of the stored value, so the
- * read that joins to this version is declared at the same sort.</p>
+ * CONTRACT-SPEC 2: one write, the producer half of a STATE interaction.
+ * {@code version} joins reads within a run; across runs the endpoint is the
+ * identity (INTERACTION-ID R-I4).
  */
 public final class WriteRow {
     private final String sessionId;
@@ -50,7 +43,6 @@ public final class WriteRow {
         return sessionId;
     }
 
-    /** Where this write falls in its session's event order. */
     public long seq() {
         return seq;
     }

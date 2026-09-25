@@ -10,17 +10,9 @@ import java.util.List;
 import java.util.function.Function;
 
 /**
- * One replay session's rows, one file per kind, read once.
- *
- * <p>Every reader of the corpus goes through this class, so the contract's
- * file layout is read in one place and not once per module.  A session is
- * read whole because both stages join across its kinds -- a decision names a
- * symbol a mint row declared and an attach minted -- and because a raw
- * symbol, a version id and an expression ref are all session-local names.</p>
- *
- * <p>Nothing here interprets a row, and nothing here lowers one: the session
- * is a recording, what it means is decided by the stage that reads it, and a
- * lowering cache belongs to the stage that lowers.</p>
+ * One replay session's rows, one file per kind, read once and whole (symbols,
+ * versions and expression refs are session-local and joined across kinds).
+ * The one reader of the corpus layout; interprets and lowers nothing.
  */
 public final class SessionReader {
     private final SessionDir directory;
@@ -71,16 +63,9 @@ public final class SessionReader {
     }
 
     /**
-     * Reads one session directory, naming what it could not read.
-     *
-     * <p>A file the codec refuses -- a row the kill truncated, a manifest
-     * that states no role -- is not an exception thrown at whatever stage
-     * happened to open the corpus first.  It is recorded on the session, and
-     * IMPORT names it {@code SESSION_INCOMPLETE} (BLOCKING) with the file
-     * and the reason.  The kinds it COULD read are still here, because
-     * naming which file is short is the whole point; nothing downstream may
-     * read a short kind as "this session had none", which is why the
-     * statement is BLOCKING and not a diagnostic.</p>
+     * Reads one session directory.  A file the codec refuses is recorded in
+     * {@link #incomplete()}, not thrown; IMPORT refuses it as
+     * SESSION_INCOMPLETE.
      */
     public static SessionReader read(SessionDir dir) throws IOException {
         Partial partial = new Partial();
@@ -144,13 +129,9 @@ public final class SessionReader {
     }
 
     /**
-     * The session's schedule, in the order its run made the events.
-     *
-     * <p>Read on demand and never into the session's rows: no row invariant
-     * is stated over it and a corpus that holds every session must not hold
-     * every schedule too.  A line the codec refuses ends the read there --
-     * a schedule is an ORDER, and the events after a hole are not a prefix
-     * of anything -- and a session that published no file has none.</p>
+     * The session's schedule in run order, read on demand (never held by the
+     * corpus).  An unreadable line ends the read: events after a hole are no
+     * prefix.
      */
     public static List<ScheduleEvent> readSchedule(SessionDir dir)
             throws IOException {
@@ -184,9 +165,8 @@ public final class SessionReader {
     }
 
     /**
-     * Where each occurrence of a schedule opened: occurrence id to the
-     * position of the first event after it, the cut a prefix that focuses
-     * it is taken at.  Read with the same tolerance as the events.
+     * Occurrence id to the position of the first schedule event after it
+     * opened (the prefix cut); same tolerance as the events.
      */
     public static java.util.Map<String, Long> readScheduleMarks(Path file)
             throws IOException {
@@ -258,35 +238,15 @@ public final class SessionReader {
         return targets;
     }
 
-    /**
-     * WHAT THIS REPLAY SETTLED, one row per obligation it ran.
-     *
-     * <p>The verdict, and the only statement of it a reader of the corpus
-     * may take: the replay owns whether the focused prefix reproduced and
-     * the flipped decision was taken.  A SEED session states none -- it was
-     * asked nothing -- and none is not a verdict.</p>
-     */
+    /** The replay's verdicts, one per obligation run; the only authority. */
     public List<ObligationResult> obligations() {
         return obligations;
     }
 
     /**
-     * ONLY AN ADMITTED REPLAY STATES A TOPOLOGY, AND THIS IS THAT RULE.
-     *
-     * <p>Whether this session RAN the world it was asked for, read off its
-     * own result rows and nothing else -- never the wave's aggregate file,
-     * which is the planner's copy and not the run's statement.  The rule:
-     * a session states the world it ran only when every obligation it ran
-     * came back {@link Verdict#ADMITTED}; one that states no result row at
-     * all states nothing, because an absence is not a verdict.  A SEED is
-     * asked nothing and is always an authority: it IS the recording.</p>
-     *
-     * <p>What it costs to skip it: hdfs-11741 campaign #2's NOT_ADMITTED
-     * session -- its mint planted nothing, so it never ran the clock skew
-     * the wave asked of it -- paired eight consumers with producers the
-     * skeleton does not carry.  Read as a topology, that emptied wave 1 of
-     * every candidate and filed eight BLOCKING rows, and one replay that
-     * did not run the world it was asked halted the campaign.</p>
+     * Only an admitted replay states a topology.  True for the SEED, or when
+     * every own result row is {@link Verdict#ADMITTED} (no rows: false).
+     * Never read the wave's aggregate file instead.
      */
     public boolean admitted() {
         if (seed()) return true;
@@ -301,15 +261,7 @@ public final class SessionReader {
         return expressions;
     }
 
-    /**
-     * The role this session STATES, or null when it states none.
-     *
-     * <p>Read, never inferred.  "The seed is the session whose activations
-     * focused nothing" was the rule, and it has no answer for a corpus whose
-     * focused replays were cut before their occurrence activated: on 11741
-     * campaign #2 nine of eighty-one sessions focused nothing and COMPOSE
-     * refused the lot.</p>
-     */
+    /** The role this session states, or null; read, never inferred. */
     public SessionManifest manifest() {
         return manifest;
     }
@@ -324,15 +276,7 @@ public final class SessionReader {
         return incomplete;
     }
 
-    /**
-     * The session that states it is the recording, or null when that has no
-     * single answer.
-     *
-     * <p>Exactly one SEED: with none, no declaration has a recording it was
-     * written about, and with two, nothing says which.  Both are refusals
-     * the caller names -- naming a counterfactual as the recording is how a
-     * claim comes to be about the wrong execution.</p>
-     */
+    /** The one session stating SEED, or null unless exactly one does. */
     public static String seedSessionId(List<SessionReader> sessions) {
         List<String> stated = seedSessionIds(sessions);
         return stated.size() == 1 ? stated.get(0) : null;

@@ -4,25 +4,13 @@ import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import java.util.Objects;
 
 /**
- * IDENTITY-IMPL A: one side of an interaction.
+ * IDENTITY-IMPL A: one side of an interaction, {@code (occurrence, site,
+ * siteIndex, attempt)}.  The site index (frames from region entry to the
+ * site) replaces an ordinal, which moves when an unrelated event is inserted.
  *
- * <p>{@code (occurrence, site, siteIndex, attempt)} -- which occurrence, which
- * declared port or read/write site inside it, WHERE in the region's control
- * structure that event happened (the frames from the region entry to the site),
- * and the retry number when the transport retried.  The site index replaces
- * v2's "k-th event of that site": an ordinal moves when an unrelated earlier
- * event is inserted, an execution index does not.</p>
- *
- * <p>The site is the declared port id for a WIRE endpoint (e.g.
- * {@code XCH.<uuid>.resp.block-key-id}), {@code <class>#<method>#<bci>:<READ|
- * WRITE>} for a STATE endpoint, and {@code <class>#<method>#<bci>:NEW} or
- * {@code :NEWARRAY} for an allocation -- {@link #stateSite} and
- * {@link #allocationSite} spell those so the runtime that writes them and the
- * composer that joins on them cannot drift.</p>
- *
- * <p>Neither endpoint alone identifies an interaction: the consumer side admits
- * a different producer that served the same attach, the producer side a
- * different consumer.  That is why this type exists separately from
+ * <p>Site: the declared port id (WIRE), or {@code <class>#<method>#<bci>:KIND}
+ * spelled only by {@link #stateSite} / {@link #allocationSite}, so writer and
+ * joiner cannot drift.  One endpoint does not identify an
  * {@link Interaction}.</p>
  */
 public final class Endpoint {
@@ -30,14 +18,7 @@ public final class Endpoint {
     private final String site;
     private final ExecutionIndex siteIndex;
     private final int attempt;
-    /**
-     * {@link #id()}, digested on its first reader, as an occurrence's is.
-     *
-     * <p>{@link edu.uva.liftlab.graphchecker.runtime.Interactions#endpoint}
-     * finds one filed endpoint by asking every filed endpoint for its id, so
-     * a reader that recomputed the digest re-digested the whole store on
-     * every lookup.</p>
-     */
+    /** {@link #id()}, cached: lookups ask every filed endpoint for it. */
     private String id;
 
     private Endpoint(OccurrenceAddress occurrence, String site,
@@ -63,14 +44,8 @@ public final class Endpoint {
     }
 
     /**
-     * The one spelling of a STATE endpoint's site.
-     *
-     * <p>{@code descriptor} is the JVM method descriptor of the method the
-     * event stood in, as the VM's log states it ({@code ()I}), and it is part
-     * of the member because two overloads of one name are two methods: a site
-     * spelled without it would merge the reads of {@code get()} and
-     * {@code get(int)} into one endpoint.  The empty descriptor is a site the
-     * run states no descriptor for, not a claim about the signature.</p>
+     * The one spelling of a STATE endpoint's site.  {@code descriptor} (e.g.
+     * {@code ()I}) keeps overloads apart; {@code ""} means none was stated.
      */
     public static String stateSite(String className, String method,
                                    String descriptor, int bci, boolean write) {
@@ -114,32 +89,11 @@ public final class Endpoint {
         return digested;
     }
 
-    // TRIED AND REVERTED 2026-09-22.  This digest is RECURSIVE -- an
-    // occurrence's id digests its causal context, an ANCHOR context is a
-    // producer endpoint id, and that endpoint digests its own occurrence --
-    // so an address is a digest over a whole chain (17 links on hdfs-17899
-    // bug1).  A replay that reproduces every component but one link's still
-    // computes a different id, the plan then addresses an occurrence the
-    // replay cannot answer, and the run refuses its own target.
-    //
-    // The obvious repair is to stop the recursion: name the producer by the
-    // parts a second run reproduces -- node, region, execution index -- plus
-    // a STABLE projection of its context (a ROOT context in full, an ANCHOR
-    // context by its transport site alone).  It does not work.  Dropping the
-    // nested producer id makes two producers that differed ONLY in their
-    // chain collide, and the corpus then reports one consumer paired with two
-    // producers everywhere: hdfs-17897 and hdfs-17899-bug2 both went from
-    // PASS to seven-plus BLOCKING TOPOLOGY_DIVERGENCE rows, while
-    // hdfs-17899-bug1 composed but with the same divergences.  The producer's
-    // full context is load-bearing for telling two endpoints apart.
-    //
-    // So neither loosening the comparison (three arms, see
-    // ConcolicTaskPlan#acceptsRootInvocation) nor truncating this digest is
-    // the answer.  What is left is to make the chain itself reproducible --
-    // e.g. assign each message a deterministic per-request ordinal at mint
-    // time that both passes compute identically, and digest THAT instead of
-    // the producer's address -- which keeps endpoints distinct while removing
-    // the dependence on a chain the replay may not rebuild.
+    // Trap: this digest is recursive (occurrence -> Anchor context ->
+    // producer endpoint -> its occurrence), so one unreproduced link changes
+    // the id.  Do not truncate the chain: producers that differ only in their
+    // chain then collide (TOPOLOGY_DIVERGENCE).  The open fix is a
+    // reproducible per-message ordinal digested in place of the chain.
 
     /** The canonical spelling, for reports and refusals. */
     public String render() {
@@ -168,13 +122,8 @@ public final class Endpoint {
     }
 
     /**
-     * The one renderer of every read/write/allocation site.
-     *
-     * <p>{@code <class>#<member>#<bci>:<KIND>}, where the member is the
-     * method name followed by its descriptor when the run states one.  It
-     * renders what it is given and normalizes nothing: the one place that
-     * reads a site out of the VM's log puts the class in source form there,
-     * so a name is converted once rather than at every render.</p>
+     * {@code <class>#<method><descriptor>#<bci>:<KIND>}; normalizes nothing
+     * (the VM-log reader puts the class in source form once).
      */
     private static String site(String className, String method,
                                String descriptor, int bci, String kind) {

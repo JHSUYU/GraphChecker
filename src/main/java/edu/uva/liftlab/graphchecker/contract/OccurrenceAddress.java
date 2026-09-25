@@ -4,26 +4,17 @@ import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import java.util.Objects;
 
 /**
- * IDENTITY-IMPL A: the one address of a region occurrence.
+ * IDENTITY-IMPL A: the one address of a region occurrence,
+ * {@code node#epochN/region/REGION.x/ctx:<why>/idx:<where>} -- node and epoch,
+ * static region, the {@link CausalContext} that started it, and the
+ * {@link ExecutionIndex} from scope root to region entry.  Nothing else (no
+ * thread id, object address or ordinal: an ordinal shifts when a flip inserts
+ * an unrelated invocation).  Two occurrences are the same iff their
+ * {@link #id()}s are equal.
  *
- * <p>{@code node#epochN / region/REGION.x / ctx:<why it ran> / idx:<where>} --
- * the component instance and its topology epoch, the static region, the
- * {@link CausalContext} that started it (recursively, through the producer
- * endpoint id of an {@link CausalContext.Anchor}), and the
- * {@link ExecutionIndex} of the path from the scope root to the region entry.
- * Nothing else: no thread id, no object address, no session counter, no k-th
- * activation.</p>
- *
- * <p>That is the point of v3.  A flat ordinal ("the k-th activation under the
- * parent") shifts as soon as an unrelated invocation is inserted, which is
- * exactly what a branch flip does; an execution index moves only when the path
- * to this point moves.  Two occurrences in two replays are THE SAME iff their
- * {@link #id()}s are equal.</p>
- *
- * <p>Humans do not write execution indexes: a case declares a {@link Selector}
- * in the v1 spelling and {@link #parseSelector} reads it.  A selector is not an
- * address and never becomes one by parsing -- the scheduler resolves it against
- * a seed session's occurrences.</p>
+ * <p>Cases declare a {@link Selector} ({@link #parseSelector}), which the
+ * scheduler resolves against the seed; it never becomes an address by
+ * parsing.</p>
  */
 public final class OccurrenceAddress {
     /** The one spelling of the region separator in a rendered address. */
@@ -36,15 +27,8 @@ public final class OccurrenceAddress {
     private final CausalContext context;
     private final ExecutionIndex index;
     /**
-     * {@link #id()}, digested on its first reader.
-     *
-     * <p>One address is one id, so the digest is a property of this object and
-     * not of the call that asks for it.  It was recomputed at every ask, and
-     * admission asks once per candidate comparison: hdfs-11741's seed replay
-     * spent its 980 seconds inside {@code ArtifactIO.sha256} under the
-     * concolic plan's monitor, with every other thread blocked behind it.
-     * Unsynchronized on purpose -- the value is a pure function of four final
-     * fields, so two threads that race compute the same string.</p>
+     * {@link #id()}, cached: admission asks it per comparison.  Unsynchronized
+     * on purpose; racing threads compute the same string.
      */
     private String id;
 
@@ -69,13 +53,7 @@ public final class OccurrenceAddress {
                 Fields.required(index, "index"));
     }
 
-    /**
-     * Reads {@link #render()}.
-     *
-     * <p>Refuses anything else naming the string: a half-read address is how a
-     * replay ends up answering with an occurrence that is not the planned
-     * one.</p>
-     */
+    /** Reads {@link #render()}; refuses anything else, never half-parses. */
     public static OccurrenceAddress parse(String rendered) {
         String value = rendered == null ? "" : rendered.trim();
         int context = value.indexOf(CONTEXT_MARKER);
@@ -97,12 +75,9 @@ public final class OccurrenceAddress {
     }
 
     /**
-     * Reads a case declaration's v1 selector -- NOT an address.
-     *
-     * <p>Both v1 spellings: {@code node#epochN/region/REGION.x@src#epochM/api#k}
-     * and {@code node#epochN/region/REGION.x#k}.  The node prefix is kept --
-     * two components of one session can run the same region -- and a
-     * declaration written without one selects on every component.</p>
+     * Reads a case's v1 selector ({@code node#epochN/region/REGION.x@api#k}
+     * or {@code .../REGION.x#k}); without a node prefix it selects on every
+     * component.
      */
     public static Selector parseSelector(String v1) {
         String value = v1 == null ? "" : v1.trim();
@@ -148,13 +123,7 @@ public final class OccurrenceAddress {
         return index;
     }
 
-    /**
-     * Whether the scope behind this occurrence was unattributable.
-     *
-     * <p>Derived, not stored: v3 states the degradation as the context's
-     * {@link CausalContext.Lost} form, so there is one place that says it and
-     * the id carries it.</p>
-     */
+    /** Whether the context is {@link CausalContext.Lost} (derived). */
     public boolean lineageLost() {
         return context.isLost();
     }
@@ -164,12 +133,7 @@ public final class OccurrenceAddress {
                 + context.render() + INDEX_MARKER + index.render();
     }
 
-    /**
-     * The id every row joins on.
-     *
-     * <p>Composed from the index's fold rather than its frames, so an id is
-     * constant-size however deep the path was.</p>
-     */
+    /** The id every row joins on; uses the index's fold, so constant-size. */
     public String id() {
         String digested = id;
         if (digested == null) {

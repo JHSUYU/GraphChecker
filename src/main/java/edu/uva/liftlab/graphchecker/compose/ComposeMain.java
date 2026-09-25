@@ -28,15 +28,9 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * COMPOSE, SOLVE and DECIDE for one declared occurrence.
- *
- * <p>One anchor, one query, one claim.  There is no election to make and no
- * ranking to publish: which execution of the annotated site a campaign is
- * about is the case's declaration, and the claim about it is whatever its
- * own formula decided.  There is no VALIDATE stage behind it either (owner
- * ruling): the composed {@code .smt2} and z3's verdicts on it ARE the
- * deliverable, which is why the solving happens here rather than in a
- * separate pass over the artifact.</p>
+ * COMPOSE, SOLVE and DECIDE for one declared occurrence: one anchor, one
+ * query, one claim.  The {@code .smt2} and z3's verdicts on it ARE the
+ * deliverable (no VALIDATE stage).
  *
  * <pre>
  *   --sessions &lt;dir&gt;      the corpus
@@ -49,13 +43,9 @@ import java.util.Map;
  *   --solver-timeout-ms &lt;n&gt; per solver run, default 20000
  * </pre>
  *
- * <p>Every outcome is an artifact.  A declared occurrence no session
- * reached, a corpus with no sessions, a root the case declares nothing
- * about -- each is written out as a claim with the gaps that explain it,
- * because a campaign that loses its answer to an exception has told the
- * reader nothing.  The exit code is 0 whenever the artifacts were written;
- * whether the claim is acceptable is the campaign's question, and it reads
- * it out of them.</p>
+ * <p>Every outcome, failures included, is written as a claim with its gaps,
+ * never an exception; exit 0 means the artifacts were written, not that the
+ * claim is acceptable.</p>
  */
 public final class ComposeMain {
 
@@ -90,9 +80,7 @@ public final class ComposeMain {
     }
 
     public static Result run(Arguments arguments) throws IOException {
-        // The one corpus view, read without the case's root domains: what
-        // the CASE declares is read once, here, and handed to the composer,
-        // so the composition holds one copy of that declaration and not two.
+        // Root domains are read once, here, and handed to the composer only.
         Corpus corpus = Corpus.read(arguments.iteration, null);
         OccurrenceAddress anchor = anchorOf(arguments.anchor, corpus);
         Composer.Composition composition = Composer.compose(corpus, anchor,
@@ -118,19 +106,10 @@ public final class ComposeMain {
     }
 
     /**
-     * The occurrence the case declared: a full id, or a selector.
-     *
-     * <p>Humans do not write execution indexes.  A case declares the v1
-     * spelling -- a node, a region, an api when the request matters, and
-     * which of the matching activations -- and it is resolved HERE, against
-     * the SEED session, because the seed is the recording the declaration
-     * was written about.  What comes out is an OccurrenceId, and everything
-     * downstream corresponds by that id alone.</p>
-     *
-     * <p>A selector that matches nothing is not an exception: it becomes a
-     * degraded address of the region it names, which no session's rows will
-     * equal, so the composition answers DECLARATION_MISSING and the campaign
-     * reads why out of the artifact instead of out of a stack trace.</p>
+     * The declared occurrence (a full id, or a selector resolved against the
+     * SEED session, the recording it was written about).  An unmatched
+     * selector yields a degraded address, so the composition answers
+     * DECLARATION_MISSING instead of throwing.
      */
     static OccurrenceAddress anchorOf(String declared, Corpus corpus) {
         String seed = corpus.seedSessionId();
@@ -140,21 +119,10 @@ public final class ComposeMain {
     }
 
     /**
-     * The composed query, at the valuation the run happened under.
-     *
-     * <p>One file, one named conjunct per assertion, so an unsat core reads
-     * as the list of the things that closed it.  The other valuations
-     * differ from this file by their {@code valuation__*} assertions alone,
-     * and the manifest lists every one of them beside the verdict it got.</p>
-     *
-     * <p>A BLOCKED composition closes the question instead of leaving it
-     * open.  A file with no path in it, or one whose claim a blocking gap
-     * withheld, asserts nothing about the anchor -- and a query that
-     * asserts nothing is satisfiable, so a reader who ran {@code z3} on the
-     * file by hand read "sat" off a composition that had refused to answer.
-     * The blocker is asserted false, so the file answers the way the claim
-     * does, and it is NAMED in the comment beside it, so the reader gets the
-     * reason and not just the verdict.</p>
+     * The composed query at valuation 0 (the run as it happened); other
+     * valuations differ only in their {@code valuation__*} assertions.  A
+     * BLOCKED or pathless composition asserts false with the blocker named,
+     * since an empty query would read "sat" by hand.
      */
     static String candidate(Composer.Composition composition,
                             ClaimPolicy.Decision decision) {
@@ -184,15 +152,8 @@ public final class ComposeMain {
     }
 
     /**
-     * What closed this composition, as one comment line, or "".
-     *
-     * <p>The first BLOCKING gap, by the name it was recorded under: the
-     * manifest and the claim carry every one of them, and this is the one
-     * the file's own verdict is about.  A composition with no path and no
-     * blocking gap is named by the declaration it reached nothing for,
-     * because a refusal nobody can read is the silence the process rules
-     * forbid.  CR and LF are folded to a space: the name rides in a
-     * comment, and a comment is one line.</p>
+     * What closed this composition as one comment line, or "": the first
+     * BLOCKING gap, else (pathless) the claim kind and anchor.
      */
     private static String blocker(Composer.Composition composition,
                                   ClaimPolicy.Decision decision) {
@@ -215,14 +176,7 @@ public final class ComposeMain {
     // The manifest the campaign reads.
     // ------------------------------------------------------------------
 
-    /**
-     * The composition, its claim, and the verdicts the claim was read off.
-     *
-     * <p>The solver's answers live under {@code solver} in the one manifest
-     * rather than in a second artifact: there is one anchor, so there is one
-     * document, and a reader asking "why this claim" never has to join two
-     * files to find out.</p>
-     */
+    /** The composition, its claim, and the solver verdicts, in one document. */
     private static JsonObject manifest(CompositionManifest composed,
                                        Composer.Composition composition,
                                        ClaimPolicy.Decision decision,
@@ -231,16 +185,11 @@ public final class ComposeMain {
         row.addProperty("schemaVersion", 1);
         row.addProperty("kind", "COMPOSITION_MANIFEST");
         row.addProperty("anchor", composition.anchor().render());
-        // The RESOLVED id, beside the render a human reads: exploration and
-        // composition correspond by id, and a reader checking that two runs
-        // anchored on the same occurrence compares this and nothing else.
+        // Runs correspond by the RESOLVED id, not the render.
         row.addProperty("anchorId", composition.anchor().id());
         row.addProperty("seedSessionId",
                 composition.seedSessionId() == null ? ""
                         : composition.seedSessionId());
-        // Every value in the formula was propagated inside some replay and
-        // published as that replay's expression; a cut is named, and a path
-        // that rests on one is not in the disjunction.
         row.addProperty("symbolicPropagationComplete",
                 blocking(decision.claim()) == 0);
         row.addProperty("finalStatus", blocking(decision.claim()) == 0
@@ -271,22 +220,15 @@ public final class ComposeMain {
         row.addProperty("unsatClosureComplete",
                 decided && !anySat && !decision.outcomes().isEmpty());
         row.addProperty("solverRuns", solver.runs());
-        // A model of the declared roots, published without SMT terms.  The
-        // valuation IS the model here: the composer asks one question per
-        // valuation, so a satisfying answer names the values it was asked
-        // about rather than values the solver chose.
+        // One question per valuation, so the valuation IS the model.
         row.add("valuations", valuations(decision));
         row.add("campaignClaim", campaignClaim(decision, anySat, decided));
         return row;
     }
 
     /**
-     * The claim, in the vocabulary acceptance is decided in.
-     *
-     * <p>Two questions, not one.  WHICH MECHANISM the formula supports is
-     * the {@link ClaimKind}; WHETHER the run produced an accepted candidate
-     * is this, and a blocking gap withholds it whatever the mechanism
-     * was.</p>
+     * WHETHER the run produced an accepted candidate (the {@link ClaimKind}
+     * says which mechanism); a blocking gap withholds it regardless.
      */
     private static JsonObject campaignClaim(ClaimPolicy.Decision decision,
                                             boolean anySat, boolean decided) {
@@ -365,12 +307,7 @@ public final class ComposeMain {
                             : outcome.selected().path().sessionId);
             answer.addProperty("fatalObserved", outcome.selected() != null
                     && outcome.selected().fatalObserved());
-            // WHICH DELIVERY this model rested on, per family.  A family is
-            // a case split, so a sat model names one arm of each family the
-            // selected path opened; without this the manifest says a slot
-            // had thirteen alternatives and not which one the witness used,
-            // which is what the harness and the README narrate the causal
-            // chain from.
+            // The arm of each family the model took: the causal chain.
             JsonArray arms = new JsonArray();
             for (Map.Entry<String, ComposedFamilies.ArmChoice> taken
                     : outcome.selectedArms().entrySet()) {
@@ -497,11 +434,7 @@ public final class ComposeMain {
                 values.put(name, value);
             }
             Arguments arguments = new Arguments();
-            // --sessions names <iteration>/sessions, so the iteration is its
-            // parent.  One spelling: --iteration, --target-occurrence and
-            // --out were alternate spellings of these three, passed by
-            // nothing, and an option with two spellings is an option a
-            // reader has to check both of.
+            // --sessions names <iteration>/sessions; one spelling per option.
             Path sessions = path(values.get("sessions"));
             arguments.iteration = sessions == null ? null
                     : sessions.getParent() == null ? sessions
@@ -544,16 +477,7 @@ public final class ComposeMain {
                     : Paths.get(value);
         }
 
-        /**
-         * One numeric option, or its absent value -- never the default for
-         * a bound that WAS passed.
-         *
-         * <p>A campaign that passes {@code --max-valuations 12o} means 120
-         * or 12, and either way it does not mean 64.  Reading a mistyped
-         * bound as the default composes a different query than the one the
-         * run asked for and says nothing about it, so a value that is there
-         * and is not a number is refused by name.</p>
-         */
+        /** One numeric option; a passed non-number is refused, never defaulted. */
         private static int integer(String value, int absent) {
             if (value == null || value.isEmpty()) return absent;
             try {

@@ -10,12 +10,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.trimmed;
 
-/**
- * Canonical parser for Soot field declarations and structured field paths.
- * Deliberately a value parser, not another admission layer: static analysis
- * proves the access site, and Scheduler and Runtime consume that proof
- * through this same representation.
- */
+/** Soot field declaration and field-path parser; a value parser, not an
+ *  admission layer. */
 public final class FieldPathSpec {
     private static final Pattern DECLARED_FIELD = Pattern.compile(
             "<([^:]+):\\s+([^()<>]+)\\s+([^\\s()>]+)>");
@@ -38,15 +34,9 @@ public final class FieldPathSpec {
         return Collections.unmodifiableList(result);
     }
 
-    /**
-     * The dotted label one field path spells, or empty when the path is
-     * empty or any segment is blank.
-     *
-     * <p>Fail-closed on a blank segment: such a path names no field, and a
-     * label built from it - {@code symbol.a..b} - would match an engine
-     * symbol no materialization site ever wrote.  Runtime and Solver build
-     * the same label here so their two answers cannot drift.</p>
-     */
+    /** Dotted label of a field path; "" when empty or any segment is blank. A
+     *  blank segment names no field ({@code a..b} would match no written
+     *  symbol); Runtime and Solver share this so their labels cannot drift. */
     public static String join(List<String> path) {
         if (path == null || path.isEmpty()) return "";
         StringBuilder result = new StringBuilder();
