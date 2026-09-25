@@ -55,10 +55,10 @@ final class LoggedEventSites {
         long id = optionalLongInteger(node, idKey, -1L);
         if (id < 0L) return;
         Logged logged = new Logged(node);
-        if (LOGGED.putIfAbsent(Long.valueOf(id), logged) != null
-                || !logged.states()) {
-            return;
-        }
+        LOGGED.putIfAbsent(Long.valueOf(id), logged);
+        // Every record that states the site files the event, not only the
+        // first to name its id: that one may be a record with no site.
+        if (!logged.states()) return;
         AT_SITE.computeIfAbsent(logged.activation + "|" + logged.site(write),
                 key -> new ConcurrentSkipListSet<Long>()).add(id);
     }
