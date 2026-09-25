@@ -2,7 +2,6 @@ package edu.uva.liftlab.graphchecker.contract;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 
 /**
  * CONTRACT-SPEC 3: one path prefix plus one flipped decision, with the
@@ -10,7 +9,7 @@ import java.util.Objects;
  * {@code answers} keyed by attach {@link Endpoint#id()} (one attach, not a
  * port).  {@code unproducible} attaches are answered anyway and reported.
  */
-public final class Obligation {
+public final class Obligation extends Value {
     private final String obligationId;
     private final String taskId;
     private final String pathId;
@@ -114,24 +113,9 @@ public final class Obligation {
     }
 
     @Override
-    public boolean equals(Object value) {
-        if (this == value) return true;
-        if (!(value instanceof Obligation)) return false;
-        Obligation other = (Obligation) value;
-        return ordinal == other.ordinal
-                && flippedOutcome == other.flippedOutcome
-                && obligationId.equals(other.obligationId)
-                && taskId.equals(other.taskId) && pathId.equals(other.pathId)
-                && siteId.equals(other.siteId)
-                && rootAssignments.equals(other.rootAssignments)
-                && answers.equals(other.answers)
-                && unproducible.equals(other.unproducible);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(obligationId, taskId, pathId, siteId, ordinal,
-                flippedOutcome, rootAssignments, answers, unproducible);
+    Object[] parts() {
+        return new Object[] {obligationId, taskId, pathId, siteId, ordinal,
+                flippedOutcome, rootAssignments, answers, unproducible};
     }
 
     @Override

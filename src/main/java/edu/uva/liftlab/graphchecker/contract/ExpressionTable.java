@@ -3,9 +3,9 @@ package edu.uva.liftlab.graphchecker.contract;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -13,7 +13,7 @@ import java.util.Set;
  * expression object unchanged.  Rows carry refs into this shared DAG, never
  * inlined trees.
  */
-public final class ExpressionTable {
+public final class ExpressionTable extends Value {
     private final Map<String, JsonObject> expressions;
 
     private ExpressionTable(Map<String, JsonObject> expressions) {
@@ -26,7 +26,7 @@ public final class ExpressionTable {
 
     /** The empty table: a session that propagated nothing. */
     public static ExpressionTable empty() {
-        return new ExpressionTable(Fields.<String, JsonObject>copy(null));
+        return new ExpressionTable(Collections.<String, JsonObject>emptyMap());
     }
 
     /** Reads the file's object form: one member per reference. */
@@ -65,15 +65,8 @@ public final class ExpressionTable {
     }
 
     @Override
-    public boolean equals(Object value) {
-        if (this == value) return true;
-        if (!(value instanceof ExpressionTable)) return false;
-        return expressions.equals(((ExpressionTable) value).expressions);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(expressions);
+    Object[] parts() {
+        return new Object[] {expressions};
     }
 
     @Override

@@ -1,12 +1,10 @@
 package edu.uva.liftlab.graphchecker.contract;
 
-import java.util.Objects;
-
 /**
  * CONTRACT-SPEC 1: a component instance and its declared topology epoch,
  * rendered {@code <node>#epoch<N>} (the node name may carry slashes).
  */
-public final class NodeId {
+public final class NodeId extends Value {
     /** The one spelling of the epoch separator. */
     public static final String EPOCH_MARKER = "#epoch";
 
@@ -27,18 +25,12 @@ public final class NodeId {
     public static NodeId parse(String rendered) {
         String value = rendered == null ? "" : rendered.trim();
         int marker = value.lastIndexOf(EPOCH_MARKER);
-        if (marker <= 0 || marker + EPOCH_MARKER.length() >= value.length()) {
+        int epoch = Fields.trailingNumber(value, marker, EPOCH_MARKER.length());
+        if (epoch < 0) {
             throw new IllegalArgumentException(
                     "not a node#epoch<N>: " + rendered);
         }
-        String epoch = value.substring(marker + EPOCH_MARKER.length());
-        for (int index = 0; index < epoch.length(); index++) {
-            if (!Character.isDigit(epoch.charAt(index))) {
-                throw new IllegalArgumentException(
-                        "not a node#epoch<N>: " + rendered);
-            }
-        }
-        return of(value.substring(0, marker), Integer.parseInt(epoch));
+        return of(value.substring(0, marker), epoch);
     }
 
     /** The component instance, without its epoch. */
@@ -51,16 +43,8 @@ public final class NodeId {
     }
 
     @Override
-    public boolean equals(Object value) {
-        if (this == value) return true;
-        if (!(value instanceof NodeId)) return false;
-        NodeId other = (NodeId) value;
-        return epoch == other.epoch && node.equals(other.node);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(node, epoch);
+    Object[] parts() {
+        return new Object[] {node, epoch};
     }
 
     @Override

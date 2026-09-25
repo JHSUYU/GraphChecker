@@ -1,7 +1,5 @@
 package edu.uva.liftlab.graphchecker.contract;
 
-import java.util.Objects;
-
 /**
  * IDENTITY-IMPL A: why an occurrence ran, in exactly three forms (sealed by
  * the private constructor; switch on {@link #form()} exhaustively):
@@ -9,7 +7,7 @@ import java.util.Objects;
  * (k-th workload action or daemon tick per (node, role, api) in the window),
  * {@link Lost} (unattributable; degraded but still an identity).
  */
-public abstract class CausalContext {
+public abstract class CausalContext extends Value {
     /** Which of the three forms a context is. */
     public enum Form {
         ANCHOR,
@@ -135,17 +133,8 @@ public abstract class CausalContext {
         }
 
         @Override
-        public boolean equals(Object value) {
-            if (this == value) return true;
-            if (!(value instanceof Anchor)) return false;
-            Anchor other = (Anchor) value;
-            return producerEndpointId.equals(other.producerEndpointId)
-                    && rpcSite.equals(other.rpcSite);
-        }
-
-        @Override
-        public int hashCode() {
-            return Objects.hash(producerEndpointId, rpcSite);
+        Object[] parts() {
+            return new Object[] {producerEndpointId, rpcSite};
         }
     }
 
@@ -188,17 +177,8 @@ public abstract class CausalContext {
         }
 
         @Override
-        public boolean equals(Object value) {
-            if (this == value) return true;
-            if (!(value instanceof Root)) return false;
-            Root other = (Root) value;
-            return windowIndex == other.windowIndex
-                    && role.equals(other.role) && api.equals(other.api);
-        }
-
-        @Override
-        public int hashCode() {
-            return Objects.hash(role, api, windowIndex);
+        Object[] parts() {
+            return new Object[] {role, api, windowIndex};
         }
     }
 
@@ -225,15 +205,8 @@ public abstract class CausalContext {
         }
 
         @Override
-        public boolean equals(Object value) {
-            if (this == value) return true;
-            if (!(value instanceof Lost)) return false;
-            return role.equals(((Lost) value).role);
-        }
-
-        @Override
-        public int hashCode() {
-            return Objects.hash(Form.LOST, role);
+        Object[] parts() {
+            return new Object[] {Form.LOST, role};
         }
     }
 }

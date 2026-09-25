@@ -2,7 +2,6 @@ package edu.uva.liftlab.graphchecker.contract;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 
 /**
  * CONTRACT-SPEC 4: the conclusion, with what it took and what it stepped
@@ -10,7 +9,7 @@ import java.util.Objects;
  * that was always satisfiable.  Gaps travel with the claim so no report
  * states it without them.
  */
-public final class Claim {
+public final class Claim extends Value {
     private final ClaimKind kind;
     private final int valuationOrdinal;
     private final Map<String, String> movedRoots;
@@ -66,21 +65,9 @@ public final class Claim {
     }
 
     @Override
-    public boolean equals(Object value) {
-        if (this == value) return true;
-        if (!(value instanceof Claim)) return false;
-        Claim other = (Claim) value;
-        return kind == other.kind
-                && valuationOrdinal == other.valuationOrdinal
-                && polarityDecides == other.polarityDecides
-                && movedRoots.equals(other.movedRoots)
-                && gaps.equals(other.gaps);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(kind, valuationOrdinal, movedRoots,
-                polarityDecides, gaps);
+    Object[] parts() {
+        return new Object[] {kind, valuationOrdinal, movedRoots,
+                polarityDecides, gaps};
     }
 
     @Override

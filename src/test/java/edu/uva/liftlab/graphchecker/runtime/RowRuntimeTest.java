@@ -1303,7 +1303,7 @@ public class RowRuntimeTest {
         // addressed from the region, not from the thread's whole stack.
         ExecutionIndex atEntry = Identity.regionEnter();
         assertEquals(3, atEntry.frames().size());
-        assertTrue(Identity.siteIndex().isEmpty());
+        assertTrue(Identity.siteIndex().frames().isEmpty());
         Identity.enterFrame("Region.port()#u2", null);
         assertEquals("Region.port()#u2@0", Identity.siteIndex().render());
 

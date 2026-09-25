@@ -487,21 +487,30 @@ public final class RowInvariants {
                                  Map<String, String> declared) {
         String text = term.trim();
         boolean negated = false;
-        while (text.startsWith("(not ") && text.endsWith(")")) {
+        while (negation(text)) {
             negated = !negated;
-            text = text.substring(5, text.length() - 1).trim();
+            text = operand(text);
         }
         if (!REFERENCE.matcher(text).matches()) return null;
-        Object value = value(session.expressions(),
-                session.expressions().expression(text), declared, 0);
+        Object value = value(session.expressions().expression(text),
+                declared, 0);
         if (!(value instanceof Boolean)) return null;
         boolean held = ((Boolean) value).booleanValue();
         return Boolean.valueOf(negated != held);
     }
 
+    /** Whether a published term is {@code (not <operand>)}. */
+    private static boolean negation(String text) {
+        return text.startsWith("(not ") && text.endsWith(")");
+    }
+
+    private static String operand(String negation) {
+        return negation.substring(5, negation.length() - 1).trim();
+    }
+
     /** One VM expression at the recorded valuation: Boolean, Long or null. */
-    private static Object value(ExpressionTable table, JsonObject node,
-                                Map<String, String> declared, int depth) {
+    private static Object value(JsonObject node, Map<String, String> declared,
+                                int depth) {
         if (node == null || depth > 64) return null;
         String type = primitiveString(node, "_type");
         if ("SymbolExpression".equals(type)) {
@@ -516,18 +525,16 @@ public final class RowInvariants {
                     : (Object) Long.valueOf(value.group(2));
         }
         if ("ConsumerBoundaryExpression".equals(type)) {
-            return value(table, object(node, "expression"), declared,
-                    depth + 1);
+            return value(object(node, "expression"), declared, depth + 1);
         }
         if ("ReadFromExpression".equals(type)) {
             // What the read returned is what the write it observed stated.
-            return value(table, object(object(node, "observedVersion"),
+            return value(object(object(node, "observedVersion"),
                     "expression"), declared, depth + 1);
         }
         if (!"BinaryExpression".equals(type)) return null;
-        Object left = value(table, object(node, "_left"), declared, depth + 1);
-        Object right = value(table, object(node, "_right"), declared,
-                depth + 1);
+        Object left = value(object(node, "_left"), declared, depth + 1);
+        Object right = value(object(node, "_right"), declared, depth + 1);
         if (left == null || right == null) return null;
         return apply(primitiveString(node, "_op"), left, right);
     }
@@ -826,8 +833,8 @@ public final class RowInvariants {
     private static void cite(SessionReader session, String term,
                              Map<String, String> where, String place) {
         String text = term.trim();
-        while (text.startsWith("(not ") && text.endsWith(")")) {
-            text = text.substring(5, text.length() - 1).trim();
+        while (negation(text)) {
+            text = operand(text);
         }
         if (text.isEmpty()) return;
         Set<String> symbols = new LinkedHashSet<String>();

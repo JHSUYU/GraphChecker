@@ -1,7 +1,5 @@
 package edu.uva.liftlab.graphchecker.contract;
 
-import java.util.Objects;
-
 /**
  * IDENTITY-IMPL A and D: what a case declaration selects, before resolution
  * ({@link OccurrenceAddress#parseSelector}).  This type answers only "is this
@@ -9,7 +7,7 @@ import java.util.Objects;
  * node is optional but kept when spelled.  Never an address: only resolved
  * ids reach exploration and composition.
  */
-public final class Selector {
+public final class Selector extends Value {
     private final String regionId;
     private final String api;
     private final int k;
@@ -31,7 +29,7 @@ public final class Selector {
         return regionId;
     }
 
-    /** The v1 {@code <source>#epoch<N>/<api>} segment, or {@code null}. */
+    /** The selector's {@code @api} segment, or {@code null}. */
     public String api() {
         return api;
     }
@@ -69,18 +67,8 @@ public final class Selector {
     }
 
     @Override
-    public boolean equals(Object value) {
-        if (this == value) return true;
-        if (!(value instanceof Selector)) return false;
-        Selector other = (Selector) value;
-        return k == other.k && regionId.equals(other.regionId)
-                && Objects.equals(api, other.api)
-                && Objects.equals(node, other.node);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(regionId, api, k, node);
+    Object[] parts() {
+        return new Object[] {regionId, api, k, node};
     }
 
     @Override

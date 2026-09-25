@@ -25,6 +25,5 @@ public final class GraphCheckerOptions {
 
     public String getOutputDir() { return outputDir; }
 
-
     public String[] getArgs() { return args; }
 }

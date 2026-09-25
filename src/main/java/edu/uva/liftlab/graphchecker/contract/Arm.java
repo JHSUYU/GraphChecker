@@ -1,6 +1,5 @@
 package edu.uva.liftlab.graphchecker.contract;
 
-import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -10,7 +9,7 @@ import java.util.Set;
  * {@code attested} (INTERACTION-ID R-I5): only a run with a recorded path
  * condition may carry a root move.
  */
-public final class Arm {
+public final class Arm extends Value {
     private final String producerPathId;
     private final String piRef;
     private final String expressionRef;
@@ -51,21 +50,9 @@ public final class Arm {
     }
 
     @Override
-    public boolean equals(Object value) {
-        if (this == value) return true;
-        if (!(value instanceof Arm)) return false;
-        Arm other = (Arm) value;
-        return attested == other.attested
-                && producerPathId.equals(other.producerPathId)
-                && piRef.equals(other.piRef)
-                && expressionRef.equals(other.expressionRef)
-                && guardRoots.equals(other.guardRoots);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(producerPathId, piRef, expressionRef, guardRoots,
-                attested);
+    Object[] parts() {
+        return new Object[] {producerPathId, piRef, expressionRef, guardRoots,
+                attested};
     }
 
     @Override

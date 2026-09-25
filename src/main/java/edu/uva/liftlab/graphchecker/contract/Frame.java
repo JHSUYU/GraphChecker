@@ -1,14 +1,12 @@
 package edu.uva.liftlab.graphchecker.contract;
 
-import java.util.Objects;
-
 /**
  * IDENTITY-IMPL A: one execution-index frame -- static {@code callSite}
  * ({@code class#method#bci}) and {@code iteration}, the k-th entry of that
  * site in the enclosing frame ({@code runtime.Identity}).  A call site
  * carries neither {@code /} nor {@code @}, so an index parses back exactly.
  */
-public final class Frame {
+public final class Frame extends Value {
     private final String callSite;
     private final int iteration;
 
@@ -30,18 +28,12 @@ public final class Frame {
     public static Frame parse(String rendered) {
         String value = rendered == null ? "" : rendered.trim();
         int marker = value.lastIndexOf('@');
-        if (marker <= 0 || marker + 1 >= value.length()) {
+        int iteration = Fields.trailingNumber(value, marker, 1);
+        if (iteration < 0) {
             throw new IllegalArgumentException(
                     "not a <callSite>@<iteration>: " + rendered);
         }
-        String iteration = value.substring(marker + 1);
-        for (int index = 0; index < iteration.length(); index++) {
-            if (!Character.isDigit(iteration.charAt(index))) {
-                throw new IllegalArgumentException(
-                        "not a <callSite>@<iteration>: " + rendered);
-            }
-        }
-        return of(value.substring(0, marker), Integer.parseInt(iteration));
+        return of(value.substring(0, marker), iteration);
     }
 
     /** The static call site: {@code class#method#bci}. */
@@ -59,16 +51,8 @@ public final class Frame {
     }
 
     @Override
-    public boolean equals(Object value) {
-        if (this == value) return true;
-        if (!(value instanceof Frame)) return false;
-        Frame other = (Frame) value;
-        return iteration == other.iteration && callSite.equals(other.callSite);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(callSite, iteration);
+    Object[] parts() {
+        return new Object[] {callSite, iteration};
     }
 
     @Override

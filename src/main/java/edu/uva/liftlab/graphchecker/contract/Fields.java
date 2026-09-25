@@ -49,6 +49,20 @@ final class Fields {
         return value;
     }
 
+    /**
+     * The number spelled after the marker at {@code marker} (of
+     * {@code markerLength} chars) to the end of {@code value}; -1 unless the
+     * marker is past index 0 and followed by digits only.
+     */
+    static int trailingNumber(String value, int marker, int markerLength) {
+        int start = marker + markerLength;
+        if (marker <= 0 || start >= value.length()) return -1;
+        for (int index = start; index < value.length(); index++) {
+            if (!Character.isDigit(value.charAt(index))) return -1;
+        }
+        return Integer.parseInt(value.substring(start));
+    }
+
     /** {@code value}, refusing anything below 0, naming {@code field}. */
     static long nonNegative(long value, String field) {
         if (value < 0) {

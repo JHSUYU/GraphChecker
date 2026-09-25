@@ -1,7 +1,6 @@
 package edu.uva.liftlab.graphchecker.contract;
 
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
-import java.util.Objects;
 
 /**
  * IDENTITY-IMPL A: one side of an interaction, {@code (occurrence, site,
@@ -12,7 +11,7 @@ import java.util.Objects;
  * spelled only by {@link #stateSite}, so writer and joiner cannot drift.
  * One endpoint does not identify an {@link Interaction}.</p>
  */
-public final class Endpoint {
+public final class Endpoint extends Value {
     private final OccurrenceAddress occurrence;
     private final String site;
     private final ExecutionIndex siteIndex;
@@ -77,6 +76,13 @@ public final class Endpoint {
         return attempt;
     }
 
+    /**
+     * Trap: this digest is recursive (occurrence -> Anchor context ->
+     * producer endpoint -> its occurrence), so one unreproduced link changes
+     * the id.  Do not truncate the chain: producers that differ only in their
+     * chain then collide (TOPOLOGY_DIVERGENCE).  The open fix is a
+     * reproducible per-message ordinal digested in place of the chain.
+     */
     public String id() {
         String digested = id;
         if (digested == null) {
@@ -87,12 +93,6 @@ public final class Endpoint {
         return digested;
     }
 
-    // Trap: this digest is recursive (occurrence -> Anchor context ->
-    // producer endpoint -> its occurrence), so one unreproduced link changes
-    // the id.  Do not truncate the chain: producers that differ only in their
-    // chain then collide (TOPOLOGY_DIVERGENCE).  The open fix is a
-    // reproducible per-message ordinal digested in place of the chain.
-
     /** The canonical spelling, for reports and refusals. */
     public String render() {
         return occurrence.render() + "/site:" + site + "/sidx:"
@@ -100,18 +100,8 @@ public final class Endpoint {
     }
 
     @Override
-    public boolean equals(Object value) {
-        if (this == value) return true;
-        if (!(value instanceof Endpoint)) return false;
-        Endpoint other = (Endpoint) value;
-        return attempt == other.attempt && site.equals(other.site)
-                && siteIndex.equals(other.siteIndex)
-                && occurrence.equals(other.occurrence);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(occurrence, site, siteIndex, attempt);
+    Object[] parts() {
+        return new Object[] {occurrence, site, siteIndex, attempt};
     }
 
     @Override

@@ -4,7 +4,7 @@ import edu.uva.liftlab.graphchecker.runtime.ConcolicRegionRuntime;
 
 /** Explicit symbolic inputs understood by GraphChecker's selective replay. */
 public final class Debug {
-    public static final String BOOLEAN_MARKER_SIGNATURE =
+    private static final String BOOLEAN_MARKER_SIGNATURE =
             "<edu.uva.liftlab.graphchecker.annotation.Debug: "
                     + "boolean makeSymbolicBoolean(java.lang.String)>";
 

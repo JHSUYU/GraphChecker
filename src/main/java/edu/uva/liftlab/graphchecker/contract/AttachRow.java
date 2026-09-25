@@ -1,7 +1,5 @@
 package edu.uva.liftlab.graphchecker.contract;
 
-import java.util.Objects;
-
 /**
  * CONTRACT-SPEC 2: a value a consumer endpoint took off the wire.
  * {@code symbol} is the handoff control {@code v_H}, minted at every declared
@@ -11,7 +9,7 @@ import java.util.Objects;
  * paired it (not equal evidence, INTERACTION-ID SS1); null means unstated,
  * not unpaired.
  */
-public final class AttachRow {
+public final class AttachRow extends Value {
     private final String sessionId;
     private final long seq;
     private final Endpoint endpoint;
@@ -116,26 +114,10 @@ public final class AttachRow {
     }
 
     @Override
-    public boolean equals(Object value) {
-        if (this == value) return true;
-        if (!(value instanceof AttachRow)) return false;
-        AttachRow other = (AttachRow) value;
-        return seq == other.seq && answered == other.answered
-                && sessionId.equals(other.sessionId)
-                && endpoint.equals(other.endpoint)
-                && symbol.equals(other.symbol)
-                && javaType.equals(other.javaType)
-                && arrival.equals(other.arrival)
-                && Objects.equals(answeredValue, other.answeredValue)
-                && Objects.equals(producer, other.producer)
-                && Objects.equals(pairedBy, other.pairedBy)
-                && correlationId.equals(other.correlationId);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(sessionId, seq, endpoint, symbol, javaType, arrival,
-                answered, answeredValue, producer, correlationId, pairedBy);
+    Object[] parts() {
+        return new Object[] {sessionId, seq, endpoint, symbol, javaType,
+                arrival, answered, answeredValue, producer, correlationId,
+                pairedBy};
     }
 
     @Override

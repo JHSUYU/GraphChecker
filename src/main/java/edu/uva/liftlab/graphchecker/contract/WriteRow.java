@@ -1,13 +1,11 @@
 package edu.uva.liftlab.graphchecker.contract;
 
-import java.util.Objects;
-
 /**
  * CONTRACT-SPEC 2: one write, the producer half of a STATE interaction.
  * {@code version} joins reads within a run; across runs the endpoint is the
  * identity (INTERACTION-ID R-I4).
  */
-public final class WriteRow {
+public final class WriteRow extends Value {
     private final String sessionId;
     private final long seq;
     private final Endpoint endpoint;
@@ -71,22 +69,9 @@ public final class WriteRow {
     }
 
     @Override
-    public boolean equals(Object value) {
-        if (this == value) return true;
-        if (!(value instanceof WriteRow)) return false;
-        WriteRow other = (WriteRow) value;
-        return seq == other.seq && version == other.version
-                && sessionId.equals(other.sessionId)
-                && endpoint.equals(other.endpoint)
-                && location.equals(other.location)
-                && expressionRef.equals(other.expressionRef)
-                && javaType.equals(other.javaType);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(sessionId, seq, endpoint, location, version,
-                expressionRef, javaType);
+    Object[] parts() {
+        return new Object[] {sessionId, seq, endpoint, location, version,
+                expressionRef, javaType};
     }
 
     @Override

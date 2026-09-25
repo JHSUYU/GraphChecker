@@ -1,14 +1,12 @@
 package edu.uva.liftlab.graphchecker.contract;
 
-import java.util.Objects;
-
 /**
  * CONTRACT-SPEC 2: a value a producer endpoint put on the wire, {@code e_p}
  * in the {@link ExpressionTable}.  {@code seq} is where the producer's path
  * condition is cut; the sort comes from {@code javaType}, never from the
  * recorded characters.
  */
-public final class ExportRow {
+public final class ExportRow extends Value {
     private final String sessionId;
     private final long seq;
     private final Endpoint endpoint;
@@ -72,22 +70,9 @@ public final class ExportRow {
     }
 
     @Override
-    public boolean equals(Object value) {
-        if (this == value) return true;
-        if (!(value instanceof ExportRow)) return false;
-        ExportRow other = (ExportRow) value;
-        return seq == other.seq && handle == other.handle
-                && sessionId.equals(other.sessionId)
-                && endpoint.equals(other.endpoint)
-                && expressionRef.equals(other.expressionRef)
-                && javaType.equals(other.javaType)
-                && recordedValue.equals(other.recordedValue);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(sessionId, seq, endpoint, expressionRef, javaType,
-                handle, recordedValue);
+    Object[] parts() {
+        return new Object[] {sessionId, seq, endpoint, expressionRef, javaType,
+                handle, recordedValue};
     }
 
     @Override

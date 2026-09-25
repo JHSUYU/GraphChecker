@@ -1,14 +1,13 @@
 package edu.uva.liftlab.graphchecker.contract;
 
 import java.util.List;
-import java.util.Objects;
 
 /**
  * CONTRACT-SPEC 4: every arm one interaction's control could have carried,
  * keyed by interaction id (INTERACTION-ID R-I2).  An armless family is
  * reported, never filled with an invented disjunct.
  */
-public final class Family {
+public final class Family extends Value {
     private final String interactionId;
     private final List<Arm> arms;
 
@@ -31,17 +30,8 @@ public final class Family {
     }
 
     @Override
-    public boolean equals(Object value) {
-        if (this == value) return true;
-        if (!(value instanceof Family)) return false;
-        Family other = (Family) value;
-        return interactionId.equals(other.interactionId)
-                && arms.equals(other.arms);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(interactionId, arms);
+    Object[] parts() {
+        return new Object[] {interactionId, arms};
     }
 
     @Override

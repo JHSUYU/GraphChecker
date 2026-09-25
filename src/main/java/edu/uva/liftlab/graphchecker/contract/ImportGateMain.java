@@ -20,7 +20,7 @@ import java.util.Map;
  * IMPORT's gate: the row contract, checked before any stage reads a row.
  *
  * <pre>
- *   --sessions &lt;dir&gt;       the epoch's sessions/ (or --iteration, parent)
+ *   --sessions &lt;dir&gt;       the epoch's sessions/
  *   --out &lt;file&gt;           campaign_gaps.jsonl, appended to
  *   --topology-epoch &lt;id&gt;  the epoch these sessions belong to
  * </pre>
@@ -37,16 +37,11 @@ public final class ImportGateMain {
     public static void main(String[] argv) throws Exception {
         LongOptions options = LongOptions.parse(argv);
         Path sessions = options.path("sessions");
-        Path iteration = options.path("iteration");
-        if (iteration == null && sessions != null) {
-            iteration = sessions.getParent();
-        }
+        Path iteration = sessions == null ? null : sessions.getParent();
         if (iteration == null) {
-            throw new IllegalArgumentException(
-                    "Missing --sessions (or --iteration)");
+            throw new IllegalArgumentException("Missing --sessions");
         }
         Path out = options.path("out");
-        if (out == null) out = options.path("gaps");
         if (out == null) {
             throw new IllegalArgumentException("Missing --out");
         }

@@ -7,13 +7,12 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.Objects;
 
 /**
  * CONTRACT-SPEC 2: the file layout of one replay session,
  * {@code <iteration>/sessions/<sessionId>/}, one JSONL file per row kind.
  */
-public final class SessionDir {
+public final class SessionDir extends Value {
     public static final String SESSIONS = "sessions";
     public static final String ACTIVATIONS = "activations.jsonl";
     public static final String DECISIONS = "decisions.jsonl";
@@ -145,15 +144,8 @@ public final class SessionDir {
     }
 
     @Override
-    public boolean equals(Object value) {
-        if (this == value) return true;
-        if (!(value instanceof SessionDir)) return false;
-        return dir.equals(((SessionDir) value).dir);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(dir);
+    Object[] parts() {
+        return new Object[] {dir};
     }
 
     @Override

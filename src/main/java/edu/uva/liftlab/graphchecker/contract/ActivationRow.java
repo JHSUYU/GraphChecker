@@ -1,7 +1,5 @@
 package edu.uva.liftlab.graphchecker.contract;
 
-import java.util.Objects;
-
 /**
  * CONTRACT-SPEC 2: one activation a replay session entered, with its address.
  * {@code focused}: ran symbolically as the task's region (others run
@@ -13,7 +11,7 @@ import java.util.Objects;
  * {@link CausalContext.Anchor}; anything else is concurrent.  Re-add the edge
  * only with a producer that publishes it.</p>
  */
-public final class ActivationRow {
+public final class ActivationRow extends Value {
     private final String sessionId;
     private final OccurrenceAddress occurrence;
     private final String taskId;
@@ -69,22 +67,9 @@ public final class ActivationRow {
     }
 
     @Override
-    public boolean equals(Object value) {
-        if (this == value) return true;
-        if (!(value instanceof ActivationRow)) return false;
-        ActivationRow other = (ActivationRow) value;
-        return focused == other.focused
-                && instrumented == other.instrumented
-                && sessionId.equals(other.sessionId)
-                && occurrence.equals(other.occurrence)
-                && taskId.equals(other.taskId)
-                && threadKey.equals(other.threadKey);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(sessionId, occurrence, taskId, focused,
-                instrumented, threadKey);
+    Object[] parts() {
+        return new Object[] {sessionId, occurrence, taskId, focused,
+                instrumented, threadKey};
     }
 
     @Override

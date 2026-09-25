@@ -169,9 +169,9 @@ public class GraphCheckerMain {
         Scene.v().addBasicClass("java.lang.String[]", SootClass.HIERARCHY);
     }
 
-    static void splitProcessDirs(Collection<String> processDirs,
-                                 List<String> productionDirs,
-                                 List<String> testDirs) {
+    private static void splitProcessDirs(Collection<String> processDirs,
+                                         List<String> productionDirs,
+                                         List<String> testDirs) {
         for (String directory : processDirs) {
             File path = new File(directory);
             if ("test-classes".equals(path.getName())) {
@@ -230,7 +230,7 @@ public class GraphCheckerMain {
         return false;
     }
 
-    static String expandClassPath(String classPath) {
+    private static String expandClassPath(String classPath) {
         if (classPath == null || classPath.trim().isEmpty()) {
             return classPath;
         }

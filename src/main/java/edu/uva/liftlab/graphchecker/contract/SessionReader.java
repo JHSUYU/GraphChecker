@@ -88,20 +88,10 @@ public final class SessionReader {
         partial.rows(dir.gaps(), RowCodec::readGap);
         List<ObligationResult> obligations = partial.rows(dir.obligations(),
                 RowCodec::readObligationResult);
-        ExpressionTable expressions;
-        try {
-            expressions = RowCodec.readExpressions(dir.expressions());
-        } catch (RuntimeException unreadable) {
-            partial.note(dir.expressions(), unreadable);
-            expressions = ExpressionTable.empty();
-        }
-        SessionManifest manifest;
-        try {
-            manifest = RowCodec.readManifest(dir.manifest());
-        } catch (RuntimeException unstated) {
-            partial.note(dir.manifest(), unstated);
-            manifest = null;
-        }
+        ExpressionTable expressions = partial.read(dir.expressions(),
+                RowCodec::readExpressions, ExpressionTable.empty());
+        SessionManifest manifest = partial.read(dir.manifest(),
+                RowCodec::readManifest, null);
         return new SessionReader(dir, activations, decisions, exports,
                 attaches, writes, reads, roots, targets, obligations,
                 expressions, manifest, partial.reason);
@@ -113,20 +103,29 @@ public final class SessionReader {
 
         private <T> List<T> rows(Path file, Function<JsonObject, T> reader)
                 throws IOException {
-            try {
-                return RowCodec.readAll(file, reader);
-            } catch (RuntimeException unreadable) {
-                note(file, unreadable);
-                return new ArrayList<T>();
-            }
+            return read(file, path -> RowCodec.readAll(path, reader),
+                    Collections.<T>emptyList());
         }
 
-        private void note(Path file, RuntimeException unreadable) {
-            if (!reason.isEmpty()) return;
-            Path name = file.getFileName();
-            reason = (name == null ? file.toString() : name.toString())
-                    + " could not be read: " + unreadable.getMessage();
+        /** The file as {@code reader} reads it, else {@code unread}. */
+        private <T> T read(Path file, PathReader<T> reader, T unread)
+                throws IOException {
+            try {
+                return reader.read(file);
+            } catch (RuntimeException unreadable) {
+                if (reason.isEmpty()) {
+                    Path name = file.getFileName();
+                    reason = (name == null ? file.toString()
+                            : name.toString()) + " could not be read: "
+                            + unreadable.getMessage();
+                }
+                return unread;
+            }
         }
+    }
+
+    private interface PathReader<T> {
+        T read(Path file) throws IOException;
     }
 
     /**

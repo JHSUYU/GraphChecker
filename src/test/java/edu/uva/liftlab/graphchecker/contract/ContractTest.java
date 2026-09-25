@@ -71,7 +71,7 @@ public class ContractTest {
                 OccurrenceAddress.parse(anchored.render()).id());
         assertEquals(16, anchored.id().length());
         assertFalse(anchored.lineageLost());
-        assertEquals(3, anchored.index().depth());
+        assertEquals(3, anchored.index().frames().size());
 
         // A daemon tick has no incoming message, only its role and the k-th
         // tick of that role inside the window.
@@ -300,7 +300,7 @@ public class ContractTest {
         assertEquals(site, back.endpoint().siteIndex());
         assertEquals(9L, back.seq());
         assertEquals("I", back.javaType());
-        assertEquals(3, back.endpoint().occurrence().index().depth());
+        assertEquals(3, back.endpoint().occurrence().index().frames().size());
         assertTrue(RowCodec.readRootMint(reline(RowCodec.writeRootMint(minted)))
                 .occurrence().lineageLost());
         assertEquals(2L, RowCodec.readRootMint(

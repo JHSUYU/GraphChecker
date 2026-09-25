@@ -1,7 +1,6 @@
 package edu.uva.liftlab.graphchecker.contract;
 
 import java.util.Map;
-import java.util.Objects;
 
 /**
  * CONTRACT-SPEC 2: one branch the focused region decided.  {@code
@@ -9,7 +8,7 @@ import java.util.Objects;
  * assertion.  {@code seq} cuts a producer's path condition at its export, so a
  * consumer never conditions on a branch taken after the send.
  */
-public final class DecisionRow {
+public final class DecisionRow extends Value {
     private final String sessionId;
     private final long seq;
     private final OccurrenceAddress occurrence;
@@ -83,22 +82,9 @@ public final class DecisionRow {
     }
 
     @Override
-    public boolean equals(Object value) {
-        if (this == value) return true;
-        if (!(value instanceof DecisionRow)) return false;
-        DecisionRow other = (DecisionRow) value;
-        return seq == other.seq && ordinal == other.ordinal
-                && outcome == other.outcome
-                && sessionId.equals(other.sessionId)
-                && occurrence.equals(other.occurrence)
-                && siteId.equals(other.siteId) && term.equals(other.term)
-                && clockReadings.equals(other.clockReadings);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(sessionId, seq, occurrence, siteId, ordinal,
-                outcome, term, clockReadings);
+    Object[] parts() {
+        return new Object[] {sessionId, seq, occurrence, siteId, ordinal,
+                outcome, term, clockReadings};
     }
 
     @Override

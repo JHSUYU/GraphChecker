@@ -11,7 +11,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.Objects;
 
 /**
  * CONTRACT-SPEC 4: how far a root may move, as absolute bounds.  A root with
@@ -20,7 +19,7 @@ import java.util.Objects;
  * {@link #resolved} the one join with a mint, so the two consumers cannot
  * disagree.  A refused bound is {@code null}, never {@code ""}.
  */
-public final class RootDomain {
+public final class RootDomain extends Value {
     private final String rootId;
     private final RootKind kind;
     private final String recordedValue;
@@ -87,7 +86,7 @@ public final class RootDomain {
      * One bound as an absolute value: itself, or {@code +k}/{@code -k} from
      * the recorded reading.  {@code null} when either is not integral.
      */
-    public static String resolve(String bound, String recorded) {
+    private static String resolve(String bound, String recorded) {
         String stated = bound == null ? "" : bound.trim();
         if (stated.isEmpty()) return null;
         if (!stated.startsWith("+") && !stated.startsWith("-")) {
@@ -133,19 +132,8 @@ public final class RootDomain {
     }
 
     @Override
-    public boolean equals(Object value) {
-        if (this == value) return true;
-        if (!(value instanceof RootDomain)) return false;
-        RootDomain other = (RootDomain) value;
-        return kind == other.kind && rootId.equals(other.rootId)
-                && recordedValue.equals(other.recordedValue)
-                && Objects.equals(min, other.min)
-                && Objects.equals(max, other.max);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(rootId, kind, recordedValue, min, max);
+    Object[] parts() {
+        return new Object[] {rootId, kind, recordedValue, min, max};
     }
 
     @Override

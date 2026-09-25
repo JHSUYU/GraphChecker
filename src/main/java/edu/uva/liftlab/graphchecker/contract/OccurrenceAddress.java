@@ -1,7 +1,6 @@
 package edu.uva.liftlab.graphchecker.contract;
 
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
-import java.util.Objects;
 
 /**
  * IDENTITY-IMPL A: the one address of a region occurrence,
@@ -16,7 +15,7 @@ import java.util.Objects;
  * scheduler resolves against the seed; it never becomes an address by
  * parsing.</p>
  */
-public final class OccurrenceAddress {
+public final class OccurrenceAddress extends Value {
     /** The one spelling of the region separator in a rendered address. */
     public static final String REGION_MARKER = "/region/";
     private static final String CONTEXT_MARKER = "/ctx:";
@@ -88,15 +87,9 @@ public final class OccurrenceAddress {
         NodeId node = region == 0 ? null
                 : NodeId.parse(value.substring(0, region));
         String tail = value.substring(region + REGION_MARKER.length());
-        int ordinal = tail.length() - 1;
-        while (ordinal >= 0 && Character.isDigit(tail.charAt(ordinal))) {
-            ordinal--;
-        }
-        if (ordinal < 0 || ordinal == tail.length() - 1
-                || tail.charAt(ordinal) != '#' || ordinal == 0) {
-            throw malformed(v1, "no trailing #k");
-        }
-        int k = Integer.parseInt(tail.substring(ordinal + 1));
+        int ordinal = tail.lastIndexOf('#');
+        int k = Fields.trailingNumber(tail, ordinal, 1);
+        if (k < 0) throw malformed(v1, "no trailing #k");
         String head = tail.substring(0, ordinal);
         int at = head.indexOf('@');
         return at < 0 ? Selector.of(head, null, k, node)
@@ -145,18 +138,8 @@ public final class OccurrenceAddress {
     }
 
     @Override
-    public boolean equals(Object value) {
-        if (this == value) return true;
-        if (!(value instanceof OccurrenceAddress)) return false;
-        OccurrenceAddress other = (OccurrenceAddress) value;
-        return node.equals(other.node) && regionId.equals(other.regionId)
-                && context.equals(other.context)
-                && index.equals(other.index);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(node, regionId, context, index);
+    Object[] parts() {
+        return new Object[] {node, regionId, context, index};
     }
 
     @Override

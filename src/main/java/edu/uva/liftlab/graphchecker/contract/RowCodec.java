@@ -545,8 +545,8 @@ public final class RowCodec {
     }
 
     private static JsonElement member(JsonObject json, String name) {
-        JsonElement value = json == null ? null : json.get(name);
-        if (value == null || value.isJsonNull()) {
+        JsonElement value = optional(json, name);
+        if (value == null) {
             throw new IllegalArgumentException("row states no " + name);
         }
         return value;
@@ -557,9 +557,8 @@ public final class RowCodec {
     }
 
     private static String optionalString(JsonObject json, String name) {
-        JsonElement value = json == null ? null : json.get(name);
-        return value == null || value.isJsonNull() ? null
-                : value.getAsString();
+        JsonElement value = optional(json, name);
+        return value == null ? null : value.getAsString();
     }
 
     private static boolean bool(JsonObject json, String name) {
@@ -583,8 +582,13 @@ public final class RowCodec {
     }
 
     private static JsonObject optionalObject(JsonObject json, String name) {
+        JsonElement value = optional(json, name);
+        return value == null ? null : value.getAsJsonObject();
+    }
+
+    /** The member, or null when absent or JSON null. */
+    private static JsonElement optional(JsonObject json, String name) {
         JsonElement value = json == null ? null : json.get(name);
-        return value == null || value.isJsonNull() ? null
-                : value.getAsJsonObject();
+        return value == null || value.isJsonNull() ? null : value;
     }
 }

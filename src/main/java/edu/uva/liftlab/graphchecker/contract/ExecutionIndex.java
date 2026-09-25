@@ -4,7 +4,6 @@ import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.Objects;
 
 /**
  * IDENTITY-IMPL A: where in a component's control structure a point is --
@@ -13,7 +12,7 @@ import java.util.Objects;
  * {@code fold(h, f) = sha16(h + "/" + f.callSite + "@" + f.iteration)}.  The
  * runtime folds incrementally with the same function.
  */
-public final class ExecutionIndex {
+public final class ExecutionIndex extends Value {
     /** The fold's seed: the hash of the index with no frames at all. */
     private static final String SEED = ArtifactIO.digest("", 16);
 
@@ -68,14 +67,6 @@ public final class ExecutionIndex {
         return hash;
     }
 
-    public int depth() {
-        return frames.size();
-    }
-
-    public boolean isEmpty() {
-        return frames.isEmpty();
-    }
-
     public String render() {
         StringBuilder rendered = new StringBuilder();
         for (Frame frame : frames) {
@@ -91,15 +82,8 @@ public final class ExecutionIndex {
     }
 
     @Override
-    public boolean equals(Object value) {
-        if (this == value) return true;
-        if (!(value instanceof ExecutionIndex)) return false;
-        return frames.equals(((ExecutionIndex) value).frames);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(frames);
+    Object[] parts() {
+        return new Object[] {frames};
     }
 
     @Override

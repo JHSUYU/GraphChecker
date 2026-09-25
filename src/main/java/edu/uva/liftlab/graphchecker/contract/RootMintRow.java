@@ -1,14 +1,12 @@
 package edu.uva.liftlab.graphchecker.contract;
 
-import java.util.Objects;
-
 /**
  * CONTRACT-SPEC 2: a root the session minted, with its domain already
  * resolved to absolute bounds (both null: pinned).  An undeclared root is
  * evidence, not a degree of freedom.  {@code seq} keeps a root minted after an
  * export from being read as carried by it.
  */
-public final class RootMintRow {
+public final class RootMintRow extends Value {
     private final String sessionId;
     private final long seq;
     private final OccurrenceAddress occurrence;
@@ -101,24 +99,9 @@ public final class RootMintRow {
     }
 
     @Override
-    public boolean equals(Object value) {
-        if (this == value) return true;
-        if (!(value instanceof RootMintRow)) return false;
-        RootMintRow other = (RootMintRow) value;
-        return seq == other.seq && declared == other.declared
-                && kind == other.kind
-                && sessionId.equals(other.sessionId)
-                && occurrence.equals(other.occurrence)
-                && rootId.equals(other.rootId) && symbol.equals(other.symbol)
-                && recordedValue.equals(other.recordedValue)
-                && Objects.equals(domainMin, other.domainMin)
-                && Objects.equals(domainMax, other.domainMax);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(sessionId, seq, occurrence, rootId, symbol, kind,
-                recordedValue, domainMin, domainMax, declared);
+    Object[] parts() {
+        return new Object[] {sessionId, seq, occurrence, rootId, symbol, kind,
+                recordedValue, domainMin, domainMax, declared};
     }
 
     @Override

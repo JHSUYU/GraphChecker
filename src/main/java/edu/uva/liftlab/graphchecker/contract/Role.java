@@ -1,7 +1,6 @@
 package edu.uva.liftlab.graphchecker.contract;
 
 import java.util.Locale;
-import java.util.Objects;
 
 /**
  * CONTRACT-SPEC 1: the scope kind a lineage hop ran under, as the workload
@@ -9,7 +8,7 @@ import java.util.Objects;
  * own kinds are constants.  Never a thread id or name: those are timing
  * facts (IDENTITY-V3 §1).
  */
-public final class Role {
+public final class Role extends Value {
     /** A hop this run could not attribute; the address says so. */
     public static final Role UNKNOWN = new Role("UNKNOWN");
     /** The workload's own action: the root a request descends from. */
@@ -53,14 +52,8 @@ public final class Role {
     }
 
     @Override
-    public boolean equals(Object value) {
-        return this == value || value instanceof Role
-                && name.equals(((Role) value).name);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(name);
+    Object[] parts() {
+        return new Object[] {name};
     }
 
     @Override

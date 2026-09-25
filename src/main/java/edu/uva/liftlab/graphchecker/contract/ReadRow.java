@@ -1,13 +1,11 @@
 package edu.uva.liftlab.graphchecker.contract;
 
-import java.util.Objects;
-
 /**
  * CONTRACT-SPEC 2: one read, the consumer half of a STATE interaction.  An
  * unknown {@code observedVersion} is -1, never 0: a wrong join is a
  * fabricated causal edge.
  */
-public final class ReadRow {
+public final class ReadRow extends Value {
     /** The version of a read the run could not attribute. */
     public static final long UNKNOWN_VERSION = -1L;
 
@@ -43,7 +41,7 @@ public final class ReadRow {
                 javaType, concreteValue, UNKNOWN_VERSION);
     }
 
-    /** CONTRACT v2.4: the same row, stating the mint's own version. */
+    /** The same row, stating the mint's own version. */
     public static ReadRow of(String sessionId, long seq, Endpoint endpoint,
                              LocationId location, long observedVersion,
                              String symbol, String javaType,
@@ -104,25 +102,9 @@ public final class ReadRow {
     }
 
     @Override
-    public boolean equals(Object value) {
-        if (this == value) return true;
-        if (!(value instanceof ReadRow)) return false;
-        ReadRow other = (ReadRow) value;
-        return seq == other.seq
-                && observedVersion == other.observedVersion
-                && mintVersion == other.mintVersion
-                && sessionId.equals(other.sessionId)
-                && endpoint.equals(other.endpoint)
-                && location.equals(other.location)
-                && symbol.equals(other.symbol)
-                && javaType.equals(other.javaType)
-                && Objects.equals(concreteValue, other.concreteValue);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(sessionId, seq, endpoint, location, observedVersion,
-                symbol, javaType, concreteValue, mintVersion);
+    Object[] parts() {
+        return new Object[] {sessionId, seq, endpoint, location,
+                observedVersion, symbol, javaType, concreteValue, mintVersion};
     }
 
     @Override

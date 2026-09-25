@@ -1,7 +1,5 @@
 package edu.uva.liftlab.graphchecker.contract;
 
-import java.util.Objects;
-
 /**
  * The storage a state edge joins on, spelled as the VM's location key
  * ({@code RowPublication.locationKey}, {@code KIND/rid#slot}).  A rid is a
@@ -13,7 +11,7 @@ import java.util.Objects;
  * {@code smt.Arms.namedOwner} is the one place that decides.  No
  * cross-replay object identity exists.</p>
  */
-public final class LocationId {
+public final class LocationId extends Value {
     private final LocationKind kind;
     private final String owner;
     private final String slot;
@@ -42,17 +40,8 @@ public final class LocationId {
     }
 
     @Override
-    public boolean equals(Object value) {
-        if (this == value) return true;
-        if (!(value instanceof LocationId)) return false;
-        LocationId other = (LocationId) value;
-        return kind == other.kind && owner.equals(other.owner)
-                && slot.equals(other.slot);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(kind, owner, slot);
+    Object[] parts() {
+        return new Object[] {kind, owner, slot};
     }
 
     @Override

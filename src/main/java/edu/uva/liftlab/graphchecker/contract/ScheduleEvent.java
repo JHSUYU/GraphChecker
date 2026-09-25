@@ -1,7 +1,5 @@
 package edu.uva.liftlab.graphchecker.contract;
 
-import java.util.Objects;
-
 /**
  * One scheduling event {@code (kind, c, site, k)}; a session's schedule
  * ({@link SessionDir#SCHEDULE}) is their order, and a focused replay is held
@@ -10,7 +8,7 @@ import java.util.Objects;
  * no thread id, no time.  {@code occurrence} (open region id, or {@code ""})
  * is not part of the key; it is where a prefix is cut.
  */
-public final class ScheduleEvent {
+public final class ScheduleEvent extends Value {
     /** What kind of handoff the event is. */
     public enum Kind {
         /** A work start: {@code Thread.start}, a submission, a queue put. */
@@ -126,20 +124,9 @@ public final class ScheduleEvent {
     }
 
     @Override
-    public boolean equals(Object value) {
-        if (this == value) return true;
-        if (!(value instanceof ScheduleEvent)) return false;
-        ScheduleEvent other = (ScheduleEvent) value;
-        return seq == other.seq && k == other.k && kind == other.kind
-                && context.equals(other.context) && site.equals(other.site)
-                && occurrence.equals(other.occurrence)
-                && endpoint.equals(other.endpoint);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(seq, kind, context, site, k, occurrence,
-                endpoint);
+    Object[] parts() {
+        return new Object[] {seq, kind, context, site, k, occurrence,
+                endpoint};
     }
 
     @Override

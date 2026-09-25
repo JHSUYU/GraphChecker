@@ -1,12 +1,10 @@
 package edu.uva.liftlab.graphchecker.contract;
 
-import java.util.Objects;
-
 /**
  * CONTRACT-SPEC 2: one refusal or diagnostic, always naming its
  * {@code subject} (endpoint id, root, location, address), never a category.
  */
-public final class GapRow {
+public final class GapRow extends Value {
     private final String sessionId;
     private final GapKind kind;
     private final GapClass cls;
@@ -56,19 +54,8 @@ public final class GapRow {
     }
 
     @Override
-    public boolean equals(Object value) {
-        if (this == value) return true;
-        if (!(value instanceof GapRow)) return false;
-        GapRow other = (GapRow) value;
-        return kind == other.kind && cls == other.cls
-                && sessionId.equals(other.sessionId)
-                && subject.equals(other.subject)
-                && detail.equals(other.detail);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(sessionId, kind, cls, subject, detail);
+    Object[] parts() {
+        return new Object[] {sessionId, kind, cls, subject, detail};
     }
 
     @Override

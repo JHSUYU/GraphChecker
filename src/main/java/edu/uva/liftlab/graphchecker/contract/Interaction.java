@@ -1,14 +1,13 @@
 package edu.uva.liftlab.graphchecker.contract;
 
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
-import java.util.Objects;
 
 /**
  * CONTRACT-SPEC 1: one causal-graph edge, named by both endpoints.  A family
  * is keyed by the interaction (INTERACTION-ID R-I2): same port, other
  * endpoint contributes nothing.
  */
-public final class Interaction {
+public final class Interaction extends Value {
     private final InteractionKind kind;
     private final Endpoint producer;
     private final Endpoint consumer;
@@ -44,17 +43,8 @@ public final class Interaction {
     }
 
     @Override
-    public boolean equals(Object value) {
-        if (this == value) return true;
-        if (!(value instanceof Interaction)) return false;
-        Interaction other = (Interaction) value;
-        return kind == other.kind && producer.equals(other.producer)
-                && consumer.equals(other.consumer);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(kind, producer, consumer);
+    Object[] parts() {
+        return new Object[] {kind, producer, consumer};
     }
 
     @Override
