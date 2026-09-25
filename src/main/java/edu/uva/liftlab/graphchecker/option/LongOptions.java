@@ -47,4 +47,19 @@ public final class LongOptions {
         String value = value(name, null);
         return value == null ? null : Paths.get(value);
     }
+
+    /** The option as a number; {@code fallback} when absent or blank. A passed
+     *  value that is not a number is refused, never read as the default. */
+    public long number(String name, long fallback) {
+        String value = value(name, null);
+        if (value == null) return fallback;
+        try {
+            return Long.parseLong(value.trim());
+        } catch (NumberFormatException notANumber) {
+            throw new IllegalArgumentException("--" + name + " was passed as"
+                    + " \"" + value + "\", which is not a number: a"
+                    + " mistyped bound is refused, never read as the default"
+                    + " " + fallback, notANumber);
+        }
+    }
 }

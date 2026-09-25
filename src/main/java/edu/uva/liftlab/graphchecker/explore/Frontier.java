@@ -122,14 +122,11 @@ public final class Frontier {
 
     /** The first reason this arm is settled, or {@code ""} while it is owed. */
     public String settled(String obligationId) {
-        String reason = settled.get(obligationId);
-        return reason == null ? "" : reason;
+        return settled.getOrDefault(obligationId, "");
     }
 
     private void settle(String obligationId, String reason) {
-        if (!settled.containsKey(obligationId)) {
-            settled.put(obligationId, reason);
-        }
+        settled.putIfAbsent(obligationId, reason);
     }
 
     /** Opens one wave over the arms the tasks still owe. */
@@ -152,8 +149,7 @@ public final class Frontier {
         Map<String, Integer> counts = new LinkedHashMap<String, Integer>();
         for (Task task : tasks) counts.put(task.taskId(), 0);
         for (String taskId : proposedBy.values()) {
-            Integer count = counts.get(taskId);
-            counts.put(taskId, count == null ? 1 : count + 1);
+            counts.merge(taskId, 1, Integer::sum);
         }
         return counts;
     }
@@ -162,8 +158,7 @@ public final class Frontier {
     public Map<String, Integer> verdictHistogram() {
         Map<String, Integer> histogram = new LinkedHashMap<String, Integer>();
         for (Verdict verdict : answered.values()) {
-            Integer count = histogram.get(verdict.name());
-            histogram.put(verdict.name(), count == null ? 1 : count + 1);
+            histogram.merge(verdict.name(), 1, Integer::sum);
         }
         return histogram;
     }

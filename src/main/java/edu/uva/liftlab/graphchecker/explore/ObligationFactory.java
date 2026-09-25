@@ -14,6 +14,7 @@ import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
 
+import java.math.BigInteger;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -162,8 +163,8 @@ public final class ObligationFactory {
     private static String skew(String model, String recorded) {
         if (model == null || recorded == null) return "";
         try {
-            return new java.math.BigInteger(model.trim())
-                    .subtract(new java.math.BigInteger(recorded.trim()))
+            return new BigInteger(model.trim())
+                    .subtract(new BigInteger(recorded.trim()))
                     .toString();
         } catch (NumberFormatException notAnInstant) {
             return "";
@@ -208,7 +209,6 @@ public final class ObligationFactory {
      *  Candidate} and {@link Frontier}, which must agree. */
     public static String worldKey(Corpus corpus, Task task,
                                   String sessionId) {
-        if (corpus == null || task == null) return "";
         return corpus.inputShape(sessionId, task.focused(), task.factor());
     }
 
@@ -227,9 +227,7 @@ public final class ObligationFactory {
                                       String prefixDigest,
                                       String worldKey) {
         return ArtifactIO.digest(taskId + "|" + siteId + "|" + ordinal + "|"
-                + flippedOutcome + "|"
-                + (prefixDigest == null ? "" : prefixDigest) + "|"
-                + (worldKey == null ? "" : worldKey), 16);
+                + flippedOutcome + "|" + prefixDigest + "|" + worldKey, 16);
     }
 
     /**
@@ -363,14 +361,8 @@ public final class ObligationFactory {
             final Corpus corpus, List<Corpus.RecordedPath> paths) {
         List<Corpus.RecordedPath> ordered =
                 new ArrayList<Corpus.RecordedPath>(paths);
-        Collections.sort(ordered, new Comparator<Corpus.RecordedPath>() {
-            @Override
-            public int compare(Corpus.RecordedPath left,
-                               Corpus.RecordedPath right) {
-                return corpus.world(left.sessionId).flips.size()
-                        - corpus.world(right.sessionId).flips.size();
-            }
-        });
+        ordered.sort(Comparator.comparingInt(
+                path -> corpus.world(path.sessionId).flips.size()));
         return ordered;
     }
 
@@ -411,7 +403,7 @@ public final class ObligationFactory {
         for (String delta : clockDeltas.values()) {
             if (delta == null || delta.trim().isEmpty()) continue;
             try {
-                if (new java.math.BigInteger(delta.trim()).signum() != 0) {
+                if (new BigInteger(delta.trim()).signum() != 0) {
                     return true;
                 }
             } catch (NumberFormatException notAnInstant) {
@@ -508,9 +500,9 @@ public final class ObligationFactory {
             }
             // Fail closed: a skew or instant outside a Java long can never be
             // applied (clockDomain's ceiling should make this unreachable).
-            java.math.BigInteger skewed = new java.math.BigInteger(delta);
-            java.math.BigInteger instant =
-                    skewed.add(new java.math.BigInteger(recorded.trim()));
+            BigInteger skewed = new BigInteger(delta);
+            BigInteger instant =
+                    skewed.add(new BigInteger(recorded.trim()));
             if (!JavaPrimitiveSmtSemantics.fitsJavaLong(skewed)
                     || !JavaPrimitiveSmtSemantics.fitsJavaLong(instant)) {
                 gaps.add(GapRow.of(candidate.path.sessionId,

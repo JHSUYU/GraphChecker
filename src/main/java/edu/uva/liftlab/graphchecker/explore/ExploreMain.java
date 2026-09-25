@@ -15,12 +15,12 @@ import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.Selector;
 import edu.uva.liftlab.graphchecker.contract.Task;
+import edu.uva.liftlab.graphchecker.option.LongOptions;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -59,19 +59,19 @@ public final class ExploreMain {
     }
 
     public static void main(String[] argv) throws Exception {
-        Map<String, String> options = options(argv);
-        // One spelling per option; the iteration is the parent of --sessions.
-        Path sessions = path(options, "sessions");
+        LongOptions options = LongOptions.parse(argv);
+        // The iteration is the parent of --sessions.
+        Path sessions = options.path("sessions");
         if (sessions == null) {
             throw new IllegalArgumentException("Missing --sessions");
         }
         Path iteration = sessions.getParent() == null
                 ? sessions : sessions.getParent();
-        Path out = path(options, "output-dir");
+        Path out = options.path("output-dir");
         if (out == null) {
             throw new IllegalArgumentException("Missing --output-dir");
         }
-        String declaredAnchor = value(options, "target-occurrence", "");
+        String declaredAnchor = options.value("target-occurrence", "");
         if (declaredAnchor.isEmpty()) {
             throw new IllegalArgumentException("the closure has no root: "
                     + "pass --target-occurrence. A case declares ONE anchor "
@@ -79,7 +79,7 @@ public final class ExploreMain {
         }
         // Fail-closed: without the map the closure is the rows' alone, which
         // can miss the writer region the failure depends on (CLOSURE-V2 SS2).
-        Path scopeMap = path(options, "static-scope-map");
+        Path scopeMap = options.path("static-scope-map");
         if (scopeMap == null) {
             throw new IllegalArgumentException("the closure has no static "
                     + "map: pass --static-scope-map. PLAN publishes "
@@ -88,18 +88,18 @@ public final class ExploreMain {
                     + "(CLOSURE-V2 SS2)");
         }
         JsonObject manifest = plan(iteration, declaredAnchor,
-                path(options, "root-domains"), path(options, "results"),
+                options.path("root-domains"), options.path("results"),
                 scopeMap, out,
-                (int) number(options, "wave", 0),
-                value(options, "topology-epoch", ""),
-                (int) number(options, "max-tasks",
+                (int) options.number("wave", 0),
+                options.value("topology-epoch", ""),
+                (int) options.number("max-tasks",
                         ClosurePlanner.DEFAULT_MAX_TASKS),
                 new ObligationFactory.Bounds(
-                        (int) number(options, "max-paths-per-region",
+                        (int) options.number("max-paths-per-region",
                                 ObligationFactory.DEFAULT_MAX_PATHS_PER_TASK),
-                        (int) number(options, "max-flips-per-path",
+                        (int) options.number("max-flips-per-path",
                                 ObligationFactory.DEFAULT_MAX_FLIPS_PER_PATH),
-                        (int) number(options, "max-world-depth",
+                        (int) options.number("max-world-depth",
                                 ObligationFactory.DEFAULT_MAX_WORLD_DEPTH)));
         System.out.println(pretty(manifest));
     }
@@ -193,17 +193,10 @@ public final class ExploreMain {
         for (SessionReader session : corpus.sessions()) {
             for (ActivationRow activation : session.activations()) {
                 if (activation.taskId().isEmpty()) continue;
-                Map<String, String> addresses =
-                        answeredBy.get(activation.taskId());
-                if (addresses == null) {
-                    addresses = new LinkedHashMap<String, String>();
-                    answeredBy.put(activation.taskId(), addresses);
-                }
-                if (!addresses.containsKey(
-                        activation.occurrence().render())) {
-                    addresses.put(activation.occurrence().render(),
-                            session.sessionId());
-                }
+                answeredBy.computeIfAbsent(activation.taskId(),
+                        key -> new LinkedHashMap<String, String>())
+                        .putIfAbsent(activation.occurrence().render(),
+                                session.sessionId());
             }
         }
         List<GapRow> unstable = new ArrayList<GapRow>();
@@ -253,9 +246,7 @@ public final class ExploreMain {
                             + " sessions state role SEED"));
             return new ArrayList<OccurrenceAddress>();
         }
-        SessionReader session = corpus.session(seed);
-        List<ActivationRow> activations = session == null
-                ? new ArrayList<ActivationRow>() : session.activations();
+        List<ActivationRow> activations = corpus.session(seed).activations();
         Set<String> ranInTheSeed = new LinkedHashSet<String>();
         for (ActivationRow activation : activations) {
             ranInTheSeed.add(activation.occurrence().id());
@@ -407,8 +398,7 @@ public final class ExploreMain {
         JsonObject kinds = new JsonObject();
         Map<String, Integer> byKind = new LinkedHashMap<String, Integer>();
         for (GapRow gap : distinct(gaps)) {
-            Integer count = byKind.get(gap.kind().name());
-            byKind.put(gap.kind().name(), count == null ? 1 : count + 1);
+            byKind.merge(gap.kind().name(), 1, Integer::sum);
         }
         for (Map.Entry<String, Integer> entry : byKind.entrySet()) {
             kinds.addProperty(entry.getKey(), entry.getValue());
@@ -425,54 +415,5 @@ public final class ExploreMain {
     static String pretty(JsonObject json) {
         return new GsonBuilder().disableHtmlEscaping().setPrettyPrinting()
                 .create().toJson(json);
-    }
-
-
-    static Map<String, String> options(String[] argv) {
-        Map<String, String> options = new LinkedHashMap<String, String>();
-        for (int index = 0; index < argv.length; index++) {
-            String argument = argv[index];
-            if (!argument.startsWith("--")) continue;
-            String name = argument.substring(2);
-            int equals = name.indexOf('=');
-            if (equals >= 0) {
-                options.put(name.substring(0, equals),
-                        name.substring(equals + 1));
-            } else if (index + 1 < argv.length
-                    && !argv[index + 1].startsWith("--")) {
-                options.put(name, argv[++index]);
-            } else {
-                options.put(name, "true");
-            }
-        }
-        return options;
-    }
-
-    static String value(Map<String, String> options, String name,
-                        String fallback) {
-        String value = options.get(name);
-        return value == null || value.trim().isEmpty() ? fallback : value;
-    }
-
-    static Path path(Map<String, String> options, String name) {
-        String value = options.get(name);
-        return value == null || value.trim().isEmpty()
-                ? null : Paths.get(value);
-    }
-
-    /** One numeric option; a passed value that is not a number is refused,
-     *  never read as the default. */
-    static long number(Map<String, String> options, String name,
-                       long fallback) {
-        String value = options.get(name);
-        if (value == null || value.trim().isEmpty()) return fallback;
-        try {
-            return Long.parseLong(value.trim());
-        } catch (NumberFormatException notANumber) {
-            throw new IllegalArgumentException("--" + name + " was passed as"
-                    + " \"" + value + "\", which is not a number: a"
-                    + " mistyped bound is refused, never read as the default"
-                    + " " + fallback, notANumber);
-        }
     }
 }

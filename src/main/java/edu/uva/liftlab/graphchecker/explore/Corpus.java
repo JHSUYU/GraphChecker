@@ -32,6 +32,7 @@ import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
@@ -209,6 +210,15 @@ public final class Corpus implements Arms.Rows {
     /** session id -> the world its focus row states it ran in. */
     private final Map<String, World> worlds =
             new LinkedHashMap<String, World>();
+    /** Obligation id -> the verdict the wave's own file states. */
+    private final Map<String, ObligationResult> waveVerdicts =
+            new LinkedHashMap<String, ObligationResult>();
+    /** Producer endpoint id of a SEND -> the occurrence that sent it. */
+    private final Map<String, String> senderByEndpoint =
+            new LinkedHashMap<String, String>();
+    /** Producer endpoint id of a RECV -> the occurrence that took it in. */
+    private final Map<String, String> receiverByEndpoint =
+            new LinkedHashMap<String, String>();
 
     private final Arms arms;
 
@@ -334,22 +344,11 @@ public final class Corpus implements Arms.Rows {
         return waveVerdicts.get(obligationId == null ? "" : obligationId);
     }
 
-    /** Obligation id -> the verdict the wave's own file states. */
-    private final Map<String, ObligationResult> waveVerdicts =
-            new LinkedHashMap<String, ObligationResult>();
-
     /** The directory the sessions were read from (the slot table sits beside
      *  them). */
     public Path iteration() {
         return iteration;
     }
-
-    /** Producer endpoint id of a SEND -> the occurrence that sent it. */
-    private final Map<String, String> senderByEndpoint =
-            new LinkedHashMap<String, String>();
-    /** Producer endpoint id of a RECV -> the occurrence that took it in. */
-    private final Map<String, String> receiverByEndpoint =
-            new LinkedHashMap<String, String>();
 
     /**
      * The occurrence that sent the message a consumer served under
@@ -373,8 +372,8 @@ public final class Corpus implements Arms.Rows {
         List<ScheduleEvent> events;
         try {
             events = session.schedule();
-        } catch (java.io.IOException unreadable) {
-            throw new java.io.UncheckedIOException(unreadable);
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException(unreadable);
         }
         for (ScheduleEvent event : events) {
             if (event.occurrence().isEmpty()) continue;
@@ -440,18 +439,11 @@ public final class Corpus implements Arms.Rows {
         for (RootMintRow row : session.roots()) {
             remember(occurrenceById, row.occurrence());
             rootBySymbol.put(session.sessionId() + "|" + row.symbol(), row);
-            Map<String, RootMintRow> bySession = rootsById.get(row.rootId());
-            if (bySession == null) {
-                bySession = new LinkedHashMap<String, RootMintRow>();
-                rootsById.put(row.rootId(), bySession);
-            }
-            bySession.put(session.sessionId(), row);
-            Set<String> ids = rootIdsBySymbol.get(row.symbol());
-            if (ids == null) {
-                ids = new LinkedHashSet<String>();
-                rootIdsBySymbol.put(row.symbol(), ids);
-            }
-            ids.add(row.rootId());
+            rootsById.computeIfAbsent(row.rootId(),
+                    key -> new LinkedHashMap<String, RootMintRow>())
+                    .put(session.sessionId(), row);
+            rootIdsBySymbol.computeIfAbsent(row.symbol(),
+                    key -> new LinkedHashSet<String>()).add(row.rootId());
             declaredSymbols.put(row.symbol(),
                     row.kind() == RootKind.MARKER ? Sort.BOOL : Sort.INT);
         }
@@ -482,14 +474,15 @@ public final class Corpus implements Arms.Rows {
     }
 
     private void touch(OccurrenceAddress occurrence, LocationId location) {
-        String key = occurrence.node().render() + "|"
+        locationTouches.computeIfAbsent(touchKey(occurrence, location),
+                key -> new LinkedHashSet<String>()).add(occurrence.id());
+    }
+
+    /** node|location: one location of one JVM. */
+    private static String touchKey(OccurrenceAddress occurrence,
+                                   LocationId location) {
+        return occurrence.node().render() + "|"
                 + SmtLowering.locationKey(location);
-        Set<String> occurrences = locationTouches.get(key);
-        if (occurrences == null) {
-            occurrences = new LinkedHashSet<String>();
-            locationTouches.put(key, occurrences);
-        }
-        occurrences.add(occurrence.id());
     }
 
     private static void remember(Map<String, OccurrenceAddress> into,
@@ -498,12 +491,7 @@ public final class Corpus implements Arms.Rows {
     }
 
     private static <T> void add(Map<String, List<T>> into, String key, T row) {
-        List<T> rows = into.get(key);
-        if (rows == null) {
-            rows = new ArrayList<T>();
-            into.put(key, rows);
-        }
-        rows.add(row);
+        into.computeIfAbsent(key, ignored -> new ArrayList<T>()).add(row);
     }
 
     /** One version of one location in one session; {@link
@@ -590,20 +578,19 @@ public final class Corpus implements Arms.Rows {
 
     public List<DecisionRow> decisionsOf(String sessionId,
                                          OccurrenceAddress occurrence) {
-        List<DecisionRow> rows = decisions.get(
-                sessionId + "|" + occurrence.id());
-        return rows == null ? Collections.<DecisionRow>emptyList() : rows;
+        return decisions.getOrDefault(sessionId + "|" + occurrence.id(),
+                Collections.<DecisionRow>emptyList());
     }
 
     public List<AttachRow> attachesOn(OccurrenceAddress occurrence) {
-        List<AttachRow> rows = attachesOn.get(occurrence.id());
-        return rows == null ? Collections.<AttachRow>emptyList() : rows;
+        return attachesOn.getOrDefault(occurrence.id(),
+                Collections.<AttachRow>emptyList());
     }
 
     /** Every target row published for one occurrence, in any session. */
     public List<TargetRow> targetsOn(OccurrenceAddress occurrence) {
-        List<TargetRow> rows = targetsOn.get(occurrence.id());
-        return rows == null ? Collections.<TargetRow>emptyList() : rows;
+        return targetsOn.getOrDefault(occurrence.id(),
+                Collections.<TargetRow>emptyList());
     }
 
     /** One session's target row at one occurrence, or null. */
@@ -615,8 +602,8 @@ public final class Corpus implements Arms.Rows {
     }
 
     public List<ReadRow> readsOn(OccurrenceAddress occurrence) {
-        List<ReadRow> rows = readsOn.get(occurrence.id());
-        return rows == null ? Collections.<ReadRow>emptyList() : rows;
+        return readsOn.getOrDefault(occurrence.id(),
+                Collections.<ReadRow>emptyList());
     }
 
     /** Every attach of ONE session whose consumer sits at this occurrence. */
@@ -640,14 +627,14 @@ public final class Corpus implements Arms.Rows {
     }
 
     public List<WriteRow> writesOn(OccurrenceAddress occurrence) {
-        List<WriteRow> rows = writesOn.get(occurrence.id());
-        return rows == null ? Collections.<WriteRow>emptyList() : rows;
+        return writesOn.getOrDefault(occurrence.id(),
+                Collections.<WriteRow>emptyList());
     }
 
     /** Every export any session published at one occurrence. */
     public List<ExportRow> exportsOn(OccurrenceAddress occurrence) {
-        List<ExportRow> rows = exportsOn.get(occurrence.id());
-        return rows == null ? Collections.<ExportRow>emptyList() : rows;
+        return exportsOn.getOrDefault(occurrence.id(),
+                Collections.<ExportRow>emptyList());
     }
 
     // ---- The causal graph (SS3.1) ----
@@ -938,23 +925,22 @@ public final class Corpus implements Arms.Rows {
 
     @Override
     public List<AttachRow> attachesOf(Interaction interaction) {
-        List<AttachRow> rows = attachesByInteraction.get(interaction.id());
-        return rows == null ? Collections.<AttachRow>emptyList() : rows;
+        return attachesByInteraction.getOrDefault(interaction.id(),
+                Collections.<AttachRow>emptyList());
     }
 
     /** Every export any session recorded at one producer endpoint. */
     @Override
     public List<ExportRow> exportsOf(Endpoint producer) {
         if (producer == null) return Collections.emptyList();
-        List<ExportRow> rows = exports.get(producer.id());
-        return rows == null ? Collections.<ExportRow>emptyList() : rows;
+        return exports.getOrDefault(producer.id(),
+                Collections.<ExportRow>emptyList());
     }
 
     @Override
     public List<WriteRow> writesOf(String sessionId, String locationKey) {
-        List<WriteRow> writes = writesByLocation.get(
-                sessionId + "|" + locationKey);
-        return writes == null ? Collections.<WriteRow>emptyList() : writes;
+        return writesByLocation.getOrDefault(sessionId + "|" + locationKey,
+                Collections.<WriteRow>emptyList());
     }
 
     @Override
@@ -1014,9 +1000,8 @@ public final class Corpus implements Arms.Rows {
     /** Every occurrence of the node that writes or reads one location. */
     public Set<String> touching(OccurrenceAddress occurrence,
                                 LocationId location) {
-        Set<String> found = locationTouches.get(
-                occurrence.node().render() + "|"
-                        + SmtLowering.locationKey(location));
+        Set<String> found = locationTouches.get(touchKey(occurrence,
+                location));
         return found == null ? Collections.<String>emptySet() : found;
     }
 

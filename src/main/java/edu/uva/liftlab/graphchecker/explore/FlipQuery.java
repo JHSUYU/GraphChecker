@@ -81,7 +81,6 @@ final class FlipQuery {
          */
         final List<String> modelSymbols;
         final String refusal;
-        final DecisionRow flipped;
         final List<Control> controls;
         /** query variable -> root, for model read-back: only roots the
          *  assertions REACH ({@link Builder#reached}). A root the flip does not
@@ -95,7 +94,6 @@ final class FlipQuery {
         final List<GapRow> gaps;
 
         private Built(String smt2, List<String> modelSymbols, String refusal,
-                      DecisionRow flipped,
                       List<Control> controls, Map<String, String> rootVariables,
                       Map<String, String> clockVariables,
                       List<GapRow> gaps) {
@@ -103,7 +101,6 @@ final class FlipQuery {
             this.modelSymbols =
                     Collections.unmodifiableList(modelSymbols);
             this.refusal = refusal;
-            this.flipped = flipped;
             this.controls = Collections.unmodifiableList(controls);
             this.rootVariables =
                     Collections.unmodifiableMap(rootVariables);
@@ -118,8 +115,8 @@ final class FlipQuery {
     }
 
     /** Whether one recorded decision is a flip candidate at all: it carries a
-     *  term (owner's ruling 2026-09-15: a branch with a symbol IS a flip
-     *  target; producibility is the solver's verdict, {@link Builder#unbound}).
+     *  term (a branch with a symbol IS a flip target; producibility is the
+     *  solver's verdict, {@link Builder#unbound}).
      *  A CONCRETE branch has no term to negate. Where candidates may sit is the
      *  closure's question (CLOSURE-V2 SS3, {@link
      *  ObligationFactory#candidates}). */
@@ -357,7 +354,7 @@ final class FlipQuery {
             return new Built(FlipQueryText.render(corpus, task,
                     path, lowered, this, meaning, sorts, asserted(), nearest,
                     flipped, flipIndex),
-                    new ArrayList<String>(sorts.keySet()), "", flipped,
+                    new ArrayList<String>(sorts.keySet()), "",
                     new ArrayList<Control>(controls.values()),
                     reached(rootVariables, reached),
                     reached(clockVariables, reached), gaps);
@@ -1183,7 +1180,7 @@ final class FlipQuery {
         /** No query, for the named reason. */
         private Built refused(String reason, DecisionRow flipped) {
             return new Built("", Collections.<String>emptyList(), reason,
-                    flipped, new ArrayList<Control>(controls.values()),
+                    new ArrayList<Control>(controls.values()),
                     rootVariables, clockVariables, gaps);
         }
 

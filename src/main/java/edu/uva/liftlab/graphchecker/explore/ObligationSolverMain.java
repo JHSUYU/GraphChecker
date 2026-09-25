@@ -14,6 +14,7 @@ import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
+import edu.uva.liftlab.graphchecker.option.LongOptions;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -23,7 +24,6 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.Map;
 
 /**
  * ONE obligation: build its query, solve it, say what the replay must apply.
@@ -48,11 +48,11 @@ public final class ObligationSolverMain {
     }
 
     public static void main(String[] argv) throws Exception {
-        Map<String, String> options = ExploreMain.options(argv);
-        Path obligations = ExploreMain.path(options, "obligations");
-        String obligationId = ExploreMain.value(options, "obligation-id", "");
-        Path sessions = ExploreMain.path(options, "sessions");
-        Path out = ExploreMain.path(options, "output-dir");
+        LongOptions options = LongOptions.parse(argv);
+        Path obligations = options.path("obligations");
+        String obligationId = options.value("obligation-id", "");
+        Path sessions = options.path("sessions");
+        Path out = options.path("output-dir");
         if (obligations == null || obligationId.isEmpty() || sessions == null
                 || out == null) {
             throw new IllegalArgumentException("--obligations, "
@@ -61,10 +61,10 @@ public final class ObligationSolverMain {
         }
         Path iteration = sessions.getParent();
         JsonObject result = solve(iteration,
-                ExploreMain.path(options, "root-domains"), obligations,
+                options.path("root-domains"), obligations,
                 obligationId, out,
-                Paths.get(ExploreMain.value(options, "z3", "z3")),
-                ExploreMain.number(options, "solver-timeout-ms",
+                Paths.get(options.value("z3", "z3")),
+                options.number("solver-timeout-ms",
                         Z3.DEFAULT_TIMEOUT_MILLIS));
         System.out.println(ExploreMain.pretty(result));
     }

@@ -414,12 +414,8 @@ public final class SlotTable {
         for (String id : closure) {
             OccurrenceAddress member = corpus.occurrence(id);
             if (member == null) continue;
-            List<OccurrenceAddress> members = byCodePoint.get(codePoint(member));
-            if (members == null) {
-                members = new ArrayList<OccurrenceAddress>();
-                byCodePoint.put(codePoint(member), members);
-            }
-            members.add(member);
+            byCodePoint.computeIfAbsent(codePoint(member),
+                    key -> new ArrayList<OccurrenceAddress>()).add(member);
         }
         boolean replaced = false;
         for (SessionReader session : corpus.sessions()) {

@@ -133,27 +133,26 @@ public final class ExploreCodec {
     public static Corpus.World readWorld(JsonObject json) {
         List<Corpus.Flip> flips = new ArrayList<Corpus.Flip>();
         JsonObject own = object(json, "flip");
-        String at = optionalString(json, "focusedOccurrenceId");
-        if (own.has("siteId")) {
-            flips.add(new Corpus.Flip(at, optionalString(own, "siteId"),
-                    optionalInteger(own, "ordinal", 0),
-                    optionalBool(own, "outcome", false),
-                    optionalString(json, "obligationId")));
-        }
+        if (own.has("siteId")) flips.add(readFlip(own, json));
         for (JsonElement element : array(json, "inheritedFlips")) {
             if (!element.isJsonObject()) continue;
             JsonObject flip = element.getAsJsonObject();
-            flips.add(new Corpus.Flip(
-                    optionalString(flip, "focusedOccurrenceId"),
-                    optionalString(flip, "siteId"),
-                    optionalInteger(flip, "ordinal", 0),
-                    optionalBool(flip, "outcome", false),
-                    optionalString(flip, "obligationId")));
+            flips.add(readFlip(flip, flip));
         }
         return new Corpus.World(map(object(json, "rootAssignments")),
                 map(object(json, "clockDeltas")),
                 map(object(json, "answers")),
                 map(object(json, "rootMints")), flips);
+    }
+
+    /** One flip's decision; {@code owner} states whose and which obligation
+     *  (the row itself for its own flip). */
+    private static Corpus.Flip readFlip(JsonObject flip, JsonObject owner) {
+        return new Corpus.Flip(optionalString(owner, "focusedOccurrenceId"),
+                optionalString(flip, "siteId"),
+                optionalInteger(flip, "ordinal", 0),
+                optionalBool(flip, "outcome", false),
+                optionalString(owner, "obligationId"));
     }
 
     /** One inherited flip, as the focus row states it. */

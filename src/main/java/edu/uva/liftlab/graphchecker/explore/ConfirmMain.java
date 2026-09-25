@@ -18,6 +18,8 @@ import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
+import edu.uva.liftlab.graphchecker.option.LongOptions;
+import edu.uva.liftlab.graphchecker.runtime.Confirmation;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -78,11 +80,11 @@ public final class ConfirmMain {
     }
 
     public static void main(String[] argv) throws Exception {
-        Map<String, String> options = ExploreMain.options(argv);
-        Path iteration = ExploreMain.path(options, "iteration");
-        Path claim = ExploreMain.path(options, "claim");
-        Path manifest = ExploreMain.path(options, "manifest");
-        Path out = ExploreMain.path(options, "output");
+        LongOptions options = LongOptions.parse(argv);
+        Path iteration = options.path("iteration");
+        Path claim = options.path("claim");
+        Path manifest = options.path("manifest");
+        Path out = options.path("output");
         if (iteration == null || claim == null || manifest == null
                 || out == null) {
             throw new IllegalArgumentException("--iteration, --claim, "
@@ -179,12 +181,7 @@ public final class ConfirmMain {
             confirmation.addProperty("sessionId", sessionId);
             RowCodec.writeJsonl(out.resolve(REALIZED),
                     Collections.singletonList(confirmation));
-            JsonObject summary = new JsonObject();
-            summary.addProperty("kind", "CONFIRM_TASK");
-            summary.addProperty("anchor", anchor.id());
-            summary.addProperty("selectedPathId", pathId);
-            summary.addProperty("selectedSessionId", sessionId);
-            summary.addProperty("valuationOrdinal", ordinal);
+            JsonObject summary = summary(anchor, pathId, sessionId, ordinal);
             summary.addProperty("realizedBy", sessionId);
             return summary;
         }
@@ -199,21 +196,7 @@ public final class ConfirmMain {
                 ExploreCodec.map(object(world, "rootMints"));
         Map<String, String> answers =
                 ExploreCodec.map(object(world, "answers"));
-        List<JsonObject> markers = new ArrayList<JsonObject>();
-        for (JsonElement element : array(manifest, "roots")) {
-            JsonObject root = element.getAsJsonObject();
-            String rootId = optionalString(root, "rootId");
-            if (!"MARKER".equals(optionalString(root, "kind"))
-                    || !assignments.containsKey(rootId)) {
-                continue;
-            }
-            JsonObject marker = new JsonObject();
-            marker.addProperty("kind", "MARKER");
-            marker.addProperty("root", rootId);
-            marker.addProperty("value",
-                    Boolean.parseBoolean(assignments.get(rootId)));
-            markers.add(marker);
-        }
+        List<JsonObject> markers = markerEdges(manifest, assignments);
         Map<String, SessionReader> armSessions =
                 new LinkedHashMap<String, SessionReader>();
         armSessions.put(sessionId, session);
@@ -244,9 +227,7 @@ public final class ConfirmMain {
         anchorRow.addProperty("occurrence", anchor.id());
         anchorRow.addProperty("seq", target.seq());
         edges.add(anchorRow);
-        RowCodec.writeJsonl(
-                out.resolve(edu.uva.liftlab.graphchecker.runtime
-                        .Confirmation.FILE), edges);
+        RowCodec.writeJsonl(out.resolve(Confirmation.FILE), edges);
 
         // An obligation that flips nothing: the values drive every decision.
         JsonObject focus = ExploreCodec.writeFocusRow(anchor, seedSessionId,
@@ -259,16 +240,23 @@ public final class ConfirmMain {
                 (new GsonBuilder().serializeNulls().create().toJson(focus)
                         + "\n").getBytes(StandardCharsets.UTF_8));
 
+        JsonObject summary = summary(anchor, pathId, sessionId, ordinal);
+        summary.addProperty("rootAssignments", assignments.size());
+        summary.addProperty("clockDeltas", clockDeltas.size());
+        summary.addProperty("expectedEdges", edges.size());
+        summary.add("schedulePrefix", cut.toJson());
+        return summary;
+    }
+
+    /** What either kind of confirmation task states first. */
+    private static JsonObject summary(OccurrenceAddress anchor, String pathId,
+                                      String sessionId, int ordinal) {
         JsonObject summary = new JsonObject();
         summary.addProperty("kind", "CONFIRM_TASK");
         summary.addProperty("anchor", anchor.id());
         summary.addProperty("selectedPathId", pathId);
         summary.addProperty("selectedSessionId", sessionId);
         summary.addProperty("valuationOrdinal", ordinal);
-        summary.addProperty("rootAssignments", assignments.size());
-        summary.addProperty("clockDeltas", clockDeltas.size());
-        summary.addProperty("expectedEdges", edges.size());
-        summary.add("schedulePrefix", cut.toJson());
         return summary;
     }
 
@@ -316,6 +304,27 @@ public final class ConfirmMain {
         return new JsonObject();
     }
 
+    /** One MARKER edge per planted marker root the manifest names. */
+    private static List<JsonObject> markerEdges(
+            JsonObject manifest, Map<String, String> assignments) {
+        List<JsonObject> markers = new ArrayList<JsonObject>();
+        for (JsonElement element : array(manifest, "roots")) {
+            JsonObject root = element.getAsJsonObject();
+            String rootId = optionalString(root, "rootId");
+            if (!"MARKER".equals(optionalString(root, "kind"))
+                    || !assignments.containsKey(rootId)) {
+                continue;
+            }
+            JsonObject marker = new JsonObject();
+            marker.addProperty("kind", "MARKER");
+            marker.addProperty("root", rootId);
+            marker.addProperty("value",
+                    Boolean.parseBoolean(assignments.get(rootId)));
+            markers.add(marker);
+        }
+        return markers;
+    }
+
     /** One WIRE edge per consumer of each selected message arm, paired as that
      *  arm's session recorded. */
     private static List<JsonObject> wireEdges(
@@ -360,26 +369,18 @@ public final class ConfirmMain {
         Map<String, WriteRow> writes = new LinkedHashMap<String, WriteRow>();
         Map<String, List<WriteRow>> byLocation =
                 new LinkedHashMap<String, List<WriteRow>>();
+        Map<String, Endpoint> writers = new LinkedHashMap<String, Endpoint>();
         for (WriteRow write : session.writes()) {
-            String location = location(write.location());
             writes.put(version(write.location(), write.version()), write);
-            List<WriteRow> under = byLocation.get(location);
-            if (under == null) {
-                under = new ArrayList<WriteRow>();
-                byLocation.put(location, under);
-            }
-            under.add(write);
+            writers.put(write.endpoint().id(), write.endpoint());
+            byLocation.computeIfAbsent(location(write.location()),
+                    key -> new ArrayList<WriteRow>()).add(write);
         }
         Map<String, List<ReadRow>> readsOn =
                 new LinkedHashMap<String, List<ReadRow>>();
         for (ReadRow read : session.reads()) {
-            String at = read.endpoint().occurrence().id();
-            List<ReadRow> on = readsOn.get(at);
-            if (on == null) {
-                on = new ArrayList<ReadRow>();
-                readsOn.put(at, on);
-            }
-            on.add(read);
+            readsOn.computeIfAbsent(read.endpoint().occurrence().id(),
+                    key -> new ArrayList<ReadRow>()).add(read);
         }
         // Closure: occurrence id -> the seq its prefix reaches.
         Map<String, Long> reached = new LinkedHashMap<String, Long>();
@@ -417,10 +418,6 @@ public final class ConfirmMain {
         }
         // The model's writer choices: a writer_arm__ names its writer (groupId)
         // and the STATE interaction ids it fills ({@code smt.Arms#stateArms}).
-        Map<String, Endpoint> writers = new LinkedHashMap<String, Endpoint>();
-        for (WriteRow write : session.writes()) {
-            writers.put(write.endpoint().id(), write.endpoint());
-        }
         Map<String, String> chosen = new LinkedHashMap<String, String>();
         for (JsonObject arm : arms) {
             if (!optionalString(arm, "selector").startsWith("writer_arm__")) {

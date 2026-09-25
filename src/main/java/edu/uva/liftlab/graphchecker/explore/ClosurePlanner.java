@@ -565,8 +565,7 @@ public final class ClosurePlanner {
      *  holder. Falls back to id equality when the map knows no method set. */
     private static boolean holds(StaticScopeMap map, String regionId,
                                  StaticScopeMap.Site site) {
-        Set<String> methods = map == null
-                ? Collections.<String>emptySet() : map.methodsOf(regionId);
+        Set<String> methods = map.methodsOf(regionId);
         return methods.isEmpty()
                 ? site.regionId.equals(regionId)
                 : methods.contains(SiteId.methodOf(site.siteId));
