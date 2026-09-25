@@ -1642,6 +1642,11 @@ public class ComposerTest {
                         + "by name, and not declared free",
                 named(gaps, "PROPAGATION_CUT:UndeclaredFreeSymbol:"
                         + NO_ROW));
+        assertTrue("and the composition's row for that cut says why the "
+                        + "lowering cut it, not a stock sentence",
+                says(gaps, GapKind.UNSTATED_VALUE, "no root mint, clock "
+                        + "reading, attach or read row of this corpus "
+                        + "states this symbol"));
         assertTrue("a reference projection the VM valued neither way is "
                         + "refused by name, naming the class and offset",
                 named(gaps, "UNSTATED_FIELD_PROJECTION:"

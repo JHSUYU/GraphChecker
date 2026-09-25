@@ -535,11 +535,11 @@ public final class Composer {
                             + "identities of this corpus: "
                             + collision.getValue());
         }
-        for (String cut : lowering.cuts()) {
-            gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, cut,
-                    lowering.unsupportedDetail().containsKey(cut)
-                            ? lowering.unsupportedDetail().get(cut)
-                            : "the propagation did not carry this value");
+        for (Map.Entry<String, String> cut : lowering.cuts().entrySet()) {
+            gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, cut.getKey(),
+                    cut.getValue().isEmpty()
+                            ? "the propagation did not carry this value"
+                            : cut.getValue());
         }
 
         // Valuations before the body: the body declares what pins reach.

@@ -1263,12 +1263,18 @@ public final class SmtLowering {
         return stated;
     }
 
-    public Map<String, String> unsupportedDetail() {
-        return unsupportedDetail;
-    }
-
-    public Set<String> cuts() {
-        return cuts;
+    /**
+     * Each propagation cut, by subject, with the detail its refusal stated
+     * ("" for none).  The detail is kept under the refusal's own subject,
+     * {@code PROPAGATION_CUT:<subject>}.
+     */
+    public Map<String, String> cuts() {
+        Map<String, String> named = new LinkedHashMap<String, String>();
+        for (String cut : cuts) {
+            named.put(cut,
+                    unsupportedDetail.getOrDefault(CUT + ":" + cut, ""));
+        }
+        return named;
     }
 
     /**
