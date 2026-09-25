@@ -8,14 +8,17 @@ import edu.uva.liftlab.graphchecker.contract.JvmNames;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.Role;
+import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import java.lang.ref.Reference;
 import java.lang.ref.ReferenceQueue;
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * The execution index of the running thread: one stack, O(1) per event
@@ -44,8 +47,7 @@ public final class Identity {
             };
 
     /** Frame-level tokens: one per entered level, never reused. */
-    private static final java.util.concurrent.atomic.AtomicLong TOKENS =
-            new java.util.concurrent.atomic.AtomicLong(1L);
+    private static final AtomicLong TOKENS = new AtomicLong(1L);
 
     private Identity() {
     }
@@ -233,13 +235,7 @@ public final class Identity {
         }
 
         private ExecutionIndex from(int base) {
-            int start = Math.max(0, Math.min(base, depth()));
-            if (start >= depth()) return ExecutionIndex.empty();
-            List<Frame> standing = new ArrayList<Frame>(depth() - start);
-            for (int index = start; index < depth(); index++) {
-                standing.add(addressedFrame(index));
-            }
-            return ExecutionIndex.of(standing);
+            return ExecutionIndex.of(Arrays.asList(snapshot(base)));
         }
     }
 
@@ -415,8 +411,7 @@ public final class Identity {
         // level goes (#exitFrame, State#openStart).
         RuntimeTraceContext.claimCarried(carrier);
         // The CLAIM half of the handoff, at the site the START named.
-        ScheduleLog.observe(
-                edu.uva.liftlab.graphchecker.contract.ScheduleEvent.Kind.CLAIM,
+        ScheduleLog.observe(ScheduleEvent.Kind.CLAIM,
                 start.frame.callSite());
     }
 
@@ -444,9 +439,7 @@ public final class Identity {
         RuntimeTraceContext.captureAsync(carrier);
         STARTS.put(new Carrier(carrier, COLLECTED),
                 new Start(Frame.of(site, iteration), Attribution.capture()));
-        ScheduleLog.observe(
-                edu.uva.liftlab.graphchecker.contract.ScheduleEvent.Kind.START,
-                site);
+        ScheduleLog.observe(ScheduleEvent.Kind.START, site);
     }
 
     /**
@@ -748,20 +741,14 @@ public final class Identity {
      * a task's prefix is cut.
      */
     public static String innermostRegionId() {
-        State state = state();
-        Region running = state.activeRegion();
-        return running == null || running.occurrence == null ? ""
-                : running.occurrence.id();
+        Region running = state().activeRegion();
+        return running == null ? "" : running.occurrence.id();
     }
 
     /** The innermost open region's occurrence, for a report, or {@code ""}. */
     public static String innermostRegion() {
-        State state = state();
-        for (int index = state.regions.size() - 1; index >= 0; index--) {
-            OccurrenceAddress occurrence = state.regions.get(index).occurrence;
-            if (occurrence != null) return occurrence.render();
-        }
-        return "";
+        Region running = state().activeRegion();
+        return running == null ? "" : running.occurrence.render();
     }
 
     /**
@@ -778,7 +765,8 @@ public final class Identity {
     public static OccurrenceAddress occurrence(String nodeKey, String regionId,
                                                boolean open) {
         String node = Text.safe(nodeKey);
-        if (node.isEmpty() || Text.safe(regionId).isEmpty()) {
+        String region = Text.safe(regionId);
+        if (node.isEmpty() || region.isEmpty()) {
             return null;
         }
         if (open) {
@@ -787,12 +775,10 @@ public final class Identity {
         }
         ExecutionIndex index = open ? regionEnter() : atScope();
         OccurrenceAddress address = OccurrenceAddress.of(
-                NodeId.parse(Text.safe(nodeKey)), Text.safe(regionId),
-                here(Lineage.rootRole()), index);
+                NodeId.parse(node), region, here(Lineage.rootRole()), index);
         if (open) {
-            State state = state();
-            Region region = state.region();
-            if (region != null) region.occurrence = address;
+            Region entered = state().region();
+            if (entered != null) entered.occurrence = address;
             // Where a prefix focusing this occurrence is cut.
             ScheduleLog.mark(address.id());
         }
@@ -837,13 +823,9 @@ public final class Identity {
      * region's, else the degraded role occurrence (INTERACTION-ID R-I1).
      */
     public static OccurrenceAddress currentOccurrence(String nodeKey) {
-        State state = state();
-        for (int index = state.regions.size() - 1; index >= 0; index--) {
-            OccurrenceAddress occurrence = state.regions.get(index).occurrence;
-            if (occurrence != null) return occurrence;
-        }
-        return roleOccurrence(nodeKey,
-                Lineage.role());
+        Region running = state().activeRegion();
+        return running != null ? running.occurrence
+                : roleOccurrence(nodeKey, Lineage.role());
     }
 
     /**
@@ -880,7 +862,7 @@ public final class Identity {
         if (key.isEmpty()) return state.from(state.regionBase());
         int iteration = state.nextSiteEvent(key);
         List<Frame> frames = new ArrayList<Frame>(
-                state.from(state.regionBase()).frames());
+                Arrays.asList(state.snapshot(state.regionBase())));
         frames.add(Frame.of(key, iteration));
         return ExecutionIndex.of(frames);
     }
@@ -910,9 +892,10 @@ public final class Identity {
      * context is still exact.
      */
     public static OccurrenceAddress roleOccurrence(String nodeKey, Role role) {
-        if (Text.safe(nodeKey).isEmpty()) return null;
+        String node = Text.safe(nodeKey);
+        if (node.isEmpty()) return null;
         Role kind = role == null ? Role.UNKNOWN : role;
-        return OccurrenceAddress.of(NodeId.parse(Text.safe(nodeKey)),
+        return OccurrenceAddress.of(NodeId.parse(node),
                 "ROLE." + kind.name(), here(kind), atScope());
     }
 
@@ -923,9 +906,9 @@ public final class Identity {
      * innermost root hop, which are one fact ({@code Lineage.push}).
      */
     private static CausalContext here(Role role) {
-        return context(Lineage.anchor(), Lineage.rpcSite(),
-                Lineage.rootRole(), Lineage.rootApi(),
-                Lineage.rootWindowIndex(), role);
+        Lineage.Here at = Lineage.here();
+        return context(at.anchor, at.rpcSite, at.rootRole, at.rootApi,
+                at.rootWindowIndex, role);
     }
 
     /** The context an occurrence entered under, from its scope frame. */

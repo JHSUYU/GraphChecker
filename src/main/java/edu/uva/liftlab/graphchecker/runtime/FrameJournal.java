@@ -39,7 +39,7 @@ public final class FrameJournal {
             new ConcurrentHashMap<Long, FrameJournal>();
 
     /** Clock readings, ascending, and the frames live at each. */
-    private final List<long[]> clocks = new ArrayList<long[]>();
+    private final List<Long> clocks = new ArrayList<Long>();
     private final List<Frame[]> frames = new ArrayList<Frame[]>();
 
     private FrameJournal() {
@@ -61,16 +61,16 @@ public final class FrameJournal {
         Frame[] copy = standing == null ? new Frame[0]
                 : Arrays.copyOf(standing, standing.length);
         int last = clocks.size() - 1;
-        if (last >= 0 && clocks.get(last)[0] == now) {
+        if (last >= 0 && clocks.get(last) == now) {
             // Empty interval: the previous entry can place no event.
             frames.set(last, copy);
             return;
         }
-        if (last >= 0 && clocks.get(last)[0] > now) {
+        if (last >= 0 && clocks.get(last) > now) {
             // A backwards reading is not this session's.
             return;
         }
-        clocks.add(new long[]{now});
+        clocks.add(now);
         frames.add(copy);
     }
 
@@ -81,7 +81,7 @@ public final class FrameJournal {
         int found = -1;
         while (low <= high) {
             int middle = (low + high) >>> 1;
-            if (clocks.get(middle)[0] < eventId) {
+            if (clocks.get(middle) < eventId) {
                 found = middle;
                 low = middle + 1;
             } else {

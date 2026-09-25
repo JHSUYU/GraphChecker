@@ -9,6 +9,9 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
 
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.GapClass;
+import edu.uva.liftlab.graphchecker.contract.GapKind;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
 
 import java.lang.reflect.Field;
@@ -32,81 +35,59 @@ final class WireExport {
 
     /** Result of one VM symbolic-expression export or attach. */
     static final class HandoffResult {
-        private final String stage;
         private final int status;
+        /** The exported handle, or 0. */
         private final long handle;
         /** The VM ledger events of a successful call, or {@code null}. */
         final JsonObject record;
 
-        private HandoffResult(String stage, int status, long handle,
-                              JsonObject record) {
-            this.stage = stage;
+        private HandoffResult(int status, long handle, JsonObject record) {
             this.status = status;
             this.handle = handle;
             this.record = record;
         }
 
-        public boolean ok() {
+        boolean ok() {
             return status == ConcolicVmBroker.OK;
         }
+    }
 
-        /** Named reason for a failure; empty for a successful call. */
-        public String reason() {
-            return ConcolicVmBroker.describe(status);
-        }
-
-        private long handle() {
-            return handle;
-        }
-
-        @Override
-        public String toString() {
-            return "HandoffResult[" + stage + " status=" + status
-                    + (ok() ? "" : " " + reason())
-                    + " handle=" + handle + "]";
+    /** Runs one step of the runtime's own, unobserved by the VM. */
+    private static void bookkept(Runnable step) {
+        ConcolicRegionRuntime.beginBookkeeping();
+        try {
+            step.run();
+        } finally {
+            ConcolicRegionRuntime.endBookkeeping();
         }
     }
 
     private static HandoffResult exportSymbolicLeaf(
             Object owner, String declaringClass, String fieldName,
             String descriptor) {
-        HandoffResult result;
         ConcolicRegionRuntime.beginBookkeeping();
         try {
-            result = exportOneLeaf(owner, declaringClass, fieldName,
-                    descriptor);
+            if (!leafNamed(owner, declaringClass, fieldName, descriptor)) {
+                return failed(ConcolicVmBroker.MISSING_METADATA);
+            }
+            ConcolicVmBroker api = engine();
+            long handle;
+            // README RPC-1: the VM reports the export's ledger event so the
+            // row names the exact export.
+            long[] exportEvent = new long[1];
+            try {
+                handle = api.exportExpression(owner, declaringClass,
+                        fieldName, descriptor, exportEvent);
+            } catch (Throwable throwable) {
+                return failed(ConcolicVmBroker.INVOCATION_FAILED);
+            }
+            if (handle <= 0L) return failed(exportStatus(handle));
+            JsonObject exported = new JsonObject();
+            exported.addProperty("exportEventId", exportEvent[0]);
+            return new HandoffResult(ConcolicVmBroker.OK, handle, exported);
         } finally {
             ConcolicRegionRuntime.endBookkeeping();
         }
-        return result;
-    }
-
-    private static HandoffResult exportOneLeaf(
-            Object owner, String declaringClass, String fieldName,
-            String descriptor) {
-        String missing = missingFieldMetadata(owner, declaringClass,
-                fieldName, descriptor);
-        if (!missing.isEmpty()) {
-            return failed("EXPORT", ConcolicVmBroker.MISSING_METADATA, 0L);
-        }
-        ConcolicVmBroker api = engine();
-        long handle;
-        // README RPC-1: the VM reports the export's ledger event so the row
-        // names the exact export.
-        long[] exportEvent = new long[1];
-        try {
-            handle = api.exportExpression(owner, declaringClass, fieldName,
-                    descriptor, exportEvent);
-        } catch (Throwable throwable) {
-            return failed("EXPORT", ConcolicVmBroker.INVOCATION_FAILED, 0L);
-        }
-        if (handle <= 0L) {
-            return failed("EXPORT", exportStatus(handle), 0L);
-        }
-        JsonObject exported = new JsonObject();
-        exported.addProperty("exportEventId", exportEvent[0]);
-        return new HandoffResult("EXPORT", ConcolicVmBroker.OK, handle,
-                exported);
     }
 
     /**
@@ -131,34 +112,18 @@ final class WireExport {
         }
     }
 
-    /** Stages one VM handle on the next outbound message. */
-    private static boolean stageMessageExpression(String portId,
-                                                  long handle) {
-        return SymbolicMessageEnvelope.stage(portId, handle);
-    }
-
     /**
      * Opens the frame around one message instance being serialized; leaves
      * staged inside are addressed within it, so two same-shaped groups in one
      * message stay apart.
      */
     static void pushOutboundFrame() {
-        ConcolicRegionRuntime.beginBookkeeping();
-        try {
-            SymbolicMessageEnvelope.pushOutboundFrame();
-        } finally {
-            ConcolicRegionRuntime.endBookkeeping();
-        }
+        bookkept(SymbolicMessageEnvelope::pushOutboundFrame);
     }
 
     /** Closes the frame {@link #pushOutboundFrame} opened. */
     static void popOutboundFrame() {
-        ConcolicRegionRuntime.beginBookkeeping();
-        try {
-            SymbolicMessageEnvelope.popOutboundFrame();
-        } finally {
-            ConcolicRegionRuntime.endBookkeeping();
-        }
+        bookkept(SymbolicMessageEnvelope::popOutboundFrame);
     }
 
     /**
@@ -166,22 +131,12 @@ final class WireExport {
      * thing on both sides.
      */
     static void pushInboundFrame() {
-        ConcolicRegionRuntime.beginBookkeeping();
-        try {
-            SymbolicMessageEnvelope.pushInboundFrame();
-        } finally {
-            ConcolicRegionRuntime.endBookkeeping();
-        }
+        bookkept(SymbolicMessageEnvelope::pushInboundFrame);
     }
 
-    /** Closes the frame {@link #pushInboundMessageFrame} opened. */
+    /** Closes the frame {@link #pushInboundFrame} opened. */
     static void popInboundFrame() {
-        ConcolicRegionRuntime.beginBookkeeping();
-        try {
-            SymbolicMessageEnvelope.popInboundFrame();
-        } finally {
-            ConcolicRegionRuntime.endBookkeeping();
-        }
+        bookkept(SymbolicMessageEnvelope::popInboundFrame);
     }
 
     /**
@@ -206,12 +161,12 @@ final class WireExport {
                 && result.status != ConcolicVmBroker.NOT_SYMBOLIC) {
             return;
         }
-        long handle = result.ok() ? result.handle() : 0L;
-        if (!stageMessageExpression(site.portId(), handle)) {
+        long handle = result.ok() ? result.handle : 0L;
+        if (!SymbolicMessageEnvelope.stage(site.portId(), handle)) {
             // The row still states the endpoint; the loss is named.
-            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
+            RowRuntime.gap(GapKind
                             .UNSTATED_VALUE,
-                    edu.uva.liftlab.graphchecker.contract.GapClass
+                    GapClass
                             .DIAGNOSTIC, site.portId(),
                     "the communication leaf could not enter the message");
         }
@@ -236,7 +191,7 @@ final class WireExport {
             ActiveRegion active = ConcolicRegionRuntime.activeRegion();
             // Producer address: the admitted activation's, else the
             // occurrence running here.
-            edu.uva.liftlab.graphchecker.contract.OccurrenceAddress
+            OccurrenceAddress
                     producer = active != null && active.d3Address != null
                     ? active.d3Address
                     : RowRuntime.occurrenceHere(view.source == null ? ""
@@ -261,9 +216,9 @@ final class WireExport {
                 }
             } catch (Throwable unreadable) {
                 RowRuntime.gap(
-                        edu.uva.liftlab.graphchecker.contract.GapKind
+                        GapKind
                                 .UNSTATED_VALUE,
-                        edu.uva.liftlab.graphchecker.contract.GapClass
+                        GapClass
                                 .DIAGNOSTIC, site.portId(),
                         "the exported leaf's expression could not be read: "
                                 + ConcolicRegionRuntime.rootCause(unreadable));
@@ -273,8 +228,8 @@ final class WireExport {
                     exported, descriptor, recordedValue);
         } catch (Throwable unstated) {
             // Publishing never ends a run, and never fails silently.
-            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind.UNSTATED_VALUE,
-                    edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC, site.portId(),
+            RowRuntime.gap(GapKind.UNSTATED_VALUE,
+                    GapClass.DIAGNOSTIC, site.portId(),
                     "the export of this port published no endpoint row, so"
                             + " no delivery can be paired to it: "
                             + ConcolicRegionRuntime.rootCause(unstated));
@@ -315,9 +270,9 @@ final class WireExport {
         }
         if (site == null) {
             // Rule 5: an undeclared attach is named, not silent.
-            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
+            RowRuntime.gap(GapKind
                             .DECLARATION_MISSING,
-                    edu.uva.liftlab.graphchecker.contract.GapClass
+                    GapClass
                             .DIAGNOSTIC, Text.safe(portId),
                     "a wire attach ran for a port no task of this campaign "
                             + "declares, so it filed nothing");
@@ -384,15 +339,9 @@ final class WireExport {
     private static HandoffResult attach(
             Object owner, String declaringClass, String fieldName,
             String descriptor, long handle) {
-        String missing = missingFieldMetadata(owner, declaringClass,
-                fieldName, descriptor);
-        if (handle <= 0L) {
-            missing = firstNonBlank(missing,
-                    "attach needs a positive handle");
-        }
-        if (!missing.isEmpty()) {
-            return failed("ATTACH", ConcolicVmBroker.MISSING_METADATA,
-                    handle);
+        if (!leafNamed(owner, declaringClass, fieldName, descriptor)
+                || handle <= 0L) {
+            return failed(ConcolicVmBroker.MISSING_METADATA);
         }
         ConcolicVmBroker api = engine();
         long exportEventId;
@@ -402,35 +351,25 @@ final class WireExport {
             exportEventId = api.attachExpression(owner, declaringClass,
                     fieldName, descriptor, handle, attachEvent);
         } catch (Throwable throwable) {
-            return failed("ATTACH", ConcolicVmBroker.INVOCATION_FAILED,
-                    handle);
+            return failed(ConcolicVmBroker.INVOCATION_FAILED);
         }
-        if (exportEventId <= 0L) {
-            return failed("ATTACH", exportStatus(exportEventId), handle);
-        }
+        if (exportEventId <= 0L) return failed(exportStatus(exportEventId));
         if (attachEvent[0] <= 0L) {
             // Accepted with no attach event: half an edge.
-            return failed("ATTACH", ConcolicVmBroker.MALFORMED_RESULT,
-                    handle);
+            return failed(ConcolicVmBroker.MALFORMED_RESULT);
         }
         JsonObject success = new JsonObject();
         success.addProperty("exportEventId", exportEventId);
         success.addProperty("attachEventId", attachEvent[0]);
-        return new HandoffResult("ATTACH",
-                ConcolicVmBroker.OK, handle, success);
+        return new HandoffResult(ConcolicVmBroker.OK, handle, success);
     }
 
-    private static String missingFieldMetadata(
-            Object owner, String declaringClass, String fieldName,
-            String descriptor) {
-        if (owner == null) return "handoff leaf has no owner instance";
-        if (firstNonBlank(declaringClass).isEmpty()
-                || firstNonBlank(fieldName).isEmpty()
-                || firstNonBlank(descriptor).isEmpty()) {
-            return "handoff leaf has no exact declaring class, field name "
-                    + "and type descriptor";
-        }
-        return "";
+    /** Whether a leaf names its owner instance, declaring class, field and type. */
+    private static boolean leafNamed(Object owner, String declaringClass,
+                                     String fieldName, String descriptor) {
+        return owner != null && !firstNonBlank(declaringClass).isEmpty()
+                && !firstNonBlank(fieldName).isEmpty()
+                && !firstNonBlank(descriptor).isEmpty();
     }
 
     /** Maps a non-positive {@code exportExpression} answer onto a status. */
@@ -442,8 +381,7 @@ final class WireExport {
     }
 
     /** One refused broker call; callers act on the status only. */
-    private static HandoffResult failed(String stage, int status,
-                                        long handle) {
-        return new HandoffResult(stage, status, handle, null);
+    private static HandoffResult failed(int status) {
+        return new HandoffResult(status, 0L, null);
     }
 }

@@ -1,8 +1,10 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
 import edu.uva.liftlab.graphchecker.causynth.MapFields;
+import edu.uva.liftlab.graphchecker.contract.GapClass;
+import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.Role;
-import edu.uva.liftlab.graphchecker.runtime.Lineage;
+import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.Base64;
@@ -55,7 +57,7 @@ final class RuntimeTraceContext {
         synchronized (LOCK) {
             SourceRef canonical = canonicalSourceLocked(source);
             requireUnchangedAliasLocked(anchor, canonical);
-            bindSourceLocked(anchor, canonical);
+            SOURCE_ALIASES.put(anchor, canonical);
             return canonical;
         }
     }
@@ -67,18 +69,24 @@ final class RuntimeTraceContext {
                     "source alias registration requires alias and anchor");
         }
         synchronized (LOCK) {
-            SourceRef source = resolveNamedAnchorLocked(anchor);
+            SourceRef source = SOURCE_ALIASES.get(anchor);
             if (source == null) {
                 throw new IllegalArgumentException(
                         "source anchor is not registered: "
                                 + describeAnchor(anchor));
             }
             requireUnchangedAliasLocked(alias, source);
-            bindSourceLocked(alias, source);
+            SOURCE_ALIASES.put(alias, source);
             return source;
         }
     }
 
+    /**
+     * The source an explicitly named anchor is registered as, by object
+     * identity only: the only attribution a replay reproduces.  A workload
+     * that replaces the object registers the successor itself
+     * ({@code registerSource} / {@code restartSource}).
+     */
     static SourceRef sourceFor(Object alias) {
         if (alias == null) return null;
         synchronized (LOCK) {
@@ -87,10 +95,7 @@ final class RuntimeTraceContext {
     }
 
     static long beginRequest(Object sourceAlias, String apiName) {
-        SourceRef source;
-        synchronized (LOCK) {
-            source = resolveNamedAnchorLocked(sourceAlias);
-        }
+        SourceRef source = sourceFor(sourceAlias);
         if (source == null) {
             throw new IllegalArgumentException(
                     "request source alias is not registered: "
@@ -110,10 +115,9 @@ final class RuntimeTraceContext {
         }
         State state = CURRENT.get();
         long requestId = nextId();
-        String normalizedApi = MapFields.safe(apiName).trim();
+        String normalizedApi = Text.safe(apiName);
         if (normalizedApi.isEmpty()) normalizedApi = "request";
-        Frame activeFrame = state.frames.peek();
-        ScopeFrame scope = new ScopeFrame(requestId, state, activeFrame);
+        ScopeFrame scope = new ScopeFrame(requestId, state);
         // The workload's action roots this lineage.
         scope.lineageToken = Lineage.push(source.key(), Role.CLIENT,
                 normalizedApi);
@@ -122,18 +126,23 @@ final class RuntimeTraceContext {
                 + "#" + Lineage.rootWindowIndex();
         // The index begins at the request; a start frame above it belongs
         // to the root that carried the thread here (Identity.Hop.SCOPE_ROOT).
-        scope.scopeBaseBefore = edu.uva.liftlab.graphchecker.runtime.Identity.scopeStart(
-                edu.uva.liftlab.graphchecker.runtime.Identity.Hop
-                        .SCOPE_ROOT);
+        scope.scopeBaseBefore = Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
+        standIn(state, scope, source, requestKey, normalizedApi);
+        publishCausalSource(state);
+        return requestId;
+    }
+
+    /**
+     * Stands the thread and its active frame in {@code scope}, which names
+     * {@code source} and the request {@code key}/{@code api} explicitly.
+     */
+    private static void standIn(State state, ScopeFrame scope,
+                                SourceRef source, String key, String api) {
         scope.opened = source;
         state.scopes.push(scope);
         state.source = source;
-        state.flow = state.flow.withRequest(requestKey, normalizedApi);
-        if (activeFrame != null) {
-            activeFrame.source = source;
-        }
-        publishCausalSource(state);
-        return requestId;
+        state.flow = state.flow.withRequest(key, api);
+        if (scope.activeFrame != null) scope.activeFrame.source = source;
     }
 
     /** Exits the matching request scope and restores the caller source. */
@@ -150,7 +159,7 @@ final class RuntimeTraceContext {
         SourceRef previous;
         SourceRef next;
         synchronized (LOCK) {
-            previous = resolveNamedAnchorLocked(anchor);
+            previous = SOURCE_ALIASES.get(anchor);
             if (previous == null) {
                 throw new IllegalArgumentException(
                         "source anchor is not registered: "
@@ -164,7 +173,7 @@ final class RuntimeTraceContext {
                         "restart must advance the same logical source");
             }
             next = canonicalSourceLocked(nextSource);
-            bindSourceLocked(anchor, next);
+            SOURCE_ALIASES.put(anchor, next);
         }
         return next;
     }
@@ -208,9 +217,8 @@ final class RuntimeTraceContext {
         if (seed.source == null && !flow && !lineage) return;
         releaseCarried();
         State state = CURRENT.get();
-        Frame activeFrame = state.frames.peek();
         long token = nextId();
-        ScopeFrame scope = new ScopeFrame(token, state, activeFrame);
+        ScopeFrame scope = new ScopeFrame(token, state);
         scope.opened = seed.source;
         scope.lineageToken = Lineage.restore(seed.lineage,
                 seed.source == null ? "" : seed.source.key(),
@@ -235,7 +243,11 @@ final class RuntimeTraceContext {
 
     /** Attribution rule 1: the innermost explicit scope's node, or null. */
     static SourceRef explicitSource() {
-        State state = CURRENT.get();
+        return explicitIn(CURRENT.get());
+    }
+
+    /** Rule 1 read off one state, with no thread-local touched. */
+    private static SourceRef explicitIn(State state) {
         for (ScopeFrame scope : state.scopes) {
             if (scope.opened != null) return scope.opened;
         }
@@ -335,23 +347,16 @@ final class RuntimeTraceContext {
         RequestScope scope = (RequestScope) carriedScope;
         if (!scope.names()) return 0L;
         State state = CURRENT.get();
-        Frame activeFrame = state.frames.peek();
         long token = nextId();
-        ScopeFrame frame = new ScopeFrame(token, state, activeFrame);
-        frame.opened = scope.source;
-        state.scopes.push(frame);
-        state.source = scope.source;
-        state.flow = state.flow.withRequest(scope.requestKey,
+        ScopeFrame frame = new ScopeFrame(token, state);
+        standIn(state, frame, scope.source, scope.requestKey,
                 scope.requestApi);
-        if (activeFrame != null) activeFrame.source = scope.source;
         String api = MapFields.safe(apiName).isEmpty()
                 ? scope.requestApi : MapFields.safe(apiName);
         frame.lineageToken = Lineage.restore(scope.lineage,
                 scope.source.key(), Role.of(roleName), api);
         // The carried scope is the work's, not the pool thread's.
-        frame.scopeBaseBefore = edu.uva.liftlab.graphchecker.runtime.Identity.scopeStart(
-                edu.uva.liftlab.graphchecker.runtime.Identity.Hop
-                        .SCOPE_ROOT);
+        frame.scopeBaseBefore = Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
         publishCausalSource(state);
         return token;
     }
@@ -374,11 +379,9 @@ final class RuntimeTraceContext {
         SourceRef owned = sourceFor(owner);
         SourceRef source = owned != null ? owned : Attribution.resolve(null);
         // The tick IS the started work: index begins at its start frame.
-        int scopeBaseBefore = edu.uva.liftlab.graphchecker.runtime.Identity.scopeStart(
-                edu.uva.liftlab.graphchecker.runtime.Identity.Hop
-                        .STARTED_ROOT);
+        int scopeBaseBefore = Identity.scopeStart(Identity.Hop.STARTED_ROOT);
         long token = nextId();
-        ScopeFrame scope = new ScopeFrame(token, state, state.frames.peek());
+        ScopeFrame scope = new ScopeFrame(token, state);
         scope.scopeBaseBefore = scopeBaseBefore;
         scope.opened = owned;
         // Always a ROOT hop: a nested one would inherit whatever request
@@ -390,7 +393,7 @@ final class RuntimeTraceContext {
         // sends reaches its server anchored rather than Lost.
         if (source != null
                 && !UNREGISTERED_SOURCE.key().equals(source.key())) {
-            String api = MapFields.safe(roleName).trim();
+            String api = Text.safe(roleName);
             if (api.isEmpty()) api = "tick";
             state.source = source;
             state.flow = state.flow.withRequest(source.key() + "/tick/"
@@ -399,9 +402,7 @@ final class RuntimeTraceContext {
         // A tick is a WAKE.  Only a turn whose WAKE was written states its
         // END, so no END is left without a WAKE across the window opening.
         String site = "tick." + MapFields.safe(roleName);
-        if (ScheduleLog.observe(
-                edu.uva.liftlab.graphchecker.contract.ScheduleEvent.Kind.WAKE,
-                site)) {
+        if (ScheduleLog.observe(ScheduleEvent.Kind.WAKE, site)) {
             scope.tickSite = site;
         }
         return token;
@@ -414,22 +415,11 @@ final class RuntimeTraceContext {
      */
     static void endTick(long token) {
         State state = CURRENT.get();
-        ScopeFrame tick = null;
-        for (ScopeFrame open : state.scopes) {
-            if (open.token == token) {
-                tick = open;
-                break;
-            }
-        }
+        ScopeFrame tick = standing(state, token);
         if (tick != null && tick.tickSite != null) {
             // Inner scopes close first, so END stands in the turn's context.
-            while (state.scopes.peek() != null
-                    && state.scopes.peek() != tick) {
-                restoreOne(state, state.scopes.peek());
-            }
-            ScheduleLog.observe(
-                    edu.uva.liftlab.graphchecker.contract.ScheduleEvent.Kind
-                            .END, tick.tickSite);
+            closeInside(state, tick);
+            ScheduleLog.observe(ScheduleEvent.Kind.END, tick.tickSite);
         }
         restoreScope(token);
     }
@@ -446,33 +436,26 @@ final class RuntimeTraceContext {
     static long beginWake(String api) {
         // A timed wait inside non-turn work is a pause within it, not a
         // daemon's next turn.
-        State current = CURRENT.get();
-        for (ScopeFrame standing : current.scopes) {
-            if (!standing.turn) return 0L;
+        State state = CURRENT.get();
+        for (ScopeFrame open : state.scopes) {
+            if (!open.turn) return 0L;
         }
         SourceRef source = activationSource(null);
         if (source == null
                 || UNREGISTERED_SOURCE.key().equals(source.key())) {
             return 0L;
         }
-        String normalizedApi = MapFields.safe(api).trim();
+        String normalizedApi = Text.safe(api);
         if (normalizedApi.isEmpty()) normalizedApi = "wake";
-        State state = CURRENT.get();
         long token = nextId();
-        Frame activeFrame = state.frames.peek();
-        ScopeFrame scope = new ScopeFrame(token, state, activeFrame);
-        scope.opened = source;
+        ScopeFrame scope = new ScopeFrame(token, state);
         scope.turn = true;
         scope.lineageToken = Lineage.pushRoot(source.key(), Role.of("WAKE"),
                 normalizedApi);
-        scope.scopeBaseBefore = edu.uva.liftlab.graphchecker.runtime.Identity.scopeStart(
-                edu.uva.liftlab.graphchecker.runtime.Identity.Hop.SCOPE_ROOT);
-        state.scopes.push(scope);
-        state.source = source;
-        state.flow = state.flow.withRequest(source.key() + "/wake/"
+        scope.scopeBaseBefore = Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
+        standIn(state, scope, source, source.key() + "/wake/"
                 + normalizedApi + "#" + Lineage.rootWindowIndex(),
                 normalizedApi);
-        if (activeFrame != null) activeFrame.source = source;
         publishCausalSource(state);
         return token;
     }
@@ -483,16 +466,9 @@ final class RuntimeTraceContext {
      */
     static boolean endWakeIfInnermost(long token) {
         State state = CURRENT.get();
-        boolean standing = false;
-        for (ScopeFrame open : state.scopes) {
-            if (open.token == token) {
-                standing = true;
-                break;
-            }
-        }
-        if (!standing) return true;
-        ScopeFrame innermost = state.scopes.peek();
-        if (innermost == null || innermost.token != token) return false;
+        ScopeFrame turn = standing(state, token);
+        if (turn == null) return true;
+        if (state.scopes.peek() != turn) return false;
         restoreScope(token);
         return true;
     }
@@ -520,14 +496,9 @@ final class RuntimeTraceContext {
 
     }
 
-    /** Encodes the current node and request flow for the next message. */
-    static String outboundHeader(Object localOwner) {
-        return outboundHeader(localOwner, null);
-    }
-
     /**
-     * The same header for work carrying its own scope, which wins when it
-     * names one; otherwise the thread's scope answers.
+     * Encodes the current node and request flow for the next message; a
+     * carried scope wins when it names one, else the thread's answers.
      */
     static String outboundHeader(Object localOwner, Object carriedScope) {
         State state = CURRENT.get();
@@ -564,9 +535,9 @@ final class RuntimeTraceContext {
                              String half, Object localOwner) {
         MessageContext remote = MessageContext.parse(header);
         State state = CURRENT.get();
-        Frame activeFrame = state.frames.peek();
         long token = nextId();
-        ScopeFrame scope = new ScopeFrame(token, state, activeFrame);
+        ScopeFrame scope = new ScopeFrame(token, state);
+        Frame activeFrame = scope.activeFrame;
         state.scopes.push(scope);
         // Execution context comes from execution-scope events only; the
         // SENDER's source is provenance and must not become the receiver's
@@ -593,11 +564,9 @@ final class RuntimeTraceContext {
                 inboundFamily(remote.requestKey, remote.requestApi));
         // The index begins at the inbound scope; the handler frames above
         // it are scheduling (Identity.Hop.ANCHOR).
-        scope.scopeBaseBefore = edu.uva.liftlab.graphchecker.runtime.Identity.scopeStart(
-                edu.uva.liftlab.graphchecker.runtime.Identity.Hop.ANCHOR);
+        scope.scopeBaseBefore = Identity.scopeStart(Identity.Hop.ANCHOR);
         // The producer endpoint IS the causal context (IDENTITY-V3).
-        Lineage.anchor(edu.uva.liftlab.graphchecker.runtime.Interactions
-                        .sender(state.flow.exchangeTransport,
+        Lineage.anchor(Interactions.sender(state.flow.exchangeTransport,
                                 state.flow.exchangeCorrelationId,
                                 state.flow.exchangeHalf),
                 // Api is the last segment (ComposeMain.apiOf).
@@ -613,15 +582,15 @@ final class RuntimeTraceContext {
      * cannot be held to it.
      */
     private static String inboundFamily(String requestKey, String requestApi) {
-        String key = MapFields.safe(requestKey).trim();
+        String key = Text.safe(requestKey);
         int marker = key.lastIndexOf("/request/");
-        if (marker <= 0) return MapFields.safe(requestApi).trim();
+        if (marker <= 0) return Text.safe(requestApi);
         String source = key.substring(0, marker);
         String api = key.substring(marker + "/request/".length());
         int ordinal = api.lastIndexOf('#');
         if (ordinal > 0) api = api.substring(0, ordinal);
         return source.isEmpty() || api.isEmpty()
-                ? MapFields.safe(requestApi).trim() : source + "/" + api;
+                ? Text.safe(requestApi) : source + "/" + api;
     }
 
     static void exitInbound(long token) {
@@ -697,22 +666,27 @@ final class RuntimeTraceContext {
 
     private static void restoreScope(long token) {
         State state = CURRENT.get();
-        boolean standing = false;
-        for (ScopeFrame open : state.scopes) {
-            if (open.token == token) {
-                standing = true;
-                break;
-            }
-        }
+        ScopeFrame scope = standing(state, token);
         // Already closed by an outer close: a no-op, never a throw.
-        if (!standing) return;
-        while (state.scopes.peek() != null
-                && state.scopes.peek().token != token) {
-            ScopeFrame inner = state.scopes.peek();
-            restoreOne(state, inner);
-        }
-        restoreOne(state, state.scopes.peek());
+        if (scope == null) return;
+        closeInside(state, scope);
+        restoreOne(state, scope);
         publishCausalSource(state);
+    }
+
+    /** The scope {@code token} opened, while it stands; else null. */
+    private static ScopeFrame standing(State state, long token) {
+        for (ScopeFrame open : state.scopes) {
+            if (open.token == token) return open;
+        }
+        return null;
+    }
+
+    /** Closes every scope inside {@code scope}, innermost first. */
+    private static void closeInside(State state, ScopeFrame scope) {
+        while (state.scopes.peek() != null && state.scopes.peek() != scope) {
+            restoreOne(state, state.scopes.peek());
+        }
     }
 
     /** Closes the innermost scope and puts back what it replaced. */
@@ -720,8 +694,7 @@ final class RuntimeTraceContext {
         state.scopes.pop();
         if (scope.lineageToken > 0L) Lineage.release(scope.lineageToken);
         if (scope.scopeBaseBefore >= 0) {
-            edu.uva.liftlab.graphchecker.runtime.Identity.scopeRestore(
-                    scope.scopeBaseBefore);
+            Identity.scopeRestore(scope.scopeBaseBefore);
         }
         state.source = scope.source;
         state.flow = scope.flow;
@@ -812,10 +785,8 @@ final class RuntimeTraceContext {
                 if (unique == null) {
                     unique = frame;
                 } else if (!unique.key().equals(frame.key())) {
-                    RowRuntime.gap(edu.uva.liftlab.graphchecker.contract
-                                    .GapKind.LINEAGE_LOST,
-                            edu.uva.liftlab.graphchecker.contract
-                                    .GapClass.DIAGNOSTIC,
+                    RowRuntime.gap(GapKind.LINEAGE_LOST,
+                            GapClass.DIAGNOSTIC,
                             unique.key() + " vs " + frame.key(),
                             "two frames of one activation name two"
                                     + " components, so the run attributes it"
@@ -853,20 +824,6 @@ final class RuntimeTraceContext {
         return source;
     }
 
-    private static void bindSourceLocked(Object alias, SourceRef source) {
-        SOURCE_ALIASES.put(alias, source);
-    }
-
-    /**
-     * The source an explicitly named anchor is registered as, by object
-     * identity only: the only attribution a replay reproduces.  A workload
-     * that replaces the object registers the successor itself
-     * ({@code registerSource} / {@code restartSource}).
-     */
-    private static SourceRef resolveNamedAnchorLocked(Object anchor) {
-        return SOURCE_ALIASES.get(anchor);
-    }
-
     /** Names an anchor a caller passed, without calling its toString(). */
     private static String describeAnchor(Object anchor) {
         if (anchor == null) return "null";
@@ -885,7 +842,7 @@ final class RuntimeTraceContext {
 
     /** Whether {@code sourceKey} names an epoch of its node at all. */
     static boolean declaresEpoch(String sourceKey) {
-        String value = sourceKey == null ? "" : sourceKey.trim();
+        String value = Text.safe(sourceKey);
         return !value.isEmpty() && !sourceIdentity(value).equals(value);
     }
 
@@ -908,7 +865,7 @@ final class RuntimeTraceContext {
     }
 
     private static String sourceIdentity(String sourceKey) {
-        String value = sourceKey == null ? "" : sourceKey.trim();
+        String value = Text.safe(sourceKey);
         int marker = value.lastIndexOf("#epoch");
         if (marker <= 0 || marker + 6 >= value.length()) return value;
         for (int i = marker + 6; i < value.length(); i++) {
@@ -934,13 +891,7 @@ final class RuntimeTraceContext {
         State child = initialState();
         if (parent == null) return child;
         // Read off parent state: no thread-local during construction.
-        SourceRef creatorExplicit = null;
-        for (ScopeFrame scope : parent.scopes) {
-            if (scope.opened != null) {
-                creatorExplicit = scope.opened;
-                break;
-            }
-        }
+        SourceRef creatorExplicit = explicitIn(parent);
         child.inheritedSource = creatorExplicit != null ? creatorExplicit
                 : parent.inheritedSource;
         View inherited = parent.rawView();
@@ -1090,8 +1041,8 @@ final class RuntimeTraceContext {
             this.requestKey = MapFields.safe(requestKey);
             this.requestApi = MapFields.safe(requestApi);
             this.exchangeTransport = normalizedUpper(exchangeTransport);
-            this.exchangeCorrelationId = normalized(exchangeCorrelationId);
-            this.exchangeAttemptId = normalized(exchangeAttemptId);
+            this.exchangeCorrelationId = Text.safe(exchangeCorrelationId);
+            this.exchangeAttemptId = Text.safe(exchangeAttemptId);
             this.exchangeHalf = normalizedUpper(exchangeHalf);
         }
 
@@ -1122,9 +1073,11 @@ final class RuntimeTraceContext {
         /** The request flow this scope replaced, put back when it ends. */
         private final Flow flow;
 
-        private ScopeFrame(long token, State state, Frame activeFrame) {
+        /** Opens over {@code state} as it stands, active frame included. */
+        private ScopeFrame(long token, State state) {
             this.token = token;
             this.source = state.source;
+            Frame activeFrame = state.frames.peek();
             this.activeFrame = activeFrame;
             this.frameSource = activeFrame == null ? null : activeFrame.source;
             this.frameRemoteParentSpanId = activeFrame == null ? 0L
@@ -1134,12 +1087,8 @@ final class RuntimeTraceContext {
         }
     }
 
-    private static String normalized(String value) {
-        return MapFields.safe(value).trim();
-    }
-
     private static String normalizedUpper(String value) {
-        return normalized(value).toUpperCase(Locale.ROOT);
+        return Text.safe(value).toUpperCase(Locale.ROOT);
     }
 
     private static String encoded(String value) {

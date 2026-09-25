@@ -42,7 +42,7 @@ public class SaslExchangeHalfTest {
         Object head = new Object();
         RuntimeTraceContext.registerSource(head, HEAD);
         long upstream = RuntimeTraceContext.beginRequest(head, "transfer");
-        String header = RuntimeTraceContext.outboundHeader(head);
+        String header = RuntimeTraceContext.outboundHeader(head, null);
         RuntimeTraceContext.endRequest(upstream);
         assertTrue("the upstream message carries a context", !header.isEmpty());
         // The serving thread's own flow, so every message it sends carries a

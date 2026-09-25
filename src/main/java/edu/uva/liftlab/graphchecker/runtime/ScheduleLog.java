@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.JvmNames;
@@ -71,6 +72,8 @@ public final class ScheduleLog {
     static final int REST_STALLS = 2;
     /** Where a wait no slot holds waits while the prefix stands. */
     private static final int AT_THE_CUT = -1;
+    /** An event that waits nowhere: it is written now. */
+    private static final int GO = -2;
 
     /** A stall this many timeouts long is given up whatever the CPU does. */
     static final int CEILING = 8;
@@ -158,10 +161,7 @@ public final class ScheduleLog {
         try {
             Pending event = pending(kind, site, endpoint);
             if (event == null) return false;
-            synchronized (LOCK) {
-                loadOrderLocked();
-                admitLocked(event);
-            }
+            admit(event);
             return true;
         } finally {
             unmute();
@@ -207,7 +207,7 @@ public final class ScheduleLog {
         if (!RecordingWindow.opened()) return null;
         mute();
         try {
-            Pending event = pending(ScheduleEvent.Kind.WAKE, site);
+            Pending event = pending(ScheduleEvent.Kind.WAKE, site, "");
             return event == null ? null : new Wake(event);
         } finally {
             unmute();
@@ -248,25 +248,16 @@ public final class ScheduleLog {
                 Thread self = Thread.currentThread();
                 while (true) {
                     int slot = holds ? slotOf(wake.event) : -1;
-                    if (slot < 0 && !prefixStandsLocked()) {
+                    int at = waitsAtLocked(wake.event, slot);
+                    if (at == GO) {
                         WAITERS.remove(self);
-                        return Turn.FREE;
-                    }
-                    if (slot < 0) {
-                        // An unrecorded WAKE is slept through while the
-                        // prefix stands: it waits AT THE CUT, counted by the
-                        // watchdog.  A signal still ends it.
-                        WAITERS.put(self, AT_THE_CUT);
-                        if (!watchdogLocked()) return Turn.NOT_YET;
-                        continue;
-                    }
-                    if (dueLocked(slot)) {
-                        WAITERS.remove(self);
+                        if (slot < 0) return Turn.FREE;
                         takeLocked(slot);
                         appendLocked(wake.event);
                         return Turn.ADMITTED;
                     }
-                    WAITERS.put(self, slot);
+                    // Not due: a signal still ends the wait meanwhile.
+                    WAITERS.put(self, at);
                     if (!watchdogLocked()) return Turn.NOT_YET;
                 }
             }
@@ -280,10 +271,7 @@ public final class ScheduleLog {
         if (wake == null) return;
         mute();
         try {
-            synchronized (LOCK) {
-                loadOrderLocked();
-                admitLocked(wake.event);
-            }
+            admit(wake.event);
         } finally {
             unmute();
         }
@@ -309,10 +297,6 @@ public final class ScheduleLog {
         }
     }
 
-    private static Pending pending(ScheduleEvent.Kind kind, String site) {
-        return pending(kind, site, "");
-    }
-
     /**
      * The event this hook makes, or null.  A {@code Lost} context makes none:
      * all Lost threads share it, so its k would be a cross-thread counter
@@ -323,8 +307,9 @@ public final class ScheduleLog {
         String stable = JvmNames.stable(Text.safe(site));
         if (stable.isEmpty()) return null;
         try {
-            if (Identity.contextHere().isLost()) return null;
-            return new Pending(kind, contextHere(), stable,
+            CausalContext context = Identity.contextHere();
+            if (context.isLost()) return null;
+            return new Pending(kind, contextOf(context), stable,
                     Identity.innermostRegionId(), Text.safe(endpoint));
         } catch (Throwable unnamed) {
             return null;
@@ -338,7 +323,11 @@ public final class ScheduleLog {
         ScheduleEvent event = ScheduleEvent.of(seq++, pending.kind,
                 pending.context, pending.site, k, pending.occurrence,
                 pending.endpoint);
-        JsonObject row = RowCodec.writeScheduleEvent(event);
+        writeLocked(RowCodec.writeScheduleEvent(event));
+    }
+
+    /** One row to the sink, or held until one is installed. */
+    private static void writeLocked(JsonObject row) {
         if (sink != null) {
             sink.write(row);
         } else if (PENDING.size() < PENDING_LIMIT) {
@@ -346,8 +335,7 @@ public final class ScheduleLog {
         }
     }
 
-    private static final java.util.Set<String> MARKED =
-            new java.util.HashSet<String>();
+    private static final Set<String> MARKED = new HashSet<String>();
 
     /**
      * Marks where one occurrence opened: not an event, but the cut of a
@@ -361,11 +349,7 @@ public final class ScheduleLog {
             JsonObject row = new JsonObject();
             row.addProperty("mark", id);
             row.addProperty("at", seq);
-            if (sink != null) {
-                sink.write(row);
-            } else if (PENDING.size() < PENDING_LIMIT) {
-                PENDING.add(row);
-            }
+            writeLocked(row);
         }
     }
 
@@ -374,9 +358,13 @@ public final class ScheduleLog {
      * so a key's k never counts two threads interleaved.
      */
     static String contextHere() {
+        return contextOf(Identity.contextHere());
+    }
+
+    private static String contextOf(CausalContext context) {
         String node = Text.safe(RuntimeTraceContext.nodeHere());
         String handoffs = Identity.handoffs();
-        return node + "|" + Identity.contextHere().render()
+        return node + "|" + context.render()
                 + (handoffs.isEmpty() ? "" : "|" + handoffs);
     }
 
@@ -424,6 +412,13 @@ public final class ScheduleLog {
 
     // ---- the rule ---------------------------------------------------------
 
+    private static void admit(Pending event) {
+        synchronized (LOCK) {
+            loadOrderLocked();
+            admitLocked(event);
+        }
+    }
+
     /** Admits one event by THE rule and writes it; runs the watchdog. */
     private static void admitLocked(Pending event) {
         if (!holds) {
@@ -434,26 +429,17 @@ public final class ScheduleLog {
         try {
             while (true) {
                 int slot = slotOf(event);
-                if (slot < 0 && event.kind == ScheduleEvent.Kind.WAKE
-                        && prefixStandsLocked()) {
-                    // An unrecorded WAKE waits at the cut, as in #turn.
-                    WAITERS.put(self, AT_THE_CUT);
-                    if (watchdogLocked()) continue;
-                    LOCK.wait(Math.max(1L, Math.min(timeoutMillis(), 1000L)));
-                    continue;
-                }
-                if (slot < 0) {
-                    ranFree++;
+                int at = waitsAtLocked(event, slot);
+                if (at == GO) {
+                    if (slot < 0) {
+                        ranFree++;
+                    } else {
+                        takeLocked(slot);
+                    }
                     appendLocked(event);
                     return;
                 }
-                if (event.kind == ScheduleEvent.Kind.INTERRUPT
-                        || !heldKind(slot) || dueLocked(slot)) {
-                    takeLocked(slot);
-                    appendLocked(event);
-                    return;
-                }
-                WAITERS.put(self, slot);
+                WAITERS.put(self, at);
                 if (watchdogLocked()) continue;
                 LOCK.wait(Math.max(1L, Math.min(timeoutMillis(), 1000L)));
             }
@@ -487,6 +473,21 @@ public final class ScheduleLog {
         return slots.peekFirst();
     }
 
+    /**
+     * Where {@code event}, whose slot is {@code slot} (-1: none), waits now,
+     * or {@link #GO}.  An unrecorded WAKE is slept through while the prefix
+     * stands: it waits AT THE CUT, counted by the watchdog.  INTERRUPT is
+     * never held.
+     */
+    private static int waitsAtLocked(Pending event, int slot) {
+        if (slot < 0) {
+            return event.kind == ScheduleEvent.Kind.WAKE
+                    && prefixStandsLocked() ? AT_THE_CUT : GO;
+        }
+        return event.kind == ScheduleEvent.Kind.INTERRUPT
+                || !heldKind(slot) || dueLocked(slot) ? GO : slot;
+    }
+
     /** Whether a slot holds its event: before the cut, or a WAKE. */
     private static boolean heldKind(int slot) {
         return slot < cut
@@ -505,10 +506,7 @@ public final class ScheduleLog {
 
     private static void takeLocked(int slot) {
         ScheduleEvent event = order.get(slot);
-        ArrayDeque<Integer> slots = SLOTS.get(event.key());
-        if (slots != null) slots.remove(Integer.valueOf(slot));
-        if (state[slot] == OPEN && heldKind(slot)) openHeld--;
-        state[slot] = TAKEN;
+        markLocked(slot, TAKEN);
         taken++;
         if (event.kind() == ScheduleEvent.Kind.WAKE) {
             TAKEN_WAKES.put(event.key(), slot);
@@ -518,11 +516,22 @@ public final class ScheduleLog {
         settleLocked();
     }
 
+    /**
+     * Moves one slot to {@code next}; a TAKEN or DEAD one leaves its key's
+     * queue, so no event takes it again.
+     */
+    private static void markLocked(int slot, byte next) {
+        if (state[slot] == OPEN && heldKind(slot)) openHeld--;
+        state[slot] = next;
+        if (next == GIVEN_UP) return;
+        ArrayDeque<Integer> keyed = SLOTS.get(order.get(slot).key());
+        if (keyed != null) keyed.remove(Integer.valueOf(slot));
+    }
+
     /** An open slot is given up: its event may still come and take it. */
     private static void giveUpLocked(int slot) {
         if (state[slot] != OPEN) return;
-        if (heldKind(slot)) openHeld--;
-        state[slot] = GIVEN_UP;
+        markLocked(slot, GIVEN_UP);
         givenUp++;
     }
 
@@ -537,8 +546,7 @@ public final class ScheduleLog {
                     || order.get(index).kind() == ScheduleEvent.Kind.WAKE) {
                 continue;
             }
-            if (heldKind(index)) openHeld--;
-            state[index] = GIVEN_UP;
+            markLocked(index, GIVEN_UP);
             settledByEnd++;
         }
     }
@@ -575,11 +583,7 @@ public final class ScheduleLog {
                     if (state[slot] != OPEN && state[slot] != GIVEN_UP) {
                         continue;
                     }
-                    if (state[slot] == OPEN && heldKind(slot)) openHeld--;
-                    state[slot] = DEAD;
-                    ArrayDeque<Integer> keyed =
-                            SLOTS.get(order.get(slot).key());
-                    if (keyed != null) keyed.remove(Integer.valueOf(slot));
+                    markLocked(slot, DEAD);
                     dead++;
                     count++;
                     if (first < 0) first = slot;

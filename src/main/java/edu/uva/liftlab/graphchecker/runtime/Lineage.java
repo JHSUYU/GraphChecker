@@ -148,7 +148,7 @@ public final class Lineage {
     public static long restore(Object carried, String nodeKey, Role role,
                                String api) {
         List<Frame> stack = STACK.get();
-        final List<Frame> restored = new ArrayList<Frame>(stack);
+        List<Frame> restored = new ArrayList<Frame>(stack);
         if (carried instanceof Carried && ((Carried) carried).names()) {
             // Inside a carried lineage the hop is no root.
             stack.clear();
@@ -200,35 +200,44 @@ public final class Lineage {
         frame.rpcSite = Text.safe(rpcSite);
     }
 
+    /** What the scope running here stands on, read in one scan. */
+    static final class Here {
+        /** The producer endpoint of the message that opened it, or "". */
+        final String anchor;
+        /** The transport site that message crossed, or "". */
+        final String rpcSite;
+        final Role rootRole;
+        final String rootApi;
+        final int rootWindowIndex;
+
+        private Here(Frame anchored, Frame root) {
+            this.anchor = anchored == null ? "" : anchored.anchor;
+            this.rpcSite = anchored == null ? "" : anchored.rpcSite;
+            this.rootRole = root == null ? Role.UNKNOWN : root.role;
+            this.rootApi = root == null ? "" : root.api;
+            this.rootWindowIndex = windowIndex(root);
+        }
+    }
+
     /**
-     * The producer endpoint of the message that opened this scope, or "".
+     * The innermost root hop and the hop whose message opened the scope.
      *
-     * <p>Searched outwards and STOPPED at the innermost root (whose own
-     * anchor counts): a root descends from nothing ({@link #pushRoot}), so a
-     * tick inside a request must not inherit the request's {@code Anchor}
-     * form, or two ticks share one address.  Turns of a tick differ by the
-     * root's window index ({@code Identity.Hop#STARTED_ROOT}).</p>
+     * <p>The anchor is searched outwards and STOPPED at the innermost root
+     * (whose own anchor counts): a root descends from nothing ({@link
+     * #pushRoot}), so a tick inside a request must not inherit the request's
+     * {@code Anchor} form, or two ticks share one address.  Turns of a tick
+     * differ by the root's window index ({@code
+     * Identity.Hop#STARTED_ROOT}).</p>
      */
-    public static String anchor() {
-        Frame anchored = anchored();
-        return anchored == null ? "" : anchored.anchor;
-    }
-
-    /** The transport site of that message, or "". */
-    public static String rpcSite() {
-        Frame anchored = anchored();
-        return anchored == null ? "" : anchored.rpcSite;
-    }
-
-    /** The hop whose message opened the scope running here, or null. */
-    private static Frame anchored() {
+    static Here here() {
         List<Frame> stack = STACK.get();
+        Frame anchored = null;
         for (int i = stack.size() - 1; i >= 0; i--) {
             Frame frame = stack.get(i);
-            if (!frame.anchor.isEmpty()) return frame;
-            if (frame.root) return null;
+            if (anchored == null && !frame.anchor.isEmpty()) anchored = frame;
+            if (frame.root) return new Here(anchored, frame);
         }
-        return null;
+        return new Here(anchored, null);
     }
 
     /** The innermost ROOT hop, which this scope descends from. */
@@ -255,7 +264,10 @@ public final class Lineage {
      * REQUEST keeps its k: the workload decides it.</p>
      */
     public static int rootWindowIndex() {
-        Frame root = root();
+        return windowIndex(root());
+    }
+
+    private static int windowIndex(Frame root) {
         if (root == null) return 0;
         return root.turn && root.window != RecordingWindow.index()
                 ? 0 : root.k;
@@ -295,7 +307,6 @@ public final class Lineage {
         }
         return false;
     }
-
 
     private static AtomicInteger counter(String scope) {
         AtomicInteger counter = COUNTERS.get(scope);

@@ -1,7 +1,10 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -18,15 +21,19 @@ public final class Interactions {
     /** Bounded: a long run must not retain every message it ever sent. */
     static final int LIMIT = 8192;
 
-    private static final Map<String, Endpoint> PRODUCERS =
-            new LinkedHashMap<String, Endpoint>(64, 0.75f, false) {
-                @Override
-                protected boolean removeEldestEntry(
-                        Map.Entry<String, Endpoint> eldest) {
-                    return size() > LIMIT;
-                }
-            };
+    private static final Map<String, Endpoint> PRODUCERS = bounded();
+
     private Interactions() {
+    }
+
+    /** An insertion-ordered store that drops its eldest past {@link #LIMIT}. */
+    static <V> Map<String, V> bounded() {
+        return new LinkedHashMap<String, V>(64, 0.75f, false) {
+            @Override
+            protected boolean removeEldestEntry(Map.Entry<String, V> eldest) {
+                return size() > LIMIT;
+            }
+        };
     }
 
     /** Files the producer of one staged value, by every key it states. */
@@ -82,11 +89,11 @@ public final class Interactions {
      * recorded facts (INTERACTION-ID §1).  Never "the port's last producer",
      * which is a guess; unpaired deliveries go to {@link RowRuntime#attachedAt}.
      */
-    private static java.util.List<String> keys(String portId, long handle,
-                                               String correlationId) {
+    private static List<String> keys(String portId, long handle,
+                                     String correlationId) {
         String port = Text.safe(portId);
         String correlation = Text.safe(correlationId);
-        java.util.List<String> keys = new java.util.ArrayList<String>(2);
+        List<String> keys = new ArrayList<String>(2);
         if (handle > 0L) keys.add("H\n" + handle);
         if (!correlation.isEmpty() && !port.isEmpty()) {
             keys.add("C\n" + correlation + "\n" + port);
@@ -163,8 +170,8 @@ public final class Interactions {
     }
 
     /** The producers this run has filed, for a refusal to search. */
-    static synchronized java.util.Collection<Endpoint> filedProducers() {
-        return new java.util.ArrayList<Endpoint>(MESSAGES.values());
+    static synchronized Collection<Endpoint> filedProducers() {
+        return new ArrayList<Endpoint>(MESSAGES.values());
     }
 
     private static String message(String transport, String correlationId,
@@ -175,14 +182,7 @@ public final class Interactions {
                 + Text.safe(half);
     }
 
-    private static final Map<String, Endpoint> MESSAGES =
-            new LinkedHashMap<String, Endpoint>(64, 0.75f, false) {
-                @Override
-                protected boolean removeEldestEntry(
-                        Map.Entry<String, Endpoint> eldest) {
-                    return size() > LIMIT;
-                }
-            };
+    private static final Map<String, Endpoint> MESSAGES = bounded();
 
     /** Clears both stores, taking the monitors in the declared order. */
     public static synchronized void resetForTests() {

@@ -76,6 +76,12 @@ public final class TimedWaits {
         volatile boolean onTheClock;
         volatile long deadline;
 
+        /** No slot holds the wait: it stands on the wall clock. */
+        void clockUntil(long deadline) {
+            this.deadline = deadline;
+            this.onTheClock = true;
+        }
+
         /** The JDK already took it out of the wait set at its timeout. */
         boolean expired() {
             return onTheClock && System.nanoTime() - deadline >= 0L;
@@ -128,7 +134,7 @@ public final class TimedWaits {
     public static void sleep(TimeUnit unit, long timeout, String site)
             throws InterruptedException {
         if (timeout <= 0L) {
-            WakeScopes.waiting(site);
+            WakeScopes.waiting();
             wake(site);
             return;
         }
@@ -148,7 +154,7 @@ public final class TimedWaits {
             // The JDK's own refusal, unchanged.
             Thread.sleep(millis, nanos);
         }
-        WakeScopes.waiting(site);
+        WakeScopes.waiting();
         // Thread.sleep throws on a pending interrupt, even sleep(0).
         interruptedAtEntry(site);
         long deadline = System.nanoTime()
@@ -213,7 +219,7 @@ public final class TimedWaits {
 
     /** A park: free on the wall clock, held until an unpark or its turn. */
     private static void park(Object blocker, long nanos, String site) {
-        WakeScopes.waiting(site);
+        WakeScopes.waiting();
         if (Thread.currentThread().isInterrupted()) {
             // An interrupted park returns at once and its loop spins: no event,
             // or no two runs would write the same number.
@@ -322,7 +328,7 @@ public final class TimedWaits {
             monitor.wait(millis, nanos);
             return;
         }
-        WakeScopes.waiting(site);
+        WakeScopes.waiting();
         if (millis == 0L && nanos == 0) {
             // wait(0) has no timeout, so no turn of time's.
             untimedMonitorWait(monitor);
@@ -345,21 +351,31 @@ public final class TimedWaits {
         }
     }
 
-    /** An untimed wait, registered so a woven notify meant for it is kept. */
     private static void untimedMonitorWait(Object monitor)
             throws InterruptedException {
-        Waiter self = enter(monitor);
+        untimed(monitor, self -> waitMarked(monitor, 0L, self));
+    }
+
+    /** One physical untimed wait of a registered waiter. */
+    private interface Untimed {
+        void await(Waiter self) throws InterruptedException;
+    }
+
+    /** An untimed wait, registered so a woven signal meant for it is kept. */
+    private static void untimed(Object on, Untimed wait)
+            throws InterruptedException {
+        Waiter self = enter(on);
         try {
             while (!self.signalled) {
-                long seen = sent(monitor);
-                waitMarked(monitor, 0L, self);
-                if (!self.signalled && sent(monitor) == seen) {
+                long seen = sent(on);
+                wait.await(self);
+                if (!self.signalled && sent(on) == seen) {
                     // Outside notifier or spurious wakeup: caller re-checks.
                     return;
                 }
             }
         } finally {
-            leave(monitor, self);
+            leave(on, self);
         }
     }
 
@@ -370,8 +386,7 @@ public final class TimedWaits {
         Thread thread = Thread.currentThread();
         WINDOW_WOKEN.remove(thread);
         WAITING.put(thread, monitor);
-        self.deadline = deadline;
-        self.onTheClock = true;
+        self.clockUntil(deadline);
         try {
             while (true) {
                 if (self.signalled) return true;
@@ -463,18 +478,7 @@ public final class TimedWaits {
 
     private static Quantum monitorQuantum(final Object monitor,
                                           final Waiter self) {
-        return new Quantum() {
-            @Override
-            boolean signalled() {
-                return self.signalled;
-            }
-
-            @Override
-            void onTheClock(long deadline) {
-                self.deadline = deadline;
-                self.onTheClock = true;
-            }
-
+        return new Registered(self) {
             @Override
             boolean await(long millis) throws InterruptedException {
                 long seen = sent(monitor);
@@ -491,7 +495,7 @@ public final class TimedWaits {
 
     public static long awaitNanos(Condition condition, long nanos,
                                   String site) throws InterruptedException {
-        WakeScopes.waiting(site);
+        WakeScopes.waiting();
         interruptedAtEntry(site);
         long deadline = System.nanoTime() + nanos;
         Waiter self = enter(condition);
@@ -510,7 +514,7 @@ public final class TimedWaits {
     public static boolean await(Condition condition, long time,
                                 TimeUnit unit, String site)
             throws InterruptedException {
-        WakeScopes.waiting(site);
+        WakeScopes.waiting();
         interruptedAtEntry(site);
         long deadline = System.nanoTime() + unit.toNanos(time);
         Waiter self = enter(condition);
@@ -524,19 +528,10 @@ public final class TimedWaits {
         }
     }
 
-    /** An untimed condition wait: {@link #untimedMonitorWait}'s rule. */
+    /** An untimed condition wait: {@link #untimed}'s rule. */
     public static void await(Condition condition, String site)
             throws InterruptedException {
-        Waiter self = enter(condition);
-        try {
-            while (!self.signalled) {
-                long seen = sent(condition);
-                awaitMarked(condition, self);
-                if (!self.signalled && sent(condition) == seen) return;
-            }
-        } finally {
-            leave(condition, self);
-        }
+        untimed(condition, self -> awaitMarked(condition, self));
     }
 
     public static void awaitUninterruptibly(Condition condition,
@@ -578,8 +573,7 @@ public final class TimedWaits {
                                              Waiter self, long deadline,
                                              String site)
             throws InterruptedException {
-        self.deadline = deadline;
-        self.onTheClock = true;
+        self.clockUntil(deadline);
         try {
             while (!ScheduleLog.enforcing()) {
                 if (self.signalled) return true;
@@ -605,18 +599,7 @@ public final class TimedWaits {
 
     private static Quantum conditionQuantum(final Condition condition,
                                             final Waiter self) {
-        return new Quantum() {
-            @Override
-            boolean signalled() {
-                return self.signalled;
-            }
-
-            @Override
-            void onTheClock(long deadline) {
-                self.deadline = deadline;
-                self.onTheClock = true;
-            }
-
+        return new Registered(self) {
             @Override
             boolean await(long millis) throws InterruptedException {
                 long seen = sent(condition);
@@ -695,7 +678,7 @@ public final class TimedWaits {
     public static Object poll(BlockingQueue<?> queue, long timeout,
                               TimeUnit unit, String site)
             throws InterruptedException {
-        WakeScopes.waiting(site);
+        WakeScopes.waiting();
         // The JDK's timed poll takes its lock interruptibly, even poll(0).
         interruptedAtEntry(site);
         long deadline = System.nanoTime() + unit.toNanos(timeout);
@@ -777,6 +760,25 @@ public final class TimedWaits {
         /** Only an interrupted park, which cannot throw, must end now. */
         boolean endsNow() {
             return false;
+        }
+    }
+
+    /** A registered wait's quantum: its mark is its signal. */
+    private abstract static class Registered extends Quantum {
+        private final Waiter self;
+
+        Registered(Waiter self) {
+            this.self = self;
+        }
+
+        @Override
+        boolean signalled() {
+            return self.signalled;
+        }
+
+        @Override
+        void onTheClock(long deadline) {
+            self.clockUntil(deadline);
         }
     }
 

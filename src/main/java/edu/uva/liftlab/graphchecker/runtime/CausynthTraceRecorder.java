@@ -6,14 +6,17 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
-import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
+import edu.uva.liftlab.graphchecker.contract.Endpoint;
+import edu.uva.liftlab.graphchecker.contract.GapClass;
+import edu.uva.liftlab.graphchecker.contract.GapKind;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.plan.DeclaredSymbolicInputs;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
-import edu.uva.liftlab.graphchecker.plan.WorkStartSites;
 import java.io.BufferedWriter;
 import java.io.BufferedReader;
 import java.io.File;
@@ -96,14 +99,8 @@ public final class CausynthTraceRecorder {
         Map<String, String> params = parseArgs(args);
         File directory = new File(requiredArg(params, "trace-dir"));
         String test = requiredArg(params, "test");
-        String configuredSkeletons = params.get("region-skeletons");
-        File candidateSkeletons = configuredSkeletons == null
-                || configuredSkeletons.trim().isEmpty()
-                ? null : new File(configuredSkeletons.trim());
-        if (candidateSkeletons == null) {
-            throw new IllegalArgumentException(
-                    "--region-skeletons is required");
-        }
+        File candidateSkeletons =
+                new File(requiredArg(params, "region-skeletons"));
         File graph = new File(requiredArg(params, "candidate-graph"));
         String configuredOutput = params.get("output-dir");
         File planOutputDirectory = configuredOutput == null
@@ -193,7 +190,7 @@ public final class CausynthTraceRecorder {
      * passes take the same fold ({@code Identity#fold}, paper SS3.1.2).
      */
     private static String occurrenceAddress(String nodeKey, String regionId) {
-        edu.uva.liftlab.graphchecker.contract.OccurrenceAddress address =
+        OccurrenceAddress address =
                 Identity.occurrence(nodeKey, regionId, true);
         // F1: a folded entry states no address (else a second activation
         // of one occurrence); the call above must still run to push the
@@ -213,9 +210,9 @@ public final class CausynthTraceRecorder {
         } catch (Throwable unnamed) {
             String subject = lineageSubject(carrier == null ? ""
                     : carrier.getClass().getName());
-            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
+            RowRuntime.gap(GapKind
                             .LINEAGE_LOST,
-                    edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
+                    GapClass.DIAGNOSTIC,
                     subject, "the start frame filed for this work could not "
                             + "be claimed, so the occurrences it publishes "
                             + "carry no start-site frame in their execution "
@@ -228,9 +225,9 @@ public final class CausynthTraceRecorder {
         try {
             Identity.startWork(site, carrier);
         } catch (Throwable unnamed) {
-            RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
+            RowRuntime.gap(GapKind
                             .LINEAGE_LOST,
-                    edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
+                    GapClass.DIAGNOSTIC,
                     lineageSubject(site.isEmpty() && carrier != null
                                     ? carrier.getClass().getName() : site),
                     "the frame of this work start could not be filed, "
@@ -269,8 +266,8 @@ public final class CausynthTraceRecorder {
      * hands it to the plan's gap list.
      */
     static void recordingGap(
-            edu.uva.liftlab.graphchecker.contract.GapKind kind,
-            edu.uva.liftlab.graphchecker.contract.GapClass cls,
+            GapKind kind,
+            GapClass cls,
             String subject, String detail) {
         if (!RecordingWindow.opened()) return;
         synchronized (LOCK) {
@@ -343,23 +340,17 @@ public final class CausynthTraceRecorder {
      * @return the token that closes exactly the level this opened
      */
     public static long enterMethodFrame(String callSiteId, Object receiver) {
-        return edu.uva.liftlab.graphchecker.runtime.Identity.enterFrame(
-                MapFields.safe(callSiteId), receiver);
+        return Identity.enterFrame(MapFields.safe(callSiteId), receiver);
     }
 
     /** Leaves the level {@link #enterMethodFrame} opened. */
     public static void exitMethodFrame(long token) {
-        edu.uva.liftlab.graphchecker.runtime.Identity.exitFrame(token);
+        Identity.exitFrame(token);
     }
 
     /** The exceptional edge of {@link #enterMethodFrame}. */
     public static void throwMethodFrame(long token, Throwable thrown) {
-        edu.uva.liftlab.graphchecker.runtime.Identity.exitFrame(token);
-    }
-
-    /** Leaves the region one rich activation opened. */
-    private static void popRegion() {
-        edu.uva.liftlab.graphchecker.runtime.Identity.regionExit();
+        Identity.exitFrame(token);
     }
 
     public static void endCall(long invocationId, Object returnValue,
@@ -425,9 +416,14 @@ public final class CausynthTraceRecorder {
         event.objectId = identity(returnValue);
         event.primitiveValue = MapFields.safe(primitiveValue);
         emitExecutionEvent(event);
+        closeCall(call, resolvedCallId);
+    }
+
+    /** Ends one activation: its region and root context close with it. */
+    private static void closeCall(ActiveCall call, long resolvedCallId) {
         removeCall(resolvedCallId);
         if (call != null && call.regionFrame) {
-            popRegion();
+            Identity.regionExit();
         }
         if (call != null && call.rootContext) {
             RuntimeTraceContext.exitRoot(call.spanId);
@@ -455,13 +451,7 @@ public final class CausynthTraceRecorder {
                 closeCallSite(parentSite, "CALL_SITE_THROW");
             }
         }
-        removeCall(resolvedCallId);
-        if (call != null && call.regionFrame) {
-            popRegion();
-        }
-        if (call != null && call.rootContext) {
-            RuntimeTraceContext.exitRoot(call.spanId);
-        }
+        closeCall(call, resolvedCallId);
     }
 
     public static void recordField(String kind, String method, int unitIndex,
@@ -533,8 +523,7 @@ public final class CausynthTraceRecorder {
                 RuntimeTraceContext.ownedSource(localOwner).key(),
                 transport, correlationId, half);
         // The schedule's SEND, naming the minted producer.
-        ScheduleLog.observe(
-                edu.uva.liftlab.graphchecker.contract.ScheduleEvent.Kind.SEND,
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND,
                 MapFields.safe(transport) + "#" + MapFields.safe(half),
                 producer == null ? "" : producer.id());
         if (DEBUG_PRODUCERS && producer != null) {
@@ -566,9 +555,9 @@ public final class CausynthTraceRecorder {
                 + "anchor and every occurrence downstream of either states "
                 + "the same context; the endpoint is "
                 + producer.render();
-        RowRuntime.gap(edu.uva.liftlab.graphchecker.contract.GapKind
+        RowRuntime.gap(GapKind
                         .LINEAGE_LOST,
-                edu.uva.liftlab.graphchecker.contract.GapClass.DIAGNOSTIC,
+                GapClass.DIAGNOSTIC,
                 producer.id(), detail);
     }
 
@@ -590,8 +579,7 @@ public final class CausynthTraceRecorder {
             return 0L;
         }
         // The schedule's RECV, under the scope the message opened.
-        ScheduleLog.observe(
-                edu.uva.liftlab.graphchecker.contract.ScheduleEvent.Kind.RECV,
+        ScheduleLog.observe(ScheduleEvent.Kind.RECV,
                 MapFields.safe(transport) + "#" + MapFields.safe(half));
         // recordExchange's argument refusal stays an exception, not a row.
         try {
@@ -619,8 +607,8 @@ public final class CausynthTraceRecorder {
                                       Object carriedScope,
                                       Endpoint producer) {
         String normalizedDirection = MapFields.safe(direction).toUpperCase();
-        String normalizedTransport = MapFields.safe(transport).trim();
-        String normalizedCorrelation = MapFields.safe(correlationId).trim();
+        String normalizedTransport = Text.safe(transport);
+        String normalizedCorrelation = Text.safe(correlationId);
         String normalizedHalf = MapFields.safe(half).toUpperCase();
         if (!("SEND".equals(normalizedDirection)
                 || "RECEIVE".equals(normalizedDirection))
@@ -632,7 +620,7 @@ public final class CausynthTraceRecorder {
                     "exchange requires direction, transport, correlation, and half");
         }
         initialize();
-        String normalizedAttempt = MapFields.safe(attemptId).trim();
+        String normalizedAttempt = Text.safe(attemptId);
         RuntimeTraceContext.View context =
                 RuntimeTraceContext.exchange(localOwner, carriedScope);
         if (contextOnlyConcolicReplay) return;
@@ -941,15 +929,6 @@ public final class CausynthTraceRecorder {
 
     private static String sourceKey(SourceRef source) {
         return source == null ? "" : source.key();
-    }
-
-    private static SourceRef sourceRef(FlatJsonRow row) throws IOException {
-        return sourceRef(row, "source");
-    }
-
-    private static SourceRef relatedSourceRef(FlatJsonRow row)
-            throws IOException {
-        return sourceRef(row, "relatedSource");
     }
 
     private static SourceRef sourceRef(FlatJsonRow row, String prefix)
@@ -1619,7 +1598,7 @@ public final class CausynthTraceRecorder {
                     row.longValue("laneId", 0L),
                     row.longValue("spanId", 0L),
                     row.longValue("remoteParentSpanId", 0L),
-                    sourceRef(row),
+                    sourceRef(row, "source"),
                     row.longValue("receiverAttributed", 0L) != 0L,
                     row.stringValue("requestKey"),
                     row.stringValue("requestApi"),
@@ -1657,7 +1636,7 @@ public final class CausynthTraceRecorder {
                     row.longValue("laneId", 0L),
                     row.longValue("spanId", 0L),
                     row.longValue("remoteParentSpanId", 0L),
-                    sourceRef(row), row.stringValue("requestKey"),
+                    sourceRef(row, "source"), row.stringValue("requestKey"),
                     row.stringValue("requestApi"),
                     row.stringValue("producerEndpointId"),
                     row.stringValue("producerEndpoint")));
@@ -1674,7 +1653,8 @@ public final class CausynthTraceRecorder {
                 || "SOURCE_RESTART".equals(eventKind)) {
             trace.sources.add(new SourceTraceEvent(
                     row.longValue("seq", 0L), eventKind,
-                    sourceRef(row), relatedSourceRef(row),
+                    sourceRef(row, "source"),
+                    sourceRef(row, "relatedSource"),
                     row.intValue("objectId", 0)));
         } else if (isExecutionEventKind(eventKind)) {
             trace.execution.add(new RuntimeRegionPlanner.RuntimeEvent(
@@ -1848,7 +1828,6 @@ public final class CausynthTraceRecorder {
     private static void writeExecutionTraceLine(ExecutionEvent event) {
         // The trace states the window only: nothing before it opens.
         if (!RecordingWindow.opened()) return;
-        if (event == null) return;
         writeTraceRow(
                 "schemaVersion", 3,
                 "event", event.kind,

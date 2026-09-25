@@ -26,7 +26,7 @@ final class WakeScopes {
     }
 
     /** The loop waits: the turn it was running is over. */
-    static void waiting(String site) {
+    static void waiting() {
         ScheduleLog.mute();
         try {
             Deque<Long> open = OPEN.get();

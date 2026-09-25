@@ -46,15 +46,6 @@ public final class SymbolicMessageEnvelope {
      */
     private static final int MAX_FRAMES = 64;
 
-    /** States that one side could open no further frame of a message. */
-    private static void frameNotOpened(String side, int opened) {
-        RowRuntime.messageContextRefused(
-                "symbolic message envelope " + side + " frame",
-                "this message already has " + opened + " open frames, the"
-                        + " most one message may state, so the frame was not"
-                        + " opened and the elements inside it take the"
-                        + " enclosing frame's ordinals");
-    }
     /** The message this thread is building. */
     private static final ThreadLocal<Outbound> OUTBOUND = new ThreadLocal<>();
     /** The message this thread is decoding. */
@@ -73,12 +64,16 @@ public final class SymbolicMessageEnvelope {
      */
     public static boolean stage(String portId, long handle) {
         if (empty(portId) || handle < 0L) return false;
+        return outbound().stage(portId, handle);
+    }
+
+    private static Outbound outbound() {
         Outbound message = OUTBOUND.get();
         if (message == null) {
             message = new Outbound();
             OUTBOUND.set(message);
         }
-        return message.stage(portId, handle);
+        return message;
     }
 
     /**
@@ -86,12 +81,7 @@ public final class SymbolicMessageEnvelope {
      * frames are numbered in open order on both sides.
      */
     public static void pushOutboundFrame() {
-        Outbound message = OUTBOUND.get();
-        if (message == null) {
-            message = new Outbound();
-            OUTBOUND.set(message);
-        }
-        message.push();
+        outbound().push();
     }
 
     /** Closes the innermost outbound frame. */
@@ -187,25 +177,29 @@ public final class SymbolicMessageEnvelope {
         INBOUND.remove();
     }
 
-    /** One decoded message and how much of it has been looked up. */
-    private static final class Inbound {
-        private final List<Entry> entries;
-        private final boolean[] lookedUp;
-        private final String wire;
-        /** "frame\nport" -> the element this frame decodes next. */
+    /**
+     * The frames one side opened in a message, and per (frame, port) the
+     * next ordinal: both sides count alike.
+     */
+    private static class Frames {
+        private final String side;
         private final Map<String, Integer> next = new LinkedHashMap<>();
         private final Deque<Integer> open = new ArrayDeque<>();
         private int opened;
 
-        Inbound(List<Entry> entries, String wire) {
-            this.entries = entries;
-            this.lookedUp = new boolean[entries.size()];
-            this.wire = wire;
+        Frames(String side) {
+            this.side = side;
         }
 
         void push() {
             if (opened >= MAX_FRAMES) {
-                frameNotOpened("inbound", opened);
+                RowRuntime.messageContextRefused(
+                        "symbolic message envelope " + side + " frame",
+                        "this message already has " + opened + " open frames,"
+                                + " the most one message may state, so the"
+                                + " frame was not opened and the elements"
+                                + " inside it take the enclosing frame's"
+                                + " ordinals");
                 return;
             }
             open.addLast(++opened);
@@ -219,15 +213,32 @@ public final class SymbolicMessageEnvelope {
             return open.isEmpty() ? 0 : open.peekLast();
         }
 
-        int nextOrdinal(String portId) {
-            Integer ordinal = next.get(frame() + "\n" + portId);
-            return ordinal == null ? 0 : ordinal;
+        /** Counts one element of {@code portId} in the current frame. */
+        int count(String portId) {
+            String counter = frame() + "\n" + portId;
+            Integer held = next.get(counter);
+            int ordinal = held == null ? 0 : held;
+            next.put(counter, ordinal + 1);
+            return ordinal;
+        }
+    }
+
+    /** One decoded message and how much of it has been looked up. */
+    private static final class Inbound extends Frames {
+        private final List<Entry> entries;
+        private final boolean[] lookedUp;
+        private final String wire;
+
+        Inbound(List<Entry> entries, String wire) {
+            super("inbound");
+            this.entries = entries;
+            this.lookedUp = new boolean[entries.size()];
+            this.wire = wire;
         }
 
         Entry take(String portId) {
             int frame = frame();
-            int ordinal = nextOrdinal(portId);
-            next.put(frame + "\n" + portId, ordinal + 1);
+            int ordinal = count(portId);
             for (int index = 0; index < entries.size(); index++) {
                 Entry entry = entries.get(index);
                 if (entry.frame != frame || entry.ordinal != ordinal
@@ -257,36 +268,18 @@ public final class SymbolicMessageEnvelope {
     }
 
     /** One message being built, and the frames open inside it. */
-    private static final class Outbound {
+    private static final class Outbound extends Frames {
         private final List<Entry> entries = new ArrayList<>();
-        private final Map<String, Integer> next = new LinkedHashMap<>();
-        private final Deque<Integer> open = new ArrayDeque<>();
-        private int opened;
 
-        void push() {
-            if (opened >= MAX_FRAMES) {
-                frameNotOpened("outbound", opened);
-                return;
-            }
-            open.addLast(++opened);
-        }
-
-        void pop() {
-            if (!open.isEmpty()) open.removeLast();
-        }
-
-        int frame() {
-            return open.isEmpty() ? 0 : open.peekLast();
+        Outbound() {
+            super("outbound");
         }
 
         boolean stage(String portId, long handle) {
             if (entries.size() >= MAX_ENTRIES) return false;
             int frame = frame();
-            String counter = frame + "\n" + portId;
-            Integer held = next.get(counter);
-            int ordinal = held == null ? 0 : held;
-            next.put(counter, ordinal + 1);
-            entries.add(new Entry(true, portId, handle, frame, ordinal));
+            entries.add(new Entry(true, portId, handle, frame,
+                    count(portId)));
             return true;
         }
     }

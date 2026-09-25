@@ -230,7 +230,7 @@ public class OccurrenceAddressIsNotARequestTest {
 
         // The NameNode sends; the header states its source, as provenance.
         long request = RuntimeTraceContext.beginRequest(nameNode, "heartbeat");
-        String header = RuntimeTraceContext.outboundHeader(nameNode);
+        String header = RuntimeTraceContext.outboundHeader(nameNode, null);
         RuntimeTraceContext.endRequest(request);
         assertNotNull(header);
 
@@ -259,7 +259,7 @@ public class OccurrenceAddressIsNotARequestTest {
         try {
             assertEquals(SPS + "#epoch0",
                     RuntimeTraceContext.currentSource().key());
-            String envelope = RuntimeTraceContext.outboundHeader(nnc);
+            String envelope = RuntimeTraceContext.outboundHeader(nnc, null);
             assertTrue(envelope, envelope.startsWith("1|"));
             assertEquals("source, request key and api, all present",
                     8, envelope.split("\\|", -1).length);
@@ -278,7 +278,7 @@ public class OccurrenceAddressIsNotARequestTest {
         // A refused envelope names what was missing, and separates what the
         // call carried from what the thread holds -- different owners.
         refuses("no request scope, no envelope",
-                () -> RuntimeTraceContext.outboundHeader(nnc),
+                () -> RuntimeTraceContext.outboundHeader(nnc, null),
                 "requestKey", "requestApi", "!no source");
         // The thread half is named, the thread is not: this refusal is
         // published as a GapRow (RowRuntime.messageContextRefused), and a

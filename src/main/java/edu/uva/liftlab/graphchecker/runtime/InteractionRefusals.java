@@ -1,8 +1,6 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
-import java.util.Collection;
-import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -24,13 +22,7 @@ final class InteractionRefusals {
      * like {@link Interactions}'s store, and never answers a pairing.
      */
     private static final Map<String, String> MESSAGE_OF_ENDPOINT =
-            new LinkedHashMap<String, String>(64, 0.75f, false) {
-                @Override
-                protected boolean removeEldestEntry(
-                        Map.Entry<String, String> eldest) {
-                    return size() > Interactions.LIMIT;
-                }
-            };
+            Interactions.bounded();
 
     static synchronized void noteMessage(String messageKey,
                                          Endpoint producer) {
@@ -68,19 +60,17 @@ final class InteractionRefusals {
         return producer == null ? "" : producer.render();
     }
 
-    /** The filed endpoint {@code endpointId} was minted from, or null. */
+    /**
+     * The filed endpoint {@code endpointId} was minted from, or null.  NOT
+     * {@code synchronized}: the lock order above.
+     */
     static Endpoint endpoint(String endpointId) {
         String id = Text.safe(endpointId);
         if (id.isEmpty()) return null;
-        for (Endpoint producer : filedProducers()) {
+        for (Endpoint producer : Interactions.filedProducers()) {
             if (id.equals(producer.id())) return producer;
         }
         return null;
-    }
-
-    /** NOT {@code synchronized}: the lock order above. */
-    private static Collection<Endpoint> filedProducers() {
-        return Interactions.filedProducers();
     }
 
     /** Called with the {@link Interactions} monitor held: declared order. */

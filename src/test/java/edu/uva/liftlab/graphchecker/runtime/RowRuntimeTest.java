@@ -1200,7 +1200,7 @@ public class RowRuntimeTest {
         RuntimeTraceContext.registerSource(served, NN);
         long serving = RuntimeTraceContext.beginRequest(NN,
                 "checkpoint-namespace");
-        String header = RuntimeTraceContext.outboundHeader(served);
+        String header = RuntimeTraceContext.outboundHeader(served, null);
         RuntimeTraceContext.endRequest(serving);
         String recorded = anchoredActivationIndex(header, 3);
         String replayed = anchoredActivationIndex(header, 0);
@@ -1599,7 +1599,7 @@ public class RowRuntimeTest {
         List<Endpoint> sent = new ArrayList<Endpoint>();
         long request = RuntimeTraceContext.beginRequest(NN,
                 "create-snapshots");
-        String header = RuntimeTraceContext.outboundHeader(client);
+        String header = RuntimeTraceContext.outboundHeader(client, null);
         long response = 0L;
         for (int rpc = 0; rpc < 6; rpc++) {
             long call = Identity.enterFrame("Client.call()#u12", null);
