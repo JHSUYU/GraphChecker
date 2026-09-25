@@ -21,7 +21,10 @@ final class RecordingWindow {
         return index;
     }
 
-    /** Whether the workload has opened its window in this run. */
+    /**
+     * Whether the workload has opened its window in this run.  Trap: source
+     * registration is not the window (a restart may sit between them).
+     */
     static boolean opened() {
         return index > 0;
     }

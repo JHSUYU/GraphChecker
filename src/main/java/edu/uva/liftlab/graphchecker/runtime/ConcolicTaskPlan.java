@@ -314,7 +314,7 @@ final class ConcolicTaskPlan {
         Map<String, Integer> admitted = new LinkedHashMap<>();
         // Outside the recording window nothing has an ordinal, so nothing is
         // a candidate.
-        if (!RuntimeTraceContext.recordingWindowOpen()) {
+        if (!RecordingWindow.opened()) {
             return admitted;
         }
         ObservedAddresses observedAddresses = new ObservedAddresses();
@@ -369,7 +369,7 @@ final class ConcolicTaskPlan {
         RuntimeTraceContext.View context = RuntimeTraceContext.current();
 
         // Outside the recording window there is no candidate.
-        if (!RuntimeTraceContext.recordingWindowOpen()) return null;
+        if (!RecordingWindow.opened()) return null;
         ObservedAddresses observedAddresses = new ObservedAddresses();
         for (int index = 0; index < tasks.size(); index++) {
             RuntimeTask task = tasks.get(index);
@@ -492,7 +492,7 @@ final class ConcolicTaskPlan {
         // counts in the unregistered source, as the planner counted it, or
         // it steals the planned node's k.
         return activationSource == null
-                ? RuntimeTraceContext.UNREGISTERED_SOURCE.key()
+                ? RuntimeRegionPlanner.UNREGISTERED_SOURCE.key()
                 : activationSource.key();
     }
 
@@ -522,7 +522,7 @@ final class ConcolicTaskPlan {
     static String attribution(String activationSourceKey) {
         String key = safe(activationSourceKey);
         if (key.isEmpty()
-                || RuntimeTraceContext.UNREGISTERED_SOURCE.key().equals(key)) {
+                || RuntimeRegionPlanner.UNREGISTERED_SOURCE.key().equals(key)) {
             return " (this run attributed the activation to no node, so it"
                     + " counts in the unregistered source)";
         }

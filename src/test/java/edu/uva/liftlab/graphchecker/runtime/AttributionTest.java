@@ -104,7 +104,7 @@ public class AttributionTest {
         Identity.enterFrame("<a.Orphan: void run()>", new Object());
         assertNull(Attribution.resolve(null));
         assertEquals("the planner's unregistered population",
-                RuntimeTraceContext.UNREGISTERED_SOURCE.key(),
+                RuntimeRegionPlanner.UNREGISTERED_SOURCE.key(),
                 RuntimeTraceContext.activationSource(null).key());
     }
 }

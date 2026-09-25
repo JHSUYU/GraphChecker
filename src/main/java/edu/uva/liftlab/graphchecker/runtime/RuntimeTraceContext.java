@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
+import static edu.uva.liftlab.graphchecker.runtime.RuntimeRegionPlanner.UNREGISTERED_SOURCE;
+
 import edu.uva.liftlab.graphchecker.causynth.MapFields;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
@@ -13,15 +15,19 @@ import java.util.Collections;
 import java.util.Deque;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Trace-local causal context for runtime region discovery.
+ * The running thread's causal context: the registered sources, the node the
+ * thread works for ({@link Attribution}), and the request flow and exchange
+ * leg it stands in, each set by a scope that puts back what it replaced.
  *
- * <p>Soot-inserted call hooks capture parent context at thread/task
- * submission.</p>
+ * <p>Work queued for another thread carries its scope as a value
+ * ({@link #captureAsync}, {@link #captureScope}): an
+ * {@link InheritableThreadLocal} misses pool threads created earlier.</p>
  */
 final class RuntimeTraceContext {
     private static final Object LOCK = new Object();
@@ -181,9 +187,9 @@ final class RuntimeTraceContext {
     /** Captures the current source/span for a Thread, Runnable, or Callable. */
     static void captureAsync(Object carrier) {
         if (carrier == null) return;
-        if (carrier instanceof java.util.Collection) {
+        if (carrier instanceof Collection) {
             // A batch is one submission per task, so siblings stay distinct.
-            for (Object element : (java.util.Collection<?>) carrier) {
+            for (Object element : (Collection<?>) carrier) {
                 captureAsync(element);
             }
             return;
@@ -193,10 +199,10 @@ final class RuntimeTraceContext {
         // Lineage and flow travel with the work, not the thread.  Only the
         // starter's EXPLICIT node is carried: a weaker one made explicit here
         // would outrank the work's own frames (Attribution, rule 3).
-        Object lineage = Lineage.capture();
+        Lineage.Carried lineage = Lineage.capture();
         synchronized (LOCK) {
             ASYNC_SEEDS.put(carrier, new Seed(
-                    explicitSource(), view.flow(), lineage));
+                    explicitSource(), view.flow, lineage));
         }
     }
 
@@ -212,9 +218,7 @@ final class RuntimeTraceContext {
         if (seed == null) return;
         boolean flow = !seed.flow.requestKey.isEmpty()
                 && !seed.flow.requestApi.isEmpty();
-        boolean lineage = seed.lineage instanceof Lineage.Carried
-                && ((Lineage.Carried) seed.lineage).names();
-        if (seed.source == null && !flow && !lineage) return;
+        if (seed.source == null && !flow && !seed.lineage.names()) return;
         releaseCarried();
         State state = CURRENT.get();
         long token = nextId();
@@ -263,7 +267,7 @@ final class RuntimeTraceContext {
     }
 
     /** The first of these objects that is registered, by identity. */
-    static SourceRef firstRegistered(java.util.List<Object> objects) {
+    static SourceRef firstRegistered(List<Object> objects) {
         if (objects == null || objects.isEmpty()) return null;
         synchronized (LOCK) {
             for (Object object : objects) {
@@ -281,7 +285,7 @@ final class RuntimeTraceContext {
      * <p>Opens no execution-index SCOPE: this is the recorder's hook alone,
      * so a scope here would exist in the recording and not the replay.
      * Scopes open only where the workload says one begins; pool threads are
-     * handled by {@link Identity#startWork}'s start frame (REPORT-P2H).</p>
+     * handled by {@link Identity#startWork}'s start frame.</p>
      */
     static View enterRoot(Object receiver) {
         State state = CURRENT.get();
@@ -322,11 +326,8 @@ final class RuntimeTraceContext {
     }
 
     /**
-     * The calling thread's request scope, as a value to carry with work.
-     *
-     * <p>A scope belongs to the work, not the thread: an
-     * {@link InheritableThreadLocal} misses pool threads created before the
-     * scope, so it is captured at creation and carried.</p>
+     * The calling thread's request scope, as a value to carry with work: a
+     * scope belongs to the work, not the thread.
      */
     static Object captureScope() {
         View view = CURRENT.get().view();
@@ -368,8 +369,7 @@ final class RuntimeTraceContext {
 
     /**
      * Opens one daemon tick as a lineage root (role plus a window-local k):
-     * a timer thread serves no request, so the tick is its own root
-     * (REPORT-NNCHAIN §5).
+     * a timer thread serves no request, so the tick is its own root.
      *
      * @return the token that closes the tick
      */
@@ -441,8 +441,7 @@ final class RuntimeTraceContext {
             if (!open.turn) return 0L;
         }
         SourceRef source = activationSource(null);
-        if (source == null
-                || UNREGISTERED_SOURCE.key().equals(source.key())) {
+        if (UNREGISTERED_SOURCE.key().equals(source.key())) {
             return 0L;
         }
         String normalizedApi = Text.safe(api);
@@ -479,10 +478,10 @@ final class RuntimeTraceContext {
         private final String requestKey;
         private final String requestApi;
         /** The lineage the work was created inside, as a value. */
-        private final Object lineage;
+        private final Lineage.Carried lineage;
 
         private RequestScope(SourceRef source, String requestKey,
-                             String requestApi, Object lineage) {
+                             String requestApi, Lineage.Carried lineage) {
             this.source = source;
             this.requestKey = requestKey == null ? "" : requestKey;
             this.requestApi = requestApi == null ? "" : requestApi;
@@ -651,7 +650,7 @@ final class RuntimeTraceContext {
      * The view of one exchange leg made on behalf of a registered local
      * owner: that owner's node, for this leg only; never bound to the thread.
      */
-    static View owned(View view, Object localOwner) {
+    private static View owned(View view, Object localOwner) {
         SourceRef source = sourceFor(localOwner);
         if (source == null) return view;
         return view.withScope(source, view.requestKey, view.requestApi);
@@ -742,38 +741,25 @@ final class RuntimeTraceContext {
 
     /**
      * The source one root activation is attributed to: where it RAN, by
-     * execution scope only.
+     * execution scope only.  Never null.
      *
-     * <p>One function for recorder ({@link #enterRoot}), planner
-     * ({@code RuntimeRegionPlanner.activationSource}) and replay; a
-     * replay-only variant miscounts occurrences per node.</p>
+     * <p>The planner's rule ({@link #attributedActivationSource}) with the
+     * stamp computed live and no frame stamps yet, as at a root entry; one
+     * function for recorder, planner and replay, since a replay-only variant
+     * miscounts occurrences per node.  Trap: never fall back to the PLANNED
+     * node; unstamped activations belong to the unregistered
+     * population.</p>
      */
     static SourceRef activationSource(Object receiver) {
-        return activationSource(receiver,
+        return attributedActivationSource(Attribution.resolve(receiver),
                 Collections.<SourceRef>emptyList());
     }
 
     /**
-     * The planner's attribution rule
-     * ({@code RuntimeRegionPlanner.activationSource}) with the stamp computed
-     * live: own stamp, else the unique frame stamp, else unregistered.
-     * Trap: never fall back to the PLANNED node; unstamped activations
-     * belong to the unregistered population.
-     *
-     * @param frameStamps the sources the activation's own frames carry, in
-     *                    recorded order; empty at a root entry, where no
-     *                    frame of the activation has run yet
-     */
-    static SourceRef activationSource(Object receiver,
-                                      Collection<SourceRef> frameStamps) {
-        return attributedActivationSource(Attribution.resolve(receiver),
-                frameStamps);
-    }
-
-    /**
      * One activation's source: its own stamp, else the unique stamp among
-     * its frames, else the unregistered source.  Never null.  Disagreeing
-     * frames are a named gap (contradictory, not missing, evidence).
+     * its frames (in recorded order), else the unregistered source.  Never
+     * null.  Disagreeing frames are a named gap (contradictory, not missing,
+     * evidence).
      */
     static SourceRef attributedActivationSource(
             SourceRef stamp, Collection<SourceRef> frameStamps) {
@@ -804,13 +790,8 @@ final class RuntimeTraceContext {
      * rule every activation is stamped with ({@link #activationSource}).
      */
     static String nodeHere() {
-        SourceRef source = activationSource(null);
-        return source == null ? "" : source.key();
+        return activationSource(null).key();
     }
-
-    /** The planner's unattributed population, shared by both ends. */
-    static final SourceRef UNREGISTERED_SOURCE =
-            RuntimeRegionPlanner.UNREGISTERED_SOURCE;
 
     private static SourceRef canonicalSourceLocked(SourceRef source) {
         SourceRef existing = SOURCES_BY_KEY.get(source.key());
@@ -829,15 +810,6 @@ final class RuntimeTraceContext {
         if (anchor == null) return "null";
         return anchor.getClass().getName() + "@"
                 + Integer.toHexString(System.identityHashCode(anchor));
-    }
-
-    /**
-     * Whether the workload's {@code startRecording()} has opened the window;
-     * nothing before it is counted by the plan.  Trap: source registration
-     * is not the window (a restart may sit between them).
-     */
-    static boolean recordingWindowOpen() {
-        return RecordingWindow.opened();
     }
 
     /** Whether {@code sourceKey} names an epoch of its node at all. */
@@ -894,9 +866,10 @@ final class RuntimeTraceContext {
         SourceRef creatorExplicit = explicitIn(parent);
         child.inheritedSource = creatorExplicit != null ? creatorExplicit
                 : parent.inheritedSource;
-        View inherited = parent.rawView();
-        child.source = inherited.source;
-        child.flow = inherited.flow();
+        // Unresolved: resolving would touch the child's thread-locals.
+        Frame frame = parent.frames.peek();
+        child.source = frame == null ? parent.source : frame.source;
+        child.flow = parent.flow;
         return child;
     }
 
@@ -914,10 +887,10 @@ final class RuntimeTraceContext {
         final boolean receiverAttributed;
         final String requestKey;
         final String requestApi;
-        final String exchangeTransport;
         final String exchangeCorrelationId;
         final String exchangeAttemptId;
-        final String exchangeHalf;
+        /** The request flow this view states. */
+        private final Flow flow;
 
         private View(long laneId, long spanId,
                      long remoteParentSpanId,
@@ -928,18 +901,11 @@ final class RuntimeTraceContext {
             this.remoteParentSpanId = remoteParentSpanId;
             this.source = source;
             this.receiverAttributed = receiverAttributed;
+            this.flow = flow;
             this.requestKey = flow.requestKey;
             this.requestApi = flow.requestApi;
-            this.exchangeTransport = flow.exchangeTransport;
             this.exchangeCorrelationId = flow.exchangeCorrelationId;
             this.exchangeAttemptId = flow.exchangeAttemptId;
-            this.exchangeHalf = flow.exchangeHalf;
-        }
-
-        /** The request flow this view states. */
-        private Flow flow() {
-            return new Flow(requestKey, requestApi, exchangeTransport,
-                    exchangeCorrelationId, exchangeAttemptId, exchangeHalf);
         }
 
         /** The same view speaking for a carried request scope. */
@@ -947,7 +913,7 @@ final class RuntimeTraceContext {
                                String scopeApi) {
             return new View(laneId, spanId, remoteParentSpanId,
                     scopeSource, receiverAttributed,
-                    flow().withRequest(scopeKey, scopeApi));
+                    flow.withRequest(scopeKey, scopeApi));
         }
     }
 
@@ -973,17 +939,6 @@ final class RuntimeTraceContext {
                     frame == null ? pendingRemoteParentSpanId
                             : frame.remoteParentSpanId,
                     Attribution.resolve(null),
-                    frame != null && frame.receiverAttributed, flow);
-        }
-
-        /** The same view with no resolution: for a thread's construction. */
-        private View rawView() {
-            Frame frame = frames.peek();
-            return new View(
-                    laneId, frame == null ? 0L : frame.spanId,
-                    frame == null ? pendingRemoteParentSpanId
-                            : frame.remoteParentSpanId,
-                    frame == null ? source : frame.source,
                     frame != null && frame.receiverAttributed, flow);
         }
     }
@@ -1013,9 +968,9 @@ final class RuntimeTraceContext {
         private final SourceRef source;
         private final Flow flow;
         /** The lineage the submitting thread was inside, as a value. */
-        private final Object lineage;
+        private final Lineage.Carried lineage;
 
-        private Seed(SourceRef source, Flow flow, Object lineage) {
+        private Seed(SourceRef source, Flow flow, Lineage.Carried lineage) {
             this.lineage = lineage;
             this.source = source;
             this.flow = flow;

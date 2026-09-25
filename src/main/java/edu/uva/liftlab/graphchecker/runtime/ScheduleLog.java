@@ -7,6 +7,7 @@ import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.JvmNames;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
+import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import java.io.BufferedWriter;
 import java.io.File;
@@ -383,8 +384,7 @@ public final class ScheduleLog {
     /** The recording's sink: {@code schedule.jsonl} beside its trace. */
     static void installFile(final File directory) {
         if (directory == null) return;
-        final File file = new File(directory,
-                edu.uva.liftlab.graphchecker.contract.SessionDir.SCHEDULE);
+        final File file = new File(directory, SessionDir.SCHEDULE);
         install(new Sink() {
             private BufferedWriter writer;
             private boolean failed;
@@ -792,24 +792,21 @@ public final class ScheduleLog {
     private static Path prefixFile() {
         String named = Text.safe(System.getProperty(PREFIX_PROPERTY));
         if (named.isEmpty()) named = Text.safe(System.getenv(PREFIX_ENV));
-        if (!named.isEmpty()) return Paths.get(named);
-        return besideFocus(PREFIX_FILE);
+        return orderFile(named, PREFIX_FILE);
     }
 
     private static Path suffixFile() {
-        String named = Text.safe(System.getProperty(SUFFIX_PROPERTY));
-        if (!named.isEmpty()) return Paths.get(named);
-        return besideFocus(SUFFIX_FILE);
+        return orderFile(Text.safe(System.getProperty(SUFFIX_PROPERTY)),
+                SUFFIX_FILE);
     }
 
-    private static Path besideFocus(String name) {
-        String worker = Text.safe(
-                System.getenv("CAUSYNTH_CONCOLIC_WORKER_DIR"));
-        if (!worker.isEmpty()) {
-            Path beside = Paths.get(worker).resolve(name);
-            if (beside.toFile().isFile()) return beside;
-        }
-        return null;
+    /** The file {@code named}, else {@code name} in the worker directory. */
+    private static Path orderFile(String named, String name) {
+        if (!named.isEmpty()) return Paths.get(named);
+        String worker = FocusedReplay.workerDir();
+        if (worker.isEmpty()) return null;
+        Path beside = Paths.get(worker).resolve(name);
+        return beside.toFile().isFile() ? beside : null;
     }
 
     /** The replay's account of its order, at exit. */

@@ -27,8 +27,8 @@ public final class OccurrenceBinding {
     }
 
     /** Stamps the occurrence onto the ports and accesses it owns. */
-    public static void bindPorts(List<Map<String, Object>> ports,
-                                 long rootCallId, String occurrenceId) {
+    private static void bindPorts(List<Map<String, Object>> ports,
+                                  long rootCallId, String occurrenceId) {
         for (Map<String, Object> port : ports) {
             boolean owned = false;
             if (MapFields.longNumber(port.get("rootCallId"), -1L) == rootCallId) {

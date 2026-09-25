@@ -60,9 +60,9 @@ public final class SymbolicMessageEnvelope {
      * <p>Only the staged handle and its position travel; the plan's
      * occurrences for the port do not, since both sides hold the plan and
      * the attach names its own activation
-     * ({@code ConcolicRegionRuntime.declaredConsumerOccurrence}).</p>
+     * ({@code HandoffMint.attachConsumerRegion}).</p>
      */
-    public static boolean stage(String portId, long handle) {
+    static boolean stage(String portId, long handle) {
         if (empty(portId) || handle < 0L) return false;
         return outbound().stage(portId, handle);
     }
@@ -80,12 +80,12 @@ public final class SymbolicMessageEnvelope {
      * Opens a frame around the value this thread is about to serialize;
      * frames are numbered in open order on both sides.
      */
-    public static void pushOutboundFrame() {
+    static void pushOutboundFrame() {
         outbound().push();
     }
 
     /** Closes the innermost outbound frame. */
-    public static void popOutboundFrame() {
+    static void popOutboundFrame() {
         Outbound message = OUTBOUND.get();
         if (message != null) message.pop();
     }
@@ -123,7 +123,7 @@ public final class SymbolicMessageEnvelope {
         } catch (IllegalArgumentException refused) {
             // A refused wire is a named row, never an exception: thrown, it
             // breaks the workload's IPC.  Nothing is installed, so every
-            // decode answers MISSING and the claim fails on the values.
+            // decode answers no element and the claim fails on the values.
             if (displaced != null) displaced.reportUnattached();
             RowRuntime.messageContextRefused(
                     "inbound symbolic message envelope",
@@ -150,29 +150,30 @@ public final class SymbolicMessageEnvelope {
     }
 
     /** Opens the next frame of the message being decoded, counted as the sender counted. */
-    public static void pushInboundFrame() {
+    static void pushInboundFrame() {
         Inbound message = INBOUND.get();
         if (message != null) message.push();
     }
 
     /** Closes the innermost inbound frame. */
-    public static void popInboundFrame() {
+    static void popInboundFrame() {
         Inbound message = INBOUND.get();
         if (message != null) message.pop();
     }
 
     /**
-     * Takes the element this port is decoding next, by ordinal: an element
-     * never staged answers absent rather than borrowing the next value.
+     * Takes the element this port is decoding next, by ordinal: its handle,
+     * or 0.  An element never staged answers 0, as a concrete one does,
+     * rather than borrowing the next value.
      */
-    public static Entry take(String portId) {
+    static long take(String portId) {
         Inbound message = INBOUND.get();
-        if (message == null || empty(portId)) return Entry.MISSING;
+        if (message == null || empty(portId)) return 0L;
         return message.take(portId);
     }
 
     /** Clears thread state at a session boundary; nothing is reported. */
-    public static void clear() {
+    static void clear() {
         OUTBOUND.remove();
         INBOUND.remove();
     }
@@ -236,7 +237,7 @@ public final class SymbolicMessageEnvelope {
             this.wire = wire;
         }
 
-        Entry take(String portId) {
+        long take(String portId) {
             int frame = frame();
             int ordinal = count(portId);
             for (int index = 0; index < entries.size(); index++) {
@@ -245,9 +246,9 @@ public final class SymbolicMessageEnvelope {
                         || !portId.equals(entry.portId)) continue;
                 if (lookedUp[index]) break;
                 lookedUp[index] = true;
-                return entry;
+                return entry.handle;
             }
-            return Entry.MISSING;
+            return 0L;
         }
 
         /**
@@ -278,7 +279,7 @@ public final class SymbolicMessageEnvelope {
         boolean stage(String portId, long handle) {
             if (entries.size() >= MAX_ENTRIES) return false;
             int frame = frame();
-            entries.add(new Entry(true, portId, handle, frame,
+            entries.add(new Entry(portId, handle, frame,
                     count(portId)));
             return true;
         }
@@ -310,7 +311,7 @@ public final class SymbolicMessageEnvelope {
                     || ordinal < 0 || ordinal >= MAX_ENTRIES
                     || !Integer.toString(ordinal).equals(fields[3])
                     || empty(portId)) throw malformed();
-            entries.add(new Entry(true, portId, handle, frame, ordinal));
+            entries.add(new Entry(portId, handle, frame, ordinal));
         }
         return entries;
     }
@@ -341,27 +342,18 @@ public final class SymbolicMessageEnvelope {
                 "malformed symbolic message envelope");
     }
 
-    /** One immutable entry physically decoded from the current message. */
-    public static final class Entry {
-        private static final Entry MISSING =
-                new Entry(false, "", 0L, -1, -1);
-        private final boolean present;
+    /** One staged or decoded leaf: its port, handle and position. */
+    private static final class Entry {
         private final String portId;
         private final long handle;
         private final int frame;
         private final int ordinal;
 
-        private Entry(boolean present, String portId, long handle,
-                      int frame, int ordinal) {
-            this.present = present;
+        private Entry(String portId, long handle, int frame, int ordinal) {
             this.portId = portId;
             this.handle = handle;
             this.frame = frame;
             this.ordinal = ordinal;
         }
-
-        public boolean present() { return present; }
-
-        public long handle() { return handle; }
     }
 }

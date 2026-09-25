@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import edu.uva.liftlab.graphchecker.contract.Role;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -117,8 +118,9 @@ public final class Lineage {
         String family = Text.safe(api);
         int window = RecordingWindow.index();
         int k = root
-                ? counter(window + "\n" + node + "\n" + kind.name() + "\n"
-                        + family).incrementAndGet()
+                ? COUNTERS.computeIfAbsent(window + "\n" + node + "\n"
+                        + kind.name() + "\n" + family,
+                        scope -> new AtomicInteger()).incrementAndGet()
                 : 0;
         long token = TOKENS.getAndIncrement();
         stack.add(new Frame(token, kind, family, k, root, turn, window));
@@ -145,14 +147,14 @@ public final class Lineage {
      * half of every queue that outlives its enqueueing thread.  The token
      * both closes the hop and restores the thread's own lineage.
      */
-    public static long restore(Object carried, String nodeKey, Role role,
+    public static long restore(Carried carried, String nodeKey, Role role,
                                String api) {
         List<Frame> stack = STACK.get();
         List<Frame> restored = new ArrayList<Frame>(stack);
-        if (carried instanceof Carried && ((Carried) carried).names()) {
+        if (carried.names()) {
             // Inside a carried lineage the hop is no root.
             stack.clear();
-            stack.addAll(((Carried) carried).frames);
+            stack.addAll(carried.frames);
         }
         long token = push(nodeKey, role, api);
         RESTORED.get().put(token, restored);
@@ -175,7 +177,7 @@ public final class Lineage {
             new ThreadLocal<Map<Long, List<Frame>>>() {
                 @Override
                 protected Map<Long, List<Frame>> initialValue() {
-                    return new java.util.LinkedHashMap<Long, List<Frame>>();
+                    return new LinkedHashMap<Long, List<Frame>>();
                 }
             };
 
@@ -306,14 +308,6 @@ public final class Lineage {
             if (frame.root && frame.token == token) return true;
         }
         return false;
-    }
-
-    private static AtomicInteger counter(String scope) {
-        AtomicInteger counter = COUNTERS.get(scope);
-        if (counter != null) return counter;
-        AtomicInteger fresh = new AtomicInteger();
-        AtomicInteger raced = COUNTERS.putIfAbsent(scope, fresh);
-        return raced == null ? fresh : raced;
     }
 
     /** Test hook: one window, one thread, nothing carried over. */

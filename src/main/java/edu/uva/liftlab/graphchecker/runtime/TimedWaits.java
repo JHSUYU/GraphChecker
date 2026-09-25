@@ -536,15 +536,11 @@ public final class TimedWaits {
 
     public static void awaitUninterruptibly(Condition condition,
                                             String site) {
-        Waiter self = enter(condition);
         try {
-            while (!self.signalled) {
-                long seen = sent(condition);
-                condition.awaitUninterruptibly();
-                if (!self.signalled && sent(condition) == seen) return;
-            }
-        } finally {
-            leave(condition, self);
+            untimed(condition, self -> condition.awaitUninterruptibly());
+        } catch (InterruptedException impossible) {
+            // awaitUninterruptibly never throws it.
+            Thread.currentThread().interrupt();
         }
     }
 

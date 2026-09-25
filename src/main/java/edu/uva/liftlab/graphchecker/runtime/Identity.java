@@ -119,15 +119,11 @@ public final class Identity {
                         levels.get(index).window));
             }
             child.scopeBase = scopeBase;
-            // The child claims its own start frame.
-            child.claimed = false;
-            child.startDepth = -1;
-            // Until it claims a start, its creator started it.  Read this
-            // state directly: no thread-local may be touched during the
-            // child's construction.
+            // The child claims its own start frame; until it does, its
+            // creator started it.  Read this state directly: no thread-local
+            // may be touched during the child's construction.
             child.starter = Attribution.Reference.of(receiversOf(this),
                     starter);
-            child.adopted = false;
             for (Region region : regions) {
                 // Depth carries over, the journal does not: a journal has
                 // one writer thread.
@@ -223,8 +219,8 @@ public final class Identity {
          * <p>Keyed by (level, root hop, site) only.  Trap: keying also by
          * the live causal context moves the key whenever the thread's anchor
          * moves, and sibling sends collapse to one endpoint.  Two
-         * activations of one region count apart through their own levels
-         * (G11).</p>
+         * activations of one region count apart through their own
+         * levels.</p>
          */
         private int nextSiteEvent(String site) {
             Map<String, Integer> events = top().events(Lineage.rootToken());
@@ -568,8 +564,8 @@ public final class Identity {
         /**
          * A root that IS the started work: a daemon tick ({@code
          * beginTick}).  The origin is the claimed start frame, else a
-         * pooled tick's addresses lose the frame that separates tasks
-         * (G10/G11); with no claimed start it begins where opened.
+         * pooled tick's addresses lose the frame that separates tasks;
+         * with no claimed start it begins where opened.
          */
         STARTED_ROOT
     }
@@ -829,24 +825,18 @@ public final class Identity {
     }
 
     /**
-     * THE endpoint of one event (IDENTITY-IMPL §A): (occurrence, site,
-     * site-local index, attempt), one computation for both passes so the
-     * contexts downstream of a message match.
-     */
-    public static Endpoint endpoint(String nodeKey, String site, int attempt) {
-        return endpointAt(currentOccurrence(nodeKey), site, attempt);
-    }
-
-    /**
-     * The same endpoint for a held occurrence.  The site is stabilised once
-     * ({@link JvmNames#stable}) and the index is taken over that string.
+     * THE endpoint of one event in {@code occurrence} (IDENTITY-IMPL §A):
+     * (occurrence, site, site-local index, attempt), one computation for
+     * both passes so the contexts downstream of a message match.  The site
+     * is stabilised once ({@link JvmNames#stable}) and the index is taken
+     * over that string.
      */
     public static Endpoint endpointAt(OccurrenceAddress occurrence,
                                       String site, int attempt) {
         if (occurrence == null) return null;
         String stable = JvmNames.stable(Text.safe(site));
-        return Endpoint.of(occurrence, stable,
-                eventSiteIndex(occurrence, stable), attempt);
+        return Endpoint.of(occurrence, stable, eventSiteIndex(stable),
+                attempt);
     }
 
     /**
@@ -855,15 +845,13 @@ public final class Identity {
      * frame two events of one occurrence at one site share an endpoint id.
      * Its k is the enclosing level's ({@link State#nextSiteEvent}).
      */
-    private static ExecutionIndex eventSiteIndex(OccurrenceAddress occurrence,
-                                                 String site) {
+    private static ExecutionIndex eventSiteIndex(String site) {
         State state = state();
-        String key = JvmNames.stable(Text.safe(site));
-        if (key.isEmpty()) return state.from(state.regionBase());
-        int iteration = state.nextSiteEvent(key);
+        if (site.isEmpty()) return state.from(state.regionBase());
+        int iteration = state.nextSiteEvent(site);
         List<Frame> frames = new ArrayList<Frame>(
                 Arrays.asList(state.snapshot(state.regionBase())));
-        frames.add(Frame.of(key, iteration));
+        frames.add(Frame.of(site, iteration));
         return ExecutionIndex.of(frames);
     }
 
@@ -876,7 +864,7 @@ public final class Identity {
      */
     public static Endpoint messageSent(String nodeKey, String transport,
                                        String correlationId, String half) {
-        Endpoint producer = endpoint(nodeKey,
+        Endpoint producer = endpointAt(currentOccurrence(nodeKey),
                 Text.safe(transport) + "#" + Text.safe(half), 0);
         if (producer == null) return null;
         Interactions.sent(Text.safe(transport), Text.safe(correlationId),
@@ -888,7 +876,7 @@ public final class Identity {
      * The address of work under no selected region: its role, node and
      * index from the scope root ({@link #scopeStart}), never from the
      * thread's first frame (that leaks the pool handler's iteration).
-     * The region slot is {@code ROLE.<role>} (REPORT-ENTRY §4); the
+     * The region slot is {@code ROLE.<role>}; the
      * context is still exact.
      */
     public static OccurrenceAddress roleOccurrence(String nodeKey, Role role) {

@@ -272,7 +272,7 @@ public class OccurrenceAddressIsNotARequestTest {
 
         // Outside it again: nothing attributed.
         assertEquals("the unregistered source, as the planner counts it",
-                RuntimeTraceContext.UNREGISTERED_SOURCE.key(),
+                RuntimeRegionPlanner.UNREGISTERED_SOURCE.key(),
                 RuntimeTraceContext.activationSource(null).key());
 
         // A refused envelope names what was missing, and separates what the
