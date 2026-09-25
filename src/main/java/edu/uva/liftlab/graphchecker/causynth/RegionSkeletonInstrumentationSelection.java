@@ -8,7 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import static edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 
 /**
  * The candidate region skeletons every weave opens its regions from: a static

@@ -22,7 +22,7 @@ import java.util.Set;
 import java.util.SortedMap;
 import java.util.TreeMap;
 import java.util.TreeSet;
-import static edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 
 /**
  * README section 5's per-loop {@code K_L}, declared (never measured: the
@@ -92,7 +92,7 @@ final class DeclaredLoopBodyBounds {
         String configured = firstNonBlank(
                 System.getProperty(SOURCE_PROPERTY),
                 System.getenv(SOURCE_ENVIRONMENT));
-        if (configured == null) {
+        if (configured.isEmpty()) {
             return none();
         }
         Path path = Paths.get(configured).toAbsolutePath().normalize();

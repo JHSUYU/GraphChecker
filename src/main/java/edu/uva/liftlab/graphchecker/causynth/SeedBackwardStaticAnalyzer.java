@@ -58,7 +58,7 @@ import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.Instance
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.actualInvokeArgs;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.activeBody;
 import static edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts.fieldOwner;
-import static edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 
 
 /** Static backward data-flow analysis from one annotated exception target. */

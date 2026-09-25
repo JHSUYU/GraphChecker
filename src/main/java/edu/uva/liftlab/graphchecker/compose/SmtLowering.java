@@ -11,6 +11,7 @@ import edu.uva.liftlab.graphchecker.smt.VmRows;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.FloatingKind;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.IntegralWidth;
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Sort;
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Term;
@@ -50,6 +51,7 @@ import static edu.uva.liftlab.graphchecker.smt.VmExpressionIr.isPrimitiveIntExpr
 import static edu.uva.liftlab.graphchecker.smt.VmExpressionIr.quote;
 import static edu.uva.liftlab.graphchecker.smt.VmExpressionIr.shiftOperator;
 import static edu.uva.liftlab.graphchecker.compose.VmTermLowering.and;
+import static edu.uva.liftlab.graphchecker.compose.VmTermLowering.expressionJavaType;
 import static edu.uva.liftlab.graphchecker.compose.VmTermLowering.floatingKind;
 import static edu.uva.liftlab.graphchecker.compose.VmTermLowering.numeric;
 
@@ -554,9 +556,6 @@ public final class SmtLowering {
     // What the shared lowering leaves to its caller.
     // ------------------------------------------------------------------
 
-    public Term lower(JsonElement expression, Sort expected, String origin) {
-        return dispatch(expression, expected, origin);
-    }
 
     public Term refuse(VmTermLowering.Reason reason, String origin,
                        String detail, Sort sort) {
@@ -1274,9 +1273,6 @@ public final class SmtLowering {
     }
 
     /** Lowers one value expression, keeping its sort. */
-    public Term term(JsonElement expression, Sort expected, String origin) {
-        return dispatch(expression, expected, origin);
-    }
 
     private void sideCondition(String predicate) {
         if (predicate == null || predicate.isEmpty()
@@ -1687,7 +1683,7 @@ public final class SmtLowering {
             return stringOperation(object, origin);
         }
         if ("NotExpression".equals(type)) {
-            Term operand = lower(object.get("_operand"), Sort.BOOL,
+            Term operand = dispatch(object.get("_operand"), Sort.BOOL,
                     origin + ":not");
             if (operand == null || operand.sort != Sort.BOOL) {
                 return refuse(Reason.MALFORMED_NOT, origin, "", Sort.BOOL);
@@ -1698,7 +1694,7 @@ public final class SmtLowering {
             return placeholderTerm(object, origin);
         }
         if ("TypeCastExpression".equals(type)) {
-            return VmTermLowering.typeCast(this, object, origin);
+            return typeCast(object, origin);
         }
         if (VmRows.GUARDED_READ_TYPE.equals(type)) {
             return guardedReadTerm(object, expected, origin);
@@ -1708,7 +1704,7 @@ public final class SmtLowering {
                 .equals(type)) {
             // Outside final composition an anchor is the value the VM
             // propagated.
-            return lower(object.get(VmExpressionIr.EXPRESSION), expected,
+            return dispatch(object.get(VmExpressionIr.EXPRESSION), expected,
                     origin + ":consumer-boundary");
         }
         if ("MethodExpression".equals(type)) {
@@ -1732,7 +1728,7 @@ public final class SmtLowering {
     public final Term methodTerm(JsonObject expression, String origin) {
         String method = optionalString(expression, "_name");
         if (VmExpressionIr.isJavaParseInt(method)) {
-            return VmTermLowering.parseIntTerm(this, expression, origin);
+            return parseIntTerm(expression, origin);
         }
         if (VmExpressionIr.isJavaSplitElement(method)) {
             return splitElementTerm(expression, origin);
@@ -1754,8 +1750,8 @@ public final class SmtLowering {
         if (leftExpression == null || leftExpression.isJsonNull()) {
             return unary(expression, operator, origin);
         }
-        Term left = lower(leftExpression, null, origin + ":left");
-        Term right = lower(expression.get("_right"),
+        Term left = dispatch(leftExpression, null, origin + ":left");
+        Term right = dispatch(expression.get("_right"),
                 left == null ? null : left.sort, origin + ":right");
         if (left == null || right == null) return null;
         // A JVM reference comparison against the integer 0 is a null test.
@@ -1806,9 +1802,9 @@ public final class SmtLowering {
             Sort promoted = left.sort == Sort.FLOAT64
                     || right.sort == Sort.FLOAT64
                     ? Sort.FLOAT64 : Sort.FLOAT32;
-            left = VmTermLowering.floatingPromotion(this, left, promoted,
+            left = floatingPromotion(left, promoted,
                     origin + ":left");
-            right = VmTermLowering.floatingPromotion(this, right, promoted,
+            right = floatingPromotion(right, promoted,
                     origin + ":right");
             if (left == null || right == null) return null;
         }
@@ -1910,7 +1906,7 @@ public final class SmtLowering {
 
     private Term unary(JsonObject expression, String operator,
                        String origin) {
-        Term operand = lower(expression.get("_right"), null,
+        Term operand = dispatch(expression.get("_right"), null,
                 origin + ":operand");
         Sort operandSort = operand == null ? Sort.UNKNOWN : operand.sort;
         if ("-".equals(operator) && operand != null
@@ -2202,7 +2198,7 @@ public final class SmtLowering {
                 return codecGap(operation, "REQUIRES_ONE_PRIMITIVE_INT",
                         origin, Sort.STRING);
             }
-            Term integer = lower(params.get(0), Sort.INT,
+            Term integer = dispatch(params.get(0), Sort.INT,
                     origin + ":toString");
             if (integer == null || integer.sort != Sort.INT) {
                 return codecGap(operation, "NON_INT_TERM", origin,
@@ -2221,9 +2217,9 @@ public final class SmtLowering {
         if (params.size() != 2) {
             return codecGap("equals", "ARITY", origin, Sort.BOOL);
         }
-        Term receiver = lower(params.get(0), null,
+        Term receiver = dispatch(params.get(0), null,
                 origin + ":equals:parameter0");
-        Term argument = lower(params.get(1), null,
+        Term argument = dispatch(params.get(1), null,
                 origin + ":equals:parameter1");
         if (receiver == null || argument == null) return null;
         if (receiver.sort != Sort.STRING) {
@@ -2266,7 +2262,7 @@ public final class SmtLowering {
         for (int index = 0; index < params.size(); index++) {
             // No expected sort: STRING would declare a malformed primitive
             // leaf as String.  Check the derived sort instead.
-            Term value = lower(params.get(index), null,
+            Term value = dispatch(params.get(index), null,
                     origin + ":" + operation + ":parameter" + index);
             if (value == null) return StringParameters.refused(null);
             if (value.sort != Sort.STRING) {
@@ -2319,7 +2315,7 @@ public final class SmtLowering {
     /** One String or container operation the codec could not close. */
     public final Term codecGap(String operation, String gap, String origin,
                         Sort sort) {
-        return VmTermLowering.codecGap(this, "OpStrExpression." + operation,
+        return modelGap("OpStrExpression." + operation,
                 gap, origin, sort);
     }
 
@@ -2378,5 +2374,83 @@ public final class SmtLowering {
     public final String stringLiteral(JsonElement expression) {
         return VmExpressionIr.exactStringLiteral(expression,
                 type -> sortOfJavaType(type) == Sort.STRING);
+    }
+
+    /** Java binary numeric promotion of one operand to a floating sort. */
+    private Term floatingPromotion(Term term, Sort target,
+                                  String origin) {
+        FloatingKind targetKind = floatingKind(target);
+        if (term.sort == target) return term;
+        if (term.sort.floating()) {
+            String converted = JavaPrimitiveSmtSemantics.floatingConversion(
+                    term.text, floatingKind(term.sort), targetKind);
+            if (converted != null) {
+                return dependent(Term.of(converted, target), term);
+            }
+        } else if (term.sort == Sort.INT
+                && term.integralWidth != IntegralWidth.NONE) {
+            String converted = JavaPrimitiveSmtSemantics.integralToFloating(
+                    term.text, targetKind);
+            if (converted != null) {
+                return dependent(Term.of(converted, target), term);
+            }
+        }
+        return refuse(Reason.UNSUPPORTED_JAVA_NUMERIC_PROMOTION,
+                origin, term.sort + "->" + target, target);
+    }
+
+    /** One JVM primitive conversion; every other cast is a named gap. */
+    private Term typeCast(JsonObject expression,
+                         String origin) {
+        JsonElement sourceExpression = expression.get("_exp");
+        Term source = dispatch(sourceExpression, null,
+                origin + ":castSource");
+        String sourceType = JavaPrimitiveSmtSemantics.javaTypeDescriptor(
+                firstNonBlank(optionalString(expression, "sourceJavaType"),
+                        expressionJavaType(sourceExpression)));
+        String targetType = JavaPrimitiveSmtSemantics.javaTypeDescriptor(
+                firstNonBlank(optionalString(expression, "targetJavaType"),
+                        optionalString(expression, "_java_type")));
+        Sort sourceSort = castSort(sourceType);
+        Sort targetSort = castSort(targetType);
+        // Every non-primitive cast produces a reference.
+        Sort refused = targetSort == Sort.VALUE ? Sort.REF : targetSort;
+        boolean primitivePair = JavaPrimitiveSmtSemantics
+                .primitiveNumericDescriptor(sourceType)
+                && JavaPrimitiveSmtSemantics
+                .primitiveNumericDescriptor(targetType);
+        if (source != null && primitivePair && source.sort == sourceSort) {
+            String conversion = JavaPrimitiveSmtSemantics.primitiveCast(
+                    source.text, sourceType, targetType);
+            if (conversion != null) {
+                return dependent(Term.of(conversion, targetSort,
+                        JavaPrimitiveSmtSemantics.widthOfJavaType(
+                                targetType)), source);
+            }
+        } else if (source != null && primitivePair) {
+            return refuse(Reason.JAVA_CAST_SOURCE_SORT_CONFLICT,
+                    origin, firstNonBlank(sourceType, "UNKNOWN") + ":"
+                            + source.sort + "!=" + sourceSort, refused);
+        }
+        return refuse(Reason.UNSUPPORTED_JAVA_CAST, origin,
+                firstNonBlank(sourceType, "UNKNOWN") + "->"
+                        + firstNonBlank(targetType, "UNKNOWN"), refused);
+    }
+
+    /** One container or string operation the codec could not close. */
+    private Term modelGap(String operation, String gap,
+                         String origin, Sort sort) {
+        return refuse(Reason.MODEL_SEMANTICS_MISSING, origin,
+                operation + ":" + gap, sort);
+    }
+
+    /**
+     * {@code Integer.parseInt}: always one named refusal, since nothing
+     * proves the argument is exactly a decimal int rendering.
+     */
+    private Term parseIntTerm(JsonObject expression,
+                             String origin) {
+        return modelGap("java/lang/Integer.parseInt",
+                "PARSE_INT_NOT_LOWERED", origin, Sort.INT);
     }
 }

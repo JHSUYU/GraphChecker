@@ -566,9 +566,6 @@ final class ConcolicTaskPlan {
         boolean receiverMatches = registeredReceiverSource != null
                 && RuntimeTraceContext.sameSourceIdentity(task.sourceKey,
                 registeredReceiverSource.key());
-        boolean inheritedMatches = inherited != null
-                && RuntimeTraceContext.sameSourceIdentity(task.sourceKey,
-                inherited.key());
         if (OccurrenceBinding.UNREGISTERED_SOURCE_KEY.equals(
                 task.sourceKey)) {
             return registeredReceiverSource == null && inherited == null

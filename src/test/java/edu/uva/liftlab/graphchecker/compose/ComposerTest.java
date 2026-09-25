@@ -2480,7 +2480,7 @@ public class ComposerTest {
         // those facts out at, so it is refused BY NAME rather than left
         // with positions the solver may answer as it likes.
         lowering.begin("s0", null);
-        lowering.term(viewKey(relation("ASSOCIATIVE", "STATE",
+        lowering.dispatch(viewKey(relation("ASSOCIATIVE", "STATE",
                 "java/util/HashMap", symbol("M_L'java/util/HashMap'_89",
                         "java/util/HashMap")), 0), null, "view-unbounded");
         List<String> unbounded = new ArrayList<String>(

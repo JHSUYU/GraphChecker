@@ -70,10 +70,8 @@ final class SymbolizeAction {
     final String recordedPrimitiveValue;
     /** The selection file named this input by hand: mint, do not reuse. */
     final boolean declaredSymbolicRoot;
-    final String rootKind;
     final List<String> fieldPath;
     final String javaType;
-    final String symbolicName;
     final Set<Integer> definitionUnitIndices =
             new LinkedHashSet<>();
     final Map<String, String> leafFieldSignaturesByPath =
@@ -132,7 +130,6 @@ final class SymbolizeAction {
                 ? optionalString(json, "primitiveValue") : "";
         this.declaredSymbolicRoot = optionalBool(json,
                 InputActionCatalog.DECLARED_SYMBOLIC_ROOT, false);
-        this.rootKind = optionalString(json, "rootKind");
         String explicitLeafSignature = firstNonBlank(
                 optionalString(json, "leafFieldSignature"),
                 this.accessFieldSignature);
@@ -163,7 +160,6 @@ final class SymbolizeAction {
             leafFieldSignaturesByPath.put(FieldPathSpec.join(
                     this.fieldPath), explicitLeafSignature);
         }
-        this.symbolicName = optionalString(json, "symbolicName");
     }
 
     boolean declaresArrayInput(List<String> actualPath) {

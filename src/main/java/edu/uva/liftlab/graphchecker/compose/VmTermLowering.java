@@ -182,73 +182,8 @@ public final class VmTermLowering {
         }
     }
 
-    /** Java binary numeric promotion of one operand to a floating sort. */
-    public static Term floatingPromotion(SmtLowering policy, Term term, Sort target,
-                                  String origin) {
-        FloatingKind targetKind = floatingKind(target);
-        if (term.sort == target) return term;
-        if (term.sort.floating()) {
-            String converted = JavaPrimitiveSmtSemantics.floatingConversion(
-                    term.text, floatingKind(term.sort), targetKind);
-            if (converted != null) {
-                return policy.dependent(Term.of(converted, target), term);
-            }
-        } else if (term.sort == Sort.INT
-                && term.integralWidth != IntegralWidth.NONE) {
-            String converted = JavaPrimitiveSmtSemantics.integralToFloating(
-                    term.text, targetKind);
-            if (converted != null) {
-                return policy.dependent(Term.of(converted, target), term);
-            }
-        }
-        return policy.refuse(Reason.UNSUPPORTED_JAVA_NUMERIC_PROMOTION,
-                origin, term.sort + "->" + target, target);
-    }
 
-    /** One JVM primitive conversion; every other cast is a named gap. */
-    public static Term typeCast(SmtLowering policy, JsonObject expression,
-                         String origin) {
-        JsonElement sourceExpression = expression.get("_exp");
-        Term source = policy.lower(sourceExpression, null,
-                origin + ":castSource");
-        String sourceType = JavaPrimitiveSmtSemantics.javaTypeDescriptor(
-                firstNonBlank(optionalString(expression, "sourceJavaType"),
-                        expressionJavaType(sourceExpression)));
-        String targetType = JavaPrimitiveSmtSemantics.javaTypeDescriptor(
-                firstNonBlank(optionalString(expression, "targetJavaType"),
-                        optionalString(expression, "_java_type")));
-        Sort sourceSort = policy.castSort(sourceType);
-        Sort targetSort = policy.castSort(targetType);
-        // Every non-primitive cast produces a reference.
-        Sort refused = targetSort == Sort.VALUE ? Sort.REF : targetSort;
-        boolean primitivePair = JavaPrimitiveSmtSemantics
-                .primitiveNumericDescriptor(sourceType)
-                && JavaPrimitiveSmtSemantics
-                .primitiveNumericDescriptor(targetType);
-        if (source != null && primitivePair && source.sort == sourceSort) {
-            String conversion = JavaPrimitiveSmtSemantics.primitiveCast(
-                    source.text, sourceType, targetType);
-            if (conversion != null) {
-                return policy.dependent(Term.of(conversion, targetSort,
-                        JavaPrimitiveSmtSemantics.widthOfJavaType(
-                                targetType)), source);
-            }
-        } else if (source != null && primitivePair) {
-            return policy.refuse(Reason.JAVA_CAST_SOURCE_SORT_CONFLICT,
-                    origin, firstNonBlank(sourceType, "UNKNOWN") + ":"
-                            + source.sort + "!=" + sourceSort, refused);
-        }
-        return policy.refuse(Reason.UNSUPPORTED_JAVA_CAST, origin,
-                firstNonBlank(sourceType, "UNKNOWN") + "->"
-                        + firstNonBlank(targetType, "UNKNOWN"), refused);
-    }
 
-    /** One container or string operation the codec could not close. */
-    public static Term codecGap(SmtLowering policy, String operation, String gap,
-                         String origin, Sort sort) {
-        return policy.refuse(Reason.MODEL_SEMANTICS_MISSING, origin,
-                operation + ":" + gap, sort);
-    }
 
     /** The Java type one VM expression states it evaluates to. */
     public static String expressionJavaType(JsonElement expression) {
@@ -283,15 +218,6 @@ public final class VmTermLowering {
     }
 
 
-    /**
-     * {@code Integer.parseInt}: always one named refusal, since nothing
-     * proves the argument is exactly a decimal int rendering.
-     */
-    public static Term parseIntTerm(SmtLowering policy, JsonObject expression,
-                             String origin) {
-        return codecGap(policy, "java/lang/Integer.parseInt",
-                "PARSE_INT_NOT_LOWERED", origin, Sort.INT);
-    }
 
     /** The conjunction of these predicates, with the trivial ones and the
      *  outer parentheses of a one-element conjunction removed. */

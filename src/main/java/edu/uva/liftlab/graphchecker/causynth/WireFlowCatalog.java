@@ -23,7 +23,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-import static edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 
 /** Strict, transport-neutral declarations of values carried by messages. */
 public final class WireFlowCatalog {
@@ -73,7 +73,7 @@ public final class WireFlowCatalog {
         List<Row> read = new ArrayList<>();
         String configured = firstNonBlank(System.getProperty(PROPERTY),
                 System.getenv(ENVIRONMENT));
-        if (configured != null) {
+        if (!configured.isEmpty()) {
             Path path = Paths.get(configured).toAbsolutePath().normalize();
             if (!Files.isRegularFile(path)) {
                 throw new IOException("Communication mapping not found: "

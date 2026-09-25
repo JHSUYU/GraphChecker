@@ -1009,8 +1009,6 @@ public final class RuntimeRegionPlanner {
             declareCutPortCells(region);
             regionById.put(region.regionId, region);
         }
-        Map<String, Map<String, Object>> goalByOccurrence =
-                new LinkedHashMap<>();
         Map<String, Map<String, Object>> planByOccurrence =
                 new LinkedHashMap<>();
         // Replay ordinals, reserved for every observed activation before
@@ -1202,7 +1200,6 @@ public final class RuntimeRegionPlanner {
             }
             plan.put("closureGoals", Collections.singletonList(goal));
             result.regionPlans.add(plan);
-            goalByOccurrence.put(occurrenceId, goal);
             planByOccurrence.put(occurrenceId, plan);
         }
         republishEnclosingActivationIds(result.regionPlans,
@@ -2341,14 +2338,6 @@ public final class RuntimeRegionPlanner {
                 }
             }
             return "";
-        }
-
-        /** Exact static site through which this recorded frame was entered. */
-        private String entrySiteId(long callId) {
-            MethodEvent current = methodByCall.get(callId);
-            return current == null ? ""
-                    : callSiteId(current.parentCallId,
-                    current.parentSiteId);
         }
 
         private List<RuntimeEvent> runtime(Set<Long> calls) {

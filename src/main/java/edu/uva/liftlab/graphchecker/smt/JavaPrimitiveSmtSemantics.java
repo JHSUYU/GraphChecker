@@ -139,16 +139,6 @@ public final class JavaPrimitiveSmtSemantics {
         return value.replace('/', '.');
     }
 
-    /** Reference descriptors the scalar leaf contract already represents. */
-    private static final java.util.Set<String> SCALAR_REFERENCE_DESCRIPTORS =
-            java.util.Collections.unmodifiableSet(
-                    new java.util.LinkedHashSet<>(java.util.Arrays.asList(
-                            "Ljava/lang/String;", "Ljava/lang/Boolean;",
-                            "Ljava/lang/Byte;", "Ljava/lang/Character;",
-                            "Ljava/lang/Short;", "Ljava/lang/Integer;",
-                            "Ljava/lang/Long;", "Ljava/lang/Float;",
-                            "Ljava/lang/Double;", "Ljava/lang/Object;")));
-
     /** Whether one Java type name IS a primitive (not a wrapper). */
     public static boolean primitive(String javaType) {
         String descriptor = javaTypeDescriptor(javaType);

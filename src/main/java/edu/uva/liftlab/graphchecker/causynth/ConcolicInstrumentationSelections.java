@@ -46,7 +46,7 @@ public final class ConcolicInstrumentationSelections {
 
     /** Whether this JVM was asked to rewrite a scheduled concolic campaign. */
     public static boolean instrumentationRequested() {
-        return Boolean.parseBoolean(firstNonBlank(
+        return Boolean.parseBoolean(JsonFields.firstNonBlank(
                 System.getProperty("causynth.instrument.concolic"),
                 "false"));
     }
@@ -413,8 +413,8 @@ public final class ConcolicInstrumentationSelections {
                 String local = optionalString(action, "local");
                 Matcher matcher = LOCAL.matcher(cell);
                 if (matcher.matches()) {
-                    method = firstNonBlank(method, matcher.group(1));
-                    local = firstNonBlank(local, matcher.group(2));
+                    method = JsonFields.firstNonBlank(method, matcher.group(1));
+                    local = JsonFields.firstNonBlank(local, matcher.group(2));
                 }
                 if (!method.isEmpty() && !local.isEmpty()) {
                     JsonElement definitions = action.get("definitionSites");
@@ -749,8 +749,4 @@ public final class ConcolicInstrumentationSelections {
         }
     }
 
-    static String firstNonBlank(String... values) {
-        String value = JsonFields.firstNonBlank(values);
-        return value.isEmpty() ? null : value;
-    }
 }

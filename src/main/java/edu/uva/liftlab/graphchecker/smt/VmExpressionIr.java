@@ -51,7 +51,6 @@ public final class VmExpressionIr {
     /** One exact VM value root: the symbol the VM minted for one site. */
     private static final String SYMBOL_TYPE = "SymbolExpression";
     /** A VM read that named the write it read from. */
-    private static final String READ_FROM_TYPE = "ReadFromExpression";
 
     private VmExpressionIr() {
     }
@@ -74,7 +73,7 @@ public final class VmExpressionIr {
         String type = optionalString(node, "_type");
         if (SYMBOL_TYPE.equals(type)
                 || CONSUMER_BOUNDARY_TYPE.equals(type)
-                || READ_FROM_TYPE.equals(type)) {
+                || VmRows.GUARDED_READ_TYPE.equals(type)) {
             return true;
         }
         for (java.util.Map.Entry<String, JsonElement> member

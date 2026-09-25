@@ -142,16 +142,6 @@ public final class RuntimeSelectedRegionFinalizer {
             program.skeletons.put(skeleton.regionId, skeleton);
         }
 
-        // Activation identity is read off the trace before the first port of
-        // a region is built.
-        Map<String, List<Map<String, Object>>> targetPoliciesByRegion =
-                new LinkedHashMap<>();
-        for (Map.Entry<String, StaticProgram.RegionRow> entry
-                : program.skeletons.entrySet()) {
-            if (!selectedRegion(entry.getValue(), observed)) continue;
-            targetPoliciesByRegion.put(entry.getKey(), failureTargetPolicies(
-                    program.regionGraph(entry.getKey())));
-        }
         List<Map<String, Object>> branchOrder = orderedBranchObservations(
                 runtimeObservations);
         // Addresses several activations share; classed after the closure
@@ -637,24 +627,6 @@ public final class RuntimeSelectedRegionFinalizer {
 
     /** Branch member: the exception cells a failure-target guard controls. */
     public static final String FAILURE_TARGET_CELLS = "failureTargetCells";
-
-    /** Failure-target guard sites of one region, in {@link #branches} order. */
-    private static List<Map<String, Object>> failureTargetPolicies(
-            List<Map<String, Object>> regionGraph) {
-        Map<String, List<Map<String, Object>>> failureGuardsBySite =
-                guardsBySite(regionGraph, RuntimeSelectedRegionFinalizer
-                        ::isExceptionTargetEdge);
-        List<Map<String, Object>> result = new ArrayList<>();
-        for (Map.Entry<String, List<Map<String, Object>>> entry
-                : failureGuardsBySite.entrySet()) {
-            if (entry.getValue().isEmpty()) continue;
-            Map<String, Object> policy = new LinkedHashMap<>();
-            policy.put("siteId", entry.getKey());
-            policy.put("failureTarget", true);
-            result.add(policy);
-        }
-        return result;
-    }
 
     /** Exact BRANCH observations in observed order. */
     private static List<Map<String, Object>> orderedBranchObservations(

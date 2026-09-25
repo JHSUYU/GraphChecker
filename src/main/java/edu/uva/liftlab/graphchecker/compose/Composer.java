@@ -1373,7 +1373,7 @@ public final class Composer {
                 // A refused lowering is no join (its term is a free
                 // constant at the refusal's sort).
                 int refusedBefore = lowering.openRefusals().size();
-                Term value = lowering.term(expression, null,
+                Term value = lowering.dispatch(expression, null,
                         "state-join:" + key + "@" + read.observedVersion());
                 if (value != null
                         && lowering.openRefusals().size() == refusedBefore) {

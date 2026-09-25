@@ -959,7 +959,7 @@ final class ComposedFamilies {
         }
         lowering.begin(session,
                 SmtLowering.joinOf(corpus.session(session)));
-        Term value = lowering.term(expression, null, origin);
+        Term value = lowering.dispatch(expression, null, origin);
         List<String> refused = new ArrayList<String>(
                 lowering.openRefusals());
         lowering.end();
