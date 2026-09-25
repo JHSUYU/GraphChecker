@@ -9,22 +9,21 @@ import edu.uva.liftlab.graphchecker.plan.SelectorResolution;
 import edu.uva.liftlab.graphchecker.contract.Claim;
 import edu.uva.liftlab.graphchecker.contract.ClaimKind;
 import edu.uva.liftlab.graphchecker.contract.CompositionManifest;
-import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.RootDomain;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
+import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import edu.uva.liftlab.graphchecker.smt.Z3;
 import edu.uva.liftlab.graphchecker.explore.Corpus;
+import edu.uva.liftlab.graphchecker.option.LongOptions;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -43,7 +42,7 @@ import java.util.Map;
  *   --solver-timeout-ms &lt;n&gt; per solver run, default 20000
  * </pre>
  *
- * <p>Every outcome, failures included, is written as a claim with its gaps,
+ * <p>Parsed by {@link LongOptions}.  Every outcome, failures included, is written as a claim with its gaps,
  * never an exception; exit 0 means the artifacts were written, not that the
  * claim is acceptable.</p>
  */
@@ -164,12 +163,11 @@ public final class ComposeMain {
         // Runs correspond by the RESOLVED id, not the render.
         row.addProperty("anchorId", composition.anchor().id());
         row.addProperty("seedSessionId",
-                composition.seedSessionId() == null ? ""
-                        : composition.seedSessionId());
-        row.addProperty("symbolicPropagationComplete",
-                blocking(decision.claim()) == 0);
-        row.addProperty("finalStatus", blocking(decision.claim()) == 0
-                ? "FINAL_READY" : "FINAL_REFUSED");
+                JsonFields.nonNull(composition.seedSessionId()));
+        boolean complete = !decision.claim().blocked();
+        row.addProperty("symbolicPropagationComplete", complete);
+        row.addProperty("finalStatus",
+                complete ? "FINAL_READY" : "FINAL_REFUSED");
         row.add("finalStatusRefusals", refusals(decision.claim()));
         row.add("gaps", gaps(composition.gaps()));
         row.add("solver", solverRows(decision, solver));
@@ -178,26 +176,23 @@ public final class ComposeMain {
 
     private static JsonObject solverRows(ClaimPolicy.Decision decision,
                                          Z3 solver) {
-        boolean decided = true;
+        // Every valuation asked and decided; none sat is then a refutation.
+        boolean decided = !decision.outcomes().isEmpty();
         boolean anySat = false;
-        String state = "unknown";
         for (ClaimPolicy.Outcome outcome : decision.outcomes()) {
             if (!outcome.answer().decided()) decided = false;
             if (outcome.answer().sat()) anySat = true;
         }
-        if (anySat) state = "sat";
-        else if (decided && !decision.outcomes().isEmpty()) state = "unsat";
         JsonObject row = new JsonObject();
-        row.addProperty("state", state);
+        row.addProperty("state",
+                anySat ? "sat" : decided ? "unsat" : "unknown");
         row.addProperty("reachability", anySat ? "EXACT_REACHABLE"
-                : decided && !decision.outcomes().isEmpty()
-                ? "NO_EXACT_REACHABILITY" : "UNKNOWN");
-        row.addProperty("unsatClosureComplete",
-                decided && !anySat && !decision.outcomes().isEmpty());
+                : decided ? "NO_EXACT_REACHABILITY" : "UNKNOWN");
+        row.addProperty("unsatClosureComplete", decided && !anySat);
         row.addProperty("solverRuns", solver.runs());
         // One question per valuation, so the valuation IS the model.
         row.add("valuations", valuations(decision));
-        row.add("campaignClaim", campaignClaim(decision, anySat, decided));
+        row.add("campaignClaim", campaignClaim(decision, decided && !anySat));
         return row;
     }
 
@@ -206,9 +201,10 @@ public final class ComposeMain {
      * says which mechanism); a blocking gap withholds it regardless.
      */
     private static JsonObject campaignClaim(ClaimPolicy.Decision decision,
-                                            boolean anySat, boolean decided) {
+                                            boolean refuted) {
         Claim claim = decision.claim();
-        int blockers = blocking(claim);
+        JsonArray refusals = refusals(claim);
+        int blockers = refusals.size();
         String kind;
         String reason;
         if (blockers > 0) {
@@ -225,7 +221,7 @@ public final class ComposeMain {
                     + (claim.polarityDecides()
                     ? ", and the recorded valuation refutes the recording"
                     : "");
-        } else if (decided && !anySat && !decision.outcomes().isEmpty()) {
+        } else if (refuted) {
             kind = "UNSAT_CLOSED";
             reason = "every enumerated valuation is decided and unsat: the"
                     + " declared roots do not reach the fatal arm on the"
@@ -245,7 +241,7 @@ public final class ComposeMain {
         row.addProperty("valuationOrdinal", claim.valuationOrdinal());
         row.addProperty("polarityDecides", claim.polarityDecides());
         row.add("movedRoots", GSON.toJsonTree(claim.movedRoots()));
-        row.add("blockers", refusals(claim));
+        row.add("blockers", refusals);
         row.addProperty("blockerCount", blockers);
         row.addProperty("whyNotAccepted",
                 "SAT_CANDIDATE".equals(kind) || "UNSAT_CLOSED".equals(kind)
@@ -291,27 +287,20 @@ public final class ComposeMain {
                 row.addProperty("selector", taken.getKey());
                 row.addProperty("family", arm.family());
                 row.addProperty("groupId", arm.groupId());
-                JsonArray ports = new JsonArray();
-                for (String port : arm.attachEndpointIds()) ports.add(port);
-                row.add("attachEndpointIds", ports);
+                row.add("attachEndpointIds",
+                        GSON.toJsonTree(arm.attachEndpointIds()));
                 row.addProperty("sessionId", arm.sessionId());
-                JsonArray sessions = new JsonArray();
-                for (String session : arm.sessionIds()) sessions.add(session);
-                row.add("sessionIds", sessions);
+                row.add("sessionIds", GSON.toJsonTree(arm.sessionIds()));
                 row.addProperty("producerPathId", arm.producerPathId());
-                JsonArray slots = new JsonArray();
-                for (String slot : arm.interactionIds()) slots.add(slot);
-                row.add("interactionIds", slots);
-                JsonArray refs = new JsonArray();
-                for (String ref : arm.expressionRefs()) refs.add(ref);
-                row.add("expressionRefs", refs);
+                row.add("interactionIds",
+                        GSON.toJsonTree(arm.interactionIds()));
+                row.add("expressionRefs",
+                        GSON.toJsonTree(arm.expressionRefs()));
                 row.addProperty("attested", arm.attested());
                 arms.add(row);
             }
             answer.add("selectedArms", arms);
-            JsonArray core = new JsonArray();
-            for (String name : outcome.answer().core()) core.add(name);
-            answer.add("unsatCore", core);
+            answer.add("unsatCore", GSON.toJsonTree(outcome.answer().core()));
             valuations.add(answer);
         }
         return valuations;
@@ -327,25 +316,16 @@ public final class ComposeMain {
         row.add("claim", GSON.toJsonTree(decision.claim()));
         row.addProperty("solverRuns", solver.runs());
         row.addProperty("seedSessionId",
-                composition.seedSessionId() == null ? ""
-                        : composition.seedSessionId());
+                JsonFields.nonNull(composition.seedSessionId()));
         row.add("valuations", valuations(decision));
         row.add("gaps", gaps(decision.claim().gaps()));
         return row;
     }
 
-    private static int blocking(Claim claim) {
-        int blockers = 0;
-        for (GapRow gap : claim.gaps()) {
-            if (gap.cls() == GapClass.BLOCKING) blockers++;
-        }
-        return blockers;
-    }
-
     private static JsonArray refusals(Claim claim) {
         JsonArray rows = new JsonArray();
         for (GapRow gap : claim.gaps()) {
-            if (gap.cls() != GapClass.BLOCKING) continue;
+            if (!gap.blocking()) continue;
             JsonObject row = new JsonObject();
             row.addProperty("kind", gap.kind().name());
             row.addProperty("subject", gap.subject());
@@ -386,45 +366,35 @@ public final class ComposeMain {
     }
 
     /** The CLI: one spelling per option, the one the campaign passes. */
-    public static final class Arguments {
+    static final class Arguments {
         /** The iteration directory; {@code --sessions} names its child. */
-        public Path iteration;
-        public String anchor = "";
-        public Path rootDomains;
-        public int maxValuations = 64;
-        public Path output;
-        public Path manifest;
-        public Path z3 = Paths.get("z3");
-        public long timeoutMillis = Z3.DEFAULT_TIMEOUT_MILLIS;
+        final Path iteration;
+        final String anchor;
+        final Path rootDomains;
+        final int maxValuations;
+        final Path output;
+        final Path manifest;
+        /** Null: {@link Z3}'s own default. */
+        final Path z3;
+        final long timeoutMillis;
 
-        public static Arguments parse(String[] argv) {
-            Map<String, String> values = new LinkedHashMap<String, String>();
-            for (int index = 0; index < argv.length; index++) {
-                String key = argv[index];
-                if (!key.startsWith("--")) continue;
-                String name = key.substring(2);
-                String value = index + 1 < argv.length
-                        && !argv[index + 1].startsWith("--")
-                        ? argv[++index] : "";
-                values.put(name, value);
-            }
-            Arguments arguments = new Arguments();
-            // --sessions names <iteration>/sessions; one spelling per option.
-            Path sessions = path(values.get("sessions"));
-            arguments.iteration = sessions == null ? null
-                    : sessions.getParent() == null ? sessions
-                    : sessions.getParent();
-            arguments.anchor = values.getOrDefault("anchor", "");
-            arguments.rootDomains = path(values.get("root-domains"));
-            Path z3 = path(values.get("z3"));
-            if (z3 != null) arguments.z3 = z3;
-            arguments.maxValuations = integer(values.get("max-valuations"),
+        private Arguments(LongOptions options) {
+            Path sessions = options.path("sessions");
+            iteration = sessions == null || sessions.getParent() == null
+                    ? sessions : sessions.getParent();
+            anchor = options.value("anchor", "");
+            rootDomains = options.path("root-domains");
+            maxValuations = integer(options.value("max-valuations", null),
                     64);
-            arguments.timeoutMillis = integer(
-                    values.get("solver-timeout-ms"),
+            output = options.path("output");
+            manifest = options.path("manifest");
+            z3 = options.path("z3");
+            timeoutMillis = integer(options.value("solver-timeout-ms", null),
                     (int) Z3.DEFAULT_TIMEOUT_MILLIS);
-            arguments.output = path(values.get("output"));
-            arguments.manifest = path(values.get("manifest"));
+        }
+
+        static Arguments parse(String[] argv) {
+            Arguments arguments = new Arguments(LongOptions.parse(argv));
             if (arguments.iteration == null) {
                 throw new IllegalArgumentException("--sessions is required");
             }
@@ -440,14 +410,9 @@ public final class ComposeMain {
             return arguments;
         }
 
-        private static Path path(String value) {
-            return value == null || value.isEmpty() ? null
-                    : Paths.get(value);
-        }
-
         /** One numeric option; a passed non-number is refused, never defaulted. */
         private static int integer(String value, int absent) {
-            if (value == null || value.isEmpty()) return absent;
+            if (value == null) return absent;
             try {
                 return Integer.parseInt(value.trim());
             } catch (NumberFormatException notAnInteger) {
