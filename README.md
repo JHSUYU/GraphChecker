@@ -1100,3 +1100,40 @@ three thread-context stacks for one thread (R18); an abstract lowering layer wit
 implementation (R58); a runtime-refined graph whose only value over the candidate graph is a
 lookup the finalizer already recomputes (R48); recording pass 1 (R13). Everything else in the
 list is local.
+
+## 15. Three refactor iterations (2026-09-25)
+
+Each iteration re-read the whole source (one agent per area), refactored without changing
+output, and ended in a round of all nine cases. Output is checked twice: offline (compose
+`.smt` byte-identical on the last round's corpora, region plans identical, static artifacts and
+woven classes identical up to Soot's local-slot numbering, which is not deterministic) and by
+the round (report PASS + `accept/cone.py`).
+
+| iteration | commits | round | result |
+|---|---|---|---|
+| 1: dead members, lowering indirection, comments cut to their points (18880 -> 9547 lines) | `34cf6bae9`, `d13f83f10` | v48 | 9/9 |
+| 2: one rule per place in plan/explore, causynth, runtime, compose/smt | `30e1346c1`..`bb40bcd4d` | v49 | 9/9 |
+| 3: identity (below), then every area again | `b334534de`..`6cb51bf37` | v50 | pending |
+
+**Identity (iteration 3, after the DEI paper, Meiklejohn et al. 2022).** DEI names a point by
+signature + call stack + a count per (signature, stack) + the enclosing RPC path. Ours already
+had all four for Java-side events (site, frames, `Identity.State#nextSiteEvent`, the Anchor
+chain). A VM-logged read or write had only its frames, so one loop's reads at one bytecode
+shared an endpoint id (~90 of ~200 rows per 17897 session; `Confirmation` keyed them as one
+reader). Now its index ends in `(site, k)`, k its rank by VM event id among the activation's
+logged events at that site on the same frames (`LoggedEventSites#siteIndex`), counted over every
+logged event so a flip that changes which reads are symbolic moves no k. Not adopted: DEI's
+payload component (our flips change values, so an id must not contain them) and loop-turn
+frames (a turn count persists past its loop and would carry a polling loop's timing into later
+ids).
+
+**Behaviour fixes, each its own commit:** a local selected at any site stayed "any" only until
+a second action named a site (`9a4409aad`); a propagation cut's gap lost its detail
+(`0b906a558`); `SmtLowering.lower(String)` dropped the precondition `loweredReference` conjoins
+(`3c1327ec3`); two Corpus activation lookups answered first and last row (`6cb51bf37`).
+
+**Left, with the reason:** `JvmNames.stable` merges lambdas / reflection accessors of one outer
+class (fix: name a lambda by its implementation method); `Role.of` is not one-to-one (fix:
+refuse two declared spellings that normalize alike); Lost contexts are told apart by timing
+(already refused at every cross-session join); R18 steps 3-5 (frames shared by reference,
+`Lineage.anchor` mutates in place: one reachable edge case, see the iteration-3 notes).
