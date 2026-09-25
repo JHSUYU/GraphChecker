@@ -317,8 +317,7 @@ final class SeedBackwardStaticAnalyzer {
 
     /** Execution-context entry kind from Java concurrency contracts. */
     private String executionContextAuthority(String signature) {
-        if (signature == null || signature.contains(" <init>(")
-                || signature.contains(" <clinit>(")) {
+        if (CausynthStaticFacts.constructor(signature)) {
             return "";
         }
         SootMethod method = allMethodsBySignature.get(signature);
@@ -586,13 +585,8 @@ final class SeedBackwardStaticAnalyzer {
 
     /** One method's CFG relation, built once. */
     private SiteControlDependence.MethodGuards cfgRelation(String method) {
-        SiteControlDependence.MethodGuards relation =
-                guardsByMethod.get(method);
-        if (relation == null) {
-            relation = SiteControlDependence.MethodGuards.of(method);
-            guardsByMethod.put(method, relation);
-        }
-        return relation;
+        return memoized(guardsByMethod, method,
+                SiteControlDependence.MethodGuards::of);
     }
 
     /**
@@ -1584,7 +1578,7 @@ final class SeedBackwardStaticAnalyzer {
     private void processSemanticContainerOperation(
             String callerMethod, Fact fact, MethodSig callee,
             List<String> defs, Set<String> callerRelevant) {
-        if (callee == null || defs.isEmpty()
+        if (defs.isEmpty()
                 || !(JavaContainerTypes.symbolicResultOperation(callee.raw)
                 || isSemanticContainerView(callee))) {
             return;
@@ -1602,12 +1596,11 @@ final class SeedBackwardStaticAnalyzer {
         String receiverNode = canonical(callerMethod, receiver);
         if (ignoreNode(receiverNode)) return;
         // The result is demanded, so the receiver's state is a value input.
-        String dependencyRole = DependencyRole.VALUE_FRONTIER;
         for (String def : relevantDefs) {
             Map<String, Object> edge = addEdge("container_receiver",
                     receiverNode, def, callerMethod, fact);
             if (edge != null) {
-                edge.put("dependencyRole", dependencyRole);
+                edge.put("dependencyRole", DependencyRole.VALUE_FRONTIER);
             }
         }
         callerRelevant.add(receiverNode);
@@ -1630,8 +1623,7 @@ final class SeedBackwardStaticAnalyzer {
     private void processSemanticContainerMutation(
             String callerMethod, Fact fact, MethodSig callee,
             Set<String> callerRelevant) {
-        if (callee == null
-                || !JavaContainerTypes.modeledContainerMutator(callee.raw)) {
+        if (!JavaContainerTypes.modeledContainerMutator(callee.raw)) {
             return;
         }
         String receiver = invokeBaseLocal(fact.unitText);
@@ -1672,7 +1664,6 @@ final class SeedBackwardStaticAnalyzer {
 
     private Map<Integer, String> directlyMutatedContainerParameters(
             MethodSig callee) {
-        if (callee == null) return Collections.emptyMap();
         return memoized(directlyMutatedContainerParametersCache,
                 callee.raw, ignored -> {
             SootMethod method = allMethodsBySignature.get(callee.raw);
@@ -1765,7 +1756,7 @@ final class SeedBackwardStaticAnalyzer {
     private void processAccessorInvoke(String callerMethod, Fact fact,
                                        MethodSig callee, List<String> defs,
                                        Set<String> callerRelevant) {
-        if (callee == null || defs.isEmpty()) {
+        if (defs.isEmpty()) {
             return;
         }
         StructuralFieldAccessor accessor = structuralFieldAccessor(callee);
@@ -1809,14 +1800,11 @@ final class SeedBackwardStaticAnalyzer {
 
     private void annotateAccessorDeclaredFieldEdge(
             Map<String, Object> edge, SootField field, SootMethod accessor) {
-        if (edge == null || field == null) {
+        if (edge == null) {
             return;
         }
         edge.put("declaredFieldSignature", field.getSignature());
-        if (accessor != null) {
-            edge.put("accessorImplementationMethod",
-                    accessor.getSignature());
-        }
+        edge.put("accessorImplementationMethod", accessor.getSignature());
     }
 
     /** Attaches the resolved declaration to one direct field read. */
@@ -2046,7 +2034,7 @@ final class SeedBackwardStaticAnalyzer {
 
     private void expandDispatchCallers(String targetMethod) {
         List<String> sourceMethods = resolveDispatchSources(targetMethod);
-        if (sourceMethods == null || sourceMethods.isEmpty()) {
+        if (sourceMethods.isEmpty()) {
             return;
         }
         MethodSig targetSig = parseMethodSig(targetMethod);
@@ -2194,7 +2182,6 @@ final class SeedBackwardStaticAnalyzer {
         SootMethod method = concreteMethod(signature);
         MethodSig sig = parseMethodSig(signature);
         return method != null
-                && method.isConcrete()
                 && method.getDeclaringClass().isApplicationClass()
                 && !method.getDeclaringClass().isInterface()
                 && !method.getDeclaringClass().isAbstract()

@@ -88,7 +88,7 @@ public final class ExceptionTargetAnnotationScanner {
                 unresolved.exceptionConstructionOrdinal);
     }
 
-    public static List<ExceptionTargetSite> scan(List<String> inputs)
+    private static List<ExceptionTargetSite> scan(List<String> inputs)
             throws IOException {
         Map<String, ExceptionTargetSite> unique = new LinkedHashMap<>();
         if (inputs != null) {

@@ -75,12 +75,7 @@ public final class StaticProgram {
 
     private Map<String, List<Map<String, Object>>> graphEdgesByRegion;
     private Map<String, List<String>> skeletonRegionIdsByMethod;
-    private Map<String, List<Map<String, Object>>> cellIncoming;
-    private Map<String, List<Map<String, Object>>> cellOutgoing;
-    private String incomingRegion;
-    private String outgoingRegion;
     private Map<String, List<Map<String, Object>>> activationsByRegion;
-    private Map<String, Map<String, Object>> activationsById;
     private Map<String, Map<String, Object>> regionsById;
     private Map<String, List<String>> regionIdsByMethod;
     private Object regionStamp;
@@ -142,39 +137,9 @@ public final class StaticProgram {
                 Collections.<Map<String, Object>>emptyList());
     }
 
-    /** Minted activations by the recorded activation each one names. */
-    Map<String, Map<String, Object>> activationsByActivationId() {
-        if (activationsById == null) {
-            activationsById = new LinkedHashMap<>();
-            for (Map<String, Object> activation : activations.values()) {
-                activationsById.put(text(activation.get("activationId")),
-                        activation);
-            }
-        }
-        return activationsById;
-    }
-
     List<Map<String, Object>> regionGraph(String regionId) {
         return edgesByRegion().getOrDefault(regionId,
                 Collections.<Map<String, Object>>emptyList());
-    }
-
-    /** One region's rows by the cell they flow into; caches one region. */
-    Map<String, List<Map<String, Object>>> regionIncoming(String regionId) {
-        if (!regionId.equals(incomingRegion)) {
-            cellIncoming = index(regionGraph(regionId), "toCell");
-            incomingRegion = regionId;
-        }
-        return cellIncoming;
-    }
-
-    /** The same adjacency by the cell a row flows out of. */
-    Map<String, List<Map<String, Object>>> regionOutgoing(String regionId) {
-        if (!regionId.equals(outgoingRegion)) {
-            cellOutgoing = index(regionGraph(regionId), "fromCell");
-            outgoingRegion = regionId;
-        }
-        return cellOutgoing;
     }
 
     /** The callee one dataflow edge names, dynamic dispatch included. */
@@ -223,20 +188,6 @@ public final class StaticProgram {
         }
         regionCount = regions.size();
         regionStamp = last;
-    }
-
-    /** Rows indexed by one endpoint field, in first-seen order. */
-    private static Map<String, List<Map<String, Object>>> index(
-            Collection<Map<String, Object>> rows, String field) {
-        Map<String, List<Map<String, Object>>> index = new LinkedHashMap<>();
-        for (Map<String, Object> row : rows) {
-            String key = text(row.get(field));
-            if (!key.isEmpty()) {
-                index.computeIfAbsent(key,
-                        ignored -> new ArrayList<>()).add(row);
-            }
-        }
-        return index;
     }
 
     /** Whether one cell names a declared field rather than a local. */
@@ -306,14 +257,10 @@ public final class StaticProgram {
                         Collections.<String>emptyList())) {
                     String caller = site.substring(0, site.lastIndexOf("#u"));
                     int unitIndex = SiteId.unitIndexOf(site);
-                    for (Map<String, Object> loop
-                            : loopsByMethod.getOrDefault(caller,
-                            Collections.<Map<String, Object>>emptyList())) {
-                        if (iterated.contains(text(loop.get(
-                                LoopBoundPolicy.RUNTIME_LOOP_ID)))
-                                && loopContains(loop, unitIndex)) {
-                            return rootLoop(loop, caller, unitIndex);
-                        }
+                    Map<String, Object> loop = iteratedLoopAt(loopsByMethod,
+                            iterated, caller, unitIndex);
+                    if (loop != null) {
+                        return rootLoop(loop, caller, unitIndex);
                     }
                     // The walk stops at the root.
                     if (!caller.equals(root)) next.add(caller);
@@ -333,13 +280,25 @@ public final class StaticProgram {
             }
         }
         if (demanded != Integer.MAX_VALUE) {
-            for (Map<String, Object> loop : loopsByMethod.getOrDefault(root,
-                    Collections.<Map<String, Object>>emptyList())) {
-                if (iterated.contains(text(loop.get(
-                        LoopBoundPolicy.RUNTIME_LOOP_ID)))
-                        && loopContains(loop, demanded)) {
-                    return rootLoop(loop, root, demanded);
-                }
+            Map<String, Object> loop = iteratedLoopAt(loopsByMethod, iterated,
+                    root, demanded);
+            if (loop != null) {
+                return rootLoop(loop, root, demanded);
+            }
+        }
+        return null;
+    }
+
+    /** The first iterated loop of {@code method} holding the unit, or null. */
+    private static Map<String, Object> iteratedLoopAt(
+            Map<String, List<Map<String, Object>>> loopsByMethod,
+            Set<String> iterated, String method, int unitIndex) {
+        for (Map<String, Object> loop : loopsByMethod.getOrDefault(method,
+                Collections.<Map<String, Object>>emptyList())) {
+            if (iterated.contains(text(loop.get(
+                    LoopBoundPolicy.RUNTIME_LOOP_ID)))
+                    && loopContains(loop, unitIndex)) {
+                return loop;
             }
         }
         return null;

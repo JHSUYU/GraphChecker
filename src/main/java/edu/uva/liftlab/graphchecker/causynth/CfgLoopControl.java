@@ -14,7 +14,6 @@ import soot.jimple.ReturnVoidStmt;
 import soot.jimple.ThrowStmt;
 import soot.jimple.LengthExpr;
 import soot.toolkits.graph.BriefUnitGraph;
-import soot.toolkits.graph.ExceptionalUnitGraph;
 import soot.toolkits.graph.MHGDominatorsFinder;
 import soot.toolkits.graph.TrapUnitGraph;
 import soot.toolkits.graph.UnitGraph;
@@ -194,7 +193,6 @@ final class CfgLoopControl {
     static List<NaturalLoop> naturalLoops(LoopCfg cfg,
                                           ToIntFunction<Unit> unitIndex) {
         List<NaturalLoop> loops = new ArrayList<NaturalLoop>();
-        if (cfg == null) return loops;
         Map<Unit, NaturalLoop> byHeader =
                 new IdentityHashMap<Unit, NaturalLoop>();
         for (Unit source : cfg.units()) {
@@ -218,35 +216,25 @@ final class CfgLoopControl {
         return loops;
     }
 
-    /** The loop CFG over an unexceptional transfer graph (else refused). */
-    static LoopCfg loopCfg(Body body, UnitGraph transfers) {
-        if (body == null || transfers == null) {
-            throw new IllegalArgumentException(
-                    "a loop CFG needs a body and its transfer graph");
-        }
-        if (transfers instanceof TrapUnitGraph
-                || transfers instanceof ExceptionalUnitGraph) {
-            throw new IllegalArgumentException(
-                    "LOOP_CFG_TRANSFERS_MUST_BE_UNEXCEPTIONAL: "
-                            + transfers.getClass().getName() + " in "
-                            + body.getMethod().getSignature());
-        }
-        return new LoopCfg(body, transfers,
-                body.getTraps().isEmpty() ? transfers
-                        : new TrapUnitGraph(body));
-    }
-
     /** Releases every held loop CFG at the end of one analysis run. */
     static void forget() {
         BY_BODY.clear();
     }
 
+    /**
+     * The body's loop CFG, rebuilt once its unit chain changed.  Transfers
+     * are the unexceptional {@link BriefUnitGraph}; dominance is proved over
+     * the trap graph when the body has traps.
+     */
     static LoopCfg loopCfg(Body body) {
         LoopCfg held = BY_BODY.get(body);
         if (held != null && held.describes(body)) {
             return held;
         }
-        LoopCfg built = loopCfg(body, new BriefUnitGraph(body));
+        UnitGraph transfers = new BriefUnitGraph(body);
+        LoopCfg built = new LoopCfg(body, transfers,
+                body.getTraps().isEmpty() ? transfers
+                        : new TrapUnitGraph(body));
         BY_BODY.put(body, built);
         return built;
     }
@@ -281,7 +269,6 @@ final class CfgLoopControl {
     /** Every retained loop of {@code cfg}, one per proved header. */
     static List<RetainedLoop> retainedLoops(LoopCfg cfg) {
         List<RetainedLoop> result = new ArrayList<RetainedLoop>();
-        if (cfg == null) return result;
         Map<Unit, String> kinds = classify(cfg);
         for (NaturalLoop natural : naturalLoops(cfg, ANY_UNIT)) {
             Unit header = natural.header;
@@ -331,11 +318,8 @@ final class CfgLoopControl {
      * test is {@code FIXED_COUNT_INDEXED} (slots = array cardinality); anything
      * else is {@code CONDITION_BOUNDED} under a declared {@code K_L}.
      */
-    static Map<Unit, String> classify(LoopCfg cfg) {
+    private static Map<Unit, String> classify(LoopCfg cfg) {
         Map<Unit, String> result = new IdentityHashMap<Unit, String>();
-        if (cfg == null) {
-            return result;
-        }
         Set<String> lengthLocals = arrayLengthLocals(cfg.body());
         for (NaturalLoop natural : naturalLoops(cfg, ANY_UNIT)) {
             // Classified per latch.

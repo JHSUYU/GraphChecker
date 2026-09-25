@@ -324,26 +324,22 @@ public final class ConcolicInstrumentationSelections {
             return instrumentationMethods;
         }
 
-        /** README section 1's per-task envelope, before the replay entry. */
+        /**
+         * README section 1's per-task envelope, before the replay entry: the
+         * methods whose effects a delayed engine arm may not skip, then the
+         * root, the instrumented methods and the target.
+         */
         Set<String> envelopeMethods() {
-            Set<String> methods = replayDemandMethods();
-            methods.add(rootMethod);
-            methods.addAll(instrumentationMethods);
-            if (!targetMethod.isEmpty()) methods.add(targetMethod);
-            methods.remove("");
-            return methods;
-        }
-
-        /** The methods whose effects a delayed engine arm may not skip. */
-        Set<String> replayDemandMethods() {
-            Set<String> methods = new LinkedHashSet<>();
-            methods.addAll(branchMethods);
+            Set<String> methods = new LinkedHashSet<>(branchMethods);
             methods.addAll(materializations.localMethods());
             methods.addAll(materializations.methodArgumentMethods());
             methods.addAll(materializations.accessorCallerMethods());
             for (CommunicationHandoffSpec handoff : communicationHandoffs) {
                 methods.add(handoff.method());
             }
+            methods.add(rootMethod);
+            methods.addAll(instrumentationMethods);
+            if (!targetMethod.isEmpty()) methods.add(targetMethod);
             methods.remove("");
             return methods;
         }
@@ -359,11 +355,6 @@ public final class ConcolicInstrumentationSelections {
 
     /** The concrete Jimple values a scheduled activation exposes to the VM. */
     static final class ConcolicMaterializationSelection {
-        /** Refusal verdict: a static final field is a replay-wide constant. */
-        static final String STATIC_CONSTANT = "STATIC_CONSTANT";
-        /** Refusal verdict: static shared state this pipeline cannot carry. */
-        static final String STATIC_FIELD_UNSUPPORTED =
-                "STATIC_FIELD_UNSUPPORTED";
         private static final Pattern LOCAL = Pattern.compile(
                 "^(<.+>)::([^#]+)(?:#.*)?$");
         private final Map<String, Map<String, Set<Integer>>> localsByMethod =
@@ -387,7 +378,7 @@ public final class ConcolicInstrumentationSelections {
             return result;
         }
 
-        void add(JsonObject action) throws IOException {
+        private void add(JsonObject action) throws IOException {
             FieldTarget fieldTarget = concolicFieldTarget(action);
             if (fieldTarget != null
                     && SharedFieldFlow.compilerSwitchDispatchField(
@@ -453,7 +444,8 @@ public final class ConcolicInstrumentationSelections {
          * Registers the planned observed write sites (a by-value cell has no
          * version log until observed).  One site naming two cells is refused.
          */
-        void addObservedWriteSites(JsonArray sites) throws IOException {
+        private void addObservedWriteSites(JsonArray sites)
+                throws IOException {
             for (JsonElement element : sites == null
                     ? new JsonArray() : sites) {
                 if (!element.isJsonObject()) continue;
@@ -496,7 +488,8 @@ public final class ConcolicInstrumentationSelections {
             if (unitIndex >= 0) sites.add(unitIndex);
         }
 
-        void addAccessorCallTarget(JsonObject action) throws IOException {
+        private void addAccessorCallTarget(JsonObject action)
+                throws IOException {
             String caller = optionalString(action, "accessorCallerMethod");
             int unitIndex = optionalInteger(action, "accessorCallUnitIndex", -1);
             String callee = optionalString(action, "accessorDeclaredCallee");
@@ -582,24 +575,18 @@ public final class ConcolicInstrumentationSelections {
                     && (sites.isEmpty() || sites.contains(unitIndex));
         }
 
-        boolean matches(SootFieldRef field) {
-            if (field == null) {
-                return false;
-            }
-            boolean namedTarget = namedFieldTarget(field,
-                    CausynthStaticFacts.declaredField(field));
-            // A getstatic has no receiver: only a primitive static read is
-            // materializable (on its consuming local).
-            return namedTarget && (!field.isStatic()
-                    || field.type() instanceof PrimType);
-        }
-
         /**
          * Whether a plan action named this field, by the class declaring it,
-         * ignoring its shape.
+         * in a shape a hook can carry.  A getstatic has no receiver: only a
+         * primitive static read is materializable (on its consuming local);
+         * any other stays concrete, not refused, or it would kill the whole
+         * campaign.
          */
-        private boolean namedFieldTarget(SootFieldRef field,
-                                         SootField declared) {
+        boolean matches(SootFieldRef field) {
+            if (field.isStatic() && !(field.type() instanceof PrimType)) {
+                return false;
+            }
+            SootField declared = CausynthStaticFacts.declaredField(field);
             SootClass declaringClass = declared == null
                     ? field.declaringClass() : declared.getDeclaringClass();
             String owner = declaringClass == null ? ""
@@ -614,24 +601,6 @@ public final class ConcolicInstrumentationSelections {
                 }
             }
             return false;
-        }
-
-        /**
-         * Why a selected non-primitive static read cannot be materialized, or
-         * {@code ""}: {@link #STATIC_CONSTANT} (final: no evidence lost) is
-         * reported apart from {@link #STATIC_FIELD_UNSUPPORTED} (a real gap).
-         */
-        String staticMaterializationRefusal(SootFieldRef field) {
-            if (field == null || !field.isStatic()
-                    || field.type() instanceof PrimType) {
-                return "";
-            }
-            SootField declared = CausynthStaticFacts.declaredField(field);
-            if (!namedFieldTarget(field, declared)) {
-                return "";
-            }
-            return declared != null && declared.isFinal()
-                    ? STATIC_CONSTANT : STATIC_FIELD_UNSUPPORTED;
         }
 
         /**

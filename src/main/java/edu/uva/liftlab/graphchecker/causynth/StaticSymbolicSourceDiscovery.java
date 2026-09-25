@@ -41,7 +41,7 @@ final class StaticSymbolicSourceDiscovery {
 
     /** Attaches declarations to every region that can execute the hook. */
     static void discover(StaticProgram program) throws IOException {
-        if (program == null || program.regions.isEmpty()) return;
+        if (program.regions.isEmpty()) return;
         Set<String> regionRoots = new LinkedHashSet<>();
         for (Map<String, Object> region : program.regions) {
             regionRoots.addAll(strings(Arrays.asList(

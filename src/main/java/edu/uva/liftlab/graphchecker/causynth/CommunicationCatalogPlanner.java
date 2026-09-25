@@ -38,13 +38,8 @@ final class CommunicationCatalogPlanner {
     static Result plan(Collection<String> selectedMethods,
                        Function<String, Body> bodies,
                        List<WireFlowCatalog.WireFlow> flows,
-                       DeclaredLoopBodyBounds loopBodyBounds) {
+                       DeclaredLoopBodyBounds bounds) {
         Result result = new Result();
-        if (selectedMethods == null || bodies == null || flows == null) {
-            return result;
-        }
-        DeclaredLoopBodyBounds bounds = loopBodyBounds == null
-                ? DeclaredLoopBodyBounds.none() : loopBodyBounds;
         List<String> ordered = new ArrayList<>(new TreeSet<>(
                 selectedMethods));
         Set<String> selected = new LinkedHashSet<>(ordered);

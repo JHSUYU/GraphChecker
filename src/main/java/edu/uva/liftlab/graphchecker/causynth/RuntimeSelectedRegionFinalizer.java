@@ -10,7 +10,6 @@ import edu.uva.liftlab.graphchecker.plan.DeclaredSymbolicInputs;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.plan.StaticSymbolicSourceDeclaration;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
-import edu.uva.liftlab.graphchecker.runtime.OccurrenceBinding;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 
@@ -408,10 +407,8 @@ public final class RuntimeSelectedRegionFinalizer {
      * the trace rows).  Every activation has one, so a non-address throws.
      */
     private static String activationSourceKey(Map<String, Object> instance) {
-        return instance == null
-                ? OccurrenceBinding.UNREGISTERED_SOURCE_KEY
-                : OccurrenceAddress.parse(text(instance.get("occurrenceId")))
-                        .node().render();
+        return OccurrenceAddress.parse(text(instance.get("occurrenceId")))
+                .node().render();
     }
 
     /**
@@ -780,10 +777,7 @@ public final class RuntimeSelectedRegionFinalizer {
             demandDepths.put(target, TARGET_DEMAND_DEPTH);
             // Stated once here; the plan builder publishes TARGET_REACH for
             // exactly these and does not re-ask the static selection.
-            Map<String, Object> activation = instances.get(target);
-            if (activation != null) {
-                activation.put(FAILURE_TARGET_OCCURRENCE, true);
-            }
+            instances.get(target).put(FAILURE_TARGET_OCCURRENCE, true);
         }
         // Declared-input occurrences, admitted by declaration although nothing
         // demands their outputs: a declared site often writes nothing (an
@@ -853,12 +847,11 @@ public final class RuntimeSelectedRegionFinalizer {
         // publishes the shortest chain that reached it.
         for (String occurrence : reached) {
             Map<String, Object> activation = instances.get(occurrence);
-            if (activation == null || !SHARED_LOCATION_DEMAND_ADMISSION
-                    .equals(text(activation.get(ADMISSION_BASIS)))) {
-                continue;
+            if (SHARED_LOCATION_DEMAND_ADMISSION.equals(
+                    text(activation.get(ADMISSION_BASIS)))) {
+                activation.put(DEMAND_DEPTH,
+                        demandDepth(demandDepths, occurrence));
             }
-            activation.put(DEMAND_DEPTH,
-                    demandDepth(demandDepths, occurrence));
         }
         // Stated after the walk, and only where no rule above has stated
         // one: a declared occurrence the location demand also reached keeps
@@ -876,8 +869,7 @@ public final class RuntimeSelectedRegionFinalizer {
             Collection<String> occurrences, String basis) {
         for (String occurrence : occurrences) {
             Map<String, Object> activation = instances.get(occurrence);
-            if (activation != null
-                    && text(activation.get(ADMISSION_BASIS)).isEmpty()) {
+            if (text(activation.get(ADMISSION_BASIS)).isEmpty()) {
                 activation.put(ADMISSION_BASIS, basis);
             }
         }
@@ -1117,7 +1109,6 @@ public final class RuntimeSelectedRegionFinalizer {
     private static List<String> declaredCells(Map<String, Object> activation,
                                               StaticScopeMap scopeMap) {
         List<String> cells = new ArrayList<>();
-        if (activation == null) return cells;
         for (Map<String, Object> capture
                 : rows(activation.get(DeclaredSiteCapture.PLAN_FIELD))) {
             for (StaticScopeMap.Site site : scopeMap.declaredSitesAt(
@@ -1307,8 +1298,6 @@ public final class RuntimeSelectedRegionFinalizer {
                 new LinkedHashMap<>();
         private final Map<String, Map<String, List<String>>>
                 explicitFatalSeedsBySite = new LinkedHashMap<>();
-        private final Map<String, List<String>> fatalSeeds =
-                new LinkedHashMap<>();
 
         private RegionDemandIndex(StaticProgram program) {
             // Every observed activation, not only port holders: the walk
@@ -1352,13 +1341,6 @@ public final class RuntimeSelectedRegionFinalizer {
                     if ("GUARD".equals(text(edge.get("transferKind")))) {
                         addUnique(guardIncoming, contextKey(regionId, to),
                                 from);
-                    }
-                    // A generic exception cell is only a fallback for a region
-                    // without an explicit failureTarget policy.
-                    if (to.contains("#exception:")
-                            && !explicitFatalSeedsBySite.containsKey(
-                            regionId)) {
-                        addUnique(fatalSeeds, regionId, to);
                     }
                 }
             }
@@ -1429,45 +1411,19 @@ public final class RuntimeSelectedRegionFinalizer {
 
         /**
          * The cells the failure's own decision reads: operand cells of the
-         * {@code failureTarget} sites this activation was OBSERVED to decide,
-         * or, with no explicit site, the exception cell the slice ends at.
-         * The first observation at a site must carry an eventSeq.
+         * {@code failureTarget} sites this target activation was OBSERVED to
+         * decide (a target declares and observed one, see
+         * failureDirectedClosure).  The first observation at a site must
+         * carry an eventSeq.
          */
         private List<String> targetSeedCells(Map<String, Object> instance)
                 throws IOException {
-            List<String> performed = performedRegionIds(instance);
             String occurrenceId = text(instance.get("occurrenceId"));
             Map<String, List<String>> explicit =
                     explicitFatalSeeds(instance);
-            if (explicit.isEmpty()) {
-                List<String> seeds = new ArrayList<>();
-                for (String regionId : performed) {
-                    for (String seed : fatalSeeds.getOrDefault(regionId,
-                            Collections.<String>emptyList())) {
-                        if (!seeds.contains(seed)) seeds.add(seed);
-                    }
-                }
-                if (seeds.isEmpty()) {
-                    // Seeding every observed input instead would be the free
-                    // target README TARGET-1 forbids.
-                    throw new IOException("FATAL_TARGET_SEED_GAP: region "
-                            + "names no failure target site and no exception "
-                            + "cell: " + performed + " " + occurrenceId);
-                }
-                return seeds;
-            }
-            Map<String, List<Map<String, Object>>> evidenceBySite =
-                    observedFatalEvidence(instance);
-            if (evidenceBySite.isEmpty()) {
-                // Selection already required this evidence; keeping the check
-                // here keeps the slice fail-closed for any other caller.
-                throw new IOException("exception-context activation did not "
-                        + "observe its explicit fatal target branch: "
-                        + occurrenceId);
-            }
             List<String> cells = new ArrayList<>();
             for (Map.Entry<String, List<Map<String, Object>>> entry
-                    : evidenceBySite.entrySet()) {
+                    : observedFatalEvidence(instance).entrySet()) {
                 List<Map<String, Object>> occurrences = entry.getValue();
                 sortByEventSeq(occurrences);
                 if (longNumber(occurrences.get(0).get("eventSeq"), -1L) < 0L) {
@@ -1499,14 +1455,9 @@ public final class RuntimeSelectedRegionFinalizer {
          */
         private List<String> edgesInto(Map<String, List<String>> edges,
                                        String occurrenceId, String cell) {
-            List<String> performed = regionsByOccurrence.getOrDefault(
-                    occurrenceId, Collections.<String>emptyList());
-            if (performed.size() == 1) {
-                return edges.getOrDefault(contextKey(performed.get(0), cell),
-                        Collections.<String>emptyList());
-            }
             List<String> incoming = new ArrayList<>();
-            for (String regionId : performed) {
+            for (String regionId : regionsByOccurrence.getOrDefault(
+                    occurrenceId, Collections.<String>emptyList())) {
                 for (String from : edges.getOrDefault(
                         contextKey(regionId, cell),
                         Collections.<String>emptyList())) {

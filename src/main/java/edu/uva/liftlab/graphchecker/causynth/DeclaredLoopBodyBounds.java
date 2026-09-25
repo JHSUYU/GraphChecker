@@ -82,7 +82,7 @@ final class DeclaredLoopBodyBounds {
     }
 
     /** A campaign that declares no bound: every retained loop inherits. */
-    static DeclaredLoopBodyBounds none() {
+    private static DeclaredLoopBodyBounds none() {
         return new DeclaredLoopBodyBounds(
                 new TreeMap<String, Declaration>());
     }
@@ -103,7 +103,8 @@ final class DeclaredLoopBodyBounds {
         return read(path);
     }
 
-    static DeclaredLoopBodyBounds read(Path path) throws IOException {
+    private static DeclaredLoopBodyBounds read(Path path)
+            throws IOException {
         SortedMap<String, Declaration> bySite =
                 new TreeMap<String, Declaration>();
         try (BufferedReader reader = Files.newBufferedReader(path,
