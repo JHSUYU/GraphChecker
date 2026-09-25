@@ -483,10 +483,14 @@ public final class ConcolicInstrumentationSelections {
             Map<String, Set<Integer>> locals =
                     localsByMethod.computeIfAbsent(method,
                             ignored -> new LinkedHashMap<>());
-            Set<Integer> sites = locals.computeIfAbsent(local,
-                    ignored -> new LinkedHashSet<>());
-            if (unitIndex >= 0) sites.add(unitIndex);
+            // ANY_SITE is a member, not an empty set: a union with one
+            // site must not narrow "any" to it.
+            locals.computeIfAbsent(local, ignored -> new LinkedHashSet<>())
+                    .add(unitIndex >= 0 ? unitIndex : ANY_SITE);
         }
+
+        /** A local selected at every definition site. */
+        private static final int ANY_SITE = -1;
 
         private void addAccessorCallTarget(JsonObject action)
                 throws IOException {
@@ -572,7 +576,7 @@ public final class ConcolicInstrumentationSelections {
             Map<String, Set<Integer>> locals = localsByMethod.get(method);
             Set<Integer> sites = locals == null ? null : locals.get(local);
             return sites != null
-                    && (sites.isEmpty() || sites.contains(unitIndex));
+                    && (sites.contains(ANY_SITE) || sites.contains(unitIndex));
         }
 
         /**
