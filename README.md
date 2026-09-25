@@ -1113,7 +1113,7 @@ the round (report PASS + `accept/cone.py`).
 |---|---|---|---|
 | 1: dead members, lowering indirection, comments cut to their points (18880 -> 9547 lines) | `34cf6bae9`, `d13f83f10` | v48 | 9/9 |
 | 2: one rule per place in plan/explore, causynth, runtime, compose/smt | `30e1346c1`..`bb40bcd4d` | v49 | 9/9 |
-| 3: identity (below), then every area again | `b334534de`..`1716ea427` | v51 | pending |
+| 3: identity (below), then every area again | `b334534de`..`1716ea427` | v51 | 9/9 |
 
 **Identity (iteration 3, after the DEI paper, Meiklejohn et al. 2022).** DEI names a point by
 signature + call stack + a count per (signature, stack) + the enclosing RPC path. Ours already
