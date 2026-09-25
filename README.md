@@ -131,7 +131,7 @@ The Java side is organized by those notions:
 | `plan` | `StaticScopeMap`, `ExecutionTask`, `ConcolicScheduler`, declared inputs (`DeclaredSiteCapture`, `SymbolicInputSelection`), loop-bound policy, `ExposedRegionPlanMain` |
 | `runtime` | the recording and replay hooks (`CausynthTraceRecorder`, `ConcolicRegionRuntime`, `RowRuntime`), identity (`Identity`, `Lineage`, `Attribution`, `RecordingWindow`), the schedule (`ScheduleLog`, `TimedWaits`, `WakeScopes`), mints (`RootMint`, `RowPlaceholderMint`, `HandoffMint`), `FocusedReplay`, `Confirmation`, the VM broker |
 | `explore` | `Corpus`, `ClosurePlanner`, `Frontier`, `FlipQuery`/`FlipQueryText`, `ObligationFactory`, `SchedulePrefix`, `SlotTable`, `WaveGraph`, `ExploreMain`, `ConfirmMain` |
-| `compose` | `Composer`, `ComposedFamilies`, `SmtLowering`/`VmLoweringCore`, the container model (`ContainerSmtCodec`), `ClaimPolicy`, `ComposeMain` |
+| `compose` | `Composer`, `ComposedFamilies`, `SmtLowering` (the one lowering), the container model (`ContainerSmtCodec`), `ClaimPolicy`, `ComposeMain` |
 | `smt` | the expression IR, `Arms` (path conditions, arms, families), canonical JSON, the z3 driver (`Z3`) |
 | `annotation` | `@CausynthExceptionTarget`, and `Debug.makeSymbolicBoolean` for a fault marker |
 | `src/shim` | `org.apache.hadoop.ipc.CausynthMessagePropagation`, the small jar the Hadoop trees call (message doors, SASL halves, `replaying()`) |
@@ -1073,9 +1073,7 @@ names.
   by field: fabricated members on both sides; publish `{rootId, kind, value}`. R56
   `campaignClaim` states `witnessFindings` twice (again under `rootSpace.reportedFindings`) and
   `acceptedFindingKind` = `findingKind`. R57 `VmTermLowering.parseIntTerm` refuses in three
-  spellings and can never lower; one refusal. R58 `VmLoweringCore` (911 lines) is an abstract
-  layer with exactly one subclass left (`SmtLowering`) and `VmTermLowering.Policy` its
-  interface: fold after 9/9. R59 `ContainerSmtCodec.Host`'s default methods are overridden by
+  spellings and can never lower; one refusal. R58 DONE (2026-09-24): `VmLoweringCore` and `VmTermLowering.Policy`, an abstract layer and an interface with one implementation each, are folded into `SmtLowering`. R59 `ContainerSmtCodec.Host`'s default methods are overridden by
   the only host. `Composer`/`ComposedFamilies`/`ClaimPolicy` read consistently with `Arms`; the
   JOIN→PIN→REFUSE rule and "MINT rows first" agree with the CONFIRM change of `a20f56191`.
 

@@ -18,7 +18,7 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 /**
  * The one SMT lowering vocabulary shared by {@code PathMergeLowering}
  * and {@code ConcolicConstraintSolver.Encoder}.  They differ only
- * in the three policies {@link Policy} names: an unsupported construct
+ * in the three policies {@link SmtLowering} names: an unsupported construct
  * becomes a fresh unconstrained symbol in the composer and a {@code null}
  * term in the solver; the composer threads Java evaluation definedness
  * through {@link Term#precondition} while the solver asserts it eagerly;
@@ -119,26 +119,6 @@ public final class VmTermLowering {
                 : Sort.MAP;
     }
 
-    /** What a lowering caller owns; everything else here is shared. */
-    public interface Policy {
-        /** Lowers a sub-expression at the named diagnostic position. */
-        Term lower(JsonElement expression, Sort expected, String origin);
-
-        /** Records a refusal and yields the term lowering continues with. */
-        Term refuse(Reason reason, String origin, String detail, Sort sort);
-
-        /** Carries Java evaluation definedness from the inputs. */
-        Term dependent(Term result, Term... inputs);
-
-        /** The sort one JVM cast descriptor denotes for this caller. */
-        Sort castSort(String descriptor);
-
-        /** The integer this element exactly renders, or a named gap. */
-
-        /** States {@link #javaIntRange} for one parsed integer. */
-        void assertJavaIntRange(Term integer);
-    }
-
     /** A refusal, in the composer's spelling beside the solver's. */
     public enum Reason {
         UNSUPPORTED_JAVA_NUMERIC_PROMOTION(
@@ -208,7 +188,7 @@ public final class VmTermLowering {
     }
 
     /** Java binary numeric promotion of one operand to a floating sort. */
-    public static Term floatingPromotion(Policy policy, Term term, Sort target,
+    public static Term floatingPromotion(SmtLowering policy, Term term, Sort target,
                                   String origin) {
         FloatingKind targetKind = floatingKind(target);
         if (term.sort == target) return term;
@@ -231,7 +211,7 @@ public final class VmTermLowering {
     }
 
     /** One JVM primitive conversion; every other cast is a named gap. */
-    public static Term typeCast(Policy policy, JsonObject expression,
+    public static Term typeCast(SmtLowering policy, JsonObject expression,
                          String origin) {
         JsonElement sourceExpression = expression.get("_exp");
         Term source = policy.lower(sourceExpression, null,
@@ -270,7 +250,7 @@ public final class VmTermLowering {
     }
 
     /** One container or string operation the codec could not close. */
-    public static Term codecGap(Policy policy, String operation, String gap,
+    public static Term codecGap(SmtLowering policy, String operation, String gap,
                          String origin, Sort sort) {
         return policy.refuse(Reason.MODEL_SEMANTICS_MISSING, origin,
                 operation + ":" + gap, sort);
@@ -322,15 +302,15 @@ public final class VmTermLowering {
      * <p>A parse is the inverse of a rendering only on an element that is
      * that rendering and nothing else, in decimal, and in Java's int
      * range.  Nothing in this lowering shows that an argument is one: the
-     * one {@code Policy} there is answered every such question with the gap
+     * one {@code SmtLowering} there is answered every such question with the gap
      * {@code ROUNDTRIP_NOT_PROVED_NO_SPLIT_EVIDENCE}, so the round-trip
      * half of this routine -- {@code RenderedInteger}, {@code
-     * Policy.renderedInteger}, the {@code ROUNDTRIP_SOURCE_NOT_INT} branch
+     * SmtLowering.renderedInteger}, the {@code ROUNDTRIP_SOURCE_NOT_INT} branch
      * and the int-range assertion -- was an interface no implementation
      * ever came back through.  The arity and radix gaps stay ahead of it,
      * because they name a different thing about the call.</p>
      */
-    public static Term parseIntTerm(Policy policy, JsonObject expression,
+    public static Term parseIntTerm(SmtLowering policy, JsonObject expression,
                              String origin) {
         // Not lowered at all: no round trip from the parsed int back to its
         // digits is proved, whatever the arity or radix, so there is one
