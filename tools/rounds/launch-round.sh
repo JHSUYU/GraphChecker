@@ -66,8 +66,9 @@ for row in "${placement[@]}"; do
   done
 done
 # A named case no row places (an experiments/hadoop/adhoc case) takes the
-# heads in turn; accept.sh refuses an id no case directory declares.
-read -r -a heads <<<"${LIFTS}"
+# heads in turn, lift11 (the owner's machine) excepted; accept.sh refuses an
+# id no case directory declares.
+read -r -a heads <<<"${LIFTS#lift11 }"
 turn=0
 for case_id in ${CASES:-}; do
   [[ " ${launches[*]:-} " == *" ${case_id} "* ]] && continue
