@@ -8,6 +8,8 @@ import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -17,13 +19,20 @@ import java.util.Set;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
 /**
- * The edges a CONFIRM run is expected to take, and whether it took them.
+ * The edges a CONFIRM run is expected to take, the order it is held to, and
+ * whether it took them.
  *
- * <p>CONFIRM plants the model's roots, holds the path's schedule, forces no
- * flip, and requires (a) every model edge taken and (b) the fatal at the
- * anchor.  This class is (a), from {@value #FILE} written by
- * {@code explore.ConfirmMain}.  CHECKING, NOT ENFORCING: a difference is a
- * {@code CONFIRM_MISMATCH} gap.</p>
+ * <p>CONFIRM plants the model's roots, forces no flip, and requires (a) every
+ * model edge taken and (b) the fatal at the anchor.  This class is (a), from
+ * {@value #FILE} written by {@code explore.ConfirmMain}.  The recorded order is
+ * not held (only a WAKE waits for what it followed); the MODEL's is: an
+ * {@code ORDER} row holds one method activation's entry until the activations
+ * it names have exited -- a join's writer before its reader, every other
+ * writer of the location outside the two -- at the frame and region hooks
+ * every pass weaves ({@code Identity}).  An activation that waits out
+ * {@link #ORDER_TIMEOUT_PROPERTY} proves the model's order unrealizable in
+ * this program: it goes on, and the stall is a {@code CONFIRM_MISMATCH}, so
+ * the claim is not confirmed.  Any other difference is one too.</p>
  *
  * <p>WIRE is compared at the attach, where the producer is known; STATE at
  * the close, since a writer's log is read out after the read that saw it.
@@ -31,6 +40,10 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
  */
 public final class Confirmation {
     public static final String FILE = "expected_edges.jsonl";
+    /** How long an activation waits for those ordered before it, in ms. */
+    public static final String ORDER_TIMEOUT_PROPERTY =
+            "causynth.confirm.order.timeout.ms";
+    static final long ORDER_TIMEOUT_MS = 300000L;
 
     private static final Object LOCK = new Object();
     private static boolean loaded;
@@ -62,6 +75,15 @@ public final class Confirmation {
     /** (location key, version) -> the writer endpoint id of this run. */
     private static final Map<String, String> WROTE =
             new LinkedHashMap<String, String>();
+    /** Activation -> the activations the model orders before it. */
+    private static final Map<String, Set<String>> BEFORE =
+            new HashMap<String, Set<String>>();
+    /** The activations that have exited. */
+    private static final Set<String> EXITED = new HashSet<String>();
+    /** The order stalls: what the model ordered and this run could not. */
+    private static final List<String> UNREALIZED = new ArrayList<String>();
+    /** 0 not read yet, 1 no order, 2 an order is held; read per frame. */
+    private static volatile int ordering;
 
     private Confirmation() {
     }
@@ -69,7 +91,8 @@ public final class Confirmation {
     static boolean expected() {
         load();
         synchronized (LOCK) {
-            return !WIRE.isEmpty() || !STATE.isEmpty() || !MINT.isEmpty();
+            return !WIRE.isEmpty() || !STATE.isEmpty() || !MINT.isEmpty()
+                    || !BEFORE.isEmpty();
         }
     }
 
@@ -107,11 +130,53 @@ public final class Confirmation {
         }
     }
 
+    /** Whether this run is held to an order: every frame hook asks. */
+    static boolean ordering() {
+        if (ordering == 0) load();
+        return ordering == 2;
+    }
+
+    /** Holds an activation's entry until those ordered before it exited. */
+    static void entering(String activation) {
+        synchronized (LOCK) {
+            Set<String> before = BEFORE.get(activation);
+            if (before == null) return;
+            long timeout = Long.getLong(ORDER_TIMEOUT_PROPERTY,
+                    ORDER_TIMEOUT_MS);
+            long deadline = System.currentTimeMillis() + timeout;
+            while (!EXITED.containsAll(before)) {
+                long left = deadline - System.currentTimeMillis();
+                if (left <= 0L) {
+                    Set<String> missing = new LinkedHashSet<String>(before);
+                    missing.removeAll(EXITED);
+                    UNREALIZED.add("ORDER " + activation + ": the model"
+                            + " orders it after " + missing + ", which did not"
+                            + " exit within " + timeout + " ms, so this"
+                            + " program cannot realize the model's order");
+                    return;
+                }
+                try {
+                    LOCK.wait(Math.min(left, 200L));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+        }
+    }
+
+    static void exited(String activation) {
+        synchronized (LOCK) {
+            if (EXITED.add(activation)) LOCK.notifyAll();
+        }
+    }
+
     /** Every STATE and WIRE edge the run did not take, at the close. */
     static List<String> close() {
         List<String> mismatches = new ArrayList<String>();
         if (!expected()) return mismatches;
         synchronized (LOCK) {
+            mismatches.addAll(UNREALIZED);
             for (Map.Entry<String, String> edge : WIRE.entrySet()) {
                 if (ATTACHED.containsKey(edge.getKey())) continue;
                 mismatches.add("WIRE " + edge.getKey() + ": the model chose"
@@ -169,6 +234,9 @@ public final class Confirmation {
         synchronized (LOCK) {
             if (loaded) return;
             loaded = true;
+            // Until the rows are read: a hook reached while reading them
+            // holds nothing.
+            ordering = 1;
             Path file = FocusedReplay.workerFile(FILE);
             if (file == null) return;
             try {
@@ -187,6 +255,10 @@ public final class Confirmation {
                                 optionalString(row, "writer"));
                         VERSION.put(optionalString(row, "reader"),
                                 optionalString(row, "version"));
+                    } else if ("ORDER".equals(kind)) {
+                        BEFORE.computeIfAbsent(optionalString(row, "after"),
+                                key -> new LinkedHashSet<String>())
+                                .add(optionalString(row, "before"));
                     }
                     // MARKER and ANCHOR are checked elsewhere.
                 }
@@ -199,13 +271,19 @@ public final class Confirmation {
                 STATE.clear();
                 VERSION.clear();
                 MINT.clear();
+                BEFORE.clear();
             }
+            ordering = BEFORE.isEmpty() ? 1 : 2;
         }
     }
 
     public static void resetForTests() {
         synchronized (LOCK) {
             loaded = false;
+            ordering = 0;
+            BEFORE.clear();
+            EXITED.clear();
+            UNREALIZED.clear();
             WIRE.clear();
             STATE.clear();
             VERSION.clear();

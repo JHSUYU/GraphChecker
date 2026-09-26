@@ -297,12 +297,13 @@ public class ConfirmMainTest {
         assertEquals(3, mints.size());
         assertEquals("where that session minted it", MINT,
                 mints.get("CLOCK.a").getAsString());
-        assertEquals("cut at the anchor's first event", 2,
+        assertEquals("no recorded order is held: the model's is", 0,
                 row.getAsJsonObject("schedulePrefix").get("events").getAsInt());
-        assertEquals(2, SessionReader.readSchedule(
+        assertEquals(0, SessionReader.readSchedule(
                 out.resolve(SchedulePrefix.FILE)).size());
-        assertEquals(2, SessionReader.readSchedule(
-                out.resolve(SchedulePrefix.REST_FILE)).size());
+        assertEquals("the WAKEs still wait for what they followed", 4,
+                SessionReader.readSchedule(
+                        out.resolve(SchedulePrefix.REST_FILE)).size());
 
         Map<String, JsonObject> edges = new LinkedHashMap<String, JsonObject>();
         List<JsonObject> rows = RowCodec.readJsonl(
@@ -311,17 +312,23 @@ public class ConfirmMainTest {
             edges.put(edge.get("kind").getAsString(), edge);
         }
         assertEquals("one edge each, none from the free arm of the path the"
-                + " model did not select, and none for a state join with one"
-                + " candidate writer", 3, rows.size());
-        assertEquals(3, edges.size());
+                + " model did not select", 5, rows.size());
+        assertEquals(5, edges.size());
         assertEquals("the export the arm's own session paired the consumer"
                 + " with", producer.id(),
                 edges.get("WIRE").get("producer").getAsString());
         assertEquals(consumer.id(),
                 edges.get("WIRE").get("consumer").getAsString());
-        assertTrue("a read's recorded join is the recording's, not a choice"
-                + " of the model: " + reader.id() + " <- " + writer.id(),
-                !edges.containsKey("STATE"));
+        assertEquals("a pinned join is the model's too, once no recorded"
+                + " order holds it", writer.id(),
+                edges.get("STATE").get("writer").getAsString());
+        assertEquals(reader.id(), edges.get("STATE").get("reader")
+                .getAsString());
+        assertEquals("the writer's activation exits before the reader's"
+                + " enters", writer.activation(),
+                edges.get("ORDER").get("before").getAsString());
+        assertEquals(reader.activation(),
+                edges.get("ORDER").get("after").getAsString());
         assertEquals("FAULT:IPC", edges.get("MARKER").get("root").getAsString());
         assertTrue(edges.get("MARKER").get("value").getAsBoolean());
         assertEquals(anchor.id(),

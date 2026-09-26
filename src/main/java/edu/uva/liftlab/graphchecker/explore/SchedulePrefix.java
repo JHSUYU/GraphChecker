@@ -9,6 +9,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -57,12 +58,15 @@ final class SchedulePrefix {
 
     /**
      * Writes the prefix before the first event/mark of any {@code
-     * occurrenceIds} to {@code out/FILE} and the rest to {@code out/REST_FILE}.
+     * occurrenceIds} to {@code out/FILE} and the rest to {@code out/REST_FILE};
+     * with {@code held} false nothing is held: every event is rest, so only
+     * the WAKEs still wait for what they followed (a CONFIRM run's order is
+     * the model's, {@code runtime.Confirmation}).
      *
      * @return what was written, or null when the session states no schedule
      */
     static Cut write(Path iteration, String sessionId,
-                     Collection<String> occurrenceIds, Path out)
+                     Collection<String> occurrenceIds, boolean held, Path out)
             throws IOException {
         if (iteration == null || sessionId == null || sessionId.isEmpty()) {
             return null;
@@ -72,9 +76,10 @@ final class SchedulePrefix {
         if (events.isEmpty()) return null;
         Map<String, Long> marks =
                 SessionReader.readScheduleMarks(session.schedule());
-        int cut = events.size();
+        int cut = held ? events.size() : 0;
         boolean found = false;
-        for (String id : occurrenceIds) {
+        for (String id : held ? occurrenceIds
+                : Collections.<String>emptyList()) {
             if (id == null || id.isEmpty()) continue;
             Long opened = marks.get(id);
             if (opened != null && opened < cut) {

@@ -165,4 +165,47 @@ public class ConfirmationTest {
                 endpoint(ANCHOR, "x"), endpoint(MINT, "y")));
         assertTrue(Confirmation.close().isEmpty());
     }
+
+    /** The ORDER a CONFIRM run is held to: the reader's activation enters
+     *  only once the writer's has exited; an order that cannot come is a
+     *  mismatch, not a hang. */
+    @Test
+    public void aReaderWaitsForItsWriterAndAnUnrealizableOrderIsAMismatch()
+            throws Exception {
+        String writer = Endpoint.activation(OccurrenceAddress.parse(MINT),
+                ExecutionIndex.empty());
+        String reader = Endpoint.activation(OccurrenceAddress.parse(ANCHOR),
+                ExecutionIndex.empty());
+        String never = Endpoint.activation(OccurrenceAddress.parse(PRODUCER),
+                ExecutionIndex.empty());
+        handed("", Arrays.asList(
+                "{\"kind\":\"ORDER\",\"before\":\"" + writer
+                        + "\",\"after\":\"" + reader + "\"}",
+                "{\"kind\":\"ORDER\",\"before\":\"" + never
+                        + "\",\"after\":\"" + writer + "\"}"));
+        System.setProperty(Confirmation.ORDER_TIMEOUT_PROPERTY, "300");
+        try {
+            assertTrue(Confirmation.ordering());
+            long[] entered = new long[1];
+            Thread read = new Thread(() -> {
+                Confirmation.entering(reader);
+                entered[0] = System.nanoTime();
+            });
+            read.start();
+            Thread.sleep(100L);
+            long exited = System.nanoTime();
+            Confirmation.exited(writer);
+            read.join(5000L);
+            assertTrue("the reader entered only after the writer exited",
+                    entered[0] >= exited);
+            // Nothing ever exits `never`: the writer's entry times out.
+            Confirmation.entering(writer);
+            List<String> mismatches = Confirmation.close();
+            assertEquals(1, mismatches.size());
+            assertTrue(mismatches.get(0), mismatches.get(0)
+                    .startsWith("ORDER " + writer));
+        } finally {
+            System.clearProperty(Confirmation.ORDER_TIMEOUT_PROPERTY);
+        }
+    }
 }

@@ -1,6 +1,7 @@
 package edu.uva.liftlab.graphchecker.contract;
 
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
+import java.util.List;
 
 /**
  * IDENTITY-IMPL A: one side of an interaction, {@code (occurrence, site,
@@ -91,6 +92,26 @@ public final class Endpoint extends Value {
             id = digested;
         }
         return digested;
+    }
+
+    /**
+     * The method activation this event ran in: its occurrence and the frames
+     * from the region entry, without the event's own {@code (site, k)} frame.
+     * The unit a CONFIRM order gate holds ({@code runtime.Confirmation}).
+     */
+    public String activation() {
+        List<Frame> frames = siteIndex.frames();
+        int last = frames.size() - 1;
+        boolean eventFrame = last >= 0 && frames.get(last).callSite()
+                .equals(site.replace('/', '.'));
+        return activation(occurrence, ExecutionIndex.of(
+                eventFrame ? frames.subList(0, last) : frames));
+    }
+
+    /** The one spelling of an activation key. */
+    public static String activation(OccurrenceAddress occurrence,
+                                    ExecutionIndex frames) {
+        return occurrence.id() + "|" + frames.render();
     }
 
     /** The canonical spelling, for reports and refusals. */

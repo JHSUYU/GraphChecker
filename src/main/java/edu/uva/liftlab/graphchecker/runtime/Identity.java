@@ -509,7 +509,28 @@ public final class Identity {
         state.levels.add(new Level(Frame.of(site, iteration), token,
                 receiver));
         state.journal();
+        if (Confirmation.ordering()) {
+            String activation = activation(state, state.depth());
+            if (activation != null) Confirmation.entering(activation);
+        }
         return token;
+    }
+
+    /**
+     * The key of the method activation at level {@code top} of the running
+     * occurrence ({@link Endpoint#activation}), or null outside one: what a
+     * CONFIRM order gate holds.
+     */
+    private static String activation(State state, int top) {
+        Region running = state.activeRegion();
+        if (running == null || running.occurrence == null) return null;
+        int from = Math.max(0, Math.min(state.regionBase(), top));
+        Frame[] frames = new Frame[top - from];
+        for (int index = from; index < top; index++) {
+            frames[index - from] = state.addressedFrame(index);
+        }
+        return Endpoint.activation(running.occurrence,
+                ExecutionIndex.of(Arrays.asList(frames)));
     }
 
     /**
@@ -522,6 +543,13 @@ public final class Identity {
         State state = state();
         for (int index = state.levels.size() - 1; index >= 1; index--) {
             if (state.levels.get(index).token != token) continue;
+            if (Confirmation.ordering()) {
+                // A non-local exit leaves every level inside it too.
+                for (int level = state.depth(); level >= index; level--) {
+                    String activation = activation(state, level);
+                    if (activation != null) Confirmation.exited(activation);
+                }
+            }
             while (state.levels.size() > index) {
                 state.levels.remove(state.levels.size() - 1);
             }
@@ -641,6 +669,10 @@ public final class Identity {
         // A closed occurrence makes no further event (ScheduleLog).
         if (closed.occurrence != null) {
             ScheduleLog.closed(closed.occurrence.id());
+            if (Confirmation.ordering()) {
+                Confirmation.exited(Endpoint.activation(closed.occurrence,
+                        ExecutionIndex.empty()));
+            }
         }
     }
 
@@ -773,6 +805,10 @@ public final class Identity {
             if (entered != null) entered.occurrence = address;
             // Where a prefix focusing this occurrence is cut.
             ScheduleLog.mark(address.id());
+            if (Confirmation.ordering()) {
+                Confirmation.entering(Endpoint.activation(address,
+                        ExecutionIndex.empty()));
+            }
         }
         return address;
     }

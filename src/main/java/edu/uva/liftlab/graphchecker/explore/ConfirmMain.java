@@ -210,9 +210,11 @@ public final class ConfirmMain {
                     armSession));
         }
 
-        // The schedule half (SchedulePrefix).
+        // The schedule half: the recorded order is not held (only a WAKE
+        // still waits for what it followed); the model's order is held by
+        // the ORDER rows below.
         SchedulePrefix.Cut cut = SchedulePrefix.write(iteration, sessionId,
-                Collections.singletonList(anchor.id()), out);
+                Collections.singletonList(anchor.id()), false, out);
         if (cut == null) {
             throw new Refused("the selected session " + sessionId
                     + " states no schedule to hold the confirmation to");
@@ -435,27 +437,64 @@ public final class ConfirmMain {
                 }
             }
         }
+        // Every join of the closure, pinned or chosen: the run is held to no
+        // recorded order, so a pinned join is the model's as much as a choice.
         List<JsonObject> edges = new ArrayList<JsonObject>();
+        Set<String> orders = new LinkedHashSet<String>();
         for (Map.Entry<String, WriteRow> join : joined.entrySet()) {
-            // Only model choices: single-writer joins are pinned by the
-            // formula, and rule (b) checks they still lead to the fatal.
-            if (!chosen.containsKey(join.getKey())) continue;
+            ReadRow read = readers.get(join.getKey());
+            Endpoint writer = chosen.containsKey(join.getKey())
+                    ? writers.get(chosen.get(join.getKey()))
+                    : join.getValue().endpoint();
             JsonObject edge = new JsonObject();
             edge.addProperty("kind", "STATE");
             edge.addProperty("reader", join.getKey());
             // A mint read lands on whichever racing occurrence reads the cell
             // first, so it is held by the writer (runtime/Confirmation), not
             // the reader.
-            edge.addProperty("mint", readers.get(join.getKey())
-                    .mintVersion() != ReadRow.UNKNOWN_VERSION);
-            String writer = chosen.get(join.getKey());
-            edge.addProperty("writer", writer);
+            boolean mint = read.mintVersion() != ReadRow.UNKNOWN_VERSION;
+            edge.addProperty("mint", mint);
+            edge.addProperty("writer", writer.id());
             edge.addProperty("version", join.getValue().version());
             edge.addProperty("location",
                     location(join.getValue().location()));
             edges.add(edge);
+            if (mint) continue;
+            order(orders, writer, read.endpoint());
+            // No other writer of the location between the two: one recorded
+            // before the write goes before it, any other after the read.
+            for (WriteRow other : byLocation.get(
+                    location(join.getValue().location()))) {
+                if (other.endpoint().activation().equals(writer.activation())
+                        || other.endpoint().activation().equals(
+                        read.endpoint().activation())) {
+                    continue;
+                }
+                if (other.seq() < join.getValue().seq()) {
+                    order(orders, other.endpoint(), writer);
+                } else {
+                    order(orders, read.endpoint(), other.endpoint());
+                }
+            }
+        }
+        for (String order : orders) {
+            String[] ends = order.split("\n", 2);
+            JsonObject row = new JsonObject();
+            row.addProperty("kind", "ORDER");
+            row.addProperty("before", ends[0]);
+            row.addProperty("after", ends[1]);
+            edges.add(row);
         }
         return edges;
+    }
+
+    /** {@code first}'s activation exits before {@code then}'s enters, unless
+     *  one activation holds both. */
+    private static void order(Set<String> orders, Endpoint first,
+                              Endpoint then) {
+        String before = first.activation();
+        String after = then.activation();
+        if (!before.equals(after)) orders.add(before + "\n" + after);
     }
 
     /** One write the path rests on: reach its writer, sweep older versions. */

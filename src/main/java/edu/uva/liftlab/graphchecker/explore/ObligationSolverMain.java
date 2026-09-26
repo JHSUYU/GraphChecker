@@ -112,7 +112,8 @@ public final class ObligationSolverMain {
         // not derived: one whole-workload run can focus several occurrences
         // so each root is planted where it is minted.
         SchedulePrefix.Cut cut = SchedulePrefix.write(iteration,
-                candidate.path.sessionId, targetOccurrences(candidate), out);
+                candidate.path.sessionId, targetOccurrences(candidate), true,
+                out);
         Task task = candidate.task;
         return publish(out, outcome.obligation, outcome.result, outcome.smt2,
                 outcome.gaps, ExploreCodec.writeFocusRow(task.focused(),

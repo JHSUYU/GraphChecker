@@ -46,7 +46,7 @@ public class SchedulePrefixTest {
         Path out = folder.newFolder("worker").toPath();
 
         SchedulePrefix.Cut cut = SchedulePrefix.write(iteration, "s1",
-                Collections.singletonList("OCC.focus"), out);
+                Collections.singletonList("OCC.focus"), true, out);
 
         assertEquals(Arrays.asList("a", "tick.nn"),
                 sites(out.resolve(SchedulePrefix.FILE)));
@@ -61,6 +61,15 @@ public class SchedulePrefixTest {
         assertEquals("the replay reads the rest under the name it looks for",
                 edu.uva.liftlab.graphchecker.runtime.ScheduleLog.SUFFIX_FILE,
                 SchedulePrefix.REST_FILE);
+
+        // A CONFIRM run holds no prefix: all of it is rest, WAKEs included.
+        Path unheld = folder.newFolder("confirm").toPath();
+        SchedulePrefix.write(iteration, "s1",
+                Collections.singletonList("OCC.focus"), false, unheld);
+        assertEquals(Collections.emptyList(),
+                sites(unheld.resolve(SchedulePrefix.FILE)));
+        assertEquals(Arrays.asList("a", "tick.nn", "b", "tick.dn"),
+                sites(unheld.resolve(SchedulePrefix.REST_FILE)));
     }
 
     private static JsonObject row(long seq, ScheduleEvent.Kind kind,
