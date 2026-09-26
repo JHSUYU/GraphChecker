@@ -879,11 +879,13 @@ The owner's standing rules; every one of them has been paid for.
 ```
 src/main/java/edu/uva/liftlab/graphchecker/   the engine (§3's package table)
 src/shim/                                     the hadoop-shim jar the trees call
-src/test/                                     143 @Test + src/test/shell/run_engine_campaign_helpers_test.sh
+src/test/                                     125 @Test + src/test/shell/run_engine_campaign_helpers_test.sh
 run_engine.sh                                 the campaign driver
 experiments/hadoop/<case>/                    declarations + README per case (a tree's edits are its own gc/<case> branch)
 experiments/hadoop/lib/                       the one harness every case runs through (README: workload rules)
 experiments/hadoop/accept/                    accept.sh, probe.sh, report.py (README: what PASS means)
+experiments/hadoop/adhoc/                     the ad-hoc checks: checks.tsv, occurrences.tsv, one case.sh (§17)
+tools/analysis/                               coverage, throwsites/reached, occurrences, graphdiff, chaincheck, PairingProbe
 tools/rounds/                                 launch-round.sh, launch-run.sh, round-monitor.sh (§8)
 third_party/OpenJDK-Concolic-Execution-Engine/ the concolic VM (in tree)
 docs/CONCOLIC_INTEGRATION.md                  the VM boundary: broker ABI, capabilities, refusals
@@ -892,6 +894,7 @@ docs/design/LEAN-DESIGN.md                    the fixed one-page design frame th
 docs/design/IDENTITY-V3.md, IDENTITY-IMPL.md, IDENTITY-V2.md, INTERACTION-ID.md  the identity designs the code cites (§4)
 docs/design/CLOSURE-V2.md                     the scoping walk the code cites
 docs/design/CONTRACT-SPEC.md                  the row/gap contract the code cites (its package names predate the current tree)
+docs/reports/                                 dated reports (2026-09-26: fault injection and validation; ad-hoc checks at scale)
 ```
 
 The design documents are kept verbatim because the code cites them by section; where this
@@ -1164,3 +1167,30 @@ waits out `causynth.confirm.order.timeout.ms` (300 s) files a `CONFIRM_MISMATCH`
 model's order is unrealizable, the claim unconfirmed.  The report
 `docs/reports/2026-09-26-fault-injection-and-validation.md` has the results, the graph
 changes faults cause, the new bug and the false positives CONFIRM filters.
+
+## 17. Ad-hoc checks at scale, roots by category (2026-09-26)
+
+**Roots are recognized, not declared** (`f44bcc36d`).  `causynth.RootCatalog` finds CLOCKs (the
+JVM clocks and every no-argument method whose returns are a clock under constant arithmetic:
+`Time.now`, `Time.monotonicNow`, `Timer.now`); FAULT markers come from the woven doors; a READ
+is a placeholder for an accessor the weave cannot version (`AtomicInteger.get`) of a location
+another region stores, admitted by site.  The static scope map states each declared site's
+`inputKind`; no stage reads a case's `symbolic-inputs.jsonl` (gone, with the method rows).
+
+**Rules the ad-hoc cases added.**  A guard on the 0/1 a helper returned is decided by the
+helper's one branch (`causynth.BooleanReturns`, scope-map `guardDeciders`); a disjunctive
+guard (`a || b` jumps to the throw from each test) is the OR of its tests' fatal arms, the
+target standing at the first test; a path whose target decided concretely on its healthy arm
+is dropped, DIAGNOSTIC.  A clock root is its site's first reading in an occurrence; a session
+writes one root and one unreached target per occurrence; a root method's own service loop is
+the one holding its first call into the region.  CONFIRM plants the model's world, not only
+the selected session's, and a clock witness moves its clocks with exploration's
+`ClockMargin`.  The z3 driver drops z3's `WARNING:` lines.
+
+**The campaign.**  `experiments/hadoop/adhoc`: 21 checks found by coverage on one JDK 8 tree,
+31 cases (`<check>.<workload>`) on existing unit tests; `tools/analysis/occurrences.py` reads a
+discovery run's listing into `occurrences.tsv`.  `docs/reports/2026-09-26-adhoc-checks-at-scale.md`
+has the results, the graph changes the doors cause on these checks, and the false positives
+filtered on them in real runs (formula sat at the recorded valuation; worlds execution could
+not realize; a failure only another run's delivery reaches, which DECIDE names no mechanism
+for); `tools/analysis/PairingProbe.java` reproduces the last.
