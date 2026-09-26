@@ -287,11 +287,13 @@ public final class RowInvariants {
                             + "|" + row.ordinal(),
                     row.siteId() + "#" + row.ordinal());
         }
-        // An unreached target has seq 0 (no VM clock): one per occurrence.
+        // One per occurrence and event: an unreached target has seq 0 (no
+        // VM clock), and a concrete decision stands after the last VM event,
+        // which two occurrences can share (adhoc recv-offset.mirror).
         for (TargetRow row : session.targets()) {
             twice(session, gaps, seen, "targets", row.seq(),
-                    "seq/anchorSiteId", (row.reachedAnchor()
-                            ? row.seq() + "" : row.occurrence().id())
+                    "occurrence/seq/anchorSiteId", row.occurrence().id()
+                            + "|" + (row.reachedAnchor() ? row.seq() : 0L)
                             + "|" + row.anchorSiteId(),
                     row.anchorSiteId());
         }

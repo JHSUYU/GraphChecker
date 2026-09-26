@@ -399,10 +399,20 @@ public class ContractTest {
                 "", false, false));
         assertTrue("an unreached anchor is one row per occurrence: "
                 + names(gate(unreached)), noViolation(gate(unreached), 4));
+        // Nor does a concrete decision: it stands after the last VM event,
+        // which two occurrences can share.
+        Rows decided = clean();
+        decided.activations.add(ActivationRow.of("s-gate", other, "t",
+                false, true, "DataXceiver-8#42"));
+        decided.targets.add(TargetRow.of("s-gate",
+                decided.targets.get(0).seq(), other, "Guard#u8", "", false,
+                true));
+        assertTrue("two occurrences deciding concretely after one event: "
+                + names(gate(decided)), noViolation(gate(decided), 4));
         Rows reachedTwice = clean();
         reachedTwice.targets.add(reachedTwice.targets.get(0));
-        assertInvariant(4, GapClass.BLOCKING, "field=seq/anchorSiteId",
-                reachedTwice);
+        assertInvariant(4, GapClass.BLOCKING,
+                "field=occurrence/seq/anchorSiteId", reachedTwice);
         // 5: one name, one spelled sort, and a placeholder read's sort is the
         // one its own row declares.
         Rows mixed = clean();
