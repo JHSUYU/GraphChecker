@@ -912,14 +912,17 @@ public final class Identity {
 
     /**
      * The producer endpoint of the response to the request received here
-     * now: the request's occurrence, whose context names the request's own
-     * anchor, and the response site alone -- not this thread's frames or
-     * site counts, which a pool handler carries from call to call, so which
-     * handler took the call would rename the response.
+     * now: the request's scope, whose context names the request's own
+     * anchor, and the response site alone.  Not the region this receipt runs
+     * in -- one a pool handler opened before the request came (the
+     * NameNode's {@code doAs}), whose index counts the calls that handler
+     * took -- nor this thread's frames or site counts: which handler took
+     * the call would rename the response, and two handlers' first calls
+     * would share one.
      */
     public static Endpoint responseEndpoint(String nodeKey, String transport,
                                             String half) {
-        OccurrenceAddress at = currentOccurrence(nodeKey);
+        OccurrenceAddress at = roleOccurrence(nodeKey, Lineage.role());
         if (at == null) return null;
         String site = JvmNames.stable(Text.safe(transport) + "#"
                 + Text.safe(half));

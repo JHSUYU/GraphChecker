@@ -163,22 +163,56 @@ public class RowRuntimeTest {
     }
 
     /**
-     * A response's endpoint is its request's: the request's occurrence and
-     * the response site, whatever this handler sent before (its site counts
-     * would name which pool handler took the call).
+     * A response's endpoint is its request's: the request's scope and the
+     * response site -- not the region a pool handler opened before the
+     * request came (the NameNode's {@code doAs}, whose index counts that
+     * handler's calls), nor what the handler sent before.  Two requests
+     * served in one such region answer from two endpoints (the HA token
+     * cases' client responses shared one, and the k-th receipt named the
+     * wrong call); one request answers from one endpoint whatever its
+     * handler served first.
      */
     @Test
-    public void aResponseEndpointIsItsRequestsWhateverTheHandlerDidBefore() {
-        Object anchor = new Object();
-        RuntimeTraceContext.registerSource(anchor, NN);
-        long request = RuntimeTraceContext.beginRequest(NN, "append");
-        Endpoint first = Identity.responseEndpoint(NN.key(), "HADOOP_IPC",
-                "RESPONSE");
-        Identity.messageSent(NN.key(), "HADOOP_IPC", "earlier", "RESPONSE",
-                null);
-        assertEquals(first.id(), Identity.responseEndpoint(NN.key(),
-                "HADOOP_IPC", "RESPONSE").id());
-        RuntimeTraceContext.endRequest(request);
+    public void aResponseEndpointIsItsRequestsWhateverTheHandlerDidBefore()
+            throws Exception {
+        SourceRef client = new SourceRef("CLUSTER_NODE", "CLIENT",
+                "hdfs-17899/client0", 0);
+        Object owner = new Object();
+        RuntimeTraceContext.registerSource(owner, client);
+        long calling = RuntimeTraceContext.beginRequest(client, "append");
+        String first = CausynthTraceRecorder.outboundExchange("HADOOP_IPC",
+                "corr-1", "0", "REQUEST", owner, null);
+        String second = CausynthTraceRecorder.outboundExchange("HADOOP_IPC",
+                "corr-2", "0", "REQUEST", owner, null);
+        RuntimeTraceContext.endRequest(calling);
+        List<String> both = answered(new String[][]{{"corr-1", first},
+                {"corr-2", second}});
+        assertFalse("two requests, two responses",
+                both.get(0).equals(both.get(1)));
+        assertEquals("the second request's response, served first",
+                both.get(1), answered(new String[][]{{"corr-2", second}})
+                        .get(0));
+    }
+
+    /** The response endpoints a pooled handler mints for these requests
+     *  ({correlation, header}), in one region it opened before any came. */
+    private static List<String> answered(String[][] requests)
+            throws InterruptedException {
+        List<String> ids = new ArrayList<>();
+        Thread handler = poolThreadCreatedOutsideAnyScope(() -> {
+            Identity.occurrence(NN.key(), "REGION.doAs", true);
+            for (String[] request : requests) {
+                long inbound = RuntimeTraceContext.enterInbound(request[1],
+                        "HADOOP_IPC", request[0], "0", "REQUEST", null);
+                ids.add(Identity.responseEndpoint(NN.key(), "HADOOP_IPC",
+                        "RESPONSE").id());
+                RuntimeTraceContext.exitInbound(inbound);
+            }
+            Identity.regionExit();
+        });
+        handler.start();
+        handler.join();
+        return ids;
     }
 
     /** The causal context the calling thread's root hop states. */
