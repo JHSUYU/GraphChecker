@@ -6,10 +6,12 @@
 repo=/u/vnr3ne/hadoop-hdfs-17897
 test_class=org.apache.hadoop.hdfs.TestCausynthStripedChecksum
 test_method=testStaleEncryptionKeyFailsStripedChecksum
-# The one occurrence PLAN observed (DataXceiver.run on dn0).
-target_occurrence="hdfs-17897/dn0#epoch0/region/REGION.61e62f41-34c6-3a5d-b610-b639dc3f4838/ctx:Lost:UNKNOWN/idx:<org.apache.hadoop.hdfs.server.datanode.DataXceiver: void run()>@0"
+# Empty: PLAN lists every observed occurrence of the target.  Not in scope:
+# DataXceiver -- its run() would be the region, opened before the SASL
+# handshake names the connection's cause, so two connections share one Lost
+# address (OCCURRENCE_ADDRESS_SHARED, t1).
+target_occurrence=
 scope=("${blockkey_scope[@]}"
   client:org/apache/hadoop/hdfs/DFSClient
   client:org/apache/hadoop/hdfs/FileChecksumHelper
-  hdfs=:org/apache/hadoop/hdfs/server/datanode/DataXceiver
 )
