@@ -25,6 +25,11 @@ import java.util.concurrent.locks.LockSupport;
  *       the CLOCK, never for the NOTIFIER.  It ends at a real signal or when
  *       its slot is due; between asks it waits on its own primitive, so what
  *       it holds is released.</li>
+ *   <li>NO WAIT (a timeout that is not positive): the JDK's call, and
+ *       nothing else.  It returns at once and its loop spins, so an event
+ *       per call would differ run to run; held, a {@code poll(0)} would miss
+ *       the hand-off it exists for (a DataNode proxy's IPC sender polls its
+ *       SynchronousQueue at maxIdleTime 0).</li>
  * </ul>
  *
  * <p>A wait in progress when the window opens is woken ({@link
@@ -133,11 +138,8 @@ public final class TimedWaits {
 
     public static void sleep(TimeUnit unit, long timeout, String site)
             throws InterruptedException {
-        if (timeout <= 0L) {
-            WakeScopes.waiting();
-            wake(site);
-            return;
-        }
+        // NO WAIT: TimeUnit.sleep does nothing at all.
+        if (timeout <= 0L) return;
         long millis = unit.toMillis(timeout);
         long nanos = unit.toNanos(timeout)
                 - TimeUnit.MILLISECONDS.toNanos(millis);
@@ -150,9 +152,11 @@ public final class TimedWaits {
      */
     private static void sleepFor(long millis, int nanos, String site)
             throws InterruptedException {
-        if (millis < 0L || nanos < 0 || nanos > 999999) {
-            // The JDK's own refusal, unchanged.
+        if (millis <= 0L && nanos <= 0 || nanos > 999999) {
+            // The JDK's own refusal, or NO WAIT: sleep(0) only yields, and
+            // throws on a pending interrupt.
             Thread.sleep(millis, nanos);
+            return;
         }
         WakeScopes.waiting();
         // Thread.sleep throws on a pending interrupt, even sleep(0).
@@ -219,6 +223,11 @@ public final class TimedWaits {
 
     /** A park: free on the wall clock, held until an unpark or its turn. */
     private static void park(Object blocker, long nanos, String site) {
+        if (nanos <= 0L) {
+            // NO WAIT.
+            LockSupport.parkNanos(blocker, nanos);
+            return;
+        }
         WakeScopes.waiting();
         if (Thread.currentThread().isInterrupted()) {
             // An interrupted park returns at once and its loop spins: no event,
@@ -495,6 +504,8 @@ public final class TimedWaits {
 
     public static long awaitNanos(Condition condition, long nanos,
                                   String site) throws InterruptedException {
+        // NO WAIT.
+        if (nanos <= 0L) return condition.awaitNanos(nanos);
         WakeScopes.waiting();
         interruptedAtEntry(site);
         long deadline = System.nanoTime() + nanos;
@@ -514,6 +525,8 @@ public final class TimedWaits {
     public static boolean await(Condition condition, long time,
                                 TimeUnit unit, String site)
             throws InterruptedException {
+        // NO WAIT.
+        if (time <= 0L) return condition.await(time, unit);
         WakeScopes.waiting();
         interruptedAtEntry(site);
         long deadline = System.nanoTime() + unit.toNanos(time);
@@ -674,8 +687,10 @@ public final class TimedWaits {
     public static Object poll(BlockingQueue<?> queue, long timeout,
                               TimeUnit unit, String site)
             throws InterruptedException {
+        // NO WAIT: poll(0) takes what is offered right now.
+        if (timeout <= 0L) return queue.poll(timeout, unit);
         WakeScopes.waiting();
-        // The JDK's timed poll takes its lock interruptibly, even poll(0).
+        // The JDK's timed poll takes its lock interruptibly.
         interruptedAtEntry(site);
         long deadline = System.nanoTime() + unit.toNanos(timeout);
         // Free, in quanta.  A returned element is a CLAIM, not a WAKE.
