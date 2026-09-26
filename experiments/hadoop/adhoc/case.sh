@@ -24,7 +24,8 @@ target_spec=${here}/targets/${check}.yaml
 target_occurrence=$(awk -F'\t' -v c="$1" '$1 == c {print $2}' \
   "${here}/occurrences.tsv")
 # The family scope carries the IPC and SASL doors; Sender carries the
-# data-transfer SEND door (PBHelperClient, in the family, the RECEIVE door).
+# data-transfer SEND door, one per op.  No door on reads: every pipeline ack
+# is one, and a door per packet admits an occurrence per packet.
 scope=("${blockkey_scope[@]}"
   client:org/apache/hadoop/hdfs/protocol/datatransfer/Sender)
 [[ "${own}" == - ]] || scope+=("${own}")
