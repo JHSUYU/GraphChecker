@@ -63,6 +63,7 @@ public class ConfirmMainTest {
     private final Endpoint producer = endpoint(PRODUCER, "XCH.1.resp.key-id");
     private final Endpoint reader = endpoint(ANCHOR, "a.Handler#h()#12:READ");
     private final Endpoint unknown = endpoint(ANCHOR, "a.Handler#h()#13:READ");
+    private final Endpoint after = endpoint(ANCHOR, "a.Handler#h()#14:READ");
     private final Endpoint writer = endpoint(MINT, "a.Manager#tick()#7:WRITE");
 
     private static Endpoint endpoint(String occurrence, String site) {
@@ -107,7 +108,10 @@ public class ConfirmMainTest {
                 ReadRow.of("sel", 30L, reader, CELL, 5L, "INSTANCE_FIELD/1"
                         + "#40@v5", "I", "3"),
                 ReadRow.of("sel", 31L, unknown, CELL, -1L, "INSTANCE_FIELD/1"
-                        + "#40@v?", "I", "3")), RowCodec::writeRead);
+                        + "#40@v?", "I", "3"),
+                // After the target (seq 40): a fatal run throws before it.
+                ReadRow.of("sel", 45L, after, CELL, 5L, "INSTANCE_FIELD/1"
+                        + "#40@v5", "I", "3")), RowCodec::writeRead);
         RowCodec.writeAll(sel.attaches(), Collections.singletonList(
                 AttachRow.of("sel", 20L, consumer, "M_I_field_HOFF.1", "I",
                         "119979", false, null, producer, "ipc-25",
@@ -322,8 +326,9 @@ public class ConfirmMainTest {
         assertEquals("a pinned join is the model's too, once no recorded"
                 + " order holds it", writer.id(),
                 edges.get("STATE").get("writer").getAsString());
-        assertEquals(reader.id(), edges.get("STATE").get("reader")
-                .getAsString());
+        assertEquals("the read before the target, not the one after it: a "
+                + "run that takes the fatal arm throws first", reader.id(),
+                edges.get("STATE").get("reader").getAsString());
         assertEquals("the writer's activation exits before the reader's"
                 + " enters", writer.activation(),
                 edges.get("ORDER").get("before").getAsString());

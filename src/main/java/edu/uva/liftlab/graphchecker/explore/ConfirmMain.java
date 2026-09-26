@@ -437,12 +437,16 @@ public final class ConfirmMain {
         while (!pending.isEmpty() || !versions.isEmpty()) {
             while (!pending.isEmpty()) {
                 String at = pending.remove(0);
-                boolean whole = anchor.id().equals(at);
                 long cut = reached.get(at);
                 List<ReadRow> on = readsOn.get(at);
                 if (on == null) continue;
                 for (ReadRow read : on) {
-                    if (!whole && read.seq() >= cut) continue;
+                    // The anchor's too, unlike Composer#closure, which joins
+                    // all its reads as its inputs: a run that takes the fatal
+                    // arm throws there, and no edge after it can be taken
+                    // (adhoc token-pw-expired: the key map is read after the
+                    // expiry check).
+                    if (read.seq() >= cut) continue;
                     if (read.observedVersion() < 0L) continue;
                     WriteRow write = writes.get(version(read.location(),
                             read.observedVersion()));
