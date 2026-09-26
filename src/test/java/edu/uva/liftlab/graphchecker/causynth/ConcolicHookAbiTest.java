@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
+import edu.uva.liftlab.graphchecker.plan.WorkStartSites;
 import org.junit.Test;
 
 import java.lang.reflect.InvocationTargetException;
@@ -77,8 +78,38 @@ public class ConcolicHookAbiTest {
         // a region root, and both are woven into application bytecode.
         assertEquals("no java.lang.System hook is woven by the trace pass",
                 0, resolveCatalog("trace", RECORDER_CLASS));
+        assertEveryTimedWaitHasItsStandIn();
         assertExternalCallersResolve();
         assertTheRunnerDrivesTheJupiterLifecycle();
+    }
+
+    /**
+     * The calls the weave REPLACES: every timed-wait shape has its stand-in
+     * on the class the weave names, with exactly the signature it calls --
+     * the receiver first, the call's own parameters, the site last, and the
+     * call's return type.  A mismatch is a NoSuchMethodError inside a
+     * replay, which is the one place it cannot be seen.
+     */
+    private static void assertEveryTimedWaitHasItsStandIn() throws Exception {
+        Class<?> owner = Class.forName(WorkStartSites.TIMED_WAITS_CLASS);
+        for (WorkStartSites.TimedWait shape : WorkStartSites.timedWaits()) {
+            List<Class<?>> parameters = new ArrayList<>();
+            for (String name : shape.replacementParameters()) {
+                parameters.add(declaredType(name));
+            }
+            Method method = owner.getMethod(shape.replacement,
+                    parameters.toArray(new Class<?>[0]));
+            assertTrue(shape.replacement + " is static",
+                    Modifier.isStatic(method.getModifiers()));
+            assertEquals(shape.replacement + " returns what the call did",
+                    declaredType(shape.returns), method.getReturnType());
+        }
+    }
+
+    /** A type as a Java signature spells it: a primitive, else a class. */
+    private static Class<?> declaredType(String name)
+            throws ClassNotFoundException {
+        return name.contains(".") ? Class.forName(name) : javaType(name);
     }
 
     /**

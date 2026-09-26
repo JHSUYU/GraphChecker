@@ -2747,45 +2747,54 @@ public class ExploreTest {
     }
 
     /**
-     * The same rule where it is spent: one flip over a clock, solved.
+     * The same rule where it is spent: a flip over a clock, solved.
      *
      * <p>hdfs-11741 campaign #4's 35 refusals in one fixture -- the guard is
      * {@code expiryDate >= now} over a wall-clock literal, the flip asks for
      * the other arm, and the model has to clear the literal by the margin
      * rather than by the one millisecond z3 would otherwise answer with.</p>
+     *
+     * <p>THE INHERITED FLIP IS DEMANDED TOO, and the prefix around it is not.
+     * The path a child is cut from exists only in the world its parent's
+     * replay ran ({@link Corpus.World}), so the query re-asserts that flip --
+     * and a flip over a clock is a flip over a clock whoever asked for it
+     * first.  The decisions the parent's occurrence took BEFORE it, and the
+     * flipped path's own prefix, are the recording's own arms and are asked
+     * for exactly as recorded.</p>
      */
     @Test
-    public void theFlipOverAClockIsSolvedWithRoomToSpare() throws Exception {
+    public void anInheritedClockFlipCarriesTheMarginAndItsPrefixDoesNot()
+            throws Exception {
         Assume.assumeTrue(z3Available());
-        Path iteration = tree.newFolder("margin").toPath();
-        Session seed = new Session(iteration, "s-seed");
-        seed.activation(TARGET, false);
-        seed.root(TARGET, "CASE.NOW", "M_NOW", RootKind.CLOCK, "1000",
+        Path margin = tree.newFolder("margin").toPath();
+        Session clocked = new Session(margin, "s-seed");
+        clocked.activation(TARGET, false);
+        clocked.root(TARGET, "CASE.NOW", "M_NOW", RootKind.CLOCK, "1000",
                 null, null, true);
-        seed.decision(TARGET, "Expiry#u15", 1, true,
+        clocked.decision(TARGET, "Expiry#u15", 1, true,
                 notBefore("1500", "M_NOW"));
-        seed.flush();
-        scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
+        clocked.flush();
+        scopeMap(margin, targetSite("REGION.target", "Throw#u30",
                 "Expiry#u15"));
-        Path out = tree.newFolder("margin-out").toPath();
-        Path wave = out.resolve("obligations-0000");
-        plan(iteration, TARGET_SELECTOR, null,
-                out.resolve("results.jsonl"), wave, 0);
-        List<Obligation> proposed = obligations(wave);
+        Path marginOut = tree.newFolder("margin-out").toPath();
+        Path marginWave = marginOut.resolve("obligations-0000");
+        plan(margin, TARGET_SELECTOR, null,
+                marginOut.resolve("results.jsonl"), marginWave, 0);
+        List<Obligation> proposed = obligations(marginWave);
         assertEquals(1, proposed.size());
-        Worker worker = solve(iteration, wave, proposed.get(0), out, "w0");
-        assertEquals(detail(worker), Verdict.SAT_MODEL_READY, worker.verdict);
-        String query = query(worker);
-        assertTrue("the demanded atom carries the margin: " + query,
-                query.contains("(not (>= (+ 1500 "
+        Worker direct = solve(margin, marginWave, proposed.get(0), marginOut,
+                "w0");
+        assertEquals(detail(direct), Verdict.SAT_MODEL_READY, direct.verdict);
+        assertTrue("the demanded atom carries the margin: " + query(direct),
+                query(direct).contains("(not (>= (+ 1500 "
                         + ClockMargin.MARGIN_MS + ") clk_"));
-        JsonObject focus = RowCodec.readJsonl(worker.directory.resolve(
-                ObligationDir.FOCUSED_TASK)).get(0);
-        long skew = Long.parseLong(focus.getAsJsonObject("clockDeltas")
-                .get("CASE.NOW").getAsString());
+        long owed = Long.parseLong(RowCodec.readJsonl(direct.directory
+                .resolve(ObligationDir.FOCUSED_TASK)).get(0)
+                .getAsJsonObject("clockDeltas").get("CASE.NOW")
+                .getAsString());
         assertTrue("and the replay is owed a skew that clears the literal by "
-                        + "it, not by one millisecond: " + skew,
-                skew >= 1500L + ClockMargin.MARGIN_MS - 1000L);
+                        + "it, not by one millisecond: " + owed,
+                owed >= 1500L + ClockMargin.MARGIN_MS - 1000L);
 
         // An atom whose polarity no connective of the query resolves is
         // left exactly as it was, and named once.
@@ -2818,22 +2827,8 @@ public class ExploreTest {
                     && gap.detail().contains("(< 1500 clk_");
         }
         assertTrue("and the wave says which atom it could not reach", named);
-    }
 
-    /**
-     * THE INHERITED FLIP IS DEMANDED TOO, and the prefix around it is not.
-     *
-     * <p>The path a child is cut from exists only in the world its parent's
-     * replay ran ({@link Corpus.World}), so the query re-asserts that flip --
-     * and a flip over a clock is a flip over a clock whoever asked for it
-     * first.  The decisions the parent's occurrence took BEFORE it, and the
-     * flipped path's own prefix, are the recording's own arms and are asked
-     * for exactly as recorded.</p>
-     */
-    @Test
-    public void anInheritedClockFlipCarriesTheMarginAndItsPrefixDoesNot()
-            throws Exception {
-        Assume.assumeTrue(z3Available());
+        // The inherited flip.
         Path iteration = tree.newFolder("inherited-margin").toPath();
         // The recording: the rotation read its clock and took neither arm
         // the child was later held to, and the target never reached the

@@ -48,17 +48,10 @@ public class OccurrenceAddressIsNotARequestTest {
             "<a.Manager: void deleteSnapshot()>";
     private static final String NAMENODE = "hdfs-17899/nn0";
     private static final String TARGET = "hdfs-17899/target-dn";
-    private static final String NN = NAMENODE + "#epoch0";
-    private static final String SOURCE_DN = "hdfs-17899/source-dn#epoch0";
     private static final String TARGET_DN = TARGET + "#epoch0";
-    private static final String KEYS_REGION = "REGION.16ba41cf";
-    private static final String STATIC_ROOT =
-            "<org.apache.hadoop.hdfs.protocolPB.PBHelper: "
-                    + "ExportedBlockKeys convert(ExportedBlockKeysProto)>";
     private static final String SPS = "hdfs-17899/sps";
 
     private final Object nameNode = new Object();
-    private final Object sourceDn = new Object();
     private final Object targetDn = new Object();
 
     @After
@@ -209,9 +202,6 @@ public class OccurrenceAddressIsNotARequestTest {
                 deferred.enclosingInvocationEvent());
     }
 
-
-
-
     /**
      * A value arriving over the wire does not say where the receiver ran.
      *
@@ -316,31 +306,6 @@ public class OccurrenceAddressIsNotARequestTest {
         }
     }
 
-    /** The cluster of lane VM9: three nodes, one JVM. */
-    private void registerCluster() {
-        RuntimeTraceContext.resetForTests();
-        RuntimeTraceContext.registerSource(nameNode,
-                new SourceRef("CLUSTER_NODE", "NAMENODE", NAMENODE, 0L));
-        RuntimeTraceContext.registerSource(sourceDn,
-                new SourceRef("CLUSTER_NODE", "DATANODE",
-                        "hdfs-17899/source-dn", 0L));
-        RuntimeTraceContext.registerSource(targetDn,
-                new SourceRef("CLUSTER_NODE", "DATANODE", TARGET, 0L));
-    }
-
-    /** Enters the root once, inside {@code node}'s request scope if any. */
-    private ConcolicTaskPlan.RuntimeTask decode(ConcolicTaskPlan plan,
-            ConcolicTaskPlan.RuntimeTask any, Object node) {
-        long request = node == null ? 0L
-                : RuntimeTraceContext.beginRequest(node, "heartbeat");
-        try {
-            return plan.select(any.rootHookGroupKey(), any.rootMethod, null,
-                    new Object[0]);
-        } finally {
-            if (node != null) RuntimeTraceContext.endRequest(request);
-        }
-    }
-
     /**
      * One occurrence of the balancer region, distinguished by where it ran.
      *
@@ -391,13 +356,8 @@ public class OccurrenceAddressIsNotARequestTest {
         return new ConcolicTaskPlan(null, Collections.singletonList(task));
     }
 
-    /** The lane's own producer plan row, as the campaign carries it. */
-    private static ConcolicTaskPlan.RuntimeTask task() {
-        return new ConcolicTaskPlan.RuntimeTask(
-                ExecutionTask.decode(row(PLAN_ROW)));
-    }
-
-    /** The same plan row, addressed at one enclosing invocation. */
+    /** The lane's own producer plan row, addressed at one enclosing
+     *  invocation. */
     private static ConcolicTaskPlan.RuntimeTask loopBodyTask(int ordinal) {
         JsonObject encoded = row(PLAN_ROW);
         String regionId = encoded.get("regionId").getAsString();
@@ -429,7 +389,6 @@ public class OccurrenceAddressIsNotARequestTest {
         return new ConcolicTaskPlan.RuntimeTask(ExecutionTask.decode(encoded));
     }
 
-    /** One planned activation of the snapshot region on {@code sourceKey}. */
     /**
      * One task planned at the address this test's thread actually runs at.
      *
@@ -457,23 +416,6 @@ public class OccurrenceAddressIsNotARequestTest {
                 NN0 + "#epoch1/region/" + BALANCER_REGION, 1,
                 "REGISTERED_SOURCE");
         encoded.addProperty("rootAuthority", "LOOP_BODY_ROOT");
-        return new ConcolicTaskPlan.RuntimeTask(ExecutionTask.decode(encoded));
-    }
-
-    /**
-     * One occurrence of a root belonging to no node, named as the planner mints
-     * it: the address carries the recording's request family, (source, api)
-     * and no request ordinal, and the anchor is the thread's context.
-     */
-    private static ConcolicTaskPlan.RuntimeTask sharedRootTask(String taskId,
-            String sourceKey) {
-        JsonObject encoded = encoded(taskId, sourceKey, KEYS_REGION,
-                STATIC_ROOT, sourceKey + "/region/" + KEYS_REGION + "@"
-                        + sourceKey + "/heartbeat#1", 1, "INHERITED_CONTEXT");
-        JsonObject anchor = encoded.getAsJsonObject("rootSelector")
-                .getAsJsonObject("causalAnchor");
-        anchor.addProperty("requestApi", "heartbeat");
-        anchor.addProperty("requestKey", sourceKey + "/request/heartbeat#1");
         return new ConcolicTaskPlan.RuntimeTask(ExecutionTask.decode(encoded));
     }
 

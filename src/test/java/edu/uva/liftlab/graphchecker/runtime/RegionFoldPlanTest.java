@@ -58,10 +58,12 @@ public class RegionFoldPlanTest {
     /**
      * The occurrence that folded the nested region owns it: one activation,
      * no activation of the folded region, and the fold row says where it ran.
+     * An entry that opened an occurrence of its own is no fold: the same
+     * recording without the flag plans two activations and no fold row.
      */
     @Test
     public void aFoldedEntryBelongsToTheOccurrenceItFoldedInto() {
-        RuntimeRegionPlanner.Result plan = plan();
+        RuntimeRegionPlanner.Result plan = plan(true);
 
         assertEquals("one activation: the occurrence that was running",
                 1, plan.runtimeInstances.size());
@@ -81,23 +83,11 @@ public class RegionFoldPlanTest {
         Collection<?> observed = (Collection<?>) tick.get("observedMethods");
         assertTrue(observed.contains(NESTED));
         assertTrue(observed.contains(BELOW));
-    }
 
-    /**
-     * An entry that opened an occurrence of its own is no fold: the same
-     * recording without the flag plans two activations and no fold row.
-     */
-    @Test
-    public void anUnfoldedEntryIsStillAnActivationOfItsOwnRegion() {
-        RuntimeRegionPlanner.Result plan = RuntimeRegionPlanner
-                .planSkeletonGraph(skeletons(), events(false),
-                        Collections.<RuntimeRegionPlanner.RuntimeEvent>
-                                emptyList(),
-                        Collections.<RuntimeRegionPlanner.ProtocolEvent>
-                                emptyList(), Collections.<String>emptySet());
-
-        assertEquals(2, plan.runtimeInstances.size());
-        for (Map<String, Object> activation : plan.runtimeInstances) {
+        RuntimeRegionPlanner.Result unfolded = plan(false);
+        assertEquals("unfolded, each entry is an activation of its own", 2,
+                unfolded.runtimeInstances.size());
+        for (Map<String, Object> activation : unfolded.runtimeInstances) {
             assertFalse("and no region -> occurrence fold table",
                     activation.containsKey(RuntimeSelectedRegionFinalizer
                             .FOLDED_REGION_IDS));
@@ -309,9 +299,9 @@ public class RegionFoldPlanTest {
         return Collections.singletonList(branch);
     }
 
-    private static RuntimeRegionPlanner.Result plan() {
+    private static RuntimeRegionPlanner.Result plan(boolean folded) {
         return RuntimeRegionPlanner.planSkeletonGraph(skeletons(),
-                events(true),
+                events(folded),
                 Collections.<RuntimeRegionPlanner.RuntimeEvent>emptyList(),
                 Collections.<RuntimeRegionPlanner.ProtocolEvent>emptyList(),
                 Collections.<String>emptySet());

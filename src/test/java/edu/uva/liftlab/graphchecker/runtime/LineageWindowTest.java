@@ -37,15 +37,12 @@ public class LineageWindowTest {
         assertEquals("the window's own first turn is #1", 1,
                 Lineage.rootWindowIndex());
         Lineage.pop(first);
-    }
 
-    @Test
-    public void aRequestOpenedBeforeTheWindowKeepsItsK() {
         long request = Lineage.push("hdfs/balancer", Role.CLIENT,
                 "balance-block");
         RecordingWindow.open();
-        assertEquals("the workload decides how many requests it opens", 1,
-                Lineage.rootWindowIndex());
+        assertEquals("a request keeps its k: the workload decides how many "
+                + "requests it opens", 1, Lineage.rootWindowIndex());
         Lineage.pop(request);
     }
 }

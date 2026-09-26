@@ -35,6 +35,20 @@ public class AmbientHandoffIdentityTest {
         assertFalse("two elements, two variables", first.equals(second));
         assertFalse(second.equals(third));
         assertFalse(first.equals(third));
+
+        // The ordinal is per element path and per consumer, so a run that
+        // meets them in another order mints the same variables again.
+        String expiry = HandoffMint.ambientMintKey(PORT, CONSUMER,
+                "expiryDate");
+        String elsewhere = HandoffMint.ambientMintKey(PORT,
+                CONSUMER + "other", "keyId");
+        HandoffMint.resetForTests();
+        assertEquals(expiry, HandoffMint.ambientMintKey(PORT, CONSUMER,
+                "expiryDate"));
+        assertEquals(elsewhere, HandoffMint.ambientMintKey(PORT,
+                CONSUMER + "other", "keyId"));
+        assertEquals("the same run mints the same first key again",
+                first, HandoffMint.ambientMintKey(PORT, CONSUMER, "keyId"));
     }
 
     @Test
@@ -47,21 +61,5 @@ public class AmbientHandoffIdentityTest {
         assertEquals(4, HandoffMint.nextAttach(CONSUMER, PORT, "keyId"));
         assertEquals("another consumer counts its own", 1,
                 HandoffMint.nextAttach(CONSUMER + "other", PORT, "keyId"));
-    }
-
-    @Test
-    public void theOrdinalIsPerElementPathAndPerConsumer() {
-        String key = HandoffMint.ambientMintKey(PORT, CONSUMER, "keyId");
-        String expiry = HandoffMint.ambientMintKey(PORT, CONSUMER,
-                "expiryDate");
-        String elsewhere = HandoffMint.ambientMintKey(PORT,
-                CONSUMER + "other", "keyId");
-        HandoffMint.resetForTests();
-        assertEquals("the same run mints the same first key again",
-                key, HandoffMint.ambientMintKey(PORT, CONSUMER, "keyId"));
-        assertEquals(expiry, HandoffMint.ambientMintKey(PORT, CONSUMER,
-                "expiryDate"));
-        assertEquals(elsewhere, HandoffMint.ambientMintKey(PORT,
-                CONSUMER + "other", "keyId"));
     }
 }

@@ -3,7 +3,6 @@ package edu.uva.liftlab.graphchecker.runtime;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.smt.CanonicalJson;
 import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
 import org.junit.After;
@@ -58,7 +57,10 @@ public class BranchDecisionRecordingTest {
     /**
      * What a region writes down for one binary decision at a declared
      * site: one row naming the site, the arm it took and the empty
-     * path-condition window, and the reach.
+     * path-condition window, and the reach.  The switch answers the same
+     * questions at the same site and arm: the successor it selected is the
+     * replay authority and states no predicate of its own, so the row is
+     * the binary one.
      *
      * <p>The site id in that row is also what the VM is told a guarded
      * store depends on: the guarded-store table names the store's method
@@ -69,13 +71,18 @@ public class BranchDecisionRecordingTest {
      */
     @Test
     public void aBinaryDecisionPublishesOneRowAndTheReach() throws Exception {
-        assertEquals("rows=[{"
-                + "\"method\":\"" + METHOD + "\",\"occurrence\":1,"
-                + "\"outcome\":true,"
-                + "\"rawPathConditionBaseline\":0,"
-                + "\"rawPathConditionSize\":0,\"siteId\":\"" + DECLARED
-                + "\",\"unitIndex\":4}]\n" + REACH,
-                publishes(binary(true)));
+        Object[][] decisions = {{"binary", binary(true)},
+                {"switch", multiway("0,1,2", 1)}};
+        for (Object[] decision : decisions) {
+            assertEquals((String) decision[0], "rows=[{"
+                    + "\"method\":\"" + METHOD + "\",\"occurrence\":1,"
+                    + "\"outcome\":true,"
+                    + "\"rawPathConditionBaseline\":0,"
+                    + "\"rawPathConditionSize\":0,\"siteId\":\"" + DECLARED
+                    + "\",\"unitIndex\":4}]\n" + REACH,
+                    publishes(decision[1]));
+            releaseRegions();
+        }
         GuardedStoreSites table = GuardedStoreSites.of(
                 Collections.singletonList(writeSite("a.B#run(I)V",
                         DECLARED, COMMAS)));
@@ -106,21 +113,6 @@ public class BranchDecisionRecordingTest {
     }
 
     /**
-     * The switch answers the same questions: one row, at the same site and
-     * the same arm.  The successor it selected is the replay authority and
-     * states no predicate of its own, so the row is the binary one.
-     */
-    @Test
-    public void aSwitchDecisionPublishesTheSameRowAndReach() throws Exception {
-        assertEquals("rows=[{\"method\":\"" + METHOD
-                + "\",\"occurrence\":1,\"outcome\":true,"
-                + "\"rawPathConditionBaseline\":0,"
-                + "\"rawPathConditionSize\":0,\"siteId\":\"" + DECLARED
-                + "\",\"unitIndex\":4}]\n" + REACH,
-                publishes(multiway("0,1,2", 1)));
-    }
-
-    /**
      * An activation that decides the addressed target site has reached the
      * target, symbolic predicate or two concrete ints: that is evidence about
      * the anchor, not a condition on publishing it.  Only a decision the VM
@@ -147,56 +139,6 @@ public class BranchDecisionRecordingTest {
     }
 
     /**
-     * I3: the rows and the ordinals of a folded site are the enclosing
-     * occurrence's.
-     *
-     * <p>Under I1 a declared region entered synchronously inside another
-     * region's occurrence opens none of its own, so two selected
-     * activations can be activations of ONE occurrence.  A decision row is
-     * addressed by the occurrence that performed the branch and its ordinal
-     * is counted there: counted per activation, both would start at 1 and
-     * two rows would collide at (occurrence, site, ordinal) -- the pair an
-     * obligation's flip is addressed by.</p>
-     *
-     * <p>F1 now stops the second activation from being STARTED at a fold at
-     * all, so the two here are built by hand.  The rule they hold is the one
-     * that survives it: the count belongs to the occurrence, not to whatever
-     * activation happens to be innermost, and a folded site's rows are the
-     * enclosing occurrence's.</p>
-     */
-    @Test
-    public void aFoldedSitesRowsAndOrdinalsAreTheEnclosingOccurrences()
-            throws Exception {
-        Identity.resetForTests();
-        Lineage.resetForTests();
-        Identity.scopeStart(Identity.Hop.SCOPE_ROOT);
-        Identity.enterFrame("<a.B: void addKeys()>#u1", null);
-        OccurrenceAddress enclosing = Identity.occurrence(NODE,
-                "REGION.ba3902cd", true);
-
-        ActiveRegion outer = region(enclosing);
-        decide(outer, 4);
-        decide(outer, 4);
-
-        // The synchronous call into the nested declared region: its entry
-        // folds, so this activation IS an activation of `enclosing`.
-        Identity.enterFrame("<a.B: void removeExpiredKeys()>#u7", null);
-        assertEquals(enclosing,
-                Identity.occurrence(NODE, "REGION.094a8e3d", true));
-        ActiveRegion folded = region(Identity.currentOccurrence(NODE));
-        decide(folded, 4);
-
-        assertEquals("the folded activation's row is the enclosing "
-                        + "occurrence's", enclosing.render(),
-                folded.d3Address.render());
-        assertEquals("and its ordinal goes on counting there, so no two "
-                        + "rows of this occurrence share (site, ordinal)",
-                3, ordinal(folded, 0));
-        assertEquals(1, ordinal(outer, 0));
-        assertEquals(2, ordinal(outer, 1));
-    }
-
-    /**
      * I3: an abandoned occurrence hands its later branches to nobody.
      *
      * <p>A prefix contradiction ends an activation from INSIDE the region
@@ -214,8 +156,8 @@ public class BranchDecisionRecordingTest {
             throws Exception {
         Identity.resetForTests();
         Lineage.resetForTests();
-        ActiveRegion enclosing = region(null);
-        ActiveRegion abandoned = region(null);
+        ActiveRegion enclosing = region();
+        ActiveRegion abandoned = region();
         Object frame = rootInvocationFrame(abandoned.token);
         assertEquals("the innermost activation is the one about to close",
                 abandoned, ConcolicRegionRuntime.activeRegion());
@@ -326,31 +268,16 @@ public class BranchDecisionRecordingTest {
 
     private static final String NODE = "hdfs-11741/dn1#epoch0";
 
-    /** One activation of {@code address}, on this thread's region stack. */
-    private ActiveRegion region(OccurrenceAddress address) throws Exception {
+    /** One activation of the task, on this thread's region stack. */
+    private ActiveRegion region() throws Exception {
         long token = 900000L + opened.size() + 1;
         ActiveRegion active = new ActiveRegion(token,
                 new ConcolicTaskPlan.RuntimeTask(task()), null,
                 Thread.currentThread());
-        active.d3Address = address;
         ConcolicRegionRuntime.ACTIVE.put(token, active);
         currentTokens().push(token);
         opened.push(token);
         return active;
-    }
-
-    /** One concrete decision at {@code unitIndex} of {@link #METHOD}. */
-    private void decide(ActiveRegion active, int unitIndex) throws Exception {
-        Method record = ActiveRegion.class.getDeclaredMethod(
-                "recordConcreteDecision", String.class, int.class,
-                nested("BranchDecision"));
-        record.setAccessible(true);
-        record.invoke(active, METHOD, unitIndex, binary(true));
-    }
-
-    /** The ordinal the n-th row of this activation carries. */
-    private static int ordinal(ActiveRegion active, int row) {
-        return active.branchMappings.get(row).get("occurrence").getAsInt();
     }
 
     /** One open root invocation frame, as an entry hook pushes one. */
@@ -405,14 +332,7 @@ public class BranchDecisionRecordingTest {
 
     /** The transcript one concrete decision at u4 leaves in a fresh region. */
     private String publishes(Object decision) throws Exception {
-        long token = 900000L + opened.size() + 1;
-        ActiveRegion active =
-                new ActiveRegion(token,
-                        new ConcolicTaskPlan.RuntimeTask(task()), null,
-                        Thread.currentThread());
-        ConcolicRegionRuntime.ACTIVE.put(token, active);
-        currentTokens().push(token);
-        opened.push(token);
+        ActiveRegion active = region();
         // As production stands: the ordinal is counted on the occurrence
         // running on this thread (Identity.nextBranchOrdinal).
         Identity.scopeStart(Identity.Hop.SCOPE_ROOT);

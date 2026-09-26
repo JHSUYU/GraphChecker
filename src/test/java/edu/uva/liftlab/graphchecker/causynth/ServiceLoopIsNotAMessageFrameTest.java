@@ -62,55 +62,38 @@ public class ServiceLoopIsNotAMessageFrameTest {
     // The ruling
     // ------------------------------------------------------------------
 
-    /**
-     * A loop in the port's own frame method walks ONE message's leaves, so
-     * no iteration of it is a wire value and the region stays at the frame.
-     */
+    /** Each shape, and the loop its region is rooted at (null: the frame). */
     @Test
-    public void loopInsideThePortsFrameIsNotAServiceLoop() {
-        Assert.assertNull("a region that owns a declared port's OUT site is"
-                        + " rooted at that port's frame method, not at a loop"
-                        + " inside it",
-                rootLoopOf(encodeRegion(ENCODE_FRAME, LoopBoundPolicy
-                        .LOOP_FIXED_COUNT_INDEXED)));
-    }
-
-    /**
-     * The red line: a loop the frame CALLS is not a loop inside the frame.
-     * This is hdfs-11741's IN region, rooted at {@code convertBlockKeys}'s
-     * own loop, and it keeps that rooting.
-     */
-    @Test
-    public void loopBelowTheFrameKeepsItsRooting() {
-        Map<String, Object> rooted = rootLoopOf(decodeRegion());
-        Assert.assertNotNull("the frame method is not this loop's owner, so"
-                + " the port says what it always said", rooted);
-        Assert.assertEquals(DECODE_WALK,
-                rooted.get(LoopBoundPolicy.ROOT_LOOP_METHOD));
-    }
-
-    /**
-     * A port that names no frame method is addressed within its RPC message
-     * and says nothing new: the rule before this one still decides it.
-     */
-    @Test
-    public void portWithoutAFrameMethodIsUnchanged() {
-        Assert.assertNotNull("a port that declares no frame leaves the"
-                        + " once-only-root rule exactly as it was",
-                rootLoopOf(encodeRegion("", LoopBoundPolicy
-                        .LOOP_FIXED_COUNT_INDEXED)));
-    }
-
-    /**
-     * A loop that decides its own continuation is a service loop wherever it
-     * stands: the frame bounds the indexed arm, never this one.
-     */
-    @Test
-    public void conditionBoundedLoopIsAServiceLoopInsideAFrameToo() {
-        Assert.assertNotNull("a CONDITION_BOUNDED loop is the shape the"
-                        + " once-only-root rule is about",
-                rootLoopOf(encodeRegion(ENCODE_FRAME,
-                        LoopBoundPolicy.LOOP_CONDITION_BOUNDED)));
+    public void onlyALoopOutsideTheFrameOrDecidingItselfIsAServiceLoop() {
+        Object[][] rows = {
+                // A loop in the port's own frame method walks ONE message's
+                // leaves, so no iteration of it is a wire value and the
+                // region stays at the frame.
+                {"a loop inside the port's frame",
+                        encodeRegion(ENCODE_FRAME,
+                                LoopBoundPolicy.LOOP_FIXED_COUNT_INDEXED),
+                        null},
+                // The red line: a loop the frame CALLS is not a loop inside
+                // the frame.  This is hdfs-11741's IN region, rooted at
+                // convertBlockKeys's own loop, and it keeps that rooting.
+                {"a loop below the frame", decodeRegion(), DECODE_WALK},
+                // A port that names no frame method is addressed within its
+                // RPC message: the rule before this one still decides it.
+                {"a port that declares no frame",
+                        encodeRegion("",
+                                LoopBoundPolicy.LOOP_FIXED_COUNT_INDEXED),
+                        ENCODE_FRAME},
+                // A loop that decides its own continuation is a service loop
+                // wherever it stands: the frame bounds the indexed arm only.
+                {"a CONDITION_BOUNDED loop inside the frame",
+                        encodeRegion(ENCODE_FRAME,
+                                LoopBoundPolicy.LOOP_CONDITION_BOUNDED),
+                        ENCODE_FRAME}};
+        for (Object[] row : rows) {
+            Map<String, Object> rooted = rootLoopOf((Case) row[1]);
+            Assert.assertEquals((String) row[0], row[2], rooted == null
+                    ? null : rooted.get(LoopBoundPolicy.ROOT_LOOP_METHOD));
+        }
     }
 
     // ------------------------------------------------------------------

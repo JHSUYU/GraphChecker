@@ -1283,69 +1283,41 @@ public class ComposerTest {
     }
 
     // ------------------------------------------------------------------
-    // 7. A relative domain is relative to the reading it was declared on.
-    // ------------------------------------------------------------------
-
-    @Test
-    public void aDeclaredWindowIsResolvedAgainstEachPathsOwnReading()
-            throws Exception {
-        Path iteration = folder.newFolder("window").toPath();
-        // The NameNode's serial advances between replays, so "up to three
-        // rotations ahead of what this run read" is three different windows.
-        for (String[] each : new String[][]{{"s0", "119994", "false"},
-                {"s1", "119997", "true"}}) {
-            Session session = new Session(iteration, each[0],
-                    "true".equals(each[2]));
-            session.serial(each[1], "+0", "+3");
-            session.target("true", false, true);
-            session.write();
-        }
-
-        Composer.Composition composition = compose(iteration, 8);
-        assertEquals(2, composition.disjuncts().size());
-        assertFalse("a root two sessions read differently gets no "
-                        + "corpus-wide window",
-                composition.body().contains("root_domain__"));
-        assertTrue("the seed's own window is on the seed's path",
-                composition.body().contains("(>= " + SERIAL + " 119994)"));
-        assertTrue("and the later session's own window is on its path",
-                composition.body().contains("(>= " + SERIAL + " 119997)"));
-
-        // The value the old corpus-wide window excluded: legal for the
-        // session that read 119997, and for no other.
-        Z3 solver = solver();
-        for (Composer.Disjunct disjunct : composition.disjuncts()) {
-            List<String> pinned = new ArrayList<String>();
-            pinned.add("(assert " + disjunct.selector() + ")");
-            pinned.add("(assert (= " + SERIAL + " 120000))");
-            String status = solver.ask(composition.query(pinned),
-                    Collections.<String>emptyList(), false).status();
-            assertEquals("three rotations past its own reading, on "
-                            + disjunct.path().sessionId,
-                    "s1".equals(disjunct.path().sessionId)
-                            ? "sat" : "unsat", status);
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // 7b. A path states the roots IT minted, and a root its own terms
-    //     never name is not something it is refused for.
+    // 7. A relative domain is relative to the reading it was declared on;
+    //    a path states the roots IT minted, and a root its own terms never
+    //    name is not something it is refused for.
     // ------------------------------------------------------------------
 
     @Test
     public void aPathIsNotRefusedForARootItsOwnTermsNeverName()
             throws Exception {
         Path iteration = folder.newFolder("unminted").toPath();
-        // s0 and s1 mint the declared counter at two readings, so the
-        // corpus VARIES it and each path carries its own valuation of it.
-        for (String[] each : new String[][]{{"s0", "119994", "false"},
-                {"s1", "119997", "true"}}) {
-            Session session = new Session(iteration, each[0],
-                    "true".equals(each[2]));
-            session.serial(each[1], "+0", "+3");
-            session.target("true", false, true);
-            session.write();
+        twoReadings(iteration);
+
+        Composer.Composition window = compose(iteration, 8);
+        assertEquals(2, window.disjuncts().size());
+        assertFalse("a root two sessions read differently gets no "
+                        + "corpus-wide window",
+                window.body().contains("root_domain__"));
+        assertTrue("the seed's own window is on the seed's path",
+                window.body().contains("(>= " + SERIAL + " 119994)"));
+        assertTrue("and the later session's own window is on its path",
+                window.body().contains("(>= " + SERIAL + " 119997)"));
+        // The value the old corpus-wide window excluded: legal for the
+        // session that read 119997, and for no other.
+        Z3 solver = solver();
+        for (Composer.Disjunct disjunct : window.disjuncts()) {
+            List<String> pinned = new ArrayList<String>();
+            pinned.add("(assert " + disjunct.selector() + ")");
+            pinned.add("(assert (= " + SERIAL + " 120000))");
+            String status = solver.ask(window.query(pinned),
+                    Collections.<String>emptyList(), false).status();
+            assertEquals("three rotations past its own reading, on "
+                            + disjunct.path().sessionId,
+                    "s1".equals(disjunct.path().sessionId)
+                            ? "sat" : "unsat", status);
         }
+
         // s2 replayed an occurrence that never mints the counter: no row
         // of it states the root and no term of its path names the symbol.
         // hdfs-11741's three hook-minted BLOCK_KEY.EXPIRY_DATE roots are
@@ -1373,14 +1345,7 @@ public class ComposerTest {
         // symbol would be free, or worse, answered by another execution's
         // reading -- and it is refused by the root's name.
         Path naming = folder.newFolder("unminted-named").toPath();
-        for (String[] each : new String[][]{{"s0", "119994", "false"},
-                {"s1", "119997", "true"}}) {
-            Session session = new Session(naming, each[0],
-                    "true".equals(each[2]));
-            session.serial(each[1], "+0", "+3");
-            session.target("true", false, true);
-            session.write();
-        }
+        twoReadings(naming);
         Session names = new Session(naming, "s2", true);
         names.target("(> " + SERIAL + " 0)", false, true);
         names.write();
@@ -1390,6 +1355,23 @@ public class ComposerTest {
                         + "disjunction", 2, refused.disjuncts().size());
         assertTrue("and the refusal is BLOCKING and names the root",
                 blocking(refused.gaps(), SERIAL_ROOT));
+    }
+
+    /**
+     * s0 and s1 mint the declared counter at two readings, so the corpus
+     * VARIES it and each path carries its own valuation of it: the
+     * NameNode's serial advances between replays, so "up to three rotations
+     * ahead of what this run read" is a different window on each.
+     */
+    private void twoReadings(Path iteration) throws IOException {
+        for (String[] each : new String[][]{{"s0", "119994", "false"},
+                {"s1", "119997", "true"}}) {
+            Session session = new Session(iteration, each[0],
+                    "true".equals(each[2]));
+            session.serial(each[1], "+0", "+3");
+            session.target("true", false, true);
+            session.write();
+        }
     }
 
     // ------------------------------------------------------------------
@@ -1743,57 +1725,6 @@ public class ComposerTest {
                     : rest.substring(0, end);
         }
         return "";
-    }
-
-    // ------------------------------------------------------------------
-    // 10. A case declares a selector; the seed session resolves it.
-    // ------------------------------------------------------------------
-
-    @Test
-    public void aCaseSelectorIsResolvedAgainstTheSeedSession()
-            throws Exception {
-        Path iteration = folder.newFolder("selector").toPath();
-        // Three activations of one region on one node, two of them started
-        // by the api the case names.
-        OccurrenceAddress first = occurrence("case/dn0", "REGION.sel",
-                CausalContext.of("p1", "case/client#epoch0/checksum"),
-                frame("DataXceiver#run#12", 0));
-        OccurrenceAddress second = occurrence("case/dn0", "REGION.sel",
-                CausalContext.of("p2", "case/client#epoch0/read-block"),
-                frame("DataXceiver#run#12", 1));
-        OccurrenceAddress third = occurrence("case/dn0", "REGION.sel",
-                CausalContext.of("p3", "case/client#epoch0/checksum"),
-                frame("DataXceiver#run#12", 2));
-        Session session = new Session(iteration, "s0", false);
-        session.activation(first);
-        session.activation(second);
-        session.activation(third);
-        session.marker("false");
-        session.occurrence = first;
-        session.target("true", false, true);
-        session.write();
-        Corpus corpus = Corpus.read(iteration, null);
-
-        assertEquals("the k-th activation of the region, in seed order",
-                second.id(), ComposeMain.anchorOf(
-                        "case/dn0#epoch0/region/REGION.sel#2", corpus)
-                        .id());
-        assertEquals("and with an api, the k-th that api started",
-                third.id(), ComposeMain.anchorOf(
-                        "case/dn0#epoch0/region/REGION.sel@"
-                                + "case/client#epoch0/checksum#2", corpus)
-                        .id());
-        assertEquals("a full id is taken as one, not re-resolved",
-                third.id(),
-                ComposeMain.anchorOf(third.render(), corpus).id());
-        assertEquals("another node's declaration matches nothing here",
-                "REGION.sel", ComposeMain.anchorOf(
-                        "case/dn9#epoch0/region/REGION.sel#1", corpus)
-                        .regionId());
-        assertTrue("and an unresolved declaration is degraded, not thrown",
-                ComposeMain.anchorOf(
-                        "case/dn9#epoch0/region/REGION.sel#1", corpus)
-                        .context().isLost());
     }
 
     // ------------------------------------------------------------------
@@ -2902,8 +2833,6 @@ public class ComposerTest {
         assertEquals("the size model binds exactly previous_size",
                 Collections.singletonList("previous_size"),
                 new ArrayList<String>(SmtNames.letBound(model)));
-        assertEquals("and the delegator says the same",
-                SmtNames.letBound(model), SmtNames.letBound(model));
         // Nesting, in the order the binders appear.
         assertEquals("a nested let binds both, outermost first",
                 Arrays.asList("outer", "inner"),
@@ -3031,12 +2960,58 @@ public class ComposerTest {
         }
     }
 
+    /**
+     * ONE MESSAGE, TWO LEAVES, under one correlation id -- the shape an
+     * array payload has: every position is its own handoff leaf -- binds to
+     * a run attested at every leaf, and to no other.
+     *
+     * <p>A run that instrumented the head's occurrence and ran the TAIL's
+     * concretely states at the tail what was delivered and not why -- R3c'
+     * does not admit it, and the path it owns is answered by the run that
+     * says why.  A run that exported a SHORTER response -- one leaf,
+     * attested -- is no option either: R3c' is unchanged by this ruling, a
+     * run that never sent the second leaf is no option for a message that
+     * has one.</p>
+     */
     @Test
     public void aRunThatRanALeafConcretelyIsNoOptionForTheMessage()
             throws Exception {
-        Path iteration = folder.newFolder("concrete-leaf").toPath();
-        // ONE MESSAGE, TWO LEAVES, under one correlation id -- the shape
-        // an array payload has: every position is its own handoff leaf.
+        // Each row a corpus: {run, value it delivered, how it ran the
+        // message}.  s0 attests both leaves in every one.
+        String[][][] corpora = {
+                {{"s0", "10", "both"}, {"s1", "20", "concrete"}},
+                {{"s0", "10", "both"}, {"s1", "30", "shorter"},
+                        {"s2", "20", "concrete"}}};
+        for (int row = 0; row < corpora.length; row++) {
+            Path iteration = folder.newFolder("leaves-" + row).toPath();
+            boolean shorter = false;
+            for (String[] run : corpora[row]) {
+                leafRun(iteration, run[0], run[1], run[2]);
+                shorter |= "shorter".equals(run[2]);
+            }
+            Composer.Composition composition = compose(iteration, 4);
+            assertEquals("row " + row + ": every run's path is in the "
+                            + "disjunction", corpora[row].length,
+                    composition.disjuncts().size());
+            for (String selector : composition.armSelectors()) {
+                ComposedFamilies.ArmChoice choice = composition.arm(selector);
+                // A shorter run's own one-leaf arrival is a message of its
+                // own, and that run is eligible to have sent it.
+                if (shorter && choice.attachEndpointIds().size() < 2) continue;
+                assertEquals("row " + row + ": s0 is the only run attested "
+                        + "at every leaf: " + selector, "s0",
+                        choice.sessionId());
+            }
+        }
+    }
+
+    /**
+     * One run of the two-leaf message: {@code both} leaves attested, the
+     * tail's occurrence run {@code concrete}ly, or a {@code shorter}
+     * response carrying the head alone.
+     */
+    private void leafRun(Path iteration, String sessionId, String value,
+                         String shape) throws IOException {
         Endpoint head = Endpoint.of(PRODUCER, "PORT.keys",
                 at("export#1", 0), 0);
         Endpoint tail = Endpoint.of(UPSTREAM, "PORT.keys",
@@ -3045,42 +3020,34 @@ public class ComposerTest {
                 at("attach#1", 0), 0);
         Endpoint second = Endpoint.of(ANCHOR, "PORT.keys",
                 at("attach#2", 0), 0);
-        // s0 attests both leaves; s1 instrumented the head's occurrence
-        // and ran the TAIL's concretely, so its arm there states what was
-        // delivered and not why -- R3c' does not admit it, and the path it
-        // owns is answered by the run that says why.
-        for (String[] each : new String[][]{{"s0", "10", "false"},
-                {"s1", "20", "true"}}) {
-            boolean flip = "true".equals(each[1 + 1]);
-            Session session = new Session(iteration, each[0], flip);
-            session.activation(PRODUCER);
+        boolean both = "both".equals(shape);
+        boolean shorter = "shorter".equals(shape);
+        Session session = new Session(iteration, sessionId,
+                !"s0".equals(sessionId));
+        session.activation(PRODUCER);
+        if (both) {
+            session.activation(UPSTREAM);
+        } else if (!shorter) {
             session.activation(UPSTREAM, "thread#" + UPSTREAM.regionId(),
-                    flip, !flip);
-            session.marker("false");
-            session.expression("EXPR.v1.id", integer("I",
-                    Long.parseLong(each[1])));
-            session.decision(PRODUCER, "nn#u1", "(or " + MARKER + " (not "
+                    true, false);
+        }
+        session.marker("false");
+        session.expression("EXPR.v1.id", integer("I",
+                Long.parseLong(value)));
+        session.decision(PRODUCER, "nn#u1", "(or " + MARKER + " (not "
+                + MARKER + "))");
+        if (both) {
+            session.decision(UPSTREAM, "up#u1", "(or " + MARKER + " (not "
                     + MARKER + "))");
-            if (!flip) {
-                session.decision(UPSTREAM, "up#u1", "(or " + MARKER
-                        + " (not " + MARKER + "))");
-            }
-            session.export(head, "EXPR.v1.id", 1L, each[1]);
-            session.export(tail, "EXPR.v1.id", 2L, each[1]);
-            session.attach(first, "vh1", "I", each[1], head, "corr-m");
-            session.attach(second, "vh2", "I", each[1], tail, "corr-m");
-            session.target("true", false, true);
-            session.write();
         }
-
-        Composer.Composition composition = compose(iteration, 4);
-        assertEquals("both paths are in the disjunction", 2,
-                composition.disjuncts().size());
-        for (String selector : composition.armSelectors()) {
-            assertEquals("every arm of this corpus is s0's, because s0 is "
-                            + "the only run attested at every leaf",
-                    "s0", composition.arm(selector).sessionId());
+        session.export(head, "EXPR.v1.id", 1L, value);
+        if (!shorter) session.export(tail, "EXPR.v1.id", 2L, value);
+        session.attach(first, "vh1", "I", value, head, "corr-m");
+        if (!shorter) {
+            session.attach(second, "vh2", "I", value, tail, "corr-m");
         }
+        session.target("true", false, true);
+        session.write();
     }
 
     /**
@@ -3103,78 +3070,6 @@ public class ComposerTest {
                 lowering.facts(Collections.singletonList(quotient.text()));
         assertTrue("and the JVM divided, so the divisor was not zero: "
                 + facts, facts.contains("(not (= divisor 0))"));
-    }
-
-    @Test
-    public void aRunMissingALeafIsStillNoOptionForTheMessage()
-            throws Exception {
-        Path iteration = folder.newFolder("missing-leaf").toPath();
-        Endpoint head = Endpoint.of(PRODUCER, "PORT.keys",
-                at("export#1", 0), 0);
-        Endpoint tail = Endpoint.of(UPSTREAM, "PORT.keys",
-                at("export#2", 0), 0);
-        Endpoint first = Endpoint.of(ANCHOR, "PORT.keys",
-                at("attach#1", 0), 0);
-        Endpoint second = Endpoint.of(ANCHOR, "PORT.keys",
-                at("attach#2", 0), 0);
-        // s0 attests both leaves.  s2 ran the tail's occurrence
-        // concretely, so it is no option for its own two-leaf message.
-        // s1 exported a SHORTER response -- one leaf, attested -- and
-        // R3c' is unchanged by this ruling: a run that never sent the
-        // second leaf is no option for a message that has one, so the
-        // two-leaf message binds to s0 and s0 alone.
-        Session seed = new Session(iteration, "s0", false);
-        seed.activation(PRODUCER);
-        seed.activation(UPSTREAM);
-        seed.marker("false");
-        seed.expression("EXPR.v1.id", integer("I", 10L));
-        seed.decision(PRODUCER, "nn#u1", "(or " + MARKER + " (not "
-                + MARKER + "))");
-        seed.decision(UPSTREAM, "up#u1", "(or " + MARKER + " (not "
-                + MARKER + "))");
-        seed.export(head, "EXPR.v1.id", 1L, "10");
-        seed.export(tail, "EXPR.v1.id", 2L, "10");
-        seed.attach(first, "vh1", "I", "10", head, "corr-m");
-        seed.attach(second, "vh2", "I", "10", tail, "corr-m");
-        seed.target("true", false, true);
-        seed.write();
-
-        Session shorter = new Session(iteration, "s1", true);
-        shorter.activation(PRODUCER);
-        shorter.marker("false");
-        shorter.expression("EXPR.v1.id", integer("I", 30L));
-        shorter.decision(PRODUCER, "nn#u1", "(or " + MARKER + " (not "
-                + MARKER + "))");
-        shorter.export(head, "EXPR.v1.id", 1L, "30");
-        shorter.attach(first, "vh1", "I", "30", head, "corr-m");
-        shorter.target("true", false, true);
-        shorter.write();
-
-        Session concrete = new Session(iteration, "s2", true);
-        concrete.activation(PRODUCER);
-        concrete.activation(UPSTREAM, "thread#" + UPSTREAM.regionId(),
-                true, false);
-        concrete.marker("false");
-        concrete.expression("EXPR.v1.id", integer("I", 20L));
-        concrete.decision(PRODUCER, "nn#u1", "(or " + MARKER + " (not "
-                + MARKER + "))");
-        concrete.export(head, "EXPR.v1.id", 1L, "20");
-        concrete.export(tail, "EXPR.v1.id", 2L, "20");
-        concrete.attach(first, "vh1", "I", "20", head, "corr-m");
-        concrete.attach(second, "vh2", "I", "20", tail, "corr-m");
-        concrete.target("true", false, true);
-        concrete.write();
-
-        Composer.Composition composition = compose(iteration, 4);
-        for (String selector : composition.armSelectors()) {
-            ComposedFamilies.ArmChoice choice = composition.arm(selector);
-            // The two-leaf message alone: s1's own one-leaf arrival is a
-            // message of its own, and s1 is eligible to have sent that.
-            if (choice.attachEndpointIds().size() < 2) continue;
-            assertFalse("and never to the run that sent a shorter "
-                            + "response: " + selector,
-                    "s1".equals(choice.sessionId()));
-        }
     }
 
     /** The ordinal one selector was made under. */

@@ -44,7 +44,6 @@ public class ManualMintStatesItsValueTest {
     private static final String METHOD = "<a.B: void run()>";
     private static final String MANUAL_REGION = "REGION.aaa1cfd7";
     private static final String MANUAL_SOURCE = "hdfs-17899/nn0#epoch0";
-    private static final String MINT_PHASE = "SOURCE_PHASE.0b2b2a3d";
     private static final String NODE = "hdfs/nn0";
     private static final String SOURCE_ID = "CFG.ORDERED";
     private static final String FIELD =
@@ -69,7 +68,6 @@ public class ManualMintStatesItsValueTest {
                     + TICK_FRAME;
 
     private final List<Long> opened = new ArrayList<>();
-    private String occurrenceId = PLANNED;
     /** The activation the last {@link #manualRow} published into. */
     private ActiveRegion lastManualRegion;
 
@@ -687,6 +685,21 @@ public class ManualMintStatesItsValueTest {
      * at the wrong epoch rewrites a value the wave said nothing about.  A
      * write demands positive evidence, so an unattributed mint keeps the
      * recorded value with a named gap.</p>
+     *
+     * <p>One site is one variable: every occurrence that reaches it is
+     * modelled.  A site reached by six regions twice each has twelve
+     * identities; applying a flip at one of them leaves every other
+     * execution on the recorded value.  A configured source is declared by
+     * site, so a flip of it is a flip everywhere it is read.</p>
+     *
+     * <p>And the catalog is not a budget.  It used to be: the plan listed the
+     * executions the RECORDING made, the runtime counted the reads a REPLAY
+     * made against that size, and read n+1 was refused
+     * {@code DECLARATION_MISSING ... exceeds the frozen phase catalog size n}
+     * -- two of them on the hdfs-17960 flip replays, whose second read of
+     * the marker was the wave's own re-read of the value it had just
+     * written.  So the published occurrence row states no ordinal at all,
+     * and a row set of any size names one variable.</p>
      */
     @Test
     public void aModelIsAppliedOnlyAtAMintThisRunCanPlace() throws Exception {
@@ -709,6 +722,20 @@ public class ManualMintStatesItsValueTest {
                 new SourceRef("CLUSTER_NODE", "NAMENODE", NODE, 1L));
         assertTrue("the epoch-1 mint is placeable",
                 placeable(active, manager));
+        assertTrue("and so is a second occurrence of its site, on the same "
+                        + "valuation",
+                placeable(phaseRegion(NODE + "#epoch1",
+                        NODE + "#epoch1/region/" + REGION + "#2"), manager));
+        // The row says WHERE the recording observed the site, and nothing
+        // about which read of it a replay is making.
+        JsonObject row = phaseTask(NODE + "#epoch1", PLANNED)
+                .getAsJsonArray(ConfiguredSourcePhaseContract.PLAN_FIELD)
+                .get(0).getAsJsonObject();
+        assertFalse("no per-occurrence ordinal is published",
+                row.has("baselineOrdinal"));
+        assertEquals("and the symbol is the site's", 1,
+                oneSymbolPerSite(row).size());
+
         ActiveRegion orphan =
                 phaseRegion(NODE + "#epoch1", PLANNED);
         assertFalse("nothing places this mint, so nothing rewrites it",
@@ -725,50 +752,6 @@ public class ManualMintStatesItsValueTest {
                 placeable(epochless, new Object()));
         assertEquals("and files nothing", GapKind.MINT_UNATTRIBUTED,
                 gap().kind());
-    }
-
-    /**
-     * One site is one variable: every occurrence that reaches it is modelled.
-     *
-     * <p>A site reached by six regions twice each has twelve identities;
-     * applying a flip at one of them leaves every other execution on the
-     * recorded value.  A configured source is declared by site, so a flip
-     * of it is a flip everywhere it is read.</p>
-     *
-     * <p>And the catalog is not a budget.  It used to be: the plan listed the
-     * executions the RECORDING made, the runtime counted the reads a REPLAY
-     * made against that size, and read n+1 was refused
-     * {@code DECLARATION_MISSING ... exceeds the frozen phase catalog size n}
-     * -- two of them on the hdfs-17960 flip replays, whose second read of
-     * the marker was the wave's own re-read of the value it had just
-     * written.  So the published occurrence row states no ordinal at all,
-     * and a row set of any size names one variable.</p>
-     */
-    @Test
-    public void everyOccurrenceOfOneSiteAnswersOneValuation()
-            throws Exception {
-        Object manager = new Object();
-        RuntimeTraceContext.registerSource(manager,
-                new SourceRef("CLUSTER_NODE", "NAMENODE", NODE, 1L));
-
-        String second = NODE + "#epoch1/region/" + REGION + "#2";
-        assertEquals("one site, one variable, whatever reached it",
-                phaseId(PLANNED), phaseId(second));
-
-        assertTrue("the first occurrence is placeable",
-                placeable(phaseRegion(NODE + "#epoch1", PLANNED), manager));
-        assertTrue("and so is the second, on the same valuation",
-                placeable(phaseRegion(NODE + "#epoch1", second), manager));
-
-        // The row says WHERE the recording observed the site, and nothing
-        // about which read of it a replay is making.
-        JsonObject row = phaseTask(NODE + "#epoch1", PLANNED)
-                .getAsJsonArray(ConfiguredSourcePhaseContract.PLAN_FIELD)
-                .get(0).getAsJsonObject();
-        assertFalse("no per-occurrence ordinal is published",
-                row.has("baselineOrdinal"));
-        assertEquals("and the symbol is the site's", 1,
-                oneSymbolPerSite(row).size());
     }
 
     /**
@@ -860,7 +843,7 @@ public class ManualMintStatesItsValueTest {
             assertEquals("and files nothing to explain itself", 2,
                     gaps().size());
             String symbol = ConfiguredSourcePhaseContract
-                    .engineLabelForPhase(phaseId(FOCUSED_ADDRESS), SOURCE_ID);
+                    .engineLabelForPhase(phaseId(), SOURCE_ID);
             focused.recordConfiguredSourceMint(entry, SOURCE_ID, FIELD,
                     symbol, symbolExpression(symbol), false, "true");
             RowPlaceholderMint.roots(focused, address(FOCUSED_ADDRESS));
@@ -1029,10 +1012,8 @@ public class ManualMintStatesItsValueTest {
                 MANUAL_SOURCE + "/region/" + MANUAL_REGION + "#1"));
     }
 
-    private ActiveRegion phaseRegion(String sourceKey,
-                                                           String occurrence)
+    private ActiveRegion phaseRegion(String sourceKey, String occurrence)
             throws Exception {
-        this.occurrenceId = occurrence;
         return open(phaseTask(sourceKey, occurrence));
     }
 
@@ -1074,7 +1055,8 @@ public class ManualMintStatesItsValueTest {
         RowRuntime.configure(results);
     }
 
-    private static String phaseId(String occurrenceId) {
+    /** The one phase of the declared site, whichever occurrence reads it. */
+    private static String phaseId() {
         return ConfiguredSourcePhaseContract.phaseId(SOURCE_ID,
                 SiteId.of(PHASE_METHOD, UNIT));
     }
@@ -1137,10 +1119,10 @@ public class ManualMintStatesItsValueTest {
         JsonObject model = new JsonObject();
         model.addProperty("modelAssignmentKey", "MODEL.1");
         model.addProperty("inputSymbol",
-                "SOURCE_PHASE:" + phaseId(occurrence));
+                "SOURCE_PHASE:" + phaseId());
         model.addProperty("valueType", "BOOLEAN");
         model.addProperty("value", "false");
-        model.addProperty("configuredSourcePhaseId", phaseId(occurrence));
+        model.addProperty("configuredSourcePhaseId", phaseId());
         model.addProperty("configuredSourceId", SOURCE_ID);
         model.addProperty("configuredSourceFieldSignature", FIELD);
         JsonArray models = new JsonArray();

@@ -37,7 +37,6 @@ import soot.jimple.JimpleBody;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -124,11 +123,6 @@ public class RegionGraphOccurrenceKeyTest {
     @Test
     public void aDeclaredAttachIsNamedByTheDeclarationNotTheWire()
             throws Exception {
-        assertNotEquals("the wire transactions of two recordings are "
-                        + "expected to differ",
-                "hadoop-ipc-f76d5ada8a274fd1ac95a5db23edeaa4-21\n0",
-                "hadoop-ipc-9c8bc11a624f4ee1ad1374fe269fe5ca-21\n0");
-
         String frame = "<example.Helper: example.Keys convert("
                 + "example.KeysProto)>";
         String site = "<example.Helper: example.Key convert("

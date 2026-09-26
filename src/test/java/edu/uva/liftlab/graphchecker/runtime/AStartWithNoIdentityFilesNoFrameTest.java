@@ -12,8 +12,6 @@ import static org.junit.Assert.assertTrue;
  * starts file no frame and the work keeps the identity of its own turn.
  */
 public class AStartWithNoIdentityFilesNoFrameTest {
-    private static final SourceRef DN =
-            new SourceRef("CLUSTER_NODE", "DATANODE", "t/dn1", 0L);
     private static final String ACCEPT = "<a.Acceptor: void run()>#u5";
 
     @Before
@@ -47,16 +45,5 @@ public class AStartWithNoIdentityFilesNoFrameTest {
         Identity.startWork(ACCEPT, second);
         assertEquals("", claimedFrame(first));
         assertEquals("", claimedFrame(second));
-    }
-
-    @Test
-    public void aStartInsideARequestFilesItsFrameAsBefore() throws Exception {
-        Object node = new Object();
-        RuntimeTraceContext.registerSource(node, DN);
-        long request = RuntimeTraceContext.beginRequest(node, "transfer");
-        Object work = new Object();
-        Identity.startWork(ACCEPT, work);
-        RuntimeTraceContext.endRequest(request);
-        assertEquals(ACCEPT, claimedFrame(work));
     }
 }

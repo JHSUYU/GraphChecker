@@ -120,6 +120,12 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
      * #domains} both skip a CLOCK -- so a clock pinned by its own read row
      * would make {@code clockNecessary} answer "decoration" for every witness
      * and leave CLOCK_SKEW exactly as unreachable as it was.</p>
+     *
+     * <p>A configured-source mint likewise: the root row and the version
+     * row.  Driven through the runtime's own recorder -- {@code
+     * observeConfiguredSourceEntry} then {@code recordConfiguredSourceMint}
+     * -- so the symbol this asserts on is the one the VM label produces and
+     * not a spelling the test chose.</p>
      */
     @Test
     public void aClockMintStatesItsRootAndTheVersionItInstalled()
@@ -163,28 +169,18 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
         assertNull("and it states no value: the root row states that, and a"
                         + " second statement of it is a pin",
                 placeholder.concreteValue());
-    }
 
-    /**
-     * A configured-source mint likewise: the root row and the version row.
-     *
-     * <p>Driven through the runtime's own recorder -- {@code
-     * observeConfiguredSourceEntry} then {@code recordConfiguredSourceMint}
-     * -- so the symbol this asserts on is the one the VM label produces and
-     * not a spelling the test chose.</p>
-     */
-    @Test
-    public void aConfiguredSourceMintStatesItsRootAndItsVersion()
-            throws Exception {
+        // A configured-source mint likewise, in a session of its own.
+        clear();
         RowRuntime.configure(sessionFile());
         RecordingWindow.open();
         long invocation = CausynthTraceRecorder.beginCall(0L, SOURCE_METHOD,
                 UNIT, SOURCE_METHOD, new Object());
         try {
-            OccurrenceAddress at = address();
-            ActiveRegion active = region(sourceTask(), at);
+            OccurrenceAddress source = address();
+            ActiveRegion configured = region(sourceTask(), source);
             RootMint.SourceSiteEntry entry =
-                    active.observeConfiguredSourceEntry(SOURCE_ID,
+                    configured.observeConfiguredSourceEntry(SOURCE_ID,
                             SOURCE_FIELD);
             assertNotNull("the fixture declares this source's site", entry);
             String label = ConfiguredSourcePhaseContract
@@ -194,21 +190,22 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
             // the label filed before the store, as RootMint files it.
             String symbol = "M_Z_field_" + label + "_a/Manager";
             RowRuntime.declaredMintLabel(label);
-            active.recordConfiguredSourceMint(entry, SOURCE_ID, SOURCE_FIELD,
-                    label, symbolExpression(symbol, "Z"), false, "true");
-            active.sharedStateRecords.put(SOURCE_CELL,
+            configured.recordConfiguredSourceMint(entry, SOURCE_ID,
+                    SOURCE_FIELD, label, symbolExpression(symbol, "Z"), false,
+                    "true");
+            configured.sharedStateRecords.put(SOURCE_CELL,
                     record(SOURCE_CELL, version(SOURCE_MINT_VERSION,
                             symbolExpression(symbol, "Z"))));
 
-            RowPlaceholderMint.roots(active, at);
+            RowPlaceholderMint.roots(configured, source);
             RowRuntime.closeSession();
 
-            List<RootMintRow> roots = roots();
+            roots = roots();
             assertEquals(1, roots.size());
             assertEquals(SOURCE_ID, roots.get(0).rootId());
             assertEquals("a configured boolean source is a MARKER",
                     RootKind.MARKER, roots.get(0).kind());
-            List<ReadRow> reads = reads();
+            reads = reads();
             assertEquals("and it owes the same version row a clock does",
                     1, reads.size());
             assertEquals(symbol, reads.get(0).symbol());

@@ -24,12 +24,6 @@ import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
-import edu.uva.liftlab.graphchecker.runtime.FrameJournal;
-import edu.uva.liftlab.graphchecker.runtime.RowRuntime;
-import edu.uva.liftlab.graphchecker.runtime.Identity;
-import edu.uva.liftlab.graphchecker.runtime.Interactions;
-import edu.uva.liftlab.graphchecker.runtime.Lineage;
-import edu.uva.liftlab.graphchecker.runtime.Identity;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -192,6 +186,12 @@ public class RowRuntimeTest {
      * the first send inside the window must be the same endpoint whatever
      * the set-up sent, or its anchor -- and every context downstream of it
      * -- differs between the recording and the replay.
+     *
+     * <p>Frames too: an iteration counted before the window stands at 0 in
+     * an address made inside it.  hdfs-17899-bug1's DataXceiver threads
+     * inherit {@code instantiateDataNode@k} for the k-th DataNode started,
+     * and which started node plays the case's target was random -- @0 in the
+     * recording, @1 in the replay.</p>
      */
     @Test
     public void aCountTakenBeforeTheWindowDoesNotReachIntoIt() {
@@ -224,17 +224,7 @@ public class RowRuntimeTest {
         assertTrue(firstInWindow.get(0).siteIndex().render(),
                 firstInWindow.get(0).siteIndex().render()
                         .endsWith("HADOOP_IPC#REQUEST@0"));
-    }
 
-    /**
-     * Frames too: an iteration counted before the window stands at 0 in an
-     * address made inside it.  hdfs-17899-bug1's DataXceiver threads inherit
-     * {@code instantiateDataNode@k} for the k-th DataNode started, and which
-     * started node plays the case's target was random -- @0 in the
-     * recording, @1 in the replay.
-     */
-    @Test
-    public void aFrameEnteredBeforeTheWindowStandsAtIterationZero() {
         Identity.resetForTests();
         long first = Identity.enterFrame("Cluster.startDataNodes()#u1", null);
         Identity.exitFrame(first);

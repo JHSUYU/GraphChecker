@@ -106,6 +106,16 @@ public class ConfirmationTest {
 
     @Test
     public void theEdgesAreComparedAndNeverEnforced() throws Exception {
+        // A replay handed no edges compares nothing.
+        Path plain = folder.newFolder("plain").toPath()
+                .resolve("execution_task_plan.jsonl");
+        Files.write(plain, new byte[0]);
+        System.setProperty(FocusedReplay.PLAN_PROPERTY, plain.toString());
+        assertEquals("", Confirmation.attached(
+                endpoint(ANCHOR, "x"), endpoint(MINT, "y")));
+        assertTrue(Confirmation.close().isEmpty());
+        reset();
+
         Endpoint consumer = endpoint(ANCHOR, "XCH.1.resp.key-id");
         Endpoint chosen = endpoint(PRODUCER, "XCH.1.resp.key-id");
         Endpoint other = endpoint(MINT, "XCH.1.resp.key-id");
@@ -153,17 +163,6 @@ public class ConfirmationTest {
                 + other.id()));
         assertTrue(close.get(1), close.get(1).contains(absent.id())
                 && close.get(1).endsWith("the run never read here"));
-    }
-
-    @Test
-    public void aReplayHandedNoEdgesComparesNothing() throws Exception {
-        Path worker = folder.newFolder("plain").toPath();
-        Path plan = worker.resolve("execution_task_plan.jsonl");
-        Files.write(plan, new byte[0]);
-        System.setProperty(FocusedReplay.PLAN_PROPERTY, plan.toString());
-        assertEquals("", Confirmation.attached(
-                endpoint(ANCHOR, "x"), endpoint(MINT, "y")));
-        assertTrue(Confirmation.close().isEmpty());
     }
 
     /** The ORDER a CONFIRM run is held to: the reader's activation enters

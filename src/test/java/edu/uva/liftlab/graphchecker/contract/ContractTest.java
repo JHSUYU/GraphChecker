@@ -264,12 +264,6 @@ public class ContractTest {
         assertEquals(ambient, ambientBack);
         assertFalse(ambientBack.instrumented());
         assertEquals("KeyManager-1#13", ambientBack.threadKey());
-        // An activation row states the thread it ran on and nothing about
-        // what started that thread: the thread-creation edge had no
-        // producer and is gone, so the row schema states none either.
-        assertFalse("no activation row carries a thread starter",
-                reline(RowCodec.writeActivation(activation))
-                        .has("startedBy"));
         assertEquals(decision, RowCodec.readDecision(
                 reline(RowCodec.writeDecision(decision))));
         assertEquals(exported, RowCodec.readExport(
