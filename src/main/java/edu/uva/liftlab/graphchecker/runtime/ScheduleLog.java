@@ -157,10 +157,52 @@ public final class ScheduleLog {
     /** For a SEND: {@code endpoint} is the producer endpoint it carries. */
     public static boolean observe(ScheduleEvent.Kind kind, String site,
                                   String endpoint) {
+        return observe(kind, site, endpoint, null);
+    }
+
+    /** Where an event stands: its context and region ({@link #stanceHere}).
+     */
+    public static final class Stance {
+        private final String context;
+        private final String region;
+
+        private Stance(String context, String region) {
+            this.context = context;
+            this.region = region;
+        }
+    }
+
+    /** Where an event on this thread would stand now, or null outside the
+     *  window or any attributable context. */
+    public static Stance stanceHere() {
+        if (!RecordingWindow.opened()) return null;
+        mute();
+        try {
+            return standing();
+        } finally {
+            unmute();
+        }
+    }
+
+    /** {@link #stanceHere}, already muted. */
+    private static Stance standing() {
+        try {
+            CausalContext context = Identity.contextHere();
+            return context.isLost() ? null : new Stance(contextOf(context),
+                    Identity.innermostRegionId());
+        } catch (Throwable unnamed) {
+            return null;
+        }
+    }
+
+    /** The same, standing where {@code at} says rather than on this thread
+     *  (a response stands where its request was received). */
+    public static boolean observe(ScheduleEvent.Kind kind, String site,
+                                  String endpoint, Stance at) {
         if (kind == null || !RecordingWindow.opened()) return false;
         mute();
         try {
-            Pending event = pending(kind, site, endpoint);
+            Pending event = pending(kind, site, endpoint, at);
             if (event == null) return false;
             admit(event);
             return true;
@@ -208,7 +250,7 @@ public final class ScheduleLog {
         if (!RecordingWindow.opened()) return null;
         mute();
         try {
-            Pending event = pending(ScheduleEvent.Kind.WAKE, site, "");
+            Pending event = pending(ScheduleEvent.Kind.WAKE, site, "", null);
             return event == null ? null : new Wake(event);
         } finally {
             unmute();
@@ -304,17 +346,13 @@ public final class ScheduleLog {
      * (G8) and would stall the replay.
      */
     private static Pending pending(ScheduleEvent.Kind kind, String site,
-                                   String endpoint) {
+                                   String endpoint, Stance at) {
         String stable = JvmNames.stable(Text.safe(site));
         if (stable.isEmpty()) return null;
-        try {
-            CausalContext context = Identity.contextHere();
-            if (context.isLost()) return null;
-            return new Pending(kind, contextOf(context), stable,
-                    Identity.innermostRegionId(), Text.safe(endpoint));
-        } catch (Throwable unnamed) {
-            return null;
-        }
+        Stance stance = at != null ? at : standing();
+        if (stance == null) return null;
+        return new Pending(kind, stance.context, stable, stance.region,
+                Text.safe(endpoint));
     }
 
     private static void appendLocked(Pending pending) {

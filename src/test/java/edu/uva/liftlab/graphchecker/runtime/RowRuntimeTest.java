@@ -1601,7 +1601,7 @@ public class RowRuntimeTest {
             if (response > 0L) RuntimeTraceContext.exitInbound(response);
             long outbound = Identity.enterFrame("Propagation.outbound()#u4", null);
             sent.add(Identity.messageSent(NN.key(), "HADOOP_IPC",
-                    "corr-" + rpc, "REQUEST"));
+                    "corr-" + rpc, "REQUEST", null));
             Identity.exitFrame(outbound);
             Identity.exitFrame(sending);
             response = installResponses

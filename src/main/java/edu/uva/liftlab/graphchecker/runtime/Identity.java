@@ -897,17 +897,27 @@ public final class Identity {
         return ExecutionIndex.of(frames);
     }
 
+    /** The producer endpoint a message sent here now would carry. */
+    public static Endpoint messageEndpoint(String nodeKey, String transport,
+                                           String half) {
+        return endpointAt(currentOccurrence(nodeKey),
+                Text.safe(transport) + "#" + Text.safe(half), 0);
+    }
+
     /**
      * Files the producer endpoint of one whole message, for the anchor its
-     * receiver states (IDENTITY-IMPL §C).  Returns the endpoint, not its
+     * receiver states (IDENTITY-IMPL §C): {@code minted} when the message
+     * was given its endpoint elsewhere (a response, at its request's
+     * receipt), else the one sent here now.  Returns the endpoint, not its
      * digest, so rows and refusals spell out what the anchor digests.
      *
      * @return the endpoint filed, or {@code null}
      */
     public static Endpoint messageSent(String nodeKey, String transport,
-                                       String correlationId, String half) {
-        Endpoint producer = endpointAt(currentOccurrence(nodeKey),
-                Text.safe(transport) + "#" + Text.safe(half), 0);
+                                       String correlationId, String half,
+                                       Endpoint minted) {
+        Endpoint producer = minted != null ? minted
+                : messageEndpoint(nodeKey, transport, half);
         if (producer == null) return null;
         Interactions.sent(Text.safe(transport), Text.safe(correlationId),
                 Text.safe(half), producer);

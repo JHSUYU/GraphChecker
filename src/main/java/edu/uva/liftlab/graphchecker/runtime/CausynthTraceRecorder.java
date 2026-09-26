@@ -486,14 +486,19 @@ public final class CausynthTraceRecorder {
         }
         // IDENTITY-V3 §C: the message carries its producer's endpoint,
         // filed by correlation (it exceeds the header slot); one mint for
-        // both passes.
+        // both passes.  A response was given its endpoint and its stance
+        // where its request was received, whichever thread sends it.
+        Receipt receipt = RESPONSE.equals(half) ? RECEIPTS.remove(
+                receiptKey(transport, correlationId, attemptId)) : null;
         Endpoint producer = Identity.messageSent(
                 RuntimeTraceContext.ownedSource(localOwner).key(),
-                transport, correlationId, half);
+                transport, correlationId, half,
+                receipt == null ? null : receipt.response);
         // The schedule's SEND, naming the minted producer.
         ScheduleLog.observe(ScheduleEvent.Kind.SEND,
                 MapFields.safe(transport) + "#" + MapFields.safe(half),
-                producer == null ? "" : producer.id());
+                producer == null ? "" : producer.id(),
+                receipt == null ? null : receipt.stance);
         if (DEBUG_PRODUCERS && producer != null) {
             System.err.println("CAUSYNTH-PRODUCER " + transport + "#" + half
                     + " " + correlationId + " " + producer.id() + " "
@@ -549,6 +554,13 @@ public final class CausynthTraceRecorder {
         // The schedule's RECV, under the scope the message opened.
         ScheduleLog.observe(ScheduleEvent.Kind.RECV,
                 MapFields.safe(transport) + "#" + MapFields.safe(half));
+        if (REQUEST.equals(half)) {
+            RECEIPTS.put(receiptKey(transport, correlationId, attemptId),
+                    new Receipt(ScheduleLog.stanceHere(),
+                            Identity.messageEndpoint(RuntimeTraceContext
+                                    .ownedSource(localOwner).key(),
+                                    transport, RESPONSE)));
+        }
         // recordExchange's argument refusal stays an exception, not a row.
         try {
             // The receiving leg mints no producer.
@@ -559,6 +571,37 @@ public final class CausynthTraceRecorder {
             RuntimeTraceContext.exitInbound(token);
             throw failure;
         }
+    }
+
+    private static final String REQUEST = "REQUEST";
+    private static final String RESPONSE = "RESPONSE";
+
+    /**
+     * A request's receipt: the endpoint and schedule stance of its response.
+     * A response belongs to the call it answers, not to the thread that
+     * happens to send it: a deferred RPC response is sent by whichever of
+     * the handler and the thread it handed the call to finishes last (the
+     * NameNode's edit-log sync thread), a race the recording and a replay
+     * decide differently.  Minted where the request was received, it is the
+     * same in both.
+     */
+    private static final class Receipt {
+        private final ScheduleLog.Stance stance;
+        private final Endpoint response;
+
+        private Receipt(ScheduleLog.Stance stance, Endpoint response) {
+            this.stance = stance;
+            this.response = response;
+        }
+    }
+
+    private static final Map<String, Receipt> RECEIPTS =
+            new ConcurrentHashMap<String, Receipt>();
+
+    private static String receiptKey(String transport, String correlationId,
+                                     String attemptId) {
+        return MapFields.safe(transport) + "|" + MapFields.safe(correlationId)
+                + "|" + MapFields.safe(attemptId);
     }
 
     public static void endInboundExchange(long scopeToken) {

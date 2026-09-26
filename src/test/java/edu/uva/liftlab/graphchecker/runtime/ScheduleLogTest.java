@@ -96,6 +96,35 @@ public class ScheduleLogTest {
                 written.isEmpty());
     }
 
+    /**
+     * A response stands where its request was received, whichever thread
+     * sends it: a thread serving other work (a deferred RPC response's
+     * sender) writes it under the receipt's context, not its own.
+     */
+    @Test
+    public void aResponseStandsWhereItsRequestWasReceived() throws Exception {
+        ScheduleLog.Stance receipt = ScheduleLog.stanceHere();
+        ScheduleLog.observe(ScheduleEvent.Kind.RECV, "HADOOP_IPC#REQUEST");
+        Object other = new Object();
+        RuntimeTraceContext.registerSource(other, new SourceRef(
+                "CLUSTER_NODE", "DATANODE", "t/dn1", 0L));
+        Thread sender = new Thread(() -> {
+            long own = RuntimeTraceContext.beginRequest(other, "sync");
+            ScheduleLog.observe(ScheduleEvent.Kind.START, "<A: void a()>#u1");
+            ScheduleLog.observe(ScheduleEvent.Kind.SEND,
+                    "HADOOP_IPC#RESPONSE", "endpoint-at-receipt", receipt);
+            RuntimeTraceContext.endRequest(own);
+        });
+        sender.start();
+        sender.join();
+        List<ScheduleEvent> events = events();
+        assertEquals(3, events.size());
+        assertFalse("the sender has a context of its own",
+                events.get(0).context().equals(events.get(1).context()));
+        assertEquals(events.get(0).context(), events.get(2).context());
+        assertEquals("endpoint-at-receipt", events.get(2).endpoint());
+    }
+
     /** An event survives its row, and a torn last row ends the read. */
     @Test
     public void aTruncatedTailEndsTheReadThere() throws Exception {
