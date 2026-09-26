@@ -676,6 +676,18 @@ public final class Identity {
         State state = state();
         if (state.regions.isEmpty()) return;
         Region closed = state.regions.remove(state.regions.size() - 1);
+        if (state.startDepth >= closed.base) {
+            // Work the region claimed ends with it: its start level and the
+            // scope it carried close here, not at the next claim.  A region
+            // that drains a queue (BlockManager's processQueue) would
+            // otherwise close a level deeper than it opened.
+            while (state.depth() > state.startDepth) {
+                state.levels.remove(state.levels.size() - 1);
+            }
+            state.startDepth = -1;
+            RuntimeTraceContext.releaseCarried();
+            state.journal();
+        }
         // A closed occurrence makes no further event (ScheduleLog).
         if (closed.occurrence != null) {
             ScheduleLog.closed(closed.occurrence.id());
