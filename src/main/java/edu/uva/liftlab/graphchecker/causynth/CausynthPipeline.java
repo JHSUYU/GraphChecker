@@ -2462,14 +2462,15 @@ public final class CausynthPipeline {
     /**
      * Weaves the decision marker at EVERY original conditional branch of
      * every instrumented method (LEAN section 1: the plan picks methods, not
-     * branches).
+     * branches) -- but a constructor's branch before its this/super call,
+     * which runs before the region it is in is entered.
      */
     private void instrumentConcolicBranches(
             Collection<String> methods, HookCatalog refs) {
         int[] woven = new int[1];
+        int[] beforeEntry = new int[1];
         instrumentMethods(methods, "",
                 (body, method, units, entry, lowerBound, receiver) -> {
-                    String signature = method.getSignature();
                     for (Unit unit : snapshotUnits(body)) {
                         boolean conditional = unit instanceof IfStmt
                                 || unit instanceof SwitchStmt;
@@ -2478,10 +2479,8 @@ public final class CausynthPipeline {
                         if (unitIndex < 0) continue;
                         if (lowerBound != null
                                 && !unitAtOrAfter(body, lowerBound, unit)) {
-                            throw new IllegalStateException(
-                                    "CONCOLIC_BRANCH_BEFORE_CONSTRUCTOR_"
-                                            + "INITIALIZATION: "
-                                            + SiteId.of(signature, unitIndex));
+                            beforeEntry[0]++;
+                            continue;
                         }
                         if (unit instanceof IfStmt) {
                             instrumentConcolicBranch(body, method,
@@ -2494,8 +2493,9 @@ public final class CausynthPipeline {
                     }
                 });
         LOG.info("Wove the decision marker at {} conditional branch site(s) "
-                + "across {} instrumented method(s)", woven[0],
-                methods.size());
+                + "across {} instrumented method(s); {} before a constructor's"
+                + " this/super call left unwoven", woven[0], methods.size(),
+                beforeEntry[0]);
     }
 
     private void instrumentConcolicBranch(Body body, SootMethod method,
