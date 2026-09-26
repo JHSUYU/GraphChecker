@@ -73,25 +73,27 @@ null invoke.
 
 ## Which reads are symbolic
 
-The case's `symbolic-inputs.jsonl` is the one authority (`plan/DeclaredSymbolicInputs.java`),
-and it is read in three forms:
+No case declares its roots: the categories are recognized from the program text, as the
+GreyGraph design derives its inputs from the analysis (SS3.1), and SEED states them on the
+static scope map's `DECLARED_SITE` rows (`inputKind`) for every later stage to read:
 
-- a **method** row, `{"class", "method"}` or the whole Soot signature: that method is a region
-  root by declaration, independent of whether the backward slice reaches it. The slice answers
-  "what does the failure read"; the declaration answers "where does a symbol enter at all",
-  and the two differ exactly where the healthy recording took the arm the case is about.
-- a **cells** row, naming `<callee signature>.return` or a field signature at that method: the
-  read of that cell mints a placeholder, with `"clock": true` where the cell is a wall clock.
-- a **callee** row, `{"callee", "kind": "CLOCK"}`: *every* call site of that callee in the
-  application scope is a root. That is the honest form for a clock, which the program may ask
-  in methods the case never listed.
+- **CLOCK** (`causynth/RootCatalog`): a call of one of the JVM's clocks, or of a method with no
+  parameter whose every returned value is a clock under constant arithmetic -- `Time.now()`,
+  `Time.monotonicNow()` (`nanoTime / 1000000`), `Timer.now()` -- read off its body, library or
+  application alike.  Every read of such a callee's return the slice reaches is a root.
+- **FAULT**: a `Debug.makeSymbolicBoolean` marker, woven at the declared transport doors
+  (`DoorWeave`).
+- **READ**: an accessor read of a location some other region stores, when the accessor runs
+  outside the woven program (`AtomicInteger.get()`), so no replay versions it: a placeholder the
+  closure binds to the location's writers (hdfs-17960's snapshot counter).
+- a `CausynthSymbolicSource.symbolize` hook site in the tree mints its own source.
 
 `ConcolicScheduler.SymbolicInputSelection.decide` takes one decision per proposed input, and
-a declaration is the only thing that makes a read symbolic:
+a category is the only thing that makes a read symbolic:
 
 | declaration | verdict | mints |
 | --- | --- | --- |
-| a name of this file, for the action's own region | `declaredSymbolicRoot` | yes — the read is where the search starts |
+| a clock's return or a READ placeholder's location (`StaticScopeMap.clockCallees`, `readCells`) | `declaredSymbolicRoot` | yes — the read is where the search starts |
 | a fault marker the workload wrote into its own source (`Debug.makeSymbolicBoolean`) | workload-owned | yes |
 | a field a `CausynthSymbolicSource.symbolize` hook site owns | `CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED` | no: the hook mints at its own site, so the action stands down `CONCRETE` |
 | a port `communication-mappings.jsonl` declared | `DECLARED_COMMUNICATION_CUT_PORT` | never: tracked, and `attachCommunicationLeaf` installs the producer's expression |
@@ -189,7 +191,7 @@ nothing.
 ## Knobs
 
 `workflow.properties` holds them, resolvable with `@config`, `@repo` and `@project`:
-`causynth_target_spec`, `causynth_symbolic_inputs`, `causynth_root_domains`,
+`causynth_target_spec`, `causynth_root_domains`,
 `causynth_communication_mappings`, `causynth_loop_bounds` and `causynth_loop_default_bound`
 name the declarations; `declared_target_occurrence` names the occurrence the campaign is
 about; `schedule_max_jobs`, `concolic_worker_count`, `solver_timeout_ms`,

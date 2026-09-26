@@ -1,9 +1,17 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
+import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -20,33 +28,35 @@ import static org.junit.Assert.assertTrue;
 /**
  * What the plan says about a region entry the run FOLDED.
  *
- * <p>F1 (paper SS3.1.2, {@code Identity#fold}): a declared region entered
+ * <p>F1 (paper SS3.1.2, {@code Identity#fold}): a region entered
  * synchronously inside an occurrence already running opens NONE of its own.
  * The recording states that on the entry ({@code regionFolded}, no occurrence
  * address) and this plan states its consequence: no activation for the folded
- * region, one fold row naming the occurrence it folded into, and that
- * occurrence owning the calls -- so the sites executed below the folded entry
- * belong to the occurrence that performed them and to no other.</p>
+ * region, and the occurrence it folded into naming it and owning the calls --
+ * so the sites executed below the folded entry belong to the occurrence that
+ * performed them and to no other.</p>
  *
- * <p>The case is hdfs-11741's: a declared key-rotation method entered only
- * inside the NameNode's key-manager tick, which is the recording that killed
- * campaign #5 with DECLARED_INPUT_NEVER_ACTIVATED.</p>
+ * <p>The case is hdfs-11741's: a key-rotation method entered only inside the
+ * NameNode's key-manager tick.</p>
  */
 public class RegionFoldPlanTest {
+    @Rule
+    public final TemporaryFolder folder = new TemporaryFolder();
+
 
     private static final String TICK =
             "<o.a.h.BlockTokenSecretManager: boolean updateKeys(long)>";
-    private static final String DECLARED =
+    private static final String NESTED =
             "<o.a.h.BlockTokenSecretManager: boolean updateKeys()>";
     private static final String BELOW =
             "<o.a.h.BlockTokenSecretManager: void removeExpiredKeys()>";
     private static final String TICK_REGION = "REGION.tick";
-    private static final String DECLARED_REGION = "REGION.declared";
+    private static final String NESTED_REGION = "REGION.nested";
     private static final String ADDRESS =
             "wl/nn0#epoch0/region/" + TICK_REGION + "/ctx:Root:TICK#1";
 
     /**
-     * The occurrence that folded the declared region owns it: one activation,
+     * The occurrence that folded the nested region owns it: one activation,
      * no activation of the folded region, and the fold row says where it ran.
      */
     @Test
@@ -58,21 +68,8 @@ public class RegionFoldPlanTest {
         Map<String, Object> tick = plan.runtimeInstances.get(0);
         assertEquals(TICK_REGION, tick.get("regionId"));
 
-        assertEquals("one fold row, for the declared region",
-                1, plan.regionFolds.size());
-        Map<String, Object> fold = plan.regionFolds.get(0);
-        assertEquals(RuntimeSelectedRegionFinalizer.REGION_FOLD_KIND,
-                fold.get("kind"));
-        assertEquals(DECLARED_REGION, fold.get("regionId"));
-        assertEquals(DECLARED, fold.get("rootMethod"));
-        assertEquals("named at the occurrence it folded into",
-                ADDRESS, fold.get("occurrenceAddress"));
-        assertEquals(TICK_REGION, fold.get("enclosingRegionId"));
-        assertEquals(tick.get("activationId"),
-                fold.get("enclosingActivationId"));
-
         // The region -> occurrence table, published where the occurrence is.
-        assertEquals(Collections.singletonList(DECLARED_REGION),
+        assertEquals(Collections.singletonList(NESTED_REGION),
                 tick.get(RuntimeSelectedRegionFinalizer.FOLDED_REGION_IDS));
 
         // And the calls: everything executed below the folded entry is an
@@ -82,7 +79,7 @@ public class RegionFoldPlanTest {
         assertTrue("the folded entry itself", calls.contains(20L));
         assertTrue("and what ran below it", calls.contains(30L));
         Collection<?> observed = (Collection<?>) tick.get("observedMethods");
-        assertTrue(observed.contains(DECLARED));
+        assertTrue(observed.contains(NESTED));
         assertTrue(observed.contains(BELOW));
     }
 
@@ -100,7 +97,6 @@ public class RegionFoldPlanTest {
                                 emptyList(), Collections.<String>emptySet());
 
         assertEquals(2, plan.runtimeInstances.size());
-        assertTrue("nothing folded", plan.regionFolds.isEmpty());
         for (Map<String, Object> activation : plan.runtimeInstances) {
             assertFalse("and no region -> occurrence fold table",
                     activation.containsKey(RuntimeSelectedRegionFinalizer
@@ -129,9 +125,8 @@ public class RegionFoldPlanTest {
                 RuntimeSelectedRegionFinalizer.finalizeRegions(
                         cutGraph(), cutSkeletons(), "test",
                         Arrays.asList(HANDLER, LEAF),
-                        activations.runtimeInstances,
-                        activations.regionFolds, cutObservations(),
-                        StaticScopeMap.empty());
+                        activations.runtimeInstances, cutObservations(),
+                        cutScopeMap());
 
         assertEquals("the folded region has no row: it has no occurrence",
                 1, closure.regions.size());
@@ -207,9 +202,9 @@ public class RegionFoldPlanTest {
      */
     private static List<StaticProgram.RegionRow> cutSkeletons() {
         Map<String, Object> handler = skeleton(HANDLER_REGION, HANDLER,
-                Collections.singletonList(HANDLER), false);
+                Collections.singletonList(HANDLER));
         Map<String, Object> leaf = skeleton(LEAF_REGION, LEAF,
-                Collections.singletonList(LEAF), false);
+                Collections.singletonList(LEAF));
         leaf.put("selection", "EXCEPTION_CONTEXT");
         Map<String, Object> port = new LinkedHashMap<>();
         port.put("portId", PORT_ID);
@@ -263,6 +258,30 @@ public class RegionFoldPlanTest {
                         -1, "", 0, "", null, null, "", ""));
     }
 
+    /** The published scope map: the throw below {@link #GUARD_SITE}, which
+     *  decides it. */
+    private StaticScopeMap cutScopeMap() throws IOException {
+        Map<String, Object> thrown = new LinkedHashMap<>();
+        thrown.put("kind", "exception_throw");
+        thrown.put("method", LEAF);
+        thrown.put("unitIndex", 7);
+        Map<String, Object> region = new LinkedHashMap<>();
+        region.put("regionId", LEAF_REGION);
+        region.put("methods", Collections.singletonList(LEAF));
+        StringBuilder text = new StringBuilder();
+        for (JsonObject row : StaticScopeMap.rows(StaticScopeMap.sites(
+                Collections.singletonList(thrown),
+                Collections.singletonList(region),
+                Collections.<String>emptySet(), method -> false),
+                site -> Collections.singletonList(new StaticScopeMap.Guard(
+                        GUARD_SITE, Boolean.TRUE)))) {
+            text.append(row).append('\n');
+        }
+        Path file = folder.newFolder().toPath().resolve(StaticScopeMap.FILE);
+        Files.write(file, text.toString().getBytes(StandardCharsets.UTF_8));
+        return StaticScopeMap.read(file);
+    }
+
     /** One exception guard, tagged with the folded region alone. */
     private static List<Map<String, Object>> cutGraph() {
         Map<String, Object> guard = new LinkedHashMap<>();
@@ -299,7 +318,7 @@ public class RegionFoldPlanTest {
     }
 
     /**
-     * The tick's region holds only its own method; the declared region holds
+     * The tick's region holds only its own method; the nested region holds
      * the two the tick calls.  That is the shape the fold has to carry: the
      * enclosing skeleton does not name the folded region's methods, so
      * nothing but the fold can give those frames an occurrence.
@@ -307,16 +326,15 @@ public class RegionFoldPlanTest {
     private static List<StaticProgram.RegionRow> skeletons() {
         List<Map<String, Object>> rows = new ArrayList<>();
         rows.add(skeleton(TICK_REGION, TICK,
-                Collections.singletonList(TICK), false));
-        rows.add(skeleton(DECLARED_REGION, DECLARED,
-                Arrays.asList(DECLARED, BELOW), true));
+                Collections.singletonList(TICK)));
+        rows.add(skeleton(NESTED_REGION, NESTED,
+                Arrays.asList(NESTED, BELOW)));
         return StaticProgram.regionRows(rows,
                 RuntimeSelectedRegionFinalizer.SKELETON_KIND, "test");
     }
 
     private static Map<String, Object> skeleton(String regionId, String root,
-                                                List<String> methods,
-                                                boolean declared) {
+                                                List<String> methods) {
         Map<String, Object> row = new LinkedHashMap<>();
         row.put("schemaVersion",
                 RuntimeSelectedRegionFinalizer.REGION_SCHEMA_VERSION);
@@ -328,17 +346,14 @@ public class RegionFoldPlanTest {
         row.put("anchorMethods", new ArrayList<>(methods));
         row.put("selection", "STATE_CONTEXT");
         row.put("methods", new ArrayList<>(methods));
-        if (declared) {
-            row.put("declaredInputRoot", true);
-        }
         return row;
     }
 
     /**
-     * One recorded tick: it opens an occurrence, calls the declared method,
-     * and that call runs one more of the declared region's methods below it.
+     * One recorded tick: it opens an occurrence, calls the nested method,
+     * and that call runs one more of the nested region's methods below it.
      *
-     * @param folded whether the declared entry was folded -- the recording's
+     * @param folded whether the nested entry was folded -- the recording's
      *               own statement, which is the only thing that differs
      *               between the two cases this fixture serves
      */
@@ -346,8 +361,8 @@ public class RegionFoldPlanTest {
             boolean folded) {
         List<RuntimeRegionPlanner.MethodEvent> methods = new ArrayList<>();
         methods.add(entry(10L, TICK, 0L, ADDRESS, false));
-        methods.add(entry(20L, DECLARED, 10L, folded ? ""
-                : "wl/nn0#epoch0/region/" + DECLARED_REGION
+        methods.add(entry(20L, NESTED, 10L, folded ? ""
+                : "wl/nn0#epoch0/region/" + NESTED_REGION
                 + "/ctx:Root:TICK#1", folded));
         methods.add(entry(30L, BELOW, 20L, "", false));
         return methods;

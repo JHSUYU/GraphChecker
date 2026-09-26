@@ -439,10 +439,10 @@ final class RowPublication {
         }
         long at = reach == null ? 0L
                 : optionalLongInteger(reach, "vmEventId", 0L);
-        // seq == 0 means "no VM clock" (a CONCRETE decision, see
-        // ActiveRegion#recordConcreteDecision).  The composer cuts the prefix
-        // before target.seq() (P1), so at 0 pi_p would be empty and too
-        // weak; state a BLOCKING gap instead.
+        // seq == 0 means "no VM clock" (a CONCRETE decision stands after the
+        // last VM event, ActiveRegion#recordConcreteDecision).  The composer
+        // cuts the prefix before target.seq() (P1), so at 0 pi_p would be
+        // empty and too weak; state a BLOCKING gap instead.
         if (at <= 0L && reached) {
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.BLOCKING, anchor,
                     "this run reached the anchor on a decision the VM gave"

@@ -232,6 +232,14 @@ public final class CausynthStaticFacts {
         }
     }
 
+    /** Whether a method is the woven program's: its class is an application
+     *  class. */
+    static boolean applicationMethod(String signature) {
+        SootMethod method = method(signature);
+        return method != null
+                && method.getDeclaringClass().isApplicationClass();
+    }
+
     /** A retrievable active body, or null: an unloadable body is not a fact. */
     static Body activeBody(SootMethod method) {
         if (method == null || !method.isConcrete()) return null;

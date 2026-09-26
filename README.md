@@ -406,7 +406,7 @@ changed").
 ### What a case declares
 
 A case directory under `experiments/hadoop/` holds declarations only (`case.sh`,
-`workflow.properties`, `target.yaml`, `symbolic-inputs.jsonl`, `root-domains.jsonl`,
+`workflow.properties`, `target.yaml`, `root-domains.jsonl`,
 `communication-mappings.jsonl`, `loop-bounds*.jsonl`); everything executable is
 `experiments/hadoop/lib/` (its README lists the scripts and the workload rules). The loop-bounds
 files key loops by Jimple unit id (`<method>#uNN`); **any edit to an instrumented method shifts

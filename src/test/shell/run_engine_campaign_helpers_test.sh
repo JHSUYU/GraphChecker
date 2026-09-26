@@ -698,7 +698,9 @@ done
 # runs that scanned different roots did not replay under the same rules.
 # 45: `refined_graph` left with RuntimeRefinedGraphBuilder (R14/R48): the
 # finalizer reads the candidate graph and the skeletons, and nothing else.
-[[ "$(print_normalized_config | wc -l)" -eq 45 ]] \
+# 44: `causynth_symbolic_inputs` left: roots are recognized by category from
+# the program text (causynth.RootCatalog) and stated by the static scope map.
+[[ "$(print_normalized_config | wc -l)" -eq 44 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 # CONFIG-4: the discovery artifacts are derived from causynth_output_dir and
@@ -809,7 +811,6 @@ candidate_graph="${plan2_dir}/candidate.jsonl.gz"
 causynth_static_scope_map="${plan2_dir}/static_scope_map.jsonl"
 schedule_output_dir="${plan2_dir}/out"
 schedule_max_jobs=8
-causynth_symbolic_inputs=""
 declared_target_occurrence=""
 do_schedule
 unset -f run_java_main
@@ -881,8 +882,7 @@ stop_after_config() {
   : >"${causynth_loop_bounds}"
   causynth_loop_default_bound=8
   causynth_communication_mappings=""
-  causynth_symbolic_inputs=""
-  causynth_root_domains=""
+    causynth_root_domains=""
   solver_timeout_ms=1000
   replay_timeout_s=2400
   schedule_max_jobs=1

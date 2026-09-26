@@ -76,6 +76,15 @@ public final class StaticScopeMap {
      *  <callee>.return}. */
     public static final String CALL_RETURN = "CALL_RETURN";
 
+    /** {@code inputKind}: a clock's reading (causynth.RootCatalog). */
+    public static final String CLOCK_INPUT = "CLOCK";
+    /** {@code inputKind}: a fault marker's choice. */
+    public static final String FAULT_INPUT = "FAULT";
+    /** {@code inputKind}: a read of a location another region stores, by an
+     *  accessor that runs outside the woven program, so no replay versions
+     *  it: a placeholder the closure binds to that location's writers. */
+    public static final String READ_INPUT = "READ";
+
     /** A Jimple local cell: {@code <method>::local[#suffix]}. */
     private static final java.util.regex.Pattern LOCAL_CELL =
             java.util.regex.Pattern.compile("^(<.+>)::([^#]+)(?:#.*)?$");
@@ -198,14 +207,19 @@ public final class StaticScopeMap {
         /** For an accessor: the method that answers the call. */
         public final String implementationMethod;
         public final String javaType;
+        /** {@link #CLOCK_INPUT}, {@link #FAULT_INPUT}, {@link #READ_INPUT},
+         *  or "": a read that stays concrete. */
+        public final String inputKind;
 
         public Declared(String kind, String edgeId, String dependencyCell,
-                        String implementationMethod, String javaType) {
+                        String implementationMethod, String javaType,
+                        String inputKind) {
             this.kind = safe(kind);
             this.edgeId = safe(edgeId);
             this.dependencyCell = safe(dependencyCell);
             this.implementationMethod = safe(implementationMethod);
             this.javaType = safe(javaType);
+            this.inputKind = safe(inputKind);
         }
 
         private static String safe(String value) {
@@ -243,30 +257,20 @@ public final class StaticScopeMap {
     /**
      * Every site the slice names, before guards are computed.
      *
-     * @param edges   the candidate graph's rows
-     * @param regions region skeletons: {@code regionId}, {@code methods}, ports
-     */
-    public static List<Site> sites(List<Map<String, Object>> edges,
-                                   List<Map<String, Object>> regions) {
-        return sites(edges, regions,
-                DeclaredSymbolicInputs.configuredCallees().keySet());
-    }
-
-    /**
-     * As above with the declared callees stated.
-     *
-     * @param declaredCallees the case's declared
-     *                        callees; they bound the {@code CALL_RETURN} rows
-     *                        (only a named callee can be a root). {@code
-     *                        ACCESSOR_RETURN} rows are bounded by edge kind and
-     *                        published whole.
+     * @param edges        the candidate graph's rows
+     * @param regions      region skeletons: {@code regionId}, {@code methods},
+     *                     ports
+     * @param clockCallees the clocks the slice reads ({@code
+     *                     causynth.RootCatalog}); they bound the {@code
+     *                     CALL_RETURN} rows.  {@code ACCESSOR_RETURN} rows are
+     *                     bounded by edge kind and published whole.
+     * @param unwoven      whether a method runs outside the woven program
      */
     public static List<Site> sites(List<Map<String, Object>> edges,
                                    List<Map<String, Object>> regions,
-                                   Collection<String> declaredCallees) {
-        Set<String> callees = new LinkedHashSet<String>(
-                declaredCallees == null
-                        ? Collections.<String>emptySet() : declaredCallees);
+                                   Collection<String> clockCallees,
+                                   Predicate<String> unwoven) {
+        Set<String> callees = new LinkedHashSet<String>(clockCallees);
         List<Region> retained = regions(regions);
         Set<String> regionRoots = new LinkedHashSet<String>();
         for (Region region : retained) regionRoots.addAll(region.methods);
@@ -294,6 +298,7 @@ public final class StaticScopeMap {
             add(found, seen, retained, WRITE_SITE, method, unitIndex,
                     leaf.isEmpty() ? carrier : leaf, carrier, "", invoke);
         }
+        markReads(found, unwoven);
         for (Region region : retained) {
             for (Map<String, Object> port : region.ports) {
                 String portId = text(port.get(
@@ -316,6 +321,49 @@ public final class StaticScopeMap {
             }
         }
         return found;
+    }
+
+    /**
+     * Marks {@link #READ_INPUT} each accessor read the weave cannot version
+     * (its accessor runs outside the woven program: {@code
+     * AtomicInteger.get()}) of a location some other region stores.  A
+     * woven read needs no mark: the replay versions it where it runs.
+     */
+    private static void markReads(List<Site> found,
+                                  Predicate<String> unwoven) {
+        Map<String, Set<String>> storers =
+                new LinkedHashMap<String, Set<String>>();
+        for (Site site : found) {
+            if (!WRITE_SITE.equals(site.role)) continue;
+            for (String location : new String[]{site.cell, site.carrier}) {
+                if (location.isEmpty()) continue;
+                storers.computeIfAbsent(location,
+                        key -> new LinkedHashSet<String>())
+                        .add(site.regionId);
+            }
+        }
+        for (int index = 0; index < found.size(); index++) {
+            Site site = found.get(index);
+            Declared declared = site.declared;
+            if (declared == null || !ACCESSOR_RETURN.equals(declared.kind)
+                    || !unwoven.test(declared.implementationMethod)) {
+                continue;
+            }
+            Set<String> regions = storers.getOrDefault(site.cell,
+                    Collections.<String>emptySet());
+            if (regions.isEmpty() || regions.size() == 1
+                    && regions.contains(site.regionId)) {
+                continue;
+            }
+            found.set(index, new Site(site.role, site.regionId, site.siteId,
+                    site.vmSite, site.cell, site.carrier, site.portId,
+                    site.declaredCallee, site.local,
+                    new Declared(declared.kind, declared.edgeId,
+                            declared.dependencyCell,
+                            declared.implementationMethod,
+                            declared.javaType, READ_INPUT),
+                    site.guards, site.guardOutcomes));
+        }
     }
 
     /** Every site id in {@code sites}. */
@@ -364,6 +412,9 @@ public final class StaticScopeMap {
                 row.addProperty("implementationMethod",
                         site.declared.implementationMethod);
             }
+            if (!site.declared.inputKind.isEmpty()) {
+                row.addProperty("inputKind", site.declared.inputKind);
+            }
         }
         JsonArray guards = new JsonArray();
         for (String guard : site.guards) guards.add(guard);
@@ -411,31 +462,35 @@ public final class StaticScopeMap {
 
     /** DECLARED_SITE rows of one candidate edge producing a value from outside
      *  the slice's text: {@code accessor_field_return} (cell = the field);
-     *  {@code call_return} of a declared callee no region holds (a region
-     *  callee already publishes rows; two authorities for one value is the
-     *  trap); and {@code explicit_symbolic_fault}, the workload's fault marker.
+     *  {@code call_return} of a clock no region holds (a region callee
+     *  already publishes rows; two authorities for one value is the trap);
+     *  and {@code explicit_symbolic_fault}, a fault marker.
      */
     private static void addDeclaredSite(
             List<Site> into, Set<String> seen, List<Region> retained,
             Map<String, Object> edge, String kind, String method,
-            int unitIndex, Set<String> declaredCallees,
+            int unitIndex, Set<String> clockCallees,
             Set<String> regionMethods) {
         String callee = text(edge.get("invoke"));
         if (callee.isEmpty()) return;
         String cell;
         String implementation = "";
+        String inputKind = "";
         if ("accessor_field_return".equals(kind)) {
             cell = firstNonBlank(text(edge.get("declaredFieldSignature")),
                     text(edge.get("fromCell")));
             implementation = text(edge.get("accessorImplementationMethod"));
             if (implementation.isEmpty()) return;
         } else if ("call_return".equals(kind)
-                && declaredCallees.contains(callee)
-                && !regionMethods.contains(callee)
-                || "explicit_symbolic_fault".equals(kind)
+                && clockCallees.contains(callee)
+                && !regionMethods.contains(callee)) {
+            cell = text(edge.get("fromCell"));
+            inputKind = CLOCK_INPUT;
+        } else if ("explicit_symbolic_fault".equals(kind)
                 && Debug.isBooleanMarkerSignature(callee)
                 && declaredFault(text(edge.get("symbolicName")))) {
             cell = text(edge.get("fromCell"));
+            inputKind = FAULT_INPUT;
         } else {
             return;
         }
@@ -454,7 +509,8 @@ public final class StaticScopeMap {
             into.add(new Site(DECLARED_SITE, regionId, siteId,
                     vmSite(method), cell, "", "", callee, "",
                     new Declared(declaredKind, text(edge.get("id")),
-                            dependencyCell, implementation, javaType),
+                            dependencyCell, implementation, javaType,
+                            inputKind),
                     Collections.<String>emptyList(),
                     Collections.<Boolean>emptyList()));
         }
@@ -607,7 +663,8 @@ public final class StaticScopeMap {
                     : new Declared(declaredKind, optionalString(row, "edgeId"),
                             optionalString(row, "dependencyCell"),
                             optionalString(row, "implementationMethod"),
-                            optionalString(row, "javaType"));
+                            optionalString(row, "javaType"),
+                            optionalString(row, "inputKind"));
             sites.add(new Site(optionalString(row, "role"),
                     optionalString(row, "regionId"),
                     optionalString(row, "siteId"),
@@ -765,6 +822,28 @@ public final class StaticScopeMap {
             found.add(row);
         }
         return found;
+    }
+
+    /** The clocks the slice reads: every {@link #CLOCK_INPUT} site's callee.
+     */
+    public Set<String> clockCallees() {
+        Set<String> callees = new LinkedHashSet<String>();
+        for (Site site : ofRole(DECLARED_SITE, site -> site.declared != null
+                && CLOCK_INPUT.equals(site.declared.inputKind))) {
+            callees.add(site.declaredCallee);
+        }
+        return callees;
+    }
+
+    /** The locations read into a placeholder: every {@link #READ_INPUT}
+     *  site's cell. */
+    public Set<String> readCells() {
+        Set<String> cells = new LinkedHashSet<String>();
+        for (Site site : ofRole(DECLARED_SITE, site -> site.declared != null
+                && READ_INPUT.equals(site.declared.inputKind))) {
+            cells.add(site.cell);
+        }
+        return cells;
     }
 
     /** Every DECLARED_SITE, in publication order. Whether any mints is {@link

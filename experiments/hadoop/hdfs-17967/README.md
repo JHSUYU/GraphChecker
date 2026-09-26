@@ -55,7 +55,7 @@ apart by `declared_target_occurrence`, exactly as HDFS-17899's three bugs are.
 
 ## What these cases declare
 
-`workflow.properties`, `target.yaml`, `symbolic-inputs.jsonl`, `root-domains.jsonl`,
+`workflow.properties`, `target.yaml`, `root-domains.jsonl`,
 `communication-mappings.jsonl` and `loop-bounds.jsonl` are shared by all three; `case.sh`
 carries what is per case, including the per-case analysis scope.
 
@@ -63,7 +63,7 @@ carries what is per case, including the per-case analysis scope.
 | --- | --- | --- |
 | the failure | `@CausynthExceptionTarget("hdfs-17967")` in each worktree's `BlockTokenSecretManager`; `target.yaml` | `exception_target_id: hdfs-17967` |
 | the occurrence | `target_occurrence` in `case.sh` | `pathA` `hdfs-17967/mirror-dn#epoch0/region/REGION.7c569c3f…#1`; `pathB` `…/proxy-dn#…`; `pathC` `…/target-dn#…`. `REGION.7c569c3f` is the per-connection `SaslDataTransferServer` callback handler, the region every passing case in this family anchors on |
-| clock roots | `symbolic-inputs.jsonl` | three callee rows (`Timer.now`, `Time.now`, `Time.monotonicNow`) plus per-method clock cells on `BlockTokenSecretManager.updateKeys()` and `.addKeys(ExportedBlockKeys,boolean)`. Without them `CLOCK_SKEW` is unreachable by construction and key EXPIRY cannot be expressed at all |
+| clock roots | the program text (`causynth/RootCatalog`) | every read the slice reaches of a clock -- a JVM clock or a method returning one under constant arithmetic (`Timer.now()`, `Time.now()`, `Time.monotonicNow()`) -- is a root, and the occurrence that reads it is admitted as a root reader |
 | root domains | `root-domains.jsonl`, one row | `HDFS.BLOCK_KEY.SERIAL_NO`, `+0` to `+3`: the recorded value and up to three rotations past it |
 | analysis scope | `case.sh` (`scope`) | a shared narrow set (the SASL client/server, the key managers, `PBHelper`, `ipc/Client`), plus `DFSClient` for A and the erasure-coding reconstruction families for C |
 

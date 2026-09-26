@@ -166,7 +166,9 @@ public final class CausynthPipeline {
         // CLOSURE-V2 SS4: before ANY weaving, so site and guard ids are the
         // original unit indices a replay decides at.
         List<StaticScopeMap.Site> scopeSites = StaticScopeMap.sites(
-                result.edges, result.regions);
+                result.edges, result.regions,
+                RootCatalog.clockCallees(result.edges),
+                method -> !CausynthStaticFacts.applicationMethod(method));
         List<JsonObject> scopeMap = StaticScopeMap.rows(scopeSites,
                 SiteControlDependence.over(
                         StaticScopeMap.siteIds(scopeSites)));

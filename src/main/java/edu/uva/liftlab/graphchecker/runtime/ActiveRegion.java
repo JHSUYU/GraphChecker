@@ -186,8 +186,10 @@ final class ActiveRegion {
                     unitIndex, occurrence, 0L, decision.outcome(), 0, 0));
             if (activation.targetBranchSite.equals(site)
                     && activation.targetBranchOccurrence == occurrence) {
+                // Concrete: it stands after every event so far, so the path
+                // condition before it is every decision the VM recorded.
                 recordTargetReach(site, occurrence, decision.outcome(),
-                        0L);
+                        Identity.afterLastEvent());
             }
             return occurrence;
         } catch (Throwable ignored) {

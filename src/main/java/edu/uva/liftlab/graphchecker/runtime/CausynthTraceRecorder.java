@@ -15,7 +15,6 @@ import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.option.LongOptions;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
-import edu.uva.liftlab.graphchecker.plan.DeclaredSymbolicInputs;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import java.io.BufferedWriter;
@@ -46,7 +45,6 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.objectWithoutNulls;
-import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
@@ -1109,7 +1107,6 @@ public final class CausynthTraceRecorder {
                     candidateRows, skeletons,
                     String.valueOf(selectedSkeletons),
                     observedMethods, activationGraph.runtimeInstances,
-                    activationGraph.regionFolds,
                     runtimeObservations(trace.execution, trace.methods),
                     scopeMap);
             // Plan gaps = this pass's plus those the recording stated.
@@ -1180,11 +1177,6 @@ public final class CausynthTraceRecorder {
     /**
      * The selected skeleton of an entered region is its candidate skeleton
      * with the observed anchor names; every other member is the candidate's.
-     *
-     * <p>A declared-symbolic root is selected even if never entered, keeping
-     * its candidate anchors: pass 2 is the authority on whether it ran
-     * ({@code DECLARED_INPUT_NEVER_ACTIVATED}), and dropping it here would
-     * make pass 2 blind to it.</p>
      */
     private static void writeSelectedSkeletons(
             File candidates, File output,
@@ -1223,9 +1215,7 @@ public final class CausynthTraceRecorder {
                             .getAsJsonObject();
                     String region = optionalString(row, "regionId");
                     String selectedAnchor = anchorByRegion.get(region);
-                    boolean declaredRoot = optionalBool(row,
-                            DeclaredSymbolicInputs.ROOT_FIELD, false);
-                    if (selectedAnchor == null && !declaredRoot) {
+                    if (selectedAnchor == null) {
                         continue;
                     }
                     String rootMethod = optionalString(row, "rootMethod");
@@ -1237,14 +1227,12 @@ public final class CausynthTraceRecorder {
                         throw new IOException("coalesced static region methods "
                                 + "must contain the runtime root: " + region);
                     }
-                    if (selectedAnchor != null) {
-                        row.addProperty("anchorMethod", selectedAnchor);
-                        JsonArray selectedAnchors = new JsonArray();
-                        for (String anchor : anchorsByRegion.get(region)) {
-                            selectedAnchors.add(anchor);
-                        }
-                        row.add("anchorMethods", selectedAnchors);
+                    row.addProperty("anchorMethod", selectedAnchor);
+                    JsonArray selectedAnchors = new JsonArray();
+                    for (String anchor : anchorsByRegion.get(region)) {
+                        selectedAnchors.add(anchor);
                     }
+                    row.add("anchorMethods", selectedAnchors);
                     writer.write(row.toString());
                     writer.write('\n');
                 }

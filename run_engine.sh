@@ -116,7 +116,6 @@ workflow_config_keys=(
   # published as the catalog's DIAGNOSTIC gap row (INHERITED_K_L_<n>).
   # No default here: a campaign that states none is refused by name.
   "causynth_loop_default_bound CAUSYNTH_LOOP_DEFAULT_BOUND krp -"
-  "causynth_symbolic_inputs CAUSYNTH_SYMBOLIC_INPUTS krp -"
   "causynth_lineage_roots CAUSYNTH_LINEAGE_ROOTS krp -"
   # What the case says its declared roots may be, beside what the recording
   # read: one row per source id, with declaredDomainMin/Max absolute or
@@ -367,9 +366,6 @@ initialize_config() {
   if [[ -n "${causynth_root_domains}" ]]; then
     causynth_root_domains=$(resolve_path "${causynth_root_domains}")
   fi
-  if [[ -n "${causynth_symbolic_inputs}" ]]; then
-    causynth_symbolic_inputs=$(resolve_path "${causynth_symbolic_inputs}")
-  fi
   # The discovery artifacts, one layout under the resolved output directory.
   candidate_graph="${causynth_output_dir}/candidate_dataflow_edges.jsonl.gz"
   causynth_static_scope_map="${causynth_output_dir}/static_scope_map.jsonl"
@@ -410,18 +406,8 @@ run_java_main() {
     # to this offline aggregation process just as it was to the recorder.
     runtime_classpath="${runtime_classpath}:${project_classpath}"
   fi
-  # The case's declaration, under the same key every other stage reads it by
-  # (DeclaredSymbolicInputs): the region finalizer's demand walk retains the
-  # activation that held a declared input, and a declaration that did not
-  # arrive would silently drop it.  A case that declares none sets nothing.
-  local declaration_property=()
-  if [[ -n "${causynth_symbolic_inputs}" ]]; then
-    declaration_property=(
-      "-Dcausynth.symbolic.inputs=${causynth_symbolic_inputs}")
-  fi
   run_in_directory "${graphchecker_work_dir}" "${java_bin}" \
     "-Dcausynth.loop.default.bound=${causynth_loop_default_bound}" \
-    "${declaration_property[@]+"${declaration_property[@]}"}" \
     -cp "${runtime_classpath}" "${main_class}" "$@"
 }
 
@@ -465,9 +451,6 @@ validate_config() {
   require_file "loop body bound declarations" "${causynth_loop_bounds}"
   if [[ -n "${causynth_communication_mappings}" ]]; then
     require_file "communication mapping" "${causynth_communication_mappings}"
-  fi
-  if [[ -n "${causynth_symbolic_inputs}" ]]; then
-    require_file "symbolic input selection" "${causynth_symbolic_inputs}"
   fi
   if [[ -n "${causynth_root_domains}" ]]; then
     require_file "declared root domains" "${causynth_root_domains}"
@@ -556,17 +539,6 @@ do_analyze() {
     require_file "communication mapping" "${causynth_communication_mappings}"
     system_properties+=(
       "-Dcausynth.communication.mappings=${causynth_communication_mappings}"
-    )
-  fi
-  # Roots are manual, so the case's declaration is an input to P1 and not
-  # only to PLAN: the static slice holds every declared method, the skeleton
-  # weave roots a region at it, and both passes weave it. Named on the same
-  # condition do_schedule passes --symbolic-inputs, so the two stages cannot
-  # be planned against different declarations.
-  if [[ -n "${causynth_symbolic_inputs}" ]]; then
-    require_file "symbolic input selection" "${causynth_symbolic_inputs}"
-    system_properties+=(
-      "-Dcausynth.symbolic.inputs=${causynth_symbolic_inputs}"
     )
   fi
   # README section 5's per-loop K_L, declared by the campaign that owns the
@@ -676,10 +648,6 @@ do_schedule() {
   # the rest, and a schedule of one task is not an empty schedule, so the
   # stage would exit 0 with the truncation invisible.
   args+=(--max-jobs "${schedule_max_jobs}")
-  if [[ -n "${causynth_symbolic_inputs}" ]]; then
-    require_file "symbolic input selection" "${causynth_symbolic_inputs}"
-    args+=(--symbolic-inputs "${causynth_symbolic_inputs}")
-  fi
   [[ -z "${declared_target_occurrence}" ]] \
     || args+=(--target-occurrence "${declared_target_occurrence}")
   run_java_main edu.uva.liftlab.graphchecker.plan.ConcolicScheduler \
@@ -1560,7 +1528,7 @@ campaign_freeze() {
   local libjava="${custom_jdk_home}/jre/lib/amd64/libjava.so"
   local libjvm="${custom_jdk_home}/jre/lib/amd64/server/libjvm.so"
   local jar_sha vm_sha rt_jar_sha libjava_sha libjvm_sha config_sha
-  local spec_sha mappings_sha bounds_sha symbolic_inputs_sha
+  local spec_sha mappings_sha bounds_sha
   local classes_sha test_classes_sha classpath_sha tool_source workload_source
   [[ -x "${vm}" ]] || die "the concolic VM is not built: ${vm}"
   require_file "concolic rt.jar" "${rt_jar}"
@@ -1586,8 +1554,6 @@ campaign_freeze() {
   campaign_freeze_digest mappings_sha optional \
     "${causynth_communication_mappings}"
   campaign_freeze_digest bounds_sha file "${causynth_loop_bounds}"
-  campaign_freeze_digest symbolic_inputs_sha optional \
-    "${causynth_symbolic_inputs}"
   campaign_freeze_digest classes_sha tree "${project_classes_dir}"
   campaign_freeze_digest test_classes_sha tree "${project_test_classes_dir}"
   campaign_freeze_digest classpath_sha string "${project_classpath}" \
@@ -1618,8 +1584,6 @@ campaign_freeze() {
     --arg mappingsSha "${mappings_sha}" \
     --arg bounds "${causynth_loop_bounds}" \
     --arg boundsSha "${bounds_sha}" \
-    --arg symbolicInputs "${causynth_symbolic_inputs}" \
-    --arg symbolicInputsSha "${symbolic_inputs_sha}" \
     --arg classes "${project_classes_dir}" \
     --arg classesSha "${classes_sha}" \
     --arg testClass "${trace_test}" \
@@ -1638,8 +1602,6 @@ campaign_freeze() {
       targetSpec: {path: $spec, sha256: $specSha},
       communicationMappings: {path: $mappings, sha256: $mappingsSha},
       loopBounds: {path: $bounds, sha256: $boundsSha},
-      symbolicInputs: {path: $symbolicInputs,
-                       sha256: $symbolicInputsSha},
       productionClasses: {path: $classes, sha256: $classesSha},
       workload: {testClass: $testClass,
                  testClasses: {path: $testClasses, sha256: $testClassesSha},
@@ -1660,7 +1622,7 @@ campaign_freeze() {
 #
 # Scope is the FREEZE stage's inputs and only those: jar, VM and its three
 # libraries, config, target spec, communication mappings, per-loop bounds,
-# symbolic input selection, the production/test class trees, and the workload
+# the production/test class trees, and the workload
 # classpath string. The SEED additions (static catalog, region plan) are
 # this campaign's own outputs rather than its inputs, and the INSTRUMENT stage
 # legitimately rewrites the analysis root they sit in; re-hashing them here
@@ -1683,7 +1645,6 @@ campaign_verify_frozen_inputs() {
        {kind: "file", label: "targetSpec", entry: .targetSpec},
        {kind: "file", label: "communicationMappings", entry: .communicationMappings},
        {kind: "file", label: "loopBounds", entry: .loopBounds},
-       {kind: "file", label: "symbolicInputs", entry: .symbolicInputs},
        {kind: "tree", label: "productionClasses", entry: .productionClasses},
        {kind: "tree", label: "workload.testClasses",
         entry: .workload.testClasses}]

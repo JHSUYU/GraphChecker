@@ -10,15 +10,15 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.text;
  */
 public final class InputActionCatalog {
     public static final String FIELD = "inputActions";
-    /** Input the case named by hand in {@code symbolic-inputs.jsonl}. A
-     *  declared primitive source mints its root even when wrapped in a carrier
-     *  over a constant, so a case can start the search at a field nothing
-     *  symbolic reached. */
+    /** Input a root category names ({@code StaticScopeMap}'s clocks and READ
+     *  placeholders).  Such a primitive source mints its root even when
+     *  wrapped in a carrier over a constant, so the search can start at a
+     *  field nothing symbolic reached. */
     public static final String DECLARED_SYMBOLIC_ROOT =
             "declaredSymbolicRoot";
-    /** Input the case declared to be a wall-clock read. The composer moves a
-     *  clock by an offset from the recorded read, so clocks are declared on the
-     *  input row, never recognised by callee name. */
+    /** Input that is a clock's reading.  The composer moves a clock by an
+     *  offset from the recorded read, so the flag rides on the input row and
+     *  no later stage recognises a clock again. */
     public static final String DECLARED_WALL_CLOCK = "clock";
 
     public enum Mode {

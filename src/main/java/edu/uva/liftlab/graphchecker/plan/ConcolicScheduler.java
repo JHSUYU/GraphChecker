@@ -58,8 +58,6 @@ public final class ConcolicScheduler {
                 arguments.regionPlan);
         JsonObject candidateGraphIdentity = artifactIdentity(
                 arguments.candidateGraph);
-        JsonObject symbolicInputsIdentity = arguments.symbolicInputs == null
-                ? null : artifactIdentity(arguments.symbolicInputs);
         RuntimePlanArtifact runtimePlan = RuntimePlanArtifact.read(
                 arguments.regionPlan);
         List<JsonObject> regions = runtimePlan.regions();
@@ -75,9 +73,6 @@ public final class ConcolicScheduler {
         List<JsonObject> candidateGraph = ArtifactIO.readJsonl(
                 arguments.candidateGraph);
         requireCandidateGraph(candidateGraph);
-        SymbolicInputSelection symbolicInputs =
-                SymbolicInputSelection.read(arguments.symbolicInputs,
-                        regions, regionPlans);
         Set<String> regionIndex = regionIndex(regions);
         StaticScopeMap staticScopeMap = StaticScopeMap.read(
                 arguments.staticScopeMap);
@@ -85,12 +80,12 @@ public final class ConcolicScheduler {
             throw new IOException("static scope map states no site: "
                     + arguments.staticScopeMap);
         }
+        SymbolicInputSelection symbolicInputs =
+                SymbolicInputSelection.read(staticScopeMap, regions);
         // These identities are re-verified when the schedule index commits.
         return new LoadedInputs(regionPlans, regionIndex,
                 candidateGraph, staticScopeMap,
-                regionPlanIdentity,
-                candidateGraphIdentity, symbolicInputsIdentity,
-                symbolicInputs);
+                regionPlanIdentity, candidateGraphIdentity, symbolicInputs);
     }
 
     private static List<ExecutionTask> scheduleLoaded(
@@ -315,11 +310,6 @@ public final class ConcolicScheduler {
         requireArtifactIdentity(arguments.candidateGraph,
                 loaded.candidateGraphIdentity,
                 "candidate data-flow graph changed while scheduling");
-        if (arguments.symbolicInputs != null) {
-            requireArtifactIdentity(arguments.symbolicInputs,
-                    loaded.symbolicInputsIdentity,
-                    "symbolic input selection changed while scheduling");
-        }
         requireArtifactIdentity(taskPlan, taskPlanIdentity,
                 "execution task plan changed before index publication");
         // The integrity-checked index is the commit record.
@@ -1030,14 +1020,14 @@ public final class ConcolicScheduler {
 
 
     /**
-     * The experiment's declaration of which inputs are symbolic: one decision
-     * per proposed input, one authority. Four declarations exist:
+     * Which inputs are symbolic: one decision per proposed input, one
+     * authority, the categories the static scope map states. Four exist:
      *
      * <ul>
-     *   <li>a cell, port or field this file names for the action's region:
+     *   <li>a clock's return, or a READ placeholder's location ({@link
+     * StaticScopeMap#clockCallees}, {@link StaticScopeMap#readCells}):
      * mints;</li>
-     *   <li>an {@code EXPLICIT_SYMBOLIC_FAULT} marker in the workload's text:
-     * mints;</li>
+     *   <li>an {@code EXPLICIT_SYMBOLIC_FAULT} marker: mints;</li>
      *   <li>a field a {@code CausynthSymbolicSource} hook owns: the hook mints,
      * the action stays concrete;</li>
      *   <li>a declared {@code COMMUNICATION_SITE_PORT}: tracked, never minted
@@ -1051,44 +1041,31 @@ public final class ConcolicScheduler {
     static final class SymbolicInputSelection {
         /** Verdict of a read no declaration names. */
         static final String UNDECLARED = "UNDECLARED_SYMBOLIC_INPUT";
-        /** regionId -> admitted field signatures, port ids and cells. */
-        private final Map<String, Set<String>> admitted;
-        /** The subset of {@link #admitted} the case declared to be clocks. */
-        private final Map<String, Set<String>> clocks;
+        /** The admitted names: every clock's return cell and every READ
+         *  placeholder's location, whatever region reads them. */
+        private final Set<String> admitted;
+        /** The subset of {@link #admitted} that are clocks. */
+        private final Set<String> clocks;
         /** regionId -> sourceId -> the one field that hook site mints. */
         private final Map<String, Map<String, String>> minted;
         private SymbolicInputSelection(
-                Map<String, Set<String>> admitted,
-                Map<String, Set<String>> clocks,
+                Set<String> admitted, Set<String> clocks,
                 Map<String, Map<String, String>> minted) {
             this.admitted = admitted;
             this.clocks = clocks;
             this.minted = minted;
         }
 
-        /** One pass over the static hook declarations and the declared rows, if
-         *  any. */
-        static SymbolicInputSelection read(
-                Path path, List<JsonObject> regionCatalog,
-                List<RegionInstancePlan> regionPlans)
+        /** The roots the scope map states ({@link StaticScopeMap#clockCallees},
+         *  {@link StaticScopeMap#readCells}) and the hook declarations of the
+         *  region catalog. */
+        static SymbolicInputSelection read(StaticScopeMap scopeMap,
+                                           List<JsonObject> regionCatalog)
                 throws IOException {
             Map<String, Map<String, String>> minted = new LinkedHashMap<>();
-            Set<String> catalogRegions = new LinkedHashSet<>();
-            // Declared method -> regions it roots, as the finalizer published.
-            // A declared method missing here means the plan never saw the
-            // declaration (distinct from a site the recording never entered).
-            Map<String, Set<String>> declaredRootRegions =
-                    new LinkedHashMap<>();
             for (JsonObject region : regionCatalog == null
                     ? Collections.<JsonObject>emptyList() : regionCatalog) {
                 String regionId = optionalString(region, "regionId");
-                if (!regionId.isEmpty()) catalogRegions.add(regionId);
-                if (!regionId.isEmpty() && optionalBool(region,
-                        DeclaredSymbolicInputs.ROOT_FIELD, false)) {
-                    declaredRootRegions.computeIfAbsent(
-                            optionalString(region, "rootMethod"),
-                            ignored -> new LinkedHashSet<>()).add(regionId);
-                }
                 for (JsonElement element : array(region,
                         StaticSymbolicSourceDeclaration.FIELD)) {
                     if (!element.isJsonObject() || regionId.isEmpty()) {
@@ -1100,163 +1077,13 @@ public final class ConcolicScheduler {
                             element.getAsJsonObject());
                 }
             }
-            Map<String, Set<String>> admitted = new LinkedHashMap<>();
-            Map<String, Set<String>> clocks = new LinkedHashMap<>();
-            if (path == null) {
-                return new SymbolicInputSelection(admitted, clocks, minted);
+            Set<String> clocks = new LinkedHashSet<>();
+            for (String callee : scopeMap.clockCallees()) {
+                clocks.add(callee + ".return");
             }
-            requireFile(path, "symbolic input selection");
-            for (JsonObject row : ArtifactIO.readJsonl(path)) {
-                // A clock row makes every name on it a clock (never decided
-                // from a callee); spelled `clock: true` or `kind: CLOCK`.
-                String callee = DeclaredSymbolicInputs.declaredCallee(row);
-                boolean clock = optionalBool(
-                        row, InputActionCatalog.DECLARED_WALL_CLOCK, false)
-                        || DeclaredSymbolicInputs.CLOCK_KIND.equals(
-                        firstNonBlank(optionalString(row, "kind")));
-                for (String regionId : declaredRegions(row, catalogRegions,
-                        regionPlans, declaredRootRegions)) {
-                    Set<String> names = admitted.computeIfAbsent(regionId,
-                            ignored -> new LinkedHashSet<>());
-                    Set<String> clockNames = clock
-                            ? clocks.computeIfAbsent(regionId,
-                                    ignored -> new LinkedHashSet<>())
-                            : null;
-                    for (String field : new String[]{
-                            "fieldSignatures", "portIds", "cells"}) {
-                        addDeclaredNames(names, row, field);
-                        if (clockNames != null) {
-                            addDeclaredNames(clockNames, row, field);
-                        }
-                    }
-                    // A callee's name is its return cell, carried by its
-                    // call-return ports.
-                    if (!callee.isEmpty()) {
-                        String cell = DeclaredSymbolicInputs
-                                .returnCell(callee);
-                        names.add(cell);
-                        if (clockNames != null) clockNames.add(cell);
-                    }
-                }
-            }
+            Set<String> admitted = new LinkedHashSet<>(clocks);
+            admitted.addAll(scopeMap.readCells());
             return new SymbolicInputSelection(admitted, clocks, minted);
-        }
-
-        /**
-         * Which planned regions one declaration row admits its names in.
-         *
-         * <p>A manual root belongs to a SITE, not a region id (ids are minted
-         * from the selection and move with it). Per {@link
-         * DeclaredSymbolicInputs} a declared method names every scoped region
-         * it roots, anchors, or whose occurrence ran it ({@link
-         * #ranTheDeclaredMethod}). The region-id form is still read.</p>
-         *
-         * <p>No match is a hard error: the plan was built without the
-         * declaration (a never-entered root is refused earlier, at
-         * aggregation).</p>
-         */
-        private static List<String> declaredRegions(
-                JsonObject row, Set<String> catalogRegions,
-                List<RegionInstancePlan> regionPlans,
-                Map<String, Set<String>> declaredRootRegions)
-                throws IOException {
-            String regionId = firstNonBlank(optionalString(row, "regionId"));
-            if (!regionId.isEmpty()) {
-                if (!catalogRegions.contains(regionId)) {
-                    throw new IOException("symbolic input selection names "
-                            + "an unknown static region: " + regionId);
-                }
-                return Collections.singletonList(regionId);
-            }
-            String method = DeclaredSymbolicInputs.declaredMethod(row);
-            if (method.isEmpty()) {
-                // A callee names no site: admit its name in every scoped
-                // region (empty is legal); the recording's port walk decides
-                // which regions actually call it.
-                if (!DeclaredSymbolicInputs.declaredCallee(row).isEmpty()) {
-                    return scopedRegions(row, catalogRegions, regionPlans,
-                            plan -> true);
-                }
-                throw new IOException("symbolic input selection row declares "
-                        + "neither a regionId nor a static site "
-                        + "(class + method) nor a callee: " + row);
-            }
-            // Rooted by declaration, or anchored: the same site seen from two
-            // sides.
-            Set<String> rooted = declaredRootRegions.getOrDefault(method,
-                    Collections.<String>emptySet());
-            List<String> resolved = scopedRegions(row, catalogRegions,
-                    regionPlans, plan -> method.equals(optionalString(
-                            plan.json(), "targetMethod"))
-                            || rooted.contains(plan.regionId())
-                            || ranTheDeclaredMethod(plan, method));
-            if (resolved.isEmpty()) {
-                // Empty = a plan built without this declaration: re-plan, don't
-                // edit the case.
-                String node = firstNonBlank(optionalString(row, "node"));
-                String epoch = firstNonBlank(optionalString(row, "epoch"));
-                String scope = (node.isEmpty() ? "" : " on node " + node)
-                        + (epoch.isEmpty() ? "" : " at epoch " + epoch);
-                throw new IOException("DECLARED_INPUT_NOT_PLANNED: symbolic "
-                        + "input selection names " + method + scope
-                        + ", which this runtime region plan carries no "
-                        + "region for; the plan honoured the declared "
-                        + "roots " + declaredRootRegions.keySet() + ", so "
-                        + "it was planned without this declaration and must "
-                        + "be re-planned with it");
-            }
-            return resolved;
-        }
-
-        /** Whether this occurrence RAN the declared method (the fold rule,
-         *  paper SS3.1.2, {@code Identity#fold}): a method called synchronously
-         *  inside an occurrence opens none of its own, so root/anchor tests
-         *  miss it (hdfs-11741's {@code removeExpiredKeys}). Read from the
-         *  recorded {@code runtimeDefinitionMethods}, never static containment.
-         */
-        private static boolean ranTheDeclaredMethod(
-                RegionInstancePlan plan, String method) {
-            return plan.goal().runtimeDefinitionMethods().contains(method);
-        }
-
-        /** The catalogued planned regions in the row's node/epoch scope that
-         *  {@code names} holds for, once each, in plan order. */
-        private static List<String> scopedRegions(
-                JsonObject row, Set<String> catalogRegions,
-                List<RegionInstancePlan> regionPlans,
-                java.util.function.Predicate<RegionInstancePlan> names) {
-            String node = firstNonBlank(optionalString(row, "node"));
-            String epoch = firstNonBlank(optionalString(row, "epoch"));
-            Set<String> resolved = new LinkedHashSet<>();
-            for (RegionInstancePlan plan : regionPlans == null
-                    ? Collections.<RegionInstancePlan>emptyList()
-                    : regionPlans) {
-                if (names.test(plan)
-                        && scopeAdmits(plan.sourceKey(), node, epoch)
-                        && catalogRegions.contains(plan.regionId())) {
-                    resolved.add(plan.regionId());
-                }
-            }
-            return new ArrayList<>(resolved);
-        }
-
-        /** Whether a {@code <workload>/<node>#epoch<n>} source key is in the
-         *  declared scope; unset = any. */
-        private static boolean scopeAdmits(String sourceKey, String node,
-                                   String epoch) {
-            if (node.isEmpty() && epoch.isEmpty()) return true;
-            String key = nonNull(sourceKey);
-            int slash = key.indexOf('/');
-            String address = slash < 0 ? key : key.substring(slash + 1);
-            int hash = address.indexOf('#');
-            String actualNode = hash < 0 ? address
-                    : address.substring(0, hash);
-            String actualEpoch = hash < 0 ? "" : address.substring(hash + 1);
-            if (actualEpoch.startsWith("epoch")) {
-                actualEpoch = actualEpoch.substring("epoch".length());
-            }
-            return (node.isEmpty() || node.equals(actualNode))
-                    && (epoch.isEmpty() || epoch.equals(actualEpoch));
         }
 
         /** An explicit source hook is itself the allowlist authority. */
@@ -1287,26 +1114,6 @@ public final class ConcolicScheduler {
             }
         }
 
-        private static void addDeclaredNames(
-                Set<String> output, JsonObject row, String field)
-                throws IOException {
-            JsonElement encoded = row.get(field);
-            if (encoded == null) return;
-            if (!encoded.isJsonArray()) {
-                throw new IOException("symbolic input selection " + field
-                        + " must be an array");
-            }
-            for (JsonElement element : encoded.getAsJsonArray()) {
-                if (!element.isJsonPrimitive()
-                        || !element.getAsJsonPrimitive().isString()
-                        || firstNonBlank(element.getAsString()).isEmpty()) {
-                    throw new IOException("symbolic input selection " + field
-                            + " entries must be non-empty strings");
-                }
-                output.add(firstNonBlank(element.getAsString()));
-            }
-        }
-
         /**
          * Ports one occurrence's DECLARED sites mint: scope-map static half
          * joined with the recording's captures, for sites this rule admits
@@ -1332,7 +1139,7 @@ public final class ConcolicScheduler {
                     ports.add(capture.port(plan, site));
                 }
             }
-            return admittedPorts(plan.regionId(), ports);
+            return admittedPorts(ports);
         }
 
         /** The same rule for an exposed occurrence (DESIGN4 section 3.3b): one
@@ -1349,15 +1156,14 @@ public final class ConcolicScheduler {
                     ports.add(DeclaredSiteCapture.declaredPort(plan, site));
                 }
             }
-            return admittedPorts(plan.regionId(), ports);
+            return admittedPorts(ports);
         }
 
         /** The ports this rule declares, first of each port id. */
-        private JsonArray admittedPorts(String regionId,
-                                        List<JsonObject> ports) {
+        private JsonArray admittedPorts(List<JsonObject> ports) {
             Map<String, JsonObject> byId = new LinkedHashMap<>();
             for (JsonObject port : ports) {
-                if (declares(regionId, port)) {
+                if (declares(port)) {
                     byId.putIfAbsent(optionalString(port, "portId"), port);
                 }
             }
@@ -1366,10 +1172,9 @@ public final class ConcolicScheduler {
             return minted;
         }
 
-        /** Named by the selection file, or a fault marker in the workload's
-         *  text. */
-        private boolean declares(String regionId, JsonObject action) {
-            return admits(regionId, action) || workloadOwnedSymbol(action);
+        /** A root the scope map states, or a fault marker. */
+        private boolean declares(JsonObject action) {
+            return names(admitted, action) || workloadOwnedSymbol(action);
         }
 
         /** The accessor declarations of one site, or all of them when it has
@@ -1420,7 +1225,7 @@ public final class ConcolicScheduler {
                 // minted here is a free variable the attach overwrites.
                 return;
             }
-            if (!declares(regionId, action)) {
+            if (!declares(action)) {
                 // Undeclared: concrete. Its root-derived expression still rides
                 // with the value; a plan-side mint would hide the real writer
                 // behind a fresh root.
@@ -1431,7 +1236,7 @@ public final class ConcolicScheduler {
             // Declared: the replay mints here.
             retained.addProperty(
                     InputActionCatalog.DECLARED_SYMBOLIC_ROOT, true);
-            if (names(clocks, regionId, action)) {
+            if (names(clocks, action)) {
                 retained.addProperty(
                         InputActionCatalog.DECLARED_WALL_CLOCK, true);
             }
@@ -1462,25 +1267,17 @@ public final class ConcolicScheduler {
                     .containsValue(field);
         }
 
-        /** Whether one region admits one declared name, for tests. */
-        boolean declares(String regionId, String name) {
-            Set<String> names = admitted.get(nonNull(regionId));
-            return names != null && names.contains(name);
+        /** Whether one name is admitted, for tests. */
+        boolean declares(String name) {
+            return admitted.contains(name);
         }
 
-        /** Whether one region admits one proposed action: its port or any of
-         *  {@link ConcolicScheduler#actionCells} (including the landing local).
-         *  Trap: a narrower test misses declarations that name the accessor's
-         *  return while the port names the leaf field. */
-        private boolean admits(String regionId, JsonObject action) {
-            return names(admitted, regionId, action);
-        }
-
-        /** Whether one declared name set covers this action's port or cells. */
-        private static boolean names(Map<String, Set<String>> declared,
-                                     String regionId, JsonObject action) {
-            Set<String> names = declared.get(nonNull(regionId));
-            if (names == null || names.isEmpty()) return false;
+        /** Whether a name set covers this action's port or any of {@link
+         *  ConcolicScheduler#actionCells} (including the landing local).  Trap:
+         *  a narrower test misses a name for the accessor's return while the
+         *  port names the leaf field. */
+        private static boolean names(Set<String> names, JsonObject action) {
+            if (names.isEmpty()) return false;
             if (names.contains(actionPort(action))) return true;
             for (String cell : actionCells(action)) {
                 if (names.contains(cell)) return true;
@@ -1519,21 +1316,15 @@ public final class ConcolicScheduler {
                         ignored -> new LinkedHashSet<>()).add(from);
             }
             if (copies.isEmpty()) return;
-            // Clock names are renamed too: the flag travels with the
-            // declaration.
-            for (Map<String, Set<String>> declared
-                    : Arrays.asList(admitted, clocks)) {
-                for (Set<String> names : declared.values()) {
-                    Set<String> renamed = new LinkedHashSet<>(names);
-                    Deque<String> pending = new ArrayDeque<>(names);
-                    while (!pending.isEmpty()) {
-                        for (String copied : copies.getOrDefault(
-                                pending.removeFirst(),
-                                Collections.<String>emptySet())) {
-                            if (renamed.add(copied)) pending.addLast(copied);
-                        }
+            // Clock names are renamed too: the flag travels with the name.
+            for (Set<String> names : Arrays.asList(admitted, clocks)) {
+                Deque<String> pending = new ArrayDeque<>(names);
+                while (!pending.isEmpty()) {
+                    for (String copied : copies.getOrDefault(
+                            pending.removeFirst(),
+                            Collections.<String>emptySet())) {
+                        if (names.add(copied)) pending.addLast(copied);
                     }
-                    names.addAll(renamed);
                 }
             }
         }
@@ -1556,7 +1347,6 @@ public final class ConcolicScheduler {
         private final StaticScopeMap staticScopeMap;
         private final JsonObject regionPlanIdentity;
         private final JsonObject candidateGraphIdentity;
-        private final JsonObject symbolicInputsIdentity;
         private final SymbolicInputSelection symbolicInputs;
 
         private LoadedInputs(List<RegionInstancePlan> regionPlans,
@@ -1565,7 +1355,6 @@ public final class ConcolicScheduler {
                              StaticScopeMap staticScopeMap,
                              JsonObject regionPlanIdentity,
                              JsonObject candidateGraphIdentity,
-                             JsonObject symbolicInputsIdentity,
                              SymbolicInputSelection symbolicInputs) {
             this.regionPlans = regionPlans;
             this.regionIndex = regionIndex;
@@ -1573,7 +1362,6 @@ public final class ConcolicScheduler {
             this.staticScopeMap = staticScopeMap;
             this.regionPlanIdentity = regionPlanIdentity;
             this.candidateGraphIdentity = candidateGraphIdentity;
-            this.symbolicInputsIdentity = symbolicInputsIdentity;
             this.symbolicInputs = symbolicInputs;
         }
     }
@@ -1588,7 +1376,6 @@ public final class ConcolicScheduler {
         public final String occurrenceId;
         public final String goalId;
         public final int maxJobs;
-        public final Path symbolicInputs;
         /** The occurrence of the annotated site the case declares, or "". */
         public final String targetOccurrence;
 
@@ -1596,8 +1383,7 @@ public final class ConcolicScheduler {
                           Path staticScopeMap,
                           Path outputDirectory, String regionId,
                           String occurrenceId, String goalId,
-                          int maxJobs,
-                          Path symbolicInputs, String targetOccurrence) {
+                          int maxJobs, String targetOccurrence) {
             this.regionPlan = regionPlan;
             this.candidateGraph = candidateGraph;
             this.staticScopeMap = staticScopeMap;
@@ -1606,31 +1392,23 @@ public final class ConcolicScheduler {
             this.occurrenceId = nonNull(occurrenceId);
             this.goalId = nonNull(goalId);
             this.maxJobs = Math.max(1, maxJobs);
-            this.symbolicInputs = symbolicInputs;
             this.targetOccurrence = nonNull(targetOccurrence);
         }
 
         public static Arguments parse(String[] args) {
             Map<String, String> values = parseArgs(args, "region-plan",
                     "candidate-graph", "static-scope-map", "output-dir",
-                    "max-jobs", "symbolic-inputs", "target-occurrence");
+                    "max-jobs", "target-occurrence");
             Path regionPlan = requiredPath(values, "region-plan");
             Path output = Paths.get(firstNonBlank(values.get("output-dir"),
                     ArtifactIO.sibling(regionPlan,
                             "concolic-schedule").toString()));
             Path candidateGraph = requiredPath(values, "candidate-graph");
             Path staticScopeMap = requiredPath(values, "static-scope-map");
-            Path symbolicInputs = optionalPath(
-                    values.get("symbolic-inputs"));
             return new Arguments(regionPlan, candidateGraph, staticScopeMap,
                     output, "", "", "",
                     positiveInt(values.get("max-jobs"), 1, "max-jobs"),
-                    symbolicInputs, values.get("target-occurrence"));
-        }
-
-        private static Path optionalPath(String value) {
-            return value == null || value.trim().isEmpty()
-                    ? null : Paths.get(value);
+                    values.get("target-occurrence"));
         }
 
         /** The one option-integer parse: a mistyped bound is refused, never
@@ -1656,8 +1434,7 @@ public final class ConcolicScheduler {
             return new Arguments(regionPlan, candidateGraph, staticScopeMap,
                     outputDirectory,
                     selection.regionId, selection.occurrenceId,
-                    selection.goalId, 1,
-                    symbolicInputs, targetOccurrence);
+                    selection.goalId, 1, targetOccurrence);
         }
     }
 }

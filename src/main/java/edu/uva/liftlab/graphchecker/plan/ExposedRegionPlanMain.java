@@ -63,8 +63,6 @@ public final class ExposedRegionPlanMain {
                 JsonObject.class), "provenance");
         Path catalog = Paths.get(optionalString(
                 object(provenance, "staticCatalog"), "path"));
-        Path symbolicInputs = Paths.get(optionalString(
-                object(provenance, "symbolicInputs"), "path"));
         StaticScopeMap scopeMap = StaticScopeMap.read(
                 catalog.resolveSibling(StaticScopeMap.FILE));
         if (!scopeMap.stated()) {
@@ -121,8 +119,8 @@ public final class ExposedRegionPlanMain {
             exposedBy.add(sessionId);
         }
         ConcolicScheduler.SymbolicInputSelection inputs =
-                ConcolicScheduler.SymbolicInputSelection.read(symbolicInputs,
-                        regionCatalog, regionPlans);
+                ConcolicScheduler.SymbolicInputSelection.read(scopeMap,
+                        regionCatalog);
         LoopBoundPolicy loopBound = ConcolicScheduler.declaredLoopBounds(
                 LoopBoundPolicy.declaredDefault(), exposed);
         List<JsonObject> rows = new ArrayList<>();

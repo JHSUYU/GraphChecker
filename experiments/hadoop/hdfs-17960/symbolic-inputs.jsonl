@@ -1,1 +1,0 @@
-{"class":"org.apache.hadoop.hdfs.server.namenode.snapshot.FSImageFormatPBSnapshot$Saver","method":"void serializeSnapshotSection(java.io.OutputStream)","cells":["<org.apache.hadoop.hdfs.server.namenode.snapshot.SnapshotManager: int getNumSnapshots()>.return"]}

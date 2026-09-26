@@ -16,7 +16,6 @@ import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.plan.DeclaredSiteCapture;
-import edu.uva.liftlab.graphchecker.plan.DeclaredSymbolicInputs;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.plan.RuntimePlanArtifact;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
@@ -144,8 +143,7 @@ public final class RuntimeRegionPlanner {
                     foldOwners);
         }
         stampActivationContainment(activationByCall, trace);
-        stampFoldedRegionEntries(result, foldedRoots, foldOwners,
-                activationByCall, trace);
+        stampFoldedRegionEntries(foldedRoots, foldOwners, activationByCall);
         result.runtimeInstances.addAll(activationByCall.values());
         stampRecordedExchanges(result, trace, protocolEvents);
         return result;
@@ -164,53 +162,31 @@ public final class RuntimeRegionPlanner {
     }
 
     /**
-     * Names the occurrence every FOLDED entry ({@code Identity#fold}) belongs
-     * to, as a {@link RuntimeSelectedRegionFinalizer#REGION_FOLD_KIND} row and
-     * on the owner's {@link RuntimeSelectedRegionFinalizer#FOLDED_REGION_IDS}.
-     * An entry with no planned owner still gets a row.
+     * Names on its owner ({@link RuntimeSelectedRegionFinalizer
+     * #FOLDED_REGION_IDS}) the region of every FOLDED entry ({@code
+     * Identity#fold}): the occurrence it ran in declares what it declares.
      */
     private static void stampFoldedRegionEntries(
-            Result result, Map<Long, StaticProgram.RegionRow> foldedRoots,
+            Map<Long, StaticProgram.RegionRow> foldedRoots,
             Map<Long, Long> foldOwners,
-            Map<Long, Map<String, Object>> activationByCall,
-            TraceIndex trace) {
+            Map<Long, Map<String, Object>> activationByCall) {
         List<Long> ordered = new ArrayList<>(foldedRoots.keySet());
         Collections.sort(ordered);
         for (Long folded : ordered) {
-            long rootCallId = folded;
             StaticProgram.RegionRow skeleton = foldedRoots.get(folded);
-            MethodEvent root = trace.methodByCall.get(rootCallId);
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("schemaVersion", 3);
-            row.put("kind", RuntimeSelectedRegionFinalizer.REGION_FOLD_KIND);
-            row.put("regionId", skeleton.regionId);
-            row.put("rootMethod", skeleton.rootMethod);
-            row.put("rootCallId", rootCallId);
-            if (root != null) row.put("test", root.test);
             Long owner = foldOwners.get(folded);
             Map<String, Object> enclosing = owner == null ? null
                     : activationByCall.get(owner);
-            if (enclosing != null) {
-                row.put("enclosingRegionId",
-                        stringValue(enclosing.get("regionId")));
-                row.put("enclosingActivationId",
-                        stringValue(enclosing.get("activationId")));
-                row.put("occurrenceAddress",
-                        stringValue(enclosing.get("occurrenceAddress")));
-                List<String> held = new ArrayList<>(strings(enclosing.get(
-                        RuntimeSelectedRegionFinalizer.FOLDED_REGION_IDS)));
-                if (!held.contains(skeleton.regionId)) {
-                    held.add(skeleton.regionId);
-                }
-                enclosing.put(
-                        RuntimeSelectedRegionFinalizer.FOLDED_REGION_IDS,
-                        held);
+            if (enclosing == null) continue;
+            List<String> held = new ArrayList<>(strings(enclosing.get(
+                    RuntimeSelectedRegionFinalizer.FOLDED_REGION_IDS)));
+            if (!held.contains(skeleton.regionId)) {
+                held.add(skeleton.regionId);
             }
-            result.regionFolds.add(row);
+            enclosing.put(RuntimeSelectedRegionFinalizer.FOLDED_REGION_IDS,
+                    held);
         }
     }
-
-
 
     /** Stamps each activation with its transport hooks' exchanges. */
     private static void stampRecordedExchanges(
@@ -958,13 +934,12 @@ public final class RuntimeRegionPlanner {
             observedMethods.retainAll(allowedMethods);
             List<Map<String, Object>> branches = branches(
                     region.branchPolicies, trace.runtime(calls));
-            // README TARGET-1: the finalizer's seed wins (the EXCEPTION
-            // region may fold elsewhere); the static test is the fallback.
+            // README TARGET-1: the finalizer decided which occurrences
+            // observed the throw's deciding guard (the EXCEPTION region may
+            // fold elsewhere).
             boolean target = Boolean.TRUE.equals(MapFields.booleanValue(
                     seed.get(RuntimeSelectedRegionFinalizer
-                            .FAILURE_TARGET_OCCURRENCE)))
-                    || (region.selection.startsWith("EXCEPTION")
-                    && observedFailureTargetActivation(branches));
+                            .FAILURE_TARGET_OCCURRENCE)));
             MethodEvent semanticContext = target
                     ? trace.selectedTargetContext(root, calls, branches)
                     : root;
@@ -1153,12 +1128,6 @@ public final class RuntimeRegionPlanner {
         row.put("schemaVersion", 3);
         row.put("kind", "SYMBOLIC_REGION");
         row.put("regionId", region.regionId);
-        // Lets the scheduler tell an unseen declaration from a site the
-        // recording never entered.
-        if (region.declaredInputRoot) {
-            row.put("rootMethod", region.rootMethod);
-            row.put(DeclaredSymbolicInputs.ROOT_FIELD, true);
-        }
         // Copied, not aliased: later passes normalize graph rows in place.
         Object declaredSources = region.json.get(
                 StaticSymbolicSourceDeclaration.FIELD);
@@ -1237,18 +1206,6 @@ public final class RuntimeRegionPlanner {
             return result;
         }
         return GSON.toJsonTree(value);
-    }
-
-    /** Whether this activation plans a target-reach closure. */
-    private static boolean observedFailureTargetActivation(
-            List<Map<String, Object>> branches) {
-        boolean declared = false;
-        for (Map<String, Object> branch : branches) {
-            if (!Boolean.TRUE.equals(branch.get("failureTarget"))) continue;
-            declared = true;
-            if (Boolean.TRUE.equals(branch.get("observed"))) return true;
-        }
-        return !declared;
     }
 
     /** The declared communication ports this region hands to the VM, and the
@@ -1766,9 +1723,6 @@ public final class RuntimeRegionPlanner {
         /** Gaps the region finalizer raised while building these ports. */
         final List<Map<String, Object>> planGaps = new ArrayList<>();
         final List<Map<String, Object>> runtimeInstances = new ArrayList<>();
-        /** FOLDED entries ({@link #stampFoldedRegionEntries}); never in
-         * {@link #runtimeInstances}. */
-        final List<Map<String, Object>> regionFolds = new ArrayList<>();
         int staticRegionCount;
 
         String runtimePlanJsonl() {

@@ -986,6 +986,13 @@ public final class Identity {
 
     private static volatile FrameJournal.Clock CLOCK = UNAVAILABLE;
 
+    /** A position after every VM event so far, or 0 with no clock: where a
+     *  decision the VM gave no event of its own stands. */
+    static long afterLastEvent() {
+        long now = CLOCK.now();
+        return now < 0L ? 0L : now + 1L;
+    }
+
     /**
      * One open region entry: where its endpoints are indexed from.  An
      * opening entry carries its occurrence; a folded one ({@link #fold})

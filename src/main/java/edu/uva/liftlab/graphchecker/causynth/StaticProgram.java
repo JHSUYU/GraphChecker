@@ -3,7 +3,6 @@ package edu.uva.liftlab.graphchecker.causynth;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
-import edu.uva.liftlab.graphchecker.plan.DeclaredSymbolicInputs;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 
@@ -269,24 +268,46 @@ public final class StaticProgram {
             next.removeAll(visited);
             frontier = new ArrayList<>(next);
         }
-        // The root method itself may hold the service loop.
-        int demanded = Integer.MAX_VALUE;
+        // The root method itself may hold the service loop.  Its demanded
+        // unit is the first call in the loop's BODY: a call before the
+        // loop's control sites feeds its condition (a synthetic accessor of
+        // the outer class's running flag), which no body edge dominates.  A
+        // loop with no call after its control sites (do-while) keeps its
+        // first call.
+        List<Integer> units = new ArrayList<>();
         for (List<String> sites : callSites.values()) {
             for (String site : sites) {
                 if (site.startsWith(root + "#u")) {
-                    demanded = Math.min(demanded,
-                            SiteId.unitIndexOf(site));
+                    units.add(SiteId.unitIndexOf(site));
                 }
             }
         }
-        if (demanded != Integer.MAX_VALUE) {
+        Collections.sort(units);
+        Map<String, Object> first = null;
+        int firstUnit = -1;
+        for (int unit : units) {
             Map<String, Object> loop = iteratedLoopAt(loopsByMethod, iterated,
-                    root, demanded);
-            if (loop != null) {
-                return rootLoop(loop, root, demanded);
+                    root, unit);
+            if (loop == null) continue;
+            if (unit > lastControlUnit(loop)) {
+                return rootLoop(loop, root, unit);
+            }
+            if (first == null) {
+                first = loop;
+                firstUnit = unit;
             }
         }
-        return null;
+        return first == null ? null : rootLoop(first, root, firstUnit);
+    }
+
+    /** The last unit of the loop's control sites, or -1. */
+    private static int lastControlUnit(Map<String, Object> loop) {
+        int last = -1;
+        for (String site : strings(loop.get(
+                LoopBoundPolicy.LOOP_CONTROL_SITE_IDS))) {
+            last = Math.max(last, SiteId.unitIndexOf(site));
+        }
+        return last;
     }
 
     /** The first iterated loop of {@code method} holding the unit, or null. */
@@ -501,11 +522,6 @@ public final class StaticProgram {
         public final String regionId;
         public final String rootMethod;
         public final String rootAuthority;
-        /**
-         * Whether {@code symbolic-inputs.jsonl} names this root; stamped by
-         * the skeleton planner so no later stage re-reads the case file.
-         */
-        public final boolean declaredInputRoot;
         /** The loop body this region is re-rooted at, or {@code null}. */
         public final Map<String, Object> rootLoop;
         public final String anchorMethod;
@@ -539,8 +555,6 @@ public final class StaticProgram {
             rootAuthority = stringValue(row.get(
                     LoopBoundPolicy.ROOT_AUTHORITY));
             rootLoop = asMap(row.get(LoopBoundPolicy.ROOT_LOOP));
-            declaredInputRoot = Boolean.TRUE.equals(
-                    row.get(DeclaredSymbolicInputs.ROOT_FIELD));
             anchorMethod = stringValue(row.get("anchorMethod"));
             selection = stringValue(row.get("selection"));
             methods = strings(row.get("methods"));

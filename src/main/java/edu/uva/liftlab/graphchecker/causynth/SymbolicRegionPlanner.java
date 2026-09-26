@@ -3,7 +3,6 @@ package edu.uva.liftlab.graphchecker.causynth;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
-import edu.uva.liftlab.graphchecker.plan.DeclaredSymbolicInputs;
 import edu.uva.liftlab.graphchecker.plan.DependencyRole;
 
 import java.util.ArrayList;
@@ -41,10 +40,6 @@ final class SymbolicRegionPlanner {
                 method -> !program.regionsHolding(method).isEmpty());
         anchors.root(program, anchors.state, method -> STATE_WRITER_ENTRY,
                 method -> false);
-        // Last: the region id is minted from (authority, root), so a
-        // declaration must not rename a region another rule already roots.
-        anchors.root(program, anchors.declared,
-                method -> DeclaredSymbolicInputs.AUTHORITY, method -> false);
         declareCommunicationPorts(program);
         declareRetainedLoops(program);
     }
@@ -59,12 +54,6 @@ final class SymbolicRegionPlanner {
         /** Either capture of a wire value may own an occurrence. */
         private final Set<String> communication;
         private final Set<String> state = new LinkedHashSet<>();
-        /**
-         * Every declared symbolic-input method is an anchor and a root by
-         * declaration (see DeclaredSymbolicInputs).
-         */
-        private final Set<String> declared = new LinkedHashSet<>(
-                DeclaredSymbolicInputs.configured());
 
         private Anchors(StaticProgram program,
                         Collection<String> selectedMethods) {
@@ -74,15 +63,6 @@ final class SymbolicRegionPlanner {
             selected.remove("");
             communication = communicationEndpoints(program);
             communication.retainAll(selected);
-            Set<String> unsliced = new LinkedHashSet<>(declared);
-            unsliced.removeAll(selected);
-            if (!unsliced.isEmpty()) {
-                // The analyzer seeds every declaration; refuse, never drop.
-                throw new IllegalStateException(
-                        "DECLARED_INPUT_OUTSIDE_STATIC_SLICE: declared "
-                                + "symbolic input methods are not in the "
-                                + "static slice: " + unsliced);
-            }
             Set<String> demandedState = failureRelevantState(program.edges);
             for (String method : selected) {
                 outgoing.put(method, new LinkedHashSet<>());
@@ -160,21 +140,16 @@ final class SymbolicRegionPlanner {
             List<String> communicating = intersections(methods,
                     communication);
             List<String> stateful = intersections(methods, state);
-            // Last: anchorMethod is anchors.get(0), and another kind keeps it.
-            List<String> declaring = intersections(methods, declared);
             boolean explicitFault = EXPLICIT_FAULT_ENTRY.equals(authority);
             List<String> fault = explicitFault
                     ? Collections.singletonList(root)
                     : Collections.<String>emptyList();
             List<String> anchors = union(fault, failed, communicating,
-                    stateful, declaring);
+                    stateful);
             if (anchors.isEmpty()) {
                 return;
             }
             Map<String, Object> row = skeletonRow(root, authority);
-            if (declared.contains(root)) {
-                row.put(DeclaredSymbolicInputs.ROOT_FIELD, true);
-            }
             row.put("anchorMethod", anchors.get(0));
             row.put("anchorMethods", anchors);
             row.put("methods", methods);

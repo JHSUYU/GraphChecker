@@ -6,7 +6,6 @@ import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.plan.DeclaredSiteCapture;
-import edu.uva.liftlab.graphchecker.plan.DeclaredSymbolicInputs;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.plan.StaticSymbolicSourceDeclaration;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
@@ -62,9 +61,14 @@ public final class RuntimeSelectedRegionFinalizer {
     /** The fatal target is the origin of every shared-location demand. */
     private static final int TARGET_DEMAND_DEPTH = 0;
     /**
+     * {@code admissionBasis} of an activation carried because it read a
+     * root ({@link StaticScopeMap#clockCallees}, a fault marker).
+     */
+    private static final String ROOT_READ_ADMISSION = "ROOT_READ_V1";
+    /**
      * {@code admissionBasis} of an activation carried because its region
      * declares a communication capture.  Same rule as {@link
-     * DeclaredSymbolicInputs#ADMISSION}: nothing on this node demands an
+     * #ROOT_READ_ADMISSION}: nothing on this node demands an
      * export's outputs, so no demand-directed closure arrives on it, and an
      * export outside every instrumented activation has no decision prefix,
      * so its arm can never be attested.
@@ -92,13 +96,6 @@ public final class RuntimeSelectedRegionFinalizer {
     public static final String SHARED_ADDRESS_ROOT_CALLS =
             "sharedAddressRootCallIds";
     /**
-     * {@code kind} of one recorded region entry the run FOLDED (F1, paper
-     * SS3.1.2, {@code Identity#fold}): a declared region entered synchronously
-     * inside a running occurrence opens none of its own; the row names the
-     * enclosing occurrence that performed everything below it.
-     */
-    public static final String REGION_FOLD_KIND = "RUNTIME_REGION_FOLD";
-    /**
      * Activation member: the regions whose roots FOLDED into this occurrence;
      * a region named here has no occurrence of its own in this plan.
      */
@@ -124,7 +121,6 @@ public final class RuntimeSelectedRegionFinalizer {
             List<StaticProgram.RegionRow> selectedSkeletons,
             String skeletonSource, Collection<String> observedMethods,
             Collection<Map<String, Object>> runtimeInstances,
-            Collection<Map<String, Object>> runtimeRegionFolds,
             Collection<Map<String, Object>> runtimeObservations,
             StaticScopeMap scopeMap)
             throws IOException {
@@ -132,9 +128,6 @@ public final class RuntimeSelectedRegionFinalizer {
         if (observedMethods != null) {
             observed.addAll(observedMethods);
         }
-        refuseUnactivatedDeclaredInputs(selectedSkeletons, runtimeInstances,
-                runtimeRegionFolds);
-
         StaticProgram program = new StaticProgram();
         program.graph = graph;
         for (StaticProgram.RegionRow skeleton : selectedSkeletons) {
@@ -198,13 +191,7 @@ public final class RuntimeSelectedRegionFinalizer {
             // asks whether its region holds the site's method.
             region.put("methods", foldedUnion(program, skeleton, foldedHere,
                     row -> row.methods));
-            // Carried over by name.  Catalogs are unioned; the declared-root
-            // flag is not, since it pairs with THIS row's rootMethod.
-            Object declaredRoot = skeleton.json.get(
-                    DeclaredSymbolicInputs.ROOT_FIELD);
-            if (declaredRoot != null) {
-                region.put(DeclaredSymbolicInputs.ROOT_FIELD, declaredRoot);
-            }
+            // Carried over by name, unioned.
             for (String carried : new String[]{RETAINED_LOOPS,
                     StaticSymbolicSourceDeclaration.FIELD,
                     ConfiguredSourcePhaseContract.DECLARATION_FIELD}) {
@@ -230,7 +217,7 @@ public final class RuntimeSelectedRegionFinalizer {
         Map<String, List<CutPort>> cutPorts = declaredCutPorts(program);
         declareCommunicationPorts(program, cutPorts, foldedIntoRegion);
         // One index shared by the fatal-prefix pass and the closure walk.
-        RegionDemandIndex demands = new RegionDemandIndex(program);
+        RegionDemandIndex demands = new RegionDemandIndex(program, scopeMap);
         applyClosure(program, failureDirectedClosure(program, demands,
                 skeletonSource, scopeMap));
         // AFTER the closure: the class of a shared address is whether the
@@ -533,54 +520,6 @@ public final class RuntimeSelectedRegionFinalizer {
         return new ArrayList<>(byRecordedActivation.values());
     }
 
-    /**
-     * Refuses a declared symbolic input whose method the recording never
-     * entered, either as its own occurrence ({@code RUNTIME_REGION_ACTIVATION})
-     * or as a FOLDED entry inside another ({@link #REGION_FOLD_KIND}, {@code
-     * Identity#fold}); the fold rule makes both the same event.
-     *
-     * <p>Roots are manual and every PLAN stage keeps a declared region, but
-     * none invents an entry: zero entries means the workload never reached
-     * the site, named here rather than downstream as an uncovered site.
-     * Trap: counting activations alone misses entries that all ran folded.</p>
-     *
-     * @param runtimeRegionFolds the {@link #REGION_FOLD_KIND} rows of this
-     *     recording: one per region entry that opened no occurrence
-     */
-    public static void refuseUnactivatedDeclaredInputs(
-            List<StaticProgram.RegionRow> selectedSkeletons,
-            Collection<Map<String, Object>> runtimeInstances,
-            Collection<Map<String, Object>> runtimeRegionFolds)
-            throws IOException {
-        Map<String, Integer> activations = new LinkedHashMap<>();
-        Map<String, Integer> folds = new LinkedHashMap<>();
-        for (Map<String, Object> instance : runtimeInstances == null
-                ? Collections.<Map<String, Object>>emptyList()
-                : runtimeInstances) {
-            activations.merge(text(instance.get("regionId")), 1,
-                    Integer::sum);
-        }
-        for (Map<String, Object> fold : runtimeRegionFolds == null
-                ? Collections.<Map<String, Object>>emptyList()
-                : runtimeRegionFolds) {
-            folds.merge(text(fold.get("regionId")), 1, Integer::sum);
-        }
-        for (StaticProgram.RegionRow skeleton : selectedSkeletons) {
-            if (!skeleton.declaredInputRoot
-                    || activations.getOrDefault(skeleton.regionId, 0) > 0
-                    || folds.getOrDefault(skeleton.regionId, 0) > 0) {
-                continue;
-            }
-            throw new IOException("DECLARED_INPUT_NEVER_ACTIVATED: the case "
-                    + "declares a symbolic input in "
-                    + skeleton.rootMethod + ", planned as region "
-                    + skeleton.regionId + ", and the recording entered it "
-                    + "0 times -- no occurrence of its own and no entry "
-                    + "folded into one; the workload never reached the "
-                    + "declared site, so no engine rule can carry it");
-        }
-    }
-
     /** True when this skeleton's methods were observed in the trace. */
     private static boolean selectedRegion(StaticProgram.RegionRow skeleton,
                                           Set<String> observed) {
@@ -779,23 +718,17 @@ public final class RuntimeSelectedRegionFinalizer {
             // exactly these and does not re-ask the static selection.
             instances.get(target).put(FAILURE_TARGET_OCCURRENCE, true);
         }
-        // Declared-input occurrences, admitted by declaration although nothing
-        // demands their outputs: a declared site often writes nothing (an
-        // expiry check that removes nothing), so no demand walk arrives on it.
-        // Includes occurrences a declared region FOLDED into, which performed
-        // its reads.  Their DECLARED_SITE captures seed the walk.
-        Set<String> declaredCallees =
-                DeclaredSymbolicInputs.configuredCallees().keySet();
+        // Occurrences that read a root (a clock, a fault marker), admitted
+        // although nothing demands their outputs: a root often decides an arm
+        // that writes nothing (an expiry check that removes nothing), and a
+        // clock's value may leave by a wire the walk does not follow back
+        // (hdfs-11741's key-rotation tick).  Their DECLARED_SITE captures
+        // seed the walk.
+        Set<String> clockCallees = scopeMap.clockCallees();
         Set<String> declaredInputOccurrences = new LinkedHashSet<>();
         for (Map.Entry<String, Map<String, Object>> entry
                 : instances.entrySet()) {
-            StaticProgram.RegionRow skeleton = program.skeletons.get(
-                    text(entry.getValue().get("regionId")));
-            if ((skeleton != null && skeleton.declaredInputRoot)
-                    || declaresACapturedCallee(entry.getValue(),
-                    declaredCallees)
-                    || foldedADeclaredInputRoot(program,
-                    entry.getValue())) {
+            if (readsARoot(entry.getValue(), clockCallees)) {
                 declaredInputOccurrences.add(entry.getKey());
             }
         }
@@ -857,7 +790,7 @@ public final class RuntimeSelectedRegionFinalizer {
         // one: a declared occurrence the location demand also reached keeps
         // that basis, which carries the demand depth the scheduler reads.
         stateAdmissionBasis(instances, declaredInputOccurrences,
-                DeclaredSymbolicInputs.ADMISSION);
+                ROOT_READ_ADMISSION);
         stateAdmissionBasis(instances, declaredCaptureOccurrences,
                 DECLARED_COMMUNICATION_ADMISSION);
         return reached;
@@ -986,18 +919,17 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * Whether the case DECLARED one of the calls this activation made (a
-     * callee declaration, or the {@code Debug.makeSymbolicBoolean} marker).
-     * A callee declaration names every call of that method, so the calling
-     * activation holds the input whatever the demand reaches.
+     * Whether this activation read a root: called a clock, or the {@code
+     * Debug.makeSymbolicBoolean} marker.  A root's every read is an input,
+     * so the reading activation holds it whatever the demand reaches.
      */
-    private static boolean declaresACapturedCallee(
-            Map<String, Object> activation, Set<String> declaredCallees) {
+    private static boolean readsARoot(
+            Map<String, Object> activation, Set<String> clockCallees) {
         for (Map<String, Object> capture
                 : rows(activation.get(DeclaredSiteCapture.PLAN_FIELD))) {
             String callee = text(capture.get(
                     DeclaredSiteCapture.DECLARED_CALLEE));
-            if (declaredCallees.contains(callee)
+            if (clockCallees.contains(callee)
                     || Debug.isBooleanMarkerSignature(callee)) {
                 return true;
             }
@@ -1043,21 +975,6 @@ public final class RuntimeSelectedRegionFinalizer {
             }
         }
         return "";
-    }
-
-    /**
-     * Whether a region the case DECLARED folded into this occurrence, which
-     * is then where its sites ran ({@link #FOLDED_REGION_IDS}).
-     */
-    private static boolean foldedADeclaredInputRoot(
-            StaticProgram program, Map<String, Object> activation) {
-        for (String regionId : strings(activation.get(FOLDED_REGION_IDS))) {
-            StaticProgram.RegionRow folded = program.skeletons.get(regionId);
-            if (folded != null && folded.declaredInputRoot) {
-                return true;
-            }
-        }
-        return false;
     }
 
     /**
@@ -1298,8 +1215,16 @@ public final class RuntimeSelectedRegionFinalizer {
                 new LinkedHashMap<>();
         private final Map<String, Map<String, List<String>>>
                 explicitFatalSeedsBySite = new LinkedHashMap<>();
+        /** The guards that DECIDE the annotated throw (the scope map's
+         *  TARGET_SITE rows); a {@code failureTarget} branch is any guard on a
+         *  path to it, and observing one of those is not reaching it. */
+        private final Set<String> decidingGuards = new LinkedHashSet<>();
 
-        private RegionDemandIndex(StaticProgram program) {
+        private RegionDemandIndex(StaticProgram program,
+                                  StaticScopeMap scopeMap) {
+            for (StaticScopeMap.Site target : scopeMap.targetSites()) {
+                decidingGuards.addAll(target.guards);
+            }
             // Every observed activation, not only port holders: the walk
             // needs each occurrence's text.
             for (Map.Entry<String, Map<String, Object>> entry
@@ -1370,7 +1295,8 @@ public final class RuntimeSelectedRegionFinalizer {
                     continue;
                 }
                 String site = text(evidence.get("siteId"));
-                if (explicit.containsKey(site)) {
+                if (explicit.containsKey(site)
+                        && decidingGuards.contains(site)) {
                     evidenceBySite.computeIfAbsent(site,
                             ignored -> new ArrayList<>()).add(evidence);
                 }

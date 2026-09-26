@@ -3,7 +3,6 @@ package edu.uva.liftlab.graphchecker.causynth;
 import edu.uva.liftlab.graphchecker.annotation.Debug;
 
 import edu.uva.liftlab.graphchecker.smt.JavaContainerTypes;
-import edu.uva.liftlab.graphchecker.plan.DeclaredSymbolicInputs;
 import edu.uva.liftlab.graphchecker.plan.DependencyRole;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import org.slf4j.Logger;
@@ -254,13 +253,12 @@ final class SeedBackwardStaticAnalyzer {
                     "Could not load annotated target method: "
                             + targetMethod);
         }
-        // Wire flows, fault hooks and declared inputs are seeds by
-        // declaration, even outside the exception's value slice.
+        // Wire flows and fault hooks are seeds by declaration, even outside
+        // the exception's value slice.
         buildGlobalStaticIndex();
         initializeExceptionSeedAnchors();
         seedDeclaredWireFlows();
         seedExplicitFaultEntries();
-        seedDeclaredSymbolicInputMethods();
         runWorklist();
         if (discoveredExceptionSeedCount != 1) {
             throw new IllegalStateException("Annotated exception target did "
@@ -486,25 +484,6 @@ final class SeedBackwardStaticAnalyzer {
                 }
                 selectedMethods.add(method);
             }
-        }
-    }
-
-    /**
-     * Puts every declared symbolic method into the slice by declaration: an
-     * arm the healthy run never took exports no value for the backward walk
-     * to reach.  An unresolvable declaration is refused, never dropped.
-     */
-    private void seedDeclaredSymbolicInputMethods() {
-        for (String signature : DeclaredSymbolicInputs.configured()) {
-            SootMethod method = concreteMethod(signature);
-            if (method == null || !ensureLoaded(method)) {
-                throw new IllegalStateException(
-                        "DECLARED_INPUT_UNRESOLVED: the case declares a "
-                                + "symbolic input in a method the analysed "
-                                + "program has no concrete body for: "
-                                + signature);
-            }
-            selectedMethods.add(signature);
         }
     }
 

@@ -4,8 +4,6 @@ package edu.uva.liftlab.graphchecker.plan;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
-import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -15,155 +13,178 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Predicate;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
 
 /**
- * What an experiment's {@code symbolic-inputs.jsonl} governs.
- *
- * <p>Everything: a read is symbolic only where a declaration says so -- a
- * name this file declares, a fault marker in the workload's own source, a
- * field a hook owns, or a wire cut port the communication catalog declared.
- * Every other proposed read is concrete, and the declared cell's write
- * sites are the only stores the replay observes.</p>
+ * What makes a read symbolic: its category, as the static scope map states it
+ * ({@link StaticScopeMap#clockCallees}, {@link StaticScopeMap#readCells}), a
+ * fault marker in the program's text, a field a hook owns, or a wire cut
+ * port.  Every other proposed read is concrete.
  */
 public class SymbolicRootPolicyTest {
 
     private static final String NN = "REGION.nn";
-    private static final String NN_TWIN = "REGION.nn-twin";
     private static final String DN = "REGION.dn";
-    private static final String CLOCK_CELL =
-            "<org.apache.hadoop.util.Timer: long now()>.return";
+    private static final String TIMER_NOW =
+            "<org.apache.hadoop.util.Timer: long now()>";
+    private static final String CLOCK_CELL = TIMER_NOW + ".return";
+    private static final String EXPIRE =
+            "<C: void removeExpiredKeys()>";
     private static final String KEY_ID = "<org.apache.hadoop.security.token"
             + ".delegation.DelegationKey: int keyId>";
-    private static final String CLASS = "org.apache.hadoop.hdfs.security"
-            + ".token.block.BlockTokenSecretManager";
-    private static final String UPDATE_KEYS = "boolean updateKeys()";
-    /** hdfs-11741's declared site, planned as a region of its own. */
-    private static final String EXPIRE = "REGION.expire";
-    private static final String REMOVE_EXPIRED =
-            "<" + CLASS + ": void removeExpiredKeys()>";
     private static final String ROOT = InputActionCatalog
             .DECLARED_SYMBOLIC_ROOT;
+
+    /** hdfs-17960's counter: read through a JDK accessor, stored elsewhere. */
+    private static final String ATOMIC_VALUE =
+            "<java.util.concurrent.atomic.AtomicInteger: int value>";
+    private static final String ATOMIC_GET =
+            "<java.util.concurrent.atomic.AtomicInteger: int get()>";
+    private static final String NUM_SNAPSHOTS =
+            "<S: java.util.concurrent.atomic.AtomicInteger numSnapshots>";
+    private static final String DECREMENT = "<java.util.concurrent.atomic"
+            + ".AtomicInteger: int getAndDecrement()>";
+    private static final String DELETE = "<S: void deleteSnapshot()>";
+    private static final String GET_NUM = "<S: int getNumSnapshots()>";
+    private static final String GET_NUM_LOCAL = GET_NUM + "::$i0";
 
     @Rule
     public final TemporaryFolder folder = new TemporaryFolder();
 
     /**
-     * A declared cell is stamped so the replay knows the row was named by
-     * hand rather than proposed; an undeclared read is concrete by name; and
-     * a declared wire-flow cut port hands over a producer expression: it is
-     * tracked and mints no root, so refusing it would only cut propagation.
+     * A clock's read carries the mint marker and the clock flag, both off the
+     * scope map; a read no category names is concrete by name; the fault
+     * marker in the program's text is a root; and a declared wire-flow cut
+     * port hands over a producer expression: tracked, and no root.
      */
     @Test
-    public void onlyADeclarationMakesAReadSymbolic() throws Exception {
-        ConcolicScheduler.SymbolicInputSelection selection = read(
-                "{\"regionId\":\"" + NN + "\",\"cells\":[\"" + CLOCK_CELL
-                        + "\"],\"clock\":true}");
+    public void onlyARootMakesAReadSymbolic() throws Exception {
+        StaticScopeMap map = map(Arrays.asList(clockRead(EXPIRE)),
+                Collections.singletonMap(NN, Collections.singletonList(
+                        EXPIRE)), Collections.singleton(TIMER_NOW),
+                method -> true);
+        assertEquals(Collections.singleton(TIMER_NOW), map.clockCallees());
+        ConcolicScheduler.SymbolicInputSelection selection =
+                ConcolicScheduler.SymbolicInputSelection.read(map,
+                        catalog());
         JsonArray selected = selection.select(NN, proposals());
 
-        assertTrue("the declared clock carries the mint marker",
+        assertTrue("the clock carries the mint marker",
                 selected.get(0).getAsJsonObject().get(ROOT).getAsBoolean());
-        // WHICH reads are wall clocks is declared by the case, never matched
-        // against a list of callee signatures: the flag travels from the
-        // declaration row onto the action, and the replay reads it there.
-        assertTrue("and the clock the case declared",
+        assertTrue("and the clock flag, read off its category",
                 selected.get(0).getAsJsonObject()
                         .get(InputActionCatalog.DECLARED_WALL_CLOCK)
                         .getAsBoolean());
-        assertFalse("a declared read the case did not call a clock is none",
-                declaredWithoutClockFlag().select(NN, proposals()).get(0)
-                        .getAsJsonObject()
-                        .has(InputActionCatalog.DECLARED_WALL_CLOCK));
-        assertEquals("a read no declaration names is concrete by name",
+        assertEquals("a read no category names is concrete by name",
                 "CONCRETE", member(selected, 1, "mode"));
         assertEquals(ConcolicScheduler.SymbolicInputSelection.UNDECLARED,
                 member(selected, 1, "symbolicDemand"));
-        assertEquals("and the fault marker the workload wrote stays symbolic",
+        assertEquals("the fault marker stays symbolic",
                 "SYMBOLIC", member(selected, 2, "mode"));
-        assertTrue("and is a declared root: the workload's text declared it",
+        assertTrue("and is a root: the program's text states it",
                 selected.get(2).getAsJsonObject().get(ROOT).getAsBoolean());
         JsonArray actions = proposals();
         actions.add(action("COMMUNICATION_SITE_PORT", "<C: int getKeyId()>#u2",
                 "<C: int getKeyId()>.return"));
         JsonObject cut = selection.select(DN, actions).get(3).getAsJsonObject();
         assertEquals("SYMBOLIC", cut.get("mode").getAsString());
-        assertFalse("a cut port is not a declared root", cut.has(ROOT));
+        assertFalse("a cut port is not a root", cut.has(ROOT));
 
-        // And the write side of a DECLARED cell: the VM retains a location
-        // by value, so the stores of a declared counter publish nothing
-        // until the location is observed, and the graph already names those
-        // stores as field_mutation edges carrying the callee that performed
-        // them.  Selection only -- which sites the replay observes.
-        JsonObject mutation = json("{\"kind\":\"field_mutation\","
-                + "\"transferKind\":\"HEAP_WRITE\",\"fromCell\":\""
-                + DELETE + "#u35\",\"toCell\":\"" + NUM_SNAPSHOTS
-                + "\",\"method\":\"" + DELETE + "\",\"siteId\":\""
-                + DELETE + "#u35\",\"unitIndex\":35,\"invoke\":\""
-                + DECREMENT + "\"}");
-        // One owner: the static scope map already names every write site of
-        // the slice with the cell it stores into and the callee that
-        // performs it, so the answer is a join over its rows and not a
-        // second walk of a graph.
-        StaticScopeMap map = writeSiteMap(mutation);
-        JsonArray sites = map.writeSitesOf(
-                Collections.singleton(ATOMIC_VALUE));
-        assertEquals("one write site of the declared cell", 1, sites.size());
-        assertEquals(DELETE + "#u35", member(sites, 0, "siteId"));
-        assertEquals(ATOMIC_VALUE, member(sites, 0, "cell"));
-        assertEquals(DECREMENT, member(sites, 0, "declaredCallee"));
-        assertEquals("no declared cell, no observation", 0,
-                map.writeSitesOf(Collections.singleton(KEY_ID)).size());
-        assertTrue("the declared cell is read off the declared action alone",
-                ConcolicScheduler.declaredInputCells(null).isEmpty());
-
-        // A declaration names a VALUE, and the graph names one value once
-        // per local it is copied into: the case knows the accessor's own
-        // return cell, while the port that materializes it names the local
-        // the value lands in.  Soot proves which edges are exact copies, so
-        // following only those renames the declaration onto the port --
-        // which is how hdfs-17960's declared region input stops matching
-        // nothing.
-        JsonObject accessorPort = accessorPort();
+        // A name is a VALUE, and the graph names one value once per local it
+        // is copied into; Soot proves which edges are exact copies, so
+        // following only those renames it onto the port.
+        JsonObject port = action("EXTERNAL_CALL_RETURN", GET_NUM + "#u2",
+                GET_NUM_LOCAL);
+        ConcolicScheduler.SymbolicInputSelection renamed = clockOf(GET_NUM);
+        renamed.resolveDeclaredNames(Collections.singletonList(
+                copy("SOOT_EXACT_LOCAL_DIRECT_COPY_V1")));
         assertTrue("the proven rename selects the port",
-                renamed(exactCopy()).select(NN, actions(accessorPort))
-                        .get(0).getAsJsonObject().get(ROOT).getAsBoolean());
+                renamed.select(NN, actions(port)).get(0).getAsJsonObject()
+                        .get(ROOT).getAsBoolean());
+        ConcolicScheduler.SymbolicInputSelection unproven = clockOf(GET_NUM);
+        unproven.resolveDeclaredNames(Collections.singletonList(copy("")));
         assertFalse("an edge Soot did not prove a copy is not a rename",
-                renamed(plainCopy()).select(NN, actions(accessorPort))
-                        .get(0).getAsJsonObject().has(ROOT));
+                unproven.select(NN, actions(port)).get(0).getAsJsonObject()
+                        .has(ROOT));
     }
 
     /**
-     * The published static scope map of one write edge, through the artifact
-     * the way PLAN publishes it and EXPLORE reads it.
+     * A READ placeholder: a read the weave cannot version -- its accessor runs
+     * outside the woven program -- of a location another region stores.  A
+     * woven accessor's read is versioned where it runs, and a location only
+     * its own region stores has no writer to bind.
      */
-    private StaticScopeMap writeSiteMap(JsonObject mutation)
+    @Test
+    public void aReadTheWeaveCannotVersionIsAPlaceholder() throws Exception {
+        Map<String, List<String>> apart = new LinkedHashMap<>();
+        apart.put(NN, Collections.singletonList(GET_NUM));
+        apart.put(DN, Collections.singletonList(DELETE));
+        List<Map<String, Object>> edges = Arrays.asList(atomicRead(),
+                atomicStore());
+        StaticScopeMap unwoven = map(edges, apart,
+                Collections.<String>emptySet(), ATOMIC_GET::equals);
+        assertEquals(Collections.singleton(ATOMIC_VALUE),
+                unwoven.readCells());
+        JsonObject port = action("ACCESSOR_RETURN", GET_NUM + "#u2",
+                ATOMIC_VALUE);
+        port.addProperty("accessFieldSignature", ATOMIC_VALUE);
+        JsonObject read = ConcolicScheduler.SymbolicInputSelection.read(
+                unwoven, catalog()).select(NN, actions(port)).get(0)
+                .getAsJsonObject();
+        assertTrue("the placeholder is minted", read.get(ROOT).getAsBoolean());
+        assertFalse("and is no clock",
+                read.has(InputActionCatalog.DECLARED_WALL_CLOCK));
+
+        assertTrue("a woven accessor's read is no placeholder",
+                map(edges, apart, Collections.<String>emptySet(),
+                        method -> false).readCells().isEmpty());
+        assertTrue("nor is a read its own region alone stores",
+                map(edges, Collections.singletonMap(NN,
+                        Arrays.asList(GET_NUM, DELETE)),
+                        Collections.<String>emptySet(), ATOMIC_GET::equals)
+                        .readCells().isEmpty());
+
+        // The write side of the same location: the scope map names every
+        // store of the slice with the callee that performs it, so which sites
+        // the replay observes is a join over its rows.
+        JsonArray sites = unwoven.writeSitesOf(
+                Collections.singleton(ATOMIC_VALUE));
+        assertEquals("one write site of the location", 1, sites.size());
+        assertEquals(DELETE + "#u35", member(sites, 0, "siteId"));
+        assertEquals(DECREMENT, member(sites, 0, "declaredCallee"));
+        assertEquals("no location, no observation", 0,
+                unwoven.writeSitesOf(Collections.singleton(KEY_ID)).size());
+        assertTrue("the cell is read off the action alone",
+                ConcolicScheduler.declaredInputCells(null).isEmpty());
+    }
+
+    /** The published scope map of these edges, through the artifact the way
+     *  SEED publishes it and PLAN reads it. */
+    private StaticScopeMap map(List<Map<String, Object>> edges,
+                               Map<String, List<String>> regionMethods,
+                               Collection<String> clocks,
+                               Predicate<String> unwoven)
             throws IOException {
-        java.util.Map<String, Object> edge =
-                new java.util.LinkedHashMap<String, Object>();
-        for (java.util.Map.Entry<String, com.google.gson.JsonElement> member
-                : mutation.entrySet()) {
-            edge.put(member.getKey(), member.getValue().isJsonPrimitive()
-                    && member.getValue().getAsJsonPrimitive().isNumber()
-                    ? member.getValue().getAsInt()
-                    : member.getValue().getAsString());
+        List<Map<String, Object>> regions = new java.util.ArrayList<>();
+        for (Map.Entry<String, List<String>> region
+                : regionMethods.entrySet()) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("regionId", region.getKey());
+            row.put("methods", region.getValue());
+            regions.add(row);
         }
-        java.util.Map<String, Object> region =
-                new java.util.LinkedHashMap<String, Object>();
-        region.put("regionId", NN);
-        region.put("methods", Collections.singletonList(DELETE));
-        List<StaticScopeMap.Site> found = StaticScopeMap.sites(
-                Collections.singletonList(edge),
-                Collections.singletonList(region));
         StringBuilder text = new StringBuilder();
-        for (JsonObject row : StaticScopeMap.rows(found, null)) {
+        for (JsonObject row : StaticScopeMap.rows(StaticScopeMap.sites(edges,
+                regions, clocks, unwoven), null)) {
             text.append(row.toString()).append('\n');
         }
         Path file = folder.newFolder().toPath().resolve(StaticScopeMap.FILE);
@@ -171,362 +192,81 @@ public class SymbolicRootPolicyTest {
         return StaticScopeMap.read(file);
     }
 
-    /** The accessor's return cell, as a case declares a manual read. */
-    private static final String ACCESSOR_RETURN =
-            "<S: int getNumSnapshots()>.return";
-    /** The local the accessor copies it into, which the port names. */
-    private static final String ACCESSOR_LOCAL =
-            "<S: int getNumSnapshots()>::$i0";
-
-    /** One declaration of {@link #ACCESSOR_RETURN}, resolved over one graph. */
-    private ConcolicScheduler.SymbolicInputSelection renamed(JsonObject edge)
+    /** A selection whose one clock is {@code callee}. */
+    private ConcolicScheduler.SymbolicInputSelection clockOf(String callee)
             throws IOException {
-        ConcolicScheduler.SymbolicInputSelection selection = read(
-                "{\"regionId\":\"" + NN + "\",\"cells\":[\""
-                        + ACCESSOR_RETURN + "\"]}");
-        selection.resolveDeclaredNames(Collections.singletonList(edge));
-        return selection;
+        return ConcolicScheduler.SymbolicInputSelection.read(map(
+                Arrays.asList(clockRead(callee, EXPIRE)),
+                Collections.singletonMap(NN, Collections.singletonList(
+                        EXPIRE)), Collections.singleton(callee),
+                method -> true), catalog());
     }
 
-    /** The declared counter of hdfs-17960 and the store the graph names. */
-    private static final String ATOMIC_VALUE =
-            "<java.util.concurrent.atomic.AtomicInteger: int value>";
-    private static final String NUM_SNAPSHOTS =
-            "<S: java.util.concurrent.atomic.AtomicInteger numSnapshots>";
-    private static final String DECREMENT = "<java.util.concurrent.atomic"
-            + ".AtomicInteger: int getAndDecrement()>";
-    private static final String DELETE = "<S: void deleteSnapshot()>";
-
-    private static String member(JsonArray rows, int index, String name) {
-        JsonObject row = rows.get(index).getAsJsonObject();
-        return row.has(name) ? row.get(name).getAsString() : "";
+    private static Map<String, Object> clockRead(String method) {
+        return clockRead(TIMER_NOW, method);
     }
 
-    private static JsonArray actions(JsonObject action) {
-        JsonArray actions = new JsonArray();
-        actions.add(action.deepCopy());
-        return actions;
+    private static Map<String, Object> clockRead(String callee,
+                                                 String method) {
+        return edge("{\"kind\":\"call_return\",\"method\":\"" + method
+                + "\",\"unitIndex\":2,\"invoke\":\"" + callee
+                + "\",\"fromCell\":\"" + callee + ".return\",\"toCell\":\""
+                + method + "::$l0\"}");
     }
 
-    /** The accessor-return port: its cell is the Atomic's value leaf. */
-    private static JsonObject accessorPort() {
-        JsonObject port = action("ACCESSOR_RETURN",
-                "<S: int getNumSnapshots()>#u2",
-                "<java.util.concurrent.atomic.AtomicInteger: int value>");
-        port.addProperty("accessFieldSignature",
-                "<java.util.concurrent.atomic.AtomicInteger: int value>");
-        JsonArray cells = new JsonArray();
-        cells.add(ACCESSOR_LOCAL);
-        port.add("dependencyCells", cells);
-        return port;
+    private static Map<String, Object> atomicRead() {
+        return edge("{\"kind\":\"accessor_field_return\",\"method\":\""
+                + GET_NUM + "\",\"unitIndex\":2,\"invoke\":\"" + ATOMIC_GET
+                + "\",\"declaredFieldSignature\":\"" + ATOMIC_VALUE
+                + "\",\"accessorImplementationMethod\":\"" + ATOMIC_GET
+                + "\",\"fromCell\":\"" + ATOMIC_VALUE + "\",\"toCell\":\""
+                + GET_NUM_LOCAL + "\"}");
     }
 
-    private static JsonObject exactCopy() {
-        JsonObject edge = plainCopy();
-        edge.addProperty("valueFlowAuthority",
-                "SOOT_EXACT_LOCAL_DIRECT_COPY_V1");
+    private static Map<String, Object> atomicStore() {
+        return edge("{\"kind\":\"field_mutation\",\"transferKind\":"
+                + "\"HEAP_WRITE\",\"fromCell\":\"" + DELETE + "#u35\","
+                + "\"toCell\":\"" + NUM_SNAPSHOTS + "\",\"method\":\""
+                + DELETE + "\",\"unitIndex\":35,\"invoke\":\"" + DECREMENT
+                + "\"}");
+    }
+
+    private static JsonObject copy(String authority) {
+        JsonObject edge = json("{\"kind\":\"local_def_use\",\"transferKind\":"
+                + "\"VALUE_PASS\",\"fromCell\":\"" + GET_NUM_LOCAL
+                + "\",\"toCell\":\"" + GET_NUM + ".return\"}");
+        if (!authority.isEmpty()) {
+            edge.addProperty("valueFlowAuthority", authority);
+        }
         return edge;
     }
 
-    private static JsonObject plainCopy() {
-        return json("{\"kind\":\"local_def_use\",\"transferKind\":"
-                + "\"VALUE_PASS\",\"fromCell\":\"" + ACCESSOR_LOCAL
-                + "\",\"toCell\":\"" + ACCESSOR_RETURN + "\"}");
-    }
-
-    /**
-     * A manual root is declared by the site it is read at, not by a region hash.
-     *
-     * <p>A region id moves whenever the retained selection moves; a static
-     * site is what the experiment knows, and the plan resolves it to the
-     * regions covering it -- one method planned twice is two regions, and
-     * both mean it.</p>
-     */
-    @Test
-    public void aManualRootIsDeclaredByItsSite() throws Exception {
-        declaresAt("\"class\":\"" + CLASS + "\",\"method\":\"" + UPDATE_KEYS
-                + "\"", Arrays.asList(NN, NN_TWIN), Arrays.asList(DN));
-        // a node scope narrows the same site to the regions planned there
-        declaresAt("\"class\":\"" + CLASS + "\",\"method\":\"void addKeys()\","
-                        + "\"node\":\"dn0\",\"epoch\":\"0\"",
-                Arrays.asList(DN), Arrays.asList(NN, NN_TWIN));
-
-        // A declared method is a region ROOT by declaration, and the region
-        // it roots opens on whatever anchor the recording selected -- on
-        // hdfs-11741, removeExpiredKeys is held by the updateKeys region and
-        // its own region's plan row names that enclosing method.  The
-        // declaration still means the region it roots, so the anchor column
-        // alone does not decide this.
-        declaresAt("\"class\":\"" + CLASS
-                        + "\",\"method\":\"void removeExpiredKeys()\"",
-                Arrays.asList(EXPIRE), Arrays.asList(NN, NN_TWIN, DN));
-
-        // A site the plan carries no region for is refused by name.  Under
-        // the rule it can mean only one thing: this plan was built without
-        // the declaration, because a declared root the recording never
-        // entered is refused at aggregation instead (below).  The refusal
-        // names the declared roots the plan did honour, which is what tells
-        // the reader to re-plan rather than to edit the case.
-        try {
-            read("{\"class\":\"" + CLASS + "\",\"method\":\"long absent()\","
-                    + "\"cells\":[\"" + CLOCK_CELL + "\"]}");
-            fail("a site outside every planned region was admitted");
-        } catch (IOException refused) {
-            assertTrue(refused.getMessage(), refused.getMessage()
-                    .contains("DECLARED_INPUT_NOT_PLANNED"));
-            assertTrue(refused.getMessage(), refused.getMessage()
-                    .contains("long absent()"));
-            assertTrue(refused.getMessage(), refused.getMessage()
-                    .contains(REMOVE_EXPIRED));
+    /** One candidate-graph row as the static stage holds it. */
+    private static Map<String, Object> edge(String row) {
+        Map<String, Object> edge = new LinkedHashMap<>();
+        for (Map.Entry<String, com.google.gson.JsonElement> member
+                : json(row).entrySet()) {
+            edge.put(member.getKey(), member.getValue().getAsJsonPrimitive()
+                    .isNumber() ? (Object) member.getValue().getAsInt()
+                    : member.getValue().getAsString());
         }
-
-        // And the other failure mode, where the count is a fact: PLAN plans
-        // the declared root whether or not the recording entered it, and the
-        // aggregation refuses it by name with the activation count, so the
-        // case author reads "your workload never reached this site" rather
-        // than "the engine dropped your root".
-        List<StaticProgram.RegionRow> declared = StaticProgram.regionRows(
-                Collections.singletonList(declaredRootSkeleton()),
-                "REGION_SKELETON", "test");
-        try {
-            RuntimeSelectedRegionFinalizer.refuseUnactivatedDeclaredInputs(
-                    declared, Collections.<Map<String, Object>>emptyList(),
-                    Collections.<Map<String, Object>>emptyList());
-            fail("a declared root the recording never entered was planned");
-        } catch (IOException refused) {
-            assertTrue(refused.getMessage(), refused.getMessage()
-                    .contains("DECLARED_INPUT_NEVER_ACTIVATED"));
-            assertTrue(refused.getMessage(), refused.getMessage()
-                    .contains(REMOVE_EXPIRED));
-            assertTrue(refused.getMessage(), refused.getMessage()
-                    .contains("0 times"));
-        }
-        Map<String, Object> activation = new LinkedHashMap<String, Object>();
-        activation.put("regionId", EXPIRE);
-        RuntimeSelectedRegionFinalizer.refuseUnactivatedDeclaredInputs(
-                declared, Collections.singletonList(activation),
-                Collections.<Map<String, Object>>emptyList());
-
-        // F1: AND A FOLDED ENTRY IS AN ENTRY.  A declared region entered
-        // synchronously inside a running occurrence opens none of its own,
-        // so it has no activation and never will; the recording reached the
-        // declared site all the same, and its sites are planned at the
-        // occurrence that folded it.  hdfs-11741 campaign #5 died here --
-        // every entry of updateKeys() ran inside the NameNode's key-manager
-        // tick -- so the fold is what this guard reads, not only the
-        // activation.
-        Map<String, Object> fold = new LinkedHashMap<String, Object>();
-        fold.put("kind", RuntimeSelectedRegionFinalizer.REGION_FOLD_KIND);
-        fold.put("regionId", EXPIRE);
-        fold.put("enclosingRegionId", NN);
-        RuntimeSelectedRegionFinalizer.refuseUnactivatedDeclaredInputs(
-                declared, Collections.<Map<String, Object>>emptyList(),
-                Collections.singletonList(fold));
-
-        // A fold of ANOTHER region is not an entry of this one.
-        Map<String, Object> elsewhere = new LinkedHashMap<String, Object>();
-        elsewhere.put("kind",
-                RuntimeSelectedRegionFinalizer.REGION_FOLD_KIND);
-        elsewhere.put("regionId", NN);
-        try {
-            RuntimeSelectedRegionFinalizer.refuseUnactivatedDeclaredInputs(
-                    declared, Collections.<Map<String, Object>>emptyList(),
-                    Collections.singletonList(elsewhere));
-            fail("a fold of another region was read as this one's entry");
-        } catch (IOException refused) {
-            assertTrue(refused.getMessage(), refused.getMessage()
-                    .contains("DECLARED_INPUT_NEVER_ACTIVATED"));
-        }
-
-        // CLK: A CALLEE DECLARATION IS ABOUT NO SITE.  It says every read of
-        // that method's return is a root, wherever in the application scope
-        // it is called, so it declares the RETURN cell in every planned
-        // region of its scope -- and `kind: CLOCK` is the same statement
-        // `clock: true` is for the cell form.  The per-method cell form
-        // named ONE site per declared method, and hdfs-11741's slice calls
-        // Timer.now() at seven: the reads in generateKeys and
-        // generateDataEncryptionKey entered every formula as constants.
-        ConcolicScheduler.SymbolicInputSelection everywhere = read(
-                "{\"callee\":\"<org.apache.hadoop.util.Timer: long now()>\","
-                        + "\"kind\":\"CLOCK\"}");
-        for (String id : Arrays.asList(NN, NN_TWIN, DN, EXPIRE)) {
-            assertTrue("a declared callee's return is a root in " + id,
-                    everywhere.declares(id, CLOCK_CELL));
-        }
-        assertTrue("and the case declared it a clock by its kind",
-                everywhere.select(NN, proposals()).get(0).getAsJsonObject()
-                        .get(InputActionCatalog.DECLARED_WALL_CLOCK)
-                        .getAsBoolean());
-        // A node scope still narrows it, because a declaration's scope is
-        // one rule whatever it names.
-        ConcolicScheduler.SymbolicInputSelection onDn = read(
-                "{\"callee\":\"<org.apache.hadoop.util.Timer: long now()>\","
-                        + "\"kind\":\"CLOCK\",\"node\":\"dn0\"}");
-        assertTrue(onDn.declares(DN, CLOCK_CELL));
-        assertFalse("and not the regions planned elsewhere",
-                onDn.declares(NN, CLOCK_CELL));
-        // A callee stated twice at two kinds is a contradiction in the case
-        // file, refused by name rather than letting the later row win.
-        Path twice = folder.newFolder().toPath()
-                .resolve("symbolic-inputs.jsonl");
-        Files.write(twice, ("{\"callee\":\"" + TIMER_NOW
-                + "\",\"kind\":\"CLOCK\"}\n{\"callee\":\"" + TIMER_NOW
-                + "\",\"kind\":\"INTEGRAL\"}\n")
-                .getBytes(StandardCharsets.UTF_8));
-        try {
-            DeclaredSymbolicInputs.callees(twice);
-            fail("one callee was admitted at two kinds");
-        } catch (IOException refused) {
-            assertTrue(refused.getMessage(),
-                    refused.getMessage().contains("at two kinds"));
-        }
-        assertEquals("and the cell a callee declaration names is its return",
-                CLOCK_CELL, DeclaredSymbolicInputs.returnCell(TIMER_NOW));
+        return edge;
     }
 
-    /**
-     * F1: a declared method that opened no occurrence is planned at the
-     * occurrence that RAN it.
-     *
-     * <p>A declared method entered synchronously inside a running occurrence
-     * folds into it ({@code Identity#fold}), so it roots no planned region
-     * and anchors none -- and resolving it by those two tests alone refused
-     * a plan that had honoured the declaration exactly, which is what
-     * hdfs-11741's {@code removeExpiredKeys()} did to campaign #5.  The
-     * occurrence that ran it is where its sites were recorded and where its
-     * ports are minted, so that is the region the declaration means.</p>
-     */
-    @Test
-    public void aFoldedDeclaredMethodIsPlannedWhereItRan() throws Exception {
-        // No catalog row roots the declared method and no plan row anchors
-        // it: the fold published neither.
-        List<JsonObject> catalog = Collections.singletonList(
-                json("{\"regionId\":\"" + NN + "\"}"));
-        ConcolicScheduler.SymbolicInputSelection selection = selection(
-                catalog, Collections.singletonList(ranPlan(REMOVE_EXPIRED)));
-        assertTrue("the occurrence that ran the folded declared method "
-                        + "carries its declaration",
-                selection.declares(NN, CLOCK_CELL));
-
-        // And an occurrence that ran something else is still not its region:
-        // the test is the recording's statement of what this occurrence ran,
-        // never a static containment.
-        try {
-            selection(catalog, Collections.singletonList(
-                    ranPlan("<" + CLASS + ": void addKeys()>")));
-            fail("a declared method no occurrence ran was resolved");
-        } catch (IOException refused) {
-            assertTrue(refused.getMessage(), refused.getMessage()
-                    .contains("DECLARED_INPUT_NOT_PLANNED"));
-            assertTrue(refused.getMessage(), refused.getMessage()
-                    .contains(REMOVE_EXPIRED));
-        }
+    private static List<JsonObject> catalog() {
+        return Arrays.asList(json("{\"regionId\":\"" + NN + "\"}"),
+                json("{\"regionId\":\"" + DN + "\"}"));
     }
 
-    /** The declaration of {@link #REMOVE_EXPIRED}, read against one plan. */
-    private ConcolicScheduler.SymbolicInputSelection selection(
-            List<JsonObject> catalog, List<RegionInstancePlan> plans)
-            throws IOException {
-        Path path = folder.newFolder().toPath()
-                .resolve("symbolic-inputs.jsonl");
-        Files.write(path, ("{\"class\":\"" + CLASS + "\",\"method\":\"void "
-                + "removeExpiredKeys()\",\"cells\":[\"" + CLOCK_CELL
-                + "\"]}\n").getBytes(StandardCharsets.UTF_8));
-        return ConcolicScheduler.SymbolicInputSelection.read(path, catalog,
-                plans);
-    }
-
-    /** One planned occurrence of {@link #NN}, stating the methods it ran. */
-    private static RegionInstancePlan ranPlan(String ran) {
-        String id = "wl/nn0#epoch0/region/" + NN + "#1";
-        return RegionInstancePlan.decode(json("{\"regionId\":\"" + NN
-                + "\",\"targetMethod\":\"<" + CLASS + ": " + UPDATE_KEYS
-                + ">\",\"sourceKey\":\"wl/nn0#epoch0\",\"occurrenceId\":\""
-                + id + "\",\"relationKey\":\"wl/nn0#epoch0/relation/" + NN
-                + "\",\"closureGoals\":[{\"goalId\":\"GOAL." + id + "\","
-                + "\"kind\":\"REGION_PATH_CLOSURE\","
-                + "\"runtimeDefinitionMethods\":[\"" + ran + "\"]}]}"));
-    }
-
-    /** The callee hdfs-11741 and hdfs-17897 declare a CLOCK. */
-    private static final String TIMER_NOW =
-            "<org.apache.hadoop.util.Timer: long now()>";
-
-    /** The skeleton PLAN publishes for hdfs-11741's declared clock site. */
-    private static Map<String, Object> declaredRootSkeleton() {
-        Map<String, Object> row = new LinkedHashMap<String, Object>();
-        row.put("schemaVersion", 3);
-        row.put("kind", "REGION_SKELETON");
-        row.put("regionId", EXPIRE);
-        row.put("rootMethod", REMOVE_EXPIRED);
-        row.put("rootAuthority", DeclaredSymbolicInputs.AUTHORITY);
-        row.put("anchorMethod", REMOVE_EXPIRED);
-        row.put("methods", Collections.singletonList(REMOVE_EXPIRED));
-        row.put(DeclaredSymbolicInputs.ROOT_FIELD, true);
-        return row;
-    }
-
-    /** One site declaration, and the regions it must and must not reach. */
-    private void declaresAt(String site, List<String> declaring,
-            List<String> silent) throws IOException {
-        ConcolicScheduler.SymbolicInputSelection selection =
-                read("{" + site + ",\"cells\":[\"" + CLOCK_CELL + "\"]}");
-        for (String id : declaring) assertTrue(site, selection.declares(id, CLOCK_CELL));
-        for (String id : silent) assertFalse(site, selection.declares(id, CLOCK_CELL));
-    }
-
-    /** The same declaration of {@link #CLOCK_CELL}, stating no clock. */
-    private ConcolicScheduler.SymbolicInputSelection
-            declaredWithoutClockFlag() throws IOException {
-        return read("{\"regionId\":\"" + NN + "\",\"cells\":[\""
-                + CLOCK_CELL + "\"]}");
-    }
-
-    /** One declaration row, written where the campaign would put the file. */
-    private ConcolicScheduler.SymbolicInputSelection read(String row)
-            throws IOException {
-        Path path = folder.newFolder().toPath().resolve("symbolic-inputs.jsonl");
-        Files.write(path, (row + "\n").getBytes(StandardCharsets.UTF_8));
-        return ConcolicScheduler.SymbolicInputSelection.read(path,
-                Arrays.asList(json("{\"regionId\":\"" + NN + "\"}"),
-                        json("{\"regionId\":\"" + NN_TWIN + "\"}"),
-                        json("{\"regionId\":\"" + DN + "\"}"),
-                        json("{\"regionId\":\"" + EXPIRE
-                                + "\",\"rootMethod\":\"" + REMOVE_EXPIRED
-                                + "\",\"" + DeclaredSymbolicInputs.ROOT_FIELD
-                                + "\":true}")), plans());
-    }
-
-    /** Two nn0 regions of one method, and one dn0 region of another. */
-    private static List<RegionInstancePlan> plans() {
-        String updateKeys = "<" + CLASS + ": " + UPDATE_KEYS + ">";
-        return Arrays.asList(plan(NN, updateKeys, "wl/nn0#epoch0", 1),
-                plan(NN_TWIN, updateKeys, "wl/nn0#epoch0", 2),
-                plan(DN, "<" + CLASS + ": void addKeys()>", "wl/dn0#epoch0", 1),
-                // the declared root's own region, anchored on the enclosing
-                // method the recording selected
-                plan(EXPIRE, updateKeys, "wl/nn0#epoch0", 3));
-    }
-
-    private static RegionInstancePlan plan(String regionId, String method,
-            String key, int occurrence) {
-        String id = key + "/region/" + regionId + "#" + occurrence;
-        return RegionInstancePlan.decode(json("{\"regionId\":\"" + regionId
-                + "\",\"targetMethod\":\"" + method + "\",\"sourceKey\":\""
-                + key + "\",\"occurrenceId\":\"" + id + "\",\"relationKey\":\""
-                + key + "/relation/" + regionId + "\",\"closureGoals\":[{"
-                + "\"goalId\":\"GOAL." + id + "\",\"kind\":"
-                + "\"REGION_PATH_CLOSURE\",\"runtimeDefinitionMethods\":[]}]}"));
-    }
-
-    /** One automatic clock return, one accessor field, one fault marker. */
+    /** One clock return, one accessor field, one fault marker. */
     private static JsonArray proposals() {
         JsonArray actions = new JsonArray();
-        JsonObject clock = action("EXTERNAL_CALL_RETURN",
-                "<C: void removeExpiredKeys()>#u2", CLOCK_CELL);
-        clock.addProperty("declaredCallee", "<org.apache.hadoop.util.Timer: long now()>");
+        JsonObject clock = action("EXTERNAL_CALL_RETURN", EXPIRE + "#u2",
+                CLOCK_CELL);
+        clock.addProperty("declaredCallee", TIMER_NOW);
         actions.add(clock);
-        JsonObject field = action("ACCESSOR_RETURN", "<C: boolean f()>#u9", KEY_ID);
+        JsonObject field = action("ACCESSOR_RETURN", "<C: boolean f()>#u9",
+                KEY_ID);
         field.addProperty("accessFieldSignature", KEY_ID);
         actions.add(field);
         actions.add(action("EXPLICIT_SYMBOLIC_FAULT",
@@ -535,12 +275,23 @@ public class SymbolicRootPolicyTest {
         return actions;
     }
 
+    private static JsonArray actions(JsonObject action) {
+        JsonArray actions = new JsonArray();
+        actions.add(action.deepCopy());
+        return actions;
+    }
+
     private static JsonObject action(String sourceKind, String siteId,
             String cell) {
-        return json("{\"mode\":\"SYMBOLIC\",\"sourceKind\":\"" + sourceKind
-                + "\",\"siteId\":\"" + siteId + "\",\"portId\":\"port."
-                + siteId + "\",\"symbol\":\"port." + siteId + "\",\"cell\":\""
-                + cell + "\"}");
+        return json("{\"mode\":\"SYMBOLIC\",\"sourceKind\":\""
+                + sourceKind + "\",\"siteId\":\"" + siteId
+                + "\",\"portId\":\"port." + siteId + "\",\"symbol\":\"port."
+                + siteId + "\",\"cell\":\"" + cell + "\"}");
+    }
+
+    private static String member(JsonArray rows, int index, String name) {
+        JsonObject row = rows.get(index).getAsJsonObject();
+        return row.has(name) ? row.get(name).getAsString() : "";
     }
 
     private static JsonObject json(String row) {

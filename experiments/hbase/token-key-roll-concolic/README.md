@@ -10,8 +10,10 @@ before the token expires and observes the explicit `InvalidToken` exception.
 regression test into `overlay/`, using Java 8 and the existing JDK 8 HBase
 worktree. Neither HBase checkout is edited. The analysis scope is this class
 family; the remaining HBase classes and dependencies are on the runtime
-classpath. `symbolic-inputs.jsonl` declares the HBase clock return as a
-symbolic root, plus the token expiry accessor used by the target guard.
+classpath. Its clock, `EnvironmentEdgeManager.currentTime()`, reaches the JVM
+clock through an interface (`getDelegate().currentTime()`), which
+`RootCatalog` does not follow (a delegate may be a manual edge): this case
+has no clock root until it does.
 
 The default classpath is the validated Java 8 classpath from the earlier HBase
 pressure run. Set `HBASE_JDK8_CLASSPATH_FILE` to a replacement classpath file
