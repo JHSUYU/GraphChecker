@@ -1451,6 +1451,12 @@ public class ComposerTest {
         assertTrue("past the instant its session read, which is what the "
                         + "skew IS: " + at,
                 Long.parseLong(at.trim()) > 1000L);
+        assertTrue("and with room: a confirming replay reads its clocks "
+                        + "fresh, so an instant at the boundary would fall "
+                        + "back on the recorded arm: " + at,
+                Long.parseLong(at.trim())
+                        > 1000L + edu.uva.liftlab.graphchecker.explore
+                        .ClockMargin.MARGIN_MS);
 
         // R3: AND A WINDOWED ROOT BESIDE THE CLOCK DOES NOT TAKE THE CLAIM
         // AWAY.  Same clock, plus one declared counter the case gave a

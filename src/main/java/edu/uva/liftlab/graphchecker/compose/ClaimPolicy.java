@@ -1,5 +1,6 @@
 package edu.uva.liftlab.graphchecker.compose;
 
+import edu.uva.liftlab.graphchecker.explore.ClockMargin;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.Z3;
 
@@ -273,9 +274,10 @@ public final class ClaimPolicy {
                 if (found.valuation().ordinal() == 0 || !found.witness()) {
                     continue;
                 }
-                // Publish the witness under every clock pin it can keep.
-                Outcome outcome = leastClocks(composition, solver, found,
-                        cells);
+                // Publish the witness under every clock pin it can keep,
+                // and each clock it still moves moved with room.
+                Outcome outcome = withMargin(composition, solver,
+                        leastClocks(composition, solver, found, cells));
                 outcomes.set(outcomes.indexOf(found), outcome);
                 if (unattested(composition, outcome, gaps)) continue;
                 // A moved root: #mechanism answers MARKER_FLIPPED or a
@@ -315,9 +317,11 @@ public final class ClaimPolicy {
                 undecidedPolarity(gaps, recorded, still);
                 break;
             }
+            Outcome roomy = withMargin(composition, solver, outcome);
+            outcomes.set(outcomes.indexOf(outcome), roomy);
             return new Decision(Claim.of(still,
-                    outcome.valuation().ordinal(),
-                    movedRoots(composition, outcome), true,
+                    roomy.valuation().ordinal(),
+                    movedRoots(composition, roomy), true,
                     gaps), outcomes);
         }
 
@@ -659,6 +663,43 @@ public final class ClaimPolicy {
             }
         }
         return witness;
+    }
+
+    /**
+     * The witness with each clock it moves moved {@link ClockMargin#MARGIN_MS}
+     * further the same way, where the formula still reaches the fatal arm
+     * there; else the witness as it was.  The model is the cheapest world (a
+     * token's expiry passed by one millisecond), and the confirming replay
+     * reads every clock fresh, so an instant at the boundary falls back on
+     * the recorded arm: exploration's margin rule (adhoc token-expired.proxy
+     * missed by 70 ms).
+     */
+    private static Outcome withMargin(Composer.Composition composition,
+                                      Z3 solver, Outcome witness) {
+        List<String> room = new ArrayList<String>(witness.pinned());
+        Map<String, String> model = witness.answer().values();
+        for (String cell : composition.clockCells()) {
+            Long reading = composition.clockReadings().get(cell);
+            String answered = model.get(cell);
+            if (reading == null || answered == null) continue;
+            long at;
+            try {
+                at = Long.parseLong(answered.trim());
+            } catch (NumberFormatException notAnInstant) {
+                continue;
+            }
+            if (at == reading.longValue()) continue;
+            boolean later = at > reading.longValue();
+            room.add("(assert (! (" + (later ? ">=" : "<=") + " " + cell
+                    + " " + integralLiteral(Long.toString(later
+                    ? at + ClockMargin.MARGIN_MS : at - ClockMargin.MARGIN_MS))
+                    + ") :named clock_margin__" + ArtifactIO.digest(cell, 10)
+                    + "))");
+        }
+        if (room.size() == witness.pinned().size()) return witness;
+        Outcome asked = outcome(composition, solver, witness.valuation(),
+                room, false);
+        return asked.witness() ? asked : witness;
     }
 
     /** These cells at the instants the recording read, as named pins. */

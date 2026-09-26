@@ -31,8 +31,8 @@ import java.util.Set;
  * operands are returned for one DIAGNOSTIC row each. Polarity passes only
  * through {@code not}, {@code and}, {@code or}.</p>
  */
-final class ClockMargin {
-    static final long MARGIN_MS = 60_000L;
+public final class ClockMargin {
+    public static final long MARGIN_MS = 60_000L;
 
     private static final Set<String> COMPARISONS =
             new LinkedHashSet<String>(java.util.Arrays.asList(
