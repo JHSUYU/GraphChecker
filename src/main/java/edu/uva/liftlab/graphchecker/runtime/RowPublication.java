@@ -441,7 +441,8 @@ final class RowPublication {
                 : optionalLongInteger(reach, "vmEventId", 0L);
         // A concrete target testing the constant a helper returned
         // (causynth.BooleanReturns): the helper's last decision before it,
-        // at the helper's fatal arm, is the predicate.
+        // at the helper's fatal arm, is the predicate, and stands where that
+        // decision stands, so the prefix is cut before it and not after.
         boolean takenIsFatal = observed == fatalArm;
         if (condition == null && reached
                 && !task.targetDeciderSite.isEmpty()) {
@@ -461,6 +462,7 @@ final class RowPublication {
                 takenIsFatal = optionalBool(mapping, "outcome", false)
                         == task.targetDeciderOutcome;
             }
+            if (latest > 0L) at = latest;
         }
         // seq == 0 means "no VM clock" (a CONCRETE decision stands after the
         // last VM event, ActiveRegion#recordConcreteDecision).  The composer
