@@ -45,24 +45,42 @@ The case's declared class scope (`case.sh` `scope`) is where `S` starts, not whe
 ends: e.g. adhoc sender-gs stopped at `getReplica`'s return.  SEED grows the scope to a
 fixpoint (`run_engine.sh campaign_analyze_grown_scope`):
 
-1. The static pass publishes `scope_frontier.jsonl` (`plan.ScopeFrontier`): every
-   `CALLEE` whose return `S` demands but whose body is not analysed (its class is out
-   of scope, or it is abstract with no implementation in scope), and every `FIELD`
-   `S` reads or stores; each with its distance to the throw over `S`'s edges.
+1. The static pass publishes `scope_frontier.jsonl` (`plan.ScopeFrontier`), each row
+   with its distance to the throw's guards over `S`'s edges (the thrown value's own
+   construction, its message, is not the fatal condition; a cell the throw does not
+   depend on, a declared wire flow's or fault's own seed, is no part of `S`):
+   * `CALLEE`: a callee whose return `S` demands but whose body is not analysed (its
+     class is out of scope, or it is abstract with no implementation in scope);
+   * `FIELD`: a field `S` reads or stores;
+   * `FORMAL`: a method whose primitive or string formal `S` demands only through a
+     field -- a writer's value (`Block.setGenerationStamp(long)`), whose callers are
+     writers too;
+   * `ROOT`: the roots of the regions holding the target's method.
 2. `plan.ScopeGrowth` resolves the rows nearest first over the lineage roots (the
-   modules common, hdfs-client, hdfs): a callee's class, or every class implementing
-   an abstract one; a field's owner and, unless it is private, every class storing it
-   (a reference field: loading it too).  It copies each class into
-   `<output>/scope-classes/` and lists it with its row in `GROWN`, until
-   `causynth_scope_growth_budget` classes are grown (default 24).
+   modules common, hdfs-client, hdfs):
+   * a callee of a type of the roots: the class whose body it runs, or for an
+     abstract one the class each implementation inherits it from, unless that body
+     only returns constants;
+   * a field: its owner and, unless it is private or final, every class storing it;
+     a static final field is a constant, no state;
+   * a formal: every class calling the method.
+   It copies each class into `<output>/scope-classes/` and lists it with its row in
+   `GROWN`, until `causynth_scope_growth_budget` classes are grown (default 24).
 3. The static pass reruns with that directory as a further process directory
    (`causynth.process.dirs`), and so does every later pass: one application scope.
-   It stops when a round adds nothing.
+   It stops when a round changes nothing.
 
-Two things never grow the scope.  A CALLER: it moves the region root, and with it the
-identity of the occurrence under test (DataXceiver's `run()` swallowed the anchored
-SASL occurrence); a formal no caller in scope feeds stays pinned (F4).  A protobuf
-message: it is a wire payload, F3's.  A clock callee is a root already (F1).
+What never grows the scope:
+* The target's own callers.  They would move the region root, and with it the
+  identity of the occurrence under test (DataXceiver's `run()` swallowed the anchored
+  SASL occurrence).  A formal the throw depends on without a field in between stays
+  pinned (F4).  The rule is enforced after the fact, whatever row grew a class: the
+  first round's `ROOT`s are kept in `ROOTS`, and a grown class holding a new one is
+  taken back (`EXCLUDED`) and never taken again.
+* A platform type (the VM models `java.*`), a protobuf message, or a formal of object
+  type.  The last two are payloads (F3), or objects whose own state is a frontier row
+  of its own.
+* A clock callee, which is a root already (F1).
 
 ## 3. Control flow across regions
 

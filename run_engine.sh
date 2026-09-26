@@ -636,7 +636,7 @@ campaign_grown_scope() {
 # The static pass, with the scope grown where the slice stops at it until
 # nothing is added or the budget is spent (SYMBOL-SCOPE section 2).
 campaign_analyze_grown_scope() {
-  local grown added
+  local grown changes summary
   grown=$(campaign_grown_scope)
   local -a roots=()
   rm -rf -- "${grown}"
@@ -645,15 +645,15 @@ campaign_analyze_grown_scope() {
   while :; do
     do_analyze
     (( causynth_scope_growth_budget > 0 && ${#roots[@]} > 0 )) || return 0
-    added=$(run_java_main edu.uva.liftlab.graphchecker.plan.ScopeGrowth \
-      "${grown}" "${causynth_output_dir}/scope_frontier.jsonl" \
+    read -r changes summary < <(run_java_main \
+      edu.uva.liftlab.graphchecker.plan.ScopeGrowth "${grown}" \
+      "${causynth_output_dir}/scope_frontier.jsonl" \
       "${causynth_scope_growth_budget}" "${project_classes_dir}" \
       "${roots[@]}") \
+      && [[ "${changes}" =~ ^[0-9]+$ ]] \
       || campaign_fail SEED ScopeGrowth "${grown}" "scope growth failed"
-    campaign_log "scope growth: +${added} class(es), $(wc -l \
-      <"${grown}/${scope_growth_manifest}" 2>/dev/null || echo 0) of \
-      ${causynth_scope_growth_budget}"
-    [[ "${added}" != 0 ]] || return 0
+    campaign_log "scope growth: ${summary}"
+    [[ "${changes}" != 0 ]] || return 0
   done
 }
 

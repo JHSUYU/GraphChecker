@@ -30,23 +30,40 @@ import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 /**
- * Grows the analysis scope toward the slice's frontier (SYMBOL-SCOPE §2):
- * for a {@link ScopeFrontier#CALLEE}, the class whose concrete body it is --
- * or, for an abstract one, every class of the roots implementing it; for a
- * {@link ScopeFrontier#FIELD}, its owner and, unless it is private, every
- * class storing it (a reference field: every class loading it too, since the
- * object it holds is written through it).  A protobuf message is a wire
- * payload (F3), never scope.  Rows are taken nearest first until the budget of
- * grown classes is spent; each class taken is copied into the grown directory
- * and listed in its {@value #MANIFEST} with the row that took it.
+ * Grows the analysis scope toward the slice's frontier (SYMBOL-SCOPE §2), over
+ * the classes of the lineage roots:
+ * <ul>
+ *   <li>a {@link ScopeFrontier#CALLEE} of a type of the roots (the platform's
+ *       types are the VM's to model): the class whose body it runs -- for an
+ *       abstract one, the class each implementation inherits it from, unless
+ *       that body only returns constants;</li>
+ *   <li>a {@link ScopeFrontier#FIELD}: its owner and, unless the field is
+ *       private or final, every class storing it; a static final field is a
+ *       constant, no state;</li>
+ *   <li>a {@link ScopeFrontier#FORMAL}: every class calling the method.</li>
+ * </ul>
+ * A protobuf message is a wire payload (F3), never scope.  Rows are taken
+ * nearest first until the budget of grown classes is spent; each class taken
+ * is copied into the grown directory and listed in its {@value #MANIFEST}
+ * with the row that took it.
+ *
+ * <p>Growth must leave the target's region roots (the frontier's {@code
+ * ROOT} rows) as the first round found them ({@value #ROOTS}): a grown class
+ * holding a new one is taken back and listed in {@value #EXCLUDED}, and
+ * never taken again.</p>
  *
  * <p>Usage: {@code ScopeGrowth <grown-dir> <frontier.jsonl> <budget>
- * <scope-dir> <class-root>...}.  Prints the number of classes it added.</p>
+ * <scope-dir> <class-root>...}.  Prints the number of classes it added or
+ * took back, then what it did.</p>
  */
 public final class ScopeGrowth {
-    /** The grown classes and why, one {@code class<TAB>kind<TAB>signature}
-     *  line each, in the order they were taken. */
+    /** The grown classes and why, one {@code class<TAB>kind<TAB>signature
+     *  <TAB>distance} line each, in the order they were taken. */
     public static final String MANIFEST = "GROWN";
+    /** The target's region roots before any growth. */
+    public static final String ROOTS = "ROOTS";
+    /** The grown classes taken back, {@code class<TAB>root} each. */
+    public static final String EXCLUDED = "EXCLUDED";
     private static final Pattern METHOD = Pattern.compile(
             "<([^:]+): \\S+ ([^(\\s]+)\\(([^)]*)\\)>");
     private static final Pattern FIELD = Pattern.compile(
@@ -69,18 +86,53 @@ public final class ScopeGrowth {
         for (int at = 4; at < args.length; at++) {
             index.scan(Paths.get(args[at]));
         }
-        Set<String> present = new LinkedHashSet<>();
-        present.addAll(classNames(Paths.get(args[3])));
-        present.addAll(classNames(grown));
-        Path manifest = grown.resolve(MANIFEST);
-        int taken = Files.exists(manifest)
-                ? Files.readAllLines(manifest, StandardCharsets.UTF_8).size()
-                : 0;
-        int added = 0;
+        List<JsonObject> rows = new ArrayList<>();
+        Set<String> roots = new TreeSet<>();
         for (String line : Files.readAllLines(Paths.get(args[1]),
                 StandardCharsets.UTF_8)) {
             if (line.trim().isEmpty()) continue;
             JsonObject row = JsonParser.parseString(line).getAsJsonObject();
+            if (ScopeFrontier.ROOT.equals(row.get("kind").getAsString())) {
+                roots.add(row.get("signature").getAsString());
+            } else {
+                rows.add(row);
+            }
+        }
+        Path first = grown.resolve(ROOTS);
+        if (!Files.exists(first)) {
+            Files.write(first, roots, StandardCharsets.UTF_8);
+        }
+        Set<String> grownNames = new LinkedHashSet<>();
+        for (String line : lines(grown.resolve(MANIFEST))) {
+            grownNames.add(line.split("\t", 2)[0]);
+        }
+        Set<String> excluded = new LinkedHashSet<>();
+        for (String line : lines(grown.resolve(EXCLUDED))) {
+            excluded.add(line.split("\t", 2)[0]);
+        }
+        List<String> takenBack = new ArrayList<>();
+        roots.removeAll(lines(first));
+        for (String root : roots) {
+            Matcher method = METHOD.matcher(root);
+            String owner = method.matches() ? method.group(1) : "";
+            if (!grownNames.contains(owner) || !excluded.add(owner)) continue;
+            Files.deleteIfExists(grown.resolve(
+                    index.classes.get(owner).relative));
+            append(grown.resolve(EXCLUDED), owner + "\t" + root);
+            takenBack.add(owner);
+        }
+        if (!takenBack.isEmpty()) {
+            System.out.println(takenBack.size() + " took back "
+                    + takenBack + ": each held a new root of the target's "
+                    + "region");
+            return;
+        }
+        Set<String> present = new LinkedHashSet<>(excluded);
+        present.addAll(classNames(Paths.get(args[3])));
+        present.addAll(classNames(grown));
+        int taken = grownNames.size();
+        int added = 0;
+        for (JsonObject row : rows) {
             String kind = row.get("kind").getAsString();
             String signature = row.get("signature").getAsString();
             for (String name : index.resolve(kind, signature)) {
@@ -91,55 +143,103 @@ public final class ScopeGrowth {
                 Files.createDirectories(target.getParent());
                 Files.copy(facts.file, target,
                         StandardCopyOption.REPLACE_EXISTING);
-                Files.write(manifest, Collections.singletonList(name + "\t"
-                                + kind + "\t" + signature),
-                        StandardCharsets.UTF_8, StandardOpenOption.CREATE,
-                        StandardOpenOption.APPEND);
+                append(grown.resolve(MANIFEST), name + "\t" + kind + "\t"
+                        + signature + "\t" + row.get("distance").getAsInt());
                 present.add(name);
                 added++;
             }
         }
-        System.out.println(added);
+        System.out.println(added + " added " + added + " class(es), "
+                + (taken + added) + " of " + budget + " grown");
+    }
+
+    private static List<String> lines(Path file) throws IOException {
+        return Files.exists(file)
+                ? Files.readAllLines(file, StandardCharsets.UTF_8)
+                : Collections.<String>emptyList();
+    }
+
+    private static void append(Path file, String line) throws IOException {
+        Files.write(file, Collections.singletonList(line),
+                StandardCharsets.UTF_8, StandardOpenOption.CREATE,
+                StandardOpenOption.APPEND);
     }
 
     /** The classes of the roots one frontier row reaches, in name order. */
     Set<String> resolve(String kind, String signature) {
         Set<String> found = new TreeSet<>();
-        if (ScopeFrontier.CALLEE.equals(kind)) {
-            Matcher method = METHOD.matcher(signature);
-            if (!method.matches()) return found;
-            String key = method.group(2) + "(" + method.group(3) + ")";
-            ClassFacts owner = classes.get(method.group(1));
-            if (owner != null && owner.concrete.contains(key)) {
-                found.add(owner.name);
+        Matcher member = (ScopeFrontier.FIELD.equals(kind) ? FIELD : METHOD)
+                .matcher(signature);
+        if (!member.matches()) return found;
+        String owner = member.group(1);
+        if (ScopeFrontier.FIELD.equals(kind)) {
+            ClassFacts facts = classes.get(owner);
+            Integer access = facts == null ? null
+                    : facts.fields.get(member.group(3));
+            if (access == null || constant(access)) return found;
+            found.add(owner);
+            if ((access & (Opcodes.ACC_PRIVATE | Opcodes.ACC_FINAL)) != 0) {
                 return found;
             }
             for (ClassFacts candidate : classes.values()) {
-                if (candidate.concrete.contains(key)
-                        && subtype(candidate.name, method.group(1))) {
-                    found.add(candidate.name);
-                }
-            }
-        } else if (ScopeFrontier.FIELD.equals(kind)) {
-            Matcher field = FIELD.matcher(signature);
-            if (!field.matches()) return found;
-            ClassFacts owner = classes.get(field.group(1));
-            if (owner == null) return found;
-            found.add(owner.name);
-            if (owner.privateFields.contains(field.group(3))) return found;
-            boolean reference = !primitive(field.group(2));
-            for (ClassFacts candidate : classes.values()) {
-                for (String access : candidate.fieldAccesses) {
-                    String[] parts = access.split("\\|", 3);
-                    if (parts[2].equals(field.group(3))
-                            && ("W".equals(parts[0]) || reference)
-                            && subtype(parts[1], owner.name)) {
+                for (String store : candidate.stores) {
+                    String[] at = store.split("\\|", 2);
+                    if (at[1].equals(member.group(3))
+                            && subtype(at[0], owner)) {
                         found.add(candidate.name);
                     }
                 }
             }
+            return found;
+        }
+        String key = member.group(2) + "(" + member.group(3) + ")";
+        if (ScopeFrontier.FORMAL.equals(kind)) {
+            for (ClassFacts candidate : classes.values()) {
+                for (String call : candidate.calls) {
+                    String[] at = call.split("\\|", 2);
+                    if (at[1].equals(key) && (subtype(at[0], owner)
+                            || subtype(owner, at[0]))) {
+                        found.add(candidate.name);
+                    }
+                }
+            }
+            return found;
+        }
+        ClassFacts declared = classes.get(owner);
+        if (declared == null) return found;
+        if (declared.bodies.containsKey(key)) {
+            if (!constantBody(declared.bodies.get(key))) found.add(owner);
+            return found;
+        }
+        for (ClassFacts candidate : classes.values()) {
+            if (!subtype(candidate.name, owner)) continue;
+            // The body it runs is the nearest superclass declaring it.
+            for (ClassFacts at = candidate; at != null;
+                 at = classes.get(at.superclass)) {
+                if (!at.bodies.containsKey(key)) continue;
+                if (!constantBody(at.bodies.get(key))) found.add(at.name);
+                break;
+            }
         }
         return found;
+    }
+
+    private static boolean constant(int access) {
+        int flags = Opcodes.ACC_STATIC | Opcodes.ACC_FINAL;
+        return (access & flags) == flags;
+    }
+
+    /** Whether a body touches nothing but the constants it loads (null: it
+     *  touches state or calls). */
+    private boolean constantBody(Set<String> statics) {
+        if (statics == null) return false;
+        for (String field : statics) {
+            String[] at = field.split("\\|", 2);
+            ClassFacts owner = classes.get(at[0]);
+            Integer access = owner == null ? null : owner.fields.get(at[1]);
+            if (access == null || !constant(access)) return false;
+        }
+        return true;
     }
 
     /** Whether {@code name} is {@code ancestor} or below it in the roots. */
@@ -168,17 +268,6 @@ public final class ScopeGrowth {
             pending.addAll(facts.supertypes);
         }
         return false;
-    }
-
-    private static boolean primitive(String type) {
-        switch (type) {
-            case "boolean": case "byte": case "char": case "short":
-            case "int": case "long": case "float": case "double":
-            case "java.lang.String":
-                return true;
-            default:
-                return false;
-        }
     }
 
     void scan(Path root) throws IOException {
@@ -217,17 +306,22 @@ public final class ScopeGrowth {
     }
 
     /** What one class file states: its supertypes, the methods it has a
-     *  body for, its private fields, and the fields it loads and stores. */
+     *  body for, its fields, and the fields it stores and methods it calls. */
     private static final class ClassFacts extends ClassVisitor {
         final Path file;
         final Path relative;
         String name = "";
+        String superclass = "";
         final List<String> supertypes = new ArrayList<>();
-        /** {@code name(paramType,...)} of every concrete method. */
-        final Set<String> concrete = new LinkedHashSet<>();
-        final Set<String> privateFields = new LinkedHashSet<>();
-        /** {@code R|owner|field} or {@code W|owner|field}. */
-        final Set<String> fieldAccesses = new LinkedHashSet<>();
+        /** {@code name(paramType,...)} of every concrete method, to the
+         *  static fields it loads -- null once it touches anything else. */
+        final Map<String, Set<String>> bodies = new LinkedHashMap<>();
+        /** Every field it declares, with its access flags. */
+        final Map<String, Integer> fields = new LinkedHashMap<>();
+        /** {@code owner|field} of every field it stores. */
+        final Set<String> stores = new LinkedHashSet<>();
+        /** {@code owner|name(paramType,...)} of every method it calls. */
+        final Set<String> calls = new LinkedHashSet<>();
 
         ClassFacts(Path file, Path relative) {
             super(Opcodes.ASM9);
@@ -240,7 +334,10 @@ public final class ScopeGrowth {
                           String signature, String superName,
                           String[] interfaces) {
             name = internal.replace('/', '.');
-            if (superName != null) supertypes.add(superName.replace('/', '.'));
+            if (superName != null) {
+                superclass = superName.replace('/', '.');
+                supertypes.add(superclass);
+            }
             for (String type : interfaces) {
                 supertypes.add(type.replace('/', '.'));
             }
@@ -250,7 +347,7 @@ public final class ScopeGrowth {
         public FieldVisitor visitField(int access, String field,
                                        String descriptor, String signature,
                                        Object value) {
-            if ((access & Opcodes.ACC_PRIVATE) != 0) privateFields.add(field);
+            fields.put(field, access);
             return null;
         }
 
@@ -258,23 +355,54 @@ public final class ScopeGrowth {
         public MethodVisitor visitMethod(int access, String method,
                                          String descriptor, String signature,
                                          String[] exceptions) {
+            String body = key(method, descriptor);
             if ((access & Opcodes.ACC_ABSTRACT) == 0) {
-                List<String> params = new ArrayList<>();
-                for (Type type : Type.getArgumentTypes(descriptor)) {
-                    params.add(type.getClassName());
-                }
-                concrete.add(method + "(" + String.join(",", params) + ")");
+                bodies.put(body, new LinkedHashSet<String>());
             }
             return new MethodVisitor(Opcodes.ASM9) {
                 @Override
                 public void visitFieldInsn(int opcode, String owner,
                                            String field, String type) {
-                    boolean store = opcode == Opcodes.PUTFIELD
-                            || opcode == Opcodes.PUTSTATIC;
-                    fieldAccesses.add((store ? "W|" : "R|")
-                            + owner.replace('/', '.') + "|" + field);
+                    String at = owner.replace('/', '.') + "|" + field;
+                    if (opcode == Opcodes.PUTFIELD
+                            || opcode == Opcodes.PUTSTATIC) {
+                        stores.add(at);
+                    }
+                    Set<String> statics = bodies.get(body);
+                    if (statics == null) return;
+                    if (opcode == Opcodes.GETSTATIC) {
+                        statics.add(at);
+                    } else {
+                        bodies.put(body, null);
+                    }
+                }
+
+                @Override
+                public void visitMethodInsn(int opcode, String owner,
+                                            String callee, String type,
+                                            boolean isInterface) {
+                    calls.add(owner.replace('/', '.') + "|"
+                            + key(callee, type));
+                    if (bodies.containsKey(body)) bodies.put(body, null);
+                }
+
+                @Override
+                public void visitInvokeDynamicInsn(String callee,
+                                                   String type,
+                                                   org.objectweb.asm.Handle
+                                                           bootstrap,
+                                                   Object... arguments) {
+                    if (bodies.containsKey(body)) bodies.put(body, null);
                 }
             };
+        }
+
+        private static String key(String method, String descriptor) {
+            List<String> params = new ArrayList<>();
+            for (Type type : Type.getArgumentTypes(descriptor)) {
+                params.add(type.getClassName());
+            }
+            return method + "(" + String.join(",", params) + ")";
         }
     }
 }

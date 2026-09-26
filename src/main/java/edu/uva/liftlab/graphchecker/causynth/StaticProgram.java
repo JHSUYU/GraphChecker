@@ -169,6 +169,15 @@ public final class StaticProgram {
                 Collections.<String>emptyList());
     }
 
+    /** The root methods of the regions holding {@code method}. */
+    List<String> rootsHolding(String method) {
+        List<String> roots = new ArrayList<>();
+        for (String regionId : regionsHolding(method)) {
+            roots.add(text(regionsById().get(regionId).get("rootMethod")));
+        }
+        return roots;
+    }
+
     private void indexRegions() {
         Object last = regions.isEmpty() ? null
                 : regions.get(regions.size() - 1);
