@@ -88,7 +88,15 @@ public class ServiceLoopIsNotAMessageFrameTest {
                 {"a CONDITION_BOUNDED loop inside the frame",
                         encodeRegion(ENCODE_FRAME,
                                 LoopBoundPolicy.LOOP_CONDITION_BOUNDED),
-                        ENCODE_FRAME}};
+                        ENCODE_FRAME},
+                // The root's own loop, when its first call into the region
+                // is in it: a thread's set-up before it is not work.
+                {"a root that only sets up before its loop",
+                        rootLoop(SET_UP), ENCODE_FRAME},
+                // hdfs-11741's addKeys runs removeExpiredKeys, then its
+                // copy loop: one unit of work, rooted at its entry.
+                {"a root that works before its loop", rootLoop(ENCODE_LEAF),
+                        null}};
         for (Object[] row : rows) {
             Map<String, Object> rooted = rootLoopOf((Case) row[1]);
             Assert.assertEquals((String) row[0], row[2], rooted == null
@@ -147,6 +155,24 @@ public class ServiceLoopIsNotAMessageFrameTest {
                 port(DECODE_LEAF, DECODE_FRAME),
                 Arrays.asList(callEdge(DECODE_FRAME, 3, DECODE_WALK),
                         callEdge(DECODE_WALK, 7, DECODE_LEAF)));
+    }
+
+    private static final String SET_UP =
+            "<java.lang.Thread: void setName(java.lang.String)>";
+
+    /**
+     * Root and anchor {@code convert(ExportedBlockKeys)}: a call of {@code
+     * first} before its own CONDITION_BOUNDED loop, and one of the leaf in
+     * it.
+     */
+    private static Case rootLoop(String first) {
+        return program(ENCODE_FRAME, ENCODE_FRAME,
+                Arrays.asList(ENCODE_FRAME, ENCODE_LEAF),
+                loop(ENCODE_FRAME, 14, 19,
+                        LoopBoundPolicy.LOOP_CONDITION_BOUNDED),
+                port(ENCODE_LEAF, ""),
+                Arrays.asList(callEdge(ENCODE_FRAME, 3, first),
+                        callEdge(ENCODE_FRAME, 17, ENCODE_LEAF)));
     }
 
     private static Case program(String rootMethod,

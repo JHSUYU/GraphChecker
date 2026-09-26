@@ -268,36 +268,37 @@ public final class StaticProgram {
             next.removeAll(visited);
             frontier = new ArrayList<>(next);
         }
-        // The root method itself may hold the service loop.  Its demanded
-        // unit is the first call in the loop's BODY: a call before the
-        // loop's control sites feeds its condition (a synthetic accessor of
-        // the outer class's running flag), which no body edge dominates.  A
-        // loop with no call after its control sites (do-while) keeps its
-        // first call.
+        // The root method itself may hold the service loop: the one its
+        // first call into the region is in.  A method that does region work
+        // before its loop (addKeys runs removeExpiredKeys, then copies keys)
+        // is one unit of work; set-up outside the region (a thread's setName)
+        // is not work.  The demanded unit is the first call in the loop's
+        // BODY: a call before the loop's control sites feeds its condition
+        // (a synthetic accessor of the outer class's running flag), which no
+        // body edge dominates.  A loop with no call after its control sites
+        // (do-while) keeps that first call.
         List<Integer> units = new ArrayList<>();
-        for (List<String> sites : callSites.values()) {
-            for (String site : sites) {
-                if (site.startsWith(root + "#u")) {
-                    units.add(SiteId.unitIndexOf(site));
+        int work = Integer.MAX_VALUE;
+        for (Map.Entry<String, List<String>> callee : callSites.entrySet()) {
+            for (String site : callee.getValue()) {
+                if (!site.startsWith(root + "#u")) continue;
+                int unit = SiteId.unitIndexOf(site);
+                units.add(unit);
+                if (skeleton.methods.contains(callee.getKey())) {
+                    work = Math.min(work, unit);
                 }
             }
         }
+        Map<String, Object> loop = work == Integer.MAX_VALUE ? null
+                : iteratedLoopAt(loopsByMethod, iterated, root, work);
+        if (loop == null) return null;
         Collections.sort(units);
-        Map<String, Object> first = null;
-        int firstUnit = -1;
         for (int unit : units) {
-            Map<String, Object> loop = iteratedLoopAt(loopsByMethod, iterated,
-                    root, unit);
-            if (loop == null) continue;
-            if (unit > lastControlUnit(loop)) {
+            if (unit > lastControlUnit(loop) && loopContains(loop, unit)) {
                 return rootLoop(loop, root, unit);
             }
-            if (first == null) {
-                first = loop;
-                firstUnit = unit;
-            }
         }
-        return first == null ? null : rootLoop(first, root, firstUnit);
+        return rootLoop(loop, root, work);
     }
 
     /** The last unit of the loop's control sites, or -1. */
