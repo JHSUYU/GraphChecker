@@ -78,6 +78,13 @@ public final class Identity {
         private Attribution.Reference starter;
         /** Whether {@link #starter} is a claimed start, not the creator. */
         private boolean adopted;
+        /**
+         * The work this thread runs: the receiver of its last work entry
+         * ({@link #claimStart}).  Attribution's outermost receiver, so a
+         * daemon whose class weaves no frames (lineage-only text) is still
+         * its registered object's.
+         */
+        private Object work;
 
         private State() {
             levels.add(new Level(null, 0L, null));
@@ -465,6 +472,7 @@ public final class Identity {
             Object receiver = state.levels.get(index).receiver;
             if (receiver != null) receivers.add(receiver);
         }
+        if (state.work != null) receivers.add(state.work);
         return receivers;
     }
 
@@ -476,8 +484,10 @@ public final class Identity {
      * refused at the mint, not given an invented frame.
      */
     public static void claimStart(Object carrier) {
-        if (carrier == null || STARTS.isEmpty()) return;
-        adopt(state(), carrier);
+        if (carrier == null) return;
+        State state = state();
+        state.work = carrier;
+        if (!STARTS.isEmpty()) adopt(state, carrier);
     }
 
     /** Drops the entries of carriers nothing runs any more. */
