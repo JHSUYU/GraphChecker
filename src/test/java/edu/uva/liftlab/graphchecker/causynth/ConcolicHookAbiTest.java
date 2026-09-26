@@ -173,6 +173,16 @@ public class ConcolicHookAbiTest {
                     new ArrayList<>(LIFECYCLE));
         }
 
+        // What a Jupiter class states about its own set-up: a directory in
+        // each @TempDir field, an extension's callbacks around the methods
+        // of its role, and the @Test among same-named methods.
+        LIFECYCLE.clear();
+        runWorkloadMethod(SetUpWorkload.class, "theWorkloadBody");
+        assertEquals(Arrays.asList("beforeAll:SetUpWorkload",
+                        "beforeEach:theWorkloadBody", "theWorkloadBody",
+                        "afterEach:theWorkloadBody"),
+                new ArrayList<>(LIFECYCLE));
+
         LIFECYCLE.clear();
         try {
             runWorkloadMethod(FailingJupiterWorkload.class,
@@ -276,6 +286,54 @@ public class ConcolicHookAbiTest {
         @org.junit.AfterClass
         public static void afterAll() {
             LIFECYCLE.add("afterAll");
+        }
+    }
+
+    /** Names what each callback is handed, as Hadoop's TestName does. */
+    public static class NamingExtension implements
+            org.junit.jupiter.api.extension.BeforeAllCallback,
+            org.junit.jupiter.api.extension.BeforeEachCallback,
+            org.junit.jupiter.api.extension.AfterEachCallback {
+        @Override
+        public void beforeAll(
+                org.junit.jupiter.api.extension.ExtensionContext context) {
+            LIFECYCLE.add("beforeAll:"
+                    + context.getRequiredTestClass().getSimpleName());
+        }
+
+        @Override
+        public void beforeEach(
+                org.junit.jupiter.api.extension.ExtensionContext context) {
+            LIFECYCLE.add("beforeEach:"
+                    + context.getTestMethod().get().getName());
+        }
+
+        @Override
+        public void afterEach(
+                org.junit.jupiter.api.extension.ExtensionContext context) {
+            LIFECYCLE.add("afterEach:"
+                    + context.getRequiredTestMethod().getName());
+        }
+    }
+
+    /** A workload stating its own set-up the Jupiter way. */
+    private static class SetUpWorkload {
+        @org.junit.jupiter.api.extension.RegisterExtension
+        static NamingExtension perClass = new NamingExtension();
+        @org.junit.jupiter.api.io.TempDir
+        static java.io.File shared;
+        @org.junit.jupiter.api.io.TempDir
+        java.nio.file.Path own;
+
+        /** A helper sharing the test's name is not the test. */
+        void theWorkloadBody(int ignored) {
+            throw new AssertionError("the helper ran");
+        }
+
+        @org.junit.jupiter.api.Test
+        void theWorkloadBody() {
+            assertTrue(shared.isDirectory() && Files.isDirectory(own));
+            LIFECYCLE.add("theWorkloadBody");
         }
     }
 
