@@ -925,6 +925,15 @@ void ConcolicMngr::observeExactPrimitiveField(
       : static_cast<Expression *>(
           new ConExpression(owner()->long_field(field.offset())));
   instance->set_sym_exp(field.offset(), observed);
+  // The observation starts the field's log.  A concrete store is versioned
+  // only where a log exists, and the woven write site calls here just before
+  // its store: without a base the store would leave no version and a reader
+  // in another occurrence would join no writer.  The base is the value from
+  // before the window, which a read of it is pinned to.
+  SharedFieldVersions::publish_initial(
+      SharedFieldVersions::Location(instance->get_sym_rid(), field.offset(),
+                                    SharedFieldVersions::LOC_INSTANCE_FIELD),
+      observed, SharedFieldVersions::InitialSnapshot());
   ctx->set_pc_admitted(true);
 }
 

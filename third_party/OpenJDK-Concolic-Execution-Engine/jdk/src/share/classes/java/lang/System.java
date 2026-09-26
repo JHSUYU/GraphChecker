@@ -752,7 +752,9 @@ public final class System {
     /**
      * Attaches the currently observed int or long value to one exact field.
      * This creates a concrete expression leaf for a selected state mutation;
-     * it does not add a symbolic input.
+     * it does not add a symbolic input.  It also starts the field's version
+     * log with that value, so the store it precedes is versioned even when
+     * the stored value is concrete.
      */
     public static native void observeExactPrimitiveField(
             Object owner, String declaringClass, String fieldName,
