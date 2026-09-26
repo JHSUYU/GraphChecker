@@ -698,10 +698,18 @@ public final class Composer {
 
         // (5) phi_p is the FATAL arm as published; never re-derive its
         //     polarity.  No predicate is a concrete branch (invariant 9):
-        //     the arm this run took is the whole of phi_p.
+        //     the arm this run took is the whole of phi_p, and a healthy one
+        //     is no path to the fatal arm in any world.
         String subject = "phi of " + anchor.render();
         if (target.phiTerm() == null || target.phiTerm().isEmpty()) {
-            terms.add(target.observedFatal() ? "true" : "false");
+            if (target.observedFatal()) {
+                terms.add("true");
+            } else {
+                refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
+                        GapClass.DIAGNOSTIC, subject, "the anchor decided "
+                                + "concretely on its healthy arm, so no root "
+                                + "of this path reaches the fatal one"));
+            }
         } else {
             String phi = lowering.statedTerm(target.phiTerm(),
                     "phi:" + subject);
