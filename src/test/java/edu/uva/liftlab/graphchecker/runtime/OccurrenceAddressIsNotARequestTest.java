@@ -13,6 +13,7 @@ import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.plan.ExecutionTask;
 
 import org.junit.After;
+import org.junit.Before;
 import org.junit.Test;
 
 import java.io.InputStream;
@@ -53,6 +54,15 @@ public class OccurrenceAddressIsNotARequestTest {
 
     private final Object nameNode = new Object();
     private final Object targetDn = new Object();
+
+    /** The address a select computes reads the thread's identity and
+     *  lineage: another test's must not leak into it. */
+    @Before
+    public void startFromNoIdentity() {
+        Identity.resetForTests();
+        Lineage.resetForTests();
+        RuntimeTraceContext.resetForTests();
+    }
 
     @After
     public void clearRuntimeState() {
