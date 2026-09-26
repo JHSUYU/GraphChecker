@@ -38,7 +38,7 @@ placement=(
   "lift11 hdfs-17960 hdfs-17967-pathC hdfs-token-key"
   "lift12 hdfs-11741"
   "lift13 hdfs-17899-bug1 hdfs-17899-bug2"
-  "lift14 hdfs-17899-bug3 hdfs-17897"
+  "lift14 hdfs-17899-bug3 hdfs-17897 hdfs-17897-nowire"
   "lift15 hdfs-17967-pathA hdfs-17967-pathB"
 )
 
