@@ -75,8 +75,8 @@ public final class RuntimeRegionPlanner {
             if ((!validRootAuthority(authority)
                     && !COMMUNICATION_ENTRY.equals(authority)
                     && !"STATE_WRITER_ENTRY".equals(authority))
-                    || CausynthStaticFacts.constructor(
-                            skeleton.rootMethod)) {
+                    || CausynthStaticFacts.constructor(skeleton.rootMethod)
+                    && !"FAILURE_TARGET_ENTRY".equals(authority)) {
                 throw new IllegalArgumentException(
                         "region skeleton has no authoritative execution "
                                 + "context root: " + skeleton.rootMethod);

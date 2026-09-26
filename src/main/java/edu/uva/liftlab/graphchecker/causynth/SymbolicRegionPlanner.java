@@ -25,6 +25,8 @@ final class SymbolicRegionPlanner {
     static final String STATE_WRITER_ENTRY = "STATE_WRITER_ENTRY";
     /** An explicit fault call is itself a replayable request boundary. */
     static final String EXPLICIT_FAULT_ENTRY = "EXPLICIT_FAULT_ENTRY";
+    /** The annotated target's own method, when no entry encloses it. */
+    static final String FAILURE_TARGET_ENTRY = "FAILURE_TARGET_ENTRY";
     private SymbolicRegionPlanner() {
     }
 
@@ -118,13 +120,16 @@ final class SymbolicRegionPlanner {
             }
             String target = text(program.targetResolved.get("method"));
             if (!target.isEmpty()) {
-                authorities.putIfAbsent(target, "FAILURE_TARGET_ENTRY");
+                authorities.putIfAbsent(target, FAILURE_TARGET_ENTRY);
             }
         }
 
         /**
          * Roots a skeleton at each entry, in signature order, unless it is
-         * unselected, a constructor, already a root, or {@code skipped}.
+         * unselected, already a root, {@code skipped}, or a constructor: no
+         * execution context, but the target's own method is its region when
+         * nothing encloses it (the weave enters it once {@code this} is
+         * initialized).
          */
         private void root(StaticProgram program, Collection<String> entries,
                           Function<String, String> authority,
@@ -133,12 +138,16 @@ final class SymbolicRegionPlanner {
             Collections.sort(ordered);
             for (String entry : ordered) {
                 if (!selected.contains(entry)
-                        || CausynthStaticFacts.constructor(entry)
                         || hasSkeletonRoot(program, entry)
                         || skipped.test(entry)) {
                     continue;
                 }
-                addSkeleton(program, entry, authority.apply(entry));
+                String kind = authority.apply(entry);
+                if (CausynthStaticFacts.constructor(entry)
+                        && !FAILURE_TARGET_ENTRY.equals(kind)) {
+                    continue;
+                }
+                addSkeleton(program, entry, kind);
             }
         }
 
