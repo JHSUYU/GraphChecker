@@ -20,6 +20,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicVmBroker.engine;
@@ -48,7 +49,19 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
  * {@link ConcolicRegionRuntime} as delegates.</p>
  */
 final class RootMint {
+    /**
+     * The clock roots each occurrence has read, as "owner address|root id":
+     * a root is one clock SITE, and an occurrence's root is that site's
+     * first reading there ({@link #materializePrimitiveValue}).
+     */
+    private static final Set<String> CLOCK_READINGS =
+            ConcurrentHashMap.newKeySet();
+
     private RootMint() {
+    }
+
+    static void resetForTests() {
+        CLOCK_READINGS.clear();
     }
 
     /** Called once per Java argument right after region entry. */
@@ -710,6 +723,14 @@ final class RootMint {
             } else {
                 planted = modeled;
             }
+        }
+        // A clock site read again in the occurrence that read it (a loop's
+        // bodies share one address) is a later instant of the same root:
+        // it runs at the plant and stays concrete.  One symbol for both
+        // would state two values for one source (IMPORT invariant 8).
+        if (action.clock && !CLOCK_READINGS.add(active.rootOwner(
+                action.symbol).address() + "|" + action.symbol)) {
+            return planted;
         }
         Object fresh = freshPrimitiveBox(planted);
         try {

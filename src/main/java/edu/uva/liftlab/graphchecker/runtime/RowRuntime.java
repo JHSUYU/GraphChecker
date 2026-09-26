@@ -876,6 +876,7 @@ public final class RowRuntime {
             Interactions.resetForTests();
             Lineage.resetForTests();
             FocusedReplay.resetForTests();
+            RootMint.resetForTests();
             Confirmation.resetForTests();
             SessionPublisher.resetForTests();
             HandoffMint.resetForTests();
