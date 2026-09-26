@@ -4,3 +4,12 @@ token-expired.proxy	hdfs-17967/proxy-dn#epoch0/region/REGION.7f08d6f5-b1ef-323d-
 commit-gs.flush	flush/nn0#epoch0/region/REGION.6c403606-6afd-361f-8aac-862f6fa8ce36#1
 lease-holder.softlimit	softlimit/nn0#epoch0/region/REGION.5388f531-b30a-3e1b-9c75-92b90478f46a#1
 sender-gs.mirror	hdfs-17967/source-dn#epoch0/region/REGION.042e5a91-22d3-3046-acac-4aa99c673318#1
+token-blockid.mirror	hdfs-17967/mirror-dn#epoch0/region/REGION.7f08d6f5-b1ef-323d-8084-ce44a2259712#1
+close-retries.softlimit	softlimit/client1#epoch0/region/REGION.7df86003-9a6b-3822-b0fd-27402a140fcb#1
+finalize-gs.flush	flush/dn0#epoch0/region/REGION.3870d2c3-81ff-3ba4-9518-b0e153fb0ffe#1
+ack-seqno.flush	flush/client0#epoch0/region/REGION.33959492-c7c7-37de-99ce-af728209f3ba#1
+token-password.mirror	hdfs-17967/mirror-dn#epoch0/region/REGION.7f08d6f5-b1ef-323d-8084-ce44a2259712#1
+sender-gs.flush	flush/dn0#epoch0/region/REGION.042e5a91-22d3-3046-acac-4aa99c673318#1
+commit-blockid.flush	flush/nn0#epoch0/region/REGION.9834780a-d2f5-3cae-abcf-c6bee26e2e30#1
+lease-missing.softlimit	softlimit/nn0#epoch0/region/REGION.387ae84e-0dec-3980-b07a-8a200b6ee387#1
+addblock-notreplicated.softlimit	softlimit/nn0#epoch0/region/REGION.3fc25854-efbd-3885-aa0f-9eca1e67e61c#1
