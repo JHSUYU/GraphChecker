@@ -160,7 +160,7 @@ public final class ObligationFactory {
     }
 
     /** {@code model - recorded} as a decimal, or "" if either is not one. */
-    private static String skew(String model, String recorded) {
+    static String skew(String model, String recorded) {
         if (model == null || recorded == null) return "";
         try {
             return new BigInteger(model.trim())

@@ -13,6 +13,7 @@ import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
@@ -197,6 +198,9 @@ public final class ConfirmMain {
                 ExploreCodec.map(object(world, "rootMints"));
         Map<String, String> answers =
                 ExploreCodec.map(object(world, "answers"));
+        plantModel(decided, session,
+                SessionReader.read(iteration, seedSessionId), assignments,
+                clockDeltas, mints);
         List<JsonObject> markers = markerEdges(manifest, assignments);
         Map<String, SessionReader> armSessions =
                 new LinkedHashMap<String, SessionReader>();
@@ -249,6 +253,42 @@ public final class ConfirmMain {
         summary.addProperty("expectedEdges", edges.size());
         summary.add("schedulePrefix", cut.toJson());
         return summary;
+    }
+
+    /**
+     * The MODEL's world over the session's: a root the model moved off the
+     * value this session ran -- a clock DECIDE left free at the recorded
+     * valuation, which no replay moved -- is planted as an exploration
+     * plants it (ObligationFactory): a clock as the skew off this session's
+     * reading, any other root as the value, at the occurrence the recording
+     * mints it.  Otherwise the replay runs the session again, not the claim.
+     */
+    static void plantModel(JsonObject decided, SessionReader session,
+                           SessionReader recording,
+                           Map<String, String> assignments,
+                           Map<String, String> clockDeltas,
+                           Map<String, String> mints) {
+        JsonObject moved = object(decided, "movedRoots");
+        for (RootMintRow row : session.roots()) {
+            JsonElement value = moved.has(row.symbol())
+                    ? moved.get(row.symbol()) : moved.get(row.rootId());
+            if (value == null || value.isJsonNull()) continue;
+            String model = value.getAsString().trim();
+            if (row.kind() == RootKind.CLOCK) {
+                String skew = ObligationFactory.skew(model,
+                        row.recordedValue());
+                if (skew.isEmpty()) continue;
+                clockDeltas.put(row.rootId(), skew);
+            } else {
+                assignments.put(row.rootId(), model);
+            }
+            for (RootMintRow mint : recording.roots()) {
+                if (mint.rootId().equals(row.rootId())) {
+                    mints.put(row.rootId(), mint.occurrence().render());
+                    break;
+                }
+            }
+        }
     }
 
     /** What either kind of confirmation task states first. */

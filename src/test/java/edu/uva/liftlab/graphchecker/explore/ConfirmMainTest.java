@@ -334,5 +334,15 @@ public class ConfirmMainTest {
         assertEquals(anchor.id(),
                 edges.get("ANCHOR").get("occurrence").getAsString());
         assertEquals(40L, edges.get("ANCHOR").get("seq").getAsLong());
+
+        // A model that moved the clock elsewhere (DECIDE leaves clocks free)
+        // is the world handed over, as the skew off that session's reading.
+        Path moved = folder.newFolder("moved").toPath();
+        ConfirmMain.write(iteration, claim("M_J_clock.sel", "50000"),
+                manifest(), moved);
+        assertEquals("the model's instant, 50000, less the 2000 read",
+                "48000", RowCodec.readJsonl(moved.resolve(
+                        "focused_task.jsonl")).get(0).getAsJsonObject(
+                        "clockDeltas").get("CLOCK.a").getAsString());
     }
 }
