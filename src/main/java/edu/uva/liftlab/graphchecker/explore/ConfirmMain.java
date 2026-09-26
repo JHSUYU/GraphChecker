@@ -465,11 +465,7 @@ public final class ConfirmMain {
             // before the write goes before it, any other after the read.
             for (WriteRow other : byLocation.get(
                     location(join.getValue().location()))) {
-                if (other.endpoint().activation().equals(writer.activation())
-                        || other.endpoint().activation().equals(
-                        read.endpoint().activation())) {
-                    continue;
-                }
+                if (other.endpoint().equals(writer)) continue;
                 if (other.seq() < join.getValue().seq()) {
                     order(orders, other.endpoint(), writer);
                 } else {
@@ -489,12 +485,13 @@ public final class ConfirmMain {
     }
 
     /** {@code first}'s activation exits before {@code then}'s enters, unless
-     *  one activation holds both. */
+     *  one occurrence holds both: it runs on one thread, whose program order
+     *  already orders them (and a nested activation cannot exit before the
+     *  one around it enters). */
     private static void order(Set<String> orders, Endpoint first,
                               Endpoint then) {
-        String before = first.activation();
-        String after = then.activation();
-        if (!before.equals(after)) orders.add(before + "\n" + after);
+        if (first.occurrence().id().equals(then.occurrence().id())) return;
+        orders.add(first.activation() + "\n" + then.activation());
     }
 
     /** One write the path rests on: reach its writer, sweep older versions. */
