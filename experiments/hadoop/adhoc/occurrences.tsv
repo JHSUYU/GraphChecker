@@ -1,1 +1,6 @@
 # case (<check>.<workload>)	target occurrence (selector node/region/REGION.<id>#k, from a discovery run)
+token-nokey.mirror	hdfs-17967/mirror-dn#epoch0/region/REGION.7f08d6f5-b1ef-323d-8084-ce44a2259712#1
+token-expired.proxy	hdfs-17967/proxy-dn#epoch0/region/REGION.7f08d6f5-b1ef-323d-8084-ce44a2259712#1
+commit-gs.flush	flush/nn0#epoch0/region/REGION.6c403606-6afd-361f-8aac-862f6fa8ce36#1
+lease-holder.softlimit	softlimit/nn0#epoch0/region/REGION.5388f531-b30a-3e1b-9c75-92b90478f46a#1
+sender-gs.mirror	hdfs-17967/source-dn#epoch0/region/REGION.042e5a91-22d3-3046-acac-4aa99c673318#1
