@@ -65,6 +65,18 @@ for row in "${placement[@]}"; do
     launches+=("${head} ${case_id} ${suffix}")
   done
 done
+# A named case no row places (an experiments/hadoop/adhoc case) takes the
+# heads in turn; accept.sh refuses an id no case directory declares.
+read -r -a heads <<<"${LIFTS}"
+turn=0
+for case_id in ${CASES:-}; do
+  [[ " ${launches[*]:-} " == *" ${case_id} "* ]] && continue
+  suffix="${round}-${case_id#hdfs-}"
+  [[ ! -e "${out}/accept-${suffix}" && ! -e "${out}/launch-${suffix}.log" ]] \
+    || { echo "round ${round} already has ${case_id}: ${out}/accept-${suffix}" >&2; exit 2; }
+  launches+=("${heads[$((turn % ${#heads[@]}))]} ${case_id} ${suffix}")
+  turn=$((turn + 1))
+done
 [[ ${#launches[@]} -gt 0 ]] || { echo "no case of the round matches CASES='${CASES:-}'" >&2; exit 2; }
 
 mkdir -p "${out}"

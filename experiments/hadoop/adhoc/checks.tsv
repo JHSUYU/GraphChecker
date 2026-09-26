@@ -1,0 +1,23 @@
+# check	source file (tree-relative)	throw line	scope entry of the check's class ("-": the family scope has it)	workloads
+token-blockid	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager.java	384	-	mirror proxy
+token-expired	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager.java	388	-	mirror proxy
+token-password	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager.java	441	-	mirror
+token-pw-expired	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager.java	533	-	mirror
+token-nokey	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager.java	541	-	mirror replicate
+sender-gs	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockSender.java	275	hdfs=:org/apache/hadoop/hdfs/server/datanode/BlockSender	mirror reconstruct flush
+recv-offset	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockReceiver.java	564	hdfs=:org/apache/hadoop/hdfs/server/datanode/BlockReceiver	mirror flush
+recv-seqno	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockReceiver.java	1448	hdfs=:org/apache/hadoop/hdfs/server/datanode/BlockReceiver	mirror
+finalize-gs	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/FsDatasetImpl.java	2049	hdfs=:org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/FsDatasetImpl	mirror flush
+visible-gs	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/FsDatasetImpl.java	3274	hdfs=:org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/FsDatasetImpl	flush
+reader-chunk	hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/client/impl/BlockReaderRemote.java	432	client=:org/apache/hadoop/hdfs/client/impl/BlockReaderRemote	reconstruct flush
+reader-header	hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/client/impl/BlockReaderRemote.java	197	client=:org/apache/hadoop/hdfs/client/impl/BlockReaderRemote	flush
+commit-gs	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockManager.java	1192	hdfs=:org/apache/hadoop/hdfs/server/blockmanagement/BlockManager	flush softlimit
+commit-blockid	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockInfo.java	444	hdfs=:org/apache/hadoop/hdfs/server/blockmanagement/BlockInfo	flush
+complete-uncommitted	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/blockmanagement/BlockManager.java	1308	hdfs=:org/apache/hadoop/hdfs/server/blockmanagement/BlockManager	flush
+lease-holder	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java	3250	hdfs=:org/apache/hadoop/hdfs/server/namenode/FSNamesystem	flush softlimit
+lease-missing	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSNamesystem.java	2968	hdfs=:org/apache/hadoop/hdfs/server/namenode/FSNamesystem	softlimit
+addblock-notreplicated	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/namenode/FSDirWriteFileOp.java	183	hdfs=:org/apache/hadoop/hdfs/server/namenode/FSDirWriteFileOp	softlimit
+close-retries	hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/DFSOutputStream.java	1014	client=:org/apache/hadoop/hdfs/DFSOutputStream	softlimit
+ack-seqno	hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/DataStreamer.java	1262	client=:org/apache/hadoop/hdfs/DataStreamer	flush
+stream-offset	hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/DataStreamer.java	765	client=:org/apache/hadoop/hdfs/DataStreamer	flush
+pipeline-reply	hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/DataStreamer.java	1223	client=:org/apache/hadoop/hdfs/DataStreamer	flush

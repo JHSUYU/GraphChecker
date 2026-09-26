@@ -1,0 +1,70 @@
+# Ad-hoc coordination checks of HDFS: a throw whose guard compares what one
+# node holds with what another sent, and which a workload's healthy path
+# evaluates and passes (tools/analysis: throwsites.py, coverage.sh,
+# reached.py).  One case per check and workload, "<check>.<workload>":
+# checks.tsv declares the checks and the workloads each is reached on,
+# occurrences.tsv each case's target occurrence (discovered, README of lib).
+# All run one JDK 8 tree, gc/hdfs-17967-pathC; tools/analysis/mkadhoc.py
+# annotates it and writes targets/.  DataXceiver is never woven.
+check=${1%%.*}
+workload=${1#*.}
+[[ -n "${check}" && "${workload}" != "$1" ]] || {
+  echo "usage: case.sh <check>.<workload>" >&2
+  return 2
+}
+repo=/u/vnr3ne/hadoop-hdfs-17967-c
+row=$(awk -F'\t' -v c="${check}" '$1 == c' "${here}/checks.tsv")
+[[ -n "${row}" ]] || { echo "unknown ad-hoc check: ${check}" >&2; return 2; }
+IFS=$'\t' read -r _ _ _ own workloads <<<"${row}"
+[[ " ${workloads} " == *" ${workload} "* ]] || {
+  echo "${check} is not declared on ${workload}" >&2
+  return 2
+}
+target_spec=${here}/targets/${check}.yaml
+target_occurrence=$(awk -F'\t' -v c="$1" '$1 == c {print $2}' \
+  "${here}/occurrences.tsv")
+# The family scope carries the IPC and SASL doors; Sender carries the
+# data-transfer SEND door (PBHelperClient, in the family, the RECEIVE door).
+scope=("${blockkey_scope[@]}"
+  client:org/apache/hadoop/hdfs/protocol/datatransfer/Sender)
+[[ "${own}" == - ]] || scope+=("${own}")
+datanode=org.apache.hadoop.hdfs.server.datanode
+ec=hdfs:org/apache/hadoop/hdfs/server/datanode/erasurecode
+case "${workload}" in
+  mirror)
+    test_class=${datanode}.TestCausynthWriteBlockMirrorStaleKey
+    test_method=testWritePipelineAfterKeyRotations
+    scope+=(client:org/apache/hadoop/hdfs/DFSClient)
+    ;;
+  proxy)
+    test_class=${datanode}.TestCausynthReplaceBlockProxyStaleKey
+    test_method=testBlockMoveAfterKeyRotations
+    ;;
+  replicate)
+    test_class=${datanode}.TestCausynthDataTransferRpcFailure
+    test_method=testReplicationAfterModeledKeyRefreshRpcFailure
+    ;;
+  reconstruct)
+    test_class=${datanode}.TestCausynthStripedReconstructTargetStaleKey
+    test_method=testReconstructionAfterKeyRotations
+    scope+=("${ec}/StripedWriter" "${ec}/StripedBlockWriter"
+      "${ec}/StripedBlockReconstructor" "${ec}/StripedReconstructor"
+      "${ec}/StripedReconstructionInfo" "${ec}/ErasureCodingWorker")
+    ;;
+  # Upstream tests, each on one DataNode: with more, the NameNode's choice of
+  # a pipeline's head is a ThreadLocalRandom draw no run can repeat.
+  flush)
+    test_class=org.apache.hadoop.hdfs.TestFileAppend
+    test_method=testSimpleFlush
+    scope+=(client:org/apache/hadoop/hdfs/DFSClient)
+    ;;
+  softlimit)
+    test_class=org.apache.hadoop.hdfs.TestFileAppend
+    test_method=testAppendAfterSoftLimit
+    scope+=(client:org/apache/hadoop/hdfs/DFSClient)
+    ;;
+  *)
+    echo "unknown ad-hoc workload: ${workload}" >&2
+    return 2
+    ;;
+esac

@@ -1,0 +1,33 @@
+# K_L is demanded only for a retained CONDITION_BOUNDED loop: CommunicationCatalogPlanner
+# raises BOUNDED_LOOP_BODY_BOUND_UNDECLARED at `if (!fixedCount && declaredBound == 0)`,
+# and an undeclared loop then runs at the inherited ceiling
+# LoopBoundPolicy.MAX_LOOP_BODY_ITERATIONS = 8 rather than being refused.
+# The three key-plumbing loops below it does NOT cover are all
+# FIXED_COUNT_INDEXED (authority STATIC_ARRAY_INDEXED_FOR_V1), i.e. their trip
+# count is the array length and is exact, so they must stay undeclared:
+#   <...BlockTokenSecretManager: void addKeys(ExportedBlockKeys,boolean)>#u19
+#     -- the allKeys PUT loop, receivedKeys.length
+#   <...PBHelper: ...ExportedBlockKeysProto convert(ExportedBlockKeys)>#u14
+#     -- the producer half of block-key-id/-expiry-date
+#   <...ExportedBlockKeys: void readFields(DataInput)>#u16
+# Declaring one of them would replace an exact count with a stated prefix.
+# exportAllKeys() has no CFG loop at all (values().toArray is a library call).
+# Trimmed from hdfs-17899's file for this case's slice.  A declared bound that
+# names no RETAINED loop is a HARD refusal -- DeclaredLoopBodyBounds
+# .refuseUnclaimed, BOUNDED_LOOP_BODY_BOUND_SITE_UNDECLARED -- while a retained
+# loop with no bound is only a DIAGNOSTIC and runs at causynth_loop_default_bound.
+# So err towards declaring less.  The Balancer's KeyManager$BlockKeyUpdater.run
+# loop stays dropped: no path of this case enters it.
+#
+# The two Client$Connection.sendRpcRequest loops are DECLARED again as of
+# 2026-09-22.  They were dropped with the reason "this workload never drives
+# them", which was false the moment the symbolized RPC failure came back: the
+# marker is minted INSIDE sendRpcRequest, and every path of this case drives
+# IPC -- three DataNode heartbeats and the NameNode rotations.  Undeclared,
+# they are retained-but-unbounded, so they only raise a DIAGNOSTIC and run at
+# the inherited ceiling, which leaves the marker loosely bound to any one
+# send.  hdfs-17899 bug3, which passes clean, declares exactly these two.
+{"loopSiteId":"<org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager: void removeExpiredKeys()>#u7","loopBodyBound":8,"reason":"covers the retained expiry scan"}
+{"loopSiteId":"<org.apache.hadoop.hdfs.protocolPB.PBHelper: org.apache.hadoop.hdfs.security.token.block.BlockKey[] convertBlockKeys(java.util.List)>#u6","loopBodyBound":8,"reason":"covers the bounded block-key reply conversion"}
+{"loopSiteId":"<org.apache.hadoop.ipc.Client$Connection: void sendRpcRequest(org.apache.hadoop.ipc.Client$Call)>#u53","loopBodyBound":8,"reason":"covers the retained bounded RPC request serialization loop the fault marker is minted in"}
+{"loopSiteId":"<org.apache.hadoop.ipc.Client$Connection: void sendRpcRequest(org.apache.hadoop.ipc.Client$Call)>#u58","loopBodyBound":8,"reason":"the retained RPC request loop has two control sites and one shared prefix"}

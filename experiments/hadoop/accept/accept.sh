@@ -84,21 +84,20 @@ acc_log() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*"; }
 acc_free_gb() { df --output=avail -BG / | tail -1 | tr -dc 0-9; }
 acc_dir_mb() { du -sm "$1" 2>/dev/null | cut -f1; }
 
-# The experiment directory a case id lives in (17899 shares one for bug1-3).
+# The experiment directory a case id lives in: the longest "-"-prefix of the
+# id that names one (hdfs-17899-bug1 lives in hdfs-17899, adhoc-recv-seqno.mirror
+# in adhoc).
 acc_experiment_of() {
-  case "$1" in
-    hdfs-17899-*) echo hdfs-17899 ;;
-    hdfs-17967-*) echo hdfs-17967 ;;
-    *) echo "$1" ;;
-  esac
+  local exp=$1
+  until [[ -d "$REPO/experiments/hadoop/$exp" || "$exp" != *-* ]]; do
+    exp=${exp%-*}
+  done
+  echo "$exp"
 }
-# The leading run.sh argument a case needs ("" for most).
+# The case id's rest after its experiment directory: the run.sh argument.
 acc_case_arg_of() {
-  case "$1" in
-    hdfs-17899-*) echo "${1#hdfs-17899-}" ;;
-    hdfs-17967-*) echo "${1#hdfs-17967-}" ;;
-    *) echo "" ;;
-  esac
+  local exp; exp=$(acc_experiment_of "$1")
+  [[ "$exp" == "$1" ]] && echo "" || echo "${1#"$exp"-}"
 }
 acc_case_dir() {
   local root=$1 c=$2 d
