@@ -124,7 +124,7 @@ methods, STATE families and their arms, formula size, replay slowdown.
 
 ## 6. Automation, in order
 
-1. **F2 from `S`**: the scope map classifies as tracked every read of a primitive
+1. **F2 from `S`**: the scope map classifies as tracked every read of an int or long
    instance field `S` also stores, when a branch decides on the value within a few
    flows and before any store (`StaticScopeMap#READ_SITE`); every store of it is an
    observed write site, and a region reading it records its branches from entry.  A
@@ -133,6 +133,11 @@ methods, STATE families and their arms, formula size, replay slowdown.
    and its HMAC (17899-bug3's seed expressions grew from 0.9 MB to 27 MB, the
    orchestrator ran out of heap) and bound nothing.  A static final field is a
    constant, no shared state (`SymbolicRegionPlanner#failureRelevantState`).
+   Only int and long fields: the VM's `observeExactPrimitiveField` versions no
+   other type.  A container, a reference or a string -- where most of HDFS's
+   shared state lives (a key map, a lease holder) -- is versioned only once a
+   symbolic value is stored into it; observing one from its first concrete store
+   needs a VM hook of its own (the container log's INITIAL version exists).
 2. **Scope growth** (§2): the declared class list is the fixpoint's start.
 3. **Wire pairing** (F3): protobuf `Builder.setF` / `getF` pairs per message type,
    direction from the RPC interface's request/response types, IPC and DataTransfer

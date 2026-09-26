@@ -255,13 +255,15 @@ public final class CausynthStaticFacts {
         return field != null && field.isStatic() && field.isFinal();
     }
 
-    /** Whether the VM can version a field from any store into it: a
-     *  primitive field of an instance ({@code observeExactPrimitiveField}). */
+    /** Whether the VM can version a field from any store into it: an int or
+     *  long field of an instance ({@code observeExactPrimitiveField} refuses
+     *  every other type with a warning and versions nothing). */
     static boolean versionableField(String signature) {
         SootField field = signature == null || signature.isEmpty() ? null
                 : Scene.v().grabField(signature);
         return field != null && !field.isStatic()
-                && field.getType() instanceof soot.PrimType;
+                && (field.getType() instanceof soot.IntType
+                || field.getType() instanceof soot.LongType);
     }
 
     /** A retrievable active body, or null: an unloadable body is not a fact. */
