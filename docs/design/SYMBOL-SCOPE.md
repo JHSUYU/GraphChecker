@@ -126,12 +126,15 @@ methods, STATE families and their arms, formula size, replay slowdown.
 
 1. **F2 from `S`**: the scope map classifies as tracked every read of an int or long
    instance field `S` also stores, when a branch decides on the value within a few
-   flows and before any store (`StaticScopeMap#READ_SITE`); every store of it is an
-   observed write site, and a region reading it records its branches from entry.  A
-   read that only feeds data is not tracked: in v59 `tokenLifetime` and `serialNo`,
-   read on the NameNode only to build a token, carried symbols into the token's bytes
-   and its HMAC (17899-bug3's seed expressions grew from 0.9 MB to 27 MB, the
-   orchestrator ran out of heap) and bound nothing.  A static final field is a
+   flows, before any store and on this side of the wire (`StaticScopeMap#READ_SITE`);
+   every store of it is an observed write site, and a region reading it records its
+   branches from entry.  A read that only feeds data is not tracked: in v59
+   `tokenLifetime` and `serialNo`, read on the NameNode only to build a token, carried
+   symbols into the token's bytes and its HMAC (17899-bug3's seed expressions grew from
+   0.9 MB to 27 MB, the orchestrator ran out of heap) and bound nothing.  Nor is a read
+   whose value a receiver decides on (F3 carries it): in v61/v62 `DataEncryptionKey.keyId`,
+   read into the SASL user name that the DataNode checks, went through DIGEST-MD5 into
+   the session cipher, and bug3's fault-world expressions reached 33 MB of CBC writes.  A static final field is a
    constant, no shared state (`SymbolicRegionPlanner#failureRelevantState`).
    Only int and long fields: the VM's `observeExactPrimitiveField` versions no
    other type.  A container, a reference or a string -- where most of HDFS's

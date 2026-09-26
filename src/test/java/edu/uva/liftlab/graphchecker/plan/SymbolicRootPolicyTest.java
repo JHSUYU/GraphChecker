@@ -161,7 +161,7 @@ public class SymbolicRootPolicyTest {
      * stores, and a branch decides on, is tracked -- every store of it is
      * observed, a {@code putfield} as well as an atomic's RMW, and a region
      * reading it observes its branches from entry.  A cell no read of the
-     * slice reaches, or whose reads only feed data, is not.
+     * slice reaches, or whose reads only feed data or the wire, is not.
      */
     @Test
     public void aCellTheSliceReadsAndStoresIsTracked() throws Exception {
@@ -197,6 +197,13 @@ public class SymbolicRootPolicyTest {
                         counterStore()), apart,
                         Collections.<String>emptySet(), method -> false)
                         .observedWriteSites().size());
+        assertEquals("nor one whose reads a receiver decides on (F3)", 0,
+                map(Arrays.asList(counterRead(), counterStore(),
+                        edge("{\"kind\":\"wire_handoff\",\"fromCell\":\""
+                                + GET_NUM + "::$i1\",\"toCell\":\"" + DELETE
+                                + "::$i3\"}"), guard(DELETE + "::$i3")),
+                        apart, Collections.<String>emptySet(),
+                        method -> false).observedWriteSites().size());
     }
 
     /** The published scope map of these edges, through the artifact the way

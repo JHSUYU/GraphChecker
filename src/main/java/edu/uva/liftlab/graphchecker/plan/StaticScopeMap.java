@@ -419,13 +419,17 @@ public final class StaticScopeMap {
         }
     }
 
+    private static final String WIRE_KIND = "wire_handoff";
+
     /** How many flows a read's value may take to a branch operand. */
     private static final int DECIDING_FLOWS = 8;
 
     /**
      * The cells a branch operand of the slice depends on within {@link
      * #DECIDING_FLOWS} flows, never through a field (a store hands the value
-     * to whoever reads the field next, a read of its own).
+     * to whoever reads the field next, a read of its own) nor across the wire
+     * (the receiver decides on its attach, F3): what the occurrence that
+     * reads decides on itself.
      */
     private static Set<String> decidingCells(
             List<Map<String, Object>> edges) {
@@ -440,7 +444,7 @@ public final class StaticScopeMap {
                     || "exception_guard".equals(kind)) {
                 frontier.add(from);
             }
-            if (!field(edge).isEmpty()) continue;
+            if (!field(edge).isEmpty() || WIRE_KIND.equals(kind)) continue;
             List<String> sources = into.get(text(edge.get("toCell")));
             if (sources == null) {
                 sources = new ArrayList<String>();
