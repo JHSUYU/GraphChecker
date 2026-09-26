@@ -35,6 +35,7 @@ import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.registerRunTotalsHook;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.taskUnanswered;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
@@ -926,6 +927,10 @@ final class ConcolicTaskPlan {
         final int targetBranchOccurrence;
         /** Solver-selected outcome that reaches the annotated failure. */
         final boolean targetBranchRequiredOutcome;
+        /** The helper branch deciding the target branch when it tests the
+         *  constant a helper returned ("" if none), and its fatal arm. */
+        final String targetDeciderSite;
+        final boolean targetDeciderOutcome;
         /** Declared communication ports handed to the VM, by port role. */
         final Map<String, CommunicationHandoffSpec>
                 communicationHandoffs = new LinkedHashMap<>();
@@ -993,6 +998,10 @@ final class ConcolicTaskPlan {
                     "occurrence", -1);
             this.targetBranchRequiredOutcome = targetRequiredOutcome(
                     targetBranch, targetBranchSite);
+            JsonObject decider = object(targetBranch, "decidedBy");
+            this.targetDeciderSite = optionalString(decider, "siteId");
+            this.targetDeciderOutcome = optionalBool(decider,
+                    "requiredOutcome", false);
             for (JsonElement element : task.inputActions().all()) {
                 JsonObject encoded = element.getAsJsonObject();
                 SymbolizeAction action = new SymbolizeAction(encoded);

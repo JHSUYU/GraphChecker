@@ -74,6 +74,24 @@ public final class SiteControlDependence {
         };
     }
 
+    /** One unit's original index in its body ({@link
+     *  CausynthPipeline#originalUnitIndex}), or its position in a body never
+     *  woven. */
+    static int originalIndex(Body body, Unit unit) {
+        List<Unit> units = new ArrayList<Unit>(body.getUnits());
+        return tagged(units) ? CausynthPipeline.originalUnitIndex(unit)
+                : units.indexOf(unit);
+    }
+
+    /** Whether a weave tagged these units; an untagged body was never woven,
+     *  so its positions are the original indices. */
+    private static boolean tagged(List<Unit> units) {
+        for (Unit unit : units) {
+            if (CausynthPipeline.originalUnitIndex(unit) >= 0) return true;
+        }
+        return false;
+    }
+
     /** One method's post-dominance relation, built once; callers keep it. */
     public static final class MethodGuards {
         private final String method;
@@ -112,11 +130,7 @@ public final class SiteControlDependence {
                         Collections.<Integer, Unit>emptyMap());
             }
             List<Unit> units = new ArrayList<Unit>(body.getUnits());
-            // An untagged body was never woven: position is original index.
-            boolean tagged = false;
-            for (Unit unit : units) {
-                tagged |= CausynthPipeline.originalUnitIndex(unit) >= 0;
-            }
+            boolean tagged = tagged(units);
             Map<Unit, Integer> original = new LinkedHashMap<Unit, Integer>();
             Map<Integer, Unit> byIndex = new LinkedHashMap<Integer, Unit>();
             for (int position = 0; position < units.size(); position++) {
@@ -225,7 +239,9 @@ public final class SiteControlDependence {
                 String guardSite = SiteId.of(method,
                         original.get(branch).intValue());
                 if (named.add(guardSite)) {
-                    found.add(new StaticScopeMap.Guard(guardSite, arm));
+                    found.add(new StaticScopeMap.Guard(guardSite, arm,
+                            arm == null ? null : BooleanReturns.decider(
+                                    cfg.getBody(), branch, arm)));
                 }
             }
             return Collections.unmodifiableList(found);

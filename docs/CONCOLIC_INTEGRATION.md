@@ -93,7 +93,7 @@ a category is the only thing that makes a read symbolic:
 
 | declaration | verdict | mints |
 | --- | --- | --- |
-| a clock's return or a READ placeholder's location (`StaticScopeMap.clockCallees`, `readCells`) | `declaredSymbolicRoot` | yes — the read is where the search starts |
+| a clock's return, or a READ placeholder's own site (`StaticScopeMap.clockCallees`, `readSites`) | `declaredSymbolicRoot` | yes — the read is where the search starts |
 | a fault marker the workload wrote into its own source (`Debug.makeSymbolicBoolean`) | workload-owned | yes |
 | a field a `CausynthSymbolicSource.symbolize` hook site owns | `CONFIGURED_SYMBOLIC_SOURCE_FIELD_OWNED` | no: the hook mints at its own site, so the action stands down `CONCRETE` |
 | a port `communication-mappings.jsonl` declared | `DECLARED_COMMUNICATION_CUT_PORT` | never: tracked, and `attachCommunicationLeaf` installs the producer's expression |

@@ -439,6 +439,29 @@ final class RowPublication {
         }
         long at = reach == null ? 0L
                 : optionalLongInteger(reach, "vmEventId", 0L);
+        // A concrete target testing the constant a helper returned
+        // (causynth.BooleanReturns): the helper's last decision before it,
+        // at the helper's fatal arm, is the predicate.
+        boolean takenIsFatal = observed == fatalArm;
+        if (condition == null && reached
+                && !task.targetDeciderSite.isEmpty()) {
+            long latest = 0L;
+            for (JsonObject mapping : active.branchMappings) {
+                long seq = optionalLongInteger(mapping, "vmEventId", 0L);
+                JsonElement satisfied = object(mapping, "witness")
+                        .get("sourceSatisfiedPredicate");
+                if (!task.targetDeciderSite.equals(
+                        optionalString(mapping, "siteId"))
+                        || seq <= latest || seq >= at
+                        || satisfied == null || !satisfied.isJsonObject()) {
+                    continue;
+                }
+                latest = seq;
+                condition = satisfied.getAsJsonObject();
+                takenIsFatal = optionalBool(mapping, "outcome", false)
+                        == task.targetDeciderOutcome;
+            }
+        }
         // seq == 0 means "no VM clock" (a CONCRETE decision stands after the
         // last VM event, ActiveRegion#recordConcreteDecision).  The composer
         // cuts the prefix before target.seq() (P1), so at 0 pi_p would be
@@ -450,7 +473,6 @@ final class RowPublication {
                             + " in the event order and the path condition"
                             + " before it cannot be cut");
         }
-        RowRuntime.target(occurrence, at, anchor, condition,
-                observed == fatalArm,
+        RowRuntime.target(occurrence, at, anchor, condition, takenIsFatal,
                 reached && observed == fatalArm, reached);
     }}

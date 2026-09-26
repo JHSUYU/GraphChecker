@@ -123,6 +123,14 @@ public final class ConcolicScheduler {
                         candidate.targetOccurrence);
                 target.addProperty("requiredOutcome",
                         candidate.targetRequiredOutcome);
+                if (candidate.targetDecider != null) {
+                    JsonObject decider = new JsonObject();
+                    decider.addProperty("siteId",
+                            candidate.targetDecider.siteId());
+                    decider.addProperty("requiredOutcome",
+                            candidate.targetDecider.outcome());
+                    target.add("decidedBy", decider);
+                }
                 executionTask.add("targetBranch", target);
             }
 
@@ -260,6 +268,18 @@ public final class ConcolicScheduler {
             found = arm;
         }
         return found;
+    }
+
+    /** The helper branch deciding the target guard {@code guardSiteId}, as
+     *  the TARGET_SITE rows state it, or null. */
+    static StaticScopeMap.Guard fatalDecider(StaticScopeMap map,
+                                             String guardSiteId) {
+        for (StaticScopeMap.Site target : map.targetSites()) {
+            StaticScopeMap.Guard decider =
+                    target.guardDeciders.get(guardSiteId);
+            if (decider != null) return decider;
+        }
+        return null;
     }
 
     private static void scheduleTargetFirst(Arguments arguments)
@@ -469,12 +489,11 @@ public final class ConcolicScheduler {
         }
         requireSelectedOccurrence(arguments, goal);
         JsonObject fatal = fatalBranch(branches, scopeMap);
-        result.add(new Candidate(goal, branches,
-                optionalString(fatal, "siteId"),
+        String site = optionalString(fatal, "siteId");
+        result.add(new Candidate(goal, branches, site,
                 optionalInteger(fatal, "selectedOccurrence", 1),
-                fatalArm(scopeMap, optionalString(fatal, "siteId"))
-                        .booleanValue(),
-                inputActions));
+                fatalArm(scopeMap, site).booleanValue(),
+                fatalDecider(scopeMap, site), inputActions));
     }
 
     /** The one recorded branch the scope map names as a guard of the annotated
@@ -815,13 +834,25 @@ public final class ConcolicScheduler {
         private final String targetSiteId;
         private final int targetOccurrence;
         private final boolean targetRequiredOutcome;
+        /** The helper branch that decides the target branch, or null. */
+        private final StaticScopeMap.Guard targetDecider;
         private final JsonArray inputActions;
 
         private Candidate(Goal goal, JsonArray branches,
                           String targetSiteId, int targetOccurrence,
                           boolean targetRequiredOutcome,
                           JsonArray inputActions) {
+            this(goal, branches, targetSiteId, targetOccurrence,
+                    targetRequiredOutcome, null, inputActions);
+        }
+
+        private Candidate(Goal goal, JsonArray branches,
+                          String targetSiteId, int targetOccurrence,
+                          boolean targetRequiredOutcome,
+                          StaticScopeMap.Guard targetDecider,
+                          JsonArray inputActions) {
             this.goal = goal;
+            this.targetDecider = targetDecider;
             this.branches = branches;
             this.targetSiteId = nonNull(targetSiteId);
             this.targetOccurrence = Math.max(1, targetOccurrence);
@@ -1024,8 +1055,8 @@ public final class ConcolicScheduler {
      * authority, the categories the static scope map states. Four exist:
      *
      * <ul>
-     *   <li>a clock's return, or a READ placeholder's location ({@link
-     * StaticScopeMap#clockCallees}, {@link StaticScopeMap#readCells}):
+     *   <li>a clock's return, or a READ placeholder's own site ({@link
+     * StaticScopeMap#clockCallees}, {@link StaticScopeMap#readSites}):
      * mints;</li>
      *   <li>an {@code EXPLICIT_SYMBOLIC_FAULT} marker: mints;</li>
      *   <li>a field a {@code CausynthSymbolicSource} hook owns: the hook mints,
@@ -1041,23 +1072,22 @@ public final class ConcolicScheduler {
     static final class SymbolicInputSelection {
         /** Verdict of a read no declaration names. */
         static final String UNDECLARED = "UNDECLARED_SYMBOLIC_INPUT";
-        /** The admitted names: every clock's return cell and every READ
-         *  placeholder's location, whatever region reads them. */
-        private final Set<String> admitted;
-        /** The subset of {@link #admitted} that are clocks. */
+        /** Every clock's return cell, whatever region reads it. */
         private final Set<String> clocks;
+        /** The READ placeholders ({@link StaticScopeMap#readSites}). */
+        private final Set<String> reads;
         /** regionId -> sourceId -> the one field that hook site mints. */
         private final Map<String, Map<String, String>> minted;
         private SymbolicInputSelection(
-                Set<String> admitted, Set<String> clocks,
+                Set<String> clocks, Set<String> reads,
                 Map<String, Map<String, String>> minted) {
-            this.admitted = admitted;
             this.clocks = clocks;
+            this.reads = reads;
             this.minted = minted;
         }
 
         /** The roots the scope map states ({@link StaticScopeMap#clockCallees},
-         *  {@link StaticScopeMap#readCells}) and the hook declarations of the
+         *  {@link StaticScopeMap#readSites}) and the hook declarations of the
          *  region catalog. */
         static SymbolicInputSelection read(StaticScopeMap scopeMap,
                                            List<JsonObject> regionCatalog)
@@ -1081,9 +1111,8 @@ public final class ConcolicScheduler {
             for (String callee : scopeMap.clockCallees()) {
                 clocks.add(callee + ".return");
             }
-            Set<String> admitted = new LinkedHashSet<>(clocks);
-            admitted.addAll(scopeMap.readCells());
-            return new SymbolicInputSelection(admitted, clocks, minted);
+            return new SymbolicInputSelection(clocks, scopeMap.readSites(),
+                    minted);
         }
 
         /** An explicit source hook is itself the allowlist authority. */
@@ -1174,7 +1203,19 @@ public final class ConcolicScheduler {
 
         /** A root the scope map states, or a fault marker. */
         private boolean declares(JsonObject action) {
-            return names(admitted, action) || workloadOwnedSymbol(action);
+            return names(clocks, action) || readsAPlaceholder(action)
+                    || workloadOwnedSymbol(action);
+        }
+
+        /** Whether the action is a READ placeholder's own site. */
+        private boolean readsAPlaceholder(JsonObject action) {
+            String site = optionalString(action, SiteId.MEMBER);
+            for (String cell : actionCells(action)) {
+                if (reads.contains(StaticScopeMap.readKey(site, cell))) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         /** The accessor declarations of one site, or all of them when it has
@@ -1267,9 +1308,9 @@ public final class ConcolicScheduler {
                     .containsValue(field);
         }
 
-        /** Whether one name is admitted, for tests. */
+        /** Whether one clock cell is admitted, for tests. */
         boolean declares(String name) {
-            return admitted.contains(name);
+            return clocks.contains(name);
         }
 
         /** Whether a name set covers this action's port or any of {@link
@@ -1301,7 +1342,7 @@ public final class ConcolicScheduler {
          * Idempotent; done before any {@code select}.</p>
          */
         void resolveDeclaredNames(List<JsonObject> candidateGraph) {
-            if (admitted.isEmpty()) return;
+            if (clocks.isEmpty()) return;
             Map<String, Set<String>> copies = new LinkedHashMap<>();
             for (JsonObject edge : candidateGraph == null
                     ? Collections.<JsonObject>emptyList() : candidateGraph) {
@@ -1316,15 +1357,12 @@ public final class ConcolicScheduler {
                         ignored -> new LinkedHashSet<>()).add(from);
             }
             if (copies.isEmpty()) return;
-            // Clock names are renamed too: the flag travels with the name.
-            for (Set<String> names : Arrays.asList(admitted, clocks)) {
-                Deque<String> pending = new ArrayDeque<>(names);
-                while (!pending.isEmpty()) {
-                    for (String copied : copies.getOrDefault(
-                            pending.removeFirst(),
-                            Collections.<String>emptySet())) {
-                        if (names.add(copied)) pending.addLast(copied);
-                    }
+            Deque<String> pending = new ArrayDeque<>(clocks);
+            while (!pending.isEmpty()) {
+                for (String copied : copies.getOrDefault(
+                        pending.removeFirst(),
+                        Collections.<String>emptySet())) {
+                    if (clocks.add(copied)) pending.addLast(copied);
                 }
             }
         }

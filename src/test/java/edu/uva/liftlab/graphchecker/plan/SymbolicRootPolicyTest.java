@@ -26,7 +26,7 @@ import static org.junit.Assert.assertTrue;
 
 /**
  * What makes a read symbolic: its category, as the static scope map states it
- * ({@link StaticScopeMap#clockCallees}, {@link StaticScopeMap#readCells}), a
+ * ({@link StaticScopeMap#clockCallees}, {@link StaticScopeMap#readSites}), a
  * fault marker in the program's text, a field a hook owns, or a wire cut
  * port.  Every other proposed read is concrete.
  */
@@ -132,8 +132,8 @@ public class SymbolicRootPolicyTest {
                 atomicStore());
         StaticScopeMap unwoven = map(edges, apart,
                 Collections.<String>emptySet(), ATOMIC_GET::equals);
-        assertEquals(Collections.singleton(ATOMIC_VALUE),
-                unwoven.readCells());
+        assertEquals(Collections.singleton(StaticScopeMap.readKey(
+                GET_NUM + "#u2", ATOMIC_VALUE)), unwoven.readSites());
         JsonObject port = action("ACCESSOR_RETURN", GET_NUM + "#u2",
                 ATOMIC_VALUE);
         port.addProperty("accessFieldSignature", ATOMIC_VALUE);
@@ -146,12 +146,12 @@ public class SymbolicRootPolicyTest {
 
         assertTrue("a woven accessor's read is no placeholder",
                 map(edges, apart, Collections.<String>emptySet(),
-                        method -> false).readCells().isEmpty());
+                        method -> false).readSites().isEmpty());
         assertTrue("nor is a read its own region alone stores",
                 map(edges, Collections.singletonMap(NN,
                         Arrays.asList(GET_NUM, DELETE)),
                         Collections.<String>emptySet(), ATOMIC_GET::equals)
-                        .readCells().isEmpty());
+                        .readSites().isEmpty());
 
         // The write side of the same location: the scope map names every
         // store of the slice with the callee that performs it, so which sites

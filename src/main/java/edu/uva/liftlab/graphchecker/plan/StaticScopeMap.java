@@ -106,10 +106,23 @@ public final class StaticScopeMap {
     public static final class Guard {
         private final String siteId;
         private final Boolean outcome;
+        /** A helper's branch that decides this guard's arm when the guard
+         *  tests the constant it returned (causynth.BooleanReturns), or
+         *  null. */
+        private final Guard decider;
 
         public Guard(String siteId, Boolean outcome) {
+            this(siteId, outcome, null);
+        }
+
+        public Guard(String siteId, Boolean outcome, Guard decider) {
             this.siteId = siteId == null ? "" : siteId;
             this.outcome = outcome;
+            this.decider = decider;
+        }
+
+        public Guard decider() {
+            return decider;
         }
 
         public String siteId() {
@@ -148,11 +161,23 @@ public final class StaticScopeMap {
         /** Arm of each {@link #guards} entry reaching this site; null if not
          *  binary. */
         public final List<Boolean> guardOutcomes;
+        /** The deciders of those guards that have one, by guard site. */
+        public final Map<String, Guard> guardDeciders;
 
         Site(String role, String regionId, String siteId, String vmSite,
              String cell, String carrier, String portId,
              String declaredCallee, String local, Declared declared,
              List<String> guards, List<Boolean> guardOutcomes) {
+            this(role, regionId, siteId, vmSite, cell, carrier, portId,
+                    declaredCallee, local, declared, guards, guardOutcomes,
+                    Collections.<String, Guard>emptyMap());
+        }
+
+        Site(String role, String regionId, String siteId, String vmSite,
+             String cell, String carrier, String portId,
+             String declaredCallee, String local, Declared declared,
+             List<String> guards, List<Boolean> guardOutcomes,
+             Map<String, Guard> guardDeciders) {
             this.declared = declared;
             this.role = role;
             this.regionId = regionId;
@@ -167,18 +192,24 @@ public final class StaticScopeMap {
                     new ArrayList<String>(guards));
             this.guardOutcomes = Collections.unmodifiableList(
                     new ArrayList<Boolean>(guardOutcomes));
+            this.guardDeciders = Collections.unmodifiableMap(
+                    new LinkedHashMap<String, Guard>(guardDeciders));
         }
 
         Site withGuards(List<Guard> found) {
             List<String> sites = new ArrayList<String>();
             List<Boolean> outcomes = new ArrayList<Boolean>();
+            Map<String, Guard> deciders = new LinkedHashMap<String, Guard>();
             for (Guard guard : found) {
                 sites.add(guard.siteId());
                 outcomes.add(guard.outcome());
+                if (guard.decider() != null) {
+                    deciders.put(guard.siteId(), guard.decider());
+                }
             }
             return new Site(role, regionId, siteId, vmSite, cell, carrier,
                     portId, declaredCallee, local, declared, sites,
-                    outcomes);
+                    outcomes, deciders);
         }
 
         /** The arm of {@code guardSiteId} that reaches this site, or null. */
@@ -432,6 +463,17 @@ public final class StaticScopeMap {
             }
             row.add("guardOutcomes", outcomes);
         }
+        if (!site.guardDeciders.isEmpty()) {
+            JsonObject deciders = new JsonObject();
+            for (Map.Entry<String, Guard> decider
+                    : site.guardDeciders.entrySet()) {
+                JsonObject helper = new JsonObject();
+                helper.addProperty("siteId", decider.getValue().siteId());
+                helper.addProperty("outcome", decider.getValue().outcome());
+                deciders.add(decider.getKey(), helper);
+            }
+            row.add("guardDeciders", deciders);
+        }
         return row;
     }
 
@@ -673,9 +715,25 @@ public final class StaticScopeMap {
                     optionalString(row, "carrier"),
                     optionalString(row, "portId"),
                     optionalString(row, "declaredCallee"),
-                    optionalString(row, "local"), declared, guards, outcomes));
+                    optionalString(row, "local"), declared, guards, outcomes,
+                    deciders(row)));
         }
         return new StaticScopeMap(sites, readRegions(file));
+    }
+
+    /** A row's {@code guardDeciders}, by guard site. */
+    private static Map<String, Guard> deciders(JsonObject row) {
+        Map<String, Guard> deciders = new LinkedHashMap<String, Guard>();
+        JsonElement stated = row.get("guardDeciders");
+        if (stated == null || !stated.isJsonObject()) return deciders;
+        for (Map.Entry<String, JsonElement> decider
+                : stated.getAsJsonObject().entrySet()) {
+            JsonObject helper = decider.getValue().getAsJsonObject();
+            deciders.put(decider.getKey(), new Guard(
+                    optionalString(helper, "siteId"),
+                    helper.get("outcome").getAsBoolean()));
+        }
+        return deciders;
     }
 
     /** Region method sets from the skeletons PLAN wrote beside the map (plain
@@ -835,15 +893,21 @@ public final class StaticScopeMap {
         return callees;
     }
 
-    /** The locations read into a placeholder: every {@link #READ_INPUT}
-     *  site's cell. */
-    public Set<String> readCells() {
-        Set<String> cells = new LinkedHashSet<String>();
+    /** The reads into a placeholder, one per {@link #READ_INPUT} site, as
+     *  {@link #readKey}: the SITE, never the cell alone, since a cell names
+     *  a field of every object of its type ({@code AtomicInteger.value}). */
+    public Set<String> readSites() {
+        Set<String> reads = new LinkedHashSet<String>();
         for (Site site : ofRole(DECLARED_SITE, site -> site.declared != null
                 && READ_INPUT.equals(site.declared.inputKind))) {
-            cells.add(site.cell);
+            reads.add(readKey(site.siteId, site.cell));
         }
-        return cells;
+        return reads;
+    }
+
+    /** One read's key: its site and the location it reads. */
+    public static String readKey(String siteId, String cell) {
+        return siteId + "\n" + cell;
     }
 
     /** Every DECLARED_SITE, in publication order. Whether any mints is {@link
