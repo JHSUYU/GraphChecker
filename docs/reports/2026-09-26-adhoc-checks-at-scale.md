@@ -13,6 +13,7 @@ HDFS ad-hoc 协调检查上真实地、大规模地跑 GraphChecker，用故障�
 | 设计 | 根按类别自动识别（CLOCK / FAULT / READ），不再手写 `symbolic-inputs.jsonl`；具体值判定的 target 有了三条通用规则（helper 返回常量由其分支决定、析取守卫取各测试致命臂的或、健康的具体判定以 DIAGNOSTIC 排除）；wire 流自动配对已设计（§8） |
 | 结果 | 时钟类检查 token-expired.proxy / .mirror、token-pw-expired.mirror 得到 **CLOCK_SKEW，并由 CONFIRM 重放确认**（a6、a7；是 HDFS 时钟大致同步的设计前提，不是新 bug，§5.4）；其余具体值检查以"没有被建模的根能到达致命臂"结束——a4 的 261 个故障重放里 83 个到达检查，a5 三个 flush case 的约 1700 个 session 里检查到达 4000 余次，**致命臂 0 次**（§3、§4） |
 | 假阳性过滤（全部来自真实运行） | §5：公式在录制取值下可满足 ×6（sender-gs、token-expired、commit-gs、lease-holder）；探索中模型可行、执行否决 68 次（两个故障不独立、门没经过、根只存在于故障世界）；**跨运行拼接的消息配对**（token-nokey.mirror / .replicate：只有把一次运行的状态配上另一次运行 NN 下发的 key 列表才会失败，每次运行自己的配对下 UNSAT，DECIDE 不命名机制、不发布）。CONFIRM 的偏序关卡在真实运行里**没有**触发过（§5.4） |
+| 集群单测当工作负载 | 301 个测试的清单；20 对（检查 × 测试）里 18 对在窗口内到达检查；18 个 campaign 首跑 11 个种子重放复现失败，逐个找出 3 类分歧并修掉（推迟的 RPC 响应、HA 随机选 NN、排队区域的帧），修后种子重放 88–89/94；致命臂 0 次，新 bug 0 个；过滤实例：执行否决 178 个模型、59 条自相矛盾路径被扣下（§9） |
 | 九个 case | v58（p62）**9/9 PASS**，因果链与 v54 一致或更丰富；11741 CLOCK_SKEW 由 CONFIRM 重放确认 |
 | 修掉的引擎缺陷 | 15 个，另有 1 处工作负载登记修复，都在 adhoc 运行里暴露（§6） |
 
@@ -372,6 +373,56 @@ SAT 模型都有别的配对能替代，钉住任何单一机制仍然 SAT，于
 * **wire 流仍是 block-key 族手写的**（§8）。
 * **多 DataNode 的客户端流水线不可用**：NameNode 用 `ThreadLocalRandom` 选流水线头，
   重放无法复现，所以 flush/softlimit 都只用一个 DataNode。
+
+## 9. 已有的集群单测当工作负载（g0–g2）
+
+**做法**。工作负载清单（`~/gc-out/workload-inventory/`）跑了 301 个 MiniDFSCluster 单测：每个 ad-hoc 检查都被几十个
+测试覆盖（覆盖率含集群启动，不等于窗口内到达）。树里的 `CausynthCluster#AUTOMATIC`（`fdf425b3e9c`）让任意集群测试
+不改一行就成为工作负载：它建的 MiniDFSCluster 自己注册（`auto0/nn<i>`、`dn<i>`、`client0`）并打开录制窗口；case 名
+`<check>.<TestClass>-<method>`（`789144da7`）。挑了单 DataNode、跑得通的 7 个测试 × 相关检查共 20 对：
+
+* **g0（发现）**：18/20 对在录制窗口内真的到达检查点，占用写进 `occurrences.tsv`（`8d9af33a8`）；
+  complete-uncommitted/TestLeaseRecovery、visible-gs/TestTransferRbw 只在建集群时到达，剔除。
+* **g1（18 个 campaign）**：11 个的种子重放没有复现到检查点（MISSING），7 个走完全程；**致命臂 0 次**。
+* **g2（修复后重跑 2 个）**：种子重放从 31/93、31/94 个调度槽涨到 89/93、88/94，都走完全程；致命臂 0 次。
+
+| case | 轮 | 种子重放 槽 | 义务 接纳/拒绝/UNSAT | 结论 |
+|---|---|---|---|---|
+| lease-missing.TestLeaseRecovery-testLeaseRecoveryAndAppend | g1 | 87/94 | 65/29/17 | 59 条路径全部自相矛盾（见下），组合被扣下 |
+| reader-chunk.TestFileConcurrentReader-testUnfinishedBlockRead | g1 | 109/112 | 103/149/35 | 路径都是健康臂上的具体判定 |
+| commit-gs.TestLeaseRecovery-testLeaseRecoveryAndAppend | g2 | 89/93 | 22/3/4 | 同上；另有 22 条 FRAME_UNBALANCED（已修，`e13c75bb9`） |
+| lease-holder.TestLeaseRecovery-testLeaseRecoveryAndAppend | g2 | 88/94 | 5/0/0 | 同上 |
+| finalize-gs / sender-gs / recv-offset（4 个） | g1 | 41–252 | ≤1 | 同上 |
+| token-* 5 个（HA 故障切换）、visible-gs 2 个、commit-gs/lease-holder 首跑 | g1 | 30–131 | — | 种子重放没复现到检查点 |
+
+**重放为什么复现不了，修了什么**（逐个对比 `recorded_schedule.jsonl` 与重放会话的 `schedule.jsonl` 找第一处分歧）：
+
+1. **推迟的 RPC 响应**。NameNode 的名字空间写操作把响应推迟给 FSEditLogAsync 的同步线程：处理线程和同步线程谁后完成
+   谁发送。录制（JIT）和重放（解释器）判得不一样，响应的 SEND 挂在不同上下文、生产者端点也不同，客户端之后的锚点
+   全部改名，调度前缀每次空等 16 秒。修法（`784bebc9e`）：响应的端点和调度站位在**收到请求时**就定下，谁发都一样。
+2. **HA 客户端随机选 NameNode**。`dfs.client.failover.random.order` 默认为真：录制先连 nn2、重放先连 nn1。
+   `CausynthCluster.configure` 把它设为假（`3d4f4066cfa`）。
+3. **排队区域留下已认领任务的帧**。BlockManager 的 `processQueue` 是区域根又自己排空队列，最后一个任务的启动层留到
+   区域关闭之后（FRAME_UNBALANCED，BLOCKING）。区域退出时关闭它内部认领的工作（`e13c75bb9`）。
+
+**这些新协调上的假阳性过滤（真实运行，不构造）**：
+
+* **探索阶段：模型可行、执行实现不了 → 不采纳**。reader-chunk 的 149 个、lease-missing 的 29 个义务被执行否决。
+  典型的一条：求解器要在客户端 RPC 的发送门（`Client$Connection.sendRpcRequest`）和响应门（`getRpcResponse`）上
+  同时注入故障，但在第一处故障的世界里，客户端再也没走到第二个门，重放没有 mint 这个根——"this replay published
+  no root mint row for [...], so its session states nothing about the value it ran the root(s) the obligation moves at"。
+  模型里的"故障组合"在真实执行里不存在，这条路径不进入语料，也就不会被当成见证。
+* **组合阶段：公式在任何世界都为假 → 扣下，不发布任何结论**。lease-missing（`FSNamesystem.recoverLeaseInternal`
+  的 "lease == null"）59 条组合路径的致命项都要求 lease 引用为 null，而录制里它是一个确定的非空对象身份
+  （unsat core 只有 `identity != nullRef`、`path_fatal`、选中路径三条）。这种路径既证明不了 bug，也不能拿来
+  "反驳" bug；composer 以 PATH_SELF_CONTRADICTORY 把整次组合扣下，而不是报 UNSAT。
+* **判定阶段：具体健康臂**。commit-gs、lease-holder、reader-chunk 等的锚点在健康臂上做的是具体判定（比较的是字符串、
+  引用、计数器，不是根），所有到达锚点的路径被拒（ADMISSION_GAP），不发布候选。
+
+**没有找到新 bug**。原因两条，都指向下一步：
+(a) 这些检查比较的值（租约持有者字符串、lease 引用、块的 GS、key 映射）在单次运行里是具体的——F2 目前只能跟踪
+VM 能版本化的 int/long 字段，容器、引用、字符串要在 VM 里加一个"从第一次具体写入开始观察"的入口（容器日志的
+INITIAL 版本已经有了）；(b) 多个 HA/时序敏感的测试还需要按上面的方法逐个找重放分歧。修复后的 18 个 case 正在重跑（g3）。
 
 ## 8. 下一步
 
