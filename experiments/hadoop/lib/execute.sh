@@ -67,8 +67,12 @@ extra=()
 [[ -z ${CAUSYNTH_WORKLOAD_JAVA_OPTS:-} ]] \
   || read -r -a extra <<<"${CAUSYNTH_WORKLOAD_JAVA_OPTS}"
 
+# noInflation: a reflective call is served by a generated accessor from its
+# first call, not by the native one for fifteen calls and a generated one
+# after, so one write through reflection names one site in every run.
 set +e
 "${jdk}/bin/java" -ea -Xmx2g -Djava.awt.headless=true \
+  -Dsun.reflect.noInflation=true \
   -Dorg.slf4j.simpleLogger.defaultLogLevel=warn \
   -Djava.io.tmpdir="${tmpdir}" -Dtest.build.data="${datadir}" \
   "${properties[@]}" "${extra[@]+"${extra[@]}"}" -cp "${classes}:${jar}:${cp}" \
