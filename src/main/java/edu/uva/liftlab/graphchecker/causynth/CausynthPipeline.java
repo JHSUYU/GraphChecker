@@ -115,6 +115,8 @@ public final class CausynthPipeline {
 
     public void run() throws IOException {
         try {
+            // Program text for every pass, so unit indices agree across them.
+            DoorWeave.apply();
             analyze();
             // Before Soot writes any class file.
             validateWovenBodies();
@@ -2679,7 +2681,7 @@ public final class CausynthPipeline {
     }
 
     /** The scene's class for a name, added as a phantom when it is absent. */
-    private static SootClass phantomClass(String name) {
+    static SootClass phantomClass(String name) {
         SootClass existing = Scene.v().getSootClassUnsafe(name);
         if (existing != null) {
             return existing;
@@ -3079,7 +3081,7 @@ public final class CausynthPipeline {
         return tmp;
     }
 
-    private static Local newTraceLocal(Body body, Type type, String prefix) {
+    static Local newTraceLocal(Body body, Type type, String prefix) {
         int index = body.getLocals().size();
         while (true) {
             String name = prefix + index;

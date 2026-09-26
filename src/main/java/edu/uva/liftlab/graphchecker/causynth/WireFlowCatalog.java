@@ -44,6 +44,7 @@ public final class WireFlowCatalog {
             Map<String, SootMethod> methods) throws IOException {
         List<WireFlow> flows = new ArrayList<>();
         for (Row row : rows()) {
+            if (DoorWeave.KIND.equals(string(row.json, "kind"))) continue;
             try {
                 flows.add(parse(row.json, methods));
             } catch (RuntimeException invalid) {
@@ -111,10 +112,19 @@ public final class WireFlowCatalog {
         return flows;
     }
 
+    /** The mapping's rows of one other kind ({@link DoorWeave#KIND}). */
+    static List<JsonObject> rowsOfKind(String kind) throws IOException {
+        List<JsonObject> found = new ArrayList<>();
+        for (Row row : rows()) {
+            if (kind.equals(string(row.json, "kind"))) found.add(row.json);
+        }
+        return found;
+    }
+
     /**
-     * The mapped transports: a door fault {@code FAULT:<TRANSPORT>:<DIRECTION>}
-     * exists exactly for these.  Read off the raw rows, before method
-     * resolution.
+     * The mapped transports, of flows and doors: a door fault
+     * {@code FAULT:<TRANSPORT>:<DIRECTION>[:<kind>]} exists exactly for
+     * these.  Read off the raw rows, before method resolution.
      */
     public static java.util.Set<String> declaredTransports() {
         java.util.Set<String> found = new java.util.LinkedHashSet<String>();
