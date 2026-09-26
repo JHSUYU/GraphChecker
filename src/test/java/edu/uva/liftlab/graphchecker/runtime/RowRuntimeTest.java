@@ -27,6 +27,7 @@ import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -1714,4 +1715,66 @@ public class RowRuntimeTest {
                 .resolve("iteration-0000"), RowRuntime.sessionId());
     }
 
+
+    /**
+     * {@code if (a || b || c) throw}: every test jumps to the throw, so phi
+     * is the OR of their fatal arms as one evaluation decided them, from the
+     * target branch on (adhoc reader-chunk's first-chunk offset check).
+     */
+    @Test
+    public void aDisjunctiveGuardIsTheOrOfItsTestsFatalArms() {
+        JsonObject a = predicate("a"), c = predicate("c");
+        String refA = RowRuntime.expressionRef(a);
+        String refC = RowRuntime.expressionRef(c);
+        java.util.LinkedHashMap<String, Boolean> guards =
+                new java.util.LinkedHashMap<>();
+        guards.put("G#u1", true);
+        guards.put("G#u2", true);
+        guards.put("G#u3", false);
+        Object[][] rows = {
+                // All healthy: a symbolic, b concrete, c symbolic.
+                {decided("G#u1", false, a), decided("G#u2", false, null),
+                        decided("G#u3", true, c), false,
+                        Arrays.asList("(not " + refA + ")",
+                                "(not " + refC + ")")},
+                // b took its fatal arm concretely: fatal, and no arm stated.
+                {decided("G#u1", false, a), decided("G#u2", true, null),
+                        null, true, Collections.emptyList()},
+                // a took it symbolically: its predicate is the arm.
+                {decided("G#u1", true, a), null, null, true,
+                        Collections.singletonList(refA)}};
+        for (Object[] row : rows) {
+            List<JsonObject> mappings = new ArrayList<>();
+            // An earlier evaluation of a test is not this one.
+            mappings.add(decided("G#u2", true, null));
+            mappings.get(0).addProperty("occurrence", 0);
+            for (int index = 0; index < 3; index++) {
+                if (row[index] != null) mappings.add((JsonObject) row[index]);
+            }
+            List<String> arms = new ArrayList<>();
+            assertEquals(row[3], RowPublication.disjunction(mappings, guards,
+                    "G#u1", 1, arms));
+            assertEquals(row[4], arms);
+        }
+    }
+
+    private static JsonObject predicate(String name) {
+        JsonObject expression = new JsonObject();
+        expression.addProperty("_exp", name);
+        return expression;
+    }
+
+    private static JsonObject decided(String site, boolean outcome,
+                                      JsonObject satisfied) {
+        JsonObject mapping = new JsonObject();
+        mapping.addProperty("siteId", site);
+        mapping.addProperty("occurrence", 1);
+        mapping.addProperty("outcome", outcome);
+        JsonObject witness = new JsonObject();
+        if (satisfied != null) {
+            witness.add("sourceSatisfiedPredicate", satisfied);
+        }
+        mapping.add("witness", witness);
+        return mapping;
+    }
 }

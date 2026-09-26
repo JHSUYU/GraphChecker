@@ -8,9 +8,12 @@ import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
 import java.util.IdentityHashMap;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -464,6 +467,15 @@ final class RowPublication {
             }
             if (latest > 0L) at = latest;
         }
+        String phi = RowRuntime.fatalTerm(condition, takenIsFatal);
+        boolean observedFatal = reached && observed == fatalArm;
+        if (reached && task.targetGuards.size() > 1) {
+            List<String> arms = new ArrayList<>();
+            observedFatal = disjunction(active.branchMappings,
+                    task.targetGuards, site, ordinal, arms);
+            phi = arms.isEmpty() ? "" : arms.size() == 1 ? arms.get(0)
+                    : "(or " + String.join(" ", arms) + ")";
+        }
         // seq == 0 means "no VM clock" (a CONCRETE decision stands after the
         // last VM event, ActiveRegion#recordConcreteDecision).  The composer
         // cuts the prefix before target.seq() (P1), so at 0 pi_p would be
@@ -475,6 +487,45 @@ final class RowPublication {
                             + " in the event order and the path condition"
                             + " before it cannot be cut");
         }
-        RowRuntime.target(occurrence, at, anchor, condition, takenIsFatal,
-                reached && observed == fatalArm, reached);
+        RowRuntime.target(occurrence, at, anchor, phi, observedFatal,
+                reached);
+    }
+
+    /**
+     * A disjunctive guard ({@code a || b}) as one evaluation decided it:
+     * every test jumps to the throw, so phi is the OR of their fatal arms,
+     * each test's first decision from the target branch's on.  The target
+     * stands at that first test, so none of them is in the prefix.  A test
+     * decided concretely states no arm; one that took its fatal arm ends the
+     * evaluation, and a concrete one leaves phi empty (the fatal observed).
+     *
+     * @return whether a test took its fatal arm
+     */
+    static boolean disjunction(List<JsonObject> mappings,
+                               Map<String, Boolean> guards,
+                               String site, int ordinal,
+                               List<String> arms) {
+        Map<String, Boolean> pending = new LinkedHashMap<>(guards);
+        boolean started = false;
+        for (JsonObject mapping : mappings) {
+            String decided = optionalString(mapping, "siteId");
+            started = started || site.equals(decided)
+                    && optionalInteger(mapping, "occurrence", -1) == ordinal;
+            Boolean fatalArm = started ? pending.remove(decided) : null;
+            if (fatalArm == null) continue;
+            boolean took = optionalBool(mapping, "outcome", false)
+                    == fatalArm.booleanValue();
+            JsonElement satisfied = object(mapping, "witness")
+                    .get("sourceSatisfiedPredicate");
+            boolean symbolic = satisfied != null && satisfied.isJsonObject();
+            if (symbolic) {
+                arms.add(RowRuntime.fatalTerm(satisfied.getAsJsonObject(),
+                        took));
+            }
+            if (took) {
+                if (!symbolic) arms.clear();
+                return true;
+            }
+        }
+        return false;
     }}

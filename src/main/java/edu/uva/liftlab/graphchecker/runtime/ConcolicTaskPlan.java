@@ -34,6 +34,7 @@ import java.util.Set;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.safe;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.registerRunTotalsHook;
 import static edu.uva.liftlab.graphchecker.runtime.ConcolicResultPublisher.taskUnanswered;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
@@ -931,6 +932,9 @@ final class ConcolicTaskPlan {
          *  constant a helper returned ("" if none), and its fatal arm. */
         final String targetDeciderSite;
         final boolean targetDeciderOutcome;
+        /** Every test of a disjunctive target guard and its fatal arm, the
+         *  target branch first; empty for one guard. */
+        final Map<String, Boolean> targetGuards = new LinkedHashMap<>();
         /** Declared communication ports handed to the VM, by port role. */
         final Map<String, CommunicationHandoffSpec>
                 communicationHandoffs = new LinkedHashMap<>();
@@ -1002,6 +1006,11 @@ final class ConcolicTaskPlan {
             this.targetDeciderSite = optionalString(decider, "siteId");
             this.targetDeciderOutcome = optionalBool(decider,
                     "requiredOutcome", false);
+            for (JsonElement guard : array(targetBranch, "guards")) {
+                JsonObject row = guard.getAsJsonObject();
+                targetGuards.put(optionalString(row, "siteId"),
+                        optionalBool(row, "requiredOutcome", false));
+            }
             for (JsonElement element : task.inputActions().all()) {
                 JsonObject encoded = element.getAsJsonObject();
                 SymbolizeAction action = new SymbolizeAction(encoded);

@@ -131,6 +131,16 @@ public final class ConcolicScheduler {
                             candidate.targetDecider.outcome());
                     target.add("decidedBy", decider);
                 }
+                if (!candidate.targetGuards.isEmpty()) {
+                    JsonArray guards = new JsonArray();
+                    for (StaticScopeMap.Guard guard : candidate.targetGuards) {
+                        JsonObject row = new JsonObject();
+                        row.addProperty("siteId", guard.siteId());
+                        row.addProperty("requiredOutcome", guard.outcome());
+                        guards.add(row);
+                    }
+                    target.add("guards", guards);
+                }
                 executionTask.add("targetBranch", target);
             }
 
@@ -488,18 +498,33 @@ public final class ConcolicScheduler {
             return;
         }
         requireSelectedOccurrence(arguments, goal);
-        JsonObject fatal = fatalBranch(branches, scopeMap);
-        String site = optionalString(fatal, "siteId");
+        List<JsonObject> fatal = fatalBranches(branches, scopeMap);
+        String site = optionalString(fatal.get(0), "siteId");
+        List<StaticScopeMap.Guard> guards = new ArrayList<>();
+        if (fatal.size() > 1) {
+            for (JsonObject guard : fatal) {
+                String guardSite = optionalString(guard, "siteId");
+                guards.add(new StaticScopeMap.Guard(guardSite,
+                        fatalArm(scopeMap, guardSite)));
+            }
+        }
         result.add(new Candidate(goal, branches, site,
-                optionalInteger(fatal, "selectedOccurrence", 1),
+                optionalInteger(fatal.get(0), "selectedOccurrence", 1),
                 fatalArm(scopeMap, site).booleanValue(),
-                fatalDecider(scopeMap, site), inputActions));
+                guards.isEmpty() ? fatalDecider(scopeMap, site) : null,
+                guards, inputActions));
     }
 
-    /** The one recorded branch the scope map names as a guard of the annotated
-     *  throw; none or several is a named refusal (phi has one polarity). */
-    private static JsonObject fatalBranch(JsonArray branches,
-                                          StaticScopeMap scopeMap)
+    /**
+     * The recorded branches the scope map names as guards of the annotated
+     * throw, in unit order: one for a conjunction ({@code a && b} jumps to
+     * the throw from its last test only), one per test of a disjunction
+     * ({@code a || b} jumps to it from each), whose first test is evaluated
+     * first and so is where the target stands.  None, or guards of two
+     * throws, is a named refusal.
+     */
+    private static List<JsonObject> fatalBranches(JsonArray branches,
+                                                  StaticScopeMap scopeMap)
             throws IOException {
         Map<String, JsonObject> bySite = new LinkedHashMap<>();
         Set<String> guardedTargets = new LinkedHashSet<>();
@@ -520,15 +545,18 @@ public final class ConcolicScheduler {
             }
             bySite.put(siteId, branch);
         }
-        if (bySite.size() != 1 || guardedTargets.size() > 1) {
+        if (bySite.isEmpty() || guardedTargets.size() > 1) {
             throw new IOException("UNSUPPORTED_AMBIGUOUS_TARGET_PATH: "
-                    + "expected one guarded failure target and one guard of "
+                    + "expected one guarded failure target and a guard of "
                     + "it; found " + guardedTargets.size()
                     + " guarded failure target(s) and " + bySite.size()
                     + " guard(s) the static scope map names: "
                     + bySite.keySet());
         }
-        return bySite.values().iterator().next();
+        List<JsonObject> ordered = new ArrayList<>(bySite.values());
+        ordered.sort(Comparator.comparingInt(branch -> SiteId.unitIndexOf(
+                optionalString(branch, "siteId"))));
+        return ordered;
     }
 
     /** A target goal is the occurrence the arguments selected, if any. */
@@ -836,6 +864,9 @@ public final class ConcolicScheduler {
         private final boolean targetRequiredOutcome;
         /** The helper branch that decides the target branch, or null. */
         private final StaticScopeMap.Guard targetDecider;
+        /** Every test of a disjunctive guard with its fatal arm, first the
+         *  target branch; empty for one guard. */
+        private final List<StaticScopeMap.Guard> targetGuards;
         private final JsonArray inputActions;
 
         private Candidate(Goal goal, JsonArray branches,
@@ -843,16 +874,20 @@ public final class ConcolicScheduler {
                           boolean targetRequiredOutcome,
                           JsonArray inputActions) {
             this(goal, branches, targetSiteId, targetOccurrence,
-                    targetRequiredOutcome, null, inputActions);
+                    targetRequiredOutcome, null,
+                    Collections.<StaticScopeMap.Guard>emptyList(),
+                    inputActions);
         }
 
         private Candidate(Goal goal, JsonArray branches,
                           String targetSiteId, int targetOccurrence,
                           boolean targetRequiredOutcome,
                           StaticScopeMap.Guard targetDecider,
+                          List<StaticScopeMap.Guard> targetGuards,
                           JsonArray inputActions) {
             this.goal = goal;
             this.targetDecider = targetDecider;
+            this.targetGuards = targetGuards;
             this.branches = branches;
             this.targetSiteId = nonNull(targetSiteId);
             this.targetOccurrence = Math.max(1, targetOccurrence);
