@@ -35,6 +35,12 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.strings;
  *       with its {@code carrier} field, versioned leaf {@code cell} and region
  *       (generalises REPORT-P2N's {@code observedWriteSites} to every cell of
  *       the slice).</li>
+ *   <li>{@code READ_SITE}: a read of a TRACKED cell -- a primitive instance
+ *       field (an atomic's value included) the slice both reads and stores
+ *       (SYMBOL-SCOPE F2).  Its stores are versioned from the first
+ *       ({@link #observedWriteSites}), and an occurrence of a region reading
+ *       it observes its branches from entry, so what it decides on shared
+ *       state joins the writers of that state.</li>
  *   <li>{@code EXPORT_SITE}: defines the value of a declared wire port
  *       ({@code portId}), the producer half of an interaction.</li>
  *   <li>{@code DECLARED_SITE}: a value entering from outside the slice's
@@ -68,6 +74,7 @@ public final class StaticScopeMap {
     public static final String TARGET_SITE = "TARGET_SITE";
     public static final String ROOT_SITE = "ROOT_SITE";
     public static final String DECLARED_SITE = "DECLARED_SITE";
+    public static final String READ_SITE = "READ_SITE";
 
     /** {@code declaredKind}: a field accessor's return; its cell is the field.
      */
@@ -92,6 +99,8 @@ public final class StaticScopeMap {
     private static final String[] WRITE_KINDS = {"field_write",
             "field_mutation", "container_mutation_argument",
             "container_call_mutation_effect", "container_array_store_value"};
+    private static final Set<String> READ_KINDS = new LinkedHashSet<String>(
+            java.util.Arrays.asList("field_read", "accessor_field_return"));
     private static final String THROW_KIND = "exception_throw";
 
     /** The guard set of one site, asked of the stage that has the CFG. */
@@ -300,7 +309,8 @@ public final class StaticScopeMap {
     public static List<Site> sites(List<Map<String, Object>> edges,
                                    List<Map<String, Object>> regions,
                                    Collection<String> clockCallees,
-                                   Predicate<String> unwoven) {
+                                   Predicate<String> unwoven,
+                                   Predicate<String> versionable) {
         Set<String> callees = new LinkedHashSet<String>(clockCallees);
         List<Region> retained = regions(regions);
         Set<String> regionRoots = new LinkedHashSet<String>();
@@ -321,6 +331,16 @@ public final class StaticScopeMap {
             addRootSite(found, seen, retained, edge, method, unitIndex);
             addDeclaredSite(found, seen, retained, edge, kind, method,
                     unitIndex, callees, regionRoots);
+            if (READ_KINDS.contains(kind)) {
+                String cell = firstNonBlank(
+                        text(edge.get("declaredFieldSignature")),
+                        text(edge.get("fromCell")));
+                if (versionable.test(cell)) {
+                    add(found, seen, retained, READ_SITE, method, unitIndex,
+                            cell, "", "", "");
+                }
+                continue;
+            }
             if (!write(kind)) continue;
             String carrier = signature(text(edge.get("toCell")));
             if (carrier.isEmpty()) continue;
@@ -330,6 +350,7 @@ public final class StaticScopeMap {
                     leaf.isEmpty() ? carrier : leaf, carrier, "", invoke);
         }
         markReads(found, unwoven);
+        keepTrackedReads(found);
         for (Region region : retained) {
             for (Map<String, Object> port : region.ports) {
                 String portId = text(port.get(
@@ -395,6 +416,17 @@ public final class StaticScopeMap {
                             declared.javaType, READ_INPUT),
                     site.guards, site.guardOutcomes));
         }
+    }
+
+    /** A READ_SITE stays only where the slice stores its cell too: a cell
+     *  nothing in the slice writes has no writer to join. */
+    private static void keepTrackedReads(List<Site> found) {
+        Set<String> stored = new LinkedHashSet<String>();
+        for (Site site : found) {
+            if (WRITE_SITE.equals(site.role)) stored.add(site.cell);
+        }
+        found.removeIf(site -> READ_SITE.equals(site.role)
+                && !stored.contains(site.cell));
     }
 
     /** Every site id in {@code sites}. */
@@ -833,15 +865,19 @@ public final class StaticScopeMap {
         return ofRole(EXPORT_SITE, site -> site.portId.equals(portId));
     }
 
-    /** Stores into declared cells the replay must observe (REPORT-P2N). */
-    public JsonArray writeSitesOf(Collection<String> declaredCells) {
+    /** Every store into a tracked cell ({@link #READ_SITE}): the replay
+     *  versions the cell from it, so a read of the cell has a writer to join
+     *  whatever value the store wrote (REPORT-P2N, for every cell). */
+    public JsonArray observedWriteSites() {
+        Set<String> tracked = new LinkedHashSet<String>();
+        for (Site site : ofRole(READ_SITE, read -> true)) {
+            tracked.add(site.cell);
+        }
         JsonArray found = new JsonArray();
-        if (declaredCells == null || declaredCells.isEmpty()) return found;
         Set<String> seen = new LinkedHashSet<String>();
         for (Site site : sites) {
             if (!WRITE_SITE.equals(site.role)
-                    || !declaredCells.contains(site.cell)
-                    || site.declaredCallee.isEmpty()
+                    || !tracked.contains(site.cell)
                     || !seen.add(site.siteId)) {
                 continue;
             }
@@ -903,6 +939,15 @@ public final class StaticScopeMap {
             reads.add(readKey(site.siteId, site.cell));
         }
         return reads;
+    }
+
+    /** The methods reading a tracked cell ({@link #READ_SITE}). */
+    public Set<String> trackedReaders() {
+        Set<String> methods = new LinkedHashSet<String>();
+        for (Site site : ofRole(READ_SITE, read -> true)) {
+            methods.add(SiteId.methodOf(site.siteId));
+        }
+        return methods;
     }
 
     /** One read's key: its site and the location it reads. */

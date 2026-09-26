@@ -896,6 +896,8 @@ final class ConcolicTaskPlan {
         final List<SymbolizeAction> symbolize;
         final LoopBoundPolicy loopBound;
         final boolean capturesTargetReach;
+        /** Whether the region reads a tracked cell (SYMBOL-SCOPE F2). */
+        final boolean readsTrackedState;
         /**
          * Whether this non-loop address has completed its goal, which closes
          * its admission; loop-body roots are governed by K_L alone.
@@ -992,6 +994,8 @@ final class ConcolicTaskPlan {
             // An undeclared root loop site inherits the default K_L.
             this.loopOccurrenceBudget = this.loopBound
                     .maxBackedgeTraversals(task.rootLoopSiteId());
+            this.readsTrackedState = optionalBool(task.json(),
+                    ExecutionTask.READS_TRACKED_STATE, false);
             this.capturesTargetReach =
                     task.goalKind().capturesTargetReach();
             // Already validated when the plan row was decoded.

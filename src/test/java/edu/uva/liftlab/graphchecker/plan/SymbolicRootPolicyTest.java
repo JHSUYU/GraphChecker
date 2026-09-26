@@ -56,6 +56,7 @@ public class SymbolicRootPolicyTest {
     private static final String DELETE = "<S: void deleteSnapshot()>";
     private static final String GET_NUM = "<S: int getNumSnapshots()>";
     private static final String GET_NUM_LOCAL = GET_NUM + "::$i0";
+    private static final String COUNTER = "<S: int snapshotCounter>";
 
     @Rule
     public final TemporaryFolder folder = new TemporaryFolder();
@@ -153,18 +154,38 @@ public class SymbolicRootPolicyTest {
                         Collections.<String>emptySet(), ATOMIC_GET::equals)
                         .readSites().isEmpty());
 
-        // The write side of the same location: the scope map names every
-        // store of the slice with the callee that performs it, so which sites
-        // the replay observes is a join over its rows.
-        JsonArray sites = unwoven.writeSitesOf(
-                Collections.singleton(ATOMIC_VALUE));
-        assertEquals("one write site of the location", 1, sites.size());
+    }
+
+    /**
+     * SYMBOL-SCOPE F2: a primitive instance cell the slice both reads and
+     * stores is tracked -- every store of it is observed, a {@code putfield}
+     * as well as an atomic's RMW, and a region reading it observes its
+     * branches from entry.  A cell no read of the slice reaches is not.
+     */
+    @Test
+    public void aCellTheSliceReadsAndStoresIsTracked() throws Exception {
+        Map<String, List<String>> apart = new LinkedHashMap<>();
+        apart.put(NN, Collections.singletonList(GET_NUM));
+        apart.put(DN, Collections.singletonList(DELETE));
+        StaticScopeMap tracked = map(Arrays.asList(atomicRead(),
+                atomicStore(), counterRead(), counterStore()), apart,
+                Collections.<String>emptySet(), method -> false);
+        JsonArray sites = tracked.observedWriteSites();
+        assertEquals("the atomic's RMW and the putfield", 2, sites.size());
         assertEquals(DELETE + "#u35", member(sites, 0, "siteId"));
         assertEquals(DECREMENT, member(sites, 0, "declaredCallee"));
-        assertEquals("no location, no observation", 0,
-                unwoven.writeSitesOf(Collections.singleton(KEY_ID)).size());
-        assertTrue("the cell is read off the action alone",
-                ConcolicScheduler.declaredInputCells(null).isEmpty());
+        assertEquals(DELETE + "#u40", member(sites, 1, "siteId"));
+        assertEquals("a putfield names no callee", "",
+                member(sites, 1, "declaredCallee"));
+        assertTrue("the reading region observes from entry",
+                ConcolicScheduler.SymbolicInputSelection.read(tracked,
+                        Arrays.asList(json("{\"regionId\":\"" + NN
+                                + "\",\"methods\":[\"" + GET_NUM
+                                + "\"]}"))).readsTrackedState(NN));
+        assertEquals("a store no read of the slice reaches is not observed",
+                0, map(Arrays.asList(atomicStore(), counterStore()), apart,
+                        Collections.<String>emptySet(), method -> false)
+                        .observedWriteSites().size());
     }
 
     /** The published scope map of these edges, through the artifact the way
@@ -184,7 +205,7 @@ public class SymbolicRootPolicyTest {
         }
         StringBuilder text = new StringBuilder();
         for (JsonObject row : StaticScopeMap.rows(StaticScopeMap.sites(edges,
-                regions, clocks, unwoven), null)) {
+                regions, clocks, unwoven, cell -> true), null)) {
             text.append(row.toString()).append('\n');
         }
         Path file = folder.newFolder().toPath().resolve(StaticScopeMap.FILE);
@@ -229,6 +250,19 @@ public class SymbolicRootPolicyTest {
                 + "\"toCell\":\"" + NUM_SNAPSHOTS + "\",\"method\":\""
                 + DELETE + "\",\"unitIndex\":35,\"invoke\":\"" + DECREMENT
                 + "\"}");
+    }
+
+    private static Map<String, Object> counterRead() {
+        return edge("{\"kind\":\"field_read\",\"method\":\"" + GET_NUM
+                + "\",\"unitIndex\":4,\"fromCell\":\"" + COUNTER
+                + "\",\"toCell\":\"" + GET_NUM + "::$i1\"}");
+    }
+
+    private static Map<String, Object> counterStore() {
+        return edge("{\"kind\":\"field_write\",\"transferKind\":"
+                + "\"HEAP_WRITE\",\"fromCell\":\"" + DELETE + "::$i2\","
+                + "\"toCell\":\"" + COUNTER + "\",\"method\":\""
+                + DELETE + "\",\"unitIndex\":40}");
     }
 
     private static JsonObject copy(String authority) {

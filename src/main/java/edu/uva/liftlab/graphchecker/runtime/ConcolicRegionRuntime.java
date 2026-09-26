@@ -399,8 +399,11 @@ public final class ConcolicRegionRuntime {
             active = new ActiveRegion(TOKEN_COUNTER.incrementAndGet(),
                     admitted, receiver, Thread.currentThread());
             // A nested region inherits its caller's symbolic state, so its
-            // branches record even if it mints no root of its own.
-            if (enclosing != null && enclosing.pathRecordingStarted) {
+            // branches record even if it mints no root of its own; a region
+            // reading tracked state records from entry (its reads are
+            // versions another occurrence wrote).
+            if (admitted.readsTrackedState
+                    || enclosing != null && enclosing.pathRecordingStarted) {
                 active.pathRecordingStarted = true;
             }
             active.claimActivation();

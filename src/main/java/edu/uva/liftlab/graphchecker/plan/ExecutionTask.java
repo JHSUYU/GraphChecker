@@ -44,6 +44,9 @@ public final class ExecutionTask extends PlanRow {
 
     /** Write sites of a declared input's cell the replay must observe. */
     public static final String OBSERVED_WRITE_SITES = "observedWriteSites";
+    /** Set when the task's region reads a tracked cell: its occurrence
+     *  observes branches from entry (SYMBOL-SCOPE F2). */
+    public static final String READS_TRACKED_STATE = "readsTrackedState";
     private final InputActionCatalog inputActions;
     private final LoopBoundPolicy loopBound;
     private final String rootLoopMethod;

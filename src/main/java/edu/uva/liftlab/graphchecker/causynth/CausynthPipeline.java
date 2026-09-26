@@ -168,7 +168,8 @@ public final class CausynthPipeline {
         List<StaticScopeMap.Site> scopeSites = StaticScopeMap.sites(
                 result.edges, result.regions,
                 RootCatalog.clockCallees(result.edges),
-                method -> !CausynthStaticFacts.applicationMethod(method));
+                method -> !CausynthStaticFacts.applicationMethod(method),
+                CausynthStaticFacts::versionableField);
         List<JsonObject> scopeMap = StaticScopeMap.rows(scopeSites,
                 SiteControlDependence.over(
                         StaticScopeMap.siteIds(scopeSites)));
@@ -1841,35 +1842,104 @@ public final class CausynthPipeline {
     }
 
     /**
-     * Observes a selected declared-input cell before the call, starting its
-     * version log; hooked at the invocation because an atomic RMW has no
-     * application {@code putfield}.
+     * Observes a tracked cell before each store into it, starting its version
+     * log: before the {@code putfield}, or before the call when the store is
+     * an atomic's RMW (no application {@code putfield}).  A store before the
+     * constructor call that makes its object has no object to observe yet.
      */
     private void instrumentConcolicObservedWriteSites(
             ConcolicMaterializationSelection selection, HookCatalog refs) {
+        int unconstructed = 0;
         for (ObservedWriteTarget target : selection.observedWrites()) {
             Body body = selectedBody(target.method,
                     "OBSERVED_WRITE_SITE_METHOD", target.siteId);
-            Stmt selected = originalCall(body, target.unitIndex,
-                    target.siteId, "OBSERVED_WRITE_SITE_NOT_UNIQUE",
-                    "OBSERVED_WRITE_SITE_INVOKE_NOT_FOUND");
-            requireCallee(selected, target.declaredCallee,
-                    "OBSERVED_WRITE_SITE_DECLARED_CALLEE_MISMATCH",
-                    target.siteId);
-            InvokeExpr invocation = selected.getInvokeExpr();
-            if (!(invocation instanceof InstanceInvokeExpr)) {
-                throw new IllegalStateException(
-                        "OBSERVED_WRITE_SITE_REQUIRES_INSTANCE_RECEIVER: "
-                                + target.siteId);
+            Stmt selected;
+            Value owner;
+            if (target.declaredCallee.isEmpty()) {
+                selected = originalStore(body, target);
+                if (selected == null) {
+                    unconstructed++;
+                    continue;
+                }
+                owner = ((InstanceFieldRef) ((AssignStmt) selected)
+                        .getLeftOp()).getBase();
+            } else {
+                selected = originalCall(body, target.unitIndex,
+                        target.siteId, "OBSERVED_WRITE_SITE_NOT_UNIQUE",
+                        "OBSERVED_WRITE_SITE_INVOKE_NOT_FOUND");
+                requireCallee(selected, target.declaredCallee,
+                        "OBSERVED_WRITE_SITE_DECLARED_CALLEE_MISMATCH",
+                        target.siteId);
+                InvokeExpr invocation = selected.getInvokeExpr();
+                if (!(invocation instanceof InstanceInvokeExpr)) {
+                    throw new IllegalStateException(
+                            "OBSERVED_WRITE_SITE_REQUIRES_INSTANCE_RECEIVER: "
+                                    + target.siteId);
+                }
+                owner = ((InstanceInvokeExpr) invocation).getBase();
             }
             List<Unit> before = new ArrayList<>();
-            Value receiver = objectArg(body,
-                    ((InstanceInvokeExpr) invocation).getBase(), before);
+            Value receiver = objectArg(body, owner, before);
             refs.bracket(before, Hook.OBSERVE_DECLARED_WRITE_SITE,
                     StringConstant.v(target.siteId),
                     StringConstant.v(target.cell), receiver);
             insertBeforeSequence(body, selected, before);
         }
+        if (unconstructed > 0) {
+            LOG.info("Left {} tracked store(s) before their object's "
+                    + "constructor call unobserved", unconstructed);
+        }
+    }
+
+    /**
+     * The original {@code putfield} into the target's cell, or null when it
+     * runs before the constructor call that makes its object.
+     */
+    private static Stmt originalStore(Body body, ObservedWriteTarget target) {
+        tagOriginalUnits(snapshotUnits(body));
+        Stmt selected = null;
+        Unit constructed = null;
+        for (Unit unit : snapshotUnits(body)) {
+            if (constructed == null && constructorCall(body, unit)) {
+                constructed = unit;
+            }
+            if (originalUnitIndex(unit) != target.unitIndex) continue;
+            if (selected != null || !(unit instanceof AssignStmt)) {
+                throw new IllegalStateException(
+                        "OBSERVED_WRITE_SITE_NOT_UNIQUE: " + target.siteId);
+            }
+            selected = (Stmt) unit;
+            if (!(((AssignStmt) unit).getLeftOp() instanceof InstanceFieldRef)
+                    || !target.cell.equals(CausynthStaticFacts
+                    .declaredFieldSignature(((InstanceFieldRef) ((AssignStmt)
+                            unit).getLeftOp()).getFieldRef()))) {
+                throw new IllegalStateException(
+                        "OBSERVED_WRITE_SITE_STORE_NOT_FOUND: "
+                                + target.siteId + " stores no " + target.cell);
+            }
+            if (body.getMethod().isConstructor() && constructed == null) {
+                return null;
+            }
+        }
+        if (selected == null) {
+            throw new IllegalStateException(
+                    "OBSERVED_WRITE_SITE_STORE_NOT_FOUND: " + target.siteId);
+        }
+        return selected;
+    }
+
+    /** Whether {@code unit} is a constructor's own this/super constructor
+     *  call. */
+    private static boolean constructorCall(Body body, Unit unit) {
+        if (!body.getMethod().isConstructor() || !(unit instanceof Stmt)
+                || !((Stmt) unit).containsInvokeExpr()) {
+            return false;
+        }
+        InvokeExpr call = ((Stmt) unit).getInvokeExpr();
+        return call instanceof SpecialInvokeExpr
+                && "<init>".equals(call.getMethodRef().getName())
+                && ((SpecialInvokeExpr) call).getBase()
+                .equals(body.getThisLocal());
     }
 
     /** Materializes the campaign envelope's selected sites, and only those. */

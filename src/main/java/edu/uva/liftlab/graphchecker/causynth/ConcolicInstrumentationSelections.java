@@ -442,7 +442,9 @@ public final class ConcolicInstrumentationSelections {
 
         /**
          * Registers the planned observed write sites (a by-value cell has no
-         * version log until observed).  One site naming two cells is refused.
+         * version log until observed): a call storing into an atomic's value,
+         * or a {@code putfield} ({@code declaredCallee} empty).  One site
+         * naming two cells is refused.
          */
         private void addObservedWriteSites(JsonArray sites)
                 throws IOException {
@@ -456,7 +458,7 @@ public final class ConcolicInstrumentationSelections {
                 String callee = optionalString(site, "declaredCallee");
                 String cell = optionalString(site, "cell");
                 if (method.isEmpty() || unitIndex < 0 || siteId.isEmpty()
-                        || callee.isEmpty() || cell.isEmpty()
+                        || cell.isEmpty()
                         || !siteId.equals(SiteId.of(method, unitIndex))) {
                     throw unsupported(site);
                 }

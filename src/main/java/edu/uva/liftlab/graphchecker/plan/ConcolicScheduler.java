@@ -36,6 +36,7 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.nonNull;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.strings;
 
 /** Builds graph-directed concolic jobs from static regions and concrete
  * runtime-selected region instance plans. */
@@ -146,11 +147,9 @@ public final class ConcolicScheduler {
 
             result.add(scheduled);
         }
-        // Stores of declared input cells the replay must observe:
-        // campaign-wide, on every task, since whichever occurrence writes first
-        // starts the log.
-        JsonArray writeSites = loaded.staticScopeMap.writeSitesOf(
-                declaredInputCells(result));
+        // Stores of tracked cells the replay must observe: campaign-wide, on
+        // every task, since whichever occurrence writes first starts the log.
+        JsonArray writeSites = loaded.staticScopeMap.observedWriteSites();
         if (writeSites.size() > 0) {
             for (ExecutionTask task : result) {
                 task.json().add(ExecutionTask.OBSERVED_WRITE_SITES,
@@ -178,9 +177,13 @@ public final class ConcolicScheduler {
                 candidate.inputActions);
         selected = removeInboundProtocolHandoffInputs(selected,
                 CommunicationHandoffSpec.decode(plan.json()));
-        return ExecutionTask.create(candidate.goal,
+        ExecutionTask task = ExecutionTask.create(candidate.goal,
                 candidate.seedTaskId(selected), selected, branchMethods,
                 loopBound);
+        if (symbolicInputs.readsTrackedState(plan.regionId())) {
+            task.json().addProperty(ExecutionTask.READS_TRACKED_STATE, true);
+        }
+        return task;
     }
 
     /** The ONE cap rule: a selection over {@code --max-jobs} is refused by name
@@ -191,31 +194,6 @@ public final class ConcolicScheduler {
         return new IOException("selected exact closure exceeds max jobs: "
                 + selected + " > " + maxJobs + "; "
                 + closureAdmissionSummary(regionPlans));
-    }
-
-    /** The exact cells the campaign's DECLARED region inputs name (nothing
-     *  else). */
-    static Set<String> declaredInputCells(Iterable<ExecutionTask> tasks) {
-        Set<String> cells = new LinkedHashSet<>();
-        for (ExecutionTask task : tasks == null
-                ? Collections.<ExecutionTask>emptyList() : tasks) {
-            for (JsonElement element : task.inputActions().all()) {
-                if (!element.isJsonObject()) continue;
-                JsonObject action = element.getAsJsonObject();
-                if (!optionalBool(action,
-                        InputActionCatalog.DECLARED_SYMBOLIC_ROOT, false)) {
-                    continue;
-                }
-                for (String member : new String[]{"leafFieldSignature",
-                        "accessFieldSignature", "cell"}) {
-                    String signature = optionalString(action, member);
-                    if (FieldPathSpec.declaredField(signature) != null) {
-                        cells.add(signature);
-                    }
-                }
-            }
-        }
-        return cells;
     }
 
     /** Drops local SYMBOLIC actions for ports this occurrence attaches
@@ -1113,12 +1091,22 @@ public final class ConcolicScheduler {
         private final Set<String> reads;
         /** regionId -> sourceId -> the one field that hook site mints. */
         private final Map<String, Map<String, String>> minted;
+        /** The regions whose methods read a tracked cell (SYMBOL-SCOPE F2). */
+        private final Set<String> trackedReaders;
         private SymbolicInputSelection(
                 Set<String> clocks, Set<String> reads,
-                Map<String, Map<String, String>> minted) {
+                Map<String, Map<String, String>> minted,
+                Set<String> trackedReaders) {
             this.clocks = clocks;
             this.reads = reads;
             this.minted = minted;
+            this.trackedReaders = trackedReaders;
+        }
+
+        /** Whether an occurrence of this region decides on tracked state, so
+         *  it observes its branches from entry. */
+        boolean readsTrackedState(String regionId) {
+            return trackedReaders.contains(regionId);
         }
 
         /** The roots the scope map states ({@link StaticScopeMap#clockCallees},
@@ -1146,8 +1134,19 @@ public final class ConcolicScheduler {
             for (String callee : scopeMap.clockCallees()) {
                 clocks.add(callee + ".return");
             }
+            Set<String> readers = scopeMap.trackedReaders();
+            Set<String> trackedReaders = new LinkedHashSet<>();
+            for (JsonObject region : regionCatalog == null
+                    ? Collections.<JsonObject>emptyList() : regionCatalog) {
+                // A region's methods fold in the regions folded into it.
+                for (String method : strings(region, "methods")) {
+                    if (readers.contains(method)) {
+                        trackedReaders.add(optionalString(region, "regionId"));
+                    }
+                }
+            }
             return new SymbolicInputSelection(clocks, scopeMap.readSites(),
-                    minted);
+                    minted, trackedReaders);
         }
 
         /** An explicit source hook is itself the allowlist authority. */
