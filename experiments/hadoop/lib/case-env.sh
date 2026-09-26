@@ -16,6 +16,10 @@
 #   loop_bounds         default: <case-dir>/loop-bounds.jsonl
 #   target_spec         default: <case-dir>/target.yaml
 #   hadoop_javac        the javac the Hadoop build uses (default: the filter)
+#   classpath_test      the test class whose surefire report states the
+#                       module's test classpath (default: test_class)
+#   workload_properties system properties every workload JVM of the case
+#                       gets (default: none)
 case_dir=${1:?missing case directory}
 case_id=${2-}
 case_dir=$(cd "${case_dir}" && pwd -P)
@@ -25,6 +29,8 @@ loop_bounds=${case_dir}/loop-bounds.jsonl
 target_spec=${case_dir}/target.yaml
 target_occurrence=
 hadoop_javac=
+classpath_test=
+workload_properties=()
 scope=()
 # THE block-key family's shared scope: the SASL data-transfer handshake and
 # the block-token key managers every case of the family turns on, and the IPC
@@ -53,7 +59,7 @@ source "${case_dir}/case.sh" "${case_id}"
 # change.
 target_occurrence=${CAUSYNTH_TARGET_OCCURRENCE_OVERRIDE-${target_occurrence}}
 module=${repo}/hadoop-hdfs-project/hadoop-hdfs
-report=${module}/target/surefire-reports/TEST-${test_class}.xml
+report=${module}/target/surefire-reports/TEST-${classpath_test:-${test_class}}.xml
 tag=${case_name}${case_id:+-${case_id}}
 analysis=/tmp/graphchecker-${tag}-classes
 test_name=${test_class}#${test_method}

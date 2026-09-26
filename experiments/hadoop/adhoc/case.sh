@@ -68,6 +68,22 @@ case "${workload}" in
     test_method=testAppendAfterSoftLimit
     scope+=(client:org/apache/hadoop/hdfs/DFSClient)
     ;;
+  # Any other cluster test of the module, "<test class>-<method>", run as
+  # it is written: the MiniDFSCluster it builds is made reproducible and
+  # registered, and opens the window, by itself (CausynthCluster#AUTOMATIC).
+  # Its classpath is the module's, stated by any of its reports.
+  Test*-*)
+    test_method=${workload#*-}
+    test_class=$(cd "${repo}/hadoop-hdfs-project/hadoop-hdfs/target/test-classes" \
+      && find . -name "${workload%%-*}.class" | sed 's#^\./##; s#\.class$##; s#/#.#g')
+    [[ -n "${test_class}" && "${test_class}" != *$'\n'* ]] || {
+      echo "no single test class ${workload%%-*} in ${repo}" >&2
+      return 2
+    }
+    classpath_test=org.apache.hadoop.hdfs.TestFileAppend
+    workload_properties=(-Dcausynth.cluster.automatic=true)
+    scope+=(client:org/apache/hadoop/hdfs/DFSClient)
+    ;;
   *)
     echo "unknown ad-hoc workload: ${workload}" >&2
     return 2

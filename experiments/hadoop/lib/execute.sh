@@ -75,7 +75,8 @@ set +e
   -Dsun.reflect.noInflation=true \
   -Dorg.slf4j.simpleLogger.defaultLogLevel=warn \
   -Djava.io.tmpdir="${tmpdir}" -Dtest.build.data="${datadir}" \
-  "${properties[@]}" "${extra[@]+"${extra[@]}"}" -cp "${classes}:${jar}:${cp}" \
+  "${properties[@]}" "${workload_properties[@]+"${workload_properties[@]}"}" \
+  "${extra[@]+"${extra[@]}"}" -cp "${classes}:${jar}:${cp}" \
   edu.uva.liftlab.graphchecker.runtime.JUnitMethodRunner \
   "${test_class}" "${test_method}"
 status=$?
