@@ -6,7 +6,7 @@ import os, re, sys, json
 tree = sys.argv[1]
 roots = [("hdfs", "hadoop-hdfs-project/hadoop-hdfs/src/main/java"),
          ("client", "hadoop-hdfs-project/hadoop-hdfs-client/src/main/java")]
-THROW = re.compile(r'throw\s+new\s+(?:@\w+(?:\("[^"]*"\))?\s+)?([\w.]+)\s*\(')
+THROW = re.compile(r'throw\s+new\s+(?:@[\w.]+(?:\("[^"]*"\))?\s+)?([\w.]+)\s*\(')
 IF = re.compile(r'^\s*(?:}\s*else\s+)?if\s*\((.*)$')
 for module, rel in roots:
     base = os.path.join(tree, rel)
