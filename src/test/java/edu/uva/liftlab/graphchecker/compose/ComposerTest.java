@@ -204,6 +204,12 @@ public class ComposerTest {
         assertFalse("and decides nothing about the recording",
                 undecided.claim().polarityDecides());
 
+        // And answered by a z3 that WARNS first, as its optimizer does under
+        // quantifiers: the answer is the line after the warning.
+        assertEquals("a warning is not the verdict", ClaimKind.MARKER_FLIPPED,
+                ClaimPolicy.decide(composition, new Z3(warningSolver(),
+                        30000L)).claim().kind());
+
         // 1b. The same claim where the marker reaches the target only
         // through CONTROL dependence -- 17960's shape.  The marker gates a
         // branch of ANOTHER occurrence, so no decision of the anchor names
@@ -694,6 +700,17 @@ public class ComposerTest {
                 "cat > /dev/null",
                 "echo unknown",
                 "echo '(:reason-unknown \"(incomplete quantifiers)\")'"));
+        assertTrue("the fixture solver is executable",
+                script.toFile().setExecutable(true));
+        return script;
+    }
+
+    private Path warningSolver() throws IOException {
+        Path script = folder.newFile("z3-warns.sh").toPath();
+        Files.write(script, Arrays.asList("#!/bin/sh",
+                "echo 'WARNING: optimization with quantified constraints is"
+                        + " not supported'",
+                "exec " + z3() + " \"$@\""));
         assertTrue("the fixture solver is executable",
                 script.toFile().setExecutable(true));
         return script;
@@ -3091,11 +3108,15 @@ public class ComposerTest {
     }
 
     private Z3 solver() {
-        Path z3 = Paths.get("/usr/local/bin/z3");
-        if (!Files.isExecutable(z3)) z3 = Paths.get("z3");
+        Path z3 = z3();
         Assume.assumeTrue("z3 is not on this machine",
                 Files.isExecutable(z3) || !z3.isAbsolute());
         return new Z3(z3, 30000L);
+    }
+
+    private static Path z3() {
+        Path z3 = Paths.get("/usr/local/bin/z3");
+        return Files.isExecutable(z3) ? z3 : Paths.get("z3");
     }
 
     /** The one assertion that carries a path's own conjunction. */

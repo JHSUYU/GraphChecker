@@ -242,12 +242,22 @@ public final class Z3 {
             Thread.currentThread().interrupt();
             return TIMEOUT;
         }
-        return errorsOf(read.get());
+        return answerOf(read.get());
     }
 
-    /** The same output, with every error line it names remembered. */
-    private String errorsOf(String output) {
-        if (output == null) return "";
+    /**
+     * The answer z3 printed: its WARNING lines dropped (the optimizer warns
+     * it ignores an objective under quantifiers, then answers on the next
+     * line, which every reader here takes as the first), every error line
+     * remembered.
+     */
+    private String answerOf(String printed) {
+        if (printed == null) return "";
+        List<String> kept = new ArrayList<String>();
+        for (String line : printed.split("\n", -1)) {
+            if (!line.startsWith("WARNING:")) kept.add(line);
+        }
+        String output = String.join("\n", kept);
         int at = output.indexOf(ERROR);
         while (at >= 0) {
             int end = output.indexOf('\n', at);
