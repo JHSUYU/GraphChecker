@@ -18,6 +18,7 @@ import java.nio.file.Paths;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
@@ -180,7 +181,10 @@ public final class ConcolicScheduler {
         ExecutionTask task = ExecutionTask.create(candidate.goal,
                 candidate.seedTaskId(selected), selected, branchMethods,
                 loopBound);
-        if (symbolicInputs.readsTrackedState(plan.regionId())) {
+        List<String> regions = new ArrayList<>(strings(plan.json(),
+                RuntimeSelectedRegionFinalizer.FOLDED_REGION_IDS));
+        regions.add(plan.regionId());
+        if (symbolicInputs.readsTrackedState(regions)) {
             task.json().addProperty(ExecutionTask.READS_TRACKED_STATE, true);
         }
         return task;
@@ -1091,22 +1095,26 @@ public final class ConcolicScheduler {
         private final Set<String> reads;
         /** regionId -> sourceId -> the one field that hook site mints. */
         private final Map<String, Map<String, String>> minted;
-        /** The regions whose methods read a tracked cell (SYMBOL-SCOPE F2). */
-        private final Set<String> trackedReaders;
+        /** The regions reading a tracked cell (SYMBOL-SCOPE F2). */
+        private final Set<String> trackedRegions;
         private SymbolicInputSelection(
                 Set<String> clocks, Set<String> reads,
                 Map<String, Map<String, String>> minted,
-                Set<String> trackedReaders) {
+                Set<String> trackedRegions) {
             this.clocks = clocks;
             this.reads = reads;
             this.minted = minted;
-            this.trackedReaders = trackedReaders;
+            this.trackedRegions = trackedRegions;
         }
 
-        /** Whether an occurrence of this region decides on tracked state, so
-         *  it observes its branches from entry. */
-        boolean readsTrackedState(String regionId) {
-            return trackedReaders.contains(regionId);
+        /** Whether an occurrence of these regions (one and those folded into
+         *  it) decides on tracked state, so it observes its branches from
+         *  entry. */
+        boolean readsTrackedState(Collection<String> regionIds) {
+            for (String regionId : regionIds) {
+                if (trackedRegions.contains(regionId)) return true;
+            }
+            return false;
         }
 
         /** The roots the scope map states ({@link StaticScopeMap#clockCallees},
@@ -1134,19 +1142,8 @@ public final class ConcolicScheduler {
             for (String callee : scopeMap.clockCallees()) {
                 clocks.add(callee + ".return");
             }
-            Set<String> readers = scopeMap.trackedReaders();
-            Set<String> trackedReaders = new LinkedHashSet<>();
-            for (JsonObject region : regionCatalog == null
-                    ? Collections.<JsonObject>emptyList() : regionCatalog) {
-                // A region's methods fold in the regions folded into it.
-                for (String method : strings(region, "methods")) {
-                    if (readers.contains(method)) {
-                        trackedReaders.add(optionalString(region, "regionId"));
-                    }
-                }
-            }
             return new SymbolicInputSelection(clocks, scopeMap.readSites(),
-                    minted, trackedReaders);
+                    minted, scopeMap.trackedRegions());
         }
 
         /** An explicit source hook is itself the allowlist authority. */

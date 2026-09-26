@@ -948,13 +948,13 @@ public final class StaticScopeMap {
         return reads;
     }
 
-    /** The methods reading a tracked cell ({@link #READ_SITE}). */
-    public Set<String> trackedReaders() {
-        Set<String> methods = new LinkedHashSet<String>();
+    /** The regions reading a tracked cell ({@link #READ_SITE}). */
+    public Set<String> trackedRegions() {
+        Set<String> regions = new LinkedHashSet<String>();
         for (Site site : ofRole(READ_SITE, read -> true)) {
-            methods.add(SiteId.methodOf(site.siteId));
+            regions.add(site.regionId);
         }
-        return methods;
+        return regions;
     }
 
     /** One read's key: its site and the location it reads. */

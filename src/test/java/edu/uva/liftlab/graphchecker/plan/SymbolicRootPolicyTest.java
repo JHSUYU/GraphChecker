@@ -177,11 +177,15 @@ public class SymbolicRootPolicyTest {
         assertEquals(DELETE + "#u40", member(sites, 1, "siteId"));
         assertEquals("a putfield names no callee", "",
                 member(sites, 1, "declaredCallee"));
-        assertTrue("the reading region observes from entry",
+        ConcolicScheduler.SymbolicInputSelection selection =
                 ConcolicScheduler.SymbolicInputSelection.read(tracked,
-                        Arrays.asList(json("{\"regionId\":\"" + NN
-                                + "\",\"methods\":[\"" + GET_NUM
-                                + "\"]}"))).readsTrackedState(NN));
+                        catalog());
+        assertTrue("the reading region observes from entry",
+                selection.readsTrackedState(Collections.singleton(NN)));
+        assertTrue("so does one it is folded into", selection
+                .readsTrackedState(Arrays.asList("REGION.enclosing", NN)));
+        assertFalse("the writing region does not", selection
+                .readsTrackedState(Collections.singleton(DN)));
         assertEquals("a store no read of the slice reaches is not observed",
                 0, map(Arrays.asList(atomicStore(), counterStore()), apart,
                         Collections.<String>emptySet(), method -> false)
