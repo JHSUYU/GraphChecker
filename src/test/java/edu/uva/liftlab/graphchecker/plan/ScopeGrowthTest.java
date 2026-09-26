@@ -109,8 +109,7 @@ public class ScopeGrowthTest {
         List<String> found = new ArrayList<>();
         for (JsonObject row : ScopeFrontier.rows(edges,
                 "<A: long own()>"::equals,
-                Collections.singleton("<C: long now()>"),
-                Collections.singleton("<M: void m(long)>"))) {
+                Collections.singleton("<C: long now()>"))) {
             found.add(row.get("kind").getAsString() + " "
                     + row.get("signature").getAsString() + " "
                     + row.get("distance").getAsInt());
@@ -118,51 +117,7 @@ public class ScopeGrowthTest {
         assertEquals(Arrays.asList(
                 "FIELD " + SHARED + " 1",
                 "CALLEE " + GET + " 2",
-                "FORMAL " + set + " 3",
-                "ROOT <M: void m(long)> 0"), found);
-    }
-
-    /** A grown class holding a new root of the target's region is taken
-     *  back, and never taken again. */
-    @Test
-    public void growthNeverMovesTheTargetsRoot() throws Exception {
-        Path root = fixtures();
-        Path scope = folder.newFolder().toPath();
-        Path grown = folder.newFolder().toPath();
-        String set = "FORMAL <" + T + "$Holder: void set(long)>";
-        String moved = "<" + T + "$Setter: void write(" + T + "$Holder)>";
-        assertEquals("1 added 1 class(es), 1 of 8 grown",
-                grow(grown, scope, root, set, "<M: void m()>"));
-        assertEquals("1 took back [" + T + "$Setter]: each held a new root "
-                + "of the target's region", grow(grown, scope, root, set,
-                "<M: void m()>", moved));
-        assertEquals("0 added 0 class(es), 1 of 8 grown",
-                grow(grown, scope, root, set, "<M: void m()>"));
-    }
-
-    private String grow(Path grown, Path scope, Path root, String row,
-                        String... roots) throws Exception {
-        StringBuilder frontier = new StringBuilder();
-        String[] parts = row.split(" ", 2);
-        frontier.append("{\"kind\":\"").append(parts[0])
-                .append("\",\"signature\":\"").append(parts[1])
-                .append("\",\"distance\":1}\n");
-        for (String held : roots) {
-            frontier.append("{\"kind\":\"ROOT\",\"signature\":\"")
-                    .append(held).append("\",\"distance\":0}\n");
-        }
-        Path file = folder.newFile().toPath();
-        Files.write(file, frontier.toString().getBytes("UTF-8"));
-        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
-        java.io.PrintStream was = System.out;
-        System.setOut(new java.io.PrintStream(out, true, "UTF-8"));
-        try {
-            ScopeGrowth.main(new String[]{grown.toString(), file.toString(),
-                    "8", scope.toString(), root.toString()});
-        } finally {
-            System.setOut(was);
-        }
-        return out.toString("UTF-8").trim();
+                "FORMAL " + set + " 3"), found);
     }
 
     @Test

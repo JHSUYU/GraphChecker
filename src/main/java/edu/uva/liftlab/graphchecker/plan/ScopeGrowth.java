@@ -47,23 +47,14 @@ import java.util.stream.Stream;
  * is copied into the grown directory and listed in its {@value #MANIFEST}
  * with the row that took it.
  *
- * <p>Growth must leave the target's region roots (the frontier's {@code
- * ROOT} rows) as the first round found them ({@value #ROOTS}): a grown class
- * holding a new one is taken back and listed in {@value #EXCLUDED}, and
- * never taken again.</p>
- *
  * <p>Usage: {@code ScopeGrowth <grown-dir> <frontier.jsonl> <budget>
- * <scope-dir> <class-root>...}.  Prints the number of classes it added or
- * took back, then what it did.</p>
+ * <scope-dir> <class-root>...}.  Prints the number of classes it added,
+ * then what it did.</p>
  */
 public final class ScopeGrowth {
     /** The grown classes and why, one {@code class<TAB>kind<TAB>signature
      *  <TAB>distance} line each, in the order they were taken. */
     public static final String MANIFEST = "GROWN";
-    /** The target's region roots before any growth. */
-    public static final String ROOTS = "ROOTS";
-    /** The grown classes taken back, {@code class<TAB>root} each. */
-    public static final String EXCLUDED = "EXCLUDED";
     private static final Pattern METHOD = Pattern.compile(
             "<([^:]+): \\S+ ([^(\\s]+)\\(([^)]*)\\)>");
     private static final Pattern FIELD = Pattern.compile(
@@ -87,50 +78,16 @@ public final class ScopeGrowth {
             index.scan(Paths.get(args[at]));
         }
         List<JsonObject> rows = new ArrayList<>();
-        Set<String> roots = new TreeSet<>();
         for (String line : Files.readAllLines(Paths.get(args[1]),
                 StandardCharsets.UTF_8)) {
-            if (line.trim().isEmpty()) continue;
-            JsonObject row = JsonParser.parseString(line).getAsJsonObject();
-            if (ScopeFrontier.ROOT.equals(row.get("kind").getAsString())) {
-                roots.add(row.get("signature").getAsString());
-            } else {
-                rows.add(row);
+            if (!line.trim().isEmpty()) {
+                rows.add(JsonParser.parseString(line).getAsJsonObject());
             }
         }
-        Path first = grown.resolve(ROOTS);
-        if (!Files.exists(first)) {
-            Files.write(first, roots, StandardCharsets.UTF_8);
-        }
-        Set<String> grownNames = new LinkedHashSet<>();
-        for (String line : lines(grown.resolve(MANIFEST))) {
-            grownNames.add(line.split("\t", 2)[0]);
-        }
-        Set<String> excluded = new LinkedHashSet<>();
-        for (String line : lines(grown.resolve(EXCLUDED))) {
-            excluded.add(line.split("\t", 2)[0]);
-        }
-        List<String> takenBack = new ArrayList<>();
-        roots.removeAll(lines(first));
-        for (String root : roots) {
-            Matcher method = METHOD.matcher(root);
-            String owner = method.matches() ? method.group(1) : "";
-            if (!grownNames.contains(owner) || !excluded.add(owner)) continue;
-            Files.deleteIfExists(grown.resolve(
-                    index.classes.get(owner).relative));
-            append(grown.resolve(EXCLUDED), owner + "\t" + root);
-            takenBack.add(owner);
-        }
-        if (!takenBack.isEmpty()) {
-            System.out.println(takenBack.size() + " took back "
-                    + takenBack + ": each held a new root of the target's "
-                    + "region");
-            return;
-        }
-        Set<String> present = new LinkedHashSet<>(excluded);
-        present.addAll(classNames(Paths.get(args[3])));
+        Set<String> present = new LinkedHashSet<>(
+                classNames(Paths.get(args[3])));
         present.addAll(classNames(grown));
-        int taken = grownNames.size();
+        int taken = lines(grown.resolve(MANIFEST)).size();
         int added = 0;
         for (JsonObject row : rows) {
             String kind = row.get("kind").getAsString();

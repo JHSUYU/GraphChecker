@@ -37,10 +37,13 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.strings;
  *       the slice).</li>
  *   <li>{@code READ_SITE}: a read of a TRACKED cell -- a primitive instance
  *       field (an atomic's value included) the slice both reads and stores
- *       (SYMBOL-SCOPE F2).  Its stores are versioned from the first
+ *       (SYMBOL-SCOPE F2) -- whose value a branch decides on, a few flows on
+ *       and before any store.  Its stores are versioned from the first
  *       ({@link #observedWriteSites}), and an occurrence of a region reading
  *       it observes its branches from entry, so what it decides on shared
- *       state joins the writers of that state.</li>
+ *       state joins the writers of that state.  A read nothing decides on
+ *       only feeds data -- a token's bytes, a digest -- where a symbol costs
+ *       every expression it flows through and binds nothing.</li>
  *   <li>{@code EXPORT_SITE}: defines the value of a declared wire port
  *       ({@code portId}), the producer half of an interaction.</li>
  *   <li>{@code DECLARED_SITE}: a value entering from outside the slice's
@@ -312,6 +315,7 @@ public final class StaticScopeMap {
                                    Predicate<String> unwoven,
                                    Predicate<String> versionable) {
         Set<String> callees = new LinkedHashSet<String>(clockCallees);
+        Set<String> deciding = decidingCells(edges);
         List<Region> retained = regions(regions);
         Set<String> regionRoots = new LinkedHashSet<String>();
         for (Region region : retained) regionRoots.addAll(region.methods);
@@ -333,7 +337,8 @@ public final class StaticScopeMap {
                     unitIndex, callees, regionRoots);
             String field = field(edge);
             if (READ_KINDS.contains(kind)) {
-                if (versionable.test(field)) {
+                if (versionable.test(field)
+                        && deciding.contains(text(edge.get("toCell")))) {
                     add(found, seen, retained, READ_SITE, method, unitIndex,
                             field, "", "", "");
                 }
@@ -412,6 +417,50 @@ public final class StaticScopeMap {
                             declared.javaType, READ_INPUT),
                     site.guards, site.guardOutcomes));
         }
+    }
+
+    /** How many flows a read's value may take to a branch operand. */
+    private static final int DECIDING_FLOWS = 8;
+
+    /**
+     * The cells a branch operand of the slice depends on within {@link
+     * #DECIDING_FLOWS} flows, never through a field (a store hands the value
+     * to whoever reads the field next, a read of its own).
+     */
+    private static Set<String> decidingCells(
+            List<Map<String, Object>> edges) {
+        Map<String, List<String>> into = new LinkedHashMap<String,
+                List<String>>();
+        List<String> frontier = new ArrayList<String>();
+        for (Map<String, Object> edge : edges == null
+                ? Collections.<Map<String, Object>>emptyList() : edges) {
+            String kind = text(edge.get("kind"));
+            String from = text(edge.get("fromCell"));
+            if ("guard_dependency".equals(kind)
+                    || "exception_guard".equals(kind)) {
+                frontier.add(from);
+            }
+            if (!field(edge).isEmpty()) continue;
+            List<String> sources = into.get(text(edge.get("toCell")));
+            if (sources == null) {
+                sources = new ArrayList<String>();
+                into.put(text(edge.get("toCell")), sources);
+            }
+            sources.add(from);
+        }
+        Set<String> deciding = new LinkedHashSet<String>(frontier);
+        for (int flow = 0; flow < DECIDING_FLOWS && !frontier.isEmpty();
+             flow++) {
+            List<String> next = new ArrayList<String>();
+            for (String cell : frontier) {
+                for (String source : into.getOrDefault(cell,
+                        Collections.<String>emptyList())) {
+                    if (deciding.add(source)) next.add(source);
+                }
+            }
+            frontier = next;
+        }
+        return deciding;
     }
 
     /** A READ_SITE stays only where the slice stores its cell too: a cell

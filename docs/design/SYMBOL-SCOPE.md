@@ -55,7 +55,6 @@ fixpoint (`run_engine.sh campaign_analyze_grown_scope`):
    * `FORMAL`: a method whose primitive or string formal `S` demands only through a
      field -- a writer's value (`Block.setGenerationStamp(long)`), whose callers are
      writers too;
-   * `ROOT`: the roots of the regions holding the target's method.
 2. `plan.ScopeGrowth` resolves the rows nearest first over the lineage roots (the
    modules common, hdfs-client, hdfs):
    * a callee of a type of the roots: the class whose body it runs, or for an
@@ -71,16 +70,25 @@ fixpoint (`run_engine.sh campaign_analyze_grown_scope`):
    It stops when a round changes nothing.
 
 What never grows the scope:
-* The target's own callers.  They would move the region root, and with it the
+* The target's own callers: they would move the region root, and with it the
   identity of the occurrence under test (DataXceiver's `run()` swallowed the anchored
   SASL occurrence).  A formal the throw depends on without a field in between stays
-  pinned (F4).  The rule is enforced after the fact, whatever row grew a class: the
-  first round's `ROOT`s are kept in `ROOTS`, and a grown class holding a new one is
-  taken back (`EXCLUDED`) and never taken again.
+  pinned (F4).
 * A platform type (the VM models `java.*`), a protobuf message, or a formal of object
-  type.  The last two are payloads (F3), or objects whose own state is a frontier row
-  of its own.
+  type: payloads (F3), or objects whose own state is a frontier row of its own.
 * A clock callee, which is a root already (F1).
+
+Growth still changes the region structure of the declared scope: new state makes more
+of its methods state-writer roots, and at run time a new root can enclose the target
+through frames the static call graph never sees (a JDK SASL callback).  v60: with
+`Configuration` grown, `getEncryptedStreams` became a root and enclosed the SASL
+handler holding 11741's target, so 8 of the 9 declared target occurrences were no
+longer observed.  A static guard (no new root in the declared scope) could not name
+the grown class responsible -- demand spreads over the whole slice -- and was dropped.
+So a target occurrence is declared against a grown scope or not at all: the nine
+regression cases, declared before growth, run with `causynth_scope_growth_budget=0`;
+cases discovered with growth (the cluster-test workloads) keep it.  Growth is
+deterministic, so their declarations stay valid.
 
 ## 3. Control flow across regions
 
@@ -116,10 +124,15 @@ methods, STATE families and their arms, formula size, replay slowdown.
 
 ## 6. Automation, in order
 
-1. **F2 from `S`**: the scope map classifies every read of a location stored in
-   another region as tracked; the guarded-store table and the observed write sites
-   come from it; the unwoven-accessor READ placeholder becomes the special case where
-   the VM cannot version the read itself.
+1. **F2 from `S`**: the scope map classifies as tracked every read of a primitive
+   instance field `S` also stores, when a branch decides on the value within a few
+   flows and before any store (`StaticScopeMap#READ_SITE`); every store of it is an
+   observed write site, and a region reading it records its branches from entry.  A
+   read that only feeds data is not tracked: in v59 `tokenLifetime` and `serialNo`,
+   read on the NameNode only to build a token, carried symbols into the token's bytes
+   and its HMAC (17899-bug3's seed expressions grew from 0.9 MB to 27 MB, the
+   orchestrator ran out of heap) and bound nothing.  A static final field is a
+   constant, no shared state (`SymbolicRegionPlanner#failureRelevantState`).
 2. **Scope growth** (§2): the declared class list is the fixpoint's start.
 3. **Wire pairing** (F3): protobuf `Builder.setF` / `getF` pairs per message type,
    direction from the RPC interface's request/response types, IPC and DataTransfer

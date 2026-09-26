@@ -39,16 +39,13 @@ import java.util.regex.Pattern;
  *
  * <p>Each row carries its {@code distance}, the edges from its cell to the
  * throw's guards (the thrown value's own construction, its message, is not
- * the fatal condition), and the rows come nearest first.  They follow one
- * {@code ROOT} row per root of a region holding the target's method: growth
- * must leave them as they were.</p>
+ * the fatal condition), and the rows come nearest first.</p>
  */
 public final class ScopeFrontier {
     public static final String FILE = "scope_frontier.jsonl";
     public static final String CALLEE = "CALLEE";
     public static final String FIELD = "FIELD";
     public static final String FORMAL = "FORMAL";
-    public static final String ROOT = "ROOT";
     private static final Pattern FORMAL_CELL = Pattern.compile(
             "(<[^>]+>)\\.param\\d+:(boolean|byte|char|short|int|long|float"
                     + "|double|java\\.lang\\.String)");
@@ -57,15 +54,12 @@ public final class ScopeFrontier {
     }
 
     /**
-     * @param analysed    whether a callee's body is the analysed program's: a
-     *                    concrete method of a class in scope
-     * @param targetRoots the root methods of the regions holding the target's
-     *                    method
+     * @param analysed whether a callee's body is the analysed program's: a
+     *                 concrete method of a class in scope
      */
     public static List<JsonObject> rows(List<Map<String, Object>> edges,
                                         Predicate<String> analysed,
-                                        Collection<String> clockCallees,
-                                        Collection<String> targetRoots) {
+                                        Collection<String> clockCallees) {
         Map<String, List<String>> into = new LinkedHashMap<>();
         Set<String> fields = new LinkedHashSet<>();
         Set<String> sinks = new LinkedHashSet<>();
@@ -105,13 +99,6 @@ public final class ScopeFrontier {
                         -> row.get("distance").getAsInt())
                 .thenComparing(row -> row.get("kind").getAsString())
                 .thenComparing(row -> row.get("signature").getAsString()));
-        for (String root : new java.util.TreeSet<>(targetRoots)) {
-            JsonObject row = new JsonObject();
-            row.addProperty("kind", ROOT);
-            row.addProperty("signature", root);
-            row.addProperty("distance", 0);
-            rows.add(row);
-        }
         return rows;
     }
 

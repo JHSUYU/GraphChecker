@@ -381,8 +381,11 @@ final class SymbolicRegionPlanner {
                     Collections.<Map<String, Object>>emptyList())) {
                 String transfer = text(edge.get("transferKind"));
                 String source = text(edge.get("fromCell"));
+                // A static final field -- a constant, an enum switch map --
+                // is no state an occurrence shares.
                 if ("HEAP_READ".equals(transfer)
-                        && StaticProgram.declaredField(source)) {
+                        && StaticProgram.declaredField(source)
+                        && !CausynthStaticFacts.constantField(source)) {
                     demanded.add(source);
                 }
                 if (!source.isEmpty()) next.add(source);

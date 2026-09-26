@@ -248,6 +248,13 @@ public final class CausynthStaticFacts {
                 && method.getDeclaringClass().isApplicationClass();
     }
 
+    /** Whether a field is a constant: static and final. */
+    static boolean constantField(String signature) {
+        SootField field = signature == null || signature.isEmpty() ? null
+                : Scene.v().grabField(signature);
+        return field != null && field.isStatic() && field.isFinal();
+    }
+
     /** Whether the VM can version a field from any store into it: a
      *  primitive field of an instance ({@code observeExactPrimitiveField}). */
     static boolean versionableField(String signature) {

@@ -158,9 +158,10 @@ public class SymbolicRootPolicyTest {
 
     /**
      * SYMBOL-SCOPE F2: a primitive instance cell the slice both reads and
-     * stores is tracked -- every store of it is observed, a {@code putfield}
-     * as well as an atomic's RMW, and a region reading it observes its
-     * branches from entry.  A cell no read of the slice reaches is not.
+     * stores, and a branch decides on, is tracked -- every store of it is
+     * observed, a {@code putfield} as well as an atomic's RMW, and a region
+     * reading it observes its branches from entry.  A cell no read of the
+     * slice reaches, or whose reads only feed data, is not.
      */
     @Test
     public void aCellTheSliceReadsAndStoresIsTracked() throws Exception {
@@ -168,7 +169,8 @@ public class SymbolicRootPolicyTest {
         apart.put(NN, Collections.singletonList(GET_NUM));
         apart.put(DN, Collections.singletonList(DELETE));
         StaticScopeMap tracked = map(Arrays.asList(atomicRead(),
-                atomicStore(), counterRead(), counterStore()), apart,
+                atomicStore(), counterRead(), counterStore(),
+                guard(GET_NUM_LOCAL), guard(GET_NUM + "::$i1")), apart,
                 Collections.<String>emptySet(), method -> false);
         JsonArray sites = tracked.observedWriteSites();
         assertEquals("the atomic's RMW and the putfield", 2, sites.size());
@@ -188,6 +190,11 @@ public class SymbolicRootPolicyTest {
                 .readsTrackedState(Collections.singleton(DN)));
         assertEquals("a store no read of the slice reaches is not observed",
                 0, map(Arrays.asList(atomicStore(), counterStore()), apart,
+                        Collections.<String>emptySet(), method -> false)
+                        .observedWriteSites().size());
+        assertEquals("nor one whose reads no branch decides on", 0,
+                map(Arrays.asList(atomicRead(), atomicStore(), counterRead(),
+                        counterStore()), apart,
                         Collections.<String>emptySet(), method -> false)
                         .observedWriteSites().size());
     }
@@ -254,6 +261,13 @@ public class SymbolicRootPolicyTest {
                 + "\"toCell\":\"" + NUM_SNAPSHOTS + "\",\"method\":\""
                 + DELETE + "\",\"unitIndex\":35,\"invoke\":\"" + DECREMENT
                 + "\"}");
+    }
+
+    /** A branch of the slice on {@code cell}. */
+    private static Map<String, Object> guard(String cell) {
+        return edge("{\"kind\":\"guard_dependency\",\"method\":\""
+                + GET_NUM + "\",\"unitIndex\":6,\"fromCell\":\"" + cell
+                + "\",\"toCell\":\"" + GET_NUM + "#u6\"}");
     }
 
     private static Map<String, Object> counterRead() {
