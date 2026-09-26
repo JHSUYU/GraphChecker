@@ -192,7 +192,7 @@ public final class ComposeMain {
         row.addProperty("solverRuns", solver.runs());
         // One question per valuation, so the valuation IS the model.
         row.add("valuations", valuations(decision));
-        row.add("campaignClaim", campaignClaim(decision, decided && !anySat));
+        row.add("campaignClaim", campaignClaim(decision, decided, anySat));
         return row;
     }
 
@@ -201,7 +201,8 @@ public final class ComposeMain {
      * says which mechanism); a blocking gap withholds it regardless.
      */
     private static JsonObject campaignClaim(ClaimPolicy.Decision decision,
-                                            boolean refuted) {
+                                            boolean decided,
+                                            boolean anySat) {
         Claim claim = decision.claim();
         JsonArray refusals = refusals(claim);
         int blockers = refusals.size();
@@ -221,7 +222,7 @@ public final class ComposeMain {
                     + (claim.polarityDecides()
                     ? ", and the recorded valuation refutes the recording"
                     : "");
-        } else if (refuted) {
+        } else if (decided && !anySat) {
             kind = "UNSAT_CLOSED";
             reason = "every enumerated valuation is decided and unsat: the"
                     + " declared roots do not reach the fatal arm on the"
@@ -231,8 +232,15 @@ public final class ComposeMain {
             reason = decision.outcomes().isEmpty()
                     ? "no path of this corpus reached the declared"
                     + " occurrence"
-                    : "the solver left a valuation undecided, so neither a"
-                    + " witness nor a refutation is closed";
+                    : !decided
+                    ? "the solver left a valuation undecided, so neither a"
+                    + " witness nor a refutation is closed"
+                    // Sat, and no mechanism: e.g. only a delivery of another
+                    // session reaches the fatal arm (adhoc token-nokey).
+                    : "a valuation reaches the fatal arm, and no moved root,"
+                    + " clock or pairing the recording decides is what"
+                    + " makes it, so there is no mechanism to name and no"
+                    + " witness";
         }
         JsonObject row = new JsonObject();
         row.addProperty("claim", kind);
