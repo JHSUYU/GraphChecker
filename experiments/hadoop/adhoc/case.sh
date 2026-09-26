@@ -6,6 +6,10 @@
 # occurrences.tsv each case's target occurrence (discovered, README of lib).
 # All run one JDK 8 tree, gc/hdfs-17967-pathC; tools/analysis/mkadhoc.py
 # annotates it and writes targets/.  DataXceiver is never woven.
+# Coverage counts the whole JVM, set-up before the recording window
+# included; only a discovery run says the window reaches a check (the
+# PacketResponder seqno check ran only for mirror's pre-window client write:
+# the window's DataNode transfer starts no responder, so it is not a case).
 check=${1%%.*}
 workload=${1#*.}
 [[ -n "${check}" && "${workload}" != "$1" ]] || {

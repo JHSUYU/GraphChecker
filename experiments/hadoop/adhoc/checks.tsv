@@ -6,7 +6,6 @@ token-pw-expired	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop
 token-nokey	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager.java	541	-	mirror replicate
 sender-gs	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockSender.java	275	hdfs=:org/apache/hadoop/hdfs/server/datanode/BlockSender	mirror reconstruct flush
 recv-offset	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockReceiver.java	564	hdfs=:org/apache/hadoop/hdfs/server/datanode/BlockReceiver	mirror flush
-recv-seqno	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/BlockReceiver.java	1448	hdfs=:org/apache/hadoop/hdfs/server/datanode/BlockReceiver	mirror
 finalize-gs	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/FsDatasetImpl.java	2049	hdfs=:org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/FsDatasetImpl	mirror flush
 visible-gs	hadoop-hdfs-project/hadoop-hdfs/src/main/java/org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/FsDatasetImpl.java	3274	hdfs=:org/apache/hadoop/hdfs/server/datanode/fsdataset/impl/FsDatasetImpl	flush
 reader-chunk	hadoop-hdfs-project/hadoop-hdfs-client/src/main/java/org/apache/hadoop/hdfs/client/impl/BlockReaderRemote.java	432	client=:org/apache/hadoop/hdfs/client/impl/BlockReaderRemote	reconstruct flush

@@ -13,3 +13,8 @@ sender-gs.flush	flush/dn0#epoch0/region/REGION.042e5a91-22d3-3046-acac-4aa99c673
 commit-blockid.flush	flush/nn0#epoch0/region/REGION.9834780a-d2f5-3cae-abcf-c6bee26e2e30#1
 lease-missing.softlimit	softlimit/nn0#epoch0/region/REGION.387ae84e-0dec-3980-b07a-8a200b6ee387#1
 addblock-notreplicated.softlimit	softlimit/nn0#epoch0/region/REGION.3fc25854-efbd-3885-aa0f-9eca1e67e61c#1
+commit-gs.softlimit	softlimit/nn0#epoch0/region/REGION.6c403606-6afd-361f-8aac-862f6fa8ce36#1
+sender-gs.reconstruct	hdfs-17967/worker-dn#epoch0/region/REGION.042e5a91-22d3-3046-acac-4aa99c673318#1
+token-blockid.proxy	hdfs-17967/proxy-dn#epoch0/region/REGION.7f08d6f5-b1ef-323d-8084-ce44a2259712#1
+token-expired.mirror	hdfs-17967/mirror-dn#epoch0/region/REGION.7f08d6f5-b1ef-323d-8084-ce44a2259712#1
+token-pw-expired.mirror	hdfs-17967/mirror-dn#epoch0/region/REGION.7f08d6f5-b1ef-323d-8084-ce44a2259712#1
