@@ -1140,3 +1140,27 @@ class (fix: name a lambda by its implementation method); `Role.of` is not one-to
 refuse two declared spellings that normalize alike); Lost contexts are told apart by timing
 (already refused at every cross-session join); R18 steps 3-5 (frames shared by reference,
 `Lineage.anchor` mutates in place: one reachable edge case, see the iteration-3 notes).
+
+## 16. Typed fault doors and a partial-order CONFIRM (2026-09-26)
+
+**Doors are declared, not written** (`3cc1b7d29`).  A `DOOR` row of the communication
+mapping names a transport door (method, the call it stands `before`/`after`) and the
+ENVIRONMENT failures it can raise; `causynth.DoorWeave` weaves one
+`Debug.makeSymbolicBoolean` marker per failure before any pass analyses the program, so the
+marker is rooted exactly as the hand-written ones were.  Kinds are the ones HDFS callers
+tell apart: request door `IOException` + `ConnectTimeoutException`, response door
+`IOException` + `EOFException` + `SocketTimeoutException` (`RetryPolicies` fails over on
+the second group whatever the idempotency; `LeaseRenewer` aborts on a timeout), SASL
+`IOException`.  Semantic server exceptions are never a kind: they must come from the causal
+chain.  Trap: the woven request door is ten Jimple units where the hand-written one was
+five, so loop ids declared after it move (`bd3b0af5f`).
+
+**Exploration keeps the total order; CONFIRM holds the model's** (`7f60d2a0d`).  A CONFIRM
+run holds no recorded prefix -- only a WAKE still waits for what it followed -- and is held
+instead to `ORDER` rows: for every join of the anchor's closure the writer's method
+activation exits before the reader's enters, other writers of the location stay outside
+the two.  Gates sit on the frame and region hooks every pass weaves.  An activation that
+waits out `causynth.confirm.order.timeout.ms` (300 s) files a `CONFIRM_MISMATCH`: the
+model's order is unrealizable, the claim unconfirmed.  The report
+`docs/reports/2026-09-26-fault-injection-and-validation.md` has the results, the graph
+changes faults cause, the new bug and the false positives CONFIRM filters.
