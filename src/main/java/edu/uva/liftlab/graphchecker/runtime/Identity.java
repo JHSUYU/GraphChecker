@@ -910,11 +910,21 @@ public final class Identity {
         return ExecutionIndex.of(frames);
     }
 
-    /** The producer endpoint a message sent here now would carry. */
-    public static Endpoint messageEndpoint(String nodeKey, String transport,
-                                           String half) {
-        return endpointAt(currentOccurrence(nodeKey),
-                Text.safe(transport) + "#" + Text.safe(half), 0);
+    /**
+     * The producer endpoint of the response to the request received here
+     * now: the request's occurrence, whose context names the request's own
+     * anchor, and the response site alone -- not this thread's frames or
+     * site counts, which a pool handler carries from call to call, so which
+     * handler took the call would rename the response.
+     */
+    public static Endpoint responseEndpoint(String nodeKey, String transport,
+                                            String half) {
+        OccurrenceAddress at = currentOccurrence(nodeKey);
+        if (at == null) return null;
+        String site = JvmNames.stable(Text.safe(transport) + "#"
+                + Text.safe(half));
+        return Endpoint.of(at, site, ExecutionIndex.of(Arrays.asList(
+                Frame.of(site, 0))), 0);
     }
 
     /**
@@ -930,7 +940,8 @@ public final class Identity {
                                        String correlationId, String half,
                                        Endpoint minted) {
         Endpoint producer = minted != null ? minted
-                : messageEndpoint(nodeKey, transport, half);
+                : endpointAt(currentOccurrence(nodeKey),
+                Text.safe(transport) + "#" + Text.safe(half), 0);
         if (producer == null) return null;
         Interactions.sent(Text.safe(transport), Text.safe(correlationId),
                 Text.safe(half), producer);

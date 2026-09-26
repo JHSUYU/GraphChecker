@@ -162,6 +162,25 @@ public class RowRuntimeTest {
         RuntimeTraceContext.endRequest(request);
     }
 
+    /**
+     * A response's endpoint is its request's: the request's occurrence and
+     * the response site, whatever this handler sent before (its site counts
+     * would name which pool handler took the call).
+     */
+    @Test
+    public void aResponseEndpointIsItsRequestsWhateverTheHandlerDidBefore() {
+        Object anchor = new Object();
+        RuntimeTraceContext.registerSource(anchor, NN);
+        long request = RuntimeTraceContext.beginRequest(NN, "append");
+        Endpoint first = Identity.responseEndpoint(NN.key(), "HADOOP_IPC",
+                "RESPONSE");
+        Identity.messageSent(NN.key(), "HADOOP_IPC", "earlier", "RESPONSE",
+                null);
+        assertEquals(first.id(), Identity.responseEndpoint(NN.key(),
+                "HADOOP_IPC", "RESPONSE").id());
+        RuntimeTraceContext.endRequest(request);
+    }
+
     /** The causal context the calling thread's root hop states. */
     private static String rootContext() {
         return CausalContext.of(Lineage.rootRole(), Lineage.rootApi(),

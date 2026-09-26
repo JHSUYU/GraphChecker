@@ -557,7 +557,7 @@ public final class CausynthTraceRecorder {
         if (REQUEST.equals(half)) {
             RECEIPTS.put(receiptKey(transport, correlationId, attemptId),
                     new Receipt(ScheduleLog.stanceHere(),
-                            Identity.messageEndpoint(RuntimeTraceContext
+                            Identity.responseEndpoint(RuntimeTraceContext
                                     .ownedSource(localOwner).key(),
                                     transport, RESPONSE)));
         }
