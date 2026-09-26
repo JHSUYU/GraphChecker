@@ -240,6 +240,14 @@ public final class CausynthStaticFacts {
                 && method.getDeclaringClass().isApplicationClass();
     }
 
+    /** Whether a method's body is the analysed program's: a concrete method
+     *  of an application class. */
+    static boolean analysedMethod(String signature) {
+        SootMethod method = method(signature);
+        return method != null && method.isConcrete()
+                && method.getDeclaringClass().isApplicationClass();
+    }
+
     /** Whether the VM can version a field from any store into it: a
      *  primitive field of an instance ({@code observeExactPrimitiveField}). */
     static boolean versionableField(String signature) {

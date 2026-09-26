@@ -331,23 +331,19 @@ public final class StaticScopeMap {
             addRootSite(found, seen, retained, edge, method, unitIndex);
             addDeclaredSite(found, seen, retained, edge, kind, method,
                     unitIndex, callees, regionRoots);
+            String field = field(edge);
             if (READ_KINDS.contains(kind)) {
-                String cell = firstNonBlank(
-                        text(edge.get("declaredFieldSignature")),
-                        text(edge.get("fromCell")));
-                if (versionable.test(cell)) {
+                if (versionable.test(field)) {
                     add(found, seen, retained, READ_SITE, method, unitIndex,
-                            cell, "", "", "");
+                            field, "", "", "");
                 }
                 continue;
             }
-            if (!write(kind)) continue;
-            String carrier = signature(text(edge.get("toCell")));
-            if (carrier.isEmpty()) continue;
+            if (field.isEmpty()) continue;
             String invoke = text(edge.get("invoke"));
-            String leaf = SharedFieldFlow.atomicValueField(carrier, invoke);
+            String leaf = SharedFieldFlow.atomicValueField(field, invoke);
             add(found, seen, retained, WRITE_SITE, method, unitIndex,
-                    leaf.isEmpty() ? carrier : leaf, carrier, "", invoke);
+                    leaf.isEmpty() ? field : leaf, field, "", invoke);
         }
         markReads(found, unwoven);
         keepTrackedReads(found);
@@ -635,6 +631,17 @@ public final class StaticScopeMap {
                     Collections.<String>emptyList(),
                     Collections.<Boolean>emptyList()));
         }
+    }
+
+    /** The field a read or a store of the slice names, or "". */
+    static String field(Map<String, Object> edge) {
+        String kind = text(edge.get("kind"));
+        if (READ_KINDS.contains(kind)) {
+            return signature(firstNonBlank(
+                    text(edge.get("declaredFieldSignature")),
+                    text(edge.get("fromCell"))));
+        }
+        return write(kind) ? signature(text(edge.get("toCell"))) : "";
     }
 
     private static boolean write(String kind) {

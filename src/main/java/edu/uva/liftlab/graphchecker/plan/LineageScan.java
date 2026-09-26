@@ -24,7 +24,9 @@ import java.util.stream.Stream;
  * Bytecode only, no hierarchy: wide {@link WorkStartSites} predicates; classes
  * already analysed are skipped.
  *
- * <p>Usage: {@code LineageScan <out-dir> <analysis-dir> <class-root>...}</p>
+ * <p>Usage: {@code LineageScan <out-dir> <analysed-dirs> <class-root>...},
+ * {@code <analysed-dirs>} path-separated: the case's scope and what SEED grew
+ * it by ({@link ScopeGrowth}).</p>
  */
 public final class LineageScan {
     private LineageScan() {
@@ -33,10 +35,14 @@ public final class LineageScan {
     public static void main(String[] args) throws IOException {
         if (args.length < 3) {
             throw new IllegalArgumentException("usage: LineageScan <out-dir> "
-                    + "<analysis-dir> <class-root>...");
+                    + "<analysed-dirs> <class-root>...");
         }
         Path out = Paths.get(args[0]);
-        Path analysis = Paths.get(args[1]);
+        List<Path> analysed = new ArrayList<>();
+        for (String dir : args[1].split(java.util.regex.Pattern.quote(
+                java.io.File.pathSeparator))) {
+            if (!dir.isEmpty()) analysed.add(Paths.get(dir));
+        }
         int scanned = 0;
         int kept = 0;
         for (int index = 2; index < args.length; index++) {
@@ -48,7 +54,10 @@ public final class LineageScan {
             for (Path file : classFiles(root)) {
                 scanned++;
                 Path relative = root.relativize(file);
-                if (Files.exists(analysis.resolve(relative))) continue;
+                if (analysed.stream().anyMatch(dir
+                        -> Files.exists(dir.resolve(relative)))) {
+                    continue;
+                }
                 if (!handsOffWork(file)) continue;
                 Path target = out.resolve(relative);
                 Files.createDirectories(target.getParent());

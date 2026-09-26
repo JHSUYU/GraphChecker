@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.causynth;
 
 import com.google.gson.JsonObject;
 
+import edu.uva.liftlab.graphchecker.plan.ScopeFrontier;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
@@ -28,7 +29,8 @@ final class CausynthArtifactWriter {
 
     static void writeDiscoveryArtifacts(Path outputDir,
                                         StaticProgram program,
-                                        List<JsonObject> staticScopeMap)
+                                        List<JsonObject> staticScopeMap,
+                                        List<JsonObject> scopeFrontier)
             throws IOException {
         Files.createDirectories(outputDir);
         writeGzipJsonl(outputDir.resolve(
@@ -41,6 +43,8 @@ final class CausynthArtifactWriter {
         // weaving, so guard ids share the woven branch sites' numbering.
         ArtifactIO.replaceJsonl(outputDir.resolve(StaticScopeMap.FILE),
                 staticScopeMap);
+        ArtifactIO.replaceJsonl(outputDir.resolve(ScopeFrontier.FILE),
+                scopeFrontier);
     }
 
     private static void writeGzipJsonl(Path output, List<?> values)

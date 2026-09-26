@@ -117,6 +117,10 @@ workflow_config_keys=(
   # No default here: a campaign that states none is refused by name.
   "causynth_loop_default_bound CAUSYNTH_LOOP_DEFAULT_BOUND krp -"
   "causynth_lineage_roots CAUSYNTH_LINEAGE_ROOTS krp -"
+  # How many classes of the lineage roots SEED may add to the case's scope
+  # where the slice stops at it (plan.ScopeGrowth, SYMBOL-SCOPE section 2),
+  # nearest the throw first; 0 keeps the declared scope as it is.
+  "causynth_scope_growth_budget CAUSYNTH_SCOPE_GROWTH_BUDGET krp 24"
   # What the case says its declared roots may be, beside what the recording
   # read: one row per source id, with declaredDomainMin/Max absolute or
   # written +k / -k from the recorded value.  A root with no row stays pinned
@@ -475,6 +479,9 @@ validate_config() {
     *) die "campaign_stop_after must be empty or IMPORT: \
 ${campaign_stop_after}" ;;
   esac
+  [[ "${causynth_scope_growth_budget}" =~ ^[0-9]+$ ]] \
+    || die "causynth_scope_growth_budget must be a non-negative integer: \
+${causynth_scope_growth_budget}"
   # Every host in the worker list ends up inside an `ssh <host> ...` command,
   # so the spelling is checked before any work starts rather than discovered
   # by a shell on the far side.  Letters, digits, dot, dash and underscore is
@@ -535,6 +542,10 @@ do_analyze() {
     "-Dcausynth.output.dir=${causynth_output_dir}"
     "-Dcausynth.target.spec=${causynth_target_spec}"
   )
+  # The scope SEED grew is the application scope of every pass after it.
+  if [[ -s "$(campaign_grown_scope)/${scope_growth_manifest}" ]]; then
+    system_properties+=("-Dcausynth.process.dirs=$(campaign_grown_scope)")
+  fi
   if [[ -n "${causynth_communication_mappings}" ]]; then
     require_file "communication mapping" "${causynth_communication_mappings}"
     system_properties+=(
@@ -609,10 +620,41 @@ campaign_lineage_classes() {
     rm -rf -- "${out}.partial"
     mkdir -p "${out}.partial"
     run_java_main edu.uva.liftlab.graphchecker.plan.LineageScan \
-      "${out}.partial" "${project_classes_dir}" "${roots[@]}" >&2 || return 1
+      "${out}.partial" "${project_classes_dir}:$(campaign_grown_scope)" \
+      "${roots[@]}" >&2 || return 1
     mv -- "${out}.partial" "${out}"
   fi
   printf '%s\n' "${out}"
+}
+
+# The classes SEED added to the case's scope, and why (plan.ScopeGrowth).
+scope_growth_manifest=GROWN
+campaign_grown_scope() {
+  printf '%s\n' "${causynth_output_dir}/scope-classes"
+}
+
+# The static pass, with the scope grown where the slice stops at it until
+# nothing is added or the budget is spent (SYMBOL-SCOPE section 2).
+campaign_analyze_grown_scope() {
+  local grown added
+  grown=$(campaign_grown_scope)
+  local -a roots=()
+  rm -rf -- "${grown}"
+  mkdir -p "${grown}"
+  IFS=: read -r -a roots <<<"${causynth_lineage_roots}"
+  while :; do
+    do_analyze
+    (( causynth_scope_growth_budget > 0 && ${#roots[@]} > 0 )) || return 0
+    added=$(run_java_main edu.uva.liftlab.graphchecker.plan.ScopeGrowth \
+      "${grown}" "${causynth_output_dir}/scope_frontier.jsonl" \
+      "${causynth_scope_growth_budget}" "${project_classes_dir}" \
+      "${roots[@]}") \
+      || campaign_fail SEED ScopeGrowth "${grown}" "scope growth failed"
+    campaign_log "scope growth: +${added} class(es), $(wc -l \
+      <"${grown}/${scope_growth_manifest}" 2>/dev/null || echo 0) of \
+      ${causynth_scope_growth_budget}"
+    [[ "${added}" != 0 ]] || return 0
+  done
 }
 
 # The occurrence of the annotated site the case declares.  It is a config
@@ -1708,7 +1750,7 @@ campaign_seed() {
   local marker="${campaign_root}/.seed-started"
   local catalog_sha plan_sha
   : >"${marker}"
-  do_analyze
+  campaign_analyze_grown_scope
   do_workload
   require_fresh "static candidate data-flow graph" "${candidate_graph}" \
     "${marker}"

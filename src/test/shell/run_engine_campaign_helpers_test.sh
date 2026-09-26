@@ -700,7 +700,9 @@ done
 # finalizer reads the candidate graph and the skeletons, and nothing else.
 # 44: `causynth_symbolic_inputs` left: roots are recognized by category from
 # the program text (causynth.RootCatalog) and stated by the static scope map.
-[[ "$(print_normalized_config | wc -l)" -eq 44 ]] \
+# 45: `causynth_scope_growth_budget` joined it: how many classes SEED adds to
+# the case's scope where the slice stops decides what the campaign analyses.
+[[ "$(print_normalized_config | wc -l)" -eq 45 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 # CONFIG-4: the discovery artifacts are derived from causynth_output_dir and

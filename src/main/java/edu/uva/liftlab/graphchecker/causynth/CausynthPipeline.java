@@ -12,6 +12,7 @@ import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
 import edu.uva.liftlab.graphchecker.plan.LoopBoundPolicy;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.plan.WorkStartSites;
+import edu.uva.liftlab.graphchecker.plan.ScopeFrontier;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.option.GraphCheckerOptions;
 import edu.uva.liftlab.graphchecker.runtime.RuntimeTraceMode;
@@ -173,9 +174,12 @@ public final class CausynthPipeline {
         List<JsonObject> scopeMap = StaticScopeMap.rows(scopeSites,
                 SiteControlDependence.over(
                         StaticScopeMap.siteIds(scopeSites)));
+        List<JsonObject> frontier = ScopeFrontier.rows(result.edges,
+                CausynthStaticFacts::analysedMethod,
+                RootCatalog.clockCallees(result.edges));
         long artifactWriteStart = System.nanoTime();
         CausynthArtifactWriter.writeDiscoveryArtifacts(
-                target.outputDir, result, scopeMap);
+                target.outputDir, result, scopeMap, frontier);
         long artifactWriteMillis = elapsedMillis(artifactWriteStart);
         LOG.info("Discovery phase timing: seedAnalysis={} ms, "
                         + "skeletonPlanning={} ms, artifactWrite={} ms",

@@ -41,12 +41,28 @@ deciding it (`SeedBackwardStaticAnalyzer#demandControllingGuards`), in whatever 
 and region the definition is -- so the guards under which a writer in another region
 stores `ℓ` are in `S`, and their operands in turn obey §1.
 
-Today `S` stops at the case's declared class scope (`case.sh` `scope`), e.g. adhoc
-sender-gs stops at `BlockSender.<init>`'s parameter and at `getReplica`'s return.  The
-scope becomes a fixpoint: start from the target's class; add every class holding a
-writer of a demanded field, a caller passing a demanded argument, or a sender of a
-demanded leaf; stop at the modules (common, hdfs-client, hdfs) or a class budget.  A
-case's scope list becomes a hint, not the boundary.
+The case's declared class scope (`case.sh` `scope`) is where `S` starts, not where it
+ends: e.g. adhoc sender-gs stopped at `getReplica`'s return.  SEED grows the scope to a
+fixpoint (`run_engine.sh campaign_analyze_grown_scope`):
+
+1. The static pass publishes `scope_frontier.jsonl` (`plan.ScopeFrontier`): every
+   `CALLEE` whose return `S` demands but whose body is not analysed (its class is out
+   of scope, or it is abstract with no implementation in scope), and every `FIELD`
+   `S` reads or stores; each with its distance to the throw over `S`'s edges.
+2. `plan.ScopeGrowth` resolves the rows nearest first over the lineage roots (the
+   modules common, hdfs-client, hdfs): a callee's class, or every class implementing
+   an abstract one; a field's owner and, unless it is private, every class storing it
+   (a reference field: loading it too).  It copies each class into
+   `<output>/scope-classes/` and lists it with its row in `GROWN`, until
+   `causynth_scope_growth_budget` classes are grown (default 24).
+3. The static pass reruns with that directory as a further process directory
+   (`causynth.process.dirs`), and so does every later pass: one application scope.
+   It stops when a round adds nothing.
+
+Two things never grow the scope.  A CALLER: it moves the region root, and with it the
+identity of the occurrence under test (DataXceiver's `run()` swallowed the anchored
+SASL occurrence); a formal no caller in scope feeds stays pinned (F4).  A protobuf
+message: it is a wire payload, F3's.  A clock callee is a root already (F1).
 
 ## 3. Control flow across regions
 
@@ -86,7 +102,7 @@ methods, STATE families and their arms, formula size, replay slowdown.
    another region as tracked; the guarded-store table and the observed write sites
    come from it; the unwoven-accessor READ placeholder becomes the special case where
    the VM cannot version the read itself.
-2. **Scope growth** (§2): the fixpoint replaces the declared class list.
+2. **Scope growth** (§2): the declared class list is the fixpoint's start.
 3. **Wire pairing** (F3): protobuf `Builder.setF` / `getF` pairs per message type,
    direction from the RPC interface's request/response types, IPC and DataTransfer
    carriers; a hand-written WIRE_FLOW stays only where no rule derives it.
