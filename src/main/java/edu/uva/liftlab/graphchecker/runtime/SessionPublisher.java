@@ -22,8 +22,10 @@ import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Writes one replay session's rows, one file per kind, through the
@@ -40,6 +42,15 @@ public final class SessionPublisher {
             new LinkedHashMap<String, BufferedWriter>();
     private final Map<String, JsonObject> expressions =
             new LinkedHashMap<String, JsonObject>();
+    /**
+     * Statements written under the key the contract makes them one row by:
+     * a root per (occurrence, rootId), an unreached target per (occurrence,
+     * anchor).  A LOOP_BODY_ROOT's bodies share one address, and a door read
+     * again mints its one symbol again ({@code RootMint#configuredSource}),
+     * so both restate a written row; a restatement that differs is written,
+     * for IMPORT to name (invariants 4 and 8).
+     */
+    private final Set<String> stated = new HashSet<String>();
     private boolean failed;
     /** Once closed, every further expression is written as it is filed. */
     private boolean closed;
@@ -127,12 +138,24 @@ public final class SessionPublisher {
      * {@code --root-domains}, not from here.
      */
     public void rootMint(RootMintRow row) {
-        if (row != null) append(layout.roots(),
-                RowCodec.writeRootMint(row));
+        if (row != null && once(row.occurrence().id() + "|" + row.rootId()
+                + "|" + row.symbol() + "|" + row.recordedValue())) {
+            append(layout.roots(), RowCodec.writeRootMint(row));
+        }
     }
 
     public void target(TargetRow row) {
-        if (row != null) append(layout.targets(), RowCodec.writeTarget(row));
+        if (row != null && (row.reachedAnchor() || once(row.occurrence().id()
+                + "|" + row.anchorSiteId()))) {
+            append(layout.targets(), RowCodec.writeTarget(row));
+        }
+    }
+
+    /** Whether this statement is written for the first time. */
+    private boolean once(String key) {
+        synchronized (LOCK) {
+            return stated.add(key);
+        }
     }
 
     public void gap(GapRow row) {
