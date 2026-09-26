@@ -129,28 +129,36 @@ public class RowRuntimeTest {
     }
 
     /**
-     * A region that drains a queue closes at the depth it opened: the task
-     * it claimed ends with it, not at the next claim (BlockManager's
-     * processQueue left its last task's start level standing, FRAME_UNBALANCED).
+     * An occurrence that drains a queue closes at the depth it opened: the
+     * task it claimed ends with it, not at the next claim (BlockManager's
+     * processQueue left its last task's start level standing,
+     * FRAME_UNBALANCED) -- while an entry folded into it, which shares its
+     * base, closes nothing (the accessor its loop condition calls).
      */
     @Test
-    public void aRegionClosesTheWorkItClaimed() throws Exception {
+    public void anOccurrenceClosesTheWorkItClaimed() throws Exception {
         Object anchor = new Object();
         RuntimeTraceContext.registerSource(anchor, NN);
         long request = RuntimeTraceContext.beginRequest(NN, "block-report");
         final Object task = new Object();
         Identity.startWork("<a.Queue: void enqueue(Runnable)>#u3", task);
-        final int[] depths = new int[2];
+        final int[] depths = new int[3];
         Thread drainer = poolThreadCreatedOutsideAnyScope(() -> {
             depths[0] = Identity.depth();
-            Identity.regionEnter();
+            Identity.occurrence(NN.key(), "REGION.queue", true);
             Identity.claimStart(task);
+            int claimed = Identity.depth();
+            Identity.occurrence(NN.key(), "REGION.accessor", true);
             Identity.regionExit();
-            depths[1] = Identity.depth();
+            depths[1] = Identity.depth() - claimed;
+            Identity.regionExit();
+            depths[2] = Identity.depth();
         });
         drainer.start();
         drainer.join();
-        assertEquals(depths[0], depths[1]);
+        assertEquals("a folded entry's exit leaves the claimed work", 0,
+                depths[1]);
+        assertEquals(depths[0], depths[2]);
         RuntimeTraceContext.endRequest(request);
     }
 

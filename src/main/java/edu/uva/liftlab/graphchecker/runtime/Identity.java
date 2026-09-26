@@ -676,11 +676,12 @@ public final class Identity {
         State state = state();
         if (state.regions.isEmpty()) return;
         Region closed = state.regions.remove(state.regions.size() - 1);
-        if (state.startDepth >= closed.base) {
-            // Work the region claimed ends with it: its start level and the
-            // scope it carried close here, not at the next claim.  A region
-            // that drains a queue (BlockManager's processQueue) would
-            // otherwise close a level deeper than it opened.
+        if (closed.occurrence != null && state.startDepth >= closed.base) {
+            // Work the occurrence claimed ends with it: its start level and
+            // the scope it carried close here, not at the next claim.  A
+            // region that drains a queue (BlockManager's processQueue) would
+            // otherwise close a level deeper than it opened.  A folded entry's
+            // marker shares its occurrence's base and closes nothing.
             while (state.depth() > state.startDepth) {
                 state.levels.remove(state.levels.size() - 1);
             }
