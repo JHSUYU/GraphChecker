@@ -697,9 +697,12 @@ public final class Composer {
         terms.addAll(closureConditions(session, reached, refusals));
 
         // (5) phi_p is the FATAL arm as published; never re-derive its
-        //     polarity.
+        //     polarity.  No predicate is a concrete branch (invariant 9):
+        //     the arm this run took is the whole of phi_p.
         String subject = "phi of " + anchor.render();
-        if (target.phiTerm() != null && !target.phiTerm().isEmpty()) {
+        if (target.phiTerm() == null || target.phiTerm().isEmpty()) {
+            terms.add(target.observedFatal() ? "true" : "false");
+        } else {
             String phi = lowering.statedTerm(target.phiTerm(),
                     "phi:" + subject);
             if (!phi.isEmpty() && !unknown(phi, refusals, subject)) {
