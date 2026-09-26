@@ -30,8 +30,10 @@ import sys
 
 GC = '/u/vnr3ne/gc-out'
 ROUND = 'accept-' + (sys.argv[1] if len(sys.argv) > 1 else 'v51')
-CASES = ['11741', '17897', '17899-bug1', '17899-bug2', '17899-bug3', '17960',
-         '17967-pathA', '17967-pathB', '17967-pathC']
+# Every case the round ran (the nine, or an ad-hoc round's), from its directories.
+CASES = sorted(os.path.basename(d)[len(ROUND) + 1:]
+               for d in glob.glob(f'{GC}/{ROUND}-*')
+               if glob.glob(d + '/out/*/schedule/iteration-0000/obligation_results.jsonl'))
 OUT = os.path.join(os.environ.get('GRAPHDIFF_OUT', '/tmp/graphdiff'), ROUND)
 os.makedirs(OUT, exist_ok=True)
 
@@ -46,7 +48,7 @@ DOOR_SITES = {  # branch site of each marker: v51 hand-written, v53 woven kinds
     'org.apache.hadoop.security.token.Token)>#u15': 'SASL:REQUEST',
 }
 DOOR_REGIONS = {'REGION.763d087e': 'IPC:REQUEST', 'REGION.9ffdee3d': 'IPC:RESPONSE',
-                'REGION.074f9e67': 'SASL:REQUEST'}
+                'REGION.074f9e67': 'SASL:REQUEST', 'REGION.2edcf422': 'DATA_TRANSFER:SEND'}
 
 
 def door_of_site(site):
@@ -267,7 +269,7 @@ def anchor_norm(ctxtail):
 
 # ----------------------------------------------------------------------------- obligations
 def load_case(case):
-    it = f'{GC}/{ROUND}-{case}/out/hdfs-{case}/schedule/iteration-0000'
+    it = glob.glob(f'{GC}/{ROUND}-{case}/out/*/schedule/iteration-0000')[0]
     results = {}
     for r in rows(it + '/obligation_results.jsonl'):
         results[r['obligationId']] = r
