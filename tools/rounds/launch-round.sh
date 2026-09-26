@@ -35,12 +35,18 @@ LIFTS="lift11 lift12 lift13 lift14 lift15"
 
 # head host, then the cases it heads.
 placement=(
-  "lift11 hdfs-17960 hdfs-17967-pathC hdfs-token-key"
+  "lift11 hdfs-17960 hdfs-17967-pathC"
   "lift12 hdfs-11741"
   "lift13 hdfs-17899-bug1 hdfs-17899-bug2"
-  "lift14 hdfs-17899-bug3 hdfs-17897 hdfs-17897-nowire"
+  "lift14 hdfs-17899-bug3 hdfs-17897"
   "lift15 hdfs-17967-pathA hdfs-17967-pathB"
 )
+# Experiments run only when CASES names them.
+experiments=(
+  "lift11 hdfs-token-key"
+  "lift14 hdfs-17897-nowire"
+)
+[[ -z "${CASES:-}" ]] || placement+=("${experiments[@]}")
 
 [[ -s "${snapshot}/target/GraphChecker-1.0-SNAPSHOT-jar-with-dependencies.jar" ]] \
   || { echo "no built jar in the snapshot: ${snapshot}" >&2; exit 2; }
