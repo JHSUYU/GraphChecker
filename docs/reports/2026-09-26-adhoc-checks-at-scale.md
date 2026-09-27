@@ -12,9 +12,9 @@ HDFS ad-hoc 协调检查上真实地、大规模地跑 GraphChecker，用故障�
 | 规模 | 21 个 ad-hoc 检查（覆盖率找出，全部注解在一棵 JDK 8 树上）、31 个 case、6 个已有单元测试作工作负载；轮次 a4（30 个 case）+ a5（10 个重跑）+ a6（4 个）+ a7（1 个）；a4 里 **261 个故障重放** + 49 个对照重放 |
 | 设计 | 根按类别自动识别（CLOCK / FAULT / READ），不再手写 `symbolic-inputs.jsonl`；具体值判定的 target 有了三条通用规则（helper 返回常量由其分支决定、析取守卫取各测试致命臂的或、健康的具体判定以 DIAGNOSTIC 排除）；wire 流自动配对已设计（§8） |
 | 结果 | 时钟类检查 token-expired.proxy / .mirror、token-pw-expired.mirror 得到 **CLOCK_SKEW，并由 CONFIRM 重放确认**（a6、a7；是 HDFS 时钟大致同步的设计前提，不是新 bug，§5.4）；其余具体值检查以"没有被建模的根能到达致命臂"结束——a4 的 261 个故障重放里 83 个到达检查，a5 三个 flush case 的约 1700 个 session 里检查到达 4000 余次，**致命臂 0 次**（§3、§4） |
-| 假阳性过滤（全部来自真实运行） | §5：公式在录制取值下可满足 ×6（sender-gs、token-expired、commit-gs、lease-holder）；探索中模型可行、执行否决 68 次（两个故障不独立、门没经过、根只存在于故障世界）；**跨运行拼接的消息配对**（token-nokey.mirror / .replicate：只有把一次运行的状态配上另一次运行 NN 下发的 key 列表才会失败，每次运行自己的配对下 UNSAT，DECIDE 不命名机制、不发布）。CONFIRM 的偏序关卡在真实运行里**没有**触发过（§5.4） |
+| 假阳性过滤（全部来自真实运行） | §5：公式在录制取值下可满足 ×6（sender-gs、token-expired、commit-gs、lease-holder）；探索中模型可行、执行否决 68 次（两个故障不独立、门没经过、根只存在于故障世界）；**跨运行拼接的消息配对**（token-nokey.mirror / .replicate：只有把一次运行的状态配上另一次运行 NN 下发的 key 列表才会失败，每次运行自己的配对下 UNSAT，DECIDE 不命名机制、不发布）；**共享字段的 HB 过近似**（commit-gs.TestFileAppend2-testSimpleAppend：STATE family 让目标处的 GS 读看到更早一次 RPC 的写，DECIDE 给出 STATE_PAIRING_FLIPPED；CONFIRM 按模型的偏序重放，程序排不出这个顺序——调度空转 109 秒、649 个槽放弃，运行走了模型没选的 ORDER——判为 SAT_UNCONFIRMED 扣下，§11） |
 | 集群单测当工作负载 | 301 个测试的清单；20 对（检查 × 测试）里 18 对在窗口内到达检查；18 个 campaign 首跑 11 个种子重放复现失败，逐个找出 3 类分歧并修掉（推迟的 RPC 响应、HA 随机选 NN、排队区域的帧），修后种子重放 88–89/94；致命臂 0 次，新 bug 0 个；过滤实例：执行否决 178 个模型、59 条自相矛盾路径被扣下（§9） |
-| 九个 case | v58（p62）**9/9 PASS**，因果链与 v54 一致或更丰富；11741 CLOCK_SKEW 由 CONFIRM 重放确认 |
+| 九个 case | v58（p62）**9/9 PASS**，因果链与 v54 一致或更丰富；11741 CLOCK_SKEW 由 CONFIRM 重放确认。v77（p93，§11 的全部修复 + VM vm-f5）**8/9 PASS**，因果链的机制（移动的根、finding）不变，被跟踪的读现在以读符号出现并由 join 绑定；11741 的语料在第 4 波涨到 202 个会话，规划器超出 8 GB 堆，按 case 配置引擎堆（`79f3a4ecc`）后以 v78 重跑（写本行时在第 2 波，已越过 v74 的 IMPORT 与 v77 的规划器两处 OOM 的位置之前的阶段）|
 | 修掉的引擎缺陷 | 15 个，另有 1 处工作负载登记修复，都在 adhoc 运行里暴露（§6） |
 
 ---
@@ -475,10 +475,106 @@ composer 以 PATH_SELF_CONTRADICTORY 扣下整次组合——模型在这个工�
   视为并发：客户端等待第一个响应这件事不在任何一行里。因此一个读可能被给到"更早调用的写"作备选，而程序顺序不允许。
   这正是 CONFIRM 偏序关卡要拦的一类：模型要求的 reads-from 在重放里排不出来。
 
+* **跨线程的共享字段边第一次在集群测试里出现**（f4，p81 = CHA + 新 VM）。visible-gs.TestFileConcurrentReader 的
+  种子会话里，IPC 处理线程在 `getReplicaVisibleLength` 读副本的 `generationStamp`（`INSTANCE/58#40`，版本 158），
+  这个版本正是 DataXceiver occurrence（`Root:DATA_XCEIVER`）写入副本时留下的；种子计划也第一次包含了 DataXceiver
+  里写 GS 的 `Block.set`/`setNumBytes`。这就是 §3.1 的 Writers_W(l) 边：读者和写者在不同线程、不同因果上下文。
+  这条路径最后仍被拒，原因是下一条。
+* **与检查无关的分支拖垮整条路径**。sender-gs.TestClientProtocolForPipelineRecovery（f4）：块 id 是符号的，拼进
+  块文件路径（`java.io.File.path`），路径上对文件名做 `substring` 等字符串运算的分支都进了路径条件；composer 只会
+  降阶 `concat/length/equals/contains/startsWith/endsWith/isEmpty/toString`，这条路径因此被拒。这些合取项与检查
+  比较的 GS 不共享变量，录制值本来就满足它们。已按约束独立性（KLEE 的做法）改 composer（48b12e755）：只保留与
+  致命项、某个 arm 送来的值或会话根共享变量（符号名，或被跟踪的存储位置）的合取项和读，传递闭包；其余合取项不进
+  公式，它们的变量保持录制值。
+* **目标 occurrence 的声明依赖 region id**。CHA 修复让 visible-gs、recv-offset 的目标 region 根外移一层，
+  `occurrences.tsv` 里的声明随之失效（DECLARED_TARGET_OCCURRENCE_UNOBSERVED，已重新发现并更新）。region id
+  由静态分析决定，分析每变一次就可能要重声明；声明写成"节点上第 k 个到达被注解目标的 occurrence"会更稳，
+  需要 DECIDE/CONFIRM 解析声明的地方一起改。九个 case 这次没有受影响。
+
 **HA 与流水线恢复测试的重放**：f3（p80，响应身份修复后）6 个 HA token case 仍然 MISSING。第一处分歧换了位置：
 DataNode 三个 BPServiceActor 的第一个窗口内请求，录制里三个 NameNode 都把块操作入队（`BlockReportProcessingThread.enqueue`），
 重放里同一请求身份下没有入队——请求的内容不同，身份相同（心跳是否到期由真实时钟决定）。visible-gs.TestClientProtocolForPipelineRecovery
 是同一类。这需要调度层面的时钟处理，尚未动手。
+
+## 11. 共享字段假阳性：HB 过近似的见证被 CONFIRM 扣下（2026-09-27，v69–v77）
+
+**检查**：commit-gs（`BlockManager.commitBlock` 的 "Commit block with mismatching GS"），在
+`FSNamesystem.commitOrCompleteLastBlock` 上。工作负载 `TestFileAppend2.testSimpleAppend`；目标是这个 region
+的第三个 occurrence：第二次 append 之后，客户端的 `getAdditionalBlock` 提交上一个块。
+
+**录制里发生了什么**（seed 的写日志）：
+
+| 写者 | 线程 / occurrence | 写入的 GS |
+|---|---|---|
+| 第一次 `getAdditionalBlock` 分配块 | NN IPC 处理线程，region occurrence | 1001 |
+| 第一次 `completeFile` | NN IPC 处理线程，region occurrence | 1001 |
+| `updatePipeline`（两次 append 各一次） | NN IPC 处理线程，**不在任何 region 里** | 1002、1003 |
+
+目标处 NN 读到的 GS 是 1003，客户端上报的也是 1003，相等，健康。
+
+**组合出的公式**（`accept-v75`/`v76`，一条路径）：目标处的 GS 读是一个 STATE family，三选一
+
+```
+writer_arm A  : GS = 1001   (getAdditionalBlock#1 的写)
+writer_arm B  : GS = 1001   (completeFile#1 的写)
+observed_arm  : GS = 1003   (录制本身：updatePipeline 的写，没有 region 归属)
+phi           : GS ≠ 1003   (客户端上报 1003)
+```
+
+DECIDE：**SAT_CANDIDATE，STATE_PAIRING_FLIPPED**，在录制的赋值（valuation 0，没有移动任何根）上成立：
+见证让目标处的读"看到"第一次分配或第一次 complete 写下的 1001。
+
+**为什么这是假阳性**：客户端的 RPC 是同步的，每次调用都等上一次的响应回来才发下一次。第三次
+`getAdditionalBlock` 发出之前，`completeFile#1` 和两次 `updatePipeline` 都已经返回，它们对 GS 的写都
+happens-before 这次读，读不可能看到 1001。GraphChecker 的 `Arms.concurrent` 只沿 anchor 链判断先后：
+读者的链是 NN 处理器 ← 客户端 occurrence ← 上一次响应的 NN **角色** scope ← …，一路到客户端的根；但
+这条链经过的是那几次 RPC 的**角色** occurrence，而写者是这些 RPC 里的 **region** occurrence，
+`ancestor()` 认不出它们，于是判为"并发"。这正是 SYMBOL-SCOPE 里预料的 HB 过近似。
+
+**过滤发生在 CONFIRM**：CONFIRM 用被选中会话（seed）的世界重放，要求模型选中的每条边都被走到、目标处
+走到致命分支。
+
+* v75、v76：`confirmed=false`，"the run published no target row that reached the anchor and observed the
+  fatal"。重放中目标处读到的仍是 1003，没有不一致，**声明降为 SAT_UNCONFIRMED，候选被扣下**。
+* 这两次 CONFIRM 只要求了 ANCHOR 一条边：模型选定的写者没有变成 STATE 边（下面第 7、8 条修复）。
+  v77 里 CONFIRM 额外要求"目标处的读读写者 A 的版本"（版本 57，第一次 `getAdditionalBlock` 写的
+  1001），并要求这次读先于 A 之后的写者（3 条 ORDER）。**这个偏序在程序里排不出来**：调度器按它把
+  `completeFile#1` 挡在目标之后，而客户端要等 `completeFile#1` 返回才会发出目标 RPC。重放日志：
+  从第 53 个槽起 520 个槽一直在等客户端 `DFSOutputStream.completeFile` 的 WAKE，运行空转 109 秒；831 个
+  槽里 73 个按序执行，649 个在 2 次停滞中放弃，程序按真实顺序跑完。结论 `confirmed=false`：
+  "the run took an edge the model did not choose: ORDER …commitOrCompleteLastBlock → commitBlock…"，
+  **SAT_UNCONFIRMED**。这就是"共享字段的偏序不可满足，CONFIRM 停在它上面"的真实例子。
+
+证据：`~/gc-out/evidence/fp-commit-gs-state-v75/`、`fp-commit-gs-state-v77/`（claim、manifest、公式、
+CONFIRM 的期望边与结论、v77 的调度停滞日志 `schedule-stalls.txt`）。
+
+**为了让这个 family 出现并被检验，沿途修掉的通用缺陷**（每条都是全局修复，九个 case 同步验证）：
+
+1. `97add9da3` 普通 RPC 没有声明端口，客户端的发送端点从不进入语料：NN 处理器的 anchor 链一律追不到根，
+   `Arms.concurrent` 全判"不并发"，NN 状态上一个 STATE family 都没有。activation 现在带上它 anchor 的发送端点。
+2. `50c844ea6` 链接着断在 NN 的角色 scope：角色 occurrence 没有 activation 行。发送消息的角色 scope 现在发布
+   一条 ambient activation（带它自己的 anchor 生产者）。探针：GS 读的备选写者 1 → 3。
+3. `aa0a18520` `guardedReadTerm` 把被跟踪的读内联成观察到的写值，致命谓词和分支条件都落在常量上，family
+   选哪个写者都动不了它。标量读现在降阶为读行的符号，由状态 join 或 family 绑定。
+4. `22f2707a1`（VM）区域外线程（`updatePipeline` 所在的 IPC 线程没有 concolic 上下文）对被跟踪位置的写不记
+   版本，读解析到过期版本，路径自相矛盾（`compare(1001,1002)==0`）。现在记一个无归属的具体值版本。
+   smoke `RegionUnattributedWriterSmoke`。
+5. `9dc50f730` runtime 把无归属版本当作畸形信封，整个位置（GS、numBytes）连同所有读一起丢掉；现在"写者
+   全有或全无"都合法，只有一半才算畸形。
+6. `2671615d8` + `39a188443` 这种读没有写行可 join：读行现在陈述那次区域外写留下的常量；family 增加一个
+   "观察臂"（录制本身），与各写者多选一。
+7. `cdf205653` CONFIRM 的 `stateEdges` 跳过录制版本没有写行的读，模型为它选的写者从不被检验。
+8. `e542e1198` 写者臂的 `groupId` 是写者 occurrence，CONFIRM 却拿它去查写**端点**：真实组合里模型选定的写者
+   从来没有被 CONFIRM 检验过（单元测试恰好用端点 id，所以没暴露）。现在按臂填充的 STATE interaction 匹配。
+9. `dfa9afdf1` 兜底读名 `<loc>@v<n>` 只在单个 session 内有意义，两个分叉的重放在同一个名字上给出 J 和 Z
+   两种 sort（17897 v67 四个阻塞 gap）。名字现在带上 session。
+
+同一时间段修掉、由这次扩大的跟踪面暴露出来的其它通用问题：`1a8ffa4ce`（VM 把 JCE/JCA 的摘要、MAC、
+密码实现当作具体子树；11741 的 Balancer 把符号 keyId 送进 DIGEST-MD5 后，seed 表达式到 41 MB）、`4590f3e38`
+（VM：符号下标读只是"命名"了数组，之后按具体下标扫描读堆里的值；17960 的 FSImage 保存在 30 秒内涨到
+16 GB 被杀）、`a4c1778f7`（时限内被 SIGKILL 不再误报成超时）、`1c32d953e`（诊断 gap 有界；11741 规划器
+OOM、2.5 GB gap 文件让 jq 截断）、`39b2e37d6`（IMPORT 闸门逐会话读取，11741 的 240 个会话从 8 GB OOM
+降到 473 MB）。
 
 ## 8. 下一步
 
