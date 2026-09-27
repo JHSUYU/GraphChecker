@@ -2198,7 +2198,8 @@ public final class CausynthPipeline {
                         guards.add(edge.source);
                     }
                     AssignStmt authority = CfgLoopControl
-                            .arrayLengthAuthority(body, guards);
+                            .arrayLengthAuthority(body, guards,
+                                    loop.members());
                     if (authority == null) {
                         throw new IllegalStateException(
                                 "FIXED_COUNT_LOOP_INVOCATION_UNADDRESSABLE: "
