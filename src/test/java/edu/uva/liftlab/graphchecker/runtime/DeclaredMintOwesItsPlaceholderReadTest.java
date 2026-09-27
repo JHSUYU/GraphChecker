@@ -326,6 +326,63 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
         assertEquals(CLOCK_SYMBOL, reads.get(0).symbol());
     }
 
+    /**
+     * A version stored outside every region (VM 22f2707a1) has no write row
+     * to join, so the read of it states what that store left -- a constant
+     * -- or the composer has nothing to pin it to (commit-gs v74: the GS an
+     * IPC handler's updatePipeline stored, read at the third target).
+     */
+    @Test
+    public void aReadOfAStoreOutsideEveryRegionStatesTheConstantItLeft()
+            throws Exception {
+        RowRuntime.configure(sessionFile());
+        OccurrenceAddress at = address();
+        ActiveRegion active = region(at);
+        RowRuntime.journalRegion(900L, at);
+        JsonObject stored = new JsonObject();
+        stored.addProperty("_type", "ConstExpr");
+        stored.addProperty("_java_type", "J");
+        stored.addProperty("_exp", "Y_J_1003");
+        // The stamp's log: one store no region made, and the read of it.
+        JsonObject stamp = record("INSTANCE_FIELD/10#40",
+                version(456L, stored));
+        JsonObject read = new JsonObject();
+        read.addProperty("readEventId", 510L);
+        read.addProperty("regionEnterEventId", 900L);
+        JsonObject envelope = stamp.getAsJsonObject("envelope");
+        envelope.add("reads", new JsonArray());
+        array(stamp, "reads").add(loggedAt(read));
+        // A write of this region whose value is that read.
+        JsonObject observed = new JsonObject();
+        observed.addProperty("fieldVersionId", 456L);
+        observed.addProperty("versionKind", "WRITE");
+        observed.add("expression", stored);
+        JsonObject location = new JsonObject();
+        location.addProperty("ownerSymRid", 10);
+        location.addProperty("slot", 40);
+        location.addProperty("locationKind", "INSTANCE_FIELD");
+        JsonObject readFrom = new JsonObject();
+        readFrom.addProperty("_type", "ReadFromExpression");
+        readFrom.addProperty("_java_type", "J");
+        readFrom.addProperty("readEventId", 510L);
+        readFrom.add("location", location);
+        readFrom.add("observedVersion", observed);
+        JsonObject copy = record("INSTANCE_FIELD/77#24",
+                loggedAt(version(900L + 1L, readFrom)));
+        active.sharedStateRecords.put("INSTANCE_FIELD/10#40", stamp);
+        active.sharedStateRecords.put("INSTANCE_FIELD/77#24", copy);
+        writes(active);
+        RowRuntime.closeSession();
+
+        ReadRow stated = null;
+        for (ReadRow row : reads()) {
+            if (row.observedVersion() == 456L) stated = row;
+        }
+        assertNotNull("the read of the outside store is a row", stated);
+        assertEquals("and states what the store left", "1003",
+                stated.concreteValue());
+    }
+
     // ------------------------------------------------------------------
     // The fixture.
     // ------------------------------------------------------------------

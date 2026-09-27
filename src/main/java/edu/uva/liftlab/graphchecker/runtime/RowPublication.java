@@ -266,6 +266,17 @@ final class RowPublication {
         if (returned == null || returned.isJsonNull()) {
             returned = object(node, "observedVersion").get("concreteValue");
         }
+        if ((returned == null || returned.isJsonNull())
+                && LoggedEventSites.storedOutsideEveryRegion(observed)) {
+            // No write row will state it: what a store outside every region
+            // left is a constant, and that is what the read returned.
+            JsonElement stored = object(node, "observedVersion")
+                    .get("expression");
+            if (stored != null && stored.isJsonObject() && "ConstExpr".equals(
+                    optionalString(stored.getAsJsonObject(), "_type"))) {
+                returned = stored;
+            }
+        }
         String value = literal(returned == null || returned.isJsonNull() ? ""
                 : returned.isJsonObject()
                         ? optionalString(returned.getAsJsonObject(), "_exp")
