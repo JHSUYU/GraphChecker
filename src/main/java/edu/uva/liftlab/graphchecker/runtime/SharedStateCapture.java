@@ -533,6 +533,15 @@ final class SharedStateCapture {
         return fault != null && fault.startsWith(CONTAINER_BASE_UNSTATED_FAULT);
     }
 
+    /** Whether a version was stored outside every region: it names no
+     *  writer context, region, task or activation at all. */
+    static boolean unattributed(JsonObject version) {
+        return optionalLongInteger(version, "writerContextId", 0L) == 0L
+                && optionalLongInteger(version, "regionEnterEventId", 0L) == 0L
+                && optionalString(version, "regionId").isEmpty()
+                && optionalString(version, "taskId").isEmpty();
+    }
+
     private static String versionFault(JsonObject version, boolean mapState) {
         long id = optionalLongInteger(version, "fieldVersionId", 0L);
         if (id <= 0L) return "version has no fieldVersionId";
@@ -545,9 +554,13 @@ final class SharedStateCapture {
             return "version " + id + " has kind " + versionKind
                     + " that its location kind does not publish";
         }
-        if (optionalLongInteger(version, "regionEnterEventId", 0L) <= 0L
+        // All three name the region that wrote it; none of them, a store
+        // outside every region (a thread with no concolic context), which
+        // is a version with no writer row.  Some of them is malformed.
+        if (!unattributed(version)
+                && (optionalLongInteger(version, "regionEnterEventId", 0L) <= 0L
                 || optionalString(version, "regionId").isEmpty()
-                || optionalString(version, "taskId").isEmpty()) {
+                || optionalString(version, "taskId").isEmpty())) {
             return "version " + id + " names no writer case";
         }
         if (!version.has("pathGuard")) {

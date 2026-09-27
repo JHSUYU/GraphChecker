@@ -179,8 +179,10 @@ final class RowPublication {
                 if (!element.isJsonObject()) continue;
                 JsonObject version = element.getAsJsonObject();
                 long id = optionalLongInteger(version, "fieldVersionId", -1L);
+                // A store outside every region has no performer to row.
                 if (id < 0L
-                        || mints.containsKey(locationKey + "#" + id)) {
+                        || mints.containsKey(locationKey + "#" + id)
+                        || SharedStateCapture.unattributed(version)) {
                     continue;
                 }
                 if (!RowRuntime.claimEvent("write", locationKey + "#" + id)) {

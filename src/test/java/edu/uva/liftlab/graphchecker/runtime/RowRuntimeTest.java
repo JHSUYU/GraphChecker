@@ -835,6 +835,37 @@ public class RowRuntimeTest {
                 .refs().contains(exports.get(0).expressionRef()));
     }
 
+    /**
+     * A version names the region that wrote it wholly, or -- a store
+     * outside every region (VM 22f2707a1) -- not at all; half a writer is a
+     * malformed envelope.  Refusing the whole-less one dropped the location
+     * and every read of it (commit-gs v73: the GS reads at both later
+     * targets).
+     */
+    @Test
+    public void aVersionNamesItsWritingRegionWhollyOrNotAtAll()
+            throws Exception {
+        java.lang.reflect.Method fault = SharedStateCapture.class
+                .getDeclaredMethod("versionFault", JsonObject.class,
+                        boolean.class);
+        fault.setAccessible(true);
+        for (Object[] each : new Object[][]{
+                {41L, "REGION.a", "TASK.a", 7L, true},
+                {0L, "", "", 0L, true},
+                {41L, "", "TASK.a", 7L, false}}) {
+            JsonObject version = new JsonObject();
+            version.addProperty("fieldVersionId", 50L);
+            version.addProperty("versionKind", "WRITE");
+            version.addProperty("regionEnterEventId", (Long) each[0]);
+            version.addProperty("regionId", (String) each[1]);
+            version.addProperty("taskId", (String) each[2]);
+            version.addProperty("writerContextId", (Long) each[3]);
+            String said = (String) fault.invoke(null, version, false);
+            assertEquals(Arrays.toString(each), each[4],
+                    !said.contains("names no writer case"));
+        }
+    }
+
     /** One tracked location, as the VM's read-out states it. */
     private static JsonObject vmEnvelopeRecord() {
         JsonObject site = new JsonObject();
