@@ -50,3 +50,4 @@ visible-gs.TestClientProtocolForPipelineRecovery-testGetNewStamp	auto0/dn0#epoch
 visible-gs.TestFileConcurrentReader-testUnfinishedBlockRead	auto0/dn0#epoch0/region/REGION.b4338116-2667-305d-bd10-cddb56fce041#1
 commit-gs.TestFileAppend-testAppendTwice	auto0/nn0#epoch0/region/REGION.fefd8c85-3152-36a7-aacd-6b8eb1a6dbe8#1
 commit-gs.TestFileAppend-testAppend2Twice	auto0/nn0#epoch0/region/REGION.fefd8c85-3152-36a7-aacd-6b8eb1a6dbe8#1
+commit-gs.TestFileAppend2-testSimpleAppend	auto0/nn0#epoch0/region/REGION.fefd8c85-3152-36a7-aacd-6b8eb1a6dbe8#3
