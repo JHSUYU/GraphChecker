@@ -1383,7 +1383,9 @@ jq -n -c '{schemaVersion: 1, kind: "SESSION_MANIFEST",
 sleep 120
 EOF
 chmod +x "${withdraw_dir}/replay.sh"
-replay_timeout_s=1
+# Five seconds: the replay must open its session before the bound fires, and
+# it starts as a login shell (an NFS quota check alone can take a second).
+replay_timeout_s=5
 concolic_replay_command="${withdraw_dir}/replay.sh"
 (
   run_java_main() {
@@ -1426,7 +1428,7 @@ grep -q 'withdrew session SESSION.mine' "${withdraw_worker}/worker.log" \
   || fail "withdrawing the session changed the verdict row: \
 $(cat "${withdraw_worker}/obligation_result.jsonl")"
 [[ "$(jq -r '.detail' "${withdraw_worker}/obligation_result.jsonl")" \
-    == "replay exceeded replay_timeout_s=1" ]] \
+    == "replay exceeded replay_timeout_s=5" ]] \
   || fail "withdrawing the session changed the recorded detail: \
 $(cat "${withdraw_worker}/obligation_result.jsonl")"
 reset_config

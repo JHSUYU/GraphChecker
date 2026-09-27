@@ -278,14 +278,17 @@ public final class Corpus implements Arms.Rows {
      * the task, never the cause (keying by upstream flips asks one question
      * per flip combination).
      *
-     * <p>Covers the occurrence and its factor ({@code Task.factor()}, one
-     * symbolic unit): whether each ran, and per site how many handoffs from
-     * which producers; for factor members also per-site counts of their
-     * writes to {@code locations}, the state the flipped guard reads. The
-     * whole unit's handoffs, not only those the guard names: the arm consumes
-     * them after the flip (hdfs-11741: dn1's expiry scan names only its own
-     * clock, and the witness is that scan flipped in the world whose factor
-     * member received four keys instead of five). Trap: never a member's
+     * <p>Covers the occurrence and the factor members that FEED it ({@link
+     * #feeders}: they write state it reads): whether each ran, and per site
+     * how many handoffs from which producers; for those members also per-site
+     * counts of their writes to {@code locations}, the state the flipped guard
+     * reads. Their handoffs whole, not only those the guard names: the arm
+     * consumes them after the flip (hdfs-11741: dn1's expiry scan names only
+     * its own clock, and the witness is that scan flipped in the world whose
+     * key conversion delivered four keys instead of five). A co-reader feeds
+     * nothing (hdfs-17899-bug2: every RPC of the SPS reads the IPC
+     * connection an IPC door reads, and keyed by all of them one door flip
+     * was 11 obligations). Trap: never a member's
      * writes elsewhere (replays vary them: hdfs-11741's balancer members
      * write SASL and HashMap internals a different number of times in
      * almost every run), never the region's own reads or decisions
@@ -309,6 +312,26 @@ public final class Corpus implements Arms.Rows {
                     .append(writeSites(sessionId, member, locations));
         }
         return ArtifactIO.digest(text.toString(), 16);
+    }
+
+    /** The members of a factor that WRITE state the occurrence reads, in
+     *  any session: through them the world flows in. */
+    public List<OccurrenceAddress> feeders(OccurrenceAddress occurrence,
+                                           List<OccurrenceAddress> factor) {
+        Set<String> read = new LinkedHashSet<String>();
+        for (ReadRow row : readsOn(occurrence)) {
+            read.add(SmtLowering.locationKey(row.location()));
+        }
+        List<OccurrenceAddress> feeders = new ArrayList<OccurrenceAddress>();
+        for (OccurrenceAddress member : factor) {
+            for (WriteRow write : writesOn(member)) {
+                if (read.contains(SmtLowering.locationKey(write.location()))) {
+                    feeders.add(member);
+                    break;
+                }
+            }
+        }
+        return feeders;
     }
 
     /** Per-site handoff counts (not values). */

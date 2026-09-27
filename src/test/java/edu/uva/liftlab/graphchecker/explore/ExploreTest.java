@@ -996,13 +996,15 @@ public class ExploreTest {
         Endpoint negotiated = at(WRITER,
                 Endpoint.stateSite("DigestMD5Base", "<init>", 31, true),
                 "DigestMD5Base#<init>#31");
-        // session, Near#u2, Far#u4, writes of the map, writes of the qop
+        // session, Near#u2, Far#u4, writes of the map, writes of the qop,
+        // handoffs to a co-reader of the map
         String[][] sessions = {
-            {"s-seed", "true", "true", "1", "1"},
-            {"s-far", "true", "false", "1", "1"},
-            {"s-noise", "true", "true", "1", "3"},
-            {"s-near", "false", "true", "1", "1"},
-            {"s-more", "true", "true", "2", "1"},
+            {"s-seed", "true", "true", "1", "1", "0"},
+            {"s-far", "true", "false", "1", "1", "0"},
+            {"s-noise", "true", "true", "1", "3", "0"},
+            {"s-coreader", "true", "true", "1", "1", "1"},
+            {"s-near", "false", "true", "1", "1", "0"},
+            {"s-more", "true", "true", "2", "1", "0"},
         };
         for (String[] row : sessions) {
             Session session = new Session(iteration, row[0]);
@@ -1020,6 +1022,11 @@ public class ExploreTest {
                 session.write(negotiated, qop, 1L + i, "e.stored");
             }
             session.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "0");
+            session.activation(READER, false);
+            session.read(CONSULTED, ALL_KEYS, 5L, "M_SEEN_KEY", "0");
+            for (int i = 0; i < Integer.parseInt(row[5]); i++) {
+                session.attach(RECEIVED, "M_HOFF_TOKEN", "554433", SENT);
+            }
             session.decision(TARGET, "Near#u2", 1,
                     Boolean.parseBoolean(row[1]), "(> M_A 1)");
             session.decision(TARGET, "Far#u4", 1,
@@ -1039,6 +1046,11 @@ public class ExploreTest {
         assertEquals("nor are a factor member's writes to state the guard "
                 + "does not read", seed,
                 dependence(corpus, task, "s-noise", "Guard#u8"));
+        assertTrue("a co-reader of the map is in the factor: "
+                + task.factor(), task.factor().contains(READER));
+        assertEquals("but it writes nothing the task reads, so what it "
+                + "received is not the task's world", seed,
+                dependence(corpus, task, "s-coreader", "Guard#u8"));
         assertFalse("a prefix decision over the guard's own root is",
                 seed.equals(dependence(corpus, task, "s-near", "Guard#u8")));
         assertFalse("and so is one more write to the state it reads",

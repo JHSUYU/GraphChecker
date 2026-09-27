@@ -208,9 +208,9 @@ public final class ObligationFactory {
      *       occurrence and {@code siteId#ordinal=outcome}. Any other conjunct
      *       holds at its recorded values whatever the flip's model is, so two
      *       paths differing only there ask the same question.</li>
-     *   <li><b>Its world</b>: what the world delivered to the task's unit
-     *       ({@link Corpus#inputShape}), the writes counted at the locations
-     *       the guard reads.</li>
+     *   <li><b>Its world</b>: what the world delivered to the task and to
+     *       the factor members that feed it ({@link Corpus#inputShape}), the
+     *       writes counted at the locations the guard reads.</li>
      * </ul>
      *
      * <p>Never the session, and never the decision being flipped as an
@@ -263,7 +263,8 @@ public final class ObligationFactory {
         }
         return ArtifactIO.digest(String.join("/", kept) + "\n"
                 + corpus.inputShape(path.sessionId, task.focused(),
-                task.factor(), rests.locations()), 16);
+                corpus.feeders(task.focused(), task.factor()),
+                rests.locations()), 16);
     }
 
     /**
