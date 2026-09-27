@@ -1928,10 +1928,12 @@ campaign_verify_woven_classes() {
   campaign_log "$(head -n 1 "${report}")"
 }
 
-# Whether the last campaign_replay was killed on its wall-clock bound.  Read
-# by the caller that set the bound; every other caller leaves the bound empty
-# and this false.
-campaign_replay_timed_out=false
+# Why the last bounded campaign_replay was killed, or empty: its wall-clock
+# bound, or a SIGKILL that came before the bound (the kernel's memory killer,
+# an operator) -- hdfs-17960 v65-v67 read a 30-second 16 GB death as "exceeded
+# replay_timeout_s=2400".  Read by the caller that set the bound; every other
+# caller leaves the bound empty and this empty.
+campaign_replay_killed=""
 
 # One fresh workload instance, through the configured adapter. The adapter owns
 # how the workload starts; the campaign owns which immutable plan it replays
@@ -1950,8 +1952,8 @@ campaign_replay_timed_out=false
 campaign_replay() {
   local role=$1 plan=$2 ids=$3 classes=$4 results=$5 worker=$6
   local region_results=${7:-required}
-  local status=0
-  campaign_replay_timed_out=false
+  local status=0 started=${SECONDS}
+  campaign_replay_killed=""
   # Where this replay writes its per-kind rows.  A focused replay is a
   # session: every row it publishes is keyed by it, and every later stage
   # reads the session rather than a folded result.
@@ -1991,10 +1993,18 @@ ${campaign_local_scratch_root}/$(basename "${worker}")}" \
   if [[ -n "${campaign_adapter_timeout_s}" ]] \
       && { [[ "${status}" -eq "${campaign_adapter_timeout_status}" ]] \
         || [[ "${status}" -eq "${campaign_adapter_killed_status}" ]]; }; then
-    campaign_replay_timed_out=true
-    campaign_log "replay role=${role} exceeded \
-replay_timeout_s=${campaign_adapter_timeout_s} (exit ${status}); its process \
-group was killed and its session states no verdict: ${sessions}"
+    local lived=$(( SECONDS - started ))
+    if [[ "${status}" -eq "${campaign_adapter_timeout_status}" ]] \
+        || (( lived >= campaign_adapter_timeout_s )); then
+      campaign_replay_killed="exceeded \
+replay_timeout_s=${campaign_adapter_timeout_s}"
+    else
+      campaign_replay_killed="was killed (exit ${status}) after ${lived}s, \
+inside its ${campaign_adapter_timeout_s}s bound: by the kernel's memory \
+killer or an operator"
+    fi
+    campaign_log "replay role=${role} ${campaign_replay_killed} \
+(exit ${status}); its session states no verdict: ${sessions}"
     # A caller whose replay is the iteration's only source of observed cases
     # cannot absorb a truncated one, and a killed JVM may well have published
     # rows before it died -- enough for the evidence gate below to pass on a
@@ -2002,9 +2012,8 @@ group was killed and its session states no verdict: ${sessions}"
     # says `tolerated` owns the outcome and reads it back.
     if [[ "${region_results}" == required ]]; then
       campaign_fail REPLAY WORKLOAD "${sessions}" \
-        "the concolic replay exceeded its wall-clock bound of \
-${campaign_adapter_timeout_s}s and was killed; what it published is a \
-truncated run and its log is in ${worker}/replay.log"
+        "the concolic replay ${campaign_replay_killed}; what it published is \
+a truncated run and its log is in ${worker}/replay.log"
     fi
     return 0
   fi
@@ -2383,15 +2392,15 @@ campaign_obligation_replay() {
     campaign_adapter_timeout_s="${replay_timeout_s}" \
     campaign_replay worker "${plan}" "${replay_tasks}" "${classes}" \
       "${results}" "${worker}" tolerated
-  if [[ "${campaign_replay_timed_out}" == true ]]; then
+  if [[ -n "${campaign_replay_killed}" ]]; then
     campaign_log "obligation ${obligation_id}: \
-replay exceeded replay_timeout_s=${replay_timeout_s}"
+replay ${campaign_replay_killed}"
     campaign_withdraw_sessions "${obligation_id}" "${sessions}" \
       "${worker}/timed-out-sessions" "its manifest names this obligation \
 and its rows state no verdict, which no later stage may read as a corpus \
 session"
     jq -n -c --arg id "${obligation_id}" \
-      --arg detail "replay exceeded replay_timeout_s=${replay_timeout_s}" \
+      --arg detail "replay ${campaign_replay_killed}" \
       '{schemaVersion: 1, kind: "OBLIGATION_RESULT", obligationId: $id,
         verdict: "NOT_ADMITTED", sessionId: "", detail: $detail}' \
       >"${result_row}"
@@ -2438,7 +2447,7 @@ session"
 # One slot's cursor into the wave's job list, and the index it last claimed.
 # Every slot runs in its own background subshell, so these are private to it
 # even though they are spelled as globals -- the same arrangement
-# campaign_replay_timed_out already uses to answer its one caller.
+# campaign_replay_killed already uses to answer its one caller.
 campaign_claim_cursor=0
 campaign_claimed_index=""
 

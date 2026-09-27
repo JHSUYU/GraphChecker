@@ -1317,6 +1317,31 @@ grep -q 'nothing withdrawn' "${worker_dir}/worker.log" \
 $(cat "${worker_dir}/worker.log")"
 [[ ! -e "${worker_dir}/timed-out-sessions" ]] \
   || fail "the worker made a quarantine for a session that never existed"
+# A replay SIGKILLed well inside its bound -- the kernel's memory killer --
+# exits 137 like one killed on it, and is no timeout (hdfs-17960 v65-v67).
+worker_dir="${bound_dir}/killed"
+mkdir -p "${worker_dir}"
+replay_timeout_s=60
+concolic_replay_command='kill -KILL $$'
+(
+  run_java_main() {
+    jq -n -c '{schemaVersion: 1, kind: "OBLIGATION_RESULT",
+      obligationId: "OB.2", verdict: "SAT_MODEL_READY", sessionId: "",
+      detail: ""}' >"${worker_dir}/obligation_result.jsonl"
+    printf '{"taskId":"TASK.1"}\n' >"${worker_dir}/focused_task.jsonl"
+    printf '(assert true)\n' >"${worker_dir}/obligation_query.smt2"
+  }
+  campaign_obligation_worker OB.2 "${bound_dir}/obligations.jsonl" \
+    "${bound_dir}/classes" "${worker_dir}" "${bound_dir}/sessions" \
+    "${bound_dir}/seed_plan.jsonl"
+) >"${worker_dir}/worker.log" 2>&1 \
+  || fail "the worker did not return when its replay was killed: \
+$(cat "${worker_dir}/worker.log")"
+[[ "$(jq -r '.verdict + " " + .detail' \
+    "${worker_dir}/obligation_result.jsonl")" \
+    == "NOT_ADMITTED replay was killed (exit 137) after "*"s, inside its 60s bound: by the kernel's memory killer or an operator" ]] \
+  || fail "a replay killed inside its bound is recorded as something else: \
+$(cat "${worker_dir}/obligation_result.jsonl")"
 
 # REPLAY-BOUND-4: the session a killed replay left behind leaves the corpus.
 # SessionPublisher writes manifest.json at the OPEN, so a replay killed at
