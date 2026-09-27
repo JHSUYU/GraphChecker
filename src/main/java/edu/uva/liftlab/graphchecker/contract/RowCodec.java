@@ -8,10 +8,13 @@ import com.google.gson.JsonParser;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -502,10 +505,24 @@ public final class RowCodec {
         return SessionManifest.fromJson(readObject(file));
     }
 
+    /**
+     * One JSON object, whole or not at all: written with java.io (a channel
+     * write on a thread the program interrupts closes with
+     * ClosedByInterruptException after truncating -- the runtime writes from
+     * workload threads, and hdfs-17899-bug1 v82 kept two sessions whose
+     * expressions.json was empty) to a sibling renamed over the file, so a
+     * killed replay leaves the last whole table.
+     */
     private static void writeObject(Path file, JsonObject json)
             throws IOException {
-        Files.createDirectories(file.toAbsolutePath().getParent());
-        Files.write(file, GSON.toJson(json).getBytes(StandardCharsets.UTF_8));
+        Path parent = file.toAbsolutePath().getParent();
+        Files.createDirectories(parent);
+        Path partial = parent.resolve(file.getFileName() + ".partial");
+        try (OutputStream out = new FileOutputStream(partial.toFile())) {
+            out.write(GSON.toJson(json).getBytes(StandardCharsets.UTF_8));
+        }
+        Files.move(partial, file, StandardCopyOption.REPLACE_EXISTING,
+                StandardCopyOption.ATOMIC_MOVE);
     }
 
     private static JsonObject readObject(Path file) throws IOException {

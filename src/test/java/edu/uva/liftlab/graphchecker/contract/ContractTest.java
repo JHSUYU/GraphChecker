@@ -56,6 +56,31 @@ public class ContractTest {
     @Rule
     public TemporaryFolder iteration = new TemporaryFolder();
 
+    /** A session's table is written whole from a thread the program has
+     *  interrupted: the runtime writes from workload threads, and a channel
+     *  write there left hdfs-17899-bug1 v82 two empty expressions.json. */
+    @Test
+    public void anInterruptedWriterStillWritesTheWholeTable()
+            throws IOException {
+        Path file = iteration.getRoot().toPath().resolve("expressions.json");
+        JsonObject constant = new JsonObject();
+        constant.addProperty("_type", "ConstExpr");
+        constant.addProperty("_exp", "C_I_1");
+        constant.addProperty("_java_type", "I");
+        Map<String, JsonObject> expressions =
+                new LinkedHashMap<String, JsonObject>();
+        expressions.put("EXPR.0000000000000001", constant);
+        Thread.currentThread().interrupt();
+        try {
+            RowCodec.writeExpressions(file, ExpressionTable.of(expressions));
+        } finally {
+            assertTrue("the interrupt is the program's, left standing",
+                    Thread.interrupted());
+        }
+        assertEquals(constant, RowCodec.readExpressions(file)
+                .expression("EXPR.0000000000000001"));
+    }
+
     @Test
     public void rendersAndParsesEveryCausalContextAndIndex() {
         OccurrenceAddress anchored = OccurrenceAddress.of(DN0, REGION,

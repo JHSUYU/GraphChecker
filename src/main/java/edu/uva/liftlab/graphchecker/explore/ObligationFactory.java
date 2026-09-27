@@ -87,14 +87,20 @@ public final class ObligationFactory {
 
         private Candidate(Corpus corpus, Task task,
                           Corpus.RecordedPath path, int index) {
+            this(task, path, index, obligationId(task.taskId(),
+                    path.decisions.get(index).siteId(),
+                    path.decisions.get(index).ordinal(),
+                    !path.decisions.get(index).outcome(),
+                    dependence(corpus, task, path, index)));
+        }
+
+        private Candidate(Task task, Corpus.RecordedPath path, int index,
+                          String obligationId) {
             this.task = task;
             this.path = path;
             this.index = index;
             this.decision = path.decisions.get(index);
-            this.obligationId = obligationId(task.taskId(),
-                    decision.siteId(), decision.ordinal(),
-                    !decision.outcome(),
-                    dependence(corpus, task, path, index));
+            this.obligationId = obligationId;
         }
 
         /** The row a wave publishes: what to flip, no model yet (the solver
@@ -460,7 +466,12 @@ public final class ObligationFactory {
         return false;
     }
 
-    /** Finds the flip one published obligation names, from the corpus alone. */
+    /** Finds the flip one published obligation names, from the corpus alone,
+     *  under the id the WAVE gave it.  Never recomputed: a solver reads the
+     *  corpus mid-wave, where sessions the wave's earlier replays published
+     *  grow a task's factor and so its dependence -- a second id for one
+     *  obligation, whose answer the ledger then never meets (hdfs-17967
+     *  pathA v82: 24 of 169 workers). */
     public static Candidate locate(Corpus corpus, Obligation obligation) {
         Task task = ClosurePlanner.taskOf(corpus, obligation.taskId());
         if (task == null) return null;
@@ -470,7 +481,8 @@ public final class ObligationFactory {
                 DecisionRow decision = path.decisions.get(index);
                 if (decision.siteId().equals(obligation.siteId())
                         && decision.ordinal() == obligation.ordinal()) {
-                    return new Candidate(corpus, task, path, index);
+                    return new Candidate(task, path, index,
+                            obligation.obligationId());
                 }
             }
         }

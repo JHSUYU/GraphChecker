@@ -1043,6 +1043,15 @@ public class ExploreTest {
                 seed.equals(dependence(corpus, task, "s-near", "Guard#u8")));
         assertFalse("and so is one more write to the state it reads",
                 seed.equals(dependence(corpus, task, "s-more", "Guard#u8")));
+        // The wave names an obligation once: a solver reading the corpus
+        // mid-wave (a larger factor, another dependence) keeps that id.
+        ObligationFactory.Candidate located = ObligationFactory.locate(corpus,
+                Obligation.of("OBL.as-the-wave-named-it", task.taskId(),
+                        Corpus.pathId("s-seed", TARGET), "Guard#u8", 1, true,
+                        Collections.<String, String>emptyMap(),
+                        Collections.<String, String>emptyMap(),
+                        Collections.<String>emptyList()));
+        assertEquals("OBL.as-the-wave-named-it", located.obligationId);
     }
 
     /**
