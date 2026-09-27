@@ -721,6 +721,49 @@ def main():
                     w.writerow([case, sid, row['kind'], row['door'], tag, net, n, r, rnames.get(r, ''), f, role, v])
     write_pattern_table(rows_out)
     print_summary(rows_out)
+    write_growth()
+
+
+def write_growth():
+    """growth.csv: every occurrence the closure GREW (EXPOSED_REGION, DESIGN4 SS3.3b), the world of
+    the replay that exposed it (which door's fault, or a control world), and whether a later replay
+    captured it (a planned address no replay ran again is a DIAGNOSTIC 'planned at this address')."""
+    out = []
+    for case in CASES:
+        it, results, tasks, rnames, seed_dir, sess_dirs, roots = load_case(case)
+        unreproduced = set()
+        for g in glob.glob(it + '/obligations-*/gaps.jsonl'):
+            for r in rows(g):
+                if r.get('detail', '').startswith('planned at this address'):
+                    unreproduced.add(r.get('subject', ''))
+        for f in sorted(glob.glob(it + '/obligations-*/growth.jsonl')):
+            wave = f.split('/')[-2]
+            for r in rows(f):
+                t = tasks.get(r.get('obligationId'))
+                kind, doors, _, _, _ = world_of(t, roots) if t else ('?', [], [], False, '')
+                occ = r['occurrence']
+                ctx = occ.split('/ctx:')[1].split('/idx:')[0] if '/ctx:' in occ else ''
+                out.append({'case': case, 'wave': wave, 'obligation': r.get('obligationId', ''),
+                            'kind': kind, 'door': '+'.join(doors), 'node': node_short(r['node']),
+                            'region': r['regionId'][:15], 'regionName': rnames.get(r['regionId'][:15], ''),
+                            'context': re.sub(r'Anchor:[0-9a-f]+@', 'Anchor@', ctx),
+                            'captured': int(occ not in unreproduced)})
+    if not out:
+        return
+    with open(OUT + '/growth.csv', 'w', newline='') as fh:
+        w = csv.DictWriter(fh, fieldnames=list(out[0].keys()))
+        w.writeheader()
+        w.writerows(out)
+    print('%-12s %5s %5s %5s  %s' % ('case', 'grown', 'fault', 'capt', 'grown by (door -> node region context)'))
+    by = collections.defaultdict(list)
+    for r in out:
+        by[r['case']].append(r)
+    for case, rs in sorted(by.items()):
+        top = collections.Counter('%s -> %s %s %s' % (r['door'] or r['kind'], r['node'], r['regionName']
+                                                       or r['region'], r['context'][:32]) for r in rs)
+        print('%-12s %5d %5d %5d  %s' % (case, len(rs), sum(r['kind'] == 'FAULT' for r in rs),
+                                          sum(r['captured'] for r in rs),
+                                          '; '.join('%s x%d' % kv for kv in top.most_common(3))))
 
 
 PATTERNS = ['EDGE_CUT', 'TOLERATE', 'RETRY', 'RECOVERY', 'FALLBACK', 'STATE_DIVERGENCE', 'ESCALATION', 'ABORT',
