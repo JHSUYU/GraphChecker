@@ -20,6 +20,8 @@
 # keeps each lift's memory safe.
 #
 # CASES narrows the round to some of its cases, each still on its own head.
+# CAUSYNTH_CUSTOM_JDK_HOME, when set, is the VM image every campaign runs
+# (launch-run.sh's default otherwise).
 # Outputs: $GC_OUT/accept-<round>-<case without hdfs->/, launcher logs
 # $GC_OUT/launch-<round>-<case without hdfs->.log.  One campaign is stopped
 # with tools/rounds/stop-run.sh <round>-<case without hdfs->: a campaign is
@@ -53,6 +55,7 @@ experiments=(
 [[ "${workers}" =~ ^[1-9][0-9]*$ ]] \
   || { echo "workers-per-host must be a positive integer: ${workers}" >&2; exit 2; }
 wanted=" ${CASES:-} "
+vm=${CAUSYNTH_CUSTOM_JDK_HOME:+CAUSYNTH_CUSTOM_JDK_HOME=${CAUSYNTH_CUSTOM_JDK_HOME}}
 
 launches=()
 for row in "${placement[@]}"; do
@@ -84,7 +87,7 @@ mkdir -p "${out}"
 for launch in "${launches[@]}"; do
   read -r head case_id suffix <<<"${launch}"
   command="setsid nohup env CAUSYNTH_CAMPAIGN_WORKER_HOSTS='${LIFTS}' \
-CAUSYNTH_CONCOLIC_JOBS=${workers} GC_OUT=${out} \
+CAUSYNTH_CONCOLIC_JOBS=${workers} GC_OUT=${out} ${vm} \
 bash ${snapshot}/tools/rounds/launch-run.sh ${snapshot} ${case_id} ${suffix} \
 > ${out}/launch-${suffix}.log 2>&1 < /dev/null &"
   if [[ "${head}" == "$(hostname -s)" ]]; then
