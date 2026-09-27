@@ -18,26 +18,38 @@ public final class ActivationRow extends Value {
     private final boolean focused;
     private final boolean instrumented;
     private final String threadKey;
+    private final Endpoint anchorProducer;
 
     private ActivationRow(String sessionId, OccurrenceAddress occurrence,
                           String taskId, boolean focused, boolean instrumented,
-                          String threadKey) {
+                          String threadKey, Endpoint anchorProducer) {
         this.sessionId = sessionId;
         this.occurrence = occurrence;
         this.taskId = taskId;
         this.focused = focused;
         this.instrumented = instrumented;
         this.threadKey = threadKey;
+        this.anchorProducer = anchorProducer;
     }
 
     public static ActivationRow of(String sessionId,
                                    OccurrenceAddress occurrence, String taskId,
                                    boolean focused, boolean instrumented,
                                    String threadKey) {
+        return of(sessionId, occurrence, taskId, focused, instrumented,
+                threadKey, null);
+    }
+
+    /** The same, stating the endpoint that sent the message whose receipt
+     *  the occurrence's anchor names, when this run sent it. */
+    public static ActivationRow of(String sessionId,
+                                   OccurrenceAddress occurrence, String taskId,
+                                   boolean focused, boolean instrumented,
+                                   String threadKey, Endpoint anchorProducer) {
         return new ActivationRow(Fields.text(sessionId, "sessionId"),
                 Fields.required(occurrence, "occurrence"),
                 Fields.required(taskId, "taskId"), focused, instrumented,
-                Fields.text(threadKey, "threadKey"));
+                Fields.text(threadKey, "threadKey"), anchorProducer);
     }
 
     public String sessionId() {
@@ -66,10 +78,19 @@ public final class ActivationRow extends Value {
         return threadKey;
     }
 
+    /**
+     * The endpoint that sent the message this occurrence's anchor names, or
+     * {@code null} (no anchor, or a sender outside this run): what lets a
+     * reader follow the causal chain past the anchor to its root.
+     */
+    public Endpoint anchorProducer() {
+        return anchorProducer;
+    }
+
     @Override
     Object[] parts() {
         return new Object[] {sessionId, occurrence, taskId, focused,
-                instrumented, threadKey};
+                instrumented, threadKey, anchorProducer};
     }
 
     @Override

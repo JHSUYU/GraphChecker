@@ -1888,6 +1888,41 @@ public class ComposerTest {
                         + ArtifactIO.digest(aliasedKey, 12)));
     }
 
+    @Test
+    public void anRpcHandlersChainGoesOnThroughTheSenderItsActivationPlaces()
+            throws Exception {
+        Path iteration = folder.newFolder("sender").toPath();
+        // A plain RPC declares no port, so no export or attach row places
+        // the client's send; the handler's own activation does.
+        OccurrenceAddress client = occurrence("case/client", "REGION.append",
+                CausalContext.of(Role.of("TEST_MAIN"), "", 1),
+                frame("Test#append#3", 0));
+        Endpoint sent = Endpoint.of(client, "PORT.ipc", at("send#1", 0), 0);
+        OccurrenceAddress placed = occurrence("case/nn0", "REGION.complete",
+                CausalContext.of(sent.id(), "case/client/ipc"),
+                frame("Server#call#40", 0));
+        OccurrenceAddress unplaced = occurrence("case/nn0", "REGION.addBlock",
+                CausalContext.of(Endpoint.of(client, "PORT.ipc",
+                        at("send#2", 0), 0).id(), "case/client/ipc"),
+                frame("Server#call#41", 0));
+        OccurrenceAddress tick = occurrence("case/nn0", "REGION.monitor",
+                CausalContext.of(Role.of("LEASE_MONITOR"), "", 1),
+                frame("Monitor#run#9", 0));
+        Session session = new Session(iteration, "s0", false);
+        session.activation(placed, sent);
+        session.activation(unplaced);
+        session.activation(tick);
+        session.write();
+
+        edu.uva.liftlab.graphchecker.smt.Arms arms =
+                new edu.uva.liftlab.graphchecker.smt.Arms(
+                        Corpus.read(iteration, null));
+        assertTrue("a handler whose sender is placed reaches its root",
+                arms.concurrent(placed, tick, "s0"));
+        assertFalse("one whose sender nothing places states no order",
+                arms.concurrent(unplaced, tick, "s0"));
+    }
+
     // ------------------------------------------------------------------
     // 12. A witness that needs the other writer says so.
     // ------------------------------------------------------------------
@@ -3455,6 +3490,13 @@ public class ComposerTest {
             activations.add(ActivationRow.of(id, at,
                     explored ? "task-flip" : "task-seed", focused,
                     instrumented, threadKey));
+        }
+
+        /** One more activation, placing the sender its anchor names. */
+        void activation(OccurrenceAddress at, Endpoint anchorProducer) {
+            activations.add(ActivationRow.of(id, at,
+                    explored ? "task-flip" : "task-seed", explored, true,
+                    "thread#" + at.regionId(), anchorProducer));
         }
 
         void marker(String recorded) {

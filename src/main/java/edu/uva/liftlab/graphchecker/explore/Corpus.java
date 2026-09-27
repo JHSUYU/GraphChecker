@@ -408,6 +408,12 @@ public final class Corpus implements Arms.Rows {
             activationByOccurrence.putIfAbsent(session.sessionId() + "|"
                     + row.occurrence().id(), row);
             remember(occurrenceById, row.occurrence());
+            // The sender an anchor names: a causal chain goes on through it.
+            if (row.anchorProducer() != null) {
+                endpointById.put(row.anchorProducer().id(),
+                        row.anchorProducer());
+                remember(occurrenceById, row.anchorProducer().occurrence());
+            }
             add(activations, row.occurrence().id(), row);
         }
         for (DecisionRow row : session.decisions()) {

@@ -144,6 +144,7 @@ public final class Interactions {
         String key = message(transport, correlationId, half);
         if (key.isEmpty() || producer == null) return;
         MESSAGES.put(key, producer);
+        SENDERS.put(producer.id(), producer);
         InteractionRefusals.noteMessage(key, producer);
     }
 
@@ -169,6 +170,12 @@ public final class Interactions {
         return producer == null ? "" : producer.id();
     }
 
+    /** The whole endpoint a message's anchor names, or {@code null} when
+     *  this run filed no message under it. */
+    public static synchronized Endpoint producer(String endpointId) {
+        return SENDERS.get(Text.safe(endpointId));
+    }
+
     /** The producers this run has filed, for a refusal to search. */
     static synchronized Collection<Endpoint> filedProducers() {
         return new ArrayList<Endpoint>(MESSAGES.values());
@@ -183,10 +190,13 @@ public final class Interactions {
     }
 
     private static final Map<String, Endpoint> MESSAGES = bounded();
+    /** The same producers, by endpoint id: what an anchor names. */
+    private static final Map<String, Endpoint> SENDERS = bounded();
 
-    /** Clears both stores, taking the monitors in the declared order. */
+    /** Clears every store, taking the monitors in the declared order. */
     public static synchronized void resetForTests() {
         MESSAGES.clear();
+        SENDERS.clear();
         InteractionRefusals.resetForTests();
         DELIVERY.remove();
         PRODUCERS.clear();

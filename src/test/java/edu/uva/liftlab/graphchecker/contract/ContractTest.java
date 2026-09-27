@@ -221,8 +221,10 @@ public class ContractTest {
         Map<String, Long> clocks = new LinkedHashMap<>();
         clocks.put("clock_dn0", 1757700000000L);
 
+        // The sender its anchor names rides along, so a reader follows the
+        // causal chain past the anchor.
         ActivationRow activation = ActivationRow.of("s-17897-1", anchor,
-                "task-1", true, true, "DataXceiver-7#41");
+                "task-1", true, true, "DataXceiver-7#41", export);
         // The session's own event order: export, attach, write, decision,
         // read, anchor -- the numbers a producer's condition is cut at.
         DecisionRow decision = DecisionRow.of("s-17897-1", 12L, anchor,

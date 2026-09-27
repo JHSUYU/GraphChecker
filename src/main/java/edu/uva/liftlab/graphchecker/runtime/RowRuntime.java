@@ -4,6 +4,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
+import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
@@ -178,7 +179,8 @@ public final class RowRuntime {
         if (session != null) {
             session.activation(ActivationRow.of(sessionId(), address,
                     Text.safe(taskId), FocusedReplay.focused(taskId,
-                            address), true, threadKey()));
+                            address), true, threadKey(),
+                    anchorProducer(address)));
             if (address.lineageLost()) {
                 session.gap(GapRow.of(sessionId(), GapKind.LINEAGE_LOST,
                         GapClass.DIAGNOSTIC, address.render(),
@@ -200,7 +202,16 @@ public final class RowRuntime {
         if (AMBIENT.putIfAbsent(address.id(), Boolean.TRUE) != null) return;
         // Not an instrumented region, so it has no decisions to find.
         session.activation(ActivationRow.of(sessionId(), address, "", false,
-                false, threadKey()));
+                false, threadKey(), anchorProducer(address)));
+    }
+
+    /** The endpoint that sent the message this address's anchor names,
+     *  when this run filed it: the link a causal chain is followed by. */
+    private static Endpoint anchorProducer(OccurrenceAddress address) {
+        return address.context().form() == CausalContext.Form.ANCHOR
+                ? Interactions.producer(((CausalContext.Anchor)
+                        address.context()).producerEndpointId())
+                : null;
     }
 
     private static final Map<String, Boolean> AMBIENT =

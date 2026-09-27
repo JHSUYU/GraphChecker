@@ -171,15 +171,22 @@ public final class RowCodec {
         json.addProperty("focused", row.focused());
         json.addProperty("instrumented", row.instrumented());
         json.addProperty("threadKey", row.threadKey());
+        if (row.anchorProducer() != null) {
+            json.add(ANCHOR_PRODUCER, writeEndpoint(row.anchorProducer()));
+        }
         return json;
     }
 
     public static ActivationRow readActivation(JsonObject json) {
+        JsonObject producer = optionalObject(json, ANCHOR_PRODUCER);
         return ActivationRow.of(string(json, SESSION_ID),
                 readOccurrence(object(json, OCCURRENCE)),
                 string(json, "taskId"), bool(json, "focused"),
-                bool(json, "instrumented"), string(json, "threadKey"));
+                bool(json, "instrumented"), string(json, "threadKey"),
+                producer == null ? null : readEndpoint(producer));
     }
+
+    private static final String ANCHOR_PRODUCER = "anchorProducer";
 
     public static JsonObject writeDecision(DecisionRow row) {
         JsonObject json = row(row.sessionId(), row.seq());
