@@ -2325,6 +2325,16 @@ run:
 // one access had two names, and a hook woven before it named the hook.
 #define CONCOLIC_EVENT_PC() DECACHE_PC()
 
+// Writers_W(l) at the recording: a thread outside every region (no context)
+// still writes state a region tracks -- an HDFS IPC handler's updatePipeline
+// rewrites a generation stamp no region wrote.  Unversioned, a region's later
+// read resolved to the last version a region wrote, a value the heap no
+// longer held.  Such a store is a concrete version with no writer
+// attribution; a paused or muted thread (context present) stays silent.
+#define CONCOLIC_OUTSIDE_EVERY_REGION(owner)                                   \
+  (ConcolicMngr::ctx == NULL && SharedFieldVersions::has_carriers()           \
+   && (owner)->is_named())
+
 // Carrier state for one array element load, split across the concrete load
 // exactly as the field read is: the shadow slot is addressed with the pre-load
 // stack shape, and the value the read returned is only known afterwards.
@@ -2582,6 +2592,11 @@ run:
     }                                                                          \
   }
 
+#define CONCOLIC_ASTORE_UNATTRIBUTED                                           \
+  astore_location = SharedFieldVersions::Location(                             \
+      arrObj->get_sym_rid(), index, SharedFieldVersions::LOC_ARRAY_ELEMENT);   \
+  astore_selected = SharedFieldVersions::is_tracked(astore_location);
+
 #define CONCOLIC_ASTORE_PUBLISH(T, bits)                                       \
   if (astore_selected) {                                                       \
     Expression *published = astore_value;                                      \
@@ -2630,9 +2645,12 @@ run:
     ConcolicMngr::ctx->clear_stack_value(stack_offset + arrayOff + 1, 1);      \
     ConcolicMngr::ctx->clear_stack_value(                                     \
         stack_offset + delta, (value_slots));                                 \
+  } else if (CONCOLIC_OUTSIDE_EVERY_REGION(arrObj)) {                         \
+    CONCOLIC_ASTORE_UNATTRIBUTED                                               \
   }
 #else
 #define CONCOLIC_ASTORE_CARRIER
+#define CONCOLIC_ASTORE_UNATTRIBUTED
 #define CONCOLIC_ASTORE_PUBLISH(T, bits)
 #define CONCOLIC_ASTORE(arrayOff, delta, value_slots, value, T)
 #endif
@@ -2742,6 +2760,8 @@ run:
             ConcolicMngr::ctx->clear_stack_value(stack_offset - 3, 1);
             ConcolicMngr::ctx->clear_stack_value(stack_offset - 2, 1);
             ConcolicMngr::ctx->clear_stack_value(stack_offset - 1, 1);
+          } else if (CONCOLIC_OUTSIDE_EVERY_REGION(arrObj)) {
+            CONCOLIC_ASTORE_UNATTRIBUTED
           }
 #endif
           ((objArrayOop) arrObj)->obj_at_put(index, rhsObject);
@@ -3478,6 +3498,13 @@ run:
             if ((Bytecodes::Code)opcode == Bytecodes::_putfield) {
               ConcolicMngr::ctx->clear_stack_value(stack_offset + count, 1);
             }
+          } else if (CONCOLIC_OUTSIDE_EVERY_REGION(obj)) {
+            carrier_location = SharedFieldVersions::Location(
+                obj->get_sym_rid(), field_offset,
+                (Bytecodes::Code)opcode == Bytecodes::_putstatic
+                    ? SharedFieldVersions::LOC_STATIC_FIELD
+                    : SharedFieldVersions::LOC_INSTANCE_FIELD);
+            carrier_write = SharedFieldVersions::is_tracked(carrier_location);
           }
 #endif
 
