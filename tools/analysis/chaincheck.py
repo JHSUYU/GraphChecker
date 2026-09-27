@@ -21,8 +21,12 @@ def sig(rnd, case):
     g = collections.Counter()
     for d in decl:
         if d.startswith(("identity","message_arm","path_selector","writer_arm")): continue
+        # A tracked read lowered to its row symbol: <location>@v<version>@<session>.
+        if "@v" in d:
+            g["read@v"] += 1
+            continue
         m = re.match(r"([A-Z]_[A-Za-z]+_field_)?(REGION\.[0-9a-f]{8}|HOFF|SRC|[A-Za-z]+)", d)
-        g[(m.group(1) or "") + (m.group(2) if m else d[:20])] += 1
+        g[((m.group(1) or "") + m.group(2)) if m else d[:20]] += 1
     s["roots"] = dict(sorted(g.items()))
     s["fatal_target"] = ":named fatal_target" in t
     s["partition"] = ":named target_path_partition" in t
