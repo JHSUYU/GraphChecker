@@ -1045,6 +1045,115 @@ public class ExploreTest {
                 seed.equals(dependence(corpus, task, "s-more", "Guard#u8")));
     }
 
+    /**
+     * GROWTH IS THE CLOSURE'S (DESIGN4 SS3.3b, INTERACTION-ID SS8 case 2). A
+     * demanded occurrence no session CAPTURED -- the hooks ran it and its
+     * runtime identity is in a session's rows, but no planned task admitted
+     * it -- is grown from the admitted focused session that names it; named
+     * by the seed replay alone it waits for one (DIAGNOSTIC); a lost role is
+     * no region, so nothing grows it; a captured one is a task.  hdfs-17899:
+     * a DataNode's periodic heartbeat sends through the woven IPC door under
+     * no task, and the closure demands that sender.
+     */
+    @Test
+    public void theClosureGrowsWhatItDemandsAndNoSessionCaptured()
+            throws Exception {
+        OccurrenceAddress lost = occurrence("hdfs-case/nn0",
+                "ROLE.IPC_HANDLER", CausalContext.of(Role.of("IPC_HANDLER")),
+                "o.a.h.ipc.Server$Handler#run#1");
+        // producer, whether the seed captures it, whether a focused replay
+        // names it
+        Object[][] cases = {
+            {PRODUCER, true, false},
+            {PRODUCER, false, true},
+            {PRODUCER, false, false},
+            {lost, false, true},
+        };
+        for (Object[] row : cases) {
+            OccurrenceAddress producer = (OccurrenceAddress) row[0];
+            boolean captured = (Boolean) row[1];
+            boolean focused = (Boolean) row[2];
+            Path iteration = tree.newFolder().toPath();
+            Endpoint exported = at(producer, "XCH.resp.block-key-id",
+                    "PBHelper#convert#9");
+            for (String sessionId : focused
+                    ? Arrays.asList("s-seed", "s-flip")
+                    : Collections.singletonList("s-seed")) {
+                Session session = new Session(iteration, sessionId);
+                session.activation(TARGET, sessionId.equals("s-flip"));
+                session.activation(WRITER, false);
+                if (captured) session.activation(producer, false);
+                session.symbolic("e.stored", "M_HOFF_KEY");
+                session.attach(DELIVERED, "M_HOFF_KEY", "119992", exported);
+                session.write(STORED, ALL_KEYS, 5L, "e.stored");
+                session.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
+                session.target(TARGET, "BlockTokenSecretManager"
+                        + "#retrieveDataEncryptionKey#8", "(= M_READ_KEY 0)");
+                if (sessionId.equals("s-flip")) {
+                    session.answered(ObligationResult.of("OBL.s-flip",
+                            Verdict.ADMITTED, "s-flip",
+                            "the focused prefix reproduced"));
+                }
+                session.flush();
+            }
+            StaticScopeMap map = StaticScopeMap.read(scopeMap(iteration,
+                    targetSite("REGION.target",
+                            "BlockTokenSecretManager#u120")));
+            ClosurePlanner.Plan plan = ClosurePlanner.plan(
+                    Corpus.read(iteration, null), TARGET,
+                    ClosurePlanner.DEFAULT_MAX_TASKS, map);
+            boolean task = false;
+            for (Task planned : plan.tasks) {
+                task |= planned.focused().equals(producer);
+            }
+            String lineage = "";
+            for (GapRow gap : plan.gaps) {
+                if (!gap.subject().equals(producer.render())) continue;
+                assertEquals("never BLOCKING while a session ran it: "
+                        + gap.detail(), GapClass.DIAGNOSTIC, gap.cls());
+                if (gap.kind() == GapKind.LINEAGE_LOST) lineage = gap.detail();
+            }
+            String label = producer.regionId() + " captured=" + captured
+                    + " focused=" + focused;
+            if (captured) {
+                assertTrue("a captured occurrence is a task: " + label, task);
+                assertTrue(label, plan.exposed.isEmpty());
+            } else if (producer.role()) {
+                assertFalse(label, task);
+                assertTrue("a role is no region to grow: " + label,
+                        plan.exposed.isEmpty());
+                assertFalse("the lost scope is named: " + label,
+                        lineage.isEmpty());
+            } else if (focused) {
+                assertFalse("uncaptured is no task: " + label, task);
+                assertEquals("grown from the focused replay naming it: "
+                                + label, "s-flip",
+                        plan.exposed.get(producer));
+            } else {
+                assertFalse(label, task);
+                assertTrue("the seed replay is not re-run: " + label,
+                        plan.exposed.isEmpty());
+                assertTrue("it waits for a focused replay: " + label,
+                        plan.waiting.contains(producer));
+                // This corpus flips nothing, so its first wave is the
+                // fixpoint: no focused replay will ever run it.
+                Path wave = iteration.resolve("obligations-0000");
+                Path results = iteration.resolve("results.jsonl");
+                Files.write(results, new byte[0]);
+                assertEquals("FIXED_POINT", plan(iteration, TARGET_SELECTOR,
+                        null, results, wave, 0).get("state").getAsString());
+                boolean incomplete = false;
+                for (GapRow gap : RowCodec.readAll(
+                        wave.resolve("gaps.jsonl"), RowCodec::readGap)) {
+                    incomplete |= gap.cls() == GapClass.BLOCKING
+                            && gap.subject().equals(producer.render());
+                }
+                assertTrue("so at the fixpoint the closure is incomplete",
+                        incomplete);
+            }
+        }
+    }
+
     /** What the guard at {@code siteId} depends on in one session's path of
      *  the task ({@link ObligationFactory#dependence}). */
     private static String dependence(Corpus corpus, Task task,
@@ -1967,122 +2076,6 @@ public class ExploreTest {
                             && gap.cls() == GapClass.BLOCKING);
         }
 
-        // A region the weave does not hold, reached by an ADMITTED replay's
-        // own closure from the anchor, is GROWTH (DESIGN4 SS3.3b): an
-        // EXPOSED_REGION row names it, the exposing session and its
-        // obligation, and nothing forks.  Reached by the SEED alone it is
-        // the plan's own admission decision, and nothing is exposed.
-        OccurrenceAddress lightweight = occurrence("hdfs-case/dn0",
-                "REGION.notretained", CausalContext.of(Role.of("DATA_XCEIVER"), "", 2),
-                "o.a.h.h.s.d.DataXceiver#run#44");
-        Endpoint fromLightweight = at(lightweight, "XCH.resp.block-key-id",
-                "PBHelper#convert#9");
-        Endpoint intoTarget = at(target, "XCH.resp.block-key-id",
-                "PBHelper#convert#9");
-        Task anchorTask = Task.of(ClosurePlanner.taskId(target), target,
-                Collections.<OccurrenceAddress>emptyList(), "s-seed");
-        Path recorded = tree.newFolder("closure-unretained-seed").toPath();
-        Session seedOnly = new Session(recorded, "s-seed");
-        seedOnly.activation(target, false);
-        seedOnly.lightweight(lightweight);
-        seedOnly.attach(intoTarget, "M_HOFF_KEY", "119992", fromLightweight);
-        seedOnly.flush();
-        List<GapRow> growthGaps = new ArrayList<GapRow>();
-        assertEquals("a region the seed reached is the plan's decision", 0,
-                WaveGraph.writeGrowth(Corpus.read(recorded, null), anchorTask,
-                        recorded, growthGaps));
-        Path unseen = tree.newFolder("closure-unretained").toPath();
-        Session unseenSeed = new Session(unseen, "s-seed");
-        unseenSeed.activation(target, false);
-        unseenSeed.flush();
-        Session partial = new Session(unseen, "s-flip");
-        partial.activation(target, true);
-        partial.lightweight(lightweight);
-        partial.attach(intoTarget, "M_HOFF_KEY", "119992", fromLightweight);
-        partial.answered(ObligationResult.of("OBL.s-flip", Verdict.ADMITTED,
-                "s-flip", "the focused prefix reproduced"));
-        partial.flush();
-        assertFalse("and it forks no epoch",
-                new SlotTable().reconcile(Corpus.read(unseen, null),
-                        Collections.singleton(target.id()), 3).replaced);
-        assertEquals("a region with no detailed row is exposed", 1,
-                WaveGraph.writeGrowth(Corpus.read(unseen, null), anchorTask,
-                        unseen, growthGaps));
-        JsonObject exposed = RowCodec.readJsonl(
-                unseen.resolve(WaveGraph.GROWTH)).get(0);
-        assertEquals("EXPOSED_REGION", exposed.get("kind").getAsString());
-        assertEquals("REGION.notretained",
-                exposed.get("regionId").getAsString());
-        assertEquals(lightweight.render(),
-                exposed.get("occurrence").getAsString());
-        assertEquals("s-flip", exposed.get("sessionId").getAsString());
-        assertEquals("OBL.s-flip", exposed.get("obligationId").getAsString());
-
-        // An occurrence no task planned, of a region the weave DOES hold, is
-        // new work and not growth.  hdfs-17899: a daemon heartbeat's
-        // response left the NameNode through its command conversion, whose
-        // seed occurrences ran instrumented; the daemon's occurrence was
-        // published AMBIENT.
-        OccurrenceAddress refreshConversion = occurrence("hdfs-case/nn0",
-                "REGION.conversion",
-                CausalContext.of("a1b2c3d4e5f60718", "HADOOP_IPC/heartbeat"),
-                "o.a.h.h.p.PBHelper#convert#7");
-        OccurrenceAddress daemonConversion = occurrence("hdfs-case/nn0",
-                "REGION.conversion",
-                CausalContext.of("0f1e2d3c4b5a6978",
-                        "HADOOP_IPC/BP_SERVICE_ACTOR"),
-                "o.a.h.h.p.PBHelper#convert#7");
-        Path retainedDir = tree.newFolder("closure-retained-new-occurrence")
-                .toPath();
-        Session conversionSeed = new Session(retainedDir, "s-seed");
-        conversionSeed.activation(target, false);
-        conversionSeed.activation(refreshConversion, false);
-        conversionSeed.flush();
-        Session daemonRun = new Session(retainedDir, "s-flip");
-        daemonRun.activation(target, true);
-        daemonRun.activation(refreshConversion, false);
-        daemonRun.lightweight(daemonConversion);
-        daemonRun.attach(intoTarget, "M_HOFF_KEY", "119992",
-                at(daemonConversion, "XCH.resp.block-key-id",
-                        "PBHelper#convert#9"));
-        daemonRun.answered(ObligationResult.of("OBL.s-flip", Verdict.ADMITTED,
-                "s-flip", "the focused prefix reproduced"));
-        daemonRun.flush();
-        assertEquals("an unplanned occurrence of a woven region exposes "
-                        + "nothing", 0,
-                WaveGraph.writeGrowth(Corpus.read(retainedDir, null),
-                        anchorTask, retainedDir, growthGaps));
-
-        // A DEGRADED occurrence's region slot is ROLE.<ROLE>: the scope was
-        // lost, so there is no region of the static graph to retain and no
-        // epoch to cut.  What it states is the lineage.
-        Path roleOnly = tree.newFolder("closure-role").toPath();
-        OccurrenceAddress lost = occurrence("hdfs-case/dn0",
-                "ROLE.IPC_HANDLER", CausalContext.of(Role.of("IPC_HANDLER")),
-                "o.a.h.ipc.Server$Handler#run#1");
-        Session degradedSeed = new Session(roleOnly, "s-seed");
-        degradedSeed.activation(target, false);
-        degradedSeed.flush();
-        Session degraded = new Session(roleOnly, "s-flip");
-        degraded.activation(target, true);
-        degraded.lightweight(lost);
-        degraded.attach(intoTarget, "M_HOFF_KEY", "119992",
-                at(lost, "XCH.resp.block-key-id", "PBHelper#convert#9"));
-        degraded.answered(ObligationResult.of("OBL.s-flip", Verdict.ADMITTED,
-                "s-flip", "the focused prefix reproduced"));
-        degraded.flush();
-        List<GapRow> roleGaps = new ArrayList<GapRow>();
-        assertEquals("a role is not a region, so nothing can weave it", 0,
-                WaveGraph.writeGrowth(Corpus.read(roleOnly, null), anchorTask,
-                        roleOnly, roleGaps));
-        boolean lineage = false;
-        for (GapRow gap : roleGaps) {
-            lineage |= gap.kind() == GapKind.LINEAGE_LOST
-                    && gap.cls() == GapClass.DIAGNOSTIC
-                    && gap.detail().contains("ROLE.IPC_HANDLER");
-        }
-        assertTrue("and the lost scope is named as one", lineage);
-
         // R-I6: two occurrences of ONE code point that a replay ran BOTH are
         // two requests -- growth.  A REPLACEMENT is the closure's member
         // ABSENT from a replay that ran the same code point under another
@@ -2191,7 +2184,8 @@ public class ExploreTest {
         // activation, no decision -- cannot be a task: there is no recorded
         // run to focus a replay on.  It used to reach Task.of with an empty
         // seedSessionId and abort the whole wave with
-        // "seedSessionId is required"; the closure now refuses it by name.
+        // "seedSessionId is required"; the seed replay alone ran it, so it
+        // WAITS for a focused replay to expose it.
         Path unrun = tree.newFolder("closure-unrun").toPath();
         OccurrenceAddress ghost = occurrence("hdfs-case/dn0",
                 "REGION.unrun", CausalContext.of(Role.of("DATA_XCEIVER"), "", 7),
@@ -2218,14 +2212,8 @@ public class ExploreTest {
             assertFalse("and a task always names the recording it was "
                     + "planned from", task.seedSessionId().isEmpty());
         }
-        boolean unplannable = false;
-        for (GapRow gap : withGhost.gaps) {
-            unplannable |= gap.kind() == GapKind.ADMISSION_GAP
-                    && gap.cls() == GapClass.BLOCKING
-                    && gap.subject().equals(ghost.render())
-                    && gap.detail().contains("no replay can be focused");
-        }
-        assertTrue("and the refusal names it", unplannable);
+        assertTrue("and it waits by name: " + withGhost.waiting,
+                withGhost.waiting.contains(ghost));
 
         // A fatal predicate published as a REFERENCE into the session's
         // expression table names the read it rests on, through the one

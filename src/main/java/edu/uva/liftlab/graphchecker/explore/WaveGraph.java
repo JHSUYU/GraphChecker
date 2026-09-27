@@ -31,9 +31,9 @@ import java.util.TreeSet;
 /** G_k and its growth (DESIGN4 SS3.1-SS3.3, SS3.5). {@code graph.jsonl}: NODE
  *  per activated occurrence, EDGE per WIRE pairing or STATE join, with worlds
  *  ({@link ObligationFactory#worldDigest}), plus a FRONTIER diff; no THREAD
- *  edge (schedule rows carry no occurrence). {@code growth.jsonl}: regions an
- *  admitted replay's closure ({@link Corpus#upstreamOf(OccurrenceAddress, List,
- *  String)}) reached ambient and the weave lacks ({@link Corpus#woven}). */
+ *  edge (schedule rows carry no occurrence). {@code growth.jsonl}: the
+ *  occurrences the closure demands and no session captured ({@link
+ *  ClosurePlanner.Plan#exposed}). */
 final class WaveGraph {
     static final String GRAPH = "graph.jsonl";
     static final String GROWTH = "growth.jsonl";
@@ -160,56 +160,25 @@ final class WaveGraph {
         RowCodec.writeJsonl(waveDir.resolve(GRAPH), rows);
     }
 
-    /** Writes {@code growth.jsonl} (null {@code anchor}: none); returns the row
-     *  count. */
-    static int writeGrowth(Corpus corpus, Task anchor, Path waveDir,
-                           List<GapRow> gaps) throws IOException {
+    /** Writes {@code growth.jsonl}: one EXPOSED_REGION row per occurrence the
+     *  closure grows ({@link ClosurePlanner.Plan#exposed}), naming the session
+     *  whose replay is re-run and its obligation; returns the row count. */
+    static int writeGrowth(Corpus corpus,
+                           Map<OccurrenceAddress, String> exposed,
+                           Path waveDir) throws IOException {
         List<JsonObject> rows = new ArrayList<JsonObject>();
-        Set<String> exposed = new LinkedHashSet<String>();
-        String seed = corpus.seedSessionId();
-        for (SessionReader session : anchor == null
-                ? new ArrayList<SessionReader>() : corpus.sessions()) {
-            if (!session.admitted() || session.sessionId().equals(seed)) {
-                continue;
-            }
-            String obligationId = session.obligations().isEmpty() ? ""
-                    : session.obligations().get(0).obligationId();
-            for (String id : corpus.upstreamOf(anchor.focused(),
-                    anchor.factor(), session.sessionId())) {
-                OccurrenceAddress occurrence = corpus.occurrence(id);
-                ActivationRow activation = occurrence == null ? null
-                        : corpus.activation(session.sessionId(), occurrence);
-                if (activation == null || activation.instrumented()
-                        || corpus.woven(occurrence.regionId())
-                        || !exposed.add(occurrence.regionId() + "|" + id)) {
-                    continue;
-                }
-                // A role is not a region of the static graph, so nothing
-                // can weave it; only a LOST one says the recording lost a
-                // scope (a role that sent a message is stated with its
-                // anchor, Identity.messageSent).
-                if (occurrence.role()) {
-                    if (occurrence.lineageLost()) {
-                        gaps.add(GapRow.of(session.sessionId(),
-                                GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC,
-                                occurrence.render(),
-                                "a flipped path reached a region whose scope "
-                                        + "the recording lost: "
-                                        + occurrence.regionId() + " is a role, "
-                                        + "not a region of the static graph, "
-                                        + "so nothing can weave it"));
-                    }
-                    continue;
-                }
-                JsonObject row = new JsonObject();
-                row.addProperty("kind", "EXPOSED_REGION");
-                row.addProperty("regionId", occurrence.regionId());
-                row.addProperty("node", occurrence.node().render());
-                row.addProperty("occurrence", occurrence.render());
-                row.addProperty("sessionId", session.sessionId());
-                row.addProperty("obligationId", obligationId);
-                rows.add(row);
-            }
+        for (Map.Entry<OccurrenceAddress, String> grown : exposed.entrySet()) {
+            OccurrenceAddress occurrence = grown.getKey();
+            SessionReader session = corpus.session(grown.getValue());
+            JsonObject row = new JsonObject();
+            row.addProperty("kind", "EXPOSED_REGION");
+            row.addProperty("regionId", occurrence.regionId());
+            row.addProperty("node", occurrence.node().render());
+            row.addProperty("occurrence", occurrence.render());
+            row.addProperty("sessionId", session.sessionId());
+            row.addProperty("obligationId",
+                    session.obligations().get(0).obligationId());
+            rows.add(row);
         }
         RowCodec.writeJsonl(waveDir.resolve(GROWTH), rows);
         return rows.size();

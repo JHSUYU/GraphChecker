@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.explore;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
+import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
@@ -81,14 +82,25 @@ public final class ClosurePlanner {
         public final Map<String, String> why;
         /** task id -> site ids this wave may flip. */
         public final Map<String, Set<String>> flipSites;
+        /** A demanded occurrence no session captured -> the admitted
+         *  focused session whose rows name it: GROWTH (DESIGN4 SS3.3b). */
+        public final Map<OccurrenceAddress, String> exposed;
+        /** Demanded, uncaptured, and run by the seed replay alone: a focused
+         *  replay that runs it will expose it, so it is a gap only at the
+         *  fixpoint ({@link ExploreMain}). */
+        public final Set<OccurrenceAddress> waiting;
 
         private Plan(List<Task> tasks, List<GapRow> gaps,
                      Map<String, String> why,
-                     Map<String, Set<String>> flipSites) {
+                     Map<String, Set<String>> flipSites,
+                     Map<OccurrenceAddress, String> exposed,
+                     Set<OccurrenceAddress> waiting) {
             this.tasks = Collections.unmodifiableList(tasks);
             this.gaps = Collections.unmodifiableList(gaps);
             this.why = Collections.unmodifiableMap(why);
             this.flipSites = Collections.unmodifiableMap(flipSites);
+            this.exposed = Collections.unmodifiableMap(exposed);
+            this.waiting = Collections.unmodifiableSet(waiting);
         }
     }
 
@@ -142,17 +154,14 @@ public final class ClosurePlanner {
         Map<String, String> why = new LinkedHashMap<String, String>();
         Map<String, Set<String>> flips =
                 new LinkedHashMap<String, Set<String>>();
+        Map<OccurrenceAddress, String> exposed =
+                new LinkedHashMap<OccurrenceAddress, String>();
+        Set<OccurrenceAddress> waiting =
+                new LinkedHashSet<OccurrenceAddress>();
         for (Demand demand : demands.values()) {
             String seed = seedSession(corpus, demand.occurrence);
             if (seed.isEmpty()) {
-                // No session ran it: no replay to focus; BLOCKING, as an
-                // unattested arm.
-                gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
-                        GapKind.ADMISSION_GAP, GapClass.BLOCKING,
-                        demand.occurrence.render(),
-                        "no session of this corpus activated this occurrence "
-                                + "or recorded a decision of it, so no replay "
-                                + "can be focused on it and it is not a task"));
+                uncaptured(corpus, demand.occurrence, exposed, waiting, gaps);
                 continue;
             }
             String taskId = taskId(demand.occurrence);
@@ -165,7 +174,71 @@ public final class ClosurePlanner {
             sites.addAll(corpus.faultSites(demand.occurrence));
             flips.put(taskId, sites);
         }
-        return new Plan(tasks, gaps, why, flips);
+        return new Plan(tasks, gaps, why, flips, exposed, waiting);
+    }
+
+    /**
+     * A demanded occurrence no session CAPTURED: the hooks ran it -- its
+     * runtime identity is in some session's rows (a SEND, the sender an anchor
+     * names, a producer of a delivery) -- but no planned task admitted it, so
+     * it has no decisions to flip.  It is the retained set that must grow
+     * (INTERACTION-ID SS8 case 2, DESIGN4 SS3.3b): an admitted focused
+     * session naming it is re-run with a plan row at its address, and the
+     * next wave has it as a task.  hdfs-17899: a DataNode's periodic
+     * heartbeat sends its request through the woven IPC door under no task,
+     * and the closure demands that door as the sender of a message the
+     * NameNode served.
+     *
+     * <p>Named by the seed replay alone it is WAITING: a focused replay that
+     * runs it exposes it, and the seed is not re-run.  Named by no session it
+     * is BLOCKING.  A role
+     * is no region of the static graph: nothing captures it, and the closure
+     * goes on through the sender its anchor names.  Several occurrences are
+     * grown from one session where one names them all: one re-run each.</p>
+     */
+    private static void uncaptured(Corpus corpus,
+                                   OccurrenceAddress occurrence,
+                                   Map<OccurrenceAddress, String> exposed,
+                                   Set<OccurrenceAddress> waiting,
+                                   List<GapRow> gaps) {
+        if (occurrence.role()) {
+            if (occurrence.lineageLost()) {
+                gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                        GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC,
+                        occurrence.render(), "the closure reached a scope "
+                                + "the recording lost: " + occurrence
+                                .regionId() + " is a role, not a region of "
+                                + "the static graph, so nothing can weave "
+                                + "it"));
+            }
+            return;
+        }
+        String seed = corpus.seedSessionId();
+        String exposing = "";
+        for (String sessionId : corpus.namedBy(occurrence)) {
+            if (sessionId.equals(seed)
+                    || !corpus.session(sessionId).admitted()
+                    || corpus.session(sessionId).obligations().isEmpty()) {
+                continue;
+            }
+            if (exposing.isEmpty()) exposing = sessionId;
+            if (exposed.containsValue(sessionId)) {
+                exposing = sessionId;
+                break;
+            }
+        }
+        if (!exposing.isEmpty()) {
+            exposed.put(occurrence, exposing);
+            return;
+        }
+        if (corpus.namedBy(occurrence).contains(seed)) {
+            waiting.add(occurrence);
+            return;
+        }
+        gaps.add(GapRow.of(ExploreCodec.EXPLORATION, GapKind.ADMISSION_GAP,
+                GapClass.BLOCKING, occurrence.render(),
+                "no session of this corpus ran this occurrence, so no replay "
+                        + "can be focused on it and it is not a task"));
     }
 
     /** One task's id: the occurrence it focuses and nothing else. */
@@ -179,8 +252,8 @@ public final class ClosurePlanner {
         for (OccurrenceAddress occurrence : corpus.occurrences()) {
             if (!taskId.equals(taskId(occurrence))) continue;
             String seed = seedSession(corpus, occurrence);
-            // The wave published no task for it (BLOCKING gap), so none here
-            // either.
+            // The wave published no task for it (growth or a gap), so none
+            // here either.
             if (seed.isEmpty()) return null;
             return Task.of(taskId, occurrence, stateConnected(corpus,
                     occurrence), seed);
@@ -635,8 +708,9 @@ public final class ClosurePlanner {
         return factor;
     }
 
-    /** The session a task is planned from: the SEED if it ran the occurrence,
-     *  else the first ADMITTED one that did, else "". */
+    /** The session a task is planned from: the SEED if it captured the
+     *  occurrence ({@link #ran}), else the first ADMITTED one that did, else
+     *  "". */
     private static String seedSession(Corpus corpus,
                                       OccurrenceAddress occurrence) {
         String seed = corpus.seedSessionId();
@@ -650,10 +724,14 @@ public final class ClosurePlanner {
         return "";
     }
 
-    /** Whether one session activated or decided at one occurrence. */
+    /** Whether one session CAPTURED one occurrence: a planned task admitted
+     *  it, or it decided.  A role's ambient activation is its capture (no
+     *  region to plan). */
     private static boolean ran(Corpus corpus, String sessionId,
                                OccurrenceAddress occurrence) {
-        return corpus.activation(sessionId, occurrence) != null
+        ActivationRow activation = corpus.activation(sessionId, occurrence);
+        return activation != null
+                && (activation.instrumented() || occurrence.role())
                 || !corpus.decisionsOf(sessionId, occurrence).isEmpty();
     }
 }

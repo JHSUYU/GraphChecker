@@ -167,8 +167,14 @@ and diff against `G_k`. New relevant nodes and edges enter `G_{k+1}` labelled `w
 ### 3.3 Three kinds of growth, three responses
 
 - (a) **A new occurrence of an instrumented region** (a retry runs the handler
-  again; another daemon turn). It has rows, so it becomes a task in the next
-  wave. This works today.
+  again; another daemon turn). A planned task admits only its own address, so
+  an occurrence no task admitted has no decisions -- but the hooks ran it, and
+  its runtime identity is in the rows (a SEND, the sender an anchor names, a
+  delivery's producer). The closure decides: a demanded occurrence some session
+  captured is a task; one only named by an admitted focused replay is grown as
+  (b) is, re-running that replay with a plan row at its address; one only the
+  seed replay ran waits for a focused replay, and is a BLOCKING gap only at the
+  fixpoint (owner 2026-09-27: the hooks discover runtime regions).
 - (b) **A new occurrence of a region in scope but not woven** (a recovery handler
   reached only under a fault). Today it is an ambient activation forever. New:
   a growth step inside the wave — INSTRUMENT with the grown region set (the

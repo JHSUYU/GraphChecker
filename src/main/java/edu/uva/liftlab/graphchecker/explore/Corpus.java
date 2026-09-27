@@ -35,10 +35,8 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -207,6 +205,10 @@ public final class Corpus implements Arms.Rows {
             new LinkedHashMap<String, Map<String, RootMintRow>>();
     private final Map<String, OccurrenceAddress> occurrenceById =
             new LinkedHashMap<String, OccurrenceAddress>();
+    /** occurrence id -> the sessions whose rows name it, whether or not
+     *  they captured it: where a run states it RAN. */
+    private final Map<String, Set<String>> namedBy =
+            new LinkedHashMap<String, Set<String>>();
     /** What the case declares each root may be, by root id. */
     private final Map<String, RootDomain> declaredDomains =
             new LinkedHashMap<String, RootDomain>();
@@ -393,6 +395,7 @@ public final class Corpus implements Arms.Rows {
             if (event.kind() == ScheduleEvent.Kind.SEND
                     && !event.endpoint().isEmpty()) {
                 senderByEndpoint.put(event.endpoint(), event.occurrence());
+                named(session.sessionId(), event.occurrence());
             } else if (event.kind() == ScheduleEvent.Kind.RECV) {
                 // "node|Anchor:<producer endpoint>@<site>[|handoffs]"
                 String[] parts = event.context().split("\\|", -1);
@@ -416,17 +419,18 @@ public final class Corpus implements Arms.Rows {
         for (ActivationRow row : session.activations()) {
             activationByOccurrence.putIfAbsent(session.sessionId() + "|"
                     + row.occurrence().id(), row);
-            remember(occurrenceById, row.occurrence());
+            remember(session.sessionId(), row.occurrence());
             // The sender an anchor names: a causal chain goes on through it.
             if (row.anchorProducer() != null) {
                 endpointById.put(row.anchorProducer().id(),
                         row.anchorProducer());
-                remember(occurrenceById, row.anchorProducer().occurrence());
+                remember(session.sessionId(),
+                        row.anchorProducer().occurrence());
             }
             add(activations, row.occurrence().id(), row);
         }
         for (DecisionRow row : session.decisions()) {
-            remember(occurrenceById, row.occurrence());
+            remember(session.sessionId(), row.occurrence());
             add(decisions, session.sessionId() + "|" + row.occurrence().id(), row);
             // A decision's clock cells are corpus symbols at Int.
             for (String cell : row.clockReadings().keySet()) {
@@ -434,17 +438,17 @@ public final class Corpus implements Arms.Rows {
             }
         }
         for (ExportRow row : session.exports()) {
-            remember(occurrenceById, row.endpoint().occurrence());
+            remember(session.sessionId(), row.endpoint().occurrence());
             endpointById.put(row.endpoint().id(), row.endpoint());
             add(exports, row.endpoint().id(), row);
             add(exportsOn, row.endpoint().occurrence().id(), row);
         }
         for (AttachRow row : session.attaches()) {
-            remember(occurrenceById, row.endpoint().occurrence());
+            remember(session.sessionId(), row.endpoint().occurrence());
             endpointById.put(row.endpoint().id(), row.endpoint());
             if (row.producer() != null) {
                 endpointById.put(row.producer().id(), row.producer());
-                remember(occurrenceById, row.producer().occurrence());
+                remember(session.sessionId(), row.producer().occurrence());
             }
             attachBySymbol.put(session.sessionId() + "|" + row.symbol(), row);
             Interaction interaction = row.interaction();
@@ -459,7 +463,7 @@ public final class Corpus implements Arms.Rows {
                     JavaSmtSorts.sortOfJava(row.javaType()));
         }
         for (RootMintRow row : session.roots()) {
-            remember(occurrenceById, row.occurrence());
+            remember(session.sessionId(), row.occurrence());
             rootBySymbol.put(session.sessionId() + "|" + row.symbol(), row);
             rootsById.computeIfAbsent(row.rootId(),
                     key -> new LinkedHashMap<String, RootMintRow>())
@@ -470,7 +474,7 @@ public final class Corpus implements Arms.Rows {
                     row.kind() == RootKind.MARKER ? Sort.BOOL : Sort.INT);
         }
         for (WriteRow row : session.writes()) {
-            remember(occurrenceById, row.endpoint().occurrence());
+            remember(session.sessionId(), row.endpoint().occurrence());
             writeByVersion.put(versionKey(session.sessionId(),
                     SmtLowering.locationKey(row.location()),
                     row.version()), row);
@@ -481,11 +485,11 @@ public final class Corpus implements Arms.Rows {
             touch(row.endpoint().occurrence(), row.location());
         }
         for (TargetRow row : session.targets()) {
-            remember(occurrenceById, row.occurrence());
+            remember(session.sessionId(), row.occurrence());
             add(targetsOn, row.occurrence().id(), row);
         }
         for (ReadRow row : session.reads()) {
-            remember(occurrenceById, row.endpoint().occurrence());
+            remember(session.sessionId(), row.endpoint().occurrence());
             if (!row.symbol().isEmpty()) {
                 readBySymbol.put(session.sessionId() + "|" + row.symbol(), row);
             }
@@ -507,9 +511,16 @@ public final class Corpus implements Arms.Rows {
                 + SmtLowering.locationKey(location);
     }
 
-    private static void remember(Map<String, OccurrenceAddress> into,
-                                 OccurrenceAddress occurrence) {
-        if (occurrence != null) into.put(occurrence.id(), occurrence);
+    /** One occurrence a session's rows name, by address. */
+    private void remember(String sessionId, OccurrenceAddress occurrence) {
+        if (occurrence == null) return;
+        occurrenceById.put(occurrence.id(), occurrence);
+        named(sessionId, occurrence.id());
+    }
+
+    private void named(String sessionId, String occurrenceId) {
+        namedBy.computeIfAbsent(occurrenceId,
+                key -> new LinkedHashSet<String>()).add(sessionId);
     }
 
     private static <T> void add(Map<String, List<T>> into, String key, T row) {
@@ -593,6 +604,15 @@ public final class Corpus implements Arms.Rows {
                 taken == null ? new ArrayList<DecisionRow>() : taken);
     }
 
+    /** The sessions whose rows name this occurrence, in corpus order: an
+     *  activation, a decision, a row at one of its endpoints, a SEND it made,
+     *  or an anchor naming it as the sender. */
+    public Set<String> namedBy(OccurrenceAddress occurrence) {
+        Set<String> sessions = namedBy.get(occurrence.id());
+        return sessions == null ? Collections.<String>emptySet()
+                : Collections.unmodifiableSet(sessions);
+    }
+
     public ActivationRow activation(String sessionId,
                                     OccurrenceAddress occurrence) {
         return activationOf(sessionId, occurrence.id());
@@ -665,7 +685,7 @@ public final class Corpus implements Arms.Rows {
      * The writes one read could have taken its value from: the observed one and
      * every HB-concurrent writer (R-I7.1, {@code smt.Arms}) -- the same
      * alternatives the composition offers. ONE implementation, used by the
-     * closure ({@link ClosurePlanner#writers}) and by {@link #upstreamOf}.
+     * closure ({@link ClosurePlanner#writers}).
      *
      * @param reader the reading occurrence, for the concurrency rule
      */
@@ -681,101 +701,6 @@ public final class Corpus implements Arms.Rows {
             }
         }
         return eligible;
-    }
-
-    /** Every occurrence that reaches one occurrence and its factor, itself
-     *  included, within ONE session (DESIGN4 SS3.2). In-edges (SS3.1): matched
-     *  communication transfers and candidate shared-state dependencies on the
-     *  reader's node ({@link #eligibleWrites}, {@link #observed}), including
-     *  reads stated only in expressions (E2). Not memoized. */
-    public Set<String> upstreamOf(OccurrenceAddress occurrence,
-                                  List<OccurrenceAddress> factor,
-                                  String sessionId) {
-        Set<String> reached = closure(occurrence, sessionId);
-        if (factor != null) {
-            for (OccurrenceAddress member : factor) {
-                reached.addAll(closure(member, sessionId));
-            }
-        }
-        return reached;
-    }
-
-    private Set<String> closure(OccurrenceAddress occurrence,
-                                String sessionId) {
-        Set<String> reached = new LinkedHashSet<String>();
-        Deque<OccurrenceAddress> pending = new ArrayDeque<OccurrenceAddress>();
-        reached.add(occurrence.id());
-        pending.add(occurrence);
-        while (!pending.isEmpty()) {
-            OccurrenceAddress at = pending.remove();
-            for (String next : reaches(at, sessionId)) {
-                if (!reached.add(next)) continue;
-                OccurrenceAddress address = occurrenceById.get(next);
-                if (address != null) pending.add(address);
-            }
-        }
-        return reached;
-    }
-
-    /** One occurrence's in-edges in one session: who delivered to it, who wrote
-     *  for it. */
-    private Set<String> reaches(OccurrenceAddress occurrence,
-                                String sessionId) {
-        Set<String> in = new LinkedHashSet<String>();
-        for (AttachRow attach : attachesOn(occurrence)) {
-            if (attach.producer() == null
-                    || !sessionId.equals(attach.sessionId())) {
-                continue;
-            }
-            OccurrenceAddress producer = attach.producer().occurrence();
-            if (producer != null) in.add(producer.id());
-        }
-        for (ReadRow read : readsOn(occurrence)) {
-            if (!sessionId.equals(read.sessionId())) continue;
-            observed(read.sessionId(), SmtLowering.locationKey(read.location()),
-                    read.observedVersion(), occurrence, in);
-        }
-        // E2: shared state a delivery rests on, stated only in its expression.
-        Set<String> walked = new LinkedHashSet<String>();
-        for (ExportRow export : exportsOn(occurrence)) {
-            if (!sessionId.equals(export.sessionId())) continue;
-            stated(export.sessionId(), export.expressionRef(), occurrence,
-                    walked, in);
-        }
-        for (WriteRow write : writesOn(occurrence)) {
-            if (!sessionId.equals(write.sessionId())) continue;
-            stated(write.sessionId(), write.expressionRef(), occurrence,
-                    walked, in);
-        }
-        return in;
-    }
-
-    /** The reads one published expression states, and who wrote them. */
-    private void stated(String sessionId, String expressionRef,
-                        OccurrenceAddress reader, Set<String> walked,
-                        Set<String> into) {
-        if (expressionRef == null || expressionRef.isEmpty()) return;
-        if (!walked.add(sessionId + "|" + expressionRef)) return;
-        for (StateRead read : expressionStateReads(sessionId, expressionRef)) {
-            observed(sessionId, read.locationKey(), read.write().version(),
-                    reader, into);
-        }
-    }
-
-    /** Writers of what one read could have observed, ON THE READER'S NODE (N1:
-     *  location keys are per JVM; cross-node influence travels only by
-     *  transfer). */
-    private void observed(String sessionId, String locationKey, long version,
-                          OccurrenceAddress reader, Set<String> into) {
-        for (WriteRow write : eligibleWrites(sessionId, locationKey, version,
-                reader)) {
-            OccurrenceAddress writer = write.endpoint().occurrence();
-            if (writer == null) continue;
-            if (reader != null && !reader.node().equals(writer.node())) {
-                continue;
-            }
-            into.add(writer.id());
-        }
     }
 
     /** Whether a decision is a FAULT decision: its lowered term REACHES a
@@ -804,21 +729,6 @@ public final class Corpus implements Arms.Rows {
             }
         }
         return sites;
-    }
-
-    /** Whether some session ran the region INSTRUMENTED (the weave holds it);
-     *  an admitted replay reaching an unwoven region is growth (DESIGN4
-     *  SS3.3b). */
-    public boolean woven(String regionId) {
-        for (List<ActivationRow> rows : activations.values()) {
-            for (ActivationRow row : rows) {
-                if (row.instrumented()
-                        && row.occurrence().regionId().equals(regionId)) {
-                    return true;
-                }
-            }
-        }
-        return false;
     }
 
     // ---- Arms.Rows ----

@@ -129,10 +129,19 @@ public final class ExploreMain {
         Map<String, Set<String>> flipSites =
                 new LinkedHashMap<String, Set<String>>();
         Set<String> opened = new LinkedHashSet<String>();
+        Map<OccurrenceAddress, String> grown =
+                new LinkedHashMap<OccurrenceAddress, String>();
+        Set<OccurrenceAddress> waiting =
+                new LinkedHashSet<OccurrenceAddress>();
         for (OccurrenceAddress root : roots) {
             ClosurePlanner.Plan plan = ClosurePlanner.plan(corpus, root,
                     maxTasks, scope);
             gaps.addAll(plan.gaps);
+            for (Map.Entry<OccurrenceAddress, String> exposure
+                    : plan.exposed.entrySet()) {
+                grown.putIfAbsent(exposure.getKey(), exposure.getValue());
+            }
+            waiting.addAll(plan.waiting);
             for (Task task : plan.tasks) {
                 if (!opened.add(task.taskId())) continue;
                 tasks.add(task);
@@ -166,8 +175,22 @@ public final class ExploreMain {
         // G_k and growth (DESIGN4 SS3); empty growth.jsonl + obligations.jsonl
         // is the driver's fixed point.
         WaveGraph.of(corpus).write(out, wave);
-        int exposed = WaveGraph.writeGrowth(corpus, anchorTask(roots, tasks),
-                out, gaps);
+        int exposed = WaveGraph.writeGrowth(corpus, grown, out);
+        // What only the seed replay ran waits for a focused replay to expose
+        // it -- unless this wave is the fixpoint: then none ever will, and
+        // the closure is incomplete.
+        boolean fixpoint = open.empty() && exposed == 0;
+        for (OccurrenceAddress unexposed : waiting) {
+            gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                    GapKind.ADMISSION_GAP, fixpoint ? GapClass.BLOCKING
+                            : GapClass.DIAGNOSTIC, unexposed.render(),
+                    "only the seed replay ran this occurrence, under no "
+                            + "planned task, and "
+                            + (fixpoint ? "the exploration ends here: no "
+                            + "focused replay ran it, so it is never a task"
+                            : "the first admitted focused replay that runs "
+                            + "it exposes it")));
+        }
         RowCodec.writeAll(out.resolve("tasks.jsonl"), tasks,
                 ExploreCodec::writeTask);
         // An empty file IS the frontier closing.
@@ -322,15 +345,6 @@ public final class ExploreMain {
         }
         return named.isEmpty() ? "(that region ran there not at all)"
                 : String.join(", ", named);
-    }
-
-    /** The anchor's own task, or null when the anchor opened none. */
-    private static Task anchorTask(List<OccurrenceAddress> roots,
-                                   List<Task> tasks) {
-        for (Task task : tasks) {
-            if (roots.contains(task.focused())) return task;
-        }
-        return null;
     }
 
     /** Every occurrence this wave's tasks hold: focused, and their factors. */
