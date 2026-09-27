@@ -1932,9 +1932,10 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     /**
-     * The concrete methods a call on {@code sig.owner} may run that {@code
-     * accept}s (CHA): for each concrete subtype of the owner, the method its
-     * lookup finds, declared there or inherited.  {@code
+     * The concrete methods of the analysis scope a call on {@code
+     * sig.owner} may run that {@code accept}s (CHA): for each concrete
+     * subtype of the owner, the method its lookup finds, declared there or
+     * inherited.  {@code
      * Replica.getGenerationStamp()} runs {@code Block}'s through {@code
      * ReplicaInfo extends Block implements Replica}, though {@code Block}
      * itself implements no {@code Replica}.
@@ -1949,7 +1950,12 @@ final class SeedBackwardStaticAnalyzer {
         if (declared == null) return Collections.emptyList();
         List<SootMethod> matches = new ArrayList<>();
         for (SootMethod target : abstractDispatch(owner, declared)) {
-            if (accept.test(target)) matches.add(target);
+            // The analysis scope's bodies only: a library body the Scene can
+            // load is still outside what the slice follows.
+            if (target.getDeclaringClass().isApplicationClass()
+                    && accept.test(target)) {
+                matches.add(target);
+            }
         }
         return matches;
     }
@@ -1975,7 +1981,7 @@ final class SeedBackwardStaticAnalyzer {
     private List<String> applicationImplementationSignatures(MethodSig sig) {
         List<String> signatures = new ArrayList<>();
         for (SootMethod implementation : concreteImplementations(sig,
-                method -> method.getDeclaringClass().isApplicationClass())) {
+                method -> true)) {
             signatures.add(implementation.getSignature());
         }
         return signatures;
