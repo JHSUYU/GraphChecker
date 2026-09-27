@@ -10,7 +10,8 @@ OUT=${OUT:-"$JDK_ROOT/build/causynth-smoke"}
 mkdir -p "$OUT"
 cd "$JDK_ROOT"
 "$JDK_HOME/bin/javac" -XDignore.symbol.file=true \
-  -bootclasspath "$JDK_HOME/jre/lib/rt.jar" -d "$OUT" \
+  -bootclasspath "$JDK_HOME/jre/lib/rt.jar:$JDK_HOME/jre/lib/jce.jar" \
+  -d "$OUT" \
   test/causynth/RegionApiSmoke.java \
   test/causynth/RegionAtomicApiSmoke.java \
   test/causynth/RegionBoxedPrimitiveApiSmoke.java \
@@ -36,6 +37,7 @@ cd "$JDK_ROOT"
   test/causynth/RegionLookupSwitchApiSmoke.java \
   test/causynth/org/slf4j/helpers/CausynthObservationProbe.java \
   test/causynth/RegionLoggingObservationSmoke.java \
+  test/causynth/RegionOneWayFunctionSmoke.java \
   test/causynth/RegionReferenceBranchApiSmoke.java \
   test/causynth/RegionRepeatedFieldOwnerMapApiSmoke.java \
   test/causynth/RegionShadowStackLifecycleSmoke.java \
@@ -79,6 +81,7 @@ for smoke in \
   RegionPausedSymbolizationSmoke \
   RegionLookupSwitchApiSmoke \
   RegionLoggingObservationSmoke \
+  RegionOneWayFunctionSmoke \
   RegionReferenceBranchApiSmoke \
   RegionRepeatedFieldOwnerMapApiSmoke \
   RegionShadowStackLifecycleSmoke \

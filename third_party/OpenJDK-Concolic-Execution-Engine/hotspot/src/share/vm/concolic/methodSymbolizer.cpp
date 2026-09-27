@@ -49,6 +49,18 @@ void MethodSymbolizer::init_helper_methods() {
   add_prefix_disabled_class("org/apache/log4j/");
   add_prefix_disabled_class("org/apache/commons/logging/");
   add_prefix_disabled_class("java/util/logging/");
+
+  // A one-way function -- digest, MAC, cipher -- is a concrete subtree for
+  // the same reason: no solver inverts it, so a symbolic output only grows
+  // the graph.  hdfs-11741's Balancer handed a symbolic keyId to DIGEST-MD5
+  // and the session cipher made every transferred block CBC constraints
+  // (41 MB of expressions in one seed session).  A decision on such an
+  // output (a MAC check) stays a concrete decision of the recording.  Only
+  // provider packages: the mute holds for the call's whole extent, and they
+  // call back into no application code (a SASL mechanism would: its
+  // callback handler is the workload's).
+  add_prefix_disabled_class("com/sun/crypto/provider/");
+  add_prefix_disabled_class("sun/security/provider/");
 }
 
 void MethodSymbolizer::add_invoke_helper_methods(const std::string class_name,
