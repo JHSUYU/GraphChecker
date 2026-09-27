@@ -3,7 +3,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import edu.uva.liftlab.graphchecker.plan.VmExpressionTable;
+import edu.uva.liftlab.graphchecker.contract.VmExpressionTable;
 import java.util.ArrayList;
 import java.util.List;
 

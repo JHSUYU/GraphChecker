@@ -1,4 +1,4 @@
-package edu.uva.liftlab.graphchecker.plan;
+package edu.uva.liftlab.graphchecker.contract;
 
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.CanonicalJson;
@@ -75,8 +75,14 @@ public final class SharedExpressionTable {
         return expanded.getAsJsonObject();
     }
 
-    /** Incremental decoder which interns anchors across several envelopes. */
-    public static final class Decoder {
+    /**
+     * One store of anchors, each distinct node (by identity) hashed once:
+     * decodes envelopes, compacts the graphs it holds, and content-addresses
+     * an expression.  A walk that re-hashed shared nodes costs the tree, not
+     * the DAG: a File.getParent chain (finalize-gs a8) was 389066 nodes of
+     * 198 distinct, and its session table never finished writing.
+     */
+    public static final class Codec {
         private final Resolver resolver = new Resolver();
 
         public synchronized JsonObject expand(JsonObject artifact) {
@@ -98,14 +104,25 @@ public final class SharedExpressionTable {
             if (artifact != null) resolver.collectTables(artifact);
         }
 
-        /** Compacts a graph this decoder returned, reusing its anchors. */
+        /** One portable artifact: each expression a reference, each node
+         *  defined once. */
         public synchronized JsonObject compact(JsonObject artifact) {
             if (artifact == null) return new JsonObject();
-            return compactDecodedArtifact(artifact,
-                    new Builder(resolver.definitions,
-                            resolver.anchorsByExpanded));
+            return compactDecodedArtifact(artifact, builder());
         }
 
+        /** The SHA-256 hex of one expression's Merkle anchor. */
+        public synchronized String digest(JsonObject expression) {
+            JsonElement compact = builder().compact(expression, false);
+            String anchor = isReference(compact) ? anchor(compact)
+                    : anchorFor(compact.getAsJsonObject());
+            return anchor.substring(PREFIX.length());
+        }
+
+        private Builder builder() {
+            return new Builder(resolver.definitions,
+                    resolver.anchorsByExpanded);
+        }
     }
 
     private static boolean isReference(JsonElement value) {
@@ -345,18 +362,17 @@ public final class SharedExpressionTable {
                         new IdentityHashMap<JsonElement, Boolean>())));
     }
 
+    /** One compaction over the codec's anchors, adding the ones it hashes. */
     private static final class Builder {
-        private final Map<String, JsonObject> definitions =
-                new LinkedHashMap<>();
-        private final Map<JsonElement, String> compactedExpressions =
-                new IdentityHashMap<>();
+        private final Map<String, JsonObject> definitions;
+        private final Map<JsonElement, String> compactedExpressions;
         private final Set<String> references = new LinkedHashSet<>();
         private Set<String> reachable = Collections.emptySet();
 
-        private Builder(Map<String, JsonObject> verifiedDefinitions,
-                        Map<JsonElement, String> verifiedAnchors) {
-            definitions.putAll(verifiedDefinitions);
-            compactedExpressions.putAll(verifiedAnchors);
+        private Builder(Map<String, JsonObject> definitions,
+                        Map<JsonElement, String> anchors) {
+            this.definitions = definitions;
+            this.compactedExpressions = anchors;
         }
 
         private JsonElement compact(JsonElement value, boolean artifactRoot) {

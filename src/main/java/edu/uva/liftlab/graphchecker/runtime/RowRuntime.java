@@ -21,6 +21,7 @@ import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.SessionDir;
+import edu.uva.liftlab.graphchecker.contract.SharedExpressionTable;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.smt.Arms;
@@ -33,7 +34,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayDeque;
-import java.util.Collections;
 import java.util.Deque;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
@@ -608,14 +608,9 @@ public final class RowRuntime {
             return "";
         }
         JsonObject object = expression.getAsJsonObject();
-        // One serialization per tree: deep trees are republished by every
-        // write of their location.
-        String ref = REFS.get(object);
-        if (ref == null) {
-            ref = "EXPR." + ArtifactIO.digest(
-                    Text.safe(RowCodec.toLine(object)), 16);
-            REFS.put(object, ref);
-        }
+        // Content-addressed over the DAG: each shared node hashed once, where
+        // serializing the tree costs its expansion.
+        String ref = "EXPR." + expressions.digest(object).substring(0, 16);
         SessionPublisher session = publisher;
         if (session != null) session.expression(ref, object);
         return ref;
@@ -794,10 +789,9 @@ public final class RowRuntime {
         }
     }
 
-    /** Expression refs already computed, by the tree they name. */
-    private static final Map<JsonObject, String> REFS =
-            Collections.synchronizedMap(
-                    new IdentityHashMap<JsonObject, String>());
+    /** The anchors of every expression filed, by the node they name. */
+    private static volatile SharedExpressionTable.Codec expressions =
+            new SharedExpressionTable.Codec();
 
     /** Events already stated (every kind), so one event is one occurrence's. */
     private static final Map<String, Boolean> CLAIMED_EVENTS =
@@ -924,7 +918,7 @@ public final class RowRuntime {
             AMBIENT.clear();
             CLAIMED_EVENTS.clear();
             MINT_LABELS.clear();
-            REFS.clear();
+            expressions = new SharedExpressionTable.Codec();
             Identity.resetForTests();
             CLOCK_CELLS.clear();
             publisher = null;

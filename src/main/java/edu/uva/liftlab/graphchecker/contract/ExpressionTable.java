@@ -11,7 +11,7 @@ import java.util.Set;
 /**
  * CONTRACT-SPEC 2: the session's {@code expressions.json}, ref to the VM's
  * expression object unchanged.  Rows carry refs into this shared DAG, never
- * inlined trees.
+ * inlined trees; the file holds it as a DAG too ({@link SharedExpressionTable}).
  */
 public final class ExpressionTable extends Value {
     private final Map<String, JsonObject> expressions;
@@ -29,10 +29,12 @@ public final class ExpressionTable extends Value {
         return new ExpressionTable(Collections.<String, JsonObject>emptyMap());
     }
 
-    /** Reads the file's object form: one member per reference. */
+    /** Reads the file's form: one member per reference, a node shared in
+     *  the file shared in memory. */
     public static ExpressionTable fromJson(JsonObject json) {
         Map<String, JsonObject> expressions = new LinkedHashMap<>();
-        for (Map.Entry<String, JsonElement> member : json.entrySet()) {
+        for (Map.Entry<String, JsonElement> member
+                : new SharedExpressionTable.Codec().expand(json).entrySet()) {
             if (!member.getValue().isJsonObject()) {
                 throw new IllegalArgumentException(
                         "expression " + member.getKey() + " is not an object");
@@ -56,12 +58,14 @@ public final class ExpressionTable extends Value {
         return expressions;
     }
 
+    /** The file's form: one member per reference, each node defined once
+     *  in the shared table. */
     public JsonObject toJson() {
         JsonObject json = new JsonObject();
         for (Map.Entry<String, JsonObject> entry : expressions.entrySet()) {
             json.add(entry.getKey(), entry.getValue());
         }
-        return json;
+        return new SharedExpressionTable.Codec().compact(json);
     }
 
     @Override

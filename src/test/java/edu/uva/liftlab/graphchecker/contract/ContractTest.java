@@ -6,6 +6,7 @@ import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Collections;
@@ -17,6 +18,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -57,19 +59,29 @@ public class ContractTest {
     public TemporaryFolder iteration = new TemporaryFolder();
 
     /** A session's table is written whole from a thread the program has
-     *  interrupted: the runtime writes from workload threads, and a channel
-     *  write there left hdfs-17899-bug1 v82 two empty expressions.json. */
+     *  interrupted (a channel write there left hdfs-17899-bug1 v82 two empty
+     *  expressions.json), and as the DAG it is: a chain whose every node
+     *  names the one below twice is 2^64 nodes as a tree (a File.getParent
+     *  chain left finalize-gs a8's table unwritable). */
     @Test
-    public void anInterruptedWriterStillWritesTheWholeTable()
+    public void aSessionTableIsWrittenWholeAndAsTheDagItIs()
             throws IOException {
         Path file = iteration.getRoot().toPath().resolve("expressions.json");
-        JsonObject constant = new JsonObject();
-        constant.addProperty("_type", "ConstExpr");
-        constant.addProperty("_exp", "C_I_1");
-        constant.addProperty("_java_type", "I");
+        JsonObject chain = new JsonObject();
+        chain.addProperty("_type", "ConstExpr");
+        chain.addProperty("_exp", "C_I_1");
+        chain.addProperty("_java_type", "I");
+        for (int depth = 0; depth < 64; depth++) {
+            JsonObject sum = new JsonObject();
+            sum.addProperty("_type", "BinaryExpression");
+            sum.addProperty("_op", "+");
+            sum.add("_left", chain);
+            sum.add("_right", chain);
+            chain = sum;
+        }
         Map<String, JsonObject> expressions =
                 new LinkedHashMap<String, JsonObject>();
-        expressions.put("EXPR.0000000000000001", constant);
+        expressions.put("EXPR.0000000000000001", chain);
         Thread.currentThread().interrupt();
         try {
             RowCodec.writeExpressions(file, ExpressionTable.of(expressions));
@@ -77,8 +89,12 @@ public class ContractTest {
             assertTrue("the interrupt is the program's, left standing",
                     Thread.interrupted());
         }
-        assertEquals(constant, RowCodec.readExpressions(file)
-                .expression("EXPR.0000000000000001"));
+        assertTrue(Files.size(file) < 64 * 1024);
+        JsonObject read = RowCodec.readExpressions(file)
+                .expression("EXPR.0000000000000001");
+        assertEquals(new SharedExpressionTable.Codec().digest(chain),
+                new SharedExpressionTable.Codec().digest(read));
+        assertSame(read.get("_left"), read.get("_right"));
     }
 
     @Test

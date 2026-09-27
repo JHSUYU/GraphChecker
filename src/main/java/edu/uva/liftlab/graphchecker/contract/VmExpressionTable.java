@@ -1,4 +1,4 @@
-package edu.uva.liftlab.graphchecker.plan;
+package edu.uva.liftlab.graphchecker.contract;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -52,11 +52,10 @@ public final class VmExpressionTable {
         return false;
     }
 
-    /** Decodes a region's VM envelopes, interning equal nodes; compacted once
-     *  at publication. */
+    /** Decodes a region's VM envelopes, interning equal nodes. */
     public static final class Store {
-        private final SharedExpressionTable.Decoder decoder =
-                new SharedExpressionTable.Decoder();
+        private final SharedExpressionTable.Codec codec =
+                new SharedExpressionTable.Codec();
         private final RawResolver rawResolver = new RawResolver();
 
         public synchronized JsonObject importEnvelope(String serialized) {
@@ -80,12 +79,12 @@ public final class VmExpressionTable {
             if (usesNativeDag(envelope)) {
                 // Register portable tables beside the VM table first;
                 // RawResolver alone walks the native table.
-                collectPortableTables(envelope, decoder,
+                collectPortableTables(envelope, codec,
                         Collections.newSetFromMap(
                                 new IdentityHashMap<JsonElement, Boolean>()));
-                expanded = rawResolver.importEnvelope(envelope, decoder);
+                expanded = rawResolver.importEnvelope(envelope, codec);
             } else {
-                expanded = decoder.expand(envelope);
+                expanded = codec.expand(envelope);
             }
             return expanded;
         }
@@ -97,19 +96,14 @@ public final class VmExpressionTable {
             return value == null || value.isJsonNull() ? null : value;
         }
 
-        /** Returns one portable artifact with every reachable node stored once. */
-        public synchronized JsonObject compact(JsonObject artifact) {
-            return decoder.compact(artifact);
-        }
-
         private static void collectPortableTables(
-                JsonElement value, SharedExpressionTable.Decoder decoder,
+                JsonElement value, SharedExpressionTable.Codec codec,
                 Set<JsonElement> seen) {
             if (value == null || value.isJsonNull()
                     || value.isJsonPrimitive() || !seen.add(value)) return;
             if (value.isJsonArray()) {
                 for (JsonElement child : value.getAsJsonArray()) {
-                    collectPortableTables(child, decoder, seen);
+                    collectPortableTables(child, codec, seen);
                 }
                 return;
             }
@@ -118,13 +112,13 @@ public final class VmExpressionTable {
             if (table != null) {
                 JsonObject tableOnly = new JsonObject();
                 tableOnly.add(SharedExpressionTable.FIELD, table);
-                decoder.collectTables(tableOnly);
+                codec.collectTables(tableOnly);
             }
             for (Map.Entry<String, JsonElement> field : object.entrySet()) {
                 if (!FIELD.equals(field.getKey())
                         && !SharedExpressionTable.FIELD.equals(
                                 field.getKey())) {
-                    collectPortableTables(field.getValue(), decoder, seen);
+                    collectPortableTables(field.getValue(), codec, seen);
                 }
             }
         }
@@ -138,11 +132,11 @@ public final class VmExpressionTable {
         /** Resolves one self-contained envelope, interning each new definition
          *  once. */
         private JsonObject importEnvelope(
-                JsonObject artifact, SharedExpressionTable.Decoder decoder) {
+                JsonObject artifact, SharedExpressionTable.Codec codec) {
             Set<RawKey> supplied = new LinkedHashSet<>();
             collectTables(artifact, supplied);
             validateDefinitions(artifact, supplied);
-            JsonElement expandedArtifact = expandInterned(artifact, decoder);
+            JsonElement expandedArtifact = expandInterned(artifact, codec);
             if (!expandedArtifact.isJsonObject()) {
                 throw new IllegalArgumentException(
                         "VM artifact root must be object");
@@ -238,13 +232,13 @@ public final class VmExpressionTable {
 
         private JsonElement expandInterned(
                 JsonElement value,
-                SharedExpressionTable.Decoder decoder) {
+                SharedExpressionTable.Codec codec) {
             if (value == null || value.isJsonNull()) return JsonNull.INSTANCE;
             if (value.isJsonPrimitive()) return value.deepCopy();
             if (value.isJsonArray()) {
                 JsonArray result = new JsonArray();
                 for (JsonElement child : value.getAsJsonArray()) {
-                    result.add(expandInterned(child, decoder));
+                    result.add(expandInterned(child, codec));
                 }
                 return result;
             }
@@ -254,13 +248,13 @@ public final class VmExpressionTable {
                 JsonElement held = expanded.get(key);
                 if (held != null) return held;
                 JsonObject definition = definitions.get(key);
-                JsonElement local = expandInterned(definition, decoder);
+                JsonElement local = expandInterned(definition, codec);
                 if (!local.isJsonObject()) {
                     throw new IllegalArgumentException(
                             "VM expression definition is not an object: "
                                     + key);
                 }
-                JsonElement interned = decoder.internExpression(
+                JsonElement interned = codec.internExpression(
                         local.getAsJsonObject());
                 JsonElement raced = expanded.putIfAbsent(key, interned);
                 return raced == null ? interned : raced;
@@ -272,7 +266,7 @@ public final class VmExpressionTable {
                 result.add(field.getKey(), "pathGuard".equals(field.getKey())
                         && (child == null || child.isJsonNull())
                         ? emptyConjunction()
-                        : expandInterned(child, decoder));
+                        : expandInterned(child, codec));
             }
             return result;
         }
