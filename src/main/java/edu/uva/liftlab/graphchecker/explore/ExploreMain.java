@@ -175,6 +175,25 @@ public final class ExploreMain {
         // G_k and growth (DESIGN4 SS3); empty growth.jsonl + obligations.jsonl
         // is the driver's fixed point.
         WaveGraph.of(corpus).write(out, wave);
+        // An address is grown once: a planned occurrence no replay ran again
+        // since depends on timing the replays do not reproduce (hdfs-17897
+        // v83: the NameNode converts a key command only on the heartbeat that
+        // carries one), and growing it again duplicates a plan row.
+        Set<String> planned = plannedOccurrences(iteration);
+        Set<OccurrenceAddress> unreproduced =
+                new LinkedHashSet<OccurrenceAddress>(grown.keySet());
+        unreproduced.addAll(waiting);
+        for (OccurrenceAddress occurrence : unreproduced) {
+            if (!planned.contains(occurrence.render())) continue;
+            grown.remove(occurrence);
+            waiting.remove(occurrence);
+            gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                    GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+                    occurrence.render(), "planned at this address and no "
+                            + "replay since ran it: whether it runs depends "
+                            + "on timing the replays do not reproduce, and "
+                            + "what it delivered stays in the wire arms"));
+        }
         int exposed = WaveGraph.writeGrowth(corpus, grown, out);
         // What only the seed replay ran waits for a focused replay to expose
         // it -- unless this wave is the fixpoint: then none ever will, and
@@ -345,6 +364,21 @@ public final class ExploreMain {
         }
         return named.isEmpty() ? "(that region ran there not at all)"
                 : String.join(", ", named);
+    }
+
+    /** The occurrence address of every task row the iteration's plan holds,
+     *  grown rows included. */
+    private static Set<String> plannedOccurrences(Path iteration)
+            throws IOException {
+        Set<String> planned = new LinkedHashSet<String>();
+        Path plan = iteration.resolve("execution_task_plan.jsonl");
+        if (!Files.exists(plan)) return planned;
+        for (JsonObject row : RowCodec.readJsonl(plan)) {
+            if (row.has("occurrenceId")) {
+                planned.add(row.get("occurrenceId").getAsString());
+            }
+        }
+        return planned;
     }
 
     /** Every occurrence this wave's tasks hold: focused, and their factors. */

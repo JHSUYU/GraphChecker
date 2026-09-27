@@ -1138,6 +1138,20 @@ public class ExploreTest {
                 assertEquals("grown from the focused replay naming it: "
                                 + label, "s-flip",
                         plan.exposed.get(producer));
+                // Once planned, an address is not grown again: whether it
+                // runs is the replays' timing (hdfs-17897 v83).
+                JsonObject plannedRow = new JsonObject();
+                plannedRow.addProperty("occurrenceId", producer.render());
+                RowCodec.writeJsonl(iteration.resolve(
+                        "execution_task_plan.jsonl"),
+                        Collections.singletonList(plannedRow));
+                Path wave = iteration.resolve("obligations-0000");
+                Path results = iteration.resolve("results.jsonl");
+                Files.write(results, new byte[0]);
+                plan(iteration, TARGET_SELECTOR, null, results, wave, 0);
+                assertTrue("a planned address grows no row: " + label,
+                        RowCodec.readJsonl(wave.resolve(WaveGraph.GROWTH))
+                                .isEmpty());
             } else {
                 assertFalse(label, task);
                 assertTrue("the seed replay is not re-run: " + label,
