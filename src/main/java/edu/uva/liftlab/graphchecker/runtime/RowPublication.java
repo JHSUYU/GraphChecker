@@ -257,7 +257,8 @@ final class RowPublication {
         String symbol = optionalString(node, "_exp");
         if (symbol.isEmpty()) {
             // A guarded read has no symbol: name the version it read.
-            symbol = locationKey + "@v" + observed;
+            symbol = versionSymbol(RowRuntime.sessionId(), locationKey,
+                    "v" + observed);
         }
         JsonElement returned = node.get("concreteValue");
         if (returned == null || returned.isJsonNull()) {
@@ -320,8 +321,8 @@ final class RowPublication {
         String projected = optionalString(node, "_exp");
         if (projected.isEmpty()) {
             // One symbol per READ, not per field.
-            projected = locationKey + (observed >= 0L ? "@v" + observed
-                    : "@e" + event);
+            projected = versionSymbol(RowRuntime.sessionId(), locationKey,
+                    observed >= 0L ? "v" + observed : "e" + event);
         }
         publishRead(node, identity, locationKey, location, observed, event,
                 projected, stated);
@@ -346,6 +347,18 @@ final class RowPublication {
                 LoggedEventSites.siteIndex(node, locationKey, event, site,
                         false),
                 ReadRow.UNKNOWN_VERSION);
+    }
+
+    /**
+     * The name of a read the VM named nothing: the version (or event) it
+     * read, in this session.  A rid and a version count within one run, so
+     * without the session two replays that diverged spell two objects alike
+     * -- hdfs-17897 v67: {@code INSTANCE_FIELD/203#24@v927} a Long's value
+     * in one session and a Boolean's in another, one name at two sorts.
+     */
+    static String versionSymbol(String session, String locationKey,
+                                String version) {
+        return locationKey + "@" + version + "@" + session;
     }
 
     /**

@@ -1847,6 +1847,15 @@ public class RowRuntimeTest {
      * target branch on (adhoc reader-chunk's first-chunk offset check).
      */
     @Test
+    public void aReadTheVmNamedNothingIsNamedInItsOwnSession() {
+        // Two replays that diverged hold two objects under one rid and
+        // version; one corpus-wide name would give them one sort.
+        assertFalse(RowPublication.versionSymbol("s1", "INSTANCE_FIELD/203#24",
+                "v927").equals(RowPublication.versionSymbol("s2",
+                "INSTANCE_FIELD/203#24", "v927")));
+    }
+
+    @Test
     public void aDisjunctiveGuardIsTheOrOfItsTestsFatalArms() {
         JsonObject a = predicate("a"), c = predicate("c");
         String refA = RowRuntime.expressionRef(a);
