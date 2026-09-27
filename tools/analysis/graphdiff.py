@@ -690,6 +690,9 @@ def main():
             detail[(case, sid)] = (D, N, s, seed, rnames, row)
             row['_exchange'] = ' '.join(sorted(ex))
             scopes[(case, sid)] = (direct, down)
+    if not rows_out:
+        print('no admitted focused replay in these cases: nothing to diff')
+        return
     with open(OUT + '/sessions.csv', 'w', newline='') as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows_out[0].keys()))
         w.writeheader()

@@ -576,6 +576,103 @@ CONFIRM 的期望边与结论、v77 的调度停滞日志 `schedule-stalls.txt`�
 OOM、2.5 GB gap 文件让 jq 截断）、`39b2e37d6`（IMPORT 闸门逐会话读取，11741 的 240 个会话从 8 GB OOM
 降到 473 MB）。
 
+## 12. 不动点探索 + 闭包 GROW 的引擎上重跑（2026-09-27，a8–a9f）
+
+引擎：obligation 按守卫依赖去重、探索跑到不动点、闭包驱动 GROW（`c49e42aa9` 到 `bf164f035`）。52 个 ad-hoc case
+按批次跑在 p99→p106 上；每一轮暴露的缺陷都按通用方式修掉后再重跑。
+
+| 轮次 | 快照 | case | 结果 |
+|---|---|---|---|
+| a8 / a8r | p99 `003b0261a` / p101 `efa7637d9` | 34 + 6 | INCONCLUSIVE 24，MISSING 13，**SAT_UNCONFIRMED 1**（commit-gs.TestFileAppend2，§11 的共享字段假阳性在新引擎上复现） |
+| a9 | p102 `032bb0fd7` | 24 | MISSING 19（13 个是本人 `37c9a4381` 的回归，见下 3），INCONCLUSIVE 5 |
+| a9b | p103 `d808d2982` | 19 | MISSING 17（readVLong 被循环预算截断，见下 3） |
+| a9c | p104 `13ddabb62` | 17 | **SAT_CANDIDATE 2**（CLOCK_SKEW，CONFIRM=true，被 OCCURRENCE_ADDRESS_SHARED 扣下，见下 5），INCONCLUSIVE 6 |
+| a9d | p105 `df0f73d24` | 20 | INCONCLUSIVE 9；token 的 selector 因折叠规则改变而过期 |
+| a9e | p106 `ab01c9576` | 8 | **PASS 2**：token-expired / token-pw-expired × TestFailoverWithBlockTokensEnabled |
+| a9f | p106 + 树 `cea6fb0bf6c` | 6 | 等待修复后 6 个种子重放全部到达 target（此前全是 MISSING）；INCONCLUSIVE 6：token-expired.mirror NO_SUPPORTED_WITNESS（见下）、token-nokey.mirror PATH_SELF_CONTRADICTORY + 闭包在 64 个 task 处截断（BOUND 陈述）、token-nokey.replicate 34 个 TOPOLOGY_DIVERGENCE、blockid/pw-expired.mirror 种子重放分歧（见下）、password.mirror φ 为具体值；4 次故障 GROW |
+
+**被接受的发现（PASS）**：`adhoc-token-expired.TestFailoverWithBlockTokensEnabled-ensureInvalidBlockTokensAreRejected`
+与 `adhoc-token-pw-expired.…` —— CLOCK_SKEW，polarityDecides，移动的根是 DataNode 在 writeBlock occurrence
+（`REGION.f5aa492d`，`Root:DATA_XCEIVER#1`）里读到的时钟；CONFIRM：`confirmed=true … every edge the model chose was
+taken, and the anchor observed the fatal`。与 §5.4 的 mirror/proxy 是同一类：HDFS 假定各节点时钟大致同步，DataNode
+时钟比 NameNode 快出一个 token 寿命，块 token 就被判过期。它来自一个**现成的集群单测**（没改一行），不是专门写的工作负载。
+
+**这些轮次暴露并修掉的引擎缺陷**（都在 main，均为通用修复，九个 case 用 v85 回归）：
+
+1. `032bb0fd7` 表达式是 DAG，却被当成树序列化：`File.getParent` 链 94 层、389066 个节点里只有 198 个不同，ref 的摘要和
+   `expressions.json` 都按树展开（239 MB、重写永远写不完，finalize-gs / recv-offset 的种子重放卡死）。现在会话表用已有的
+   Merkle 编码（CONTRACT-SPEC 本来就这样规定），ref 是 Merkle 锚点的前 16 位：239 MB → 0.6 MB，finalize-gs 852 s 跑完。
+2. `6d9a4b4fe` 调度器的自等待：一个 occurrence 的线程等在自己已经越过的槽前面（NN 处理 DN 块报告的线程这次没有 enqueue，
+   却在 SEND 响应前等自己录制里的 enqueue），只有 watchdog 超时（16–49 s）能解开，排在后面的 addBlock 超过客户端 60 s IPC
+   超时（a8 reader-chunk.flush、sender-gs.flush、a8r addblock）。现在等待者立即放弃自己 (context, occurrence) 在前面没做的槽。
+3. `13ddabb62` 循环预算按**整个 region 激活**累计：target 的 occurrence 变成整条 DataXceiver 连接后，readVLong 被多次调用，
+   累计第 9 次就截断，永远走不到 checkAccess。两种预算（展开界、fixed-count 体上限）现在都按 (循环, 方法激活的 frame token)
+   计数，open/close invocation 钩子整个删掉。途中本人 `37c9a4381`（假定数组长度在循环前计算）是回归：javac 在下标循环的
+   header 里重读 `arr.length`，13 个 case 在 INSTRUMENT 被拒；已由 `29a65ce30` → `13ddabb62` 取代。
+4. `3438b585a` String 语义：VM 本来就把 String 调用记成 `OpStrExpression`，缺的是降阶。HDFS 把块 id 和 GS 写进文件名
+   （`blk_<id>_<gs>.meta`）再读回来，a8 的 finalize-gs / ack-seqno / sender-gs 因 `substring`、`charAt`、long/char 的
+   `toString` 拒绝而整条路径丢弃。现在它们按 Java 语义降阶（越界即未定义）；z3 没有 last index，`lastIndexOf` 用一个无量词公理
+   唯一确定。a9d 里这些 case 不再有 MODEL_SEMANTICS_MISSING，停在下一个原因（未陈述的 map 读）。
+5. `df0f73d24` **老板对折叠规则的修正**（"Lost 不折叠"）：DataXceiver.run 是静态回溯走到线程入口得到的 TASK_ENTRY region，
+   它在连接的第一条消息之前打开，acceptor 不给 start frame，context 是 Lost，于是一个 DataNode 的所有连接共享一个地址。
+   现在以 Lost 打开的 occurrence 不再折叠之后在有 context 时进入的 region，后者按 (r,c,i) 自己成为 occurrence
+   （`Root:DATA_XCEIVER#k`）。a9c 两个被扣下的 CLOCK_SKEW 在 a9e 发布。
+6. `7f90ff7b0` 拒绝信息：写行存在、只是它的表达式降阶失败时，不再说"没有这个版本的写"。
+
+工作负载侧：树 `cea6fb0bf6c`——mirror / proxy / replicate 三个工作负载在录制窗口里用写死的 15–20 s 等待，违反
+"窗口内等待用 `WINDOW_WAIT_MS`"的准备规则；concolic 重放比它慢，`waitFor` 先放弃、集群关闭、源端 SASL 被中断，
+种子重放到不了 target（a9d/a9e 的 token-*.mirror）。
+
+**故障注入带来的 GROW**（`tools/analysis/graphdiff.py`）：ad-hoc 这一侧共 7 次，**全部由故障世界暴露**，暴露的都是
+NameNode 的 `UserGroupInformation.doAs`（REGION.084d06ab，context Lost）——客户端/DataNode 的 RPC 在故障门上失败后，
+重试把请求送进一个录制里没出现过的 NN 处理 occurrence：
+
+| 轮 | case | GROW | 暴露它的故障门 | 被捕获为 task |
+|---|---|---|---|---|
+| a8 | ack-seqno.flush | 2 | `IPC:RESPONSE` | 2 |
+| a8 | pipeline-reply.flush | 1 | `IPC:RESPONSE:SocketTimeout` | 1 |
+| a9f | token-nokey.mirror | 2 | `IPC:RESPONSE:EOF`、`IPC:REQUEST` | 2 |
+| a9f | token-nokey.replicate | 1 | `IPC:RESPONSE` | 1 |
+| a9f | token-password.mirror | 1 | `IPC:RESPONSE:EOF` | 0（重跑后 ADMITTED，occurrence 仍未被捕获） |
+
+同一批故障世界里图的变化（相对各自对照重放，扣除对照噪声）：a9f 的 token-nokey.mirror 44 个故障会话里
+ABORT 41、EDGE_CUT 39、STATE_DIVERGENCE 21、TOLERATE 3、RETRY 1；token-password.mirror 12 个里 ANCHOR_DROPPED 2。
+其余 case 在 EXPLORE 之前就被上面的缺陷挡住，或者 target 是具体值判定；a9c/a9e 的两个 CLOCK_SKEW 直接由种子会话组合
+得出（时钟根在公式里自由），没有焦点重放。九个 case（v85）里 GROW 重跑：17897 5 次、
+pathA 4、pathC 4、bug1 3、pathB 2、bug3 2、17960 0。
+
+**过滤（全部来自真实运行）**：
+* CONFIRM 否决：commit-gs.TestFileAppend2（a8，SAT_UNCONFIRMED）——§11 的共享字段 HB 过近似在新引擎上复现；这几轮里没有
+  出现第二个被 CONFIRM 否决的候选，所以"共享字段之外的原因"目前没有真实例子。
+* 身份关卡：a9c 的两个 CLOCK_SKEW 已经 CONFIRM=true，仍因 OCCURRENCE_ADDRESS_SHARED（BLOCKING）不发布——证据指向的
+  occurrence 不能被唯一命名时宁可扣下。
+* DECIDE：token-expired.proxy（a9e）与 token-expired.mirror（a9f）NO_SUPPORTED_WITNESS。被选中的路径来自**种子重放**
+  会话，`fatalObserved: true`：这两个工作负载把块 token 的寿命设成 1 分钟，concolic 重放从签发到检查超过了一分钟，
+  token 在重放里真的过期了——致命臂由引擎自己的慢时钟触发，不是模型里的任何根。赋值为空、没有移动的根/时钟/配对，
+  DECIDE 没有机制可命名，不发布。（种子重放若在时钟根上种入录制值，这一类就不会出现；列入下一步。）token-nokey.TestFailover（a9d）与
+  recv-offset.mirror（a9）PATH_SELF_CONTRADICTORY。
+
+**种子重放复现不了录制（mirror 工作负载，a9f）**：等待修好之后，token-*.mirror 的种子重放仍然到不了 mirror-dn：
+head-dn → mirror-dn 的 SASL 握手在重放里断开（mirror 的 occurrence 没等到 SASL REQUEST 就关闭，head 收不到 RESPONSE，
+`The stream is closed`，之后 head 上 `ReplicaNotFoundException`）。这个工作负载的前提是块 key 的轮换时机：录制里 head 与
+mirror 在握手时持有同一把 key；重放里第 4 个槽的 head-dn 心跳 SEND 16 s 没出现、被放弃，心跳（也是 key 下发的通道）
+随后自由运行，key 到达两个节点的先后与录制不同，加密协商失败。它是"守护进程时序"一类的种子重放分歧，不是 CONFIRM
+否决；同一个工作负载在 pathA（织入范围小、重放快）里能复现。
+
+**符号选择挡住 φ 的一个真实例子（recv-offset.flush）**：守卫 `header.getOffsetInBlock() > replicaInfo.getNumBytes()`
+（`BlockReceiver.receivePacket`）。静态一侧选对了：`PacketHeader.getOffsetInBlock()` 的返回值是 ROOT_SITE（切片在这里
+停下），`Block.numBytes` 是被跟踪的 READ_SITE。运行时这个决策（`receivePacket#u20`）的项是
+`(1024 − numBytes) <= 0`：`offsetInBlock` 是常量 `Y_J_1024`，种子会话 roots 里没有它；`numBytes` 从第二个包起是读符号，
+第一个包的副本在 region 外创建，读到的是常量。target 的锚是守卫的第一次执行（#u20#1），两个操作数都具体，φ 形不成。
+按 SYMBOL-SCOPE 的约定，切片边界上的值"绑定、从不自由"：`offsetInBlock` 来自 DataTransfer 的包头
+（`PacketHeaderProto.offsetInBlock`），要靠 wire 流配对绑定到发送端的表达式，而这一步（设计里的第 3 步）还没做，
+DataTransfer 又不属于任何 RPC 接口（§8），于是它保持具体。它不是假阳性，是"被忽略的符号变量"的一个确切实例。
+
+**仍然挡住 ad-hoc case 的原因**：守卫在具体值上判定（recv-offset、reader-header、token-password：φ 形不成，符号选择问题，
+recv-offset 见上）；
+未陈述的读（finalize-gs、visible-gs 的 map 读，sender-gs 的数组读）；K_L 不够（一次 `removeExpiredKeys` 超过 8 个 key）；
+PATH_SELF_CONTRADICTORY（commit-gs 系列，按设计）。
+
 ## 8. 下一步
 
 **符号的范围从致命切片推出**（老板 2026-09-26 的方向，设计 [`SYMBOL-SCOPE.md`](../design/SYMBOL-SCOPE.md)）。
