@@ -946,6 +946,8 @@ final class ConcolicTaskPlan {
         /** Candidates refused for this address, and each distinct reason. */
         int unaddressedCandidates;
         final Set<RefusedCandidate> unaddressedReasons = new LinkedHashSet<>();
+        /** How many refusals one unanswered row spells out. */
+        private static final int SHOWN_REFUSALS = 4;
 
         RuntimeTask(ExecutionTask task) {
             if (!task.executable()) {
@@ -1063,13 +1065,17 @@ final class ConcolicTaskPlan {
         synchronized String unansweredAddress() {
             boolean neverExisted = rootContextSelector
                     .anchorSourceNeverExisted();
-            List<String> said = new ArrayList<String>(
-                    unaddressedReasons.size());
+            // A few refusals say why; all of them made one row 634 KB and a
+            // campaign's gap file 2.5 GB, past what jq reads (v69).
+            List<String> said = new ArrayList<String>();
             for (RefusedCandidate refusal : unaddressedReasons) {
+                if (said.size() == SHOWN_REFUSALS) break;
                 said.add(refusal.render(this));
             }
+            int unshown = unaddressedReasons.size() - said.size();
             return unaddressedCandidates + " compatible activation(s) did "
                     + "not answer the addressed occurrence; " + said
+                    + (unshown > 0 ? " and " + unshown + " more" : "")
                     + (neverExisted
                     ? "; " + rootContextSelector.describe()
                     + " was never registered in this run" : "");

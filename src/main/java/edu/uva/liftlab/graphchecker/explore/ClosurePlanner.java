@@ -7,6 +7,7 @@ import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
+import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
@@ -105,10 +106,12 @@ public final class ClosurePlanner {
         demands.put(anchor.id(), start);
         pending.add(anchor.id());
         Set<String> truncated = new LinkedHashSet<String>();
+        Set<String> unread = new LinkedHashSet<String>();
         while (!pending.isEmpty()) {
             Demand demand = demands.get(pending.remove());
             demand.dirty = false;
-            for (Demand next : successors(corpus, scope, demand, gaps)) {
+            for (Demand next : successors(corpus, scope, demand, gaps,
+                    unread)) {
                 Demand held = demands.get(next.occurrence.id());
                 if (held != null) {
                     if (held.absorb(next) && !held.dirty) {
@@ -222,7 +225,8 @@ public final class ClosurePlanner {
 
     /** Everything one demand reaches, by rows and by the static map. */
     private static List<Demand> successors(Corpus corpus, StaticScopeMap map,
-                                           Demand demand, List<GapRow> gaps) {
+                                           Demand demand, List<GapRow> gaps,
+                                           Set<String> unread) {
         List<OccurrenceAddress> group = new ArrayList<OccurrenceAddress>();
         group.add(demand.occurrence);
         group.addAll(stateConnected(corpus, demand.occurrence));
@@ -238,15 +242,15 @@ public final class ClosurePlanner {
             }
             for (AttachRow attach : corpus.attachesOn(member)) {
                 if (!demanded.contains(attach.symbol())) {
-                    unread(gaps, attach.sessionId(), attach.endpoint()
-                            .toString(), "handoff");
+                    unread(gaps, unread, attach.sessionId(),
+                            attach.endpoint(), "handoff");
                     continue;
                 }
                 producers(corpus, map, attach, next, gaps);
             }
             for (ReadRow row : corpus.readsOn(member)) {
                 if (!demanded.contains(row.symbol())) {
-                    unread(gaps, row.sessionId(), row.endpoint().toString(),
+                    unread(gaps, unread, row.sessionId(), row.endpoint(),
                             "state read");
                     continue;
                 }
@@ -386,10 +390,17 @@ public final class ClosurePlanner {
     }
 
     /** A delivery this anchor's paths never read: recorded, not planned. */
-    private static void unread(List<GapRow> gaps, String sessionId,
-                               String subject, String what) {
+    /**
+     * Once per endpoint, not per session or per pass: a demand is walked
+     * again every time it grows, and every replay repeats the seed's rows --
+     * hdfs-11741 v69's planner ran out of heap rendering these.
+     */
+    private static void unread(List<GapRow> gaps, Set<String> reported,
+                               String sessionId, Endpoint endpoint,
+                               String what) {
+        if (!reported.add(what + "|" + endpoint.id())) return;
         gaps.add(GapRow.of(sessionId, GapKind.ADMISSION_GAP,
-                GapClass.DIAGNOSTIC, subject,
+                GapClass.DIAGNOSTIC, endpoint.toString(),
                 "no demanded value of this occurrence rests on this " + what
                         + ", so its producer is not a task"));
     }

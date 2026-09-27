@@ -3484,12 +3484,14 @@ campaign_write_gaps() {
     --slurpfile composedDocuments "${composition}" \
     --slurpfile staticGapDocuments "${scratch}/static-gaps.json" \
     --slurpfile planGapDocuments "${scratch}/plan-gaps.json" \
-    --rawfile sessionGaps "${scratch}/session-gaps.jsonl" '
+    --slurpfile sessionGaps "${scratch}/session-gaps.jsonl" '
     ($staticGapDocuments[0] // []) as $staticGaps |
     ($planGapDocuments[0] // []) as $planGaps |
     $composedDocuments[0] as $composed |
     # A row that states its own class is taken at its word.
-    (($sessionGaps | split("\n") | map(select(length > 0) | fromjson))
+    # Slurped as rows, never one string: 2.5 GB of rows (v69) was past the
+    # longest string jq reads, and the split met a row cut in half.
+    ($sessionGaps
       | map({stage: (.stage // "REPLAY"),
              source: (if (.sessionId // "") == "" then "RUNTIME"
                       else .sessionId end),
