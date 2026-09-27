@@ -855,13 +855,23 @@ public final class Identity {
      * base and no occurrence, so its exit closes nothing and the two stacks
      * stay balanced ({@code ConcolicRegionRuntime#closeRegionEntry}).</p>
      *
-     * @return the occurrence this entry folded into, or null when this
-     *         thread runs none and the entry opens its own
+     * <p>Save one (owner, 2026-09-27): an occurrence that opened Lost names
+     * no context to fold into.  Once this thread has one, a declared region
+     * opens its own: a DataXceiver runs before its connection's first
+     * message, its acceptor files no start frame, and folded into it every
+     * connection of a DataNode shared one address.</p>
+     *
+     * @return the occurrence this entry folded into, or null when the entry
+     *         opens its own
      */
     private static OccurrenceAddress fold() {
         State state = state();
         Region running = state.activeRegion();
         if (running == null) return null;
+        if (running.occurrence.lineageLost()
+                && !here(Lineage.rootRole()).isLost()) {
+            return null;
+        }
         state.regions.add(new Region(running.base));
         return running.occurrence;
     }

@@ -164,6 +164,45 @@ public class RowRuntimeTest {
     }
 
     /**
+     * An occurrence opened Lost folds only what is entered still Lost: once
+     * the thread has a context a declared region opens its own (a
+     * DataXceiver before and after its connection's first message).
+     */
+    @Test
+    public void aLostOccurrenceFoldsNothingEnteredUnderAContext()
+            throws Exception {
+        Object anchor = new Object();
+        RuntimeTraceContext.registerSource(anchor, NN);
+        long request = RuntimeTraceContext.beginRequest(NN, "write-block");
+        final Object carried = RuntimeTraceContext.captureScope();
+        RuntimeTraceContext.endRequest(request);
+        final boolean[] folded = new boolean[2];
+        final String[] opened = new String[2];
+        Thread connection = poolThreadCreatedOutsideAnyScope(() -> {
+            opened[0] = Identity.occurrence(NN.key(), "REGION.run", true)
+                    .render();
+            Identity.occurrence(NN.key(), "REGION.handshake", true);
+            folded[0] = Identity.foldedEntry();
+            Identity.regionExit();
+            long scope = RuntimeTraceContext.enterCarriedScope(carried,
+                    "DATA_XCEIVER", "write-block");
+            opened[1] = Identity.occurrence(NN.key(), "REGION.check", true)
+                    .render();
+            folded[1] = Identity.foldedEntry();
+            Identity.regionExit();
+            RuntimeTraceContext.exitCarriedScope(scope);
+            Identity.regionExit();
+        });
+        connection.start();
+        connection.join();
+        assertTrue(opened[0], opened[0].contains("/ctx:Lost"));
+        assertTrue("entered still Lost, it folds", folded[0]);
+        assertFalse("entered under a context, it opens its own", folded[1]);
+        assertTrue(opened[1], opened[1].contains("REGION.check")
+                && !opened[1].contains("/ctx:Lost"));
+    }
+
+    /**
      * A response's endpoint is its request's: the request's scope and the
      * response site -- not the region a pool handler opened before the
      * request came (the NameNode's {@code doAs}, whose index counts that
