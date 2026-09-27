@@ -117,8 +117,9 @@ public final class ExposedRegionPlanMain {
         ConcolicScheduler.SymbolicInputSelection inputs =
                 ConcolicScheduler.SymbolicInputSelection.read(scopeMap,
                         regionCatalog);
+        // Over every plan, as the seed plan's is: one campaign, one policy.
         LoopBoundPolicy loopBound = ConcolicScheduler.declaredLoopBounds(
-                LoopBoundPolicy.declaredDefault(), exposed);
+                LoopBoundPolicy.declaredDefault(), regionPlans);
         List<JsonObject> rows = new ArrayList<>();
         for (int index = 0; index < exposed.size(); index++) {
             RegionInstancePlan plan = exposed.get(index);

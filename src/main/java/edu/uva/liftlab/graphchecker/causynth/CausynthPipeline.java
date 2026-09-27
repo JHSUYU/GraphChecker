@@ -392,16 +392,9 @@ public final class CausynthPipeline {
                 methods.add(replayEntry.getSignature());
                 loopBoundMethods.addAll(bounded);
                 fixedCountLoopSites.addAll(plan.fixedCountLoopSites());
-                if (loopBound != null && !loopBound.identity()
-                        .equals(plan.loopBound().identity())) {
-                    // One union tree admits one policy.
-                    throw new IllegalStateException(
-                            "CAMPAIGN_LOOP_BOUND_CONFLICT: "
-                                    + loopBound.identity()
-                                    + " and "
-                                    + plan.loopBound().identity());
-                }
-                loopBound = plan.loopBound();
+                // One union tree admits one policy: the union of the plans'.
+                loopBound = loopBound == null ? plan.loopBound()
+                        : loopBound.union(plan.loopBound());
             }
         }
 

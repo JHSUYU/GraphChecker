@@ -127,6 +127,32 @@ public final class LoopBoundPolicy {
         return new LoopBoundPolicy(maxTraversals, declared);
     }
 
+    /**
+     * The one policy of a tree woven for plans that state these two: every
+     * loop either declares, under the same inherited default.  A loop the two
+     * bound differently, or two defaults, is a conflict by name -- a subset is
+     * not (a region GROW added states its own loops beside the seed's).
+     */
+    public LoopBoundPolicy union(LoopBoundPolicy other) {
+        if (other.defaultBackedgeTraversals != defaultBackedgeTraversals) {
+            throw new IllegalStateException("CAMPAIGN_LOOP_BOUND_CONFLICT: "
+                    + "inherited K_L " + defaultBackedgeTraversals + " and "
+                    + other.defaultBackedgeTraversals);
+        }
+        SortedMap<String, Integer> merged =
+                new TreeMap<String, Integer>(declared);
+        for (Map.Entry<String, Integer> entry : other.declared.entrySet()) {
+            Integer held = merged.put(entry.getKey(), entry.getValue());
+            if (held != null && !held.equals(entry.getValue())) {
+                throw new IllegalStateException(
+                        "CAMPAIGN_LOOP_BOUND_CONFLICT: loop " + entry.getKey()
+                                + " under K_L=" + held + " and K_L="
+                                + entry.getValue());
+            }
+        }
+        return new LoopBoundPolicy(defaultBackedgeTraversals, merged);
+    }
+
     /** The inherited bound this campaign declared; missing or non-positive is
      *  refused by name. */
     public static int declaredDefault() {
