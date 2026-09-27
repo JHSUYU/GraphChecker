@@ -1478,9 +1478,12 @@ public final class Composer {
             }
             refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
                     GapClass.DIAGNOSTIC, key + "@" + read.observedVersion(),
-                    "no write of this location at this version in this "
-                            + "session, and the recording states no value "
-                            + "the read returned"));
+                    (write == null ? "no write of this location at this "
+                            + "version in this session"
+                            : "the write of this version did not lower (its "
+                            + "refusal is stated beside this)")
+                            + ", and the recording states no value the read "
+                            + "returned"));
         }
     }
 
