@@ -49,7 +49,6 @@ import static edu.uva.liftlab.graphchecker.smt.VmExpressionIr.arithmeticOperator
 import static edu.uva.liftlab.graphchecker.smt.VmExpressionIr.bitwiseOperator;
 import static edu.uva.liftlab.graphchecker.smt.VmExpressionIr.comparison;
 import static edu.uva.liftlab.graphchecker.smt.VmExpressionIr.constantPayload;
-import static edu.uva.liftlab.graphchecker.smt.VmExpressionIr.isPrimitiveIntExpression;
 import static edu.uva.liftlab.graphchecker.smt.VmExpressionIr.quote;
 import static edu.uva.liftlab.graphchecker.smt.VmExpressionIr.shiftOperator;
 
@@ -2049,6 +2048,14 @@ public final class SmtLowering {
             assertJavaIntegralDomain(text, "I");
             return length;
         }
+        if ("charAt".equals(operation) || "indexOf".equals(operation)
+                || "lastIndexOf".equals(operation)) {
+            if (negated) {
+                return codecGap(operation, "NEGATED_VALUE_OPERATION", origin,
+                        Sort.INT);
+            }
+            return stringPosition(operation, params, origin);
+        }
         if ("equals".equals(operation)) {
             return stringEquals(params, negated, origin);
         }
@@ -2088,27 +2095,143 @@ public final class SmtLowering {
             return Term.nonNullString(result.append(')').toString(),
                     strings.defined);
         }
+        if ("substring".equals(operation)) {
+            return substring(params, origin);
+        }
         if ("toString".equals(operation)) {
-            if (params.size() != 1
-                    || !isPrimitiveIntExpression(params.get(0))) {
-                return codecGap(operation, "REQUIRES_ONE_PRIMITIVE_INT",
-                        origin, Sort.STRING);
-            }
-            Term integer = dispatch(params.get(0), Sort.INT,
-                    origin + ":toString");
-            if (integer.sort != Sort.INT) {
-                return codecGap(operation, "NON_INT_TERM", origin,
-                        Sort.STRING);
-            }
-            assertJavaIntegralDomain(integer.text, "I");
-            // Java's decimal Integer.toString, defined where the int is.
-            usesJavaIntString = true;
-            return Term.nonNullString("(java_int_to_string " + integer.text
-                    + ")", integer.precondition);
+            return javaToString(params, origin);
         }
         return codecGap(firstNonBlank(operation, "unknown"),
                 "UNSUPPORTED_OPERATION", origin, Sort.STRING);
     }
+
+    /**
+     * The String form of one value: a String is itself; a char is its one
+     * character; byte, short, int and long are decimal (the file names that
+     * carry a block's id and generation stamp, blk_<id>_<gs>.meta).
+     */
+    private Term javaToString(JsonArray params, String origin) {
+        if (params.size() != 1) {
+            return codecGap("toString", "ARITY", origin, Sort.STRING);
+        }
+        String javaType = expressionJavaType(params.get(0));
+        Term value = dispatch(params.get(0), null, origin + ":toString");
+        if (value.sort == Sort.STRING) {
+            return Term.nonNullString(value.text, stringDefinedness(
+                    Collections.singletonList(value),
+                    Collections.<Term>emptyList()));
+        }
+        if (value.sort != Sort.INT || !DECIMAL_OR_CHAR.contains(javaType)) {
+            return codecGap("toString", "NON_INTEGRAL_TERM", origin,
+                    Sort.STRING);
+        }
+        assertJavaIntegralDomain(value.text, javaType);
+        if ("C".equals(javaType)) {
+            return Term.nonNullString("(str.from_code " + value.text + ")",
+                    value.precondition);
+        }
+        usesJavaIntString = true;
+        return Term.nonNullString("(java_int_to_string " + value.text + ")",
+                value.precondition);
+    }
+
+    private static final Set<String> DECIMAL_OR_CHAR = new LinkedHashSet<String>(
+            Arrays.asList("B", "S", "I", "J", "C"));
+
+    /** String.substring(b) and (b, e), defined where Java does not throw:
+     *  0 <= b <= e <= length. */
+    private Term substring(JsonArray params, String origin) {
+        if (params.size() != 2 && params.size() != 3) {
+            return codecGap("substring", "ARITY", origin, Sort.STRING);
+        }
+        Term receiver = dispatch(params.get(0), null,
+                origin + ":substring:receiver");
+        if (receiver.sort != Sort.STRING) {
+            return codecGap("substring", "NON_STRING_PARAMETER", origin,
+                    Sort.STRING);
+        }
+        List<Term> bounds = new ArrayList<Term>();
+        for (int index = 1; index < params.size(); index++) {
+            Term bound = dispatch(params.get(index), Sort.INT,
+                    origin + ":substring:bound" + index);
+            if (bound.sort != Sort.INT) {
+                return codecGap("substring", "NON_INT_PARAMETER", origin,
+                        Sort.STRING);
+            }
+            bounds.add(bound);
+        }
+        String length = "(str.len " + receiver.text + ")";
+        String begin = bounds.get(0).text;
+        String end = bounds.size() == 2 ? bounds.get(1).text : length;
+        String defined = and(Arrays.asList(stringDefinedness(
+                        Collections.singletonList(receiver), bounds),
+                "(<= 0 " + begin + ")", "(<= " + begin + " " + end + ")",
+                "(<= " + end + " " + length + ")"));
+        return Term.nonNullString("(str.substr " + receiver.text + " " + begin
+                + " (- " + end + " " + begin + "))", defined);
+    }
+
+    /**
+     * charAt(i), indexOf(x) and lastIndexOf(x), x a char or a String, as
+     * Java answers them.  z3 has no last index: it is a fresh k that only
+     * the last occurrence satisfies -- x at k and none after it, -1 and none
+     * at all, or the length for an empty x.
+     */
+    private Term stringPosition(String operation, JsonArray params,
+                                String origin) {
+        if (params.size() != 2) {
+            return codecGap(operation, "ARITY", origin, Sort.INT);
+        }
+        Term receiver = dispatch(params.get(0), null,
+                origin + ":" + operation + ":receiver");
+        Term argument = dispatch(params.get(1), null,
+                origin + ":" + operation + ":argument");
+        if (receiver.sort != Sort.STRING || (argument.sort != Sort.INT
+                && ("charAt".equals(operation)
+                || argument.sort != Sort.STRING))) {
+            return codecGap(operation, "PARAMETER_SORT", origin, Sort.INT);
+        }
+        String text = receiver.text;
+        String length = "(str.len " + text + ")";
+        if ("charAt".equals(operation)) {
+            String index = argument.text;
+            String code = "(str.to_code (str.at " + text + " " + index + "))";
+            assertJavaIntegralDomain(code, "C");
+            return definedResult(code, Sort.INT, IntegralWidth.JAVA_INT,
+                    and(Arrays.asList(stringDefinedness(
+                                    Collections.singletonList(receiver),
+                                    Collections.singletonList(argument)),
+                            "(<= 0 " + index + ")",
+                            "(< " + index + " " + length + ")")));
+        }
+        boolean character = argument.sort == Sort.INT;
+        String needle = character ? "(str.from_code " + argument.text + ")"
+                : argument.text;
+        String defined = character
+                ? stringDefinedness(Collections.singletonList(receiver),
+                        Collections.singletonList(argument))
+                : stringDefinedness(Arrays.asList(receiver, argument),
+                        Collections.<Term>emptyList());
+        if ("indexOf".equals(operation)) {
+            return definedResult("(str.indexof " + text + " " + needle
+                    + " 0)", Sort.INT, IntegralWidth.JAVA_INT, defined);
+        }
+        String last = symbols.mint("last_index_of__",
+                scope + "#" + lastIndexes++, 10);
+        declare(last, Sort.INT);
+        sideCondition("(or (and (= " + needle + " \"\") (= " + last + " "
+                + length + ")) (and (not (= " + needle + " \"\")) (= "
+                + last + " (- 1)) (not (str.contains " + text + " " + needle
+                + "))) (and (not (= " + needle + " \"\")) (<= 0 " + last
+                + ") (= (str.substr " + text + " " + last + " (str.len "
+                + needle + ")) " + needle + ") (not (str.contains (str.substr "
+                + text + " (+ " + last + " 1) " + length + ") " + needle
+                + "))))");
+        return definedResult(last, Sort.INT, IntegralWidth.JAVA_INT, defined);
+    }
+
+    /** How many last indexes this lowering has named. */
+    private int lastIndexes;
 
     /** Java String.equals requires a non-null receiver but accepts null. */
     private Term stringEquals(JsonArray params, boolean negated,

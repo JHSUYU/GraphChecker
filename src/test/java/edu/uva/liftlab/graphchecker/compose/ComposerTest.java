@@ -3349,6 +3349,83 @@ public class ComposerTest {
         }
     }
 
+    /**
+     * The Strings a file name carries lower as Java computes them: a path's
+     * parent is its prefix up to the last separator (File.getParent) and is
+     * undefined -- Java throws -- without one; a long names itself in decimal
+     * (blk_<id>_<gs>.meta).  finalize-gs a8 lost every path to these.
+     */
+    @Test
+    public void aPathsParentAndALongsNameLowerAsJavaComputesThem() {
+        Z3 solver = solver();
+        Map<String, VmTermLowering.Sort> declared =
+                new LinkedHashMap<String, VmTermLowering.Sort>();
+        declared.put("s", VmTermLowering.Sort.STRING);
+        declared.put("n", VmTermLowering.Sort.INT);
+        JsonObject path = vmLeaf("SymbolExpression", "s", "java/lang/String");
+        SmtLowering lowering = new SmtLowering(declared);
+        lowering.begin("t", SmtLowering.NO_JOIN, ExpressionTable.empty());
+        VmTermLowering.Term parent = lowering.dispatch(vmString("substring",
+                path, vmLeaf("ConstExpr", "C_I_0", "I"), vmString(
+                        "lastIndexOf", path, vmLeaf("ConstExpr", "C_I_47",
+                                "I"))), VmTermLowering.Sort.STRING, "test");
+        VmTermLowering.Term name = lowering.dispatch(vmString("toString",
+                vmLeaf("SymbolExpression", "n", "J")), VmTermLowering.Sort.STRING, "test");
+        List<String> conditions = lowering.end();
+        assertTrue(lowering.openRefusals().toString(),
+                lowering.openRefusals().isEmpty());
+        List<String> texts = new ArrayList<String>(conditions);
+        texts.addAll(Arrays.asList(parent.text, parent.precondition,
+                name.text));
+        StringBuilder query = new StringBuilder(
+                String.join("\n", lowering.preambleLines()));
+        for (SmtLowering.Declaration declaration : lowering.reachedBy(texts)) {
+            query.append('\n').append(declaration.render());
+        }
+        for (String fact : lowering.facts(texts)) {
+            query.append("\n(assert ").append(fact).append(')');
+        }
+        for (String condition : conditions) {
+            query.append("\n(assert ").append(condition).append(')');
+        }
+        query.append("\n(define-fun parent () String ").append(parent.text)
+                .append(")\n(define-fun name () String ").append(name.text)
+                .append(")\n(assert ").append(parent.precondition).append(')');
+        String[][] cases = {
+            {"(and (= s \"a/b/c\") (= parent \"a/b\"))", "sat"},
+            {"(and (= s \"a/b/c\") (= parent \"a\"))", "unsat"},
+            {"(= s \"abc\")", "unsat"},
+            {"(and (= n (- 12)) (= name \"-12\"))", "sat"},
+            {"(and (= n (- 12)) (= name \"12\"))", "unsat"},
+        };
+        for (String[] asked : cases) {
+            Z3.Answer answer = solver.ask(query + "\n(assert " + asked[0]
+                    + ")", Collections.<String>emptyList(), false);
+            assertTrue(asked[0] + " " + answer.status(), answer.decided()
+                    && answer.sat() == "sat".equals(asked[1]));
+        }
+    }
+
+    private static JsonObject vmLeaf(String type, String exp,
+                                     String javaType) {
+        JsonObject leaf = new JsonObject();
+        leaf.addProperty("_type", type);
+        leaf.addProperty("_exp", exp);
+        leaf.addProperty("_java_type", javaType);
+        return leaf;
+    }
+
+    private static JsonObject vmString(String name, JsonObject... params) {
+        JsonObject operation = new JsonObject();
+        operation.addProperty("_type", "OpStrExpression");
+        operation.addProperty("_name", name);
+        operation.addProperty("_is_not", false);
+        JsonArray list = new JsonArray();
+        for (JsonObject param : params) list.add(param);
+        operation.add("_param_list", list);
+        return operation;
+    }
+
     private Composer.Composition compose(Path iteration, int maxValuations)
             throws IOException {
         return Composer.compose(Corpus.read(iteration, null), ANCHOR,
