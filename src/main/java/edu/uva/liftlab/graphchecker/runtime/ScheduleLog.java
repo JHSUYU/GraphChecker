@@ -46,7 +46,9 @@ import java.util.concurrent.TimeUnit;
  * held.</p>
  *
  * <p>SETTLING what did not happen: a CLOSED occurrence's untaken slots are
- * dead; a turn's END gives up what the turn did not do; the WATCHDOG, after
+ * dead; a turn's END gives up what the turn did not do; a WAITER gives up
+ * what its own occurrence, in its own context, did not make before its slot
+ * (one thread, in program order, now past them); the WATCHDOG, after
  * a timeout with waiters and no computing, gives up every open slot before
  * the earliest waiter.  A given-up slot is still taken if its event comes
  * late; a dead one is not.  {@link #REST_STALLS} and {@link #CEILING} bound
@@ -136,6 +138,7 @@ public final class ScheduleLog {
     private static int stalls;
     private static int dead;
     private static int settledByEnd;
+    private static int passed;
     private static final Map<Long, Long> CPU_SEEN = new HashMap<Long, Long>();
     private static long cpuSampledAt;
     private static boolean computing;
@@ -301,7 +304,9 @@ public final class ScheduleLog {
                     }
                     // Not due: a signal still ends the wait meanwhile.
                     WAITERS.put(self, at);
-                    if (!watchdogLocked()) return Turn.NOT_YET;
+                    if (!passedLocked(wake.event, at) && !watchdogLocked()) {
+                        return Turn.NOT_YET;
+                    }
                 }
             }
         } finally {
@@ -478,7 +483,7 @@ public final class ScheduleLog {
                     return;
                 }
                 WAITERS.put(self, at);
-                if (watchdogLocked()) continue;
+                if (passedLocked(event, at) || watchdogLocked()) continue;
                 LOCK.wait(Math.max(1L, Math.min(timeoutMillis(), 1000L)));
             }
         } catch (InterruptedException interrupted) {
@@ -587,6 +592,35 @@ public final class ScheduleLog {
             markLocked(index, GIVEN_UP);
             settledByEnd++;
         }
+    }
+
+    /**
+     * The slots before {@code at} that the waiter's own occurrence, in its
+     * own context, did not make: one thread makes them in program order and
+     * waits past them, so only a watchdog timeout would settle them (a8
+     * reader-chunk.flush: a NameNode handler whose block report enqueued
+     * nothing held addBlock past the client's 60 s).  Given up, WAKEs aside.
+     */
+    private static boolean passedLocked(Pending event, int at) {
+        List<Integer> own = event.occurrence.isEmpty() ? null
+                : BY_OCCURRENCE.get(event.occurrence);
+        if (own == null) return false;
+        int count = 0;
+        for (int slot : own) {
+            if (slot >= at) break;
+            ScheduleEvent passedOver = order.get(slot);
+            if (state[slot] != OPEN
+                    || passedOver.kind() == ScheduleEvent.Kind.WAKE
+                    || !event.context.equals(passedOver.context())) {
+                continue;
+            }
+            markLocked(slot, GIVEN_UP);
+            count++;
+        }
+        if (count == 0) return false;
+        passed += count;
+        settleLocked();
+        return true;
     }
 
     /** Something was settled: the first open slot, and whether any holds. */
@@ -855,7 +889,8 @@ public final class ScheduleLog {
                     + cut + "): " + taken + " taken, " + givenUp
                     + " given up in " + stalls + " stall(s), " + dead
                     + " settled by their occurrence's close, " + settledByEnd
-                    + " settled by their turn's END; " + ranFree
+                    + " settled by their turn's END, " + passed
+                    + " passed by their own occurrence; " + ranFree
                     + " event(s) ran free";
         }
     }
@@ -899,6 +934,7 @@ public final class ScheduleLog {
             stalls = 0;
             dead = 0;
             settledByEnd = 0;
+            passed = 0;
             CPU_SEEN.clear();
             cpuSampledAt = 0L;
             computing = false;

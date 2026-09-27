@@ -317,7 +317,8 @@ the recording, so on the wall clock every daemon timer has expired at the cut an
 at once. `SchedulePrefix` therefore also writes `schedule_suffix.jsonl` (the rest of the order);
 past the prefix `ScheduleLog` holds only the timeout WAKEs the rest names until every rest event
 before them has happened or been given up; everything else runs free; a watchdog gives up the
-open events before the earliest waiting WAKE; a turn's END settles its span; after two give-ups
+open events before the earliest waiting WAKE; a turn's END settles its span, and a waiter the
+slots its own occurrence passed; after two give-ups
 (`REST_STALLS`) the rest is released. A run gone free leaves its waits to their own clocks.
 
 **World inheritance**: an obligation's task carries the schedule of the session it was cut from
@@ -544,8 +545,9 @@ that `main` moves and the parked housekeeping is due.
      closure, so its fault is a flip site (`996879297`).
    - *The schedule is one order and one rule* (§14 D3, `fad63f044`): slots with a cut, an event
      takes the earliest open or given-up slot of its key or runs free, INTERRUPT is an event of
-     its own, an occurrence's close and a turn's END settle what did not happen, and the
-     watchdog fires only when the threads not waiting are idle (or after 8 timeouts).
+     its own, an occurrence's close, a turn's END and a waiter past its own occurrence's slots
+     settle what did not happen, and the watchdog fires only when the threads not waiting are
+     idle (or after 8 timeouts).
    - *bug2's fabricated write* (§14 D1/D2, `56479867f`): a declared mint's label is filed before
      its store; invariant 7 is keyed by the mint's own `location@mintVersion`.
    - *Parallel rounds behind a memory gate* (`75417e648`): `obligation_memory_mb` per case, a

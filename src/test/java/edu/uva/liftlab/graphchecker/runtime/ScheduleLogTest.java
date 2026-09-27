@@ -1328,6 +1328,34 @@ public class ScheduleLogTest {
         assertFalse(ScheduleLog.enforcing());
     }
 
+    /**
+     * A waiter gives up at once what its own occurrence passed: only its
+     * thread could make it, and that thread waits beyond it.
+     */
+    @Test
+    public void aWaiterGivesUpWhatItsOwnOccurrencePassed() throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        Identity.occurrence(NODE.key(), "REGION.handler", true);
+        String own = Identity.innermostRegionId();
+        written.clear();
+        ScheduleLog.enforceForTests(Arrays.asList(
+                inOccurrence(ScheduleEvent.Kind.START, "enqueue", own),
+                event(ScheduleEvent.Kind.SEND, "x"),
+                inOccurrence(ScheduleEvent.Kind.SEND, "response", own)));
+        Thread other = observer(ScheduleEvent.Kind.SEND, "x");
+        Thread.sleep(200L);
+        assertTrue("x waits behind the handler's enqueue", other.isAlive());
+        long before = System.nanoTime();
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "response");
+        other.join(5000L);
+        assertTrue("no watchdog: the handler passed its enqueue",
+                TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
+                        < 2000L);
+        assertEquals(Arrays.asList("x", "response"), sites());
+        assertTrue(ScheduleLog.progress(), ScheduleLog.progress()
+                .contains(" 1 passed by their own occurrence"));
+    }
+
     @Test
     public void aComputingRunIsNoStall() throws Exception {
         System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "300");
