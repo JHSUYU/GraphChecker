@@ -2961,6 +2961,38 @@ public class ComposerTest {
         session.write();
     }
 
+    /**
+     * A node that reads the wall clock and a monotonic one orders each on
+     * its own: the second wall reading is no earlier than the first, and
+     * neither is ordered against the monotonic one (hdfs-11741 v78: wall
+     * 1.79e12 "before" monotonic 4.5e9 made all 165 paths false).
+     */
+    @Test
+    public void aNodeReadingTwoClocksOrdersEachClockOnItsOwn()
+            throws Exception {
+        Path iteration = folder.newFolder("two-clocks").toPath();
+        Session session = new Session(iteration, "s0", false);
+        String[][] cells = {{"CLOCK.wall.1", "M_J_wall_1", "1790500000000"},
+                {"CLOCK.mono", "M_J_mono", "4549240012"},
+                {"CLOCK.wall.2", "M_J_wall_2", "1790500000900"}};
+        StringBuilder phi = new StringBuilder("(and");
+        for (String[] cell : cells) {
+            session.roots.add(RootMintRow.of("s0", ++session.seq, ANCHOR,
+                    cell[0], cell[1], RootKind.CLOCK, cell[2], null, null,
+                    true));
+            phi.append(" (> ").append(cell[1]).append(" 0)");
+        }
+        session.target(phi.append(")").toString(), false, true);
+        session.write();
+
+        String body = compose(iteration, 4).body();
+        assertTrue("one clock's readings keep their order: " + body,
+                body.contains("(<= M_J_wall_1 M_J_wall_2)"));
+        assertFalse("and no clock is ordered against another",
+                body.contains("(<= M_J_wall_1 M_J_mono)")
+                        || body.contains("(<= M_J_mono M_J_wall_2)"));
+    }
+
     // ------------------------------------------------------------------
     // 17. A name a term BINDS is not a name nothing declares.
     // ------------------------------------------------------------------

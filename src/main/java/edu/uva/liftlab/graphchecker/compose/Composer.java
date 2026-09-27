@@ -1604,8 +1604,14 @@ public final class Composer {
      * the seed did not read is domained but has no reading.  EVERY cell is
      * domained, or it is left free.</p>
      *
-     * <p>ONE CLOCK PER NODE: the seed's cells on a node are ordered by seq,
-     * {@code c_i <= c_{i+1}}.</p>
+     * <p>ONE ORDER PER CLOCK OF A NODE: a seed cell is no earlier than the
+     * last cell before it (by seq) that read the same clock.  A node reads
+     * more than one -- the wall clock and a monotonic one (hdfs-11741's
+     * Balancer: {@code Time.now()} for its keys, {@code monotonicNow()}
+     * for its SASL user) -- and ordering those against each other made
+     * every path false.  One run is far shorter than a clock window, so
+     * two readings of one clock lie within one; readings further apart are
+     * two clocks.</p>
      */
     private void clocks(List<String> cells, Map<String, Long> readings) {
         String seed = seed();
@@ -1658,11 +1664,19 @@ public final class Composer {
         for (List<RootMintRow> mints : byNode.values()) {
             mints.sort(Comparator.comparingLong(RootMintRow::seq));
             for (int index = 1; index < mints.size(); index++) {
-                String earlier = mints.get(index - 1).symbol();
                 String later = mints.get(index).symbol();
-                lowering.assertNamed("clock_order__"
-                                + ArtifactIO.digest(earlier + "|" + later, 10),
-                        "(<= " + earlier + " " + later + ")");
+                long reading = readings.get(later);
+                for (int before = index - 1; before >= 0; before--) {
+                    String earlier = mints.get(before).symbol();
+                    if (Math.abs(readings.get(earlier) - reading)
+                            > JavaPrimitiveSmtSemantics.CLOCK_SKEW_WINDOW_MS) {
+                        continue;
+                    }
+                    lowering.assertNamed("clock_order__" + ArtifactIO.digest(
+                                    earlier + "|" + later, 10),
+                            "(<= " + earlier + " " + later + ")");
+                    break;
+                }
             }
         }
     }
