@@ -2,22 +2,22 @@
 # launch-round.sh <snapshot> <round> [workers-per-host]
 #
 # Starts the nine campaigns of one round from one snapshot worktree, each
-# detached on its head host, every one with its obligations spread over all
-# five lifts:
+# detached on its head host, every one with its obligations spread over
+# every host in LIFTS:
 #
 #   tools/rounds/launch-round.sh /u/vnr3ne/gc-run/p25 v22
 #   CASES="hdfs-17960 hdfs-11741" tools/rounds/launch-round.sh /u/vnr3ne/gc-run/p25 v22b
 #
 # A campaign's HEAD runs its seed recording, its planner and its composer;
-# the heads are spread so no lift carries two heavy ones: 11741 (whose
-# corpus is the largest by far) alone on its head, lift11 -- the owner's
-# interactive machine -- the lightest pair, two block-key cases on each of
-# the other three.  Its OBLIGATIONS run on every lift in LIFTS, with
-# workers-per-host slots per lift (default 4), and each start waits until
-# that lift has the case's obligation_memory_mb to spare beyond what every
+# the heads are spread so no host carries two heavy ones: 11741 (whose corpus
+# is the largest by far) alone on its head, two cases on each of the others.
+# lift11 -- the owner's interactive machine -- is neither a head nor a worker
+# (it reached load 110 as one).  Its OBLIGATIONS run on every host in LIFTS,
+# with workers-per-host slots per host (default 4), and each start waits until
+# that host has the case's obligation_memory_mb to spare beyond what every
 # campaign's recent starts there will still claim (run_engine.sh,
-# campaign_await_host_memory) -- the slots make the pool wide, the gate
-# keeps each lift's memory safe.
+# campaign_await_host_memory) -- the slots make the pool wide, the gate keeps
+# each host's memory safe.
 #
 # CASES narrows the round to some of its cases, each still on its own head.
 # CAUSYNTH_CUSTOM_JDK_HOME, when set, is the VM image every campaign runs
@@ -33,20 +33,20 @@ snapshot=${1:?usage: launch-round.sh <snapshot> <round> [workers-per-host]}
 round=${2:?usage: launch-round.sh <snapshot> <round> [workers-per-host]}
 workers=${3:-4}
 out=${GC_OUT:-/u/vnr3ne/gc-out}
-LIFTS="lift11 lift12 lift13 lift14 lift15"
+LIFTS="lift06 lift07 lift08 lift09 lift10 lift12 lift13 lift14 lift15"
 
 # head host, then the cases it heads.
 placement=(
-  "lift11 hdfs-17960 hdfs-17967-pathC"
-  "lift12 hdfs-11741"
-  "lift13 hdfs-17899-bug1 hdfs-17899-bug2"
-  "lift14 hdfs-17899-bug3 hdfs-17897"
-  "lift15 hdfs-17967-pathA hdfs-17967-pathB"
+  "lift06 hdfs-11741"
+  "lift07 hdfs-17960 hdfs-17967-pathC"
+  "lift08 hdfs-17899-bug1 hdfs-17899-bug2"
+  "lift09 hdfs-17899-bug3 hdfs-17897"
+  "lift10 hdfs-17967-pathA hdfs-17967-pathB"
 )
 # Experiments run only when CASES names them.
 experiments=(
-  "lift11 hdfs-token-key"
-  "lift14 hdfs-17897-nowire"
+  "lift12 hdfs-token-key"
+  "lift13 hdfs-17897-nowire"
 )
 [[ -z "${CASES:-}" ]] || placement+=("${experiments[@]}")
 
@@ -69,9 +69,8 @@ for row in "${placement[@]}"; do
   done
 done
 # A named case no row places (an experiments/hadoop/adhoc case) takes the
-# heads in turn, lift11 (the owner's machine) excepted; accept.sh refuses an
-# id no case directory declares.
-read -r -a heads <<<"${LIFTS#lift11 }"
+# hosts in turn; accept.sh refuses an id no case directory declares.
+read -r -a heads <<<"${LIFTS}"
 turn=0
 for case_id in ${CASES:-}; do
   [[ " ${launches[*]:-} " == *" ${case_id} "* ]] && continue
