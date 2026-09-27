@@ -110,7 +110,11 @@ and exploration can flip the writer's guard to change what the reader sees.
   (STATE_PAIRING_FLIPPED / MESSAGE_PAIRING_FLIPPED).  Pairings only another run's
   delivery makes fatal name no mechanism (adhoc token-nokey).
 * CONFIRM: holds the model's reads-from as ORDER rows (the writer's activation exits
-  before the reader's enters, competitor writers outside).  An alternative writer the
+  before the reader's enters, competitor writers outside).  Eligibility (`Arms#concurrent`)
+  over-approximates: two NameNode occurrences a client thread caused one after the
+  other (addBlock, then complete) are not causal-anchor ancestors of each other --
+  the client's wait for the first response is in no row -- so a read may be given
+  the earlier call's write as an alternative the program order forbids.  An alternative writer the
   schedule cannot put before the reader stalls the gate: `CONFIRM_MISMATCH`, the
   claim unconfirmed.  This is the shared-field false positive the owner expects: with
   F2 wide, STATE_PAIRING candidates appear, and the unrealizable ones stop here.
@@ -141,6 +145,17 @@ methods, STATE families and their arms, formula size, replay slowdown.
    shared state lives (a key map, a lease holder) -- is versioned only once a
    symbolic value is stored into it; observing one from its first concrete store
    needs a VM hook of its own (the container log's INITIAL version exists).
+   The VM starts a field's log at the observation (INITIAL, the value from before
+   the window), so the concrete store it precedes is a WRITE and a later getfield
+   resolves over the log; until 578bd7e2f the observation only set the shadow and no
+   observed concrete store left a version.
+   Open: a store is observed only inside a running task, so a read of a location no
+   task wrote yet files no ReadRow, the closure demands no writer, and the writer
+   never becomes a task (visible-gs: the DataXceiver stores the replica's GS, the
+   IPC handler reads it, neither joins).  §3.1's writer index closes this loop: the
+   recording hooks the candidate read and write sites of the tracked fields by
+   concrete object, `Writers_W(l)` is built from it, and PLAN makes the writers of
+   every location a target-relevant occurrence read into tasks.
 2. **Scope growth** (§2): the declared class list is the fixpoint's start.
 3. **Wire pairing** (F3): protobuf `Builder.setF` / `getF` pairs per message type,
    direction from the RPC interface's request/response types, IPC and DataTransfer

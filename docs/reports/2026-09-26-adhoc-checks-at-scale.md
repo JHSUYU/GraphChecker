@@ -424,6 +424,62 @@ SAT 模型都有别的配对能替代，钉住任何单一机制仍然 SAT，于
 VM 能版本化的 int/long 字段，容器、引用、字符串要在 VM 里加一个"从第一次具体写入开始观察"的入口（容器日志的
 INITIAL 版本已经有了）；(b) 多个 HA/时序敏感的测试还需要按上面的方法逐个找重放分歧。修复后的 18 个 case 正在重跑（g3）。
 
+## 10. 共享状态真正被跟踪之后（2026-09-26 晚，g3/g4/f2/f3）
+
+**五个根因，都是通用修复**：
+
+1. **STATE 族一直是 0 的原因在 VM 里**（`578bd7e2f`）。SYMBOL-SCOPE F2 在每个被跟踪字段的写点前织入
+   `observeExactPrimitiveField`，但这个 VM 入口只设了字段的影子值，没有开版本日志；而一次具体值的 `putfield`
+   只在日志已经存在时才记版本（`bytecodeInterpreter.cpp` 的 carrier 规则）。结果是：自 `74ffdb60e` 起，**没有一次
+   被观察的具体写留下过版本**，读也就没有可连接的写者。现在观察即开日志（INITIAL = 窗口前的值，读到它就钉在它上），
+   随后的写成为 WRITE、之后的 getfield 走版本日志。新 smoke `RegionObservedConcreteWriteSmoke` 在旧镜像上失败
+   （`selected:false`），新镜像上与其余 smoke 一起通过。新镜像单独放在 `~/gc-out/vm-f2/j2sdk-image`，没动正在跑的共享镜像。
+2. **17899-bug3 的 OOM**（`c30edc3eb`）。"一个读是否决定分支"的回溯穿过了 wire 边：`DataEncryptionKey.keyId`
+   只是被拼进 SASL 用户名，由接收方判定，却被当成本地的跟踪读；DIGEST-MD5 由它派生会话密钥，fault 世界里 CBC
+   加密的表达式到了 33 MB。现在回溯停在 wire 边（接收方在它的 attach 上判定，F3）。v63 里 bug3 恢复 PASS。
+3. **HA 集群测试的响应身份**（`31d364532`）。NameNode 的处理线程在请求到来之前就进了一个长期的 `doAs` region
+   （上下文 Lost，索引数的是这个处理线程接过的调用），`7e18f61df` 用"收到请求时的当前 occurrence"作响应端点，
+   于是每个处理线程的第一个响应共用一个端点，客户端第 k 个回执对错了调用（种子重放在第 57 槽分叉）。现在响应端点
+   取请求自己的作用域（它的 anchor），与哪个处理线程接手无关。
+
+4. **引用字段里写入的 null 没有写记录**（`88f18feb6`）。F2 生效后，被跟踪的 int 读使更多分支变成符号的，
+   受守卫的具体写开始给引用字段记版本；写入 `null` 时版本表达式是 VM 的 null 符号，不带类名，RowRuntime
+   不发布这条 WriteRow，读它的路径被整条拒掉——v64 里 17960 的 ordered=false 见证路径就这样丢了（一个世界里
+   24 个这样的版本，都是快照 diff 链上被清空的 `posteriorDiff`）。null 本来就是引用，按引用发布。
+5. **接口调用只解析到"自己实现了接口"的类**（`653128e23`）。`Replica.getGenerationStamp()` 实际执行的是
+   `Block` 的方法（`ReplicaInfo extends Block implements Replica`），`Block` 自己不实现 `Replica`，于是 DataNode
+   上所有读副本 GS 的检查（visible-gs、sender-gs）在静态切片里根本到不了这个字段，它的写者也就不会被规划。
+   现在按 CHA 解析：每个具体子类型的方法查找结果都是目标，反向也经过继承该方法体的每个子类型。离线重跑
+   visible-gs 的静态阶段：副本 GS 的读接上了 `Block.generationStamp`，切片只大了 13%（16423 → 18499 条边）。
+
+**新 VM 上的集群测试（f2，p79 + vm-f2）**，与旧 VM 的 g3 对比：
+
+| case | g3（旧 VM） | f2（新 VM） |
+|---|---|---|
+| commit-gs.TestLeaseRecovery | 6 个 session、23 条写记录、0 条被接纳路径，ADMISSION_GAP（锚点是具体健康臂） | 10 个 session、205 条写、3 条路径，锚点变成符号（`commitBlock` 的 GS 比较读的是被跟踪的 `BlockInfo.generationStamp`），**PATH_SELF_CONTRADICTORY** |
+| reader-chunk.TestFileConcurrentReader | 5 个 session、51 条写、0 条路径 | 43 个 session、639 条写、1 条路径，PATH_SELF_CONTRADICTORY |
+| lease-missing.TestLeaseRecovery | PATH_SELF_CONTRADICTORY（59 条） | 同，10 条路径 |
+
+**新的真实过滤例子（f2，commit-gs.TestLeaseRecovery）**：`BlockManager.commitBlock` 比较 NameNode 存的块 GS 与
+客户端上报的 GS。旧 VM 上这个读是具体值，路径直接被当作"健康臂上的具体判定"丢掉；新 VM 上它是一个跟踪读，
+读到的是 `addBlock` 那次调用写的版本（v109），而同一位置的另一次写（v198）是读者自己 occurrence 里的
+`setGenerationStamp`，不是备选写者。只有一个写者，读被钉在它写的值上，于是"GS 不一致"在任何世界里都不可满足，
+composer 以 PATH_SELF_CONTRADICTORY 扣下整次组合——模型在这个工作负载里找不到任何能让检查触发的写者顺序。
+
+**还没解决的两件事**（SYMBOL-SCOPE §4、§6 已写入）：
+* **写者索引**。一次存储只在运行中的任务里被观察；一个还没有任务写过的位置被读时，不产生 ReadRow，闭包不向任何
+  写者要求，写者也就永远不成为任务。visible-gs.TestFileConcurrentReader 里 DataXceiver 写副本的 GS、IPC 处理线程
+  读它，两边都没接上（种子里被跟踪的只有请求自己转换出来的 `ExtendedBlock`）。§3.1 的做法是在录制时按具体对象
+  挂候选读写点、建 `Writers_W(l)`，PLAN 把目标相关 occurrence 所读位置的写者都变成任务。
+* **HB 判定的过近似**。`Arms#concurrent` 把同一个客户端线程先后引起的两个 NameNode occurrence（addBlock、complete）
+  视为并发：客户端等待第一个响应这件事不在任何一行里。因此一个读可能被给到"更早调用的写"作备选，而程序顺序不允许。
+  这正是 CONFIRM 偏序关卡要拦的一类：模型要求的 reads-from 在重放里排不出来。
+
+**HA 与流水线恢复测试的重放**：f3（p80，响应身份修复后）6 个 HA token case 仍然 MISSING。第一处分歧换了位置：
+DataNode 三个 BPServiceActor 的第一个窗口内请求，录制里三个 NameNode 都把块操作入队（`BlockReportProcessingThread.enqueue`），
+重放里同一请求身份下没有入队——请求的内容不同，身份相同（心跳是否到期由真实时钟决定）。visible-gs.TestClientProtocolForPipelineRecovery
+是同一类。这需要调度层面的时钟处理，尚未动手。
+
 ## 8. 下一步
 
 **符号的范围从致命切片推出**（老板 2026-09-26 的方向，设计 [`SYMBOL-SCOPE.md`](../design/SYMBOL-SCOPE.md)）。
