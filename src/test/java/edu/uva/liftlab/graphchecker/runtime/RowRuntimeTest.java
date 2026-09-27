@@ -491,6 +491,21 @@ public class RowRuntimeTest {
                         "getAndIncrement", "()I", 12, true),
                 location, 125L, rmwExpression(), "",
                 "Caller.body()#u9@1");
+        // A String method's result states no type of its own, and its
+        // operands' are not its own: a concat is a String (f4 visible-gs:
+        // java.io.File.path's version published no row, and the path that
+        // read it was refused).
+        JsonObject concat = new JsonObject();
+        concat.addProperty("_type", "OpStrExpression");
+        concat.addProperty("_name", "concat");
+        com.google.gson.JsonArray operands = new com.google.gson.JsonArray();
+        operands.add(rmwExpression());
+        concat.add("_param_list", operands);
+        RowRuntime.write(occurrence, 13L,
+                Endpoint.stateSite("java.io.File", "<init>",
+                        "(Ljava/lang/String;)V", 4, true),
+                LocationId.of(LocationKind.INSTANCE, "49", "32"), 127L,
+                concat, "", "Caller.body()#u9@1");
         // A null stored into a tracked reference field states no class, and
         // is a reference write all the same (17960 v64: a diff's cleared
         // posteriorDiff published no row, and the path reading it was
@@ -610,7 +625,9 @@ public class RowRuntimeTest {
         // operands', so an int RMW is not published as an Object.
         assertEquals("I", writes.get(0).javaType());
         assertEquals("a written null is a reference", "L",
-                writes.get(1).javaType());
+                writes.get(2).javaType());
+        assertEquals("a String method's result is a String",
+                "Ljava/lang/String;", writes.get(1).javaType());
         List<ReadRow> reads = RowCodec.readAll(dir.reads(),
                 RowCodec::readRead);
         assertEquals(125L, reads.get(0).observedVersion());

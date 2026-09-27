@@ -3,6 +3,9 @@ package edu.uva.liftlab.graphchecker.smt;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.function.Predicate;
 import java.util.regex.Pattern;
 
@@ -33,7 +36,31 @@ public final class VmExpressionIr {
     /** One exact VM value root: the symbol the VM minted for one site. */
     public static final String SYMBOL_TYPE = "SymbolExpression";
 
+    /** The VM's node for one {@code java.lang.String} method's result. */
+    public static final String STRING_OPERATION_TYPE = "OpStrExpression";
+
+    private static final Set<String> BOOLEAN_STRING_OPERATIONS =
+            new HashSet<String>(Arrays.asList(
+                    "isEmpty", "equals", "equalsIgnoreCase", "contains",
+                    "startsWith", "endsWith", "matches"));
+    private static final Set<String> INT_STRING_OPERATIONS =
+            new HashSet<String>(Arrays.asList(
+                    "length", "indexOf", "lastIndexOf", "charAt",
+                    "compareTo", "compareToIgnoreCase", "hashCode",
+                    "codePointAt"));
+
     private VmExpressionIr() {
+    }
+
+    /**
+     * The java type of what one {@code String} operation returns: the VM's
+     * node states none, and its operands' types are not its own
+     * ({@code length} of a string is an int).
+     */
+    public static String stringOperationType(String operation) {
+        if (BOOLEAN_STRING_OPERATIONS.contains(operation)) return "Z";
+        if (INT_STRING_OPERATIONS.contains(operation)) return "I";
+        return "Ljava/lang/String;";
     }
 
     /** One node's {@code _type}, or "" for anything but an object. */

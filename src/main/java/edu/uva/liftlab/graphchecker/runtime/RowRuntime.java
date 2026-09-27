@@ -744,12 +744,28 @@ public final class RowRuntime {
                             + " expression's silence");
             return "";
         }
-        if (node == null || !node.isJsonObject()) return "";
+        if (node == null) return "";
+        if (node.isJsonArray()) {
+            for (JsonElement item : node.getAsJsonArray()) {
+                String found = statedType(item, depth + 1, walk);
+                if (!found.isEmpty()) return found;
+            }
+            return "";
+        }
+        if (!node.isJsonObject()) return "";
         JsonObject object = node.getAsJsonObject();
         JsonElement own = object.get("_java_type");
         if (own != null && own.isJsonPrimitive()) {
             String stated = Text.safe(own.getAsString());
             if (!stated.isEmpty()) return stated;
+        }
+        // A String method's result is typed by the method, not its operands.
+        if (VmExpressionIr.STRING_OPERATION_TYPE.equals(
+                VmExpressionIr.typeOf(object))) {
+            JsonElement name = object.get("_name");
+            return VmExpressionIr.stringOperationType(
+                    name == null || !name.isJsonPrimitive() ? ""
+                            : name.getAsString());
         }
         for (Map.Entry<String, JsonElement> member
                 : object.entrySet()) {
