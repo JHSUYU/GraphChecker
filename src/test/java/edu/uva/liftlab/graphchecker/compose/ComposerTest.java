@@ -1889,6 +1889,57 @@ public class ComposerTest {
     }
 
     @Test
+    public void aGuardedReadInPhiIsTheSymbolItsStateFamilyMoves()
+            throws Exception {
+        Path iteration = folder.newFolder("guarded").toPath();
+        // The VM's guarded read names no symbol; phi reads the counter the
+        // tick that ran last wrote, and the other tick is concurrent.
+        OccurrenceAddress reader = occurrence("case/nn0", "REGION.commit",
+                CausalContext.of(Role.of("IPC_HANDLER"), "", 1),
+                frame("Namesystem#commit#12", 0));
+        OccurrenceAddress first = occurrence("case/nn0", "REGION.tick",
+                CausalContext.of(Role.of("TICK_A"), "", 1),
+                frame("TickA#run#3", 0));
+        OccurrenceAddress second = occurrence("case/nn0", "REGION.tock",
+                CausalContext.of(Role.of("TICK_B"), "", 1),
+                frame("TickB#run#3", 0));
+        LocationId stamp = LocationId.of(LocationKind.INSTANCE, "10",
+                "value");
+        String symbol = SmtLowering.locationKey(stamp) + "@v2@s0";
+        Session session = new Session(iteration, "s0", false);
+        session.occurrence = reader;
+        session.activation(reader);
+        session.activation(first);
+        session.activation(second);
+        session.marker("false");
+        session.expression("EXPR.v1.one", integer("I", 1L));
+        session.expression("EXPR.v1.two", integer("I", 2L));
+        session.write(Endpoint.of(first, "TickA#set#4:WRITE", at("w#1", 0),
+                0), stamp, 1L, "EXPR.v1.one");
+        session.write(Endpoint.of(second, "TickB#set#4:WRITE", at("w#2", 0),
+                0), stamp, 2L, "EXPR.v1.two");
+        session.read(Endpoint.of(reader, "Block#getStamp#29:READ",
+                at("r#1", 0), 0), stamp, 2L, symbol, "I", "2");
+        session.expression("EXPR.00000000000000f1", binary("!=",
+                integer("I", 2L),
+                read("INSTANCE_FIELD", stamp.owner(), "value", 2L, "I")));
+        session.target("EXPR.00000000000000f1", false, true);
+        session.write();
+
+        Composer.Composition composition = Composer.compose(
+                Corpus.read(iteration, null), reader,
+                Collections.<String,
+                        edu.uva.liftlab.graphchecker.contract.RootDomain>
+                        emptyMap(), 4);
+        assertTrue("the other tick is an alternative",
+                composition.body().contains("state_family__"));
+        assertTrue("and phi reads the symbol it moves, not the value the "
+                        + "run's writer stored: " + composition.body(),
+                composition.body().contains(SmtNames.legalSymbols(
+                        "(not (= 2 " + symbol + "))")));
+    }
+
+    @Test
     public void anRpcHandlersChainGoesOnThroughTheSenderItsActivationPlaces()
             throws Exception {
         Path iteration = folder.newFolder("sender").toPath();

@@ -702,11 +702,14 @@ public final class SmtLowering {
             JsonElement written = join.writeExpression(key, version);
             if (written != null && !written.isJsonNull()) {
                 JsonElement projected = observedVersionExpression(expression);
-                return observing(element(dispatch(projected != null
+                Term value = observing(element(dispatch(projected != null
                                         && !projected.isJsonNull()
                                         ? projected : written, expected,
                                 origin + ":join"), expression, location,
                         key, version, expected), key, version);
+                String read = joinedRead(key, version, value);
+                return read == null ? value : symbolTerm(symbolNode(read,
+                        primitiveString(expression, "_java_type")), expected);
             }
             String minted = mintedReadSymbol(join, version);
             if (minted == null) {
@@ -730,6 +733,25 @@ public final class SmtLowering {
                 "no write of this location at this version in this session, "
                         + "and the recording states no value it returned",
                 expected);
+    }
+
+    /**
+     * The one symbol this session's rows give a scalar read of this version,
+     * once its state join declared it.  The read is that symbol, not the
+     * written value inlined: the join the conjunction then asks about binds
+     * it to the same value, and at the anchor a STATE family binds it to the
+     * writer it chooses instead -- inlined, no family could move it
+     * (commit-gs.TestFileAppend2-testSimpleAppend v71: two families, phi on
+     * constants).  A container read keeps its projection.
+     */
+    private String joinedRead(String key, long version, Term value) {
+        if (value.sort.containerState()) return null;
+        Set<String> named = join.readSymbols(key, version);
+        if (named.size() != 1) return null;
+        String read = named.iterator().next();
+        Declared held = declarations.get(read);
+        return held != null && held.stated && held.sort == value.sort
+                ? read : null;
     }
 
     /**
