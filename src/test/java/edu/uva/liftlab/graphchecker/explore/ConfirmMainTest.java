@@ -5,11 +5,15 @@ import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.ExpressionTable;
+import edu.uva.liftlab.graphchecker.contract.Interaction;
+import edu.uva.liftlab.graphchecker.contract.InteractionKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
@@ -227,6 +231,57 @@ public class ConfirmMainTest {
                 + "\"recordedValue\":\"7\"}]}")
                 .getBytes(StandardCharsets.UTF_8));
         return file;
+    }
+
+    /**
+     * A read of a version no row wrote (a store outside every region, VM
+     * 22f2707a1) joins nothing: the run holds it to nothing unless the model
+     * chose a writer for it, and then it is held like any chosen join -- to
+     * that writer's own write, with the orders around it.
+     */
+    @Test
+    public void aReadNoRowAnswersIsHeldOnlyToTheWriterTheModelChose()
+            throws Exception {
+        Path iteration = iteration();
+        RowCodec.writeAll(SessionDir.of(iteration, "sel").reads(),
+                Collections.singletonList(ReadRow.of("sel", 30L, reader, CELL,
+                        9L, "INSTANCE_FIELD/1#40@v9@sel", "I", "4")),
+                RowCodec::writeRead);
+        for (boolean chosen : new boolean[]{false, true}) {
+            Path claim = claim("FAULT:IPC", "true");
+            if (chosen) {
+                JsonObject document = JsonParser.parseString(new String(
+                        Files.readAllBytes(claim), StandardCharsets.UTF_8))
+                        .getAsJsonObject();
+                JsonObject arm = new JsonObject();
+                arm.addProperty("selector", "writer_arm__1__w");
+                arm.addProperty("groupId", writer.id());
+                JsonArray fills = new JsonArray();
+                fills.add(Interaction.of(InteractionKind.STATE, writer,
+                        reader).id());
+                arm.add("interactionIds", fills);
+                document.getAsJsonArray("valuations").get(1)
+                        .getAsJsonObject().getAsJsonArray("selectedArms")
+                        .add(arm);
+                Files.write(claim, document.toString()
+                        .getBytes(StandardCharsets.UTF_8));
+            }
+            Path out = folder.newFolder("outside-" + chosen).toPath();
+            ConfirmMain.write(iteration, claim, manifest(), out);
+            JsonObject state = null;
+            for (JsonObject edge : RowCodec.readJsonl(
+                    out.resolve(Confirmation.FILE))) {
+                if ("STATE".equals(edge.get("kind").getAsString())) {
+                    state = edge;
+                }
+            }
+            assertEquals("held only to a writer the model chose", chosen,
+                    state != null);
+            if (chosen) {
+                assertEquals("at that writer's own write", 5L,
+                        state.get("version").getAsLong());
+            }
+        }
     }
 
     /**

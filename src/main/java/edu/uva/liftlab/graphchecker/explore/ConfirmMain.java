@@ -450,9 +450,11 @@ public final class ConfirmMain {
                     if (read.observedVersion() < 0L) continue;
                     WriteRow write = writes.get(version(read.location(),
                             read.observedVersion()));
+                    // A version no row wrote (a store outside every region)
+                    // joins nothing; the model may still choose its writer.
+                    readers.put(read.endpoint().id(), read);
                     if (write == null) continue;
                     joined.put(read.endpoint().id(), write);
-                    readers.put(read.endpoint().id(), read);
                     reach(write, anchor, reached, pending, versions, handled);
                 }
             }
@@ -483,34 +485,39 @@ public final class ConfirmMain {
         }
         // Every join of the closure, pinned or chosen: the run is held to no
         // recorded order, so a pinned join is the model's as much as a choice.
+        // A read no row answers is held only where the model chose a writer
+        // for it; otherwise its outside store is the run's own.
         List<JsonObject> edges = new ArrayList<JsonObject>();
         Set<String> orders = new LinkedHashSet<String>();
-        for (Map.Entry<String, WriteRow> join : joined.entrySet()) {
-            ReadRow read = readers.get(join.getKey());
-            Endpoint writer = chosen.containsKey(join.getKey())
-                    ? writers.get(chosen.get(join.getKey()))
-                    : join.getValue().endpoint();
+        for (Map.Entry<String, ReadRow> reader : readers.entrySet()) {
+            ReadRow read = reader.getValue();
+            WriteRow recorded = joined.get(reader.getKey());
+            Endpoint writer = chosen.containsKey(reader.getKey())
+                    ? writers.get(chosen.get(reader.getKey()))
+                    : recorded == null ? null : recorded.endpoint();
+            WriteRow held = writer == null ? null : recorded != null
+                    ? recorded : lastBy(byLocation.get(location(
+                    read.location())), writer);
+            if (held == null) continue;
             JsonObject edge = new JsonObject();
             edge.addProperty("kind", "STATE");
-            edge.addProperty("reader", join.getKey());
+            edge.addProperty("reader", reader.getKey());
             // A mint read lands on whichever racing occurrence reads the cell
             // first, so it is held by the writer (runtime/Confirmation), not
             // the reader.
             boolean mint = read.mintVersion() != ReadRow.UNKNOWN_VERSION;
             edge.addProperty("mint", mint);
             edge.addProperty("writer", writer.id());
-            edge.addProperty("version", join.getValue().version());
-            edge.addProperty("location",
-                    location(join.getValue().location()));
+            edge.addProperty("version", held.version());
+            edge.addProperty("location", location(held.location()));
             edges.add(edge);
             if (mint) continue;
             order(orders, writer, read.endpoint());
             // No other writer of the location between the two: one recorded
             // before the write goes before it, any other after the read.
-            for (WriteRow other : byLocation.get(
-                    location(join.getValue().location()))) {
+            for (WriteRow other : byLocation.get(location(held.location()))) {
                 if (other.endpoint().equals(writer)) continue;
-                if (other.seq() < join.getValue().seq()) {
+                if (other.seq() < held.seq()) {
                     order(orders, other.endpoint(), writer);
                 } else {
                     order(orders, read.endpoint(), other.endpoint());
@@ -526,6 +533,18 @@ public final class ConfirmMain {
             edges.add(row);
         }
         return edges;
+    }
+
+    /** The last write {@code writer} made of a location, of its writes. */
+    private static WriteRow lastBy(List<WriteRow> writes, Endpoint writer) {
+        WriteRow last = null;
+        for (WriteRow write : writes) {
+            if (write.endpoint().equals(writer)
+                    && (last == null || write.seq() > last.seq())) {
+                last = write;
+            }
+        }
+        return last;
     }
 
     /** {@code first}'s activation exits before {@code then}'s enters, unless
