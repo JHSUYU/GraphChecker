@@ -125,8 +125,6 @@ final class SeedBackwardStaticAnalyzer {
     private final Map<String, SootClass> classesByName = new LinkedHashMap<>();
     private final Map<String, SootMethod> allMethodsBySignature =
             new LinkedHashMap<>();
-    private final Map<String, List<SootMethod>> concreteMethodsBySubSignature =
-            new LinkedHashMap<>();
     private final Map<String, List<Fact>> factsByMethod = new LinkedHashMap<>();
     /** Post-dominance per method: the ONE control-dependence rule. */
     private final Map<String, SiteControlDependence.MethodGuards>
@@ -194,12 +192,6 @@ final class SeedBackwardStaticAnalyzer {
             classesByName.put(sootClass.getName(), sootClass);
             for (SootMethod method : sootClass.getMethods()) {
                 allMethodsBySignature.put(method.getSignature(), method);
-                if (method.isConcrete()) {
-                    concreteMethodsBySubSignature
-                            .computeIfAbsent(method.getSubSignature(),
-                                    ignored -> new ArrayList<>())
-                            .add(method);
-                }
             }
         }
         try {
@@ -1922,7 +1914,7 @@ final class SeedBackwardStaticAnalyzer {
             return Collections.emptyList();
         }
         return memoized(dispatchTargetsCache, callee.raw, ignored -> {
-            SootClass owner = classesByName.get(callee.owner);
+            SootClass owner = sceneClass(callee.owner);
             if (owner == null
                     || (!owner.isInterface() && !owner.isAbstract())) {
                 return Collections.<String>emptyList();
@@ -1939,22 +1931,45 @@ final class SeedBackwardStaticAnalyzer {
                 + String.join(",", sig.params) + ")";
     }
 
-    /** Indexed concrete methods below {@code sig.owner} that {@code accept}s. */
+    /**
+     * The concrete methods a call on {@code sig.owner} may run that {@code
+     * accept}s (CHA): for each concrete subtype of the owner, the method its
+     * lookup finds, declared there or inherited.  {@code
+     * Replica.getGenerationStamp()} runs {@code Block}'s through {@code
+     * ReplicaInfo extends Block implements Replica}, though {@code Block}
+     * itself implements no {@code Replica}.
+     */
     private List<SootMethod> concreteImplementations(
             MethodSig sig, Predicate<SootMethod> accept) {
-        List<SootMethod> candidates = concreteMethodsBySubSignature.get(
-                methodSubSignature(sig));
-        if (candidates == null) {
-            return Collections.emptyList();
-        }
+        SootClass owner = sceneClass(sig.owner);
+        String subSignature = methodSubSignature(sig);
+        SootMethod declared = owner == null ? null
+                : walkHierarchy(owner,
+                        type -> type.getMethodUnsafe(subSignature));
+        if (declared == null) return Collections.emptyList();
         List<SootMethod> matches = new ArrayList<>();
-        for (SootMethod candidate : candidates) {
-            if (accept.test(candidate) && classImplementsOrExtends(
-                    candidate.getDeclaringClass(), sig.owner)) {
-                matches.add(candidate);
-            }
+        for (SootMethod target : abstractDispatch(owner, declared)) {
+            if (accept.test(target)) matches.add(target);
         }
         return matches;
+    }
+
+    /** The concrete targets of {@code declared} below {@code owner}; none
+     *  when the hierarchy cannot be resolved (a phantom supertype). */
+    private static Set<SootMethod> abstractDispatch(SootClass owner,
+                                                    SootMethod declared) {
+        try {
+            return Scene.v().getOrMakeFastHierarchy()
+                    .resolveAbstractDispatch(owner, declared);
+        } catch (RuntimeException unresolved) {
+            return Collections.emptySet();
+        }
+    }
+
+    /** A loaded, non-phantom class by name, application or library. */
+    private static SootClass sceneClass(String name) {
+        SootClass found = Scene.v().getSootClassUnsafe(name, false);
+        return found == null || found.isPhantom() ? null : found;
     }
 
     private List<String> applicationImplementationSignatures(MethodSig sig) {
@@ -2137,24 +2152,47 @@ final class SeedBackwardStaticAnalyzer {
             }
             Set<String> sources = new LinkedHashSet<>();
             String subSignature = methodSubSignature(targetSig);
-            for (String candidateName : hierarchyNames(targetClass)) {
-                SootClass candidate = classesByName.get(candidateName);
-                if (candidate == null || !candidate.isApplicationClass()
-                        || skipDispatchOwner(candidate.getName())
-                        || (!candidate.isInterface()
-                        && !candidate.isAbstract())) {
-                    continue;
-                }
-                for (SootMethod method : candidate.getMethods()) {
-                    if (subSignature.equals(method.getSubSignature())) {
-                        sources.add(method.getSignature());
+            // The supertypes of every class that runs this body: its own
+            // and those of each subtype inheriting it.
+            for (SootClass runner : inheritingSubtypes(targetClass,
+                    subSignature)) {
+                for (String candidateName : hierarchyNames(runner)) {
+                    SootClass candidate = sceneClass(candidateName);
+                    if (candidate == null
+                            || skipDispatchOwner(candidate.getName())
+                            || (!candidate.isInterface()
+                            && !candidate.isAbstract())) {
+                        continue;
                     }
+                    SootMethod method =
+                            candidate.getMethodUnsafe(subSignature);
+                    if (method != null) sources.add(method.getSignature());
                 }
             }
             return sources.isEmpty() ? Collections.<String>emptyList()
                     : Collections.unmodifiableList(
                             new ArrayList<>(sources));
         });
+    }
+
+    /** {@code declaring} and each of its subclasses that inherits its
+     *  {@code subSignature} (declares none of its own). */
+    private static List<SootClass> inheritingSubtypes(SootClass declaring,
+                                                      String subSignature) {
+        List<SootClass> runners = new ArrayList<>();
+        Deque<SootClass> work = new ArrayDeque<>();
+        work.add(declaring);
+        while (!work.isEmpty()) {
+            SootClass type = work.removeFirst();
+            if (type != declaring
+                    && type.getMethodUnsafe(subSignature) != null) {
+                continue;
+            }
+            runners.add(type);
+            work.addAll(Scene.v().getOrMakeFastHierarchy()
+                    .getSubclassesOf(type));
+        }
+        return runners;
     }
 
     private boolean isExpandableMethod(String signature) {
