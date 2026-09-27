@@ -9,9 +9,6 @@ import soot.Value;
 import soot.ValueBox;
 import soot.jimple.AssignStmt;
 import soot.jimple.IfStmt;
-import soot.jimple.ReturnStmt;
-import soot.jimple.ReturnVoidStmt;
-import soot.jimple.ThrowStmt;
 import soot.jimple.LengthExpr;
 import soot.toolkits.graph.BriefUnitGraph;
 import soot.toolkits.graph.MHGDominatorsFinder;
@@ -174,19 +171,6 @@ final class CfgLoopControl {
             return exits;
         }
 
-        /** Returns and throws inside the loop (no normal exit edge). */
-        List<Unit> terminals() {
-            List<Unit> terminals = new ArrayList<Unit>();
-            for (Unit unit : members()) {
-                if (cfg.succsOf(unit).isEmpty()
-                        && (unit instanceof ReturnStmt
-                        || unit instanceof ReturnVoidStmt
-                        || unit instanceof ThrowStmt)) {
-                    terminals.add(unit);
-                }
-            }
-            return terminals;
-        }
     }
 
     /** Natural loops in first-backedge order; units with no index skipped. */

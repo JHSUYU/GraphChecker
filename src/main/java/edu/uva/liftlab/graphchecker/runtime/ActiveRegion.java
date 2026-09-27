@@ -84,16 +84,7 @@ final class ActiveRegion {
             new ConcolicRegionRuntime.OccurrenceCounter();
     final Map<String, Integer> accessorCallOccurrences =
             new LinkedHashMap<>();
-    final LoopBackedgeBudget loopBackedges;
-    /**
-     * The ordinal of the open invocation of each fixed-count loop; read only
-     * by {@link #chargeLoopBody} to scope the body budget per invocation.
-     */
-    private final Map<String, Integer> activeLoopInvocations =
-            new LinkedHashMap<>();
-    /** Next invocation ordinal by runtime natural-loop id. */
-    private final Map<String, Integer> loopInvocationOrdinals =
-            new LinkedHashMap<>();
+    private final LoopBackedgeBudget loopBackedges;
     private final Map<Long, PreparedBranch> preparedBranches =
             new LinkedHashMap<>();
     /** One shared expression DAG for all read-outs in this VM session. */
@@ -144,30 +135,25 @@ final class ActiveRegion {
         // Body entries a loop may run before the replay is cut.
         int maxBodies = LoopBoundPolicy.MAX_REPLAY_PATH_LOOP_BODIES;
         chargedLoopBodies++;
-        // The ceiling is per dynamic invocation: keyed by the static loop
-        // id alone, repeated walks of one loop would share one budget.
-        Integer invocation = activeLoopInvocations.get(loopId);
-        String budgetKey = invocation == null ? loopId
-                : LoopBackedgeBudget.scoped(loopId, invocation.intValue());
-        long entered = loopBackedges.recordBody(budgetKey);
+        long entered = loopBackedges.recordBody(inThisCall(loopId));
         if (entered <= maxBodies) return null;
         return new ReplayLoopResourceCut(loopId, maxBodies, entered,
                 ReplayLoopResourceCut.REASON);
     }
 
-    /** Opens one dynamic invocation of a fixed-count loop (scopes its
-     *  budget). */
-    synchronized void openLoopInvocation(String loopId) {
-        if (loopId.isEmpty()
-                || activeLoopInvocations.containsKey(loopId)) {
-            return;
-        }
-        activeLoopInvocations.put(loopId,
-                loopInvocationOrdinals.merge(loopId, 1, Integer::sum));
+    /** Counts one traversal of this loop's backedge; returns the attempt. */
+    synchronized long traverseBackedge(String loopId) {
+        return loopBackedges.recordTraversal(inThisCall(loopId));
     }
 
-    synchronized void closeLoopInvocation(String loopId) {
-        if (!loopId.isEmpty()) activeLoopInvocations.remove(loopId);
+    /**
+     * A loop's budget key: the loop in the method activation running it.
+     * Keyed by the loop alone, every call of a helper in one long activation
+     * shared one budget (WritableUtils.readVLong, cut at its 9th body across
+     * the token fields a DataXceiver reads: a9b token-expired.mirror).
+     */
+    private static String inThisCall(String loopId) {
+        return LoopBackedgeBudget.scoped(loopId, Identity.frameToken());
     }
 
     /**

@@ -2161,8 +2161,6 @@ public final class CausynthPipeline {
             Set<String> methods, LoopBoundPolicy policy,
             Set<String> fixedCountLoopSites, HookCatalog refs) {
         SootMethodRef replayBody = refs.ref(Hook.CHECK_REPLAY_LOOP_BODY);
-        SootMethodRef openInvocation = refs.ref(Hook.OPEN_LOOP_INVOCATION);
-        SootMethodRef closeInvocation = refs.ref(Hook.CLOSE_LOOP_INVOCATION);
         SootMethodRef checkBackedge = refs.ref(Hook.CHECK_LOOP_BACKEDGE);
         for (String methodSignature : methods) {
             SootMethod method = CausynthStaticFacts.method(methodSignature);
@@ -2175,7 +2173,6 @@ public final class CausynthPipeline {
             // One loop CFG per body, shared by every loop consumer.
             CfgLoopControl.LoopCfg loopCfg = CfgLoopControl.loopCfg(body);
             Unit safeEntry = safeInstrumentationEntry(body, method);
-            Map<Unit, String> fixedCountHeaders = new LinkedHashMap<>();
             for (CfgLoopControl.NaturalLoop loop
                     : CfgLoopControl.naturalLoops(loopCfg,
                             CausynthPipeline::originalUnitIndex)) {
@@ -2185,13 +2182,6 @@ public final class CausynthPipeline {
                 boolean fixedCount = naturalLoopHasSite(
                         method, loop, continuations,
                                 fixedCountLoopSites);
-                List<CfgLoopControl.Edge> loopExits = fixedCount
-                        ? deduplicateEdges(loop.exitEdges())
-                        : Collections.<CfgLoopControl.Edge>emptyList();
-                List<Unit> loopTerminals = fixedCount
-                        ? loop.terminals()
-                        : Collections.<Unit>emptyList();
-                if (fixedCount) fixedCountHeaders.put(loop.header, loopId);
                 // A fixed-count loop is a resource loop: charged per body.
                 int loopBodyBound = fixedCount
                         ? policy.maxBackedgeTraversals()
@@ -2224,27 +2214,7 @@ public final class CausynthPipeline {
                                 invoke(replayBody, StringConstant.v(loopId),
                                         IntConstant.v(loopBodyBound)));
                     }
-                    for (CfgLoopControl.Edge exit : loopExits) {
-                        splitLoopEdge(body, method, exit.source, exit.target,
-                                loopId, "exit", invoke(closeInvocation,
-                                        StringConstant.v(loopId)));
-                    }
-                    for (Unit terminal : loopTerminals) {
-                        body.getUnits().insertBefore(invoke(closeInvocation,
-                                StringConstant.v(loopId)), terminal);
-                    }
                 }
-            }
-            // An indexed loop's invocation opens at its header, every edge
-            // into it redirected (so after the edges above are split): the
-            // first pass opens it, a pass while open is none, exits close it.
-            // Never at the lengthof: javac re-reads arr.length in an indexed
-            // header (DFSUtilClient.isValidName).
-            for (Map.Entry<Unit, String> header
-                    : fixedCountHeaders.entrySet()) {
-                body.getUnits().insertBefore(invoke(openInvocation,
-                        StringConstant.v(header.getValue())),
-                        header.getKey());
             }
         }
     }
@@ -3294,8 +3264,6 @@ public final class CausynthPipeline {
         RESOLVE_SWITCH_BRANCH,
         CHECK_LOOP_BACKEDGE,
         CHECK_REPLAY_LOOP_BODY,
-        OPEN_LOOP_INVOCATION,
-        CLOSE_LOOP_INVOCATION,
         EXIT_REGION_FRAME,
         THROW_REGION_FRAME
     }
@@ -3501,10 +3469,6 @@ public final class CausynthPipeline {
                     .add(Hook.CHECK_REPLAY_LOOP_BODY, runtime,
                             "checkReplayLoopBody", VoidType.v(), string,
                             IntType.v())
-                    .add(Hook.OPEN_LOOP_INVOCATION, runtime,
-                            "openLoopInvocation", VoidType.v(), string)
-                    .add(Hook.CLOSE_LOOP_INVOCATION, runtime,
-                            "closeLoopInvocation", VoidType.v(), string)
                     .add(Hook.EXIT_REGION_FRAME, runtime, "exitRegionFrame",
                             VoidType.v(), string, string)
                     .add(Hook.THROW_REGION_FRAME, runtime, "throwRegionFrame",

@@ -736,6 +736,15 @@ public final class Identity {
         return state().depth();
     }
 
+    /**
+     * The token of the innermost level, unique to one method activation (0
+     * at the thread root): what a loop budget is counted in.
+     */
+    public static long frameToken() {
+        State state = state();
+        return state.levels.get(state.depth()).token;
+    }
+
     /** The innermost frame's call site, for a report, or {@code ""}. */
     public static String innermostFrame() {
         State state = state();

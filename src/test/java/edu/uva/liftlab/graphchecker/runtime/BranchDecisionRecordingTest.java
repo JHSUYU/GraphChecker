@@ -118,6 +118,25 @@ public class BranchDecisionRecordingTest {
      * the anchor, not a condition on publishing it.  Only a decision the VM
      * emitted no event for is silent.
      */
+    /**
+     * A loop's unroll budget is counted per method activation: a helper
+     * called again in one long activation starts afresh (readVLong was cut
+     * at its 9th body across a DataXceiver's token fields, a9b
+     * token-expired.mirror).
+     */
+    @Test
+    public void aLoopBudgetIsCountedPerCall() throws Exception {
+        installPlan();
+        ActiveRegion active = region();
+        String helper = "<a.W: long readVLong(java.io.DataInput)>";
+        for (int call = 0; call < 2; call++) {
+            long frame = Identity.enterFrame(helper, null);
+            assertEquals(1L, active.traverseBackedge(helper + "#loop:u8"));
+            assertEquals(2L, active.traverseBackedge(helper + "#loop:u8"));
+            Identity.exitFrame(frame);
+        }
+    }
+
     @Test
     public void aConcreteDecisionAtTheTargetSiteIsStillAReach() {
         // site decided, occurrence decided, permuted by a loop, reaches

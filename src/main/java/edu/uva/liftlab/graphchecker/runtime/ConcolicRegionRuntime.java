@@ -690,16 +690,6 @@ public final class ConcolicRegionRuntime {
         LoopAccounting.checkReplayBody(loopId, instrumentedMaxTraversals);
     }
 
-    /** Opens one dynamic invocation of a fixed-count loop. */
-    public static void openLoopInvocation(String loopId) {
-        LoopAccounting.openInvocation(loopId);
-    }
-
-    /** Closes the open dynamic invocation of a fixed-count loop. */
-    public static void closeLoopInvocation(String loopId) {
-        LoopAccounting.closeInvocation(loopId);
-    }
-
     /** Opens the enclosing call that addresses LOOP_BODY_ROOT iterations. */
     public static long enterLoopRootInvocationFrame(
             String instrumentationSelector, String rootMethod,

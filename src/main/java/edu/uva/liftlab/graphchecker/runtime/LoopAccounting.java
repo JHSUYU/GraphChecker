@@ -23,8 +23,9 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 /**
  * R5 bounds: what a replay may run, and the terminal it takes after.
  *
- * <p>The unroll bound of an instrumented backedge ({@link #checkBackedge}),
- * the resource ceiling per loop invocation ({@link #checkReplayBody}), and
+ * <p>The unroll bound of an instrumented backedge ({@link #checkBackedge})
+ * and the resource ceiling of a fixed-count loop ({@link #checkReplayBody}),
+ * both per loop per method activation, and
  * the enclosing call a LOOP_BODY_ROOT occurrence's k counts against
  * ({@link #enterLoopRoot}).  The policy lives in {@code plan/LoopBoundPolicy};
  * this class only accounts and cuts.  Woven hook names stay in
@@ -56,7 +57,7 @@ final class LoopAccounting {
                 return new LoopBoundCut(edge, instrumentedMaxTraversals,
                         "INSTRUMENTATION_POLICY_MISMATCH");
             }
-            long attempted = active.loopBackedges.recordTraversal(edge);
+            long attempted = active.traverseBackedge(edge);
             return attempted < instrumentedMaxTraversals ? null
                     : new LoopBoundCut(edge, instrumentedMaxTraversals,
                             "MAX_LOOP_BODY_ITERATIONS_REACHED");
@@ -104,30 +105,6 @@ final class LoopAccounting {
             }
         }
         endAtCut(active, cut);
-    }
-
-    /** Opens one dynamic invocation of a fixed-count loop. */
-    static void openInvocation(String loopId) {
-        ActiveRegion active = ConcolicRegionRuntime.observingActiveRegion();
-        if (active == null) return;
-        ConcolicRegionRuntime.pauseObservation();
-        try {
-            active.openLoopInvocation(safe(loopId));
-        } finally {
-            ConcolicRegionRuntime.resumeObservation();
-        }
-    }
-
-    /** Closes the open dynamic invocation of a fixed-count loop. */
-    static void closeInvocation(String loopId) {
-        ActiveRegion active = ConcolicRegionRuntime.observingActiveRegion();
-        if (active == null) return;
-        ConcolicRegionRuntime.pauseObservation();
-        try {
-            active.closeLoopInvocation(safe(loopId));
-        } finally {
-            ConcolicRegionRuntime.resumeObservation();
-        }
     }
 
     /** Resumes the paused path condition; true when the resume failed. */
@@ -257,9 +234,10 @@ final class LoopAccounting {
         }
     }
 
-    /** Per-activation, per-CFG-edge completed traversal accounting. */
+    /** Completed traversals and bodies, per budget key (a loop in one
+     *  method activation). */
     static final class LoopBackedgeBudget {
-        private static final String SCOPE_SEPARATOR = "\u0000definition:";
+        private static final String SCOPE_SEPARATOR = "\u0000frame:";
         private final int maxTraversals;
         private final Map<String, Integer> traversals =
                 new LinkedHashMap<>();
@@ -284,8 +262,8 @@ final class LoopAccounting {
             return attempted;
         }
 
-        static String scoped(String loopId, long invocation) {
-            return safe(loopId) + SCOPE_SEPARATOR + invocation;
+        static String scoped(String loopId, long frame) {
+            return safe(loopId) + SCOPE_SEPARATOR + frame;
         }
 
         /** Counts one body against the cap; returns the body number. */
