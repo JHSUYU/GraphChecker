@@ -405,44 +405,4 @@ final class CfgLoopControl {
         }
         return false;
     }
-
-    /** The unique {@code lengthof} definition, before the loop, supplying
-     *  these loop guards. */
-    static AssignStmt arrayLengthAuthority(
-            Body body, Collection<Unit> guards, Set<Unit> loopMembers) {
-        Set<String> lengthLocals = arrayLengthLocals(body);
-        Set<String> demanded = new LinkedHashSet<String>();
-        for (Unit guard : guards) {
-            if (!(guard instanceof IfStmt)) continue;
-            for (ValueBox box
-                    : ((IfStmt) guard).getCondition().getUseBoxes()) {
-                Value operand = box.getValue();
-                if (operand instanceof Local && lengthLocals.contains(
-                        ((Local) operand).getName())) {
-                    demanded.add(((Local) operand).getName());
-                }
-            }
-        }
-        if (demanded.size() != 1) return null;
-        AssignStmt authority = null;
-        for (Unit unit : body.getUnits()) {
-            // Before the loop only: Soot packs locals, and a body that reads
-            // the length again (DFSUtilClient.isValidName's
-            // i != components.length - 1) reassigns the guard's local
-            // inside the loop.
-            if (!(unit instanceof AssignStmt) || loopMembers.contains(unit)) {
-                continue;
-            }
-            AssignStmt assignment = (AssignStmt) unit;
-            if (!(assignment.getLeftOp() instanceof Local)
-                    || !(assignment.getRightOp() instanceof LengthExpr)
-                    || !demanded.contains(
-                    ((Local) assignment.getLeftOp()).getName())) {
-                continue;
-            }
-            if (authority != null && authority != assignment) return null;
-            authority = assignment;
-        }
-        return authority;
-    }
 }

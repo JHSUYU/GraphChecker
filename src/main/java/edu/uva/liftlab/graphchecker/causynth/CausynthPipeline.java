@@ -2175,6 +2175,7 @@ public final class CausynthPipeline {
             // One loop CFG per body, shared by every loop consumer.
             CfgLoopControl.LoopCfg loopCfg = CfgLoopControl.loopCfg(body);
             Unit safeEntry = safeInstrumentationEntry(body, method);
+            Map<Unit, String> fixedCountHeaders = new LinkedHashMap<>();
             for (CfgLoopControl.NaturalLoop loop
                     : CfgLoopControl.naturalLoops(loopCfg,
                             CausynthPipeline::originalUnitIndex)) {
@@ -2190,24 +2191,7 @@ public final class CausynthPipeline {
                 List<Unit> loopTerminals = fixedCount
                         ? loop.terminals()
                         : Collections.<Unit>emptyList();
-                if (fixedCount) {
-                    // An indexed loop's invocation opens where its array
-                    // length is computed: once, before the first body hook.
-                    List<Unit> guards = new ArrayList<>();
-                    for (CfgLoopControl.Edge edge : loopExits) {
-                        guards.add(edge.source);
-                    }
-                    AssignStmt authority = CfgLoopControl
-                            .arrayLengthAuthority(body, guards,
-                                    loop.members());
-                    if (authority == null) {
-                        throw new IllegalStateException(
-                                "FIXED_COUNT_LOOP_INVOCATION_UNADDRESSABLE: "
-                                        + loopId);
-                    }
-                    body.getUnits().insertAfter(invoke(openInvocation,
-                            StringConstant.v(loopId)), authority);
-                }
+                if (fixedCount) fixedCountHeaders.put(loop.header, loopId);
                 // A fixed-count loop is a resource loop: charged per body.
                 int loopBodyBound = fixedCount
                         ? policy.maxBackedgeTraversals()
@@ -2250,6 +2234,17 @@ public final class CausynthPipeline {
                                 StringConstant.v(loopId)), terminal);
                     }
                 }
+            }
+            // An indexed loop's invocation opens at its header, every edge
+            // into it redirected (so after the edges above are split): the
+            // first pass opens it, a pass while open is none, exits close it.
+            // Never at the lengthof: javac re-reads arr.length in an indexed
+            // header (DFSUtilClient.isValidName).
+            for (Map.Entry<Unit, String> header
+                    : fixedCountHeaders.entrySet()) {
+                body.getUnits().insertBefore(invoke(openInvocation,
+                        StringConstant.v(header.getValue())),
+                        header.getKey());
             }
         }
     }
