@@ -1288,6 +1288,18 @@ campaign_remote_visibility_wait_s=120
 # workflow file itself lives on that same shared home and can be edited
 # mid-run; forwarding the values means an edit cannot reach a worker,
 # because every key it could change arrives already decided.
+# One workflow key as its environment assignment, spelled by the table.
+config_env_assignment() {
+  local row config_key config_env config_flags config_default
+  for row in "${workflow_config_keys[@]}"; do
+    read_config_key_row "${row}"
+    [[ "${config_key}" == "$1" ]] || continue
+    printf '%s=%s\n' "${config_env}" "${!config_key-}"
+    return 0
+  done
+  die "no workflow key $1"
+}
+
 campaign_remote_env_assignments() {
   local row config_key config_env config_flags config_default
   for row in "${workflow_config_keys[@]}"; do
@@ -1488,13 +1500,11 @@ campaign_run_adapter() {
   local label=$1
   local command=$2
   shift 2
-  local -a adapter_env configured
-  # The campaign's configuration, as a peer's replay gets it
-  # (campaign_remote_env_assignments): one environment wherever a replay
-  # runs -- e.g. the reservation its JVM sizes its heap by.
-  mapfile -t configured < <(campaign_remote_env_assignments)
+  local -a adapter_env
   adapter_env=(
-    "${configured[@]}"
+    # What one replay may use, which its JVM sizes its heap by; a peer's
+    # replay gets it with the rest (campaign_remote_env_assignments).
+    "$(config_env_assignment obligation_memory_mb)"
     "CAUSYNTH_CUSTOM_JDK_HOME=${custom_jdk_home}"
     # Every adapter loads the same frozen artifact as analysis and scheduling.
     "GRAPHCHECKER_JAR=${graphchecker_jar}"
