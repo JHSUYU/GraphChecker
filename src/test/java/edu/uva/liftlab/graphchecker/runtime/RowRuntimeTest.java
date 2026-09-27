@@ -491,6 +491,16 @@ public class RowRuntimeTest {
                         "getAndIncrement", "()I", 12, true),
                 location, 125L, rmwExpression(), "",
                 "Caller.body()#u9@1");
+        // A null stored into a tracked reference field states no class, and
+        // is a reference write all the same (17960 v64: a diff's cleared
+        // posteriorDiff published no row, and the path reading it was
+        // refused).
+        RowRuntime.write(occurrence, 12L,
+                Endpoint.stateSite("Diff", "setPosterior", "(LDiff;)V", 2,
+                        true),
+                LocationId.of(LocationKind.INSTANCE, "6", "40"), 126L,
+                nullExpression(), "",
+                "Caller.body()#u9@1");
         RowRuntime.read(occurrence, 14L,
                 Endpoint.stateSite("java.util.concurrent.atomic.AtomicInteger",
                         "get", "()I", 2, false),
@@ -599,6 +609,8 @@ public class RowRuntimeTest {
         // An operator node states no type of its own; the run states the
         // operands', so an int RMW is not published as an Object.
         assertEquals("I", writes.get(0).javaType());
+        assertEquals("a written null is a reference", "L",
+                writes.get(1).javaType());
         List<ReadRow> reads = RowCodec.readAll(dir.reads(),
                 RowCodec::readRead);
         assertEquals(125L, reads.get(0).observedVersion());
@@ -889,6 +901,15 @@ public class RowRuntimeTest {
     }
 
     /** {@code Y_I_0 + Y_I_1}, as the VM publishes a linearized RMW. */
+    /** The VM's null symbol, which states no class. */
+    private static JsonObject nullExpression() {
+        JsonObject expression = new JsonObject();
+        expression.addProperty("_type", "SymbolExpression");
+        expression.addProperty("_java_type", "");
+        expression.addProperty("_exp", "N");
+        return expression;
+    }
+
     private static JsonObject rmwExpression() {
         JsonObject left = new JsonObject();
         left.addProperty("_type", "ConstExpr");

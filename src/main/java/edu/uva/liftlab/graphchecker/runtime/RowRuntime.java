@@ -24,6 +24,7 @@ import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
+import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
 import java.io.IOException;
 import java.lang.management.ManagementFactory;
 import java.nio.charset.StandardCharsets;
@@ -689,7 +690,22 @@ public final class RowRuntime {
     private static String javaType(String declared, JsonObject expression,
                                    String walk) {
         String type = Text.safe(declared);
-        return type.isEmpty() ? statedType(expression, 0, walk) : type;
+        if (!type.isEmpty()) return type;
+        // Java null is a reference, whichever field it was stored into (the
+        // VM's null symbol states no class): a null store into a tracked
+        // reference field is a write a later read joins.
+        return isNull(expression) ? NULL_REFERENCE_TYPE
+                : statedType(expression, 0, walk);
+    }
+
+    /** The java type of a written {@code null}: a reference (Ref sort). */
+    private static final String NULL_REFERENCE_TYPE = "L";
+
+    private static boolean isNull(JsonObject expression) {
+        if (expression == null) return false;
+        JsonElement symbol = expression.get("_exp");
+        return symbol != null && symbol.isJsonPrimitive()
+                && VmExpressionIr.SYMBOLIC_NULL.equals(symbol.getAsString());
     }
 
     /**
