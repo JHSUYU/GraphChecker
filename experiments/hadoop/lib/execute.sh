@@ -67,11 +67,17 @@ extra=()
 [[ -z ${CAUSYNTH_WORKLOAD_JAVA_OPTS:-} ]] \
   || read -r -a extra <<<"${CAUSYNTH_WORKLOAD_JAVA_OPTS}"
 
+# The heap is half of what the campaign reserves for one replay
+# (obligation_memory_mb, which the host gate charges); the other half is the
+# VM's native symbolic state.  2 GB at least.
+heap_mb=$(( ${CAUSYNTH_OBLIGATION_MEMORY_MB:-0} / 2 ))
+(( heap_mb >= 2048 )) || heap_mb=2048
+
 # noInflation: a reflective call is served by a generated accessor from its
 # first call, not by the native one for fifteen calls and a generated one
 # after, so one write through reflection names one site in every run.
 set +e
-"${jdk}/bin/java" -ea -Xmx2g -Djava.awt.headless=true \
+"${jdk}/bin/java" -ea -Xmx${heap_mb}m -Djava.awt.headless=true \
   -Dsun.reflect.noInflation=true \
   -Dorg.slf4j.simpleLogger.defaultLogLevel=warn \
   -Djava.io.tmpdir="${tmpdir}" -Dtest.build.data="${datadir}" \

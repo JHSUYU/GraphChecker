@@ -1488,8 +1488,13 @@ campaign_run_adapter() {
   local label=$1
   local command=$2
   shift 2
-  local -a adapter_env
+  local -a adapter_env configured
+  # The campaign's configuration, as a peer's replay gets it
+  # (campaign_remote_env_assignments): one environment wherever a replay
+  # runs -- e.g. the reservation its JVM sizes its heap by.
+  mapfile -t configured < <(campaign_remote_env_assignments)
   adapter_env=(
+    "${configured[@]}"
     "CAUSYNTH_CUSTOM_JDK_HOME=${custom_jdk_home}"
     # Every adapter loads the same frozen artifact as analysis and scheduling.
     "GRAPHCHECKER_JAR=${graphchecker_jar}"
