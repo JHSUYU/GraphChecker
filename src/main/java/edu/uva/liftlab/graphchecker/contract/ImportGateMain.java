@@ -54,31 +54,18 @@ public final class ImportGateMain {
     /** Checks one epoch, appends its violations, and reports the counts. */
     public static JsonObject gate(Path iteration, Path out,
                                   String topologyEpoch) throws IOException {
-        List<SessionReader> sessions = SessionReader.readAll(iteration);
-        Map<String, SessionReader> byId =
-                new LinkedHashMap<String, SessionReader>();
-        for (SessionReader session : sessions) {
-            byId.put(session.sessionId(), session);
-        }
-        // Each worker's focus rows, read once: the first is the ask its
-        // session ran under (invariant 6), each one a flip it owes (10).
-        Map<String, JsonObject> asks = new LinkedHashMap<String, JsonObject>();
-        List<GapRow> flips = new ArrayList<GapRow>();
+        List<SessionDir> sessions = SessionDir.sessionsIn(iteration);
+        // Each worker's focus rows, by the session its own result row names
+        // (never a directory name): the first is the ask its session ran
+        // under (invariant 6), each one a flip it owes (10).
+        Map<String, List<JsonObject>> focus =
+                new LinkedHashMap<String, List<JsonObject>>();
         for (ObligationDir worker : ObligationDir.workersIn(iteration)) {
-            List<JsonObject> rows = RowCodec.readJsonl(worker.focusedTask());
-            if (!rows.isEmpty()) {
-                asks.putIfAbsent(worker.sessionId(), rows.get(0));
-            }
-            // Joined by the worker's own result row, never a directory name.
-            SessionReader replay = byId.get(worker.sessionId());
-            if (replay == null) continue;
-            for (JsonObject row : rows) {
-                flips.addAll(RowInvariants.flipped(row, replay));
-            }
+            focus.computeIfAbsent(worker.sessionId(),
+                    key -> new ArrayList<JsonObject>())
+                    .addAll(RowCodec.readJsonl(worker.focusedTask()));
         }
-        List<GapRow> gaps = new ArrayList<GapRow>(
-                RowInvariants.check(sessions, asks));
-        gaps.addAll(flips);
+        List<GapRow> gaps = RowInvariants.check(sessions, focus);
 
         StringBuilder text = new StringBuilder();
         int blocking = 0;

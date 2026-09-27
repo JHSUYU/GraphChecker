@@ -20,6 +20,7 @@ import edu.uva.liftlab.graphchecker.contract.WriteRow;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -645,16 +646,28 @@ public final class Arms {
      */
     public static void symbolsIn(JsonElement expression, Set<String> into,
                                  int depth) {
-        if (expression == null || expression.isJsonNull() || depth > 512) {
+        symbolsIn(expression, into, depth, Collections.newSetFromMap(
+                new IdentityHashMap<JsonElement, Boolean>()));
+    }
+
+    /**
+     * The same walk, each shared subtree once: {@code walked} holds nodes by
+     * identity, and a caller walking many expressions of one table passes
+     * one set -- expanded, they share subtrees, and walked as trees one
+     * session's table ran IMPORT out of heap (hdfs-11741 v74).
+     */
+    public static void symbolsIn(JsonElement expression, Set<String> into,
+                                 int depth, Set<JsonElement> walked) {
+        if (expression == null || expression.isJsonNull() || depth > 512
+                || expression.isJsonPrimitive() || !walked.add(expression)) {
             return;
         }
         if (expression.isJsonArray()) {
             for (JsonElement child : expression.getAsJsonArray()) {
-                symbolsIn(child, into, depth + 1);
+                symbolsIn(child, into, depth + 1, walked);
             }
             return;
         }
-        if (!expression.isJsonObject()) return;
         JsonObject node = expression.getAsJsonObject();
         if (VmExpressionIr.SYMBOL_TYPE.equals(VmExpressionIr.typeOf(node))) {
             String raw = JsonFields.optionalString(node, "_exp");
@@ -663,7 +676,8 @@ public final class Arms {
         for (JsonElement child : node.asMap().values()) {
             if (child.isJsonPrimitive()) continue;
             // An array's items sit one level below its owner, as members do.
-            symbolsIn(child, into, child.isJsonArray() ? depth : depth + 1);
+            symbolsIn(child, into, child.isJsonArray() ? depth : depth + 1,
+                    walked);
         }
     }
 

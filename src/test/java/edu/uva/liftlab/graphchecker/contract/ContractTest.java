@@ -639,10 +639,9 @@ public class ContractTest {
     /** The violations one set of sessions states. */
     private List<GapRow> gate(Rows... sessions) throws IOException {
         Path root = iteration.newFolder().toPath();
-        List<SessionReader> read = new java.util.ArrayList<>();
-        for (Rows rows : sessions) read.add(rows.read(root));
-        return RowInvariants.check(read,
-                java.util.Collections.<String, JsonObject>emptyMap());
+        for (Rows rows : sessions) rows.read(root);
+        return RowInvariants.check(SessionDir.sessionsIn(root),
+                java.util.Collections.<String, List<JsonObject>>emptyMap());
     }
 
     /** That rule, that class, that subject -- and nothing silent. */

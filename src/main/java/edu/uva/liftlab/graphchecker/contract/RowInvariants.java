@@ -10,8 +10,10 @@ import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.smt.Arms;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -50,20 +52,32 @@ public final class RowInvariants {
     }
 
     /**
-     * Every violation, in rule order.  {@code asks} maps session id to the
-     * focus row ({@code rootAssignments}, {@code clockDeltas}) a FOCUSED
-     * session ran under.
+     * Every violation, one session held at a time: an iteration no longer
+     * fits one heap (hdfs-11741 v74: 240 sessions with 3 MB expression
+     * tables ran the gate out of 8 GB).  Who states SEED and which roots
+     * the epoch has come from every session's manifest and root rows first.
+     * {@code focus} maps session id to the focus rows its replay ran: the
+     * first is the ask ({@code rootAssignments}, {@code clockDeltas}), each
+     * one a flip it owes.
      */
-    public static List<GapRow> check(List<SessionReader> sessions,
-                                     Map<String, JsonObject> asks) {
+    public static List<GapRow> check(List<SessionDir> sessions,
+                                     Map<String, List<JsonObject>> focus)
+            throws IOException {
         List<GapRow> gaps = new ArrayList<GapRow>();
         if (sessions.isEmpty()) return gaps;
-        sessionSet(sessions, gaps);
-        for (SessionReader session : sessions) {
+        List<SessionReader> headers = new ArrayList<SessionReader>();
+        for (SessionDir dir : sessions) headers.add(SessionReader.readHeader(dir));
+        sessionSet(headers, gaps);
+        Map<String, String> roots = epochRoots(headers);
+        for (SessionDir dir : sessions) {
+            SessionReader session = SessionReader.read(dir);
             complete(session, gaps);
-            check(session, asks.get(session.sessionId()), gaps);
+            List<JsonObject> rows = focus.getOrDefault(session.sessionId(),
+                    Collections.<JsonObject>emptyList());
+            check(session, rows.isEmpty() ? null : rows.get(0), gaps);
+            attributed(session, roots, gaps);
+            for (JsonObject row : rows) gaps.addAll(flipped(row, session));
         }
-        attributed(sessions, gaps);
         return gaps;
     }
 
@@ -773,37 +787,42 @@ public final class RowInvariants {
      * as COMPOSE ({@link Arms#symbolsIn}).  Runtime half:
      * {@code RootMint#mintUnattributed}.
      */
-    private static void attributed(List<SessionReader> sessions,
+    private static void attributed(SessionReader session,
+                                   Map<String, String> roots,
                                    List<GapRow> gaps) {
+        if (roots.isEmpty()) return;
+        Map<String, String> named = named(session);
+        Set<String> stated = new LinkedHashSet<String>();
+        for (RootMintRow row : session.roots()) {
+            stated.add(row.rootId());
+        }
+        for (Map.Entry<String, String> root : roots.entrySet()) {
+            if (stated.contains(root.getKey())) continue;
+            String where = named.get(root.getValue());
+            if (where == null) continue;
+            gaps.add(GapRow.of(session.sessionId(),
+                    GapKind.MINT_UNATTRIBUTED, GapClass.BLOCKING,
+                    root.getKey(),
+                    "invariant 11 (R4: a root symbol without its "
+                            + "RootMintRow): session "
+                            + session.sessionId() + " references symbol "
+                            + root.getValue() + " at " + where
+                            + " and states no RootMintRow for root "
+                            + root.getKey() + ", so it carries a "
+                            + "quantity no row of it attributes"));
+        }
+    }
+
+    /** The epoch's roots, id to the symbol it was first minted under. */
+    private static Map<String, String> epochRoots(
+            List<SessionReader> headers) {
         Map<String, String> roots = new LinkedHashMap<String, String>();
-        for (SessionReader session : sessions) {
+        for (SessionReader session : headers) {
             for (RootMintRow row : session.roots()) {
                 roots.putIfAbsent(row.rootId(), row.symbol());
             }
         }
-        if (roots.isEmpty()) return;
-        for (SessionReader session : sessions) {
-            Map<String, String> named = named(session);
-            Set<String> stated = new LinkedHashSet<String>();
-            for (RootMintRow row : session.roots()) {
-                stated.add(row.rootId());
-            }
-            for (Map.Entry<String, String> root : roots.entrySet()) {
-                if (stated.contains(root.getKey())) continue;
-                String where = named.get(root.getValue());
-                if (where == null) continue;
-                gaps.add(GapRow.of(session.sessionId(),
-                        GapKind.MINT_UNATTRIBUTED, GapClass.BLOCKING,
-                        root.getKey(),
-                        "invariant 11 (R4: a root symbol without its "
-                                + "RootMintRow): session "
-                                + session.sessionId() + " references symbol "
-                                + root.getValue() + " at " + where
-                                + " and states no RootMintRow for root "
-                                + root.getKey() + ", so it carries a "
-                                + "quantity no row of it attributes"));
-            }
-        }
+        return roots;
     }
 
     /** Every symbol one session names, with one citation (rows first). */
@@ -817,10 +836,13 @@ public final class RowInvariants {
             cite(session, row.phiTerm(), where, "targets.jsonl seq="
                     + row.seq() + " field=phiTerm " + row.anchorSiteId());
         }
+        // One walk over the table: its expressions share subtrees.
+        Set<JsonElement> walked = Collections.newSetFromMap(
+                new IdentityHashMap<JsonElement, Boolean>());
         for (Map.Entry<String, JsonObject> entry
                 : session.expressions().expressions().entrySet()) {
             Set<String> symbols = new LinkedHashSet<String>();
-            Arms.symbolsIn(entry.getValue(), symbols, 0);
+            Arms.symbolsIn(entry.getValue(), symbols, 0, walked);
             for (String symbol : symbols) {
                 if (!where.containsKey(symbol)) {
                     where.put(symbol,

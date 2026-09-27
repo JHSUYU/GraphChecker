@@ -97,6 +97,27 @@ public final class SessionReader {
                 expressions, manifest, partial.reason);
     }
 
+    /**
+     * One session's manifest and root rows only: what an epoch-wide check
+     * needs of every session before it reads any one of them whole.
+     */
+    public static SessionReader readHeader(SessionDir dir) throws IOException {
+        Partial partial = new Partial();
+        List<RootMintRow> roots = partial.rows(dir.roots(),
+                RowCodec::readRootMint);
+        SessionManifest manifest = partial.read(dir.manifest(),
+                RowCodec::readManifest, null);
+        return new SessionReader(dir, Collections.<ActivationRow>emptyList(),
+                Collections.<DecisionRow>emptyList(),
+                Collections.<ExportRow>emptyList(),
+                Collections.<AttachRow>emptyList(),
+                Collections.<WriteRow>emptyList(),
+                Collections.<ReadRow>emptyList(), roots,
+                Collections.<TargetRow>emptyList(),
+                Collections.<ObligationResult>emptyList(),
+                ExpressionTable.empty(), manifest, partial.reason);
+    }
+
     /** One session's read, and the first file of it that would not read. */
     private static final class Partial {
         private String reason = "";
