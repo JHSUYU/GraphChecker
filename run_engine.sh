@@ -3009,11 +3009,22 @@ exposure can be grown into"
 $(jq -r -s 'map(.regionId) | unique | join(",")' "${rows}") \
 ($(wc -l <"${rows}") task row(s)); weaving the grown plan"
   campaign_instrument "${iteration_dir}"
+  # The exposing replays re-run side by side: each withdraws its own session
+  # into its own worker, and the head's memory gate spaces their starts.
+  # Their verdicts join the ledger, one file, once all have settled.
+  local -a pids=() reruns=()
   while IFS=$'\t' read -r obligation_id session; do
     campaign_rerun_exposing_obligation "${iteration_dir}" "${wave_dir}" \
       "${obligation_id}" "${session}" "${classes}" "${sessions}" \
-      "${seed_plan}" "${results}"
+      "${seed_plan}" &
+    pids+=("$!")
+    reruns+=("${obligation_id}")
   done < <(campaign_exposures "${growth}" | cut -f1,3 | LC_ALL=C sort -u)
+  campaign_wait_workers "${pids[@]}" || campaign_fail EXPLORE CAMPAIGN \
+    "${wave_dir}" "a re-run of an exposing obligation did not finish"
+  for obligation_id in "${reruns[@]}"; do
+    campaign_record_rerun "${iteration_dir}" "${obligation_id}" "${results}"
+  done
 }
 
 # One exposing obligation's focused replay, again, under the grown class
@@ -3024,19 +3035,15 @@ $(jq -r -s 'map(.regionId) | unique | join(",")' "${rows}") \
 # them unchanged.  What the exposing replay wrote -- its log, its verdict row
 # and its session -- moves under the worker as before-<wave>/, kept as the
 # evidence of why the region was grown and out of the corpus, where COMPOSE
-# would otherwise read a session that ran without the region's hooks.  The
-# re-run's verdict replaces the obligation's row in obligation_results.
+# would otherwise read a session that ran without the region's hooks.  Its
+# verdict joins obligation_results once every re-run of the wave has settled
+# (campaign_record_rerun).
 campaign_rerun_exposing_obligation() {
   local iteration_dir=$1 wave_dir=$2 obligation_id=$3 session=$4 classes=$5
-  local sessions=$6 seed_plan=$7 results=$8
+  local sessions=$6 seed_plan=$7
   local worker aside file
-  worker=$(find "${iteration_dir}" -mindepth 2 -maxdepth 2 -type d \
-    -path "*/obligations-*/${obligation_id}" | LC_ALL=C sort)
-  [[ -n "${worker}" && "${worker}" != *$'\n'* \
-      && -s "${worker}/focused_task.jsonl" ]] \
-    || campaign_fail EXPLORE CAMPAIGN "${iteration_dir}" \
-      "the exposing obligation ${obligation_id} has no one worker with a \
-focus row: ${worker:-none}"
+  worker=$(campaign_obligation_worker_dir "${iteration_dir}" \
+    "${obligation_id}") || exit 1
   aside="${worker}/before-$(basename "${wave_dir}")"
   mkdir "${aside}" || campaign_fail EXPLORE CAMPAIGN "${aside}" \
     "obligation ${obligation_id} was already re-run for this wave"
@@ -3061,6 +3068,26 @@ obligation ${obligation_id}, so it was not withdrawn from the corpus"
   ) >"${worker}/stdout.log" 2>"${worker}/stderr.log" \
     || campaign_fail EXPLORE CAMPAIGN "${worker}" \
       "the re-run of ${obligation_id} did not finish"
+}
+
+# The one worker directory of an obligation, with its focus row.
+campaign_obligation_worker_dir() {
+  local iteration_dir=$1 obligation_id=$2 worker
+  worker=$(find "${iteration_dir}" -mindepth 2 -maxdepth 2 -type d \
+    -path "*/obligations-*/${obligation_id}" | LC_ALL=C sort)
+  [[ -n "${worker}" && "${worker}" != *$'\n'* \
+      && -s "${worker}/focused_task.jsonl" ]] \
+    || campaign_fail EXPLORE CAMPAIGN "${iteration_dir}" \
+      "the exposing obligation ${obligation_id} has no one worker with a \
+focus row: ${worker:-none}"
+  printf '%s\n' "${worker}"
+}
+
+# A re-run's verdict replaces the obligation's row in the ledger.
+campaign_record_rerun() {
+  local iteration_dir=$1 obligation_id=$2 results=$3 worker
+  worker=$(campaign_obligation_worker_dir "${iteration_dir}" \
+    "${obligation_id}") || exit 1
   jq -c --arg id "${obligation_id}" 'select(.obligationId != $id)' \
     "${results}" >"${results}.tmp"
   cat "${worker}/obligation_result.jsonl" >>"${results}.tmp"

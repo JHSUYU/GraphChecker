@@ -104,11 +104,11 @@ public final class RuntimeWorkflowDiscovery {
             throws IOException {
         String declared = declaredOccurrence == null ? ""
                 : declaredOccurrence.trim();
+        List<String> observed = new ArrayList<>();
+        for (Target candidate : targets) {
+            observed.add(candidate.occurrenceId);
+        }
         if (declared.isEmpty()) {
-            List<String> observed = new ArrayList<>();
-            for (Target candidate : targets) {
-                observed.add(candidate.occurrenceId);
-            }
             throw new IOException("DECLARED_TARGET_OCCURRENCE_MISSING: this "
                     + "campaign states no declared_target_occurrence, and "
                     + "which occurrence of the annotated site it is about is "
@@ -123,10 +123,13 @@ public final class RuntimeWorkflowDiscovery {
         for (Target candidate : targets) {
             if (declares(declared, candidate.occurrenceId)) matched++;
         }
+        // The same listing as a missing declaration: a selector a region
+        // change renamed is re-derived from it (tools/analysis/occurrences.py).
         throw new IOException("DECLARED_TARGET_OCCURRENCE_UNOBSERVED: "
                 + declared + " names " + matched + " of the "
                 + targets.size() + " observed target occurrence(s), and k="
-                + k + " selects none of them");
+                + k + " selects none of them; observed target occurrences: "
+                + observed);
     }
 
     /** The {@code k} of a selector, or 1 for a resolved address. Anything else
