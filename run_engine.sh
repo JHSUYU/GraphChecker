@@ -2944,52 +2944,9 @@ hosts=${campaign_worker_hosts:-local})"
     campaign_import_wave_gate "${iteration_dir}" "${iteration_id}" \
       "${wave_dir}" "${sessions}"
     wave=$((wave + 1))
-    # A witness no further flip can narrow ends the exploration
-    # (DESIGN4 SS3.5): asked only of a wave that added sessions.
-    if [[ "${pending}" -gt 0 ]] \
-        && campaign_witness_found "${wave_dir}" "${sessions}"; then
-      jq -n -c --arg epoch "${iteration_id}" --arg wave "${wave_dir}" \
-        '{schemaVersion: 1, sessionId: "", stage: "EXPLORE",
-          kind: "ADMISSION_GAP", cls: "DIAGNOSTIC",
-          subject: "EXPLORATION_WITNESS_FOUND",
-          detail: ("the corpus after " + $wave + " composes a"
-            + " MARKER_FLIPPED witness with polarity deciding and no"
-            + " blocking gap, which no further flip can narrow"),
-          topologyEpoch: $epoch}' \
-        >>"${iteration_dir}/campaign_gaps.jsonl"
-      campaign_log "exploration stopped: EXPLORATION_WITNESS_FOUND after \
-wave $((wave - 1)) (${wave_dir}/witness-probe/claim.json)"
-      break
-    fi
   done
   campaign_log "exploration stopped after ${wave} wave(s), \
 $(wc -l <"${results}") obligation verdict(s)"
-}
-
-# Whether the corpus as it stands after one wave already composes a witness
-# no further flip can narrow: MARKER_FLIPPED, polarity deciding, no blocking
-# gap.  ClaimPolicy asks a moved declared root before a clock and names a
-# pairing only where no moved root reaches the fatal arm with the run held as
-# it happened, so every other claim is a statement about what NO flip does,
-# and only the fixpoint may make it.  The probe is COMPOSE itself, into the
-# wave's own directory; a probe that fails says nothing, and the exploration
-# goes on.
-campaign_witness_found() {
-  local wave_dir=$1 sessions=$2
-  local probe="${wave_dir}/witness-probe" status=0
-  mkdir -p "${probe}"
-  local compose_sessions_dir="${sessions}"
-  local composed_smt="${probe}/candidate.smt2"
-  local composition_manifest="${probe}/candidate_composition_manifest.json"
-  run_capturing_status do_compose >"${probe}/compose.log" 2>&1
-  if [[ "${status}" -ne 0 ]]; then
-    campaign_log "witness probe after ${wave_dir}: the composer exited \
-${status} (${probe}/compose.log); exploring on"
-    return 1
-  fi
-  jq -e '.claim.kind == "MARKER_FLIPPED" and .claim.polarityDecides == true
-         and ([.claim.gaps[]? | select(.cls == "BLOCKING")] | length == 0)' \
-    "${probe}/claim.json" >/dev/null 2>&1
 }
 
 # The EXPOSED_REGION rows of a wave's growth.jsonl, one `obligation region

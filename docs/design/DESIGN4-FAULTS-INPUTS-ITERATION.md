@@ -195,12 +195,10 @@ paper's `ite(s, x1, x2)` inside a path.
 
 wave := tasks over `G_k` → obligations (fault flips, then decision flips) →
 replays → diff and growth → `G_{k+1}`. Stop when no new relevant node or edge and
-no open obligation, or as soon as the corpus composes a MARKER_FLIPPED witness with
-polarity deciding and no blocking gap (owner ruling 2026-09-23;
-`EXPLORATION_WITNESS_FOUND`, probed by composing after each wave that added
-sessions): no further flip can narrow that claim. Every other claim -- a clock, a
-pairing, no witness -- states what NO flip does and waits for the fixpoint. Bounds =
-world depth, waves, an obligation budget. A bound hit is stated (`BOUND_REACHED`,
+no open obligation; the corpus is composed once, at that fixpoint, whatever the
+claim (owner 2026-09-27: the per-wave witness probe that stopped early on a
+MARKER_FLIPPED witness is gone -- a special path for one claim kind, costing a
+whole composition every wave). Bounds = world depth, waves, an obligation budget. A bound hit is stated (`BOUND_REACHED`,
 claim `INCONCLUSIVE_BOUNDED`) — never silent.
 
 ### 3.6 Schedule under a fault world
