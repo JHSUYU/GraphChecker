@@ -271,36 +271,40 @@ public final class Corpus implements Arms.Rows {
     }
 
     /**
-     * WHAT ONE SESSION'S WORLD DELIVERED TO A TASK, digested: the world part of
-     * an arm's key ({@link ObligationFactory#worldKey}). The EFFECT at the
-     * task, never the cause (keying by upstream flips asks one question per
-     * flip combination).
+     * WHAT ONE SESSION'S WORLD DELIVERED TO A TASK, digested: the world part
+     * of an arm's key ({@link ObligationFactory#dependence}). The EFFECT at
+     * the task, never the cause (keying by upstream flips asks one question
+     * per flip combination).
      *
      * <p>Covers the occurrence and its factor ({@code Task.factor()}, one
      * symbolic unit): whether each ran, and per site how many handoffs from
-     * which producers; for factor members also per-site write counts. Trap:
-     * never the region's own reads or decisions (behaviour, not input; replay
-     * timing would split one world into many keys) and never delivered VALUES
-     * (carried symbolically; clock values differ every run).</p>
+     * which producers; for factor members also per-site counts of their
+     * writes to {@code locations}, the state the flipped guard reads. The
+     * whole unit's handoffs, not only those the guard names: the arm consumes
+     * them after the flip (hdfs-11741: dn1's expiry scan names only its own
+     * clock, and the witness is that scan flipped in the world whose factor
+     * member received four keys instead of five). Trap: never a member's
+     * writes elsewhere (replays vary them: hdfs-11741's balancer members
+     * write SASL and HashMap internals a different number of times in
+     * almost every run), never the region's own reads or decisions
+     * (behaviour, not input), never delivered VALUES (carried symbolically;
+     * clock values differ every run).</p>
      */
     public String inputShape(String sessionId, OccurrenceAddress occurrence,
-                             List<OccurrenceAddress> factor) {
+                             List<OccurrenceAddress> factor,
+                             Set<String> locations) {
         StringBuilder text = new StringBuilder();
-        if (occurrence != null) {
-            text.append(occurrence.id()).append(':')
-                    .append(activation(sessionId, occurrence) != null)
-                    .append(attachSites(sessionId, occurrence))
-                    .append(producers(sessionId, occurrence));
-        }
-        if (factor != null) {
-            for (OccurrenceAddress member : factor) {
-                if (member == null || member.equals(occurrence)) continue;
-                text.append('\n').append(member.id()).append(':')
-                        .append(activation(sessionId, member) != null)
-                        .append(attachSites(sessionId, member))
-                        .append(producers(sessionId, member))
-                        .append(writeSites(sessionId, member));
-            }
+        text.append(occurrence.id()).append(':')
+                .append(activation(sessionId, occurrence) != null)
+                .append(attachSites(sessionId, occurrence))
+                .append(producers(sessionId, occurrence));
+        for (OccurrenceAddress member : factor) {
+            if (member.equals(occurrence)) continue;
+            text.append('\n').append(member.id()).append(':')
+                    .append(activation(sessionId, member) != null)
+                    .append(attachSites(sessionId, member))
+                    .append(producers(sessionId, member))
+                    .append(writeSites(sessionId, member, locations));
         }
         return ArtifactIO.digest(text.toString(), 16);
     }
@@ -329,12 +333,17 @@ public final class Corpus implements Arms.Rows {
         return from;
     }
 
-    /** Per-site write counts (not values). */
+    /** Per-site counts of the writes to {@code locations} (not values). */
     private List<String> writeSites(String sessionId,
-                                    OccurrenceAddress occurrence) {
+                                    OccurrenceAddress occurrence,
+                                    Set<String> locations) {
         List<String> sites = new ArrayList<String>();
         for (WriteRow write : writesOn(occurrence)) {
             if (!write.sessionId().equals(sessionId)) continue;
+            if (!locations.contains(
+                    SmtLowering.locationKey(write.location()))) {
+                continue;
+            }
             sites.add(write.endpoint().site());
         }
         Collections.sort(sites);

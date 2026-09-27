@@ -313,15 +313,16 @@ public class ExploreTest {
             assertFalse("a query answered by an earlier wave is never re-asked",
                     obligation.obligationId().equals(
                             proposed.get(0).obligationId()));
-            // An arm SOME session of the epoch already took ON THIS PREFIX
-            // is not asked for again, whichever session holds the row: the
-            // seed took Guard#u8 false and the flip replay took it true,
-            // both under the EMPTY prefix, so both arms of that site are
-            // attested there and a replay of either collects nothing the
-            // corpus lacks.  On laneA6 wave 1 this was the marker decision
-            // flipped BACK to true out of the wave-0 replays: nine minutes
-            // each.  The same arm under a DIFFERENT prefix is another
-            // obligation, and the last part of this case is that one.
+            // An arm SOME session of the epoch already took under what its
+            // guard depends on is not asked for again, whichever session
+            // holds the row: the seed took Guard#u8 false and the flip
+            // replay took it true, both on the EMPTY prefix and the seed's
+            // inputs, so both arms of that site are attested there and a
+            // replay of either collects nothing the corpus lacks.  On laneA6
+            // wave 1 this was the marker decision flipped BACK to true out
+            // of the wave-0 replays: nine minutes each.  The same arm in a
+            // DIFFERENT world is another obligation, and the last part of
+            // this case is that one.
             assertFalse("an arm the corpus already holds is not re-flipped: "
                             + sites, "Guard#u8".equals(obligation.siteId()));
         }
@@ -403,16 +404,17 @@ public class ExploreTest {
         assertTrue("and a planned task answered at two addresses is named",
                 moved);
 
-        // ---- the same arm, another prefix, another world ---------------
+        // ---- the same arm, another world --------------------------------
         //
         // A NESTED obligation extends its parent's world.  s-other-prefix
-        // reaches Guard#u19 through a prefix no session of this corpus has
-        // -- an extra concrete decision before it -- and it got there by
-        // flipping the ROTATION's own guard, under root values and a clock
-        // skew of its own.  Three things follow, and this is 11741's shape:
-        // the arm is owed again under THAT prefix (the frontier keys by
-        // it), the obligation cut from that path inherits the world its
-        // path exists in, and the query states the parent's flipped
+        // reaches Guard#u19 after flipping the ROTATION's own guard, under
+        // root values and a clock skew of its own, and in its world addKeys
+        // never ran: the target's unit received something no session of
+        // this corpus delivered.  (Its extra concrete decision is not what
+        // makes the arm owed: the guard does not depend on it.)  Three
+        // things follow, and this is 11741's shape: the arm is owed again in
+        // THAT world, the obligation cut from that path inherits the world
+        // its path exists in, and the query states the parent's flipped
         // conjunct -- without which the model would answer for a path that
         // run never had.
         Session world = new Session(iteration, "s-other-prefix");
@@ -471,8 +473,8 @@ public class ExploreTest {
                 deepened.add(obligation);
             }
         }
-        assertEquals("the settled arm is owed again under the prefix no "
-                        + "session has taken it on, and exactly once: "
+        assertEquals("the settled arm is owed again in the world no "
+                        + "session has taken it in, and exactly once: "
                         + obligations(wave3), 1, deepened.size());
         assertEquals("cut from the admitted session's path",
                 Corpus.pathId("s-other-prefix", target),
@@ -637,14 +639,14 @@ public class ExploreTest {
                         + "factor member received: one handoff fewer",
                 worlds.attachesOn("s-seed", WRITER).size() - 1,
                 worlds.attachesOn("s-world-y", WRITER).size());
-        String seedInputs = ObligationFactory.worldKey(worlds, anchored,
-                "s-seed");
+        String seedInputs = dependence(worlds, anchored, "s-seed",
+                "Guard#u8");
         assertFalse("so what its world delivered differs, through that "
-                        + "member", seedInputs.equals(ObligationFactory
-                .worldKey(worlds, anchored, "s-world-y")));
+                        + "member", seedInputs.equals(dependence(worlds,
+                anchored, "s-world-y", "Guard#u8")));
         assertEquals("while the balancer's world changed nothing this region "
-                        + "received", seedInputs, ObligationFactory.worldKey(
-                worlds, anchored, "s-world-w"));
+                        + "received", seedInputs, dependence(worlds,
+                anchored, "s-world-w", "Guard#u8"));
         assertEquals("though every value it delivered differs -- a VALUE is "
                         + "not a difference, because the families carry "
                         + "values symbolically and a clock-valued handoff "
@@ -667,19 +669,18 @@ public class ExploreTest {
         JsonObject fifth = plan(iteration, TARGET_SELECTOR, null, results,
                 wave4, 4);
         assertEquals("OBLIGATIONS_PROPOSED", fifth.get("state").getAsString());
-        String emptyPrefix = ObligationFactory.prefixDigest(null, 0);
-        String wyeWorld = ObligationFactory.worldKey(worlds, anchored,
-                "s-world-y");
+        String wyeWorld = dependence(worlds, anchored, "s-world-y",
+                "Guard#u8");
         String worldless = ObligationFactory.obligationId(
                 ClosurePlanner.taskId(target), "Guard#u8", 1, true,
-                emptyPrefix, seedInputs);
+                seedInputs);
         assertEquals("a flip at the target itself changed nothing the target "
                         + "received, so the arm s-world-z recorded is the "
                         + "arm over the seed's inputs, and it settles that "
                         + "one", worldless, ObligationFactory.obligationId(
                         ClosurePlanner.taskId(target), "Guard#u8", 1, true,
-                        emptyPrefix, ObligationFactory.worldKey(worlds,
-                                anchored, "s-world-z")));
+                        dependence(worlds, anchored, "s-world-z",
+                                "Guard#u8")));
         List<Obligation> reopened = new ArrayList<Obligation>();
         for (Obligation obligation : obligations(wave4)) {
             if ("Guard#u8".equals(obligation.siteId())
@@ -703,7 +704,7 @@ public class ExploreTest {
                 Corpus.pathId("s-world-y", target), reopened.get(0).pathId());
         assertEquals("and keyed by it", ObligationFactory.obligationId(
                         ClosurePlanner.taskId(target), "Guard#u8", 1, true,
-                        emptyPrefix, wyeWorld),
+                        wyeWorld),
                 reopened.get(0).obligationId());
         Worker owed = solve(iteration, wave4, reopened.get(0), out, "w4");
         assertEquals(Verdict.SAT_MODEL_READY, owed.verdict);
@@ -930,17 +931,16 @@ public class ExploreTest {
                 + task.factor(), task.factor().contains(READER));
 
         // ---- what each world delivered to this task ------------------
-        String seedInputs = ObligationFactory.worldKey(corpus, task,
-                "s-seed");
-        String delivered = ObligationFactory.worldKey(corpus, task, "s-up");
+        String seedInputs = dependence(corpus, task, "s-seed", "Guard#u8");
+        String delivered = dependence(corpus, task, "s-up", "Guard#u8");
         assertFalse("the rotation's world delivered the factor member one "
                 + "handoff fewer", seedInputs.equals(delivered));
         for (String sessionId : Arrays.asList("s-aside", "s-up-and-aside",
                 "s-through-factor")) {
             assertEquals(sessionId + " delivered the same structure, so it "
                             + "is the same world here, whatever its flips",
-                    delivered, ObligationFactory.worldKey(corpus, task,
-                            sessionId));
+                    delivered, dependence(corpus, task, sessionId,
+                            "Guard#u8"));
         }
         assertFalse("which the flips alone do not say: they differ",
                 ObligationFactory.worldDigest(corpus.world("s-up")).equals(
@@ -960,7 +960,6 @@ public class ExploreTest {
         assertEquals("one arm, two structures -- the seed's and the one four "
                 + "worlds delivered alike: " + proposed, 2, proposed.size());
         String taskId = ClosurePlanner.taskId(TARGET);
-        String prefix = ObligationFactory.prefixDigest(null, 0);
         Map<String, Obligation> byId = new LinkedHashMap<String, Obligation>();
         for (Obligation obligation : proposed) {
             assertEquals("Guard#u8", obligation.siteId());
@@ -969,9 +968,9 @@ public class ExploreTest {
         }
         assertTrue("the arm over the seed's inputs: " + proposed,
                 byId.containsKey(ObligationFactory.obligationId(taskId,
-                        "Guard#u8", 1, true, prefix, seedInputs)));
+                        "Guard#u8", 1, true, seedInputs)));
         Obligation shared = byId.get(ObligationFactory.obligationId(taskId,
-                "Guard#u8", 1, true, prefix, delivered));
+                "Guard#u8", 1, true, delivered));
         assertNotNull("and the same arm over what the four delivered, which "
                 + "is the nested flip the 11741 witness needs: " + proposed,
                 shared);
@@ -979,6 +978,87 @@ public class ExploreTest {
                         + "two that delivered the same: " + shared,
                 Corpus.pathId("s-up-and-aside", TARGET)
                         .equals(shared.pathId()));
+    }
+
+    /**
+     * WHAT A GUARD DEPENDS ON is its arm's key ({@link
+     * ObligationFactory#dependence}): a prefix decision sharing no variable
+     * with the guard, and a factor member's writes to state the guard does
+     * not read, never split one question in two; a prefix decision over the
+     * guard's own root, and one more write to the state it reads, do.
+     * (hdfs-11741 v79: 4984 candidates, 2422 keys by the whole prefix and
+     * every write of the factor, 499 by what the guard depends on.)
+     */
+    @Test
+    public void anArmIsKeyedByWhatItsGuardDependsOn() throws Exception {
+        Path iteration = tree.newFolder("depends").toPath();
+        LocationId qop = LocationId.of(LocationKind.INSTANCE, "33", "qop");
+        Endpoint negotiated = at(WRITER,
+                Endpoint.stateSite("DigestMD5Base", "<init>", 31, true),
+                "DigestMD5Base#<init>#31");
+        // session, Near#u2, Far#u4, writes of the map, writes of the qop
+        String[][] sessions = {
+            {"s-seed", "true", "true", "1", "1"},
+            {"s-far", "true", "false", "1", "1"},
+            {"s-noise", "true", "true", "1", "3"},
+            {"s-near", "false", "true", "1", "1"},
+            {"s-more", "true", "true", "2", "1"},
+        };
+        for (String[] row : sessions) {
+            Session session = new Session(iteration, row[0]);
+            session.activation(TARGET, !"s-seed".equals(row[0]));
+            session.activation(WRITER, false);
+            session.root(TARGET, "CASE.A", "M_A", RootKind.INTEGRAL, "0",
+                    "0", "10", true);
+            session.root(TARGET, "CASE.B", "M_B", RootKind.INTEGRAL, "0",
+                    "0", "10", true);
+            session.symbolic("e.stored", "M_A");
+            for (int i = 0; i < Integer.parseInt(row[3]); i++) {
+                session.write(STORED, ALL_KEYS, 5L + i, "e.stored");
+            }
+            for (int i = 0; i < Integer.parseInt(row[4]); i++) {
+                session.write(negotiated, qop, 1L + i, "e.stored");
+            }
+            session.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "0");
+            session.decision(TARGET, "Near#u2", 1,
+                    Boolean.parseBoolean(row[1]), "(> M_A 1)");
+            session.decision(TARGET, "Far#u4", 1,
+                    Boolean.parseBoolean(row[2]), "(> M_B 1)");
+            session.decision(TARGET, "Guard#u8", 1, false,
+                    "(> (+ M_A M_READ_KEY) 3)");
+            session.flush();
+        }
+        Corpus corpus = Corpus.read(iteration, null);
+        Task task = ClosurePlanner.taskOf(corpus,
+                ClosurePlanner.taskId(TARGET));
+        assertNotNull(task);
+        String seed = dependence(corpus, task, "s-seed", "Guard#u8");
+        assertEquals("a prefix decision over a root the guard never names "
+                + "is not what it depends on", seed,
+                dependence(corpus, task, "s-far", "Guard#u8"));
+        assertEquals("nor are a factor member's writes to state the guard "
+                + "does not read", seed,
+                dependence(corpus, task, "s-noise", "Guard#u8"));
+        assertFalse("a prefix decision over the guard's own root is",
+                seed.equals(dependence(corpus, task, "s-near", "Guard#u8")));
+        assertFalse("and so is one more write to the state it reads",
+                seed.equals(dependence(corpus, task, "s-more", "Guard#u8")));
+    }
+
+    /** What the guard at {@code siteId} depends on in one session's path of
+     *  the task ({@link ObligationFactory#dependence}). */
+    private static String dependence(Corpus corpus, Task task,
+                                     String sessionId, String siteId) {
+        for (Corpus.RecordedPath path : corpus.pathsOf(task.focused())) {
+            if (!path.sessionId.equals(sessionId)) continue;
+            for (int index = 0; index < path.decisions.size(); index++) {
+                if (path.decisions.get(index).siteId().equals(siteId)) {
+                    return ObligationFactory.dependence(corpus, task, path,
+                            index);
+                }
+            }
+        }
+        throw new AssertionError(sessionId + " took no " + siteId);
     }
 
     /**

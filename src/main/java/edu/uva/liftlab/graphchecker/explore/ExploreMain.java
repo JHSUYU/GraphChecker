@@ -151,7 +151,7 @@ public final class ExploreMain {
         slots.write(iteration);
 
         // The one ledger of owed arms (Frontier).
-        Frontier frontier = new Frontier(corpus, tasks);
+        Frontier frontier = new Frontier(corpus, tasks, flipSites);
         frontier.consume(RowCodec.readAll(results,
                 RowCodec::readObligationResult));
         List<ObligationFactory.Candidate> candidates =

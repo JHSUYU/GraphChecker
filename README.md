@@ -1063,7 +1063,7 @@ names.
   constants and predicates, `MapFields.object/booleanValue/safe`.
 - R53 GROW (§10 item 6). `ExploreMain.number` and `ConcolicScheduler.positiveInt` are two
   spellings of one refusal (cosmetic). `Arms`, `FlipQuery`, `ObligationFactory` and `Frontier`
-  agree through one key (`ObligationFactory.worldKey`); `ClockMargin` and the `Z3` driver read
+  agree through one key (`ObligationFactory.dependence`); `ClockMargin` and the `Z3` driver read
   cleanly.
 
 ### COMPOSE
@@ -1096,7 +1096,7 @@ names.
 
 The one-place authorities hold and are the reason the design is sound: `Identity.occurrence`/
 `endpointAt`, `Arms.pathCondition`/`conjunct`/`predicate`, `RootMint.focusedRootValue`,
-`Corpus.rootValue`, `ObligationFactory.worldKey`, `RowRuntime.gap`, `SmtLowering` (one
+`Corpus.rootValue`, `ObligationFactory.dependence`, `RowRuntime.gap`, `SmtLowering` (one
 lowering), `SmtNames` (one tokenizer), `ClaimPolicy` (one claim). The structural redundancies,
 in the order they cost: the schedule enforcer's three regimes for one order (D3, fixed first);
 three thread-context stacks for one thread (R18); an abstract lowering layer with one

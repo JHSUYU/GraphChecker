@@ -18,19 +18,19 @@ import java.util.Set;
 /**
  * The one ledger of owed arms; a wave is what is still owed.
  *
- * <p><b>An arm is a fact about a PLANNED OCCURRENCE on one prefix under one
- * delivered input structure, never about a session.</b> Its key is {@link
+ * <p><b>An arm is a fact about a PLANNED OCCURRENCE under what its guard
+ * depends on, never about a session.</b> Its key is {@link
  * ObligationFactory#obligationId}: task ({@link ClosurePlanner#taskId}), site,
- * ordinal, flipped outcome, {@link ObligationFactory#prefixDigest} and {@link
- * ObligationFactory#worldKey}. It is owed once across the corpus and settled
- * when either:</p>
+ * ordinal, flipped outcome and {@link ObligationFactory#dependence} (the path
+ * condition and the world the guard rests on). It is owed once across the
+ * corpus and settled when either:</p>
  *
  * <ul>
- *   <li><b>some session recorded it</b> on that prefix under that input
- *       structure ({@link Corpus#pathsOf} spans sessions). Trap: keying by
- *       prefix alone lets a recording over other inputs settle an arm that is
- *       still needed (hdfs-11741: the same expiry compare over a map of four
- *       keys instead of five).</li>
+ *   <li><b>some session recorded it</b> under the same dependence ({@link
+ *       Corpus#pathsOf} spans sessions). Trap: keying by the path condition
+ *       alone lets a recording over other inputs settle an arm that is still
+ *       needed (hdfs-11741: the same expiry compare over a map of four keys
+ *       instead of five).</li>
  *   <li><b>a wave answered it</b>: ADMITTED, UNSAT or NOT_ADMITTED. {@link
  *       Verdict#SAT_MODEL_READY} is NOT an answer (replay not run).</li>
  * </ul>
@@ -73,32 +73,35 @@ public final class Frontier {
 
     /** Indexes every arm the corpus recorded for these tasks, over all paths:
      *  {@code maxPathsPerTask} bounds what a flip is cut from, not what
-     *  attests. */
-    public Frontier(Corpus corpus, List<Task> tasks) {
+     *  attests. Only at the task's flip sites ({@link
+     *  ObligationFactory#candidates}): no candidate is keyed anywhere else.
+     *
+     *  @param flipSites task id -> the site ids its demand names */
+    public Frontier(Corpus corpus, List<Task> tasks,
+                    Map<String, Set<String>> flipSites) {
         this.tasks = Collections.unmodifiableList(new ArrayList<Task>(tasks));
         for (Task task : this.tasks) {
+            Set<String> sites = flipSites.get(task.taskId());
+            if (sites == null) continue;
             for (Corpus.RecordedPath path : corpus.pathsOf(task.focused())) {
-                // Keyed by the same worldKey a proposal uses, or ledger and
-                // proposal never meet.
-                String world = ObligationFactory.worldKey(corpus, task,
-                        path.sessionId);
                 for (int index = 0; index < path.decisions.size(); index++) {
                     DecisionRow decision = path.decisions.get(index);
-                    // And by the prefix it was taken on.
+                    if (!sites.contains(decision.siteId())
+                            || !FlipQuery.flippable(decision)) {
+                        continue;
+                    }
                     settle(ObligationFactory.obligationId(task.taskId(),
                                     decision.siteId(), decision.ordinal(),
                                     decision.outcome(),
-                                    ObligationFactory.prefixDigest(
-                                            path.decisions, index),
-                                    world),
+                                    ObligationFactory.dependence(corpus,
+                                            task, path, index)),
                             "arm already recorded by " + path.sessionId
                                     + ": this occurrence took that arm at "
-                                    + "that site on that prefix in that "
-                                    + "session, so a "
-                                    + "focused replay of it would collect "
-                                    + "nothing the corpus lacks (HANDOVER "
-                                    + "SS1.5: exploration collects the arms "
-                                    + "the seed LACKS)");
+                                    + "that site under what its guard "
+                                    + "depends on, so a focused replay of it "
+                                    + "would collect nothing the corpus "
+                                    + "lacks (HANDOVER SS1.5: exploration "
+                                    + "collects the arms the seed LACKS)");
                 }
             }
         }

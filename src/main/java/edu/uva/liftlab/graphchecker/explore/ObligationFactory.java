@@ -1,5 +1,7 @@
 package edu.uva.liftlab.graphchecker.explore;
 
+import edu.uva.liftlab.graphchecker.compose.Independence;
+import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.smt.Z3;
@@ -10,6 +12,8 @@ import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.Obligation;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
@@ -24,6 +28,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 
 /**
  * The obligations of one task, and the solving of one of them.
@@ -89,8 +94,7 @@ public final class ObligationFactory {
             this.obligationId = obligationId(task.taskId(),
                     decision.siteId(), decision.ordinal(),
                     !decision.outcome(),
-                    prefixDigest(path.decisions, index),
-                    worldKey(corpus, task, path.sessionId));
+                    dependence(corpus, task, path, index));
         }
 
         /** The row a wave publishes: what to flip, no model yet (the solver
@@ -171,27 +175,9 @@ public final class ObligationFactory {
         }
     }
 
-    /** One PATH PREFIX digest: decisions {@code [0, uptoExclusive)} as {@code
-     *  siteId#ordinal=outcome} joined by {@code /}. Concrete decisions count
-     *  (they are path shape); the empty prefix digests the empty string. */
-    public static String prefixDigest(List<DecisionRow> decisions,
-                                      int uptoExclusive) {
-        StringBuilder text = new StringBuilder();
-        int bound = decisions == null ? 0
-                : Math.min(uptoExclusive, decisions.size());
-        for (int index = 0; index < bound; index++) {
-            DecisionRow decision = decisions.get(index);
-            if (text.length() > 0) text.append('/');
-            text.append(decision.siteId()).append('#')
-                    .append(decision.ordinal()).append('=')
-                    .append(decision.outcome());
-        }
-        return ArtifactIO.digest(text.toString(), 16);
-    }
-
     /** One WHOLE WORLD digest: all its flips, sorted, so order is irrelevant;
      *  the seed's is {@code ""}. Labels slot and graph rows; arm keys use
-     *  {@link #worldKey} instead. */
+     *  {@link #dependence} instead. */
     public static String worldDigest(Corpus.World world) {
         if (world == null || world.flips.isEmpty()) return "";
         List<String> held = new ArrayList<String>();
@@ -203,31 +189,92 @@ public final class ObligationFactory {
         return ArtifactIO.digest(String.join("/", held), 16);
     }
 
-    /** THE WORLD PART OF AN ARM'S KEY: what the world delivered to the task
-     *  ({@link Corpus#inputShape}), never which flips did it (keying by cause
-     *  asks one question once per upstream flip combination). Shared by {@link
-     *  Candidate} and {@link Frontier}, which must agree. */
-    public static String worldKey(Corpus corpus, Task task,
-                                  String sessionId) {
-        return corpus.inputShape(sessionId, task.focused(), task.factor());
+    /**
+     * WHAT ONE FLIPPED GUARD DEPENDS ON, digested: the part of an arm's key
+     * besides the arm itself. Shared by {@link Candidate} and {@link
+     * Frontier}, which must agree.
+     *
+     * <ul>
+     *   <li><b>Its path condition</b>: the conjuncts {@link FlipQuery}
+     *       asserts with it (the path's earlier decisions and the inherited
+     *       flips' prefixes) that share a variable with the guard, directly or
+     *       through one another ({@link Independence#ofGuard}), each as its
+     *       occurrence and {@code siteId#ordinal=outcome}. Any other conjunct
+     *       holds at its recorded values whatever the flip's model is, so two
+     *       paths differing only there ask the same question.</li>
+     *   <li><b>Its world</b>: what the world delivered to the task's unit
+     *       ({@link Corpus#inputShape}), the writes counted at the locations
+     *       the guard reads.</li>
+     * </ul>
+     *
+     * <p>Never the session, and never the decision being flipped as an
+     * inherited flip: a flip cut back from the world that took it would
+     * otherwise be owed again. Trap: the world stays even where the guard
+     * names none of it (hdfs-11741's witness, see {@link
+     * Corpus#inputShape}).</p>
+     */
+    public static String dependence(Corpus corpus, Task task,
+                                    Corpus.RecordedPath path, int index) {
+        DecisionRow flipped = path.decisions.get(index);
+        List<DecisionRow> conditions =
+                new ArrayList<DecisionRow>(path.decisions.subList(0, index));
+        List<ReadRow> reads = new ArrayList<ReadRow>(
+                corpus.readsOn(path.sessionId, task.focused()));
+        for (Corpus.Flip inherited : corpus.world(path.sessionId).flips) {
+            OccurrenceAddress at =
+                    corpus.occurrence(inherited.focusedOccurrenceId);
+            if (at == null) continue;
+            List<DecisionRow> decisions =
+                    corpus.decisionsOf(path.sessionId, at);
+            long through = -1L;
+            for (DecisionRow decision : decisions) {
+                if (decision.siteId().equals(inherited.siteId)
+                        && decision.ordinal() == inherited.ordinal) {
+                    through = decision.seq();
+                }
+            }
+            for (DecisionRow decision : decisions) {
+                if (decision.seq() <= through
+                        && decision.seq() != flipped.seq()) {
+                    conditions.add(decision);
+                }
+            }
+            if (!at.equals(task.focused())) {
+                reads.addAll(corpus.readsOn(path.sessionId, at));
+            }
+        }
+        List<DecisionRow> predicates = new ArrayList<DecisionRow>();
+        for (DecisionRow condition : conditions) {
+            if (Arms.predicate(condition.term())) predicates.add(condition);
+        }
+        Independence rests = Independence.ofGuard(corpus, path.sessionId,
+                flipped.term(), predicates, reads);
+        Set<String> kept = new TreeSet<String>();
+        for (DecisionRow condition : predicates) {
+            if (!rests.keeps(condition)) continue;
+            kept.add(condition.occurrence().id() + "|" + condition.siteId()
+                    + "#" + condition.ordinal() + "=" + condition.outcome());
+        }
+        return ArtifactIO.digest(String.join("/", kept) + "\n"
+                + corpus.inputShape(path.sessionId, task.focused(),
+                task.factor(), rests.locations()), 16);
     }
 
     /**
      * One obligation's id: planned occurrence ({@link ClosurePlanner#taskId}),
-     * {@link #prefixDigest}, {@link #worldKey} and the arm.
+     * the arm, and what its guard depends on ({@link #dependence}).
      *
      * <p>Never the session: a {@code pathId} in the key gives one arm as many
      * ids as sessions (the row still carries it; the query is built over it).
-     * The prefix lets flip chains deepen; the delivered structure keeps a known
-     * path under new inputs owed (hdfs-11741: the same expiry compare over four
-     * keys instead of five), never the same path under the same inputs.</p>
+     * The dependence lets flip chains deepen and keeps a known path under new
+     * inputs owed (hdfs-11741: the same expiry compare over four keys instead
+     * of five), never the same question twice.</p>
      */
     public static String obligationId(String taskId, String siteId,
                                       int ordinal, boolean flippedOutcome,
-                                      String prefixDigest,
-                                      String worldKey) {
+                                      String dependence) {
         return ArtifactIO.digest(taskId + "|" + siteId + "|" + ordinal + "|"
-                + flippedOutcome + "|" + prefixDigest + "|" + worldKey, 16);
+                + flippedOutcome + "|" + dependence, 16);
     }
 
     /**

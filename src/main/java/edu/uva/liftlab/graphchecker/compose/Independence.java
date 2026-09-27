@@ -34,24 +34,40 @@ import java.util.Set;
  * location: every read of one location is one variable, since a STATE
  * family moves them together, and a read carries the value its observed
  * write stated.</p>
+ *
+ * <p>The same closure seeded by one flipped GUARD alone ({@link #ofGuard})
+ * is what an obligation is keyed by ({@code ObligationFactory#dependence}).
+ * </p>
  */
-final class Independence {
+public final class Independence {
     private static final String LOCATION = "loc:";
 
     private final Set<Long> decisions = new LinkedHashSet<Long>();
     private final Set<Long> reads = new LinkedHashSet<Long>();
+    private final Set<String> variables = new LinkedHashSet<String>();
 
     private Independence() {
     }
 
     /** Whether this condition stays in the formula. */
-    boolean keeps(DecisionRow decision) {
+    public boolean keeps(DecisionRow decision) {
         return decisions.contains(decision.seq());
     }
 
     /** Whether this read stays in the formula. */
     boolean keeps(ReadRow read) {
         return reads.contains(read.seq());
+    }
+
+    /** The tracked locations the seed rests on, as location keys. */
+    public Set<String> locations() {
+        Set<String> locations = new LinkedHashSet<String>();
+        for (String variable : variables) {
+            if (variable.startsWith(LOCATION)) {
+                locations.add(variable.substring(LOCATION.length()));
+            }
+        }
+        return locations;
     }
 
     /**
@@ -63,11 +79,37 @@ final class Independence {
                            List<DecisionRow> conditions,
                            List<ReadRow> readRows) {
         ExpressionTable table = corpus.expressions(session);
-        Set<String> variables = new LinkedHashSet<String>();
-        for (String term : seedTerms) variables.addAll(leaves(term, table));
+        Set<String> seeds = new LinkedHashSet<String>();
+        for (String term : seedTerms) seeds.addAll(leaves(term, table));
         for (RootMintRow root : corpus.session(session).roots()) {
-            variables.add(root.symbol());
+            seeds.add(root.symbol());
         }
+        return closure(corpus, session, seeds, conditions, readRows);
+    }
+
+    /**
+     * What one flipped GUARD rests on among these conditions and reads of
+     * one session.  No root is a seed here: a flip asks only its guard's
+     * variables to move, so a condition over another root holds at its
+     * recorded value whatever the flip's model is.
+     */
+    public static Independence ofGuard(Corpus corpus, String session,
+                                       String guard,
+                                       List<DecisionRow> conditions,
+                                       List<ReadRow> readRows) {
+        return closure(corpus, session,
+                leaves(guard, corpus.expressions(session)), conditions,
+                readRows);
+    }
+
+    private static Independence closure(Corpus corpus, String session,
+                                        Set<String> seeds,
+                                        List<DecisionRow> conditions,
+                                        List<ReadRow> readRows) {
+        ExpressionTable table = corpus.expressions(session);
+        Independence kept = new Independence();
+        Set<String> variables = kept.variables;
+        variables.addAll(seeds);
         Map<DecisionRow, Set<String>> byCondition =
                 new LinkedHashMap<DecisionRow, Set<String>>();
         for (DecisionRow condition : conditions) {
@@ -79,7 +121,6 @@ final class Independence {
         for (ReadRow read : readRows) {
             byRead.put(read, readLeaves(corpus, session, read, table));
         }
-        Independence kept = new Independence();
         for (boolean grew = true; grew; ) {
             grew = false;
             for (Map.Entry<DecisionRow, Set<String>> condition
