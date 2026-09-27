@@ -974,7 +974,13 @@ campaign_checkout_state() {
   if ! branch=$(git -C "${repo}" rev-parse --abbrev-ref HEAD); then
     return 1
   fi
-  if ! porcelain=$(git -C "${repo}" status --porcelain); then return 1; fi
+  # Read-only: campaigns start together on one snapshot, and a status that
+  # refreshes the index takes index.lock from the others (v84 hdfs-17967
+  # pathC: "failed to capture GraphChecker checkout state").
+  if ! porcelain=$(git -C "${repo}" --no-optional-locks status --porcelain)
+  then
+    return 1
+  fi
   if ! worktree=$( { printf '%s\n' "${porcelain}"
       printf '%s\n' "${porcelain}" | awk '{print $NF}' \
         | while IFS= read -r entry; do
