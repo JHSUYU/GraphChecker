@@ -13,9 +13,7 @@ import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -25,7 +23,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
-import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 
 /** Execution-task rows for occurrences a replay EXPOSED in a region the
@@ -47,27 +44,26 @@ public final class ExposedRegionPlanMain {
 
     public static void main(String[] args) throws Exception {
         Map<String, String> values = ConcolicScheduler.parseArgs(args,
-                "iteration", "growth", "output");
+                "iteration", "static-scope-map", "growth", "output");
         Path iteration = ConcolicScheduler.requiredPath(values, "iteration");
+        Path scopeMap = ConcolicScheduler.requiredPath(values,
+                "static-scope-map");
         Path growth = ConcolicScheduler.requiredPath(values, "growth");
         Path output = ConcolicScheduler.requiredPath(values, "output");
-        ArtifactIO.replaceJsonl(output, plan(iteration,
+        ArtifactIO.replaceJsonl(output, plan(iteration, scopeMap,
                 ArtifactIO.readJsonl(growth)));
     }
 
-    static List<JsonObject> plan(Path iteration, List<JsonObject> growth)
+    /** Growth runs mid-exploration: the scope map is the one the wave
+     *  planner read, never the iteration manifest (written only once the
+     *  exploration ends). */
+    static List<JsonObject> plan(Path iteration, Path scopeMapFile,
+                                 List<JsonObject> growth)
             throws IOException {
-        JsonObject provenance = object(GSON.fromJson(new String(
-                Files.readAllBytes(iteration.resolve(
-                        "iteration_manifest.json")), StandardCharsets.UTF_8),
-                JsonObject.class), "provenance");
-        Path catalog = Paths.get(optionalString(
-                object(provenance, "staticCatalog"), "path"));
-        StaticScopeMap scopeMap = StaticScopeMap.read(
-                catalog.resolveSibling(StaticScopeMap.FILE));
+        StaticScopeMap scopeMap = StaticScopeMap.read(scopeMapFile);
         if (!scopeMap.stated()) {
-            throw new IOException("static scope map states no site beside "
-                    + catalog);
+            throw new IOException("static scope map states no site: "
+                    + scopeMapFile);
         }
         Path skeletonFile = iteration.resolveSibling("seed-skeletons")
                 .resolve(StaticScopeMap.REGIONS + ".gz");

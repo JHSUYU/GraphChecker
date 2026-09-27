@@ -2990,6 +2990,7 @@ exposure can be grown into"
   run_capturing_status run_java_main \
     edu.uva.liftlab.graphchecker.plan.ExposedRegionPlanMain \
     --iteration "${iteration_dir}" \
+    --static-scope-map "${causynth_static_scope_map}" \
     --growth "${growth}" \
     --output "${rows}" \
     >"${wave_dir}/grow-stdout.log" 2>"${wave_dir}/grow-stderr.log"
