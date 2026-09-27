@@ -2375,8 +2375,11 @@ run:
     ConcolicMngr::ctx->clear_stack_value(stack_offset + arrayOff, 1);          \
     ConcolicMngr::ctx->clear_stack_value(                                     \
         stack_offset + arrayOff + 1, 1);                                      \
-    if (arrObj->is_symbolic() || index_exp != NULL) {                          \
+    if (index_exp != NULL || (arrObj->is_symbolic()                            \
+        && !ConcolicMngr::ctx->holds_concrete_elements(arrObj))) {             \
+      bool named_now = !arrObj->is_symbolic();                                 \
       SymArr *sym_arr = ConcolicMngr::ctx->get_or_alloc_sym_array(arrObj);     \
+      if (named_now) sym_arr->set_named_by_read(true);                         \
       sym_rid_t sym_arr_oid = arrObj->get_sym_rid();                           \
       if (!index_exp) {                                                        \
         index_exp = new ConExpression(index);                                  \
@@ -2412,6 +2415,7 @@ run:
     } else {                                                                   \
       ConcolicMngr::ctx->set_stack_value(                                     \
           stack_offset + res_off, (res_slots), NULL);                         \
+      CONCOLIC_ALOAD_SELECT(res_off, res_slots)                               \
     }                                                                          \
   }
 #else
@@ -2462,9 +2466,18 @@ run:
             bool isElemNull = (obj == NULL);
             ConcolicMngr::ctx->clear_stack_value(stack_offset - 2, 1);
             ConcolicMngr::ctx->clear_stack_value(stack_offset - 1, 1);
-            if (arrObj->is_symbolic() || index_exp != NULL) {
+            // A concrete index into an array a symbolic-index read only
+            // NAMED reads the element the heap holds.  hdfs-17960:
+            // one LightWeightGSet.get at a symbolic inode id shadowed the
+            // 2^21-slot INodeMap, and the FSImage saver's scan then built a
+            // READ, a pin and a symbolic receiver per slot until the kernel
+            // killed the replay.
+            if (index_exp != NULL || (arrObj->is_symbolic()
+                && !ConcolicMngr::ctx->holds_concrete_elements(arrObj))) {
+              bool named_now = !arrObj->is_symbolic();
               SymArr *sym_arr =
                   ConcolicMngr::ctx->get_or_alloc_sym_array(arrObj);
+              if (named_now) sym_arr->set_named_by_read(true);
               sym_rid_t sym_arr_oid = arrObj->get_sym_rid();
               if (!index_exp) {
                 index_exp = new ConExpression(index);
@@ -2508,6 +2521,7 @@ run:
             } else {
               ConcolicMngr::ctx->set_stack_value(
                   stack_offset - 2, 1, NULL);
+              CONCOLIC_ALOAD_SELECT(-2, 1)
             }
           }
 #endif
@@ -2786,7 +2800,8 @@ run:
           CHECK_NULL(ary);
 #ifdef ENABLE_CONCOLIC
           if (ConcolicMngr::can_do_concolic()) {
-            if (ary->is_symbolic()) {
+            if (ary->is_symbolic()
+                && !ConcolicMngr::ctx->holds_concrete_elements(ary)) {
               sym_rid_t sym_arr_oid = ary->get_sym_rid();
               exp_list_t no_arguments;
               Expression *length_exp = new ContainerExpression(

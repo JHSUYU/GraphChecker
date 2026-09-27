@@ -335,6 +335,12 @@ public:
     return get_sym_array(array_obj->get_sym_rid());
   }
   SymArr *find_sym_array(arrayOop array_obj) const;
+  // Whether a read at a concrete index of this array returns exactly the
+  // element the heap holds: its shadow exists only because a read at a
+  // symbolic index named it (SymArr::named_by_read), and since then nothing
+  // recorded wrote it, it stands for no semantic value, and its length is
+  // concrete.  Naming changes no element.
+  bool holds_concrete_elements(arrayOop array) const;
 
   inline void __attribute__((optimize("O0"))) record_path_condition(Expression *sym_exp) {
     if (_aborted || !_path_condition_enabled || !_path_condition_admitted

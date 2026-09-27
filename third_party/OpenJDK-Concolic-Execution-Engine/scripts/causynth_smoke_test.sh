@@ -38,6 +38,7 @@ cd "$JDK_ROOT"
   test/causynth/org/slf4j/helpers/CausynthObservationProbe.java \
   test/causynth/RegionLoggingObservationSmoke.java \
   test/causynth/RegionOneWayFunctionSmoke.java \
+  test/causynth/RegionSymbolicIndexScanSmoke.java \
   test/causynth/RegionReferenceBranchApiSmoke.java \
   test/causynth/RegionRepeatedFieldOwnerMapApiSmoke.java \
   test/causynth/RegionShadowStackLifecycleSmoke.java \
@@ -82,6 +83,7 @@ for smoke in \
   RegionLookupSwitchApiSmoke \
   RegionLoggingObservationSmoke \
   RegionOneWayFunctionSmoke \
+  RegionSymbolicIndexScanSmoke \
   RegionReferenceBranchApiSmoke \
   RegionRepeatedFieldOwnerMapApiSmoke \
   RegionShadowStackLifecycleSmoke \

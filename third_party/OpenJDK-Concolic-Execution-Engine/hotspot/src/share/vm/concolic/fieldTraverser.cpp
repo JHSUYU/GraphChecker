@@ -251,6 +251,8 @@ bool FieldSymbolizer::do_field_helper(fieldDescriptor *fd, oop obj) {
     arrayOop array_obj = (arrayOop)(obj->obj_field(fd->offset()));
     if (array_obj != NULL) {
       sym_arr = this->_ctx.get_or_alloc_sym_array(array_obj);
+      // Symbolized: its contents are an input now, whoever named it first.
+      if (sym_arr != NULL) sym_arr->set_named_by_read(false);
     }
     return false;
   }
@@ -411,8 +413,11 @@ void FieldSymbolizer::after_element_helper(int index, oop parent_obj) {
 }
 
 bool FieldSymbolizer::before_array_helper() {
-  if (this->_obj->is_symbolic())
+  if (this->_obj->is_symbolic()) {
+    SymArr *named = this->_ctx.find_sym_array((arrayOop)this->_obj);
+    if (named != NULL) named->set_named_by_read(false);
     return false;
+  }
 
   arrayOop array_obj = (arrayOop)this->_obj;
   SymArr *sym_arr = this->_ctx.alloc_sym_array(array_obj);
