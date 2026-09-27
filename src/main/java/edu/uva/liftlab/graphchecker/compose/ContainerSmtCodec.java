@@ -587,9 +587,9 @@ public final class ContainerSmtCodec {
             Term key = host.box(arguments.get(0));
             Term guard = host.operand(expression.get("guard"), Sort.BOOL);
             return key == null || guard == null ? null
-                    : new Term("(let ((s " + receiver.text + ")) (ite "
-                    + guard.text + " (assoc_remove s " + key.text
-                    + ") s))", Sort.ASSOCIATIVE);
+                    : new Term("(assoc_remove_if " + receiver.text + " "
+                    + key.text + " " + guard.text + ")",
+                    Sort.ASSOCIATIVE);
         }
         return unmodeled("ASSOCIATIVE", operation, arguments, host);
     }

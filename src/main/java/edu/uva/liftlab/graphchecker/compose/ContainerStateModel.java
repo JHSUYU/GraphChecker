@@ -155,26 +155,34 @@ public final class ContainerStateModel {
                         + " (ite (assoc_has s k) (assoc_position s)"
                         + " (store (assoc_position s) k"
                         + " (assoc_size s)))))",
-                "(define-fun assoc_remove ((s AssocState) (k Value))"
-                + " AssocState"
-                + " (ite (assoc_has s k)"
-                + " (let ((p (select (assoc_position s) k)))"
+                // A removal under a guard: the guard is pushed INSIDE the
+                // renumbering lambdas.  An array-valued ite with a symbolic
+                // condition and a lambda branch is outside what z3 decides
+                // ("incomplete (theory array)": hdfs-11741 v79, the
+                // balancer's removeExpiredKeys over a clock), and with h
+                // false every component is s's own.
+                "(define-fun assoc_remove_if ((s AssocState) (k Value)"
+                + " (g Bool)) AssocState"
+                + " (let ((h (and g (assoc_has s k)))"
+                + " (p (select (assoc_position s) k))"
+                + " (n (assoc_size s)))"
                 + " (mkAssocState"
-                + " (- (assoc_size s) 1)"
-                + " (store (assoc_present s) k false)"
+                + " (ite h (- n 1) n)"
+                + " (store (assoc_present s) k"
+                + " (and (not h) (assoc_has s k)))"
                 + " (assoc_values s)"
                 + " (lambda ((q Int))"
-                + " (ite (and (<= p q)"
-                + " (< q (- (assoc_size s) 1)))"
+                + " (ite (and h (<= p q) (< q (- n 1)))"
                 + " (select (assoc_order s) (+ q 1))"
                 + " (select (assoc_order s) q)))"
                 + " (lambda ((q Value))"
-                + " (ite (= q k) (- 1)"
-                + " (ite (and (assoc_has s q)"
+                + " (ite (and h (= q k)) (- 1)"
+                + " (ite (and h (assoc_has s q)"
                 + " (> (select (assoc_position s) q) p))"
                 + " (- (select (assoc_position s) q) 1)"
-                + " (select (assoc_position s) q))))))"
-                + " s))"));
+                + " (select (assoc_position s) q)))))))",
+                "(define-fun assoc_remove ((s AssocState) (k Value))"
+                + " AssocState (assoc_remove_if s k true))"));
     }
 
     public static Term unboxValue(Term value, String javaType, Sort cellSort,

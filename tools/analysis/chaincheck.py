@@ -11,7 +11,7 @@ def sig(rnd, case):
     if not os.path.exists(f): return None
     t = open(f).read()
     s = collections.OrderedDict()
-    for op in ["assoc_put","assoc_remove","assoc_has","assoc_read","assoc_size","store","select"]:
+    for op in ["assoc_put","assoc_remove","assoc_remove_if","assoc_has","assoc_read","assoc_size","store","select"]:
         s[op] = len(re.findall(r"\(" + op + r"[ )]", t))
     s["ite"] = t.count("(ite ")
     s["path_selectors"] = len(set(re.findall(r"path_selector__\d+__[0-9a-f]+", t)))

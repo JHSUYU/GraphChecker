@@ -132,6 +132,7 @@ public final class SmtNames {
                     "indexed_contains", "indexed_size", "indexed_elements",
                     "assoc_has", "assoc_read", "assoc_key_at",
                     "assoc_value_at", "assoc_put", "assoc_remove",
+                    "assoc_remove_if",
                     "assoc_size", "assoc_present", "assoc_values",
                     "assoc_order", "assoc_position", "VByte", "VChar",
                     "VShort", "VInt", "VLong", "VFloat", "VDouble", "VBool",

@@ -1232,7 +1232,10 @@ done
 mkdir -p "${bound_dir}/work"
 workload_work_dir="${bound_dir}/work"
 custom_jdk_home=""
-campaign_adapter_timeout_s=1
+# Five seconds, not one: the adapter is a LOGIN shell, and the lifts' login
+# profile runs a quota check on NFS that alone takes up to a second, so a
+# one-second bound sometimes fired before the payload wrote its pid.
+campaign_adapter_timeout_s=5
 run_capturing_status campaign_run_adapter "replay(test)" \
   "sleep 120 & echo \$! >'${bound_dir}/grandchild.pid'; wait" \
   >"${bound_dir}/adapter.log" 2>&1

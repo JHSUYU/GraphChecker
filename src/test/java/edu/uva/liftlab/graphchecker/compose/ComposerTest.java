@@ -3309,6 +3309,46 @@ public class ComposerTest {
         }
     }
 
+    /**
+     * A map removal under a SYMBOLIC guard is decided, and renumbers the
+     * view only when it fires.  An array-valued ite over a lambda branch is
+     * "incomplete (theory array)" for z3 4.14: hdfs-11741 v79's witness
+     * paths (the balancer's removeExpiredKeys over a clock, then puts) were
+     * undecided until the guard went inside the lambdas.
+     */
+    @Test
+    public void aGuardedRemovalIsDecided() {
+        Z3 solver = solver();
+        String empty = "(mkAssocState 0 ((as const (Array Value Bool)) false)"
+                + " ((as const (Array Value Value)) (VRef nullRef))"
+                + " ((as const (Array Int Value)) (VRef nullRef))"
+                + " ((as const (Array Value Int)) (- 1)))";
+        String query = String.join("\n", VmTermLowering.preamble())
+                + "\n(declare-const x Int)"
+                + "\n(define-fun s () AssocState (assoc_remove_if"
+                + " (assoc_put (assoc_put " + empty
+                + " (VInt 1) (VInt 10)) (VInt 2) (VInt 20))"
+                + " (VInt 1) (< x 5)))"
+                + "\n(define-fun grown () AssocState"
+                + " (assoc_put s (VInt 3) (VInt 30)))\n";
+        // What the state shows, and the guard side that contradicts it.
+        String[][] cases = {
+            {"(= (assoc_key_at grown 0) (VInt 2))", "(>= x 5)"},
+            {"(= (assoc_size grown) 3)", "(< x 5)"},
+        };
+        for (String[] shown : cases) {
+            Z3.Answer holds = solver.ask(query + "(assert " + shown[0] + ")",
+                    Collections.<String>emptyList(), false);
+            assertTrue("decided with the guard free: " + shown[0] + " "
+                    + holds.status(), holds.decided() && holds.sat());
+            Z3.Answer refuted = solver.ask(query + "(assert " + shown[0]
+                    + ")\n(assert " + shown[1] + ")",
+                    Collections.<String>emptyList(), false);
+            assertTrue("and only on its own side: " + shown[1] + " "
+                    + refuted.status(), refuted.decided() && !refuted.sat());
+        }
+    }
+
     private Composer.Composition compose(Path iteration, int maxValuations)
             throws IOException {
         return Composer.compose(Corpus.read(iteration, null), ANCHOR,
