@@ -83,6 +83,13 @@ workflow_config_keys=(
   # them -- the hosts are shared, and so is this accounting.  No default: the
   # need is the case's, measured, and a campaign that states none is refused.
   "obligation_memory_mb CAUSYNTH_OBLIGATION_MEMORY_MB krp -"
+  # The heap, in MB, of the head's own engine JVMs -- analysis, planner,
+  # import gate, composer, decision -- each of which holds the whole corpus.
+  # Empty: the launcher's default.  A case whose corpus outgrows it states
+  # its own (hdfs-11741: 202 sessions by wave 4 ran the planner out of 8 GB);
+  # an obligation's solver keeps the default, since obligation_memory_mb
+  # already accounts for it.
+  "engine_memory_mb GRAPH_CHECKER_ENGINE_MEMORY_MB krp -"
   # The stage a measurement run stops after, once its measurement is
   # complete.  `IMPORT` returns successfully right after the IMPORT stage:
   # the seed session and its per-kind row census are what a runtime change
@@ -398,6 +405,11 @@ run_in_directory() {
   (cd "${directory}" && "$@")
 }
 
+# The engine JVM, with the heap the case states (engine_memory_mb).
+engine_java() {
+  env "$(config_env_assignment engine_memory_mb)" "${java_bin}" "$@"
+}
+
 run_java_main() {
   local main_class=$1
   shift
@@ -410,7 +422,7 @@ run_java_main() {
     # to this offline aggregation process just as it was to the recorder.
     runtime_classpath="${runtime_classpath}:${project_classpath}"
   fi
-  run_in_directory "${graphchecker_work_dir}" "${java_bin}" \
+  run_in_directory "${graphchecker_work_dir}" engine_java \
     "-Dcausynth.loop.default.bound=${causynth_loop_default_bound}" \
     -cp "${runtime_classpath}" "${main_class}" "$@"
 }
@@ -496,6 +508,9 @@ ${causynth_scope_growth_budget}"
 names: '${worker_host}'" ;;
     esac
   done
+  [[ -z "${engine_memory_mb}" || "${engine_memory_mb}" =~ ^[1-9][0-9]*$ ]] \
+    || die "engine_memory_mb must be empty or a positive integer: \
+${engine_memory_mb}"
   local bound
   for bound in "${region_path_max_paths_per_region}" \
       "${region_path_max_flips_per_path}" "${region_path_max_tasks}"; do
@@ -600,7 +615,7 @@ do_analyze() {
     )
   fi
   require_file "GraphChecker jar" "${graphchecker_jar}"
-  run_in_directory "${graphchecker_work_dir}" "${java_bin}" \
+  run_in_directory "${graphchecker_work_dir}" engine_java \
     "${system_properties[@]}" \
     -cp "${graphchecker_jar}:${project_classpath}" \
     edu.uva.liftlab.graphchecker.GraphCheckerMain \
@@ -2323,7 +2338,8 @@ campaign_obligation_worker() {
   [[ -z "${causynth_root_domains}" ]] \
     || domain_args+=(--root-domains "${causynth_root_domains}")
   local result_row="${worker}/obligation_result.jsonl"
-  run_capturing_status run_java_main \
+  # obligation_memory_mb budgets this JVM: it keeps the launcher's heap.
+  engine_memory_mb="" run_capturing_status run_java_main \
     edu.uva.liftlab.graphchecker.explore.ObligationSolverMain \
     --obligations "${obligations}" \
     --obligation-id "${obligation_id}" \

@@ -702,7 +702,9 @@ done
 # the program text (causynth.RootCatalog) and stated by the static scope map.
 # 45: `causynth_scope_growth_budget` joined it: how many classes SEED adds to
 # the case's scope where the slice stops decides what the campaign analyses.
-[[ "$(print_normalized_config | wc -l)" -eq 45 ]] \
+# 46: `engine_memory_mb` joined it: the heap the head's engine JVMs hold the
+# corpus in, which decides whether a campaign's planner finishes at all.
+[[ "$(print_normalized_config | wc -l)" -eq 46 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 # CONFIG-4: the discovery artifacts are derived from causynth_output_dir and
