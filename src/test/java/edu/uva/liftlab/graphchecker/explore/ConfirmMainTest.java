@@ -255,7 +255,9 @@ public class ConfirmMainTest {
                         .getAsJsonObject();
                 JsonObject arm = new JsonObject();
                 arm.addProperty("selector", "writer_arm__1__w");
-                arm.addProperty("groupId", writer.id());
+                // As the composer spells it: the writer's OCCURRENCE; the
+                // interaction it fills is what names the write.
+                arm.addProperty("groupId", writer.occurrence().id());
                 JsonArray fills = new JsonArray();
                 fills.add(Interaction.of(InteractionKind.STATE, writer,
                         reader).id());

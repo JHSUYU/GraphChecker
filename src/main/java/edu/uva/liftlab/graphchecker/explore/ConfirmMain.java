@@ -465,21 +465,25 @@ public final class ConfirmMain {
                 reach(under, anchor, reached, pending, versions, handled);
             }
         }
-        // The model's writer choices: a writer_arm__ names its writer (groupId)
-        // and the STATE interaction ids it fills ({@code smt.Arms#stateArms}).
+        // The model's writer choices: a writer_arm__ fills STATE interactions
+        // ({@code smt.Arms#stateArms}), each one writer endpoint to one read.
+        // Not its groupId: that names the writer OCCURRENCE, which is no
+        // endpoint this map is keyed by (no real choice was ever held).
         Map<String, String> chosen = new LinkedHashMap<String, String>();
         for (JsonObject arm : arms) {
             if (!optionalString(arm, "selector").startsWith("writer_arm__")) {
                 continue;
             }
-            Endpoint writer = writers.get(optionalString(arm, "groupId"));
-            if (writer == null) continue;
             Set<String> fills = new LinkedHashSet<String>(
                     strings(arm, "interactionIds"));
             for (ReadRow read : readers.values()) {
-                if (fills.contains(Interaction.of(InteractionKind.STATE,
-                        writer, read.endpoint()).id())) {
-                    chosen.put(read.endpoint().id(), writer.id());
+                for (WriteRow write : byLocation.getOrDefault(location(
+                        read.location()), Collections.<WriteRow>emptyList())) {
+                    if (fills.contains(Interaction.of(InteractionKind.STATE,
+                            write.endpoint(), read.endpoint()).id())) {
+                        chosen.put(read.endpoint().id(),
+                                write.endpoint().id());
+                    }
                 }
             }
         }
