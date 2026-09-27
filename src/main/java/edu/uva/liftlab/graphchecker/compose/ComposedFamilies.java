@@ -805,6 +805,7 @@ final class ComposedFamilies {
     Set<String> stateFamilies(Corpus.RecordedPath path,
                               int ordinal, String selector,
                               List<ReadRow> joined,
+                              Map<String, String> pins,
                               Set<String> reached,
                               List<String> stated) {
         String session = path.sessionId;
@@ -822,6 +823,10 @@ final class ComposedFamilies {
                 new LinkedHashMap<String, OccurrenceAddress>();
         Map<String, List<Out>> outsOfWriter =
                 new LinkedHashMap<String, List<Out>>();
+        // A location whose observed version no row wrote: its reads' pins,
+        // the arm that is the run's own interleaving.
+        Map<String, List<String>> observedPins =
+                new LinkedHashMap<String, List<String>>();
         for (Map.Entry<String, List<ReadRow>> entry
                 : byLocation.entrySet()) {
             List<ReadRow> reads = entry.getValue();
@@ -864,9 +869,24 @@ final class ComposedFamilies {
                 found.add(arm);
             }
             fileRefusals();
+            // Its writer ran outside every region, so no arm states what the
+            // read returned: the pins do, as one more arm.
+            List<String> observedPin = new ArrayList<String>();
+            if (corpus.writeOf(session, entry.getKey(),
+                    reads.get(0).observedVersion()) == null) {
+                for (String symbol : symbols) {
+                    String pin = pins.get(symbol);
+                    if (pin != null && !observedPin.contains(pin)) {
+                        observedPin.add(pin);
+                    }
+                }
+            }
             // One arm is the run's own interleaving: the join says it.
-            if (found.size() < 2) continue;
+            if (found.size() + (observedPin.isEmpty() ? 0 : 1) < 2) continue;
             chosen.addAll(symbols);
+            if (!observedPin.isEmpty()) {
+                observedPins.put(entry.getKey(), observedPin);
+            }
             List<String> writers = new ArrayList<String>();
             for (Arms.Arm arm : found) {
                 String writer = arm.producer().id();
@@ -906,6 +926,26 @@ final class ComposedFamilies {
             for (String writer : location.getValue()) {
                 String name = selectorOf.get(writer);
                 if (name != null) selectors.add(name);
+            }
+            List<String> observedPin = observedPins.get(location.getKey());
+            if (observedPin != null) {
+                String name = "observed_arm__" + ordinal + "__"
+                        + ArtifactIO.digest(location.getKey() + "|"
+                        + session, 12);
+                lowering.declare(name, VmTermLowering.Sort.BOOL);
+                String assertion = "observed_family__" + ordinal + "__"
+                        + ArtifactIO.digest(location.getKey() + "|"
+                        + session, 12);
+                String formula = "(=> " + name + " "
+                        + VmTermLowering.and(observedPin) + ")";
+                stated.add(formula);
+                lowering.assertNamed(assertion,
+                        "(=> " + selector + " " + formula + ")");
+                armChoices.put(name, ArmChoice.of(assertion,
+                        "observed:" + location.getKey(),
+                        Collections.<String>emptyList(), session,
+                        Collections.<Arms.Arm>emptyList()));
+                selectors.add(name);
             }
             if (selectors.size() < 2) continue;
             String formula = Arms.exactlyOne(selectors);

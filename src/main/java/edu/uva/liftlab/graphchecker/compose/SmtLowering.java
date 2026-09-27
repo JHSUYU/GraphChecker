@@ -707,7 +707,7 @@ public final class SmtLowering {
                                         ? projected : written, expected,
                                 origin + ":join"), expression, location,
                         key, version, expected), key, version);
-                String read = joinedRead(key, version, value);
+                String read = rowSymbol(key, version, value.sort);
                 return read == null ? value : symbolTerm(symbolNode(read,
                         primitiveString(expression, "_java_type")), expected);
             }
@@ -724,6 +724,13 @@ public final class SmtLowering {
                 return symbolTerm(symbolNode(minted,
                         primitiveString(expression, "_java_type")), expected);
             }
+            // No write row: its writer ran outside every region.  The read's
+            // own row states what it returned (Composer#pin).
+            String pinned = rowSymbol(key, version, null);
+            if (pinned != null) {
+                return symbolTerm(symbolNode(pinned,
+                        primitiveString(expression, "_java_type")), expected);
+            }
         }
         JsonElement concrete = expression.get("concreteValue");
         if (concrete != null && !concrete.isJsonNull()) {
@@ -737,21 +744,22 @@ public final class SmtLowering {
 
     /**
      * The one symbol this session's rows give a scalar read of this version,
-     * once its state join declared it.  The read is that symbol, not the
+     * once its state join (or its pin, for a version no row wrote) declared
+     * it.  The read is that symbol, not the
      * written value inlined: the join the conjunction then asks about binds
      * it to the same value, and at the anchor a STATE family binds it to the
      * writer it chooses instead -- inlined, no family could move it
      * (commit-gs.TestFileAppend2-testSimpleAppend v71: two families, phi on
      * constants).  A container read keeps its projection.
      */
-    private String joinedRead(String key, long version, Term value) {
-        if (value.sort.containerState()) return null;
+    private String rowSymbol(String key, long version, Sort sort) {
+        if (sort != null && sort.containerState()) return null;
         Set<String> named = join.readSymbols(key, version);
         if (named.size() != 1) return null;
         String read = named.iterator().next();
         Declared held = declarations.get(read);
-        return held != null && held.stated && held.sort == value.sort
-                ? read : null;
+        return held != null && held.stated && !held.sort.containerState()
+                && (sort == null || held.sort == sort) ? read : null;
     }
 
     /**

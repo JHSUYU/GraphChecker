@@ -768,7 +768,8 @@ public final class Composer {
         // (7) And the STATE families: which writer the read may have seen.
         //     A read a family gives alternatives to takes its value there.
         Set<String> chosen = composedFamilies.stateFamilies(path,
-                ordinal, selector, joined, interactionIds, familyTerms);
+                ordinal, selector, joined, joins, interactionIds,
+                familyTerms);
         // (8) And the state joins this conjunction ASKS ABOUT.
         terms.addAll(statedJoins(joins, chosen, terms, familyTerms));
 
@@ -1401,34 +1402,27 @@ public final class Composer {
                     lowering.declareStated(read.symbol(), value.sort);
                     joins.put(read.symbol(), "(= " + read.symbol() + " "
                             + value.text + ")");
-                    if (atAnchor) joined.add(read);
-                    String literal = atAnchor ? smtLiteral(
-                            read.concreteValue()) : "";
-                    if (!literal.isEmpty()) {
-                        // What the read RETURNED (the interleaving the run
-                        // took), kept beside the join for the claim policy.
-                        // One statement per symbol; conflicting rows refuse.
-                        String name = "observed_read__"
-                                + ArtifactIO.digest(read.symbol(), 10);
-                        String statement = "(= " + read.symbol() + " "
-                                + literal + ")";
-                        String held = statedOnce.put(name, statement);
-                        if (held == null) {
-                            observed.add(statement);
-                        } else if (!held.equals(statement)) {
-                            refusals.add(GapRow.of(session,
-                                    GapKind.UNSTATED_VALUE,
-                                    GapClass.BLOCKING, read.symbol(),
-                                    "two read rows of this occurrence state "
-                                            + "different values for one "
-                                            + "symbol: " + held + " and "
-                                            + statement));
-                        }
+                    if (atAnchor) {
+                        joined.add(read);
+                        observe(session, read, statedOnce, observed,
+                                refusals);
                     }
                     continue;
                 }
             }
-            if (joins.containsKey(read.symbol())) continue;
+            if (joins.containsKey(read.symbol())) {
+                // Pinned at step 0 to what its row states: a version no row
+                // wrote, its writer outside every region.  At the anchor a
+                // STATE family may still offer the concurrent writers
+                // beside what it returned; a mint's version is a root's.
+                if (atAnchor && write == null && read.observedVersion() >= 0L
+                        && "".equals(SmtLowering.mintedReadSymbol(join,
+                        read.observedVersion()))) {
+                    joined.add(read);
+                    observe(session, read, statedOnce, observed, refusals);
+                }
+                continue;
+            }
             // The row's own value (non-joinable rows were asked at step 0).
             if (answered.contains(read.symbol())
                     || pin(session, read, refusals, joins, answered)) {
@@ -1487,6 +1481,30 @@ public final class Composer {
                     "no write of this location at this version in this "
                             + "session, and the recording states no value "
                             + "the read returned"));
+        }
+    }
+
+    /**
+     * What an anchor read RETURNED (the interleaving the run took), kept
+     * beside its join or pin for the claim policy.  One statement per
+     * symbol; conflicting rows refuse.
+     */
+    private static void observe(String session, ReadRow read,
+                                Map<String, String> statedOnce,
+                                List<String> observed,
+                                List<GapRow> refusals) {
+        String literal = smtLiteral(read.concreteValue());
+        if (literal.isEmpty()) return;
+        String name = "observed_read__" + ArtifactIO.digest(read.symbol(), 10);
+        String statement = "(= " + read.symbol() + " " + literal + ")";
+        String held = statedOnce.put(name, statement);
+        if (held == null) {
+            observed.add(statement);
+        } else if (!held.equals(statement)) {
+            refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
+                    GapClass.BLOCKING, read.symbol(), "two read rows of this "
+                            + "occurrence state different values for one "
+                            + "symbol: " + held + " and " + statement));
         }
     }
 
