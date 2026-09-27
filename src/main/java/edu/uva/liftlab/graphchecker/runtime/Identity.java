@@ -948,6 +948,13 @@ public final class Identity {
         if (producer == null) return null;
         Interactions.sent(Text.safe(transport), Text.safe(correlationId),
                 Text.safe(half), producer);
+        // A role occurrence (a response minted at its request's scope, a
+        // send under no region) has no activation of its own; stated here,
+        // the chain of whatever runs under this message goes on through the
+        // sender its own anchor names (Arms.concurrent).
+        if (producer.occurrence().role()) {
+            RowRuntime.ambientActivation(producer.occurrence());
+        }
         return producer;
     }
 
@@ -963,7 +970,8 @@ public final class Identity {
         if (node.isEmpty()) return null;
         Role kind = role == null ? Role.UNKNOWN : role;
         return OccurrenceAddress.of(NodeId.parse(node),
-                "ROLE." + kind.name(), here(kind), atScope());
+                OccurrenceAddress.ROLE_REGION + kind.name(), here(kind),
+                atScope());
     }
 
     /**

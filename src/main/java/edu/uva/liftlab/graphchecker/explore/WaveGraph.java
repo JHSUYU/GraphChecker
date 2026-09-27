@@ -37,8 +37,6 @@ import java.util.TreeSet;
 final class WaveGraph {
     static final String GRAPH = "graph.jsonl";
     static final String GROWTH = "growth.jsonl";
-    /** A degraded occurrence's region slot: a role, not a region. */
-    private static final String ROLE_REGION = "ROLE.";
 
     private final Map<String, JsonObject> nodes =
             new LinkedHashMap<String, JsonObject>();
@@ -186,14 +184,21 @@ final class WaveGraph {
                         || !exposed.add(occurrence.regionId() + "|" + id)) {
                     continue;
                 }
-                if (occurrence.regionId().startsWith(ROLE_REGION)) {
-                    gaps.add(GapRow.of(session.sessionId(),
-                            GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC,
-                            occurrence.render(),
-                            "a flipped path reached a region whose scope the "
-                                    + "recording lost: " + occurrence.regionId()
-                                    + " is a role, not a region of the static "
-                                    + "graph, so nothing can weave it"));
+                // A role is not a region of the static graph, so nothing
+                // can weave it; only a LOST one says the recording lost a
+                // scope (a role that sent a message is stated with its
+                // anchor, Identity.messageSent).
+                if (occurrence.role()) {
+                    if (occurrence.lineageLost()) {
+                        gaps.add(GapRow.of(session.sessionId(),
+                                GapKind.LINEAGE_LOST, GapClass.DIAGNOSTIC,
+                                occurrence.render(),
+                                "a flipped path reached a region whose scope "
+                                        + "the recording lost: "
+                                        + occurrence.regionId() + " is a role, "
+                                        + "not a region of the static graph, "
+                                        + "so nothing can weave it"));
+                    }
                     continue;
                 }
                 JsonObject row = new JsonObject();

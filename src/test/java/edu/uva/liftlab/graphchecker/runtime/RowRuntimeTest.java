@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.runtime;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
@@ -192,6 +193,55 @@ public class RowRuntimeTest {
         assertEquals("the second request's response, served first",
                 both.get(1), answered(new String[][]{{"corr-2", second}})
                         .get(0));
+    }
+
+    /**
+     * A response is produced by its request's role scope, which no region
+     * opened and so no activation states: its send states it, naming the
+     * client's send its anchor answers, so a chain through the response
+     * goes on to the client (a NameNode handler's STATE alternatives rest on
+     * that chain).
+     */
+    @Test
+    public void aResponseStatesTheRoleScopeThatAnswersAndTheSendItAnswers()
+            throws Exception {
+        RowRuntime.configure(sessionFile());
+        SourceRef client = new SourceRef("CLUSTER_NODE", "CLIENT",
+                "hdfs-17899/client0", 0);
+        Object owner = new Object();
+        RuntimeTraceContext.registerSource(owner, client);
+        long calling = RuntimeTraceContext.beginRequest(client, "append");
+        String header = CausynthTraceRecorder.outboundExchange("HADOOP_IPC",
+                "corr-1", "0", "REQUEST", owner, null);
+        RuntimeTraceContext.endRequest(calling);
+        AtomicReference<Endpoint> response = new AtomicReference<>();
+        Thread handler = poolThreadCreatedOutsideAnyScope(() -> {
+            long inbound = RuntimeTraceContext.enterInbound(header,
+                    "HADOOP_IPC", "corr-1", "0", "REQUEST", null);
+            response.set(Identity.messageSent(NN.key(), "HADOOP_IPC",
+                    "corr-1", "RESPONSE", Identity.responseEndpoint(NN.key(),
+                            "HADOOP_IPC", "RESPONSE")));
+            RuntimeTraceContext.exitInbound(inbound);
+        });
+        handler.start();
+        handler.join();
+        RowRuntime.closeSession();
+
+        OccurrenceAddress scope = response.get().occurrence();
+        ActivationRow stated = null;
+        for (ActivationRow row : RowCodec.readAll(session().activations(),
+                RowCodec::readActivation)) {
+            if (row.occurrence().equals(scope)) stated = row;
+        }
+        assertNotNull("the role scope that answered is stated", stated);
+        assertFalse("and was no instrumented region", stated.instrumented());
+        assertNotNull("with the client's send its anchor answers",
+                stated.anchorProducer());
+        assertEquals(((CausalContext.Anchor) scope.context())
+                .producerEndpointId(), stated.anchorProducer().id());
+        assertTrue("which the client occurrence ran",
+                stated.anchorProducer().occurrence().node().render()
+                        .contains("client0"));
     }
 
     /** The response endpoints a pooled handler mints for these requests

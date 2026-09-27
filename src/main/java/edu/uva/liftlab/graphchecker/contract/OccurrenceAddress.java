@@ -18,6 +18,8 @@ import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 public final class OccurrenceAddress extends Value {
     /** The one spelling of the region separator in a rendered address. */
     public static final String REGION_MARKER = "/region/";
+    /** The region slot of work under no region: {@code ROLE.<role>}. */
+    public static final String ROLE_REGION = "ROLE.";
     private static final String CONTEXT_MARKER = "/ctx:";
     private static final String INDEX_MARKER = "/idx:";
 
@@ -114,6 +116,11 @@ public final class OccurrenceAddress extends Value {
     /** Where in the component's control structure it ran. */
     public ExecutionIndex index() {
         return index;
+    }
+
+    /** Whether this is work under no region, named by its role. */
+    public boolean role() {
+        return regionId.startsWith(ROLE_REGION);
     }
 
     /** Whether the context is {@link CausalContext.Lost} (derived). */
