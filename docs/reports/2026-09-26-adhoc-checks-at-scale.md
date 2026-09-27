@@ -14,7 +14,7 @@ HDFS ad-hoc 协调检查上真实地、大规模地跑 GraphChecker，用故障�
 | 结果 | 时钟类检查 token-expired.proxy / .mirror、token-pw-expired.mirror 得到 **CLOCK_SKEW，并由 CONFIRM 重放确认**（a6、a7；是 HDFS 时钟大致同步的设计前提，不是新 bug，§5.4）；其余具体值检查以"没有被建模的根能到达致命臂"结束——a4 的 261 个故障重放里 83 个到达检查，a5 三个 flush case 的约 1700 个 session 里检查到达 4000 余次，**致命臂 0 次**（§3、§4） |
 | 假阳性过滤（全部来自真实运行） | §5：公式在录制取值下可满足 ×6（sender-gs、token-expired、commit-gs、lease-holder）；探索中模型可行、执行否决 68 次（两个故障不独立、门没经过、根只存在于故障世界）；**跨运行拼接的消息配对**（token-nokey.mirror / .replicate：只有把一次运行的状态配上另一次运行 NN 下发的 key 列表才会失败，每次运行自己的配对下 UNSAT，DECIDE 不命名机制、不发布）；**共享字段的 HB 过近似**（commit-gs.TestFileAppend2-testSimpleAppend：STATE family 让目标处的 GS 读看到更早一次 RPC 的写，DECIDE 给出 STATE_PAIRING_FLIPPED；CONFIRM 按模型的偏序重放，程序排不出这个顺序——调度空转 109 秒、649 个槽放弃，运行走了模型没选的 ORDER——判为 SAT_UNCONFIRMED 扣下，§11） |
 | 集群单测当工作负载 | 301 个测试的清单；20 对（检查 × 测试）里 18 对在窗口内到达检查；18 个 campaign 首跑 11 个种子重放复现失败，逐个找出 3 类分歧并修掉（推迟的 RPC 响应、HA 随机选 NN、排队区域的帧），修后种子重放 88–89/94；致命臂 0 次，新 bug 0 个；过滤实例：执行否决 178 个模型、59 条自相矛盾路径被扣下（§9） |
-| 九个 case | v58（p62）**9/9 PASS**，因果链与 v54 一致或更丰富；11741 CLOCK_SKEW 由 CONFIRM 重放确认。v77（p93，§11 的全部修复 + VM vm-f5）**8/9 PASS**，因果链的机制（移动的根、finding）不变，被跟踪的读现在以读符号出现并由 join 绑定；11741 的语料在第 4 波涨到 202 个会话，规划器超出 8 GB 堆，按 case 配置引擎堆（`79f3a4ecc`）后以 v78 重跑（写本行时在第 2 波，已越过 v74 的 IMPORT 与 v77 的规划器两处 OOM 的位置之前的阶段）|
+| 九个 case | v58（p62）**9/9 PASS**，因果链与 v54 一致或更丰富；11741 CLOCK_SKEW 由 CONFIRM 重放确认。v77（p93，§11 的全部修复 + VM vm-f5）**8/9 PASS**，因果链的机制（移动的根、finding）不变，被跟踪的读现在以读符号出现并由 join 绑定；11741 的语料在第 4 波涨到 202 个会话，规划器超出 8 GB 堆，按 case 配置引擎堆（`79f3a4ecc`）后以 v78 重跑（写本行时在第 2 波，结果待补） |
 | 修掉的引擎缺陷 | 15 个，另有 1 处工作负载登记修复，都在 adhoc 运行里暴露（§6） |
 
 ---
