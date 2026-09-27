@@ -652,12 +652,20 @@ public final class Composer {
         //      any lowering.
         Map<String, Long> reached = closure(session, anchor, target.seq(),
                 null);
+        // (0a') What phi rests on (constraint independence): conditions and
+        //       reads sharing no variable with phi or a root stay out.
+        List<DecisionRow> conditions = before(path.decisions, target.seq());
+        conditions.addAll(reachedConditions(session, reached));
+        Independence relevant = independence(session,
+                Collections.singletonList(target.phiTerm()), reached,
+                conditions);
 
         // (0b) Reads whose value the row states outright, bound BEFORE any
         //      lowering so every leaf naming them resolves, not just later
         //      ones.
         Set<String> answered = new LinkedHashSet<String>();
-        statedReads(session, reached.keySet(), refusals, joins, answered);
+        statedReads(session, reached.keySet(), relevant, refusals, joins,
+                answered);
 
         // (1) The valuation this replay ran under, for every VARIED root
         //     (a root may be written and never branched on).  Declared roots
@@ -679,14 +687,14 @@ public final class Composer {
         // (3) State joins, read := observed write's expression, kept by
         //     symbol: a read with family alternatives must not also be
         //     asserted here.
-        stateJoins(session, reached.keySet(), rows, refusals, joined,
-                observed, joins, answered);
+        stateJoins(session, reached.keySet(), relevant, rows, refusals,
+                joined, observed, joins, answered);
 
         // (4) pi_p: decisions STRICTLY BEFORE the target's seq.  The anchor
         //     decision shares the target's seq; including it would
         //     contradict phi on every healthy path.
         terms.addAll(prefix(path.decisions, target.seq(), "decision ",
-                refusals));
+                relevant, refusals));
 
         // (4b) P3: the prefix of every OTHER occurrence the joins reach,
         //      strictly before the write that reached it: a joined value
@@ -694,7 +702,8 @@ public final class Composer {
         //      readings live only there).  Per session, already under this
         //      path's valuation; a handoff producer's prefix is stated inside
         //      its family ({@link #prefix}).
-        terms.addAll(closureConditions(session, reached, refusals));
+        terms.addAll(closureConditions(session, reached, relevant,
+                refusals));
 
         // (5) phi_p is the FATAL arm as published; never re-derive its
         //     polarity.  No predicate is a concrete branch (invariant 9):
@@ -1221,6 +1230,7 @@ public final class Composer {
      */
     List<String> closureConditions(String session,
                                    Map<String, Long> reached,
+                                   Independence relevant,
                                    List<GapRow> refusals) {
         List<String> conditions = new ArrayList<String>();
         for (Map.Entry<String, Long> entry : reached.entrySet()) {
@@ -1228,9 +1238,44 @@ public final class Composer {
             OccurrenceAddress at = corpus.occurrence(entry.getKey());
             if (at == null) continue;
             conditions.addAll(prefix(corpus.decisionsOf(session, at),
-                    entry.getValue().longValue(), "join-pi ", refusals));
+                    entry.getValue().longValue(), "join-pi ", relevant,
+                    refusals));
         }
         return conditions;
+    }
+
+    /** The decisions of every reached occurrence but the anchor, each
+     *  before its cutoff: what {@link #closureConditions} may state. */
+    List<DecisionRow> reachedConditions(String session,
+                                        Map<String, Long> reached) {
+        List<DecisionRow> conditions = new ArrayList<DecisionRow>();
+        for (Map.Entry<String, Long> entry : reached.entrySet()) {
+            if (anchor.id().equals(entry.getKey())) continue;
+            OccurrenceAddress at = corpus.occurrence(entry.getKey());
+            if (at == null) continue;
+            conditions.addAll(before(corpus.decisionsOf(session, at),
+                    entry.getValue().longValue()));
+        }
+        return conditions;
+    }
+
+    /** The decisions strictly before {@code seq}. */
+    private static List<DecisionRow> before(List<DecisionRow> decisions,
+                                            long seq) {
+        List<DecisionRow> earlier = new ArrayList<DecisionRow>();
+        for (DecisionRow decision : decisions) {
+            if (decision.seq() < seq) earlier.add(decision);
+        }
+        return earlier;
+    }
+
+    /** What {@code seeds} rest on among these conditions and the reads of
+     *  the reached occurrences ({@link Independence}). */
+    Independence independence(String session, List<String> seeds,
+                              Map<String, Long> reached,
+                              List<DecisionRow> conditions) {
+        return Independence.of(corpus, session, seeds, conditions,
+                statedRows(session, reached.keySet()));
     }
 
     /**
@@ -1240,10 +1285,12 @@ public final class Composer {
      * refused by name.
      */
     private List<String> prefix(List<DecisionRow> decisions, long before,
-                                String kind, List<GapRow> refusals) {
+                                String kind, Independence relevant,
+                                List<GapRow> refusals) {
         List<String> conditions = new ArrayList<String>();
         for (DecisionRow decision : decisions) {
             if (decision.seq() >= before) continue;
+            if (!relevant.keeps(decision)) continue;
             String subject = kind + decision.siteId() + "#"
                     + decision.ordinal();
             String conjunct = lowering.statedTerm(Arms.conjunct(decision),
@@ -1263,11 +1310,11 @@ public final class Composer {
      * refusal per row across both halves.
      */
     void statedReads(String session, Set<String> occurrences,
-                             List<GapRow> refusals,
-                             Map<String, String> joins,
-                             Set<String> answered) {
+                     Independence relevant, List<GapRow> refusals,
+                     Map<String, String> joins, Set<String> answered) {
         for (ReadRow read : statedRows(session, occurrences)) {
             if (read.symbol() == null || read.symbol().isEmpty()) continue;
+            if (!relevant.keeps(read)) continue;
             if (joins.containsKey(read.symbol())) continue;
             if (joinable(session, read)) continue;
             pin(session, read, refusals, joins, answered);
@@ -1315,15 +1362,15 @@ public final class Composer {
      * then REFUSE.  No "latest write", no choice between writers.
      */
     void stateJoins(String session, Set<String> occurrences,
-                            SmtLowering.SessionJoin join,
-                            List<GapRow> refusals,
-                            List<ReadRow> joined, List<String> observed,
-                            Map<String, String> joins,
-                            Set<String> answered) {
+                    Independence relevant, SmtLowering.SessionJoin join,
+                    List<GapRow> refusals, List<ReadRow> joined,
+                    List<String> observed, Map<String, String> joins,
+                    Set<String> answered) {
         /** Name -> the one statement this path makes under it. */
         Map<String, String> statedOnce = new LinkedHashMap<String, String>();
         for (ReadRow read : statedRows(session, occurrences)) {
             if (read.symbol() == null || read.symbol().isEmpty()) continue;
+            if (!relevant.keeps(read)) continue;
             // Family alternatives and observed values are the anchor's only.
             boolean atAnchor = anchor.id().equals(
                     read.endpoint().occurrence().id());

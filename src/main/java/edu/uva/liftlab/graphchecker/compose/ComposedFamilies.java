@@ -591,14 +591,20 @@ final class ComposedFamilies {
                     }
                 }
             }
+            // What the delivered values rest on (Independence).
+            List<String> delivered = new ArrayList<String>();
+            for (Out out : outs) delivered.add(out.arm.expressionRef());
+            Independence relevant = composer.independence(session,
+                    delivered, reached,
+                    composer.reachedConditions(session, reached));
             Set<String> answered = new LinkedHashSet<String>();
-            composer.statedReads(session, reached.keySet(), local, joins,
-                    answered);
-            composer.stateJoins(session, reached.keySet(), rows, local,
-                    new ArrayList<ReadRow>(), new ArrayList<String>(),
+            composer.statedReads(session, reached.keySet(), relevant, local,
                     joins, answered);
+            composer.stateJoins(session, reached.keySet(), relevant, rows,
+                    local, new ArrayList<ReadRow>(),
+                    new ArrayList<String>(), joins, answered);
             conjuncts.addAll(composer.closureConditions(session, reached,
-                    local));
+                    relevant, local));
             // Nested families go under this FAMILY's guard, not this
             // session's selector: sessions share the leaf's handoff symbol,
             // so a nested family under one selector leaves it unbound for

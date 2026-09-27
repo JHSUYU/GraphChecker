@@ -1,0 +1,192 @@
+package edu.uva.liftlab.graphchecker.compose;
+
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+
+import edu.uva.liftlab.graphchecker.contract.DecisionRow;
+import edu.uva.liftlab.graphchecker.contract.ExpressionTable;
+import edu.uva.liftlab.graphchecker.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.contract.RootMintRow;
+import edu.uva.liftlab.graphchecker.contract.WriteRow;
+import edu.uva.liftlab.graphchecker.explore.Corpus;
+import edu.uva.liftlab.graphchecker.smt.Arms;
+
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+/**
+ * Constraint independence (KLEE's) over one closure's conditions and reads:
+ * those that share a variable with the seed -- the fatal predicate, or the
+ * values an arm delivers -- or with a root of the session, directly or
+ * through one another.  A condition whose variables are disjoint from all of
+ * them names no root and nothing the seed rests on: the recording satisfies
+ * it at its recorded values whatever the witness moves, so leaving it out
+ * changes no answer, while lowering it lets a condition the composer cannot
+ * state (a string operation on a block file's name, a read no write row
+ * states) refuse the whole path.
+ *
+ * <p>A variable is a symbol a recorded expression names, or a tracked
+ * location: every read of one location is one variable, since a STATE
+ * family moves them together, and a read carries the value its observed
+ * write stated.</p>
+ */
+final class Independence {
+    private static final String LOCATION = "loc:";
+
+    private final Set<Long> decisions = new LinkedHashSet<Long>();
+    private final Set<Long> reads = new LinkedHashSet<Long>();
+
+    private Independence() {
+    }
+
+    /** Whether this condition stays in the formula. */
+    boolean keeps(DecisionRow decision) {
+        return decisions.contains(decision.seq());
+    }
+
+    /** Whether this read stays in the formula. */
+    boolean keeps(ReadRow read) {
+        return reads.contains(read.seq());
+    }
+
+    /**
+     * What {@code seedTerms} rest on among these conditions and reads of
+     * one session.
+     */
+    static Independence of(Corpus corpus, String session,
+                           Collection<String> seedTerms,
+                           List<DecisionRow> conditions,
+                           List<ReadRow> readRows) {
+        ExpressionTable table = corpus.expressions(session);
+        Set<String> variables = new LinkedHashSet<String>();
+        for (String term : seedTerms) variables.addAll(leaves(term, table));
+        for (RootMintRow root : corpus.session(session).roots()) {
+            variables.add(root.symbol());
+        }
+        Map<DecisionRow, Set<String>> byCondition =
+                new LinkedHashMap<DecisionRow, Set<String>>();
+        for (DecisionRow condition : conditions) {
+            byCondition.put(condition,
+                    leaves(Arms.conjunct(condition), table));
+        }
+        Map<ReadRow, Set<String>> byRead =
+                new LinkedHashMap<ReadRow, Set<String>>();
+        for (ReadRow read : readRows) {
+            byRead.put(read, readLeaves(corpus, session, read, table));
+        }
+        Independence kept = new Independence();
+        for (boolean grew = true; grew; ) {
+            grew = false;
+            for (Map.Entry<DecisionRow, Set<String>> condition
+                    : new ArrayList<Map.Entry<DecisionRow, Set<String>>>(
+                    byCondition.entrySet())) {
+                if (!shares(condition.getValue(), variables)) continue;
+                kept.decisions.add(condition.getKey().seq());
+                variables.addAll(condition.getValue());
+                byCondition.remove(condition.getKey());
+                grew = true;
+            }
+            for (Map.Entry<ReadRow, Set<String>> read
+                    : new ArrayList<Map.Entry<ReadRow, Set<String>>>(
+                    byRead.entrySet())) {
+                if (!shares(read.getValue(), variables)) continue;
+                kept.reads.add(read.getKey().seq());
+                variables.addAll(read.getValue());
+                byRead.remove(read.getKey());
+                grew = true;
+            }
+        }
+        return kept;
+    }
+
+    /** A read's variables: its location, its symbol, and what its observed
+     *  write stated. */
+    private static Set<String> readLeaves(Corpus corpus, String session,
+                                          ReadRow read,
+                                          ExpressionTable table) {
+        Set<String> leaves = new LinkedHashSet<String>();
+        leaves.add(LOCATION + SmtLowering.locationKey(read.location()));
+        if (read.symbol() != null && !read.symbol().isEmpty()) {
+            leaves.add(read.symbol());
+        }
+        WriteRow write = read.observedVersion() < 0L ? null
+                : corpus.writeOf(session,
+                        SmtLowering.locationKey(read.location()),
+                        read.observedVersion());
+        if (write != null) {
+            expressionLeaves(table.expression(write.expressionRef()), table,
+                    leaves, new LinkedHashSet<String>());
+        }
+        return leaves;
+    }
+
+    /** A term's variables: its free names, each expression it references
+     *  walked. */
+    private static Set<String> leaves(String term, ExpressionTable table) {
+        Set<String> leaves = new LinkedHashSet<String>();
+        Set<String> walked = new LinkedHashSet<String>();
+        for (String name : SmtNames.symbols(term == null ? "" : term,
+                new LinkedHashSet<String>())) {
+            if (SmtNames.reference(name)) {
+                if (walked.add(name)) {
+                    expressionLeaves(table.expression(name), table, leaves,
+                            walked);
+                }
+            } else {
+                leaves.add(name);
+            }
+        }
+        return leaves;
+    }
+
+    private static void expressionLeaves(JsonElement expression,
+                                         ExpressionTable table,
+                                         Set<String> into,
+                                         Set<String> walked) {
+        if (expression == null || expression.isJsonNull()) return;
+        Arms.symbolsIn(expression, into, 0);
+        List<JsonElement> pending = new ArrayList<JsonElement>();
+        pending.add(expression);
+        while (!pending.isEmpty()) {
+            JsonElement node = pending.remove(pending.size() - 1);
+            if (node.isJsonArray()) {
+                for (JsonElement child : node.getAsJsonArray()) {
+                    pending.add(child);
+                }
+                continue;
+            }
+            if (node.isJsonPrimitive()) {
+                String text = node.getAsString();
+                if (SmtNames.reference(text) && walked.add(text)) {
+                    JsonObject referenced = table.expression(text);
+                    if (referenced != null) {
+                        Arms.symbolsIn(referenced, into, 0);
+                        pending.add(referenced);
+                    }
+                }
+                continue;
+            }
+            if (!node.isJsonObject()) continue;
+            JsonObject object = node.getAsJsonObject();
+            JsonElement location = object.get("location");
+            if (location != null && location.isJsonObject()) {
+                String key = SmtLowering.locationKey(
+                        location.getAsJsonObject());
+                if (!key.isEmpty()) into.add(LOCATION + key);
+            }
+            pending.addAll(object.asMap().values());
+        }
+    }
+
+    private static boolean shares(Set<String> leaves, Set<String> variables) {
+        for (String leaf : leaves) {
+            if (variables.contains(leaf)) return true;
+        }
+        return false;
+    }
+}

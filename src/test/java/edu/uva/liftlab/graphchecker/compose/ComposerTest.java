@@ -2,6 +2,7 @@ package edu.uva.liftlab.graphchecker.compose;
 
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
@@ -1621,7 +1622,21 @@ public class ComposerTest {
                     "EXPR.00000000000000b1");
             session.decision(ANCHOR, "anchor#u9", true,
                     "EXPR.00000000000000b2");
-            session.target("true", false, true);
+            // phi rests on every term the decisions above compare and on
+            // both reads, so each of their refusals is this path's (a term
+            // sharing nothing with phi or a root is left out,
+            // Independence).
+            session.expression("EXPR.00000000000000fe", binary(">",
+                    symbol("absent_join", "I"), integer("I", 0L)));
+            session.expression("EXPR.00000000000000fd", binary("==",
+                    symbol("two_sorts", "s0".equals(each) ? "I"
+                            : "org/apache/Held"),
+                    symbol("two_sorts", "s0".equals(each) ? "I"
+                            : "org/apache/Held")));
+            session.target("(and EXPR.00000000000000b2 "
+                    + "EXPR.00000000000000b3 EXPR.00000000000000b4 "
+                    + "EXPR.00000000000000b5 EXPR.00000000000000fe "
+                    + "EXPR.00000000000000fd)", false, true);
             session.write();
         }
 
@@ -2192,8 +2207,15 @@ public class ComposerTest {
             session.expression("EXPR.0000000000000e4" + index,
                     viewKey(held, index));
         }
+        // And phi reads the array cell the decision above compares: every
+        // read of one location is one variable, so that decision is what
+        // phi rests on (a decision sharing nothing with phi or a root is
+        // left out, Independence).
+        session.expression("EXPR.00000000000000f5", binary("!=",
+                read("ARRAY_ELEMENT", 7L, 2L, 1L, "I"), integer("I", 6L)));
         session.target("(and EXPR.00000000000000f1 EXPR.00000000000000f2 "
-                        + "EXPR.00000000000000f3 EXPR.00000000000000f4)",
+                        + "EXPR.00000000000000f3 EXPR.00000000000000f4 "
+                        + "EXPR.00000000000000f5)",
                 false, true);
         session.write();
 
@@ -2832,7 +2854,14 @@ public class ComposerTest {
                 symbol(CLOCK_READ, "J"), integer("J", 0L)));
         session.decision(ANCHOR, "removeExpiredKeys#u9",
                 "EXPR.00000000000000c2");
-        session.target("true", false, true);
+        if (alsoUnrooted) {
+            // phi rests on the unrooted read, so its refusal is the path's.
+            session.expression("EXPR.00000000000000c3", binary(">",
+                    symbol(COUNTER_READ, "I"), integer("I", 0L)));
+            session.target("EXPR.00000000000000c3", false, true);
+        } else {
+            session.target("true", false, true);
+        }
         session.write();
     }
 
@@ -3104,6 +3133,53 @@ public class ComposerTest {
     // ------------------------------------------------------------------
     // Fixture.
     // ------------------------------------------------------------------
+
+    /**
+     * Constraint independence: a condition sharing no variable with phi or
+     * a root is left out, so one the composer cannot state -- a substring
+     * of a block file's name, read from a tracked location -- does not
+     * refuse the path (f4 visible-gs, sender-gs); the same condition over
+     * the location phi reads still does.
+     */
+    @Test
+    public void aConditionPhiDoesNotRestOnDoesNotRefuseThePath()
+            throws Exception {
+        for (boolean shared : new boolean[]{false, true}) {
+            Path iteration = folder.newFolder("independence-" + shared)
+                    .toPath();
+            Session session = new Session(iteration, "s0", false);
+            session.serial("3", "0", "8");
+            session.expression("EXPR.00000000000000a3", integer("I", 1001L));
+            session.write(Endpoint.of(ANCHOR, "Replica#set#1:WRITE",
+                            at("stamp#1", 0), 0),
+                    LocationId.of(LocationKind.INSTANCE, "58", "40"), 158L,
+                    "EXPR.00000000000000a3");
+            session.expression("EXPR.00000000000000a1", binary("<",
+                    read("INSTANCE_FIELD", 58L, 40L, 158L, "I"),
+                    symbol(SERIAL, "I")));
+            JsonObject name = new JsonObject();
+            name.addProperty("_type", "OpStrExpression");
+            name.addProperty("_name", "substring");
+            name.addProperty("_is_not", false);
+            JsonArray parameters = new JsonArray();
+            parameters.add(shared ? read("INSTANCE_FIELD", 58L, 40L, 158L, "I")
+                    : read("INSTANCE_FIELD", 59L, 32L, 157L,
+                    "Ljava/lang/String;"));
+            parameters.add(integer("I", 4L));
+            name.add("_param_list", parameters);
+            session.expression("EXPR.00000000000000a2",
+                    binary("==", name, name));
+            session.decision(ANCHOR, "file#u3", true,
+                    "EXPR.00000000000000a2");
+            session.target("EXPR.00000000000000a1", false, true);
+            session.write();
+
+            Composer.Composition composition = compose(iteration, 4);
+            assertEquals(shared ? "a condition phi rests on still refuses"
+                            : "a condition phi does not rest on is left out",
+                    shared ? 0 : 1, composition.disjuncts().size());
+        }
+    }
 
     private Composer.Composition compose(Path iteration, int maxValuations)
             throws IOException {
