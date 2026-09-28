@@ -628,6 +628,15 @@ public class RowRuntimeTest {
                 Endpoint.stateSite("java.util.concurrent.atomic.AtomicInteger",
                         "get", "()I", 2, false),
                 location, 125L, "s", "J", "9", "", ReadRow.UNKNOWN_VERSION);
+        // The tool's own wait set states no row, read or written.
+        String waits = Endpoint.stateSite(TimedWaits.class.getName(), "send",
+                "(Ljava/lang/Object;Z)Z", 34, true);
+        RowRuntime.write(occurrence, 16L, waits,
+                LocationId.of(LocationKind.INSTANCE, "350", "24"), 6254L,
+                rmwExpression(), "", "Caller.body()#u9@1");
+        RowRuntime.read(occurrence, 16L, waits,
+                LocationId.of(LocationKind.INSTANCE, "350", "24"), 6253L, "w",
+                "I", "1", "", ReadRow.UNKNOWN_VERSION);
         RowRuntime.rootMint(occurrence, 11L, "HDFS.BLOCK_KEY.SERIAL_NO",
                 "M_I_1", RootKind.INTEGRAL, "3", "3", "6", true);
         RowRuntime.rootMint(occurrence, 13L,
@@ -722,6 +731,7 @@ public class RowRuntimeTest {
         assertEquals("2", attaches.get(0).answeredValue());
         List<WriteRow> writes = RowCodec.readAll(dir.writes(),
                 RowCodec::readWrite);
+        assertEquals("the tool's own wait set is no write", 3, writes.size());
         assertEquals(125L, writes.get(0).version());
         assertEquals(10L, writes.get(0).seq());
         assertEquals("java.util.concurrent.atomic.AtomicInteger"

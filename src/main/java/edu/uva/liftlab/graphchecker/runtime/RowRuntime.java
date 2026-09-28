@@ -355,6 +355,18 @@ public final class RowRuntime {
     }
 
     /**
+     * The tool's own code.  Its wait sets and frame levels are never program
+     * state, though the VM versions them once an application reference keys
+     * them (adhoc pipeline-reply.flush: TimedWaits' send counter, read and
+     * written in one call, stood as a BLOCKING TOPOLOGY_DIVERGENCE).
+     */
+    private static boolean ownCode(String site) {
+        return site != null && site.startsWith(OWN_CODE);
+    }
+
+    private static final String OWN_CODE = "edu.uva.liftlab.graphchecker.";
+
+    /**
      * One write, at the site index the event stood on WHEN it ran.
      *
      * <p>The write log is read out at the activation's end, so the index
@@ -366,7 +378,10 @@ public final class RowRuntime {
                              JsonObject expression, String javaType,
                              String siteIndex) {
         SessionPublisher session = publisher;
-        if (session == null || occurrence == null || location == null) return;
+        if (session == null || occurrence == null || location == null
+                || ownCode(site)) {
+            return;
+        }
         Endpoint at = endpoint(occurrence, site, 0, siteIndex);
         String type = statedJavaType("version", location + "#" + version,
                 javaType, expression);
@@ -388,7 +403,10 @@ public final class RowRuntime {
                             String javaType, String concreteValue,
                             String siteIndex, long mintVersion) {
         SessionPublisher session = publisher;
-        if (session == null || occurrence == null || location == null) return;
+        if (session == null || occurrence == null || location == null
+                || ownCode(site)) {
+            return;
+        }
         Endpoint at = endpoint(occurrence, site, 0, siteIndex);
         String type = statedJavaType("read", location + "#" + seq, javaType,
                 null);
