@@ -12,10 +12,12 @@ HDFS ad-hoc 协调检查上真实地、大规模地跑 GraphChecker，用故障�
 | 规模 | 21 个 ad-hoc 检查（覆盖率找出，全部注解在一棵 JDK 8 树上）、31 个 case、6 个已有单元测试作工作负载；轮次 a4（30 个 case）+ a5（10 个重跑）+ a6（4 个）+ a7（1 个）；a4 里 **261 个故障重放** + 49 个对照重放 |
 | 设计 | 根按类别自动识别（CLOCK / FAULT / READ），不再手写 `symbolic-inputs.jsonl`；具体值判定的 target 有了三条通用规则（helper 返回常量由其分支决定、析取守卫取各测试致命臂的或、健康的具体判定以 DIAGNOSTIC 排除）；wire 流自动配对已设计（§8） |
 | 结果 | 时钟类检查 token-expired.proxy / .mirror、token-pw-expired.mirror 得到 **CLOCK_SKEW，并由 CONFIRM 重放确认**（a6、a7；是 HDFS 时钟大致同步的设计前提，不是新 bug，§5.4）；其余具体值检查以"没有被建模的根能到达致命臂"结束——a4 的 261 个故障重放里 83 个到达检查，a5 三个 flush case 的约 1700 个 session 里检查到达 4000 余次，**致命臂 0 次**（§3、§4） |
-| 假阳性过滤（全部来自真实运行） | §5：公式在录制取值下可满足 ×6（sender-gs、token-expired、commit-gs、lease-holder）；探索中模型可行、执行否决 68 次（两个故障不独立、门没经过、根只存在于故障世界）；**跨运行拼接的消息配对**（token-nokey.mirror / .replicate：只有把一次运行的状态配上另一次运行 NN 下发的 key 列表才会失败，每次运行自己的配对下 UNSAT，DECIDE 不命名机制、不发布）；**共享字段的 HB 过近似**（commit-gs.TestFileAppend2-testSimpleAppend：STATE family 让目标处的 GS 读看到更早一次 RPC 的写，DECIDE 给出 STATE_PAIRING_FLIPPED；CONFIRM 按模型的偏序重放，程序排不出这个顺序——调度空转 109 秒、649 个槽放弃，运行走了模型没选的 ORDER——判为 SAT_UNCONFIRMED 扣下，§11） |
+| 假阳性过滤（全部来自真实运行） | §5：公式在录制取值下可满足 ×6（sender-gs、token-expired、commit-gs、lease-holder）；探索中模型可行、执行否决 68 次（两个故障不独立、门没经过、根只存在于故障世界）；**跨运行拼接的消息配对**（token-nokey.mirror / .replicate：只有把一次运行的状态配上另一次运行 NN 下发的 key 列表才会失败，每次运行自己的配对下 UNSAT，DECIDE 不命名机制、不发布）；**共享字段的 HB 过近似**（commit-gs.TestFileAppend2-testSimpleAppend：STATE family 让目标处的 GS 读看到更早一次 RPC 的写，DECIDE 给出 STATE_PAIRING_FLIPPED；CONFIRM 按模型的偏序重放，程序排不出这个顺序——调度空转 109 秒、649 个槽放弃，运行走了模型没选的 ORDER——判为 SAT_UNCONFIRMED 扣下，§11）；§13.6：commit-gs.TestClientProtocolForPipelineRecovery（STATE family 让 commit 处的 GS 读配上 pipeline recovery 写的 1002，录制取值下就 SAT，被自检扣下）；token-nokey.replicate（同一 world 的两次重放把一个 consumer 配给不同生产者，MARKER_FLIPPED 被 TOPOLOGY_DIVERGENCE 扣下） |
 | 集群单测当工作负载 | 301 个测试的清单；20 对（检查 × 测试）里 18 对在窗口内到达检查；18 个 campaign 首跑 11 个种子重放复现失败，逐个找出 3 类分歧并修掉（推迟的 RPC 响应、HA 随机选 NN、排队区域的帧），修后种子重放 88–89/94；致命臂 0 次，新 bug 0 个；过滤实例：执行否决 178 个模型、59 条自相矛盾路径被扣下（§9） |
-| 九个 case | v58（p62）**9/9 PASS**，因果链与 v54 一致或更丰富；11741 CLOCK_SKEW 由 CONFIRM 重放确认。v77（p93，§11 的全部修复 + VM vm-f5）**8/9 PASS**，因果链的机制（移动的根、finding）不变，被跟踪的读现在以读符号出现并由 join 绑定；11741 的语料在第 4 波涨到 202 个会话，规划器超出 8 GB 堆，按 case 配置引擎堆（`79f3a4ecc`）后以 v78 重跑（写本行时在第 2 波，结果待补） |
-| 修掉的引擎缺陷 | 15 个，另有 1 处工作负载登记修复，都在 adhoc 运行里暴露（§6） |
+| 九个 case | 最终运行（2026-09-28，§13）：九个 case 一个一个独占十台 lift，**9/9 PASS**（exit 0、FINAL_READY、无 BLOCKING、CONFIRM true），用时 481–1378 s（v88 共享池子时 667–3275 s）；闭包 2–13 个 region；七个 case 的 .smt 签名与 v88 相同，11741 CLOCK_SKEW（NN 与 DN 时钟），17899-bug2 MARKER_FLIPPED（IPC 响应故障）；这两个在声明的 (r,c,i) 第一次出现 fatal 时停止探索（§13.5） |
+| 不动点与故障对图的改变 | §13.3–13.5：17897 四波到不动点（31 → 68 → 8 → 0 个义务，两次故障 GROW 暴露 client 换 DN 与 dn0 的 peerSend）；九个 case 的逐波图变化与 graphdiff 故障模式（响应丢失 → 状态分叉 → ESCALATION，请求丢失 → 重试恢复）；搜索空间为什么有界、规划器与 COMPOSE 的平方项；图页 https://claude.ai/artifact/7JaJAryJgqiqyFx3ub31TK |
+| ad-hoc 全量（a10） | 52 个 ad-hoc case 全量重跑（a10，被重启打断的与工具状态挡住的在 a10c 重跑）：**没有新 bug**；被接受的只有 2 个 CLOCK_SKEW（时钟同步的设计前提）；其余按原因归类：诚实否定 17、未陈述的读 10、φ 为具体值 9、种子重放时序未到达 6 …（§13.6） |
+| 修掉的引擎缺陷 | §6 的 15 个 + §12 的 6 个 + §13 的 6 个（规划器行索引、工具自身状态不发行、slot 先等空间再认领、root 表只建一次、COMPOSE 并行求解、stop-at-fatal 与见证后的截断不扣见证），另有 1 处工作负载登记修复 |
 
 ---
 
@@ -673,7 +675,309 @@ recv-offset 见上）；
 未陈述的读（finalize-gs、visible-gs 的 map 读，sender-gs 的数组读）；K_L 不够（一次 `removeExpiredKeys` 超过 8 个 key）；
 PATH_SELF_CONTRADICTORY（commit-gs 系列，按设计）。
 
+## 13. 九个 case 的最终 .smt、用时与闭包；不动点与故障对图的改变；a10 全量重跑（2026-09-28）
+
+**最终运行**：九个 case **一个接一个、每个独占全部十台 lift**（lift06–lift15 含 lift11，每台 10 个 slot，全池 100 个；
+内存闸门按每台 MemAvailable 放行），驱动脚本 `~/gc-out/analysis/series.sh`。七个 case 是 v92（p113 `b9483fb8f`）；
+11741 是 v93（p114 `970f9631f`）、17899-bug2 是 v94（p115 `21c42559d`），这两个打开了 `region_path_stop_at_fatal`
+（13.5）。对照列是 v88（p109 `b49644426`）：那一轮九个 case 和 52 个 ad-hoc case 同时共用 9 台 × 4 slot 的池子。
+v88 的 bug2 在 COMPOSE 中途遇上 06:38 的集群整体重启；它和 v90（p111，bug2 完整探索到 W8 不动点）的探索数据用于
+13.3–13.5 的图分析。
+
+### 13.1 九个 case：结论、用时三段、z3 求解
+
+用时取自每个 campaign 的 `schedule/stage_metrics.tsv`（脚本 `~/gc-out/analysis/timing.py`）。**分析** = PREFLIGHT…SEED、
+PLAN、INSTRUMENT、REPLAY、IMPORT；**探索** = EXPLORE（各波直到不动点或见证，含 GROW 重跑）；**最终求解** =
+COMPOSE+SOLVE+DECIDE（COMPOSE 内部为每个 valuation、polarity 判定与路径族各解一次，互相独立的求解并行）；
+**z3 单解** 是 z3 4.14.1 单独解最终 `final/candidate.smt2` 一次的墙钟时间。九个 case 全部 exit 0、FINAL_READY、
+无 BLOCKING、polarityDecides、CONFIRM true。
+
+| case | 结论（移动的根） | 总计 s | 分析 s | 探索 s | 最终求解 s | z3 单解 s | CONFIRM+EMIT s | v88 总计 s |
+|---|---|---|---|---|---|---|---|---|
+| 17960 | MARKER_FLIPPED（`SNAPSHOT_DELETION_ORDERED`=false） | **481** | 321 | 154 | 1 | 0.01 | 3 | 667 |
+| 17967-pathB | MARKER_FLIPPED（IPC 故障标记 `REGION.763d087e`） | **579** | 249 | 299 | 20 | 0.33 | 7 | 899 |
+| 17897 | MARKER_FLIPPED（`REGION.763d087e`） | **741** | 225 | 455 | 48 | 0.51 | 9 | 1288 |
+| 17899-bug1 | MARKER_FLIPPED（`REGION.763d087e`） | **789** | 240 | 434 | 31 | 0.09 | 81 | 1337 |
+| 17899-bug3 | MARKER_FLIPPED（`REGION.763d087e`） | **815** | 228 | 557 | 20 | 0.13 | 7 | 1300 |
+| 17967-pathA | MARKER_FLIPPED（`REGION.763d087e`） | **958** | 231 | 569 | 27 | 0.45 | 129 | 1464 |
+| 17967-pathC | MARKER_FLIPPED（`REGION.763d087e`） | **1194** | 248 | 715 | 79 | 0.11 | 145 | 1609 |
+| 11741 | CLOCK_SKEW（NN 时钟 `08ab84c9`、DN 时钟 `ba3902cd`） | **1378** | 418 | 743 | 52 | 1.36 | 161 | 3275 |
+| 17899-bug2 | MARKER_FLIPPED（IPC 响应故障标记 `REGION.9ffdee3d`） | **752** | 476 | 245 | 18 | 0.14 | 7 | —（v90 完整探索 > 2 h） |
+
+* **分析段**基本不随池子变：225–476 s（SEED 95–120 s、REPLAY 66–301 s、INSTRUMENT ≈ 30 s），它是 head 上串行的
+  种子录制、插桩和种子重放。
+* **探索段**缩短最多：七个完整探索的 case 比 v88 少 30–46%（17897 837 → 455 s、bug3 992 → 557 s），来自独占
+  100 个 slot 与规划器的行索引（`ff4db3a64`）。11741 与 bug2 在声明的 occurrence 第一次出现 fatal 时停下（13.5），
+  11741 的探索 2350 → 743 s，bug2 只跑了一波（47 个义务）。
+* **最终求解段**：COMPOSE 里互相独立的 z3 求解并行（`b9483fb8f`）、root 表只建一次（`f09f724e6`）之后，17897
+  201 → 48 s、pathC 201 → 79 s、11741 337 → 52 s。
+* **z3 解最终公式本身**很快：八个 case ≤ 0.51 s，11741 1.4 s（v88 完整探索的公式要 11 s，z3 统计里 `array-exp-ax2`
+  实例化 113 万次；停在见证处的公式小得多）。
+
+**.smt 的因果链**（`tools/analysis/chaincheck.py`，签名存于 `~/gc-out/analysis/chain-*.json`，逐个对 HDFS 代码核对）：
+v92 的七个 case 与 v88 的签名逐项相同（17960 多了一个 `REGION.5cf88831` 整数根：两条路径的 numSnapshots 现在各是
+自己那次 FSImageSaver occurrence 的符号），被移动的根都与 v54 相同。17960 的链正是机制本身：
+
+```
+path 0 (ordered=false): numSnapshots = 0+1+1-1-1 = 0,  φ: numSnapshots ≠ 1  → SAT
+path 1 (ordered=true):  numSnapshots = 0+1+1   = 2,  φ: numSnapshots ≠ 2  → UNSAT
+```
+
+11741（v93）停在见证处，公式比 v88 小（路径 42 → 25、消息臂 730 → 245、ite 8024 → 2712），链仍然完整：allKeys 的
+put / remove / has / read、NN 与 DN 两个时钟根都在，移动的根不变。17899-bug2（v94）对照上一次通过的 v58：
+assoc_put 316 → 304、消息臂 383 → 371、ite 3817 → 3695，移动的根同为 IPC 响应故障标记 `REGION.9ffdee3d`；CONFIRM：
+"the selected session is itself the run: it took every edge the model chose (2 arms, all its own deliveries), ran
+every moved root at the model's value, and observed the fatal at the anchor"。
+
+### 13.2 闭包包含多少 region
+
+闭包 = 最后一波（不动点或见证）`tasks.jsonl` 里每个 task 的 focused occurrence 加 factor 成员（去重）；图 = 同一波
+`graph.jsonl` 的节点（闭包之外还有只提供数据的节点）。脚本 `~/gc-out/analysis/closure_regions.py`。
+
+| case | 最后一波 | 闭包 task | 闭包 occurrence | **闭包 region** | 图节点 | 图 region | 各节点上的闭包 region |
+|---|---|---|---|---|---|---|---|
+| 17960 | W2 不动点 | 3 | 3 | **2** | 51 | 6 | nn0=2 |
+| 17967-pathB | W3 不动点 | 27 | 27 | **9** | 66 | 12 | mover=1 nn0=3 proxy-dn=5 spare-dn=4 target-dn=7 |
+| 17897 | W3 不动点 | 35 | 35 | **12** | 85 | 15 | client=5 dn0=8 dn1=4 dn2=4 nn0=5 |
+| 17899-bug1 | W3 不动点 | 32 | 32 | **13** | 73 | 16 | balancer=7 nn0=4 proxy-dn=1 spare-dn=4 target-dn=7 |
+| 17899-bug3 | W3 不动点 | 20 | 20 | **8** | 100 | 12 | nn0=3 source-dn=5 target-dn=5 |
+| 17967-pathA | W3 不动点 | 31 | 31 | **10** | 233 | 13 | head-dn=5 mirror-dn=5 nn0=3 source-dn=6 |
+| 17967-pathC | W3 不动点 | 35 | 35 | **9** | 274 | 12 | helper-dn=1 lost-dn=4 nn0=3 target-dn=5 worker-dn=7 |
+| 11741 | W2 见证 | 37 | 37 | **13** | 483 | 20 | balancer=6 dn1=5 nn0=3 |
+| 17899-bug2 | W1 见证 | 62 | 70 | **10** | 218 | 14 | nn0=4 sps=4 target-dn=5 |
+
+一个 region 可以在几个节点上各有 occurrence（同一段代码在 source-dn 和 target-dn 上各跑一次），所以最后一列按节点
+计数的和大于闭包 region 数。17960 最小：saveNamespace → FSImageSaver.run（按两个存储目录激活两次）和重启时的
+loadFSImage。完整探索到不动点时，11741 是 W6、46 个 task、11 个 region（v88），bug2 是 W8、63 个 task、10 个 region
+（v90）：region 数和停在见证处时相同，多出来的是同一批 region 的更多 occurrence。
+
+### 13.3 一个故障注入下迭代到不动点的完整例子（HDFS-17897，v88）
+
+| 波 | 图 G_k（节点 / 边 / world） | 义务来源 | 判决 | 这一波前后发生的事 |
+|---|---|---|---|---|
+| W0 | 64 / 238 / 1 | IPC:REQUEST 8、IPC:RESPONSE 9、SASL 2、分支 12（removeExpiredKeys 7、addKeys 4、retrieveDataEncryptionKey 1） | ADMITTED 26、UNSAT 5 | seed 一个 world |
+| W1 | 87 / 253 / 27 | IPC:REQUEST 18、IPC:RESPONSE 30、分支 20 | ADMITTED 40、UNSAT 21、NOT_ADMITTED 7 | **GROW ×2**（下），+23 节点 |
+| W2 | 87 / 257 / 52 | 分支 8（retrieveDataEncryptionKey） | UNSAT 8 | 无 GROW；world 由继承的翻转组合 27 → 52 |
+| W3 | 87 / 257 / 52 | 0 | — | **不动点**；v87 在这里还 GROW 了 nn0 心跳处理器，v88 被 tick bound 拦下（每波 6 条 DIAGNOSTIC gap） |
+
+结论：MARKER_FLIPPED（IPC 故障标记 `REGION.763d087e` = true，polarityDecides），CONFIRM true。
+
+W0 → W1 的 GROW，已在 replay 日志里核实：
+
+1. 义务 `13d962c37468dcb7` 翻转 dn0 心跳 RPC（`Root:CLIENT heartbeat #1`）的 IPC:RESPONSE 门。
+2. dn0 的 offerService 报 `IOException`，收不到带 KeyUpdateCommand 的响应，手里仍是 key 119992；NN 已滚到 119994。
+3. client 做条带文件校验和时 `tryDatanode@0` 向 dn0 做 SASL 握手，dn0 抛
+   `InvalidEncryptionKeyException: Can't re-compute encryption key for nonce, since the required block key (keyID=119994) doesn't exist. Current key: 119992`。
+4. client 改试 `tryDatanode@1 → connectToDN → … → getUserNameFromEncryptionKey`（`REGION.d930c3a2`）。这个 occurrence
+   录制里没有，闭包要求它 → GROW：插桩、义务在新树下重跑，ADMITTED。
+5. 同一波另一个 GROW：义务 `3e6c229485e267da` 翻转 dn0 自己 DATA_XCEIVER 里 `doSaslHandshake` 的 SASL:REQUEST 门，
+   dn0 经 `peerSend → checkTrustAndSend → send → getEncryptedStreams` 进入同一 region 的新 occurrence。
+
+图页（逐波条形图、GROW 因果时序图、九个 case 的逐波热力图、闭包 region 表、三段用时）：https://claude.ai/artifact/7JaJAryJgqiqyFx3ub31TK
+
+### 13.4 故障注入对图的改变（九个 case）
+
+逐波数据由 `~/gc-out/analysis/wavestats.py` 从各波的 `graph.jsonl`、`obligations.jsonl`、`growth.jsonl`、
+`gaps.jsonl` 读出（八个 case 取 v88，17899-bug2 取 v90）。
+
+| case | 不动点波 | 义务合计 | 其中故障门翻转 | ADMITTED / UNSAT / NOT_ADMITTED | GROW | 最终 world | 图节点 W0 → 不动点 | 图边 W0 → 不动点 | tick bound gap |
+|---|---|---|---|---|---|---|---|---|---|
+| 17960 | W2 | 9 | 0 | 1 / 7 / 1 | 0 | 2 | 50 → 50 | 56 → 105 | 0 |
+| 17967-pathB | W3 | 85 | 49 | 55 / 30 / 0 | 0 | 49 | 57 → 60 | 230 → 247 | 4 |
+| 17897 | W3 | 107 | 67 | 66 / 34 / 7 | 2 | 52 | 64 → 87 | 238 → 257 | 6 |
+| 17899-bug3 | W3 | 84 | 40 | 45 / 34 / 5 | 1 | 35 | 40 → 99 | 202 → 234 | 2 |
+| 17899-bug1 | W3 | 122 | 58 | 68 / 54 / 0 | 1 | 56 | 69 → 78 | 283 → 325 | 4 |
+| 17967-pathA | W3 | 89 | 55 | 54 / 26 / 9 | 2 | 44 | 62 → 234 | 242 → 302 | 4 |
+| 17967-pathC | W3 | 123 | 63 | 71 / 49 / 3 | 1 | 63 | 80 → 278 | 297 → 342 | 6 |
+| 11741 | W6 | 418 | 10 | 46 / 372 / 0 | 16 | 42 | 223 → 561 | 522 → 749 | 14 |
+| 17899-bug2 | W8 | 800 | 748 | 613 / 45 / 142 | 7 | 493 | 134 → 751 | 270 → 594 | 0 |
+
+读法：
+
+* **故障门翻转占多数的 case**（七个 IPC 机制的 case）：World 数随故障组合增长，图的节点主要由 GROW 与故障 session 里
+  新出现的 occurrence 带来（pathA 62 → 234、pathC 80 → 278：故障让 DataNode 之间的传输改走别的节点，新的
+  DataXceiver occurrence 进图）。故障 session 大多 ADMITTED——门在聚焦前缀上可控，翻转总能落实。
+* **分支翻转占多数的 case**（11741，418 个义务里 10 个故障门）：机制是时钟，不是故障；义务大多由 corpus 判 UNSAT，
+  图的增长主要来自 W2 前的 16 个 GROW（balancer 调度在新 anchor 下的 occurrence）。
+* **17960**：没有故障门，图的节点不变，边 56 → 105 来自翻转 session 里多出的配对。
+* **tick bound**：心跳 tick 超出录制轮次的 occurrence 不再 GROW，以 DIAGNOSTIC gap 记下（11741 每波最多 14 条）。
+* **NOT_ADMITTED**：bug2 的 142 个集中在 W1 之后的故障翻转——replay 在聚焦前缀上没能走到被翻转的那一臂
+  （SPS 轮询在故障后的重试次数与录制不同），这些不算 world，也不进下一波。
+
+**故障 session 对图的净改变**（`tools/analysis/graphdiff.py v88` 与 `v90`（bug2），输出在 `~/gc-out/analysis/graphdiff/`）。每个 ADMITTED
+的义务 session 与种子 session 按五层比较（occurrence、WIRE 边、STATE 边、决策、消息），键里不含会话局部 id。world 里有故障
+标记为 true 的是故障 session，其余（时钟、序号、配置 world）是对照 session，对照的差异就是重放噪声，下表是扣掉噪声后的
+净模式（一个 session 可以有多个模式）：
+
+| case | 故障 session | EDGE_CUT | RETRY | FALLBACK | RECOVERY | STATE_DIVERGENCE | ESCALATION | ABORT | ANCHOR_DROPPED | DAEMON_INFLATION | TOLERATE | 对照 session（其中 TOLERATE） |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 17960 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 1（0） |
+| 17967-pathB | 44 | 44 | 27 | 0 | 8 | 34 | 25 | 1 | 16 | 0 | 4 | 11（11） |
+| 17897 | 55 | 55 | 18 | 13 | 14 | 36 | 11 | 19 | 12 | 0 | 1 | 11（11） |
+| 17899-bug3 | 34 | 34 | 11 | 0 | 9 | 23 | 11 | 3 | 0 | 14 | 5 | 11（10） |
+| 17899-bug1 | 57 | 57 | 22 | 0 | 14 | 36 | 19 | 22 | 19 | 0 | 2 | 11（9） |
+| 17967-pathA | 43 | 43 | 22 | 0 | 21 | 30 | 19 | 3 | 5 | 23 | 4 | 11（9） |
+| 17967-pathC | 60 | 60 | 17 | 0 | 23 | 42 | 19 | 0 | 15 | 32 | 1 | 11（10） |
+| 11741 | 10 | 10 | 0 | 0 | 0 | 1 | 6 | 0 | 10 | 1 | 0 | 36（27） |
+| 17899-bug2 | 601 | 601 | 583 | 27 | 2 | 411 | 9 | 447 | 0 | 104 | 6 | 12（8） |
+
+模式的含义（`graphdiff.classify`）：EDGE_CUT 种子里的一条消息或 WIRE 边没了（被故障的那次交换）；RETRY 同一个逻辑调用
+又来一次（同一 site 重发、同类 occurrence 再现、故障节点自己的 daemon 多转一轮）；FALLBACK 出现了新的对端或新 region
+的 occurrence（换一个 DataNode）；RECOVERY 同一节点在另一个 context 下把同样的活重做；STATE_DIVERGENCE 某个读改为读另一个
+写者的版本；ESCALATION 故障 session 在 target 处观察到了 fatal 而种子没有；ABORT 不再到达 target；ANCHOR_DROPPED target 行
+消失；DAEMON_INFLATION 两个以上节点多了 daemon 轮次（运行变长）；TOLERATE 除状态与决策外没有下游改变。
+
+几点观察：
+
+* 对照组几乎全是 TOLERATE（17897 的 11 个对照 session 全部 TOLERATE），说明上面的故障模式不是重放噪声。
+* **ESCALATION 就是机制的见证**：七个 IPC case 里都有故障 session 直接在 anchor 观察到 fatal（pathB 25、bug1 19、
+  pathA 19、pathC 19、17897 11、bug3 11、bug2 9），COMPOSE 选中的就是其中之一，CONFIRM 重放它本身。
+* **IPC 故障对 DataNode 链路的影响以 RETRY / RECOVERY / FALLBACK 为主**：17897 里 FALLBACK 13（client 改试下一个 DN，
+  即 13.3 的 GROW）；pathA/pathC 的 RECOVERY 21/23（同一个 DN 在新的 DATA_XCEIVER 连接里重做传输）。
+* **bug2 的 601 个故障 session 里 ABORT 447、RETRY 583**：SPS 的 RPC 被故障打断后轮询重试，多数 session 走不到 target，
+  这正是它 world 数最多、却只有 9 个 ESCALATION 的原因。
+* **11741 的 10 个故障 session 全部 EDGE_CUT + ANCHOR_DROPPED**（其中 6 个另有 ESCALATION）：故障让 balancer 这次的
+  调度 occurrence 消失，但它的结论是 CLOCK_SKEW，被移动的是两个时钟而不是故障标记；它的 16 个 GROW 也全部来自时钟翻转
+  （CLOCK 门），不是故障。
+
+GROW 由哪个门暴露（同一输出）：
+
+| case | GROW | 其中故障 world | 被捕获为 task | 暴露它的门 → 节点上的新 occurrence |
+|---|---|---|---|---|
+| 11741 | 16 | 0 | 16 | CLOCK → balancer `SaslDataTransferClient.getUserNameFromEncryptionKey` ×8、`Dispatcher$1.run` ×4、`Balancer.matchStorageGroups` ×4（新的 balance-block anchor） |
+| 17897 | 2 | 2 | 2 | IPC:RESPONSE:SocketTimeout → client `getUserNameFromEncryptionKey`；SASL:REQUEST → dn0 `getUserNameFromEncryptionKey`（13.3） |
+| 17899-bug1 | 1 | 1 | 1 | IPC:REQUEST:ConnectTimeout → nn0 心跳处理 `PBHelper.convert` |
+| 17899-bug2 | 7 | 7 | 6 | IPC:REQUEST+IPC:RESPONSE → sps `getUserNameFromEncryptionKey` ×2（新的 satisfy-storage-policy anchor）；IPC:REQUEST:ConnectTimeout → nn0 `PBHelper.convert` ×1；IPC:RESPONSE → sps `getUserNameFromEncryptionKey` ×1 … |
+| 17899-bug3 | 1 | 1 | 1 | IPC:REQUEST:ConnectTimeout → nn0 `PBHelper.convert` |
+| 17967-pathA | 2 | 2 | 2 | IPC:REQUEST → nn0 `PBHelper.convert` ×2 |
+| 17967-pathC | 1 | 1 | 1 | IPC:REQUEST:ConnectTimeout → nn0 `PBHelper.convert` |
+
+除 11741 外，每一次 GROW 都是故障 world 暴露的：要么是故障后的重试或换节点路径（`getUserNameFromEncryptionKey` 在
+新的 SASL 握手里），要么是 DataNode 心跳重连后 NN 处理一条录制里没有的心跳请求（`PBHelper.convert`，其中超出录制轮次的
+已由 tick bound 拦下，这里剩下的是轮次之内的）。
+
+### 13.5 搜索空间会不会爆炸
+
+每一波的增长有三个来源：新 world（每个 ADMITTED 的翻转 session 成为一个 world，路径在下一波再提供翻转）、GROW
+（故障 world 走进录制里没有的 occurrence）、daemon tick（重放比录制慢，心跳多跑几轮）。理论上一条路径 F 个门或分支、
+嵌套深度 3 就是 O(F³) 个 world，再乘每个 task 32 条路径、每个 anchor 64 个 task，确实可以爆炸。实际上被这些压住：
+义务按"守卫 + 它依赖的输入"去重；corpus 能证明没有 world 走另一臂时直接 UNSAT、不重放（11741 的 418 个义务里 372 个）；
+world 深度 ≤ 3；tick bound；12 波预算（DIAGNOSTIC）。
+
+实测：九个 case 全部在预算之内到达不动点——七个 3–4 波，11741 7 波，17899-bug2 9 波（v90；被重启打断的 v88 是
+11 波）。bug2 压力最大：v90 的 world 1 → 33 → 240 → 268 → 441 → 479 → 486 → 493，义务 47、274、34、215、104、27、
+72、27、0（v88：45、298、9、200、123、44、62、59、41、7、0，world 到 484），从 W2 起全是
+故障门翻转，落在 satisfy-storage-policy 请求里 SPS 轮询 NN 的 RPC 门上：每个故障让轮询重试，重试是新的 occurrence 和
+新的门；它们在声明的请求 scope 内，不是 daemon tick，tick bound 不管。增量逐波变小，最后自己收敛，没有无界增长。要更早
+收住它，需要一条"请求 scope 内重复 occurrence"的通用 bound，同时保留故障引发的重试本身（待定）。
+
+先"爆"的是规划器实现：bug2 每波规划 20–25 分钟。线程栈全部落在两处按 session 线性扫描：`Frontier` 对每条路径的每个
+决策重算 `Corpus.feeders`；`ClosurePlanner.carriersOf` 每跟一个读就扫一遍所有 session 的全部写。两者的结果都与 session
+无关，总代价却随 session 数平方增长。`ff4db3a64` 改为建索引时算好。wave 9 的精确输入（765 个 session，从
+`sessions-before.txt` 重建，`slots.jsonl` 复制而不是链接——规划器会写它）离线 A/B：旧 26 分 18 秒、新 3 分 34 秒，义务、
+task、GROW、gap、图、manifest 六个文件逐字节相同。COMPOSE 在同样的语料上也有同类的平方项：`Corpus.roots()` 每问一次
+就把所有 session 的 root mint 复制一遍，`Arms.Rows.varied` 再逐个 session 查值，而两者都按每个臂、每个 root 被问
+（`f09f724e6` 改为只建一次）；它之后，COMPOSE 里互相独立的 z3 求解（每个 valuation、每条路径的自检）改为最多 8 个
+并行（`b9483fb8f`）。
+
+**探索的初衷是声明的那一个 (r,c,i)**（老板 2026-09-28）。fatal query 是一个 occurrence 的 target 行：种子重放时由 case
+声明的 selector 解析成确定的 (r,c,i)，COMPOSE 的 φ 只取它的 target 行，跨进程的家族与臂也沿着围绕它的图配对。
+可是在它已经出现 fatal 之后，探索仍在继续：bug2 的声明 occurrence（target-dn 上 `REGION.7c569c3f`，anchor 是
+satisfy-storage-policy 请求）在 **W0** 就有 3 个被接受的重放观察到 fatal，之后又跑了 8 波、800 个义务，GROW 长到了
+新的 satisfy-storage-policy 请求实例上；11741 的 dn1 `REGION.7c569c3f`（balance 的 SASL 处理）在 **W1** 就观察到 fatal，
+之后又跑了 5 波。dn1 挂了之后 client 怎么重试、balancer 怎么重新调度，SPS 怎么起新的请求，都不是这个 bug 的问题。
+`region_path_stop_at_fatal=true`（`970f9631f`，case 级开关，只给这两个 bug 打开）：一旦某个被接受的聚焦重放在声明的
+occurrence 的 target 行上观察到 fatal，这一波就不再提出义务、不再 GROW，用一条 DIAGNOSTIC gap 点名见证，manifest 记为
+WITNESSED，campaign 直接在已有的语料上 COMPOSE 与 CONFIRM。第一次这样跑时（v93 的 bug2）结论 MARKER_FLIPPED 且
+CONFIRM 为真，却被一条 BLOCKING 扣下：闭包在 64 个 task 处截断，7 个 target-dn 心跳 IPC 门没有规划。截断的闭包对
+"闭包上的结论"不健全，所以它平常是 BLOCKING；停在见证处的 case 不再对见证之后的闭包提问，和"只有种子跑过的
+occurrence"在那里是 DIAGNOSTIC 同理（`21c42559d`：ClosurePlanner 只陈述截断了什么，由 ExploreMain 定级）。结果：
+11741 在 W2 判为 WITNESSED（152 个义务，v88 是 418），bug2 在 W1 判为 WITNESSED（47 个义务），结论与完整探索时相同。
+
+### 13.6 a10：52 个 ad-hoc case 全量重跑
+
+a10 在 p109 上跑了全部 52 个 case，48 个跑完；4 个被集群重启打断，与另外两个被工具状态挡住的 case 一起在 p111 上
+重跑为 a10c。**没有新 bug。** 结果按挡住它的第一个原因归类（`~/gc-out/analysis/triage.py`）：
+
+| 类别 | case 数 | case |
+|---|---|---|
+| CLOCK_SKEW，CONFIRM true（接受：时钟同步的设计前提） | 2 | token-expired.TestFailoverWithBlockTokensEnabled-ensureInvalidBlockTokensAreRejected、token-pw-expired.TestFailoverWithBlockTokensEnabled-ensureInvalidBlockTokensAreRejected |
+| 公式在录制取值下即 SAT（假阳性，被自检扣下） | 1 | commit-gs.TestClientProtocolForPipelineRecovery-testGetNewStamp |
+| MARKER_FLIPPED 被扣下：同一 world 的重放把同一 consumer 配给不同生产者（调度未守住） | 1 | token-nokey.replicate |
+| 所有组合路径在任何根取值下都 UNSAT（诚实否定） | 17 | commit-blockid.flush、commit-gs.TestFileAppend-testAppend2Twice、commit-gs.TestFileAppend-testAppendTwice、commit-gs.TestLeaseRecovery-testLeaseRecoveryAndAppend、commit-gs.softlimit、lease-missing.TestLeaseRecovery-testLeaseRecoveryAndAppend、lease-missing.softlimit、reader-chunk.TestFileConcurrentReader-testUnfinishedBlockRead、reader-chunk.flush、reader-chunk.reconstruct、recv-offset.mirror、sender-gs.mirror、sender-gs.reconstruct、token-blockid.TestFailoverWithBlockTokensEnabled-ensureInvalidBlockTokensAreRejected、token-blockid.proxy、token-nokey.TestFailoverWithBlockTokensEnabled-ensureInvalidBlockTokensAreRejected、token-nokey.TestFailoverWithBlockTokensEnabled-testFailoverAfterRegistration |
+| 路径全 UNSAT 但闭包截断，否定不完整 | 1 | commit-gs.flush |
+| 未陈述的读（INITIAL 版本 / 工具经由 JDK 的状态） | 10 | ack-seqno.flush、finalize-gs.TestClientProtocolForPipelineRecovery-testGetNewStamp、finalize-gs.TestTransferRbw-testTransferRbw、finalize-gs.flush、finalize-gs.mirror、pipeline-reply.flush、sender-gs.TestClientProtocolForPipelineRecovery-testGetNewStamp、sender-gs.TestDataTransferProtocol-testOpWrite、sender-gs.flush、visible-gs.TestFileConcurrentReader-testUnfinishedBlockRead |
+| φ 为具体值：守卫的操作数不在版本化范围内 | 9 | addblock-notreplicated.softlimit、lease-holder.TestLeaseRecovery-testLeaseRecoveryAndAppend、lease-holder.flush、lease-holder.softlimit、reader-header.flush、recv-offset.TestDataTransferProtocol-testOpWrite、recv-offset.flush、stream-offset.flush、token-password.TestFailoverWithBlockTokensEnabled-testFailoverAfterRegistration |
+| 没有 session 走到声明的 occurrence（种子重放时序） | 6 | commit-gs.TestFileAppend2-testSimpleAppend、complete-uncommitted.flush、token-blockid.mirror、token-nokey.mirror、token-password.mirror、token-pw-expired.mirror |
+| NO_SUPPORTED_WITNESS：被选路径的 fatal 来自慢重放里真实过期的 token | 2 | token-expired.mirror、token-expired.proxy |
+| 种子重放没到 target，campaign 在 REPLAY 失败 | 3 | close-retries.softlimit、visible-gs.TestClientProtocolForPipelineRecovery-testGetNewStamp、visible-gs.flush |
+
+共 52 个 case。
+
+**被接受的发现**：token-expired / token-pw-expired × TestFailoverWithBlockTokensEnabled，CLOCK_SKEW，CONFIRM true——HDFS
+"各节点时钟大致同步"的设计前提，不是新 bug（§12）。
+
+**假阳性过滤的新实例（commit-gs.TestClientProtocolForPipelineRecovery-testGetNewStamp）**：检查是
+`FSNamesystem.commitOrCompleteLastBlock` 里 NN 存的 GS 与 client 提交的块 GS 不一致。φ = `not((GS@v125 − 1001) = 0)`，
+录制里 GS@v125 = 1001，走健康臂。COMPOSE 为这次读建了一个 STATE family，两个 writer 臂：一个交付 1001（录制实际读到的），
+另一个交付 1002（同一会话里 pipeline recovery 写的新 GS，`attested`）。模型在**没有移动任何根**的录制取值下选了 1002 的臂，
+φ 为真——§11 的共享字段 HB 过近似：读被允许配上一个它在这次运行里并没有读到的写。DECIDE 的自检
+FORMULA_SAT_AT_RECORDED_VALUATION（BLOCKING）把整个组合扣下，另外 5 个故障 world 里的 SAT valuation（各移动一个故障标记，
+都选 1002 的臂）也因此不发布。与 §11 的 TestFileAppend2 不同，这一例在 COMPOSE 的自检就被拦下，没有走到 CONFIRM 重放。
+
+**重放在同一 world 里不稳定、结论被扣下（token-nokey.replicate，a10c）**：探索 5 波（22、39、25、28、24 个义务）之后，
+COMPOSE 得出 MARKER_FLIPPED——翻转 DATA_TRANSFER SEND 门（`Sender.send`，`REGION.2edcf422`）的故障标记后，目标 DN 的
+`BlockPoolTokenSecretManager.checkAccess` 找不到 token 的 block key。它没有发布：骨架表（`slots.jsonl`）记下 consumer
+`88df6241745a709a` 在某个 world 里由生产者 `d7692855e1139f0f` 服务，而同一 world（同一组翻转）的另一次重放
+`ba1040a9e48c8c11` 把它配给了 `41161327159546b8`。同一组翻转下一个 consumer 有两种配对，是替换而不是生长
+（DESIGN4 §3.3c），说明这次重放的调度没有守住：两个传输连接谁先被服务，在这个 world 里并不确定。COMPOSE 不从这样的
+session 取行，30 条 TOPOLOGY_DIVERGENCE（BLOCKING）把 claim 扣下，没有进入 CONFIRM。它既不是被证实的 bug，也不是被证实的
+假阳性，而是"微妙的并发让重放给不出唯一拓扑"的真实例子；这棵树本身带着 17967 的 key 轮换问题，这个 claim 很可能是那一类
+已知机制在 replicate 工作负载上的出现。
+
+**这一轮暴露并修掉的引擎缺陷**（main，通用修复，均跑过 `mvn -q -o clean package` 与 shell 测试）：
+
+1. `ff4db3a64` 规划器按 session 线性扫描（13.5）。
+2. `9ce0cc6c4` GraphChecker 自己的等待表与帧被当作程序状态发行：应用引用做 key 之后 VM 就给它版本，
+   pipeline-reply.flush 里 271 条写是 `TimedWaits` / `Identity$Level` 的，同一次调用里读写 send 计数器成了 BLOCKING 的
+   TOPOLOGY_DIVERGENCE。按会话核对，没有任何应用 site 读写这些位置；九个 case 的语料里为 0。现在工具自身包的读写不发行。
+   工具经由 JDK 间接产生的状态（`ThreadLocal$ThreadLocalMap.set`，ack-seqno.flush 里 `INSTANCE/289#24` 被读数百次）
+   按包名过滤覆盖不到：在 p111 上重跑（a10c）后，这两个 case 里工具自身代码的写行降为 0，但 TOPOLOGY_DIVERGENCE 还在，写者换成了两类不是应用语义、按包名又过滤不到的状态：pipeline-reply.flush 是 `java.util.HashMap#removeNode`，帧在 DATA_TRANSFER RECEIVE 门织入的 `PBHelperClient.vintPrefixed` 之下（`vintPrefixed` 本身只读一个 varint，这次 remove 来自门的运行时）；ack-seqno.flush 是 `sun.misc.Cleaner#add`——JDK 为 direct buffer 登记 cleaner 的全局静态链表，各线程分配 direct buffer 的先后每次重放都不同。完整的修法要按最近的非 JDK 调用者给事件归属（工具调用的 JDK 代码算工具），并把 JDK 自身的全局簿记排除在共享状态之外；列入下一步。
+3. `d0a803fa1` worker slot 先认领义务再等本机内存：lift08 被 bug2 规划器占住 15 GB 时，TestFileAppend2 的一个义务在那里
+   等了 30 分钟，另外八台各有 26 GB 空闲。现在先等到本机有空间再认领，队列被取空就退出；shell 测试新增"一台主机满载，
+   整波全部落到另一台"。
+4. `f09f724e6` COMPOSE 里 `Corpus.roots()` 与 `varied` 按臂、按 root 反复重建（13.5）：同一份 bug2 语料上，旧版跑了
+   71 分钟还在构造臂，新版 30 分钟时已经在逐个 valuation 求解。
+5. `b9483fb8f` COMPOSE 里互相独立的 z3 求解串行：现在最多 8 个并行、按原顺序读回，claim 与 gap 不变；Z3 的计数与错误集
+   可并发共享，错误按排序报告。
+6. `970f9631f` 与 `21c42559d`：case 级的 `region_path_stop_at_fatal`，以及见证之后的闭包截断不再扣下见证（13.5）。
+
+**仍然挡住 ad-hoc case 的原因**（按引擎工作排序）：
+
+* 未陈述的 INITIAL 读（finalize-gs ×4、sender-gs ×3、visible-gs、ack-seqno、pipeline-reply）。finalize-gs 的根因比 §12
+  更具体：挡路的是 `DataSetLockManager$LockMap.getReadLock` 的锁表读，这张表在 DN 启动时（窗口外）填好，锁名由 blockId
+  派生，所以与 φ 相关、被独立性保留。CLOSURE-V2 §3 规定这类只有 INITIAL、没有授权根的链应当 pin 成录制值；运行时没有为
+  窗口外写入的版本发读行（SYMBOL-SCOPE 第 1 步的 Open 项）。即便修好，finalize-gs 在这些工作负载上也出不了 bug：φ 比较的
+  是同一个副本对象的同一个 GS 字段，只有并发的 pipeline recovery 往 volumeMap 放新副本时才可能成立。
+* φ 为具体值（lease-holder ×3 的字符串 holder、recv-offset ×2 的包头 offset、stream-offset、addblock-notreplicated、
+  token-password）：VM 只给 int/long 字段版本。
+* 种子重放依赖墙钟：token-*.mirror 在 head DN 收块时 token 已过期（工作负载把 token 寿命设成 1 分钟）；visible-gs.flush
+  在 `DATA_XCEIVER#2` 提前关闭后，16 s 一次的放弃累计超过 65 s 的 ack 超时；close-retries.softlimit 的 lease 被第二个
+  client 接走。
+* 闭包截断（commit-gs.flush：52 条路径全部 UNSAT，但闭包在 64 个 task 处截断，否定不完整，BLOCKING）。
+
 ## 8. 下一步
+
+**2026-09-28 这一轮留下的**（§13）：
+
+1. **窗口外写入的状态要 pin**：只有 INITIAL 版本、没有授权根的容器读（finalize-gs 的锁表、sender-gs 的数组）应按
+   CLOSURE-V2 §3 取录制值，运行时要为它发出带值的读行（SYMBOL-SCOPE 第 1 步的 Open 项）。
+2. **工具经由 JDK 产生的状态**：门运行时里的 `HashMap.removeNode`、`ThreadLocalMap.set`，以及 JDK 自身的
+   `sun.misc.Cleaner` 链表，不是应用语义；事件要按最近的非 JDK 调用者归属，JDK 的全局簿记排除在共享状态之外。
+3. **请求 scope 内的重复 occurrence**（bug2 的 SPS 轮询重试）需要一条通用的 bound，同时保留故障引发的重试；
+   `region_path_stop_at_fatal` 目前只对声明了单一 (r,c,i) 的 case 打开。
+4. **两波之间的串行段**：规划器与导入检查只在 head 上跑；GROW 重跑也只在 head 上并行（11741 每个重放 6 GB，head
+   一次约放 4 个）。
 
 **符号的范围从致命切片推出**（老板 2026-09-26 的方向，设计 [`SYMBOL-SCOPE.md`](../design/SYMBOL-SCOPE.md)）。
 本报告的结果说明了为什么需要它：这批检查的比较对象（GS、seqno、offset、key 的字段）在单次运行里都是具体值，
