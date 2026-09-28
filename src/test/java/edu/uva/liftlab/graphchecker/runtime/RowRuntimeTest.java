@@ -164,6 +164,25 @@ public class RowRuntimeTest {
     }
 
     /**
+     * A session the campaign withdrew stays withdrawn: a replay killed at its
+     * bound still shuts down, and its last table rewrite brought back a
+     * directory holding only expressions.json (hdfs-11741 v85, IMPORT).
+     */
+    @Test
+    public void aWithdrawnSessionIsNotWrittenBack() throws Exception {
+        SessionDir layout = SessionDir.of(iteration.getRoot().toPath(),
+                "withdrawn");
+        SessionPublisher session = SessionPublisher.at(layout);
+        Files.move(layout.dir(), iteration.getRoot().toPath().resolve("aside"));
+        session.close();
+        JsonObject constant = new JsonObject();
+        constant.addProperty("_type", "ConstExpr");
+        constant.addProperty("_exp", "C_I_1");
+        session.expression("EXPR.0000000000000001", constant);
+        assertFalse(Files.exists(layout.dir()));
+    }
+
+    /**
      * An occurrence opened Lost folds only what is entered still Lost: once
      * the thread has a context a declared region opens its own (a
      * DataXceiver before and after its connection's first message).

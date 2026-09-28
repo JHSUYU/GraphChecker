@@ -191,9 +191,8 @@ public final class SessionPublisher {
 
     private void writeExpressions() {
         synchronized (LOCK) {
-            if (failed) return;
+            if (failed || withdrawn()) return;
             try {
-                layout.create();
                 // Always written, even empty.
                 RowCodec.writeExpressions(layout.expressions(),
                         ExpressionTable.of(expressions));
@@ -208,6 +207,7 @@ public final class SessionPublisher {
             if (failed) return;
             try {
                 BufferedWriter writer = writer(file);
+                if (writer == null) return;
                 writer.write(RowCodec.toLine(row));
                 writer.newLine();
                 writer.flush();
@@ -217,16 +217,28 @@ public final class SessionPublisher {
         }
     }
 
+    /** The open writer of one row file, or null once withdrawn. */
     private BufferedWriter writer(Path file) throws IOException {
         String key = file.toString();
         BufferedWriter writer = writers.get(key);
         if (writer != null) return writer;
-        layout.create();
+        if (withdrawn()) return null;
         BufferedWriter fresh = new BufferedWriter(new OutputStreamWriter(
                 new FileOutputStream(file.toFile(), true),
                 StandardCharsets.UTF_8));
         writers.put(key, fresh);
         return fresh;
+    }
+
+    /**
+     * Whether the campaign took this session's directory away after
+     * {@link #open} made it -- a replay killed at its bound is withdrawn while
+     * its JVM still shuts down.  Nothing recreates it: a late table rewrite
+     * brought back a directory holding only expressions.json, and IMPORT
+     * refused hdfs-11741 v85 over it.
+     */
+    private boolean withdrawn() {
+        return !Files.isDirectory(layout.dir());
     }
 
     /**
