@@ -1785,6 +1785,21 @@ grep -q 'lift12=' "${twohost_dir}/hosts.log" \
 $(cat "${twohost_dir}/hosts.log")"
 grep -q 'lift13=' "${twohost_dir}/hosts.log" \
   || fail "the wave summary does not say how many ran on lift13"
+# POOL-ROOM: a slot waits for room BEFORE it claims, so a host that has none
+# holds no obligation while the other runs them all, and its slots end with
+# the wave (a10: one claim waited 30 min on a lift a planner had filled).
+room_wave="${twohost_dir}/wave-room"
+for pool_job in E F G; do mkdir -p "${room_wave}/${pool_job}"; done
+campaign_host_poll_s=0
+campaign_host_available_mb() { [[ "$1" == lift13 ]] && echo 0 || echo 30000; }
+campaign_dispatch_wave "${room_wave}" "${twohost_dir}/obligations.jsonl" \
+  "${twohost_dir}/classes" "${twohost_dir}/sessions" \
+  "${twohost_dir}/seed.jsonl" E F G \
+  >"${twohost_dir}/dispatch-room.log" 2>&1 \
+  || fail "a wave with one full host did not finish: \
+$(cat "${twohost_dir}/dispatch-room.log")"
+[[ "$(cat "${room_wave}"/*/host.txt | LC_ALL=C sort -u)" == lift12 ]] \
+  || fail "a host without room held work: $(cat "${room_wave}"/*/host.txt)"
 unset -f ssh
 unset -f campaign_obligation_worker
 reset_config
@@ -2524,12 +2539,18 @@ campaign_host_available_mb() { return 1; }
 campaign_log() { printf '%s\n' "$*" >>"${memory_dir}/gate.log"; }
 campaign_host_poll_s=0
 campaign_ssh_patience_s=1
-run_capturing_status campaign_await_host_memory lift13 OB.unreadable
-[[ "${status}" -ne 0 ]] \
+mkdir -p "${memory_dir}/queue"
+run_capturing_status campaign_await_host_memory lift13 "${memory_dir}/queue" 1
+[[ "${status}" -eq 2 ]] \
   || fail "an unreadable host admitted an obligation"
-grep -q 'OB.unreadable: the memory of host lift13 could not be read for 1s' \
+grep -q 'the memory of host lift13 could not be read for 1s' \
     "${memory_dir}/gate.log" \
   || fail "the unreadable host is not named: $(cat "${memory_dir}/gate.log")"
+# Once every obligation of the wave is claimed there is nothing to wait for.
+mkdir "${memory_dir}/queue/000000"
+run_capturing_status campaign_await_host_memory lift13 "${memory_dir}/queue" 1
+[[ "${status}" -eq 1 ]] \
+  || fail "a slot kept waiting for room after the wave was all claimed"
 unset -f hostname campaign_host_available_mb campaign_log
 reset_config
 

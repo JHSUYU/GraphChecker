@@ -2659,12 +2659,20 @@ ${campaign_host_reserve_mb} MB reserve"
   return 0
 }
 
-# Blocks until one obligation fits on its host, then charges it there.
-# Fails -- the obligation's own failure, named -- only when the host's
-# memory cannot be read, which is a host the obligation could not run on.
+# Blocks until one obligation fits on the slot's host, then charges it
+# there: 0.  A slot waits BEFORE it claims, so a host without room holds no
+# obligation while another host could run it (a10: one claim sat 30 min on a
+# lift whose planner held 15 GB while eight lifts had 26 GB free).  1 once
+# every obligation of the wave's queue is claimed -- nothing is left to wait
+# for; without a queue (a GROW re-run, one obligation) never.  2 when the
+# host's memory cannot be read, the waiter's named failure.
 campaign_await_host_memory() {
-  local host=$1 obligation_id=$2 said=false status=0 unread_since=""
+  local host=$1 queue_dir=${2:-} count=${3:-0} said=false status=0
+  local unread_since=""
   while true; do
+    [[ -z "${queue_dir}" ]] \
+      || (( $(find "${queue_dir}" -mindepth 1 -maxdepth 1 -type d | wc -l) \
+        < count )) || return 1
     run_capturing_status campaign_host_try_start "${host}"
     case "${status}" in
       0) return 0 ;;
@@ -2673,9 +2681,9 @@ campaign_await_host_memory() {
         # round opens hundreds.  Waited out, stated, within the patience.
         [[ -n "${unread_since}" ]] || unread_since=${SECONDS}
         if (( SECONDS - unread_since >= campaign_ssh_patience_s )); then
-          campaign_log "obligation ${obligation_id}: the memory of host \
-${host} could not be read for ${campaign_ssh_patience_s}s"
-          return 1
+          campaign_log "the memory of host ${host} could not be read for \
+${campaign_ssh_patience_s}s"
+          return 2
         fi
         campaign_host_wait_reason="the memory of ${host} could not be read"
         ;;
@@ -2687,8 +2695,8 @@ ${host} could not be read for ${campaign_ssh_patience_s}s"
       *) unread_since="" ;;
     esac
     if [[ "${said}" == false ]]; then
-      campaign_log "obligation ${obligation_id} waits for memory on \
-${host}: ${campaign_host_wait_reason}"
+      campaign_log "waiting for memory on ${host}: \
+${campaign_host_wait_reason}"
       said=true
     fi
     sleep "${campaign_host_poll_s}"
@@ -2713,7 +2721,9 @@ campaign_run_obligation_on_host() {
   fi
 }
 
-# One slot: claim, run, claim again, until the wave is empty.
+# One slot: room on its host, then a claim, then the run, until the wave is
+# empty.  A start charged just before the last claim went elsewhere is a
+# ramp window of over-count, never a lost obligation.
 #
 # A failed obligation does not stop the slot: the remaining obligations of
 # the wave still run, and the WAVE fails at the end.  The slot carries the
@@ -2721,15 +2731,20 @@ campaign_run_obligation_on_host() {
 campaign_wave_slot() {
   local host=$1 queue_dir=$2 count=$3 jobs_file=$4 wave_dir=$5
   local obligations=$6 classes=$7 sessions=$8 seed_plan=$9
-  local status=0 job worker_dir
+  local status=0 gate job worker_dir
   campaign_claim_cursor=0
-  while campaign_claim_next_obligation "${queue_dir}" "${count}"; do
+  while true; do
+    gate=0
+    campaign_await_host_memory "${host}" "${queue_dir}" "${count}" \
+      || gate=$?
+    (( gate != 1 )) || break
+    (( gate == 0 )) || { status=1; break; }
+    campaign_claim_next_obligation "${queue_dir}" "${count}" || break
     job=$(sed -n "$((campaign_claimed_index + 1))p" "${jobs_file}")
     [[ -n "${job}" ]] || continue
     worker_dir="${wave_dir}/${job}"
     printf '%s\n' "${host}" >"${worker_dir}/host.txt"
-    if campaign_await_host_memory "${host}" "${job}" \
-        && campaign_run_obligation_on_host "${host}" "${job}" \
+    if campaign_run_obligation_on_host "${host}" "${job}" \
           "${obligations}" "${classes}" "${worker_dir}" "${sessions}" \
           "${seed_plan}"; then
       campaign_log "obligation ${job}: host=${host} verdict=$(jq -r \
@@ -3058,7 +3073,7 @@ obligation ${obligation_id}, so it was not withdrawn from the corpus"
     [[ ! -e "${worker}/${file}" ]] || mv -- "${worker}/${file}" "${aside}/"
   done
   printf 'localhost\n' >"${worker}/host.txt"
-  campaign_await_host_memory localhost "${obligation_id}" \
+  campaign_await_host_memory localhost \
     || campaign_fail EXPLORE CAMPAIGN "${worker}" \
       "the re-run of ${obligation_id} found no readable memory on the head"
   (
