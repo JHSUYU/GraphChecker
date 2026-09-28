@@ -198,6 +198,10 @@ public final class Corpus implements Arms.Rows {
     /** Every symbol the runtime declared, at the sort it minted it at. */
     private final Map<String, Sort> declaredSymbols =
             new LinkedHashMap<String, Sort>();
+    /** root id -> whether the corpus ran it at more than one value. */
+    private final Map<String, Boolean> varied = new HashMap<String, Boolean>();
+    /** root id -> every session's mint of it, built on first ask. */
+    private Map<String, List<RootMintRow>> roots;
     /** Root symbol -> every root id declared under it. */
     private final Map<String, Set<String>> rootIdsBySymbol =
             new LinkedHashMap<String, Set<String>>();
@@ -1030,16 +1034,30 @@ public final class Corpus implements Arms.Rows {
         return rootOf(sessionId, rootId);
     }
 
+    /**
+     * {@link Arms.Rows#varied}, once per root.  This and {@link #roots} are
+     * asked per arm and per root, and a corpus does not change once read:
+     * rebuilding them per ask made COMPOSE quadratic in the sessions
+     * (hdfs-17899-bug2, 800 sessions).
+     */
+    @Override
+    public boolean varied(String rootId) {
+        return varied.computeIfAbsent(rootId, id -> Arms.Rows.super.varied(id));
+    }
+
     @Override
     public Map<String, List<RootMintRow>> roots() {
-        Map<String, List<RootMintRow>> byRoot =
-                new LinkedHashMap<String, List<RootMintRow>>();
-        for (Map.Entry<String, Map<String, RootMintRow>> entry
-                : rootsById.entrySet()) {
-            byRoot.put(entry.getKey(),
-                    new ArrayList<RootMintRow>(entry.getValue().values()));
+        if (roots == null) {
+            Map<String, List<RootMintRow>> byRoot =
+                    new LinkedHashMap<String, List<RootMintRow>>();
+            for (Map.Entry<String, Map<String, RootMintRow>> entry
+                    : rootsById.entrySet()) {
+                byRoot.put(entry.getKey(), Collections.unmodifiableList(
+                        new ArrayList<RootMintRow>(entry.getValue().values())));
+            }
+            roots = Collections.unmodifiableMap(byRoot);
         }
-        return byRoot;
+        return roots;
     }
 
     @Override
