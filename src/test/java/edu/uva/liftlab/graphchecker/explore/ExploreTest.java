@@ -1083,22 +1083,29 @@ public class ExploreTest {
         OccurrenceAddress lost = occurrence("hdfs-case/nn0",
                 "ROLE.IPC_HANDLER", CausalContext.of(Role.of("IPC_HANDLER")),
                 "o.a.h.ipc.Server$Handler#run#1");
+        // Started by nn0's KEY_MANAGER_TICK #3 through a message its tick
+        // root sent in no region (the heartbeats of hdfs-11741).
+        OccurrenceAddress anchored = occurrence("hdfs-case/nn0",
+                "REGION.rotate", CausalContext.of("e-tick", "HADOOP_IPC"),
+                "o.a.h.h.s.b.BlockManager#run#8");
         // producer, whether the seed captures it, whether a focused replay
         // names it, the last tick of its role the recording ran (-1: no
-        // recorded schedule)
+        // recorded schedule), whether it began past that tick
         Object[][] cases = {
-            {PRODUCER, true, false, -1},
-            {PRODUCER, false, true, -1},
-            {PRODUCER, false, true, 1},
-            {PRODUCER, false, true, 0},
-            {PRODUCER, false, false, -1},
-            {lost, false, true, -1},
+            {PRODUCER, true, false, -1, false},
+            {PRODUCER, false, true, -1, false},
+            {PRODUCER, false, true, 1, false},
+            {PRODUCER, false, true, 0, true},
+            {anchored, false, true, 1, true},
+            {PRODUCER, false, false, -1, false},
+            {lost, false, true, -1, false},
         };
         for (Object[] row : cases) {
             OccurrenceAddress producer = (OccurrenceAddress) row[0];
             boolean captured = (Boolean) row[1];
             boolean focused = (Boolean) row[2];
             int recorded = (Integer) row[3];
+            boolean past = (Boolean) row[4];
             Path iteration = tree.newFolder().toPath();
             if (recorded >= 0) {
                 // PRODUCER is nn0's KEY_MANAGER_TICK #1.
@@ -1135,6 +1142,16 @@ public class ExploreTest {
                             "the focused prefix reproduced"));
                 }
                 session.flush();
+                if (sessionId.equals("s-flip") && producer == anchored) {
+                    RowCodec.writeJsonl(SessionDir.of(iteration, sessionId)
+                            .schedule(), Collections.singletonList(
+                            RowCodec.writeScheduleEvent(ScheduleEvent.of(0L,
+                                    ScheduleEvent.Kind.SEND, producer.node()
+                                            .render() + "|" + CausalContext.of(
+                                            Role.of("KEY_MANAGER_TICK"), "", 3)
+                                            .render(), "HADOOP_IPC#REQUEST", 0,
+                                    "", "e-tick"))));
+                }
             }
             StaticScopeMap map = StaticScopeMap.read(scopeMap(iteration,
                     targetSite("REGION.target",
@@ -1162,7 +1179,7 @@ public class ExploreTest {
                     tick = gap.detail();
                 }
             }
-            if (recorded == 0) {
+            if (past) {
                 // A tick the recording never ran: only a slower replay ran
                 // it (hdfs-11741 v86, heartbeats #44-#100 against #5).
                 assertFalse(label, task);

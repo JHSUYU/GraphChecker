@@ -222,6 +222,9 @@ public final class Corpus implements Arms.Rows {
     private final Map<String, ObligationResult> waveVerdicts =
             new LinkedHashMap<String, ObligationResult>();
     /** Producer endpoint id of a SEND -> the occurrence that sent it. */
+    /** producer endpoint -> "node|context" its SEND stood in. */
+    private final Map<String, String> senderStanceByEndpoint =
+            new HashMap<String, String>();
     private final Map<String, String> senderByEndpoint =
             new LinkedHashMap<String, String>();
     /** Producer endpoint id of a RECV -> the occurrence that took it in. */
@@ -283,8 +286,10 @@ public final class Corpus implements Arms.Rows {
 
     /**
      * The daemon tick that began this occurrence's chain -- its own root, or
-     * through each anchor the sender's -- when the recording ran no tick of
-     * that role on that node so late, or null.  A replay outlasting the
+     * through each anchor the stance its sender's SEND stood in (a DataNode
+     * sends heartbeats from the tick's root, in no region) -- when the
+     * recording ran no tick of that role on that node so late, or null.  A
+     * replay outlasting the
      * recording runs a periodic daemon more often, and no loop bound stops
      * it: the daemon's loop runs in no region (hdfs-11741 v86: the NameNode
      * handlers of DataNode heartbeats #44 to #100, against #4 and #5
@@ -293,18 +298,21 @@ public final class Corpus implements Arms.Rows {
      */
     public String tickPastRecording(OccurrenceAddress occurrence) {
         if (recordedTicks == null) return null;
-        OccurrenceAddress origin = occurrence;
+        String node = occurrence.node().render();
+        CausalContext context = occurrence.context();
         Set<String> walked = new HashSet<String>();
-        while (origin.context() instanceof CausalContext.Anchor
-                && walked.add(origin.id())) {
-            OccurrenceAddress sender = senderOf(((CausalContext.Anchor)
-                    origin.context()).producerEndpointId());
-            if (sender == null) break;
-            origin = sender;
+        while (context instanceof CausalContext.Anchor) {
+            String producer =
+                    ((CausalContext.Anchor) context).producerEndpointId();
+            String stance = senderStanceByEndpoint.get(producer);
+            if (stance == null || !walked.add(producer)) break;
+            String[] parts = stance.split("\\|", 3);
+            if (parts.length < 2) break;
+            node = parts[0];
+            context = CausalContext.parse(parts[1]);
         }
-        CausalContext.Root tick = daemonTick(origin.context());
+        CausalContext.Root tick = daemonTick(context);
         if (tick == null) return null;
-        String node = origin.node().render();
         int last = recordedTicks.getOrDefault(node + "|" + tick.role().name(),
                 0);
         return tick.windowIndex() <= last ? null : node + " "
@@ -477,6 +485,12 @@ public final class Corpus implements Arms.Rows {
             throw new UncheckedIOException(unreadable);
         }
         for (ScheduleEvent event : events) {
+            // Where every message was sent from, in or out of a region: a
+            // daemon tick's heartbeat is sent from the tick's root alone.
+            if (event.kind() == ScheduleEvent.Kind.SEND
+                    && !event.endpoint().isEmpty()) {
+                senderStanceByEndpoint.put(event.endpoint(), event.context());
+            }
             if (event.occurrence().isEmpty()) continue;
             if (event.kind() == ScheduleEvent.Kind.SEND
                     && !event.endpoint().isEmpty()) {
