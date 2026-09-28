@@ -104,6 +104,11 @@ workflow_config_keys=(
   "region_path_max_tasks CAUSYNTH_REGION_PATH_MAX_TASKS krp -"
   "region_path_max_world_depth CAUSYNTH_REGION_PATH_MAX_WORLD_DEPTH krp -"
   "region_path_max_waves CAUSYNTH_REGION_PATH_MAX_WAVES krp 12"
+  # 'true': the case asks about its declared occurrence only, and exploring
+  # stops at the first admitted replay that observed the fatal there
+  # (ExploreMain --stop-at-fatal).  Empty -- the default -- explores to the
+  # fixed point.
+  "region_path_stop_at_fatal CAUSYNTH_REGION_PATH_STOP_AT_FATAL krp -"
   "config_file - p -"
   "workflow_path_base GRAPH_CHECKER_PATH_BASE krp -"
   "graphchecker_jar GRAPH_CHECKER_JAR krp -"
@@ -490,6 +495,11 @@ validate_config() {
     ''|IMPORT) ;;
     *) die "campaign_stop_after must be empty or IMPORT: \
 ${campaign_stop_after}" ;;
+  esac
+  case "${region_path_stop_at_fatal}" in
+    ''|true) ;;
+    *) die "region_path_stop_at_fatal must be empty or true: \
+${region_path_stop_at_fatal}" ;;
   esac
   [[ "${causynth_scope_growth_budget}" =~ ^[0-9]+$ ]] \
     || die "causynth_scope_growth_budget must be a non-negative integer: \
@@ -1122,7 +1132,7 @@ campaign_preflight() {
   require_command_available jq
   require_command_available sha256sum
   campaign_log "workers=${concolic_worker_count} maxJobs=${schedule_max_jobs} \
-maxWaves=${region_path_max_waves}"
+maxWaves=${region_path_max_waves} stopAtFatal=${region_path_stop_at_fatal:-false}"
   campaign_log "obligation pool: $(campaign_worker_slot_hosts | wc -l) slot(s) \
 across host(s) ${campaign_worker_hosts:-$(hostname) (local only)}"
   campaign_log "replay scratch: \
@@ -2842,6 +2852,7 @@ campaign_explore() {
     || bound_args+=(--max-tasks "${region_path_max_tasks}")
   [[ -z "${region_path_max_world_depth}" ]] \
     || bound_args+=(--max-world-depth "${region_path_max_world_depth}")
+  [[ -z "${region_path_stop_at_fatal}" ]] || bound_args+=(--stop-at-fatal)
   # The same declaration COMPOSE reads.  An obligation's handoff answers are
   # constrained by their interaction's family, and a family arm is only as
   # constraining as the roots inside it: without the case's declared domain

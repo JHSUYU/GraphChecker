@@ -13,6 +13,7 @@ import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.plan.SelectorResolution;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
+import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.Selector;
 import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.option.LongOptions;
@@ -100,7 +101,8 @@ public final class ExploreMain {
                         (int) options.number("max-flips-per-path",
                                 ObligationFactory.DEFAULT_MAX_FLIPS_PER_PATH),
                         (int) options.number("max-world-depth",
-                                ObligationFactory.DEFAULT_MAX_WORLD_DEPTH)));
+                                ObligationFactory.DEFAULT_MAX_WORLD_DEPTH)),
+                "true".equals(options.value("stop-at-fatal", "false")));
         System.out.println(pretty(manifest));
     }
 
@@ -111,19 +113,24 @@ public final class ExploreMain {
      *                       the closure's only root (HANDOVER SS1.5); resolved
      *                       against the seed here, so nothing downstream sees a
      *                       selector
+     * @param stopAtFatal    the case asks about its declared occurrence only:
+     *                       once an admitted replay observed the fatal there,
+     *                       nothing more is asked ({@link #witness})
      */
     public static JsonObject plan(Path iteration, String declaredAnchor,
                                   Path rootDomains, Path results,
                                   Path scopeMap, Path out,
                                   int wave, String topologyEpoch,
                                   int maxTasks,
-                                  ObligationFactory.Bounds bounds)
+                                  ObligationFactory.Bounds bounds,
+                                  boolean stopAtFatal)
             throws IOException {
         Corpus corpus = Corpus.read(iteration, rootDomains);
         StaticScopeMap scope = StaticScopeMap.read(scopeMap);
         List<GapRow> gaps = new ArrayList<GapRow>();
         gaps.addAll(unstableAddresses(corpus));
         List<OccurrenceAddress> roots = resolve(corpus, declaredAnchor, gaps);
+        String witness = stopAtFatal ? witness(corpus, roots) : "";
         List<Task> tasks = new ArrayList<Task>();
         Map<String, String> why = new LinkedHashMap<String, String>();
         Map<String, Set<String>> flipSites =
@@ -169,6 +176,18 @@ public final class ExploreMain {
             candidates.addAll(ObligationFactory.candidates(corpus, task,
                     flipSites.get(task.taskId()), bounds, frontier, gaps));
         }
+        if (!witness.isEmpty()) {
+            gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                    GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC, witness,
+                    "an admitted replay observed the fatal at the declared "
+                            + "occurrence, and this case stops exploring at "
+                            + "its first witness: " + candidates.size()
+                            + " flip(s) and " + grown.size()
+                            + " exposure(s) this wave would have asked are "
+                            + "not asked"));
+            candidates.clear();
+            grown.clear();
+        }
         Frontier.Wave open = frontier.open(wave, candidates);
 
         Files.createDirectories(out);
@@ -198,7 +217,7 @@ public final class ExploreMain {
         // What only the seed replay ran waits for a focused replay to expose
         // it -- unless this wave is the fixpoint: then none ever will, and
         // the closure is incomplete.
-        boolean fixpoint = open.empty() && exposed == 0;
+        boolean fixpoint = open.empty() && exposed == 0 && witness.isEmpty();
         for (OccurrenceAddress unexposed : waiting) {
             gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
                     GapKind.ADMISSION_GAP, fixpoint ? GapClass.BLOCKING
@@ -218,11 +237,32 @@ public final class ExploreMain {
         RowCodec.writeAll(out.resolve("gaps.jsonl"), distinct(gaps),
                 RowCodec::writeGap);
         JsonObject manifest = manifest(roots, tasks, why, frontier, open,
-                topologyEpoch, gaps, slots, skeleton, exposed);
+                topologyEpoch, gaps, slots, skeleton, exposed, witness);
         Files.write(out.resolve("explore_manifest.json"),
                 (pretty(manifest) + System.lineSeparator())
                         .getBytes(StandardCharsets.UTF_8));
         return manifest;
+    }
+
+    /**
+     * The first admitted focused replay (in reading order) whose target row
+     * at a declared root observed the fatal, as "session at occurrence", or
+     * "".  For a case whose question is that one (r,c,i) occurrence, what the
+     * run did after the fatal is not the bug's (owner 2026-09-28: hdfs-11741,
+     * hdfs-17899-bug2 kept exploring for waves after it).
+     */
+    private static String witness(Corpus corpus,
+                                  List<OccurrenceAddress> roots) {
+        for (OccurrenceAddress root : roots) {
+            for (TargetRow row : corpus.targetsOn(root)) {
+                SessionReader session = corpus.session(row.sessionId());
+                if (row.observedFatal() && session != null
+                        && !session.seed() && session.admitted()) {
+                    return row.sessionId() + " at " + root.render();
+                }
+            }
+        }
+        return "";
     }
 
     /** Planned tasks answered at more than ONE address across replays. The
@@ -401,15 +441,15 @@ public final class ExploreMain {
                                        String topologyEpoch,
                                        List<GapRow> gaps, SlotTable slots,
                                        SlotTable.Reconciliation skeleton,
-                                       int exposed) {
+                                       int exposed, String witness) {
         JsonObject manifest = new JsonObject();
         JsonArray anchors = new JsonArray();
         for (OccurrenceAddress root : roots) anchors.add(root.render());
         manifest.add("anchors", anchors);
         manifest.addProperty("topologyEpoch", topologyEpoch);
         manifest.addProperty("wave", open.index);
-        manifest.addProperty("state",
-                open.empty() ? "FIXED_POINT" : "OBLIGATIONS_PROPOSED");
+        manifest.addProperty("state", !witness.isEmpty() ? "WITNESSED"
+                : open.empty() ? "FIXED_POINT" : "OBLIGATIONS_PROPOSED");
         manifest.addProperty("exposedRegions", exposed);
         JsonObject skeletonRow = new JsonObject();
         skeletonRow.addProperty("slots", slots.size());

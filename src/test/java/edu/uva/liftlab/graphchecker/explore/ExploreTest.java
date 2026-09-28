@@ -745,7 +745,8 @@ public class ExploreTest {
                 ClosurePlanner.DEFAULT_MAX_TASKS,
                 new ObligationFactory.Bounds(
                         ObligationFactory.DEFAULT_MAX_PATHS_PER_TASK,
-                        ObligationFactory.DEFAULT_MAX_FLIPS_PER_PATH, 0));
+                        ObligationFactory.DEFAULT_MAX_FLIPS_PER_PATH, 0),
+                false);
         for (Obligation obligation : obligations(shallow)) {
             assertFalse("no obligation is cut from a world deeper than the "
                             + "bound: " + obligation,
@@ -829,6 +830,57 @@ public class ExploreTest {
                         ObligationResult.of(obligationId, Verdict.ADMITTED,
                                 sessionId,
                                 "the focused prefix reproduced"))));
+    }
+
+    /**
+     * A case that asks about ONE occurrence stops at its first witness: an
+     * admitted replay that observed the fatal at the declared occurrence ends
+     * the exploration (owner 2026-09-28: hdfs-11741, hdfs-17899-bug2), and a
+     * case that does not ask so keeps exploring.
+     */
+    @Test
+    public void aWitnessAtTheDeclaredOccurrenceEndsTheExploration()
+            throws Exception {
+        Assume.assumeTrue(z3Available());
+        Path iteration = tree.newFolder("witness").toPath();
+        Session seed = new Session(iteration, "s-seed");
+        seed.activation(TARGET, false);
+        seed.root(TARGET, "CASE.MARKER", "M_MARKER", RootKind.MARKER, "false",
+                null, null, true);
+        seed.symbolic("EXPR.0000000000000001", "M_MARKER", "Z");
+        seed.decision(TARGET, "Guard#u8", 1, false, "EXPR.0000000000000001");
+        seed.flush();
+        Session fatal = new Session(iteration, "s-fatal");
+        fatal.activation(TARGET, true);
+        fatal.fatal(TARGET, "Throw#u30", "true");
+        fatal.answered(ObligationResult.of("OBL.s-fatal", Verdict.ADMITTED,
+                "s-fatal", "the focused prefix reproduced"));
+        fatal.flush();
+        scopeMap(iteration, targetSite("REGION.target", "Throw#u30",
+                "Guard#u8"));
+        Path out = tree.newFolder("witness-out").toPath();
+        Path results = out.resolve("obligation_results.jsonl");
+        Files.write(results, new byte[0]);
+
+        Path asked = out.resolve("asked");
+        assertEquals("OBLIGATIONS_PROPOSED", plan(iteration, TARGET_SELECTOR,
+                null, results, asked, 1).get("state").getAsString());
+        assertFalse(obligations(asked).isEmpty());
+
+        Path stopped = out.resolve("stopped");
+        JsonObject manifest = ExploreMain.plan(iteration, TARGET_SELECTOR,
+                null, results, iteration.resolve(StaticScopeMap.FILE),
+                stopped, 1, "epoch0", ClosurePlanner.DEFAULT_MAX_TASKS,
+                ObligationFactory.Bounds.defaults(), true);
+        assertEquals("WITNESSED", manifest.get("state").getAsString());
+        assertTrue(obligations(stopped).isEmpty());
+        boolean named = false;
+        for (GapRow gap : RowCodec.readAll(stopped.resolve("gaps.jsonl"),
+                RowCodec::readGap)) {
+            named |= gap.subject().startsWith("s-fatal at ")
+                    && gap.cls() == GapClass.DIAGNOSTIC;
+        }
+        assertTrue("the stop names the witness", named);
     }
 
     // ---- (1b) a world is what it DELIVERED to the arm's task -----------
@@ -2777,7 +2829,7 @@ public class ExploreTest {
                 null, iteration.resolve("results.jsonl"),
                 iteration.resolve(StaticScopeMap.FILE), waveDir, 0,
                 "epoch0", ClosurePlanner.DEFAULT_MAX_TASKS,
-                ObligationFactory.Bounds.defaults());
+                ObligationFactory.Bounds.defaults(), false);
         List<String> anchors = new ArrayList<String>();
         for (JsonElement element : manifest.getAsJsonArray("anchors")) {
             anchors.add(element.getAsString());
@@ -2803,7 +2855,7 @@ public class ExploreTest {
                 elsewhere.resolve("results.jsonl"),
                 elsewhere.resolve(StaticScopeMap.FILE), absentWave, 0,
                 "epoch0", ClosurePlanner.DEFAULT_MAX_TASKS,
-                ObligationFactory.Bounds.defaults());
+                ObligationFactory.Bounds.defaults(), false);
         boolean named = false;
         for (GapRow gap : RowCodec.readAll(absentWave.resolve("gaps.jsonl"),
                 RowCodec::readGap)) {
@@ -3316,7 +3368,7 @@ public class ExploreTest {
         return ExploreMain.plan(iteration, selector, domains, results,
                 iteration.resolve(StaticScopeMap.FILE), waveDir, wave,
                 "epoch0", ClosurePlanner.DEFAULT_MAX_TASKS,
-                ObligationFactory.Bounds.defaults());
+                ObligationFactory.Bounds.defaults(), false);
     }
 
     /**
@@ -3724,6 +3776,13 @@ public class ExploreTest {
                             String phi) {
             targets.add(TargetRow.of(sessionId, ++seq, occurrence, site, phi,
                     false, true));
+        }
+
+        /** The anchor, where this replay observed the fatal. */
+        private void fatal(OccurrenceAddress occurrence, String site,
+                           String phi) {
+            targets.add(TargetRow.of(sessionId, ++seq, occurrence, site, phi,
+                    true, true));
         }
 
         private void root(OccurrenceAddress occurrence, String rootId,
