@@ -130,7 +130,6 @@ public final class ExploreMain {
         List<GapRow> gaps = new ArrayList<GapRow>();
         gaps.addAll(unstableAddresses(corpus));
         List<OccurrenceAddress> roots = resolve(corpus, declaredAnchor, gaps);
-        String witness = stopAtFatal ? witness(corpus, roots) : "";
         List<Task> tasks = new ArrayList<Task>();
         Map<String, String> why = new LinkedHashMap<String, String>();
         Map<String, Set<String>> flipSites =
@@ -140,10 +139,24 @@ public final class ExploreMain {
                 new LinkedHashMap<OccurrenceAddress, String>();
         Set<OccurrenceAddress> waiting =
                 new LinkedHashSet<OccurrenceAddress>();
+        String witness = stopAtFatal ? witness(corpus, roots) : "";
         for (OccurrenceAddress root : roots) {
             ClosurePlanner.Plan plan = ClosurePlanner.plan(corpus, root,
                     maxTasks, scope);
             gaps.addAll(plan.gaps);
+            if (!plan.truncated.isEmpty()) {
+                // A truncated closure misses arms: unsound for a claim over
+                // it, so BLOCKING -- unless the case stopped at its witness,
+                // which asks nothing of the closure past that point.
+                gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                        GapKind.ADMISSION_GAP, witness.isEmpty()
+                                ? GapClass.BLOCKING : GapClass.DIAGNOSTIC,
+                        root.render(), "closure truncated at " + maxTasks
+                                + " tasks; " + plan.truncated.size()
+                                + " occurrences were not planned, so this "
+                                + "anchor's closure is incomplete: "
+                                + plan.truncated));
+            }
             for (Map.Entry<OccurrenceAddress, String> exposure
                     : plan.exposed.entrySet()) {
                 grown.putIfAbsent(exposure.getKey(), exposure.getValue());

@@ -89,18 +89,22 @@ public final class ClosurePlanner {
          *  replay that runs it will expose it, so it is a gap only at the
          *  fixpoint ({@link ExploreMain}). */
         public final Set<OccurrenceAddress> waiting;
+        /** Demanded past the task bound, so not planned: the closure is
+         *  incomplete, which only {@link ExploreMain} can weigh. */
+        public final Set<String> truncated;
 
         private Plan(List<Task> tasks, List<GapRow> gaps,
                      Map<String, String> why,
                      Map<String, Set<String>> flipSites,
                      Map<OccurrenceAddress, String> exposed,
-                     Set<OccurrenceAddress> waiting) {
+                     Set<OccurrenceAddress> waiting, Set<String> truncated) {
             this.tasks = Collections.unmodifiableList(tasks);
             this.gaps = Collections.unmodifiableList(gaps);
             this.why = Collections.unmodifiableMap(why);
             this.flipSites = Collections.unmodifiableMap(flipSites);
             this.exposed = Collections.unmodifiableMap(exposed);
             this.waiting = Collections.unmodifiableSet(waiting);
+            this.truncated = Collections.unmodifiableSet(truncated);
         }
     }
 
@@ -140,16 +144,6 @@ public final class ClosurePlanner {
                 pending.add(next.occurrence.id());
             }
         }
-        if (!truncated.isEmpty()) {
-            // A truncated closure misses arms: unsound, so BLOCKING, naming
-            // what was left out.
-            gaps.add(GapRow.of(ExploreCodec.EXPLORATION, GapKind.ADMISSION_GAP,
-                    GapClass.BLOCKING, anchor.render(),
-                    "closure truncated at " + maxTasks + " tasks; "
-                            + truncated.size() + " occurrences were not "
-                            + "planned, so this anchor's closure is "
-                            + "incomplete: " + truncated));
-        }
         List<Task> tasks = new ArrayList<Task>();
         Map<String, String> why = new LinkedHashMap<String, String>();
         Map<String, Set<String>> flips =
@@ -174,7 +168,8 @@ public final class ClosurePlanner {
             sites.addAll(corpus.faultSites(demand.occurrence));
             flips.put(taskId, sites);
         }
-        return new Plan(tasks, gaps, why, flips, exposed, waiting);
+        return new Plan(tasks, gaps, why, flips, exposed, waiting,
+                truncated);
     }
 
     /**
