@@ -31,6 +31,7 @@ import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.contract.SessionManifest;
 import edu.uva.liftlab.graphchecker.contract.Role;
+import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.contract.Verdict;
@@ -1083,18 +1084,36 @@ public class ExploreTest {
                 "ROLE.IPC_HANDLER", CausalContext.of(Role.of("IPC_HANDLER")),
                 "o.a.h.ipc.Server$Handler#run#1");
         // producer, whether the seed captures it, whether a focused replay
-        // names it
+        // names it, the last tick of its role the recording ran (-1: no
+        // recorded schedule)
         Object[][] cases = {
-            {PRODUCER, true, false},
-            {PRODUCER, false, true},
-            {PRODUCER, false, false},
-            {lost, false, true},
+            {PRODUCER, true, false, -1},
+            {PRODUCER, false, true, -1},
+            {PRODUCER, false, true, 1},
+            {PRODUCER, false, true, 0},
+            {PRODUCER, false, false, -1},
+            {lost, false, true, -1},
         };
         for (Object[] row : cases) {
             OccurrenceAddress producer = (OccurrenceAddress) row[0];
             boolean captured = (Boolean) row[1];
             boolean focused = (Boolean) row[2];
+            int recorded = (Integer) row[3];
             Path iteration = tree.newFolder().toPath();
+            if (recorded >= 0) {
+                // PRODUCER is nn0's KEY_MANAGER_TICK #1.
+                List<JsonObject> ticks = new ArrayList<JsonObject>();
+                if (recorded > 0) {
+                    ticks.add(RowCodec.writeScheduleEvent(ScheduleEvent.of(0L,
+                            ScheduleEvent.Kind.WAKE, producer.node().render()
+                                    + "|" + CausalContext.of(Role.of(
+                                    "KEY_MANAGER_TICK"), "", recorded)
+                                    .render(), "tick.KEY_MANAGER_TICK", 0,
+                            "")));
+                }
+                RowCodec.writeJsonl(iteration.resolve(
+                        "recorded_schedule.jsonl"), ticks);
+            }
             Endpoint exported = at(producer, "XCH.resp.block-key-id",
                     "PBHelper#convert#9");
             for (String sessionId : focused
@@ -1135,8 +1154,22 @@ public class ExploreTest {
                 if (gap.kind() == GapKind.LINEAGE_LOST) lineage = gap.detail();
             }
             String label = producer.regionId() + " captured=" + captured
-                    + " focused=" + focused;
-            if (captured) {
+                    + " focused=" + focused + " recorded=" + recorded;
+            String tick = "";
+            for (GapRow gap : plan.gaps) {
+                if (gap.subject().equals(producer.render())
+                        && gap.detail().contains("daemon tick")) {
+                    tick = gap.detail();
+                }
+            }
+            if (recorded == 0) {
+                // A tick the recording never ran: only a slower replay ran
+                // it (hdfs-11741 v86, heartbeats #44-#100 against #5).
+                assertFalse(label, task);
+                assertTrue("a tick past the recording is not grown: " + label,
+                        plan.exposed.isEmpty() && plan.waiting.isEmpty());
+                assertFalse("and it says so: " + label, tick.isEmpty());
+            } else if (captured) {
                 assertTrue("a captured occurrence is a task: " + label, task);
                 assertTrue(label, plan.exposed.isEmpty());
             } else if (producer.role()) {

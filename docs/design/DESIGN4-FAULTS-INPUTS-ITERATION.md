@@ -174,7 +174,13 @@ and diff against `G_k`. New relevant nodes and edges enter `G_{k+1}` labelled `w
   captured is a task; one only named by an admitted focused replay is grown as
   (b) is, re-running that replay with a plan row at its address; one only the
   seed replay ran waits for a focused replay, and is a BLOCKING gap only at the
-  fixpoint (owner 2026-09-27: the hooks discover runtime regions).
+  fixpoint (owner 2026-09-27: the hooks discover runtime regions). THE TICK
+  BOUND (owner 2026-09-27): an occurrence whose chain began -- through its
+  anchors -- at a daemon tick (`Root:ROLE#w`, no api) later than the last of
+  that role on that node in the recorded schedule is neither grown nor
+  waited for: only a replay slower than the recording ran that tick, and no
+  loop bound stops a daemon loop that runs in no region (11741 v86: NameNode
+  handlers of DataNode heartbeats #44-#100 against #4-#5 recorded).
 - (b) **A new occurrence of a region in scope but not woven** (a recovery handler
   reached only under a fault). Today it is an ambient activation forever. New:
   a growth step inside the wave — INSTRUMENT with the grown region set (the

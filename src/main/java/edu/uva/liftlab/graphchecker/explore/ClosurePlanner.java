@@ -195,6 +195,11 @@ public final class ClosurePlanner {
      * is no region of the static graph: nothing captures it, and the closure
      * goes on through the sender its anchor names.  Several occurrences are
      * grown from one session where one names them all: one re-run each.</p>
+     *
+     * <p>THE TICK BOUND: an occurrence a daemon tick past the recording's
+     * last began ({@link Corpus#tickPastRecording}) is neither grown nor
+     * waited for -- only a replay slower than the recording ran it, so
+     * nothing the recording decided rests on it.</p>
      */
     private static void uncaptured(Corpus corpus,
                                    OccurrenceAddress occurrence,
@@ -211,6 +216,16 @@ public final class ClosurePlanner {
                                 + "the static graph, so nothing can weave "
                                 + "it"));
             }
+            return;
+        }
+        String tick = corpus.tickPastRecording(occurrence);
+        if (tick != null) {
+            gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
+                    GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
+                    occurrence.render(), "begun by the daemon tick " + tick
+                            + ": a replay slower than the recording ran it, "
+                            + "so it is not grown, and what it delivered "
+                            + "stays in the wire arms"));
             return;
         }
         String seed = corpus.seedSessionId();

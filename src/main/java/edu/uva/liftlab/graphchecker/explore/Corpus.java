@@ -37,6 +37,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -245,7 +247,68 @@ public final class Corpus implements Arms.Rows {
                     RootDomain.declared(rootDomains));
         }
         corpus.indexWorlds(iteration);
+        corpus.indexRecordedTicks(iteration);
         return corpus;
+    }
+
+    /** The recording's schedule, which run_engine sets beside the sessions. */
+    static final String RECORDED_SCHEDULE = "recorded_schedule.jsonl";
+
+    /** node|role -> the last daemon tick the recording ran; null when the
+     *  iteration states no recorded schedule. */
+    private Map<String, Integer> recordedTicks;
+
+    private void indexRecordedTicks(Path iteration) throws IOException {
+        Path recorded = iteration.resolve(RECORDED_SCHEDULE);
+        if (!Files.isRegularFile(recorded)) return;
+        recordedTicks = new HashMap<String, Integer>();
+        for (ScheduleEvent event : SessionReader.readSchedule(recorded)) {
+            String[] stance = event.context().split("\\|", 3);
+            if (stance.length < 2) continue;
+            CausalContext.Root tick = daemonTick(CausalContext.parse(stance[1]));
+            if (tick != null) {
+                recordedTicks.merge(stance[0] + "|" + tick.role().name(),
+                        tick.windowIndex(), Math::max);
+            }
+        }
+    }
+
+    /** A daemon tick: a role's w-th root in the window with no declared api
+     *  ({@code CausalContext#of(Role, String, int)}), or null. */
+    private static CausalContext.Root daemonTick(CausalContext context) {
+        if (!(context instanceof CausalContext.Root)) return null;
+        CausalContext.Root root = (CausalContext.Root) context;
+        return root.api().isEmpty() ? root : null;
+    }
+
+    /**
+     * The daemon tick that began this occurrence's chain -- its own root, or
+     * through each anchor the sender's -- when the recording ran no tick of
+     * that role on that node so late, or null.  A replay outlasting the
+     * recording runs a periodic daemon more often, and no loop bound stops
+     * it: the daemon's loop runs in no region (hdfs-11741 v86: the NameNode
+     * handlers of DataNode heartbeats #44 to #100, against #4 and #5
+     * recorded, were grown in every wave).  Null too when the iteration
+     * states no recorded schedule.
+     */
+    public String tickPastRecording(OccurrenceAddress occurrence) {
+        if (recordedTicks == null) return null;
+        OccurrenceAddress origin = occurrence;
+        Set<String> walked = new HashSet<String>();
+        while (origin.context() instanceof CausalContext.Anchor
+                && walked.add(origin.id())) {
+            OccurrenceAddress sender = senderOf(((CausalContext.Anchor)
+                    origin.context()).producerEndpointId());
+            if (sender == null) break;
+            origin = sender;
+        }
+        CausalContext.Root tick = daemonTick(origin.context());
+        if (tick == null) return null;
+        String node = origin.node().render();
+        int last = recordedTicks.getOrDefault(node + "|" + tick.role().name(),
+                0);
+        return tick.windowIndex() <= last ? null : node + " "
+                + tick.render() + ", the recording's last being #" + last;
     }
 
     /** The world of each replay, off its FOCUS ROW (not {@code
