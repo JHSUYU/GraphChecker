@@ -602,12 +602,9 @@ public final class ClosurePlanner {
     private static Set<String> carriersOf(Corpus corpus, StaticScopeMap map,
                                           String locationKey) {
         Set<String> carriers = new LinkedHashSet<String>();
-        for (SessionReader session : corpus.sessions()) {
-            for (WriteRow write : corpus.writesOf(session.sessionId(),
-                    locationKey)) {
-                carriers.addAll(map.carriersAt(write.endpoint().site(),
-                        write.javaType()));
-            }
+        for (WriteRow write : corpus.writeSitesOf(locationKey)) {
+            carriers.addAll(map.carriersAt(write.endpoint().site(),
+                    write.javaType()));
         }
         return carriers;
     }

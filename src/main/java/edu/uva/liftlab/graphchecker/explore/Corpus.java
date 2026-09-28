@@ -36,6 +36,7 @@ import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -163,24 +164,31 @@ public final class Corpus implements Arms.Rows {
             new LinkedHashMap<String, RootMintRow>();
     private final Map<String, ReadRow> readBySymbol =
             new LinkedHashMap<String, ReadRow>();
-    /** occurrence id -> its attaches, reads and writes. */
-    private final Map<String, List<AttachRow>> attachesOn =
-            new LinkedHashMap<String, List<AttachRow>>();
-    private final Map<String, List<ReadRow>> readsOn =
-            new LinkedHashMap<String, List<ReadRow>>();
+    /** occurrence id -> session id -> its attaches, reads, writes, targets. */
+    private final ByOccurrence<AttachRow> attachesOn =
+            new ByOccurrence<AttachRow>();
+    private final ByOccurrence<ReadRow> readsOn = new ByOccurrence<ReadRow>();
+    private final ByOccurrence<WriteRow> writesOn =
+            new ByOccurrence<WriteRow>();
+    private final ByOccurrence<TargetRow> targetsOn =
+            new ByOccurrence<TargetRow>();
+    /** occurrence id -> the locations it reads / writes, in any session. */
+    private final Map<String, Set<String>> readLocations =
+            new LinkedHashMap<String, Set<String>>();
+    private final Map<String, Set<String>> writtenLocations =
+            new LinkedHashMap<String, Set<String>>();
     /** occurrence id -> its exports, across sessions. */
     private final Map<String, List<ExportRow>> exportsOn =
             new LinkedHashMap<String, List<ExportRow>>();
-    private final Map<String, List<TargetRow>> targetsOn =
-            new LinkedHashMap<String, List<TargetRow>>();
-    private final Map<String, List<WriteRow>> writesOn =
-            new LinkedHashMap<String, List<WriteRow>>();
     /** session|location|version -> the write that produced it. */
     private final Map<String, WriteRow> writeByVersion =
             new LinkedHashMap<String, WriteRow>();
     /** session|locationKey -> every write of it, in that session. */
     private final Map<String, List<WriteRow>> writesByLocation =
             new LinkedHashMap<String, List<WriteRow>>();
+    /** locationKey -> site|java type -> its first write, in any session. */
+    private final Map<String, Map<String, WriteRow>> writeSitesByLocation =
+            new LinkedHashMap<String, Map<String, WriteRow>>();
     /** interaction id -> the attaches whose own pairing names it. */
     private final Map<String, List<AttachRow>> attachesByInteraction =
             new LinkedHashMap<String, List<AttachRow>>();
@@ -389,17 +397,13 @@ public final class Corpus implements Arms.Rows {
      *  any session: through them the world flows in. */
     public List<OccurrenceAddress> feeders(OccurrenceAddress occurrence,
                                            List<OccurrenceAddress> factor) {
-        Set<String> read = new LinkedHashSet<String>();
-        for (ReadRow row : readsOn(occurrence)) {
-            read.add(SmtLowering.locationKey(row.location()));
-        }
+        Set<String> read = readLocations.getOrDefault(occurrence.id(),
+                Collections.<String>emptySet());
         List<OccurrenceAddress> feeders = new ArrayList<OccurrenceAddress>();
         for (OccurrenceAddress member : factor) {
-            for (WriteRow write : writesOn(member)) {
-                if (read.contains(SmtLowering.locationKey(write.location()))) {
-                    feeders.add(member);
-                    break;
-                }
+            if (!Collections.disjoint(read, writtenLocations.getOrDefault(
+                    member.id(), Collections.<String>emptySet()))) {
+                feeders.add(member);
             }
         }
         return feeders;
@@ -434,8 +438,7 @@ public final class Corpus implements Arms.Rows {
                                     OccurrenceAddress occurrence,
                                     Set<String> locations) {
         List<String> sites = new ArrayList<String>();
-        for (WriteRow write : writesOn(occurrence)) {
-            if (!write.sessionId().equals(sessionId)) continue;
+        for (WriteRow write : writesOn.of(occurrence.id(), sessionId)) {
             if (!locations.contains(
                     SmtLowering.locationKey(write.location()))) {
                 continue;
@@ -556,7 +559,8 @@ public final class Corpus implements Arms.Rows {
                 interactions.put(interaction.id(), interaction);
                 add(attachesByInteraction, interaction.id(), row);
             }
-            add(attachesOn, row.endpoint().occurrence().id(), row);
+            attachesOn.add(row.endpoint().occurrence().id(), row.sessionId(),
+                    row);
             // One variable, one sort: from the JVM descriptor, never a value's
             // spelling.
             declaredSymbols.put(row.symbol(),
@@ -575,25 +579,31 @@ public final class Corpus implements Arms.Rows {
         }
         for (WriteRow row : session.writes()) {
             remember(session.sessionId(), row.endpoint().occurrence());
-            writeByVersion.put(versionKey(session.sessionId(),
-                    SmtLowering.locationKey(row.location()),
+            String location = SmtLowering.locationKey(row.location());
+            writeByVersion.put(versionKey(session.sessionId(), location,
                     row.version()), row);
-            add(writesOn, row.endpoint().occurrence().id(), row);
-            add(writesByLocation, session.sessionId() + "|"
-                    + SmtLowering.locationKey(row.location()), row);
+            writesOn.add(row.endpoint().occurrence().id(), row.sessionId(), row);
+            located(writtenLocations, row.endpoint().occurrence(), location);
+            add(writesByLocation, session.sessionId() + "|" + location, row);
+            writeSitesByLocation.computeIfAbsent(location,
+                    ignored -> new LinkedHashMap<String, WriteRow>())
+                    .putIfAbsent(row.endpoint().site() + "|" + row.javaType(),
+                            row);
             endpointById.put(row.endpoint().id(), row.endpoint());
             touch(row.endpoint().occurrence(), row.location());
         }
         for (TargetRow row : session.targets()) {
             remember(session.sessionId(), row.occurrence());
-            add(targetsOn, row.occurrence().id(), row);
+            targetsOn.add(row.occurrence().id(), row.sessionId(), row);
         }
         for (ReadRow row : session.reads()) {
             remember(session.sessionId(), row.endpoint().occurrence());
             if (!row.symbol().isEmpty()) {
                 readBySymbol.put(session.sessionId() + "|" + row.symbol(), row);
             }
-            add(readsOn, row.endpoint().occurrence().id(), row);
+            readsOn.add(row.endpoint().occurrence().id(), row.sessionId(), row);
+            located(readLocations, row.endpoint().occurrence(),
+                    SmtLowering.locationKey(row.location()));
             endpointById.put(row.endpoint().id(), row.endpoint());
             touch(row.endpoint().occurrence(), row.location());
         }
@@ -625,6 +635,47 @@ public final class Corpus implements Arms.Rows {
 
     private static <T> void add(Map<String, List<T>> into, String key, T row) {
         into.computeIfAbsent(key, ignored -> new ArrayList<T>()).add(row);
+    }
+
+    private static void located(Map<String, Set<String>> into,
+                                OccurrenceAddress occurrence, String location) {
+        into.computeIfAbsent(occurrence.id(),
+                ignored -> new LinkedHashSet<String>()).add(location);
+    }
+
+    /**
+     * Rows by occurrence, then by session, in recorded order: one session's
+     * rows at an occurrence without filtering every session's
+     * (hdfs-17899-bug2's planner, 480 worlds, spent a wave's 20 minutes
+     * scanning them per recorded decision).
+     */
+    private static final class ByOccurrence<T> {
+        private final Map<String, Map<String, List<T>>> rows =
+                new LinkedHashMap<String, Map<String, List<T>>>();
+
+        void add(String occurrenceId, String sessionId, T row) {
+            rows.computeIfAbsent(occurrenceId,
+                            ignored -> new LinkedHashMap<String, List<T>>())
+                    .computeIfAbsent(sessionId, ignored -> new ArrayList<T>())
+                    .add(row);
+        }
+
+        /** One session's. */
+        List<T> of(String occurrenceId, String sessionId) {
+            Map<String, List<T>> bySession = rows.get(occurrenceId);
+            List<T> own = bySession == null ? null : bySession.get(sessionId);
+            return own == null ? Collections.<T>emptyList()
+                    : Collections.unmodifiableList(own);
+        }
+
+        /** Every session's, sessions in the order they were read. */
+        List<T> all(String occurrenceId) {
+            Map<String, List<T>> bySession = rows.get(occurrenceId);
+            if (bySession == null) return Collections.<T>emptyList();
+            List<T> all = new ArrayList<T>();
+            for (List<T> own : bySession.values()) all.addAll(own);
+            return all;
+        }
     }
 
     /** One version of one location in one session; {@link
@@ -725,52 +776,38 @@ public final class Corpus implements Arms.Rows {
     }
 
     public List<AttachRow> attachesOn(OccurrenceAddress occurrence) {
-        return attachesOn.getOrDefault(occurrence.id(),
-                Collections.<AttachRow>emptyList());
+        return attachesOn.all(occurrence.id());
     }
 
     /** Every target row published for one occurrence, in any session. */
     public List<TargetRow> targetsOn(OccurrenceAddress occurrence) {
-        return targetsOn.getOrDefault(occurrence.id(),
-                Collections.<TargetRow>emptyList());
+        return targetsOn.all(occurrence.id());
     }
 
     /** One session's target row at one occurrence, or null. */
     public TargetRow target(String sessionId, OccurrenceAddress occurrence) {
-        for (TargetRow row : targetsOn(occurrence)) {
-            if (row.sessionId().equals(sessionId)) return row;
-        }
-        return null;
+        List<TargetRow> own = targetsOn.of(occurrence.id(), sessionId);
+        return own.isEmpty() ? null : own.get(0);
     }
 
     public List<ReadRow> readsOn(OccurrenceAddress occurrence) {
-        return readsOn.getOrDefault(occurrence.id(),
-                Collections.<ReadRow>emptyList());
+        return readsOn.all(occurrence.id());
     }
 
     /** Every attach of ONE session whose consumer sits at this occurrence. */
     public List<AttachRow> attachesOn(String sessionId,
                                       OccurrenceAddress occurrence) {
-        List<AttachRow> own = new ArrayList<AttachRow>();
-        for (AttachRow row : attachesOn(occurrence)) {
-            if (row.sessionId().equals(sessionId)) own.add(row);
-        }
-        return own;
+        return attachesOn.of(occurrence.id(), sessionId);
     }
 
     /** Every read ONE session made at this occurrence, in recorded order. */
     public List<ReadRow> readsOn(String sessionId,
                                  OccurrenceAddress occurrence) {
-        List<ReadRow> own = new ArrayList<ReadRow>();
-        for (ReadRow row : readsOn(occurrence)) {
-            if (row.sessionId().equals(sessionId)) own.add(row);
-        }
-        return own;
+        return readsOn.of(occurrence.id(), sessionId);
     }
 
     public List<WriteRow> writesOn(OccurrenceAddress occurrence) {
-        return writesOn.getOrDefault(occurrence.id(),
-                Collections.<WriteRow>emptyList());
+        return writesOn.all(occurrence.id());
     }
 
     /** Every export any session published at one occurrence. */
@@ -973,6 +1010,14 @@ public final class Corpus implements Arms.Rows {
     public List<WriteRow> writesOf(String sessionId, String locationKey) {
         return writesByLocation.getOrDefault(sessionId + "|" + locationKey,
                 Collections.<WriteRow>emptyList());
+    }
+
+    /** One write per (site, java type) that wrote a location, in any session,
+     *  first seen first: what writes it, not how often. */
+    public Collection<WriteRow> writeSitesOf(String locationKey) {
+        Map<String, WriteRow> sites = writeSitesByLocation.get(locationKey);
+        return sites == null ? Collections.<WriteRow>emptyList()
+                : Collections.unmodifiableCollection(sites.values());
     }
 
     @Override
