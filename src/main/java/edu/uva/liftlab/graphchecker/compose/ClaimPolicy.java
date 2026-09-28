@@ -19,6 +19,11 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.function.Function;
 
 import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.integralLiteral;
 
@@ -174,11 +179,10 @@ public final class ClaimPolicy {
                     Collections.<String, String>emptyMap(), false, gaps),
                     outcomes);
         }
-        for (Composer.Valuation valuation : composition.valuations()) {
-            outcomes.add(outcome(composition, solver, valuation,
-                    Collections.<String>emptyList(),
-                    valuation.ordinal() == 0));
-        }
+        outcomes.addAll(inParallel(composition.valuations(),
+                valuation -> outcome(composition, solver, valuation,
+                        Collections.<String>emptyList(),
+                        valuation.ordinal() == 0)));
         Outcome recorded = outcomes.isEmpty() ? null : outcomes.get(0);
 
         // Each disjunct asked alone with every root free: unsat there is a
@@ -388,6 +392,39 @@ public final class ClaimPolicy {
     static final long SELF_CHECK_BUDGET_MS = 60000L;
 
     /**
+     * How many independent asks run at once, each its own z3 process beside
+     * the composer's JVM on the campaign head (hdfs-17899-bug2: 128
+     * valuations and every path's self-check, one at a time, held COMPOSE
+     * for hours while the head's other cores sat idle).
+     */
+    static final int PARALLEL_ASKS = 8;
+
+    /** Independent asks answered in parallel, read back in their order. */
+    private static <T, R> List<R> inParallel(List<T> items,
+                                             Function<T, R> ask) {
+        List<R> answers = new ArrayList<R>();
+        if (items.isEmpty()) return answers;
+        ExecutorService pool = Executors.newFixedThreadPool(
+                Math.min(PARALLEL_ASKS, items.size()));
+        try {
+            List<Future<R>> pending = new ArrayList<Future<R>>();
+            for (T item : items) pending.add(pool.submit(() -> ask.apply(item)));
+            for (Future<R> answer : pending) answers.add(answer.get());
+            return answers;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("interrupted while solving",
+                    interrupted);
+        } catch (ExecutionException failed) {
+            Throwable cause = failed.getCause();
+            if (cause instanceof RuntimeException) throw (RuntimeException) cause;
+            throw new IllegalStateException(cause);
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    /**
      * Names every path whose OWN conjunction is unsat (selector forced, no
      * valuation): such a path answers every root question the same way.
      */
@@ -397,14 +434,17 @@ public final class ClaimPolicy {
         int undecided = 0;
         // A sanity check, not the witness search: its own short budget.  An
         // undecided run leaves the path in the disjunction (safe direction).
-        for (Composer.Disjunct disjunct : composition.disjuncts()) {
-            List<String> forced = new ArrayList<String>();
-            forced.add("(assert (! " + disjunct.selector()
-                    + " :named path_alone__"
-                    + ArtifactIO.digest(disjunct.path().pathId, 10) + "))");
-            Z3.Answer answer = solver.ask(composition.query(forced),
-                    Collections.<String>emptyList(), false,
-                    SELF_CHECK_BUDGET_MS);
+        List<Z3.Answer> answers = inParallel(composition.disjuncts(),
+                disjunct -> solver.ask(composition.query(
+                        Collections.singletonList("(assert (! "
+                                + disjunct.selector() + " :named path_alone__"
+                                + ArtifactIO.digest(disjunct.path().pathId, 10)
+                                + "))")),
+                        Collections.<String>emptyList(), false,
+                        SELF_CHECK_BUDGET_MS));
+        for (int i = 0; i < answers.size(); i++) {
+            Composer.Disjunct disjunct = composition.disjuncts().get(i);
+            Z3.Answer answer = answers.get(i);
             if (!answer.decided()) undecided++;
             if (!answer.unsat()) continue;
             inert++;

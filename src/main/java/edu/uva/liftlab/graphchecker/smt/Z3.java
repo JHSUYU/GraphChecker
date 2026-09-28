@@ -10,11 +10,12 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -105,8 +106,9 @@ public final class Z3 {
 
     private final Path z3;
     private final long timeoutMillis;
-    private int runs;
-    private final Set<String> errors = new LinkedHashSet<String>();
+    /** Asks may run on several threads, each its own z3 process. */
+    private final AtomicInteger runs = new AtomicInteger();
+    private final Set<String> errors = new TreeSet<String>();
 
     public Z3(Path executable, long timeoutMillis) {
         this.z3 = executable == null ? Paths.get("z3") : executable;
@@ -116,7 +118,7 @@ public final class Z3 {
 
     /** How many times z3 was asked; the cost of one composition. */
     public int runs() {
-        return runs;
+        return runs.get();
     }
 
     /**
@@ -125,7 +127,9 @@ public final class Z3 {
      * anywhere invalidates the claim.
      */
     public List<String> errors() {
-        return new ArrayList<String>(errors);
+        synchronized (errors) {
+            return new ArrayList<String>(errors);
+        }
     }
 
     /**
@@ -194,7 +198,7 @@ public final class Z3 {
      * queries deadlock), and the timeout is enforced here, not by z3.
      */
     private String run(String input, long budgetMillis) {
-        runs++;
+        runs.incrementAndGet();
         long budget = TimeUnit.MILLISECONDS.toNanos(budgetMillis);
         Process process;
         try {
@@ -261,8 +265,10 @@ public final class Z3 {
         int at = output.indexOf(ERROR);
         while (at >= 0) {
             int end = output.indexOf('\n', at);
-            errors.add((end < 0 ? output.substring(at)
-                    : output.substring(at, end)).trim());
+            synchronized (errors) {
+                errors.add((end < 0 ? output.substring(at)
+                        : output.substring(at, end)).trim());
+            }
             at = output.indexOf(ERROR, at + ERROR.length());
         }
         return output;
