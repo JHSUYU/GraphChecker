@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""mkadhoc.py TREE : annotates every check experiments/hadoop/adhoc/checks.tsv
-declares in TREE -- @CausynthExceptionTarget("adhoc-<check>") on its throw, fully
-qualified and on the throw's own line so no line number moves -- and writes the
-check's targets/<check>.yaml.  A line already annotated is left as it is."""
-import os, sys
+"""annotate.py <adhoc-experiment-dir> <tree> : annotates every check the
+experiment's checks.tsv declares in <tree> --
+@CausynthExceptionTarget("adhoc-<check>") on its throw, fully qualified and
+on the throw's own line so no line number moves -- and writes the check's
+targets/<check>.yaml.  A line already annotated with its own target is left
+as it is; one annotated with another is refused."""
+import os
+import sys
 
 ANNOTATION = "@edu.uva.liftlab.graphchecker.annotation.CausynthExceptionTarget"
-tree = sys.argv[1]
-adhoc = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                     "../../experiments/hadoop/adhoc")
-os.makedirs(os.path.join(adhoc, "targets"), exist_ok=True)
-for row in open(os.path.join(adhoc, "checks.tsv")):
+experiment, tree = sys.argv[1], sys.argv[2]
+os.makedirs(os.path.join(experiment, "targets"), exist_ok=True)
+for row in open(os.path.join(experiment, "checks.tsv")):
     if row.startswith("#") or not row.strip():
         continue
     check, source, line = row.rstrip("\n").split("\t")[:3]
@@ -26,6 +27,6 @@ for row in open(os.path.join(adhoc, "checks.tsv")):
         open(path, "w").write("\n".join(lines))
     elif '("%s")' % target not in text:
         sys.exit("%s:%s carries another target: %s" % (source, line, text.strip()))
-    with open(os.path.join(adhoc, "targets", check + ".yaml"), "w") as spec:
+    with open(os.path.join(experiment, "targets", check + ".yaml"), "w") as spec:
         spec.write("exception_target_id: %s\n" % target)
     print(check, "->", "%s:%s" % (os.path.basename(source), line))

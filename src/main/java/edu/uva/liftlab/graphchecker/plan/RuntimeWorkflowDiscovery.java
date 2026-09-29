@@ -88,6 +88,11 @@ public final class RuntimeWorkflowDiscovery {
     private static Set<String> anchorGoals(
             List<Target> targets, String declaredOccurrence) {
         Set<String> byDeclaration = new LinkedHashSet<>();
+        if (FIRST.equals(declaredOccurrence == null ? ""
+                : declaredOccurrence.trim())) {
+            byDeclaration.add(targets.get(0).goal.goalId());
+            return byDeclaration;
+        }
         for (Target candidate : targets) {
             if (declares(declaredOccurrence, candidate.occurrenceId)) {
                 byDeclaration.add(candidate.goal.goalId());
@@ -95,6 +100,16 @@ public final class RuntimeWorkflowDiscovery {
         }
         return byDeclaration;
     }
+
+    /**
+     * What a sweep declares: the first observed occurrence of the annotated
+     * site in THIS recording, fixed at the seed like any declaration and
+     * handed to every later stage as the address PLAN resolved it to.  A
+     * case about one failure names its occurrence; a sweep over checks has
+     * no failure to name one by, and an address read off one recording
+     * need not name anything in the next.
+     */
+    static final String FIRST = "first";
 
     /** The k-th occurrence the declaration names, in recorded order (the {@link
      *  SelectorResolution} rule). No match is a named refusal, never a fallback
@@ -115,6 +130,7 @@ public final class RuntimeWorkflowDiscovery {
                     + "not a question runtime evidence may answer; observed "
                     + "target occurrences: " + observed);
         }
+        if (FIRST.equals(declared)) return targets.get(0);
         int k = declaredK(declared);
         Target named = SelectorResolution.kth(targets,
                 candidate -> declares(declared, candidate.occurrenceId), k);
@@ -169,6 +185,7 @@ public final class RuntimeWorkflowDiscovery {
         String value = declared == null ? "" : declared.trim();
         if (value.isEmpty()) return false;
         if (value.equals(occurrenceId)) return true;
+        if (FIRST.equals(value)) return false;
         // A resolved address names the occurrence it spells and no other.
         if (resolved(value)) return false;
         // Unreadable plan id or declaration is a failure, not "no match".

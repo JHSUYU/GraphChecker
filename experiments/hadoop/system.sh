@@ -28,6 +28,15 @@ blockkey_scope=(
 # The launcher supplies the frozen GraphChecker jar ahead of the tree's
 # classpath, whose shim entry it replaces.
 system_jar_first=true
+# The tree's own code, for coverage and for the ad-hoc checks' scan: its class
+# roots (system_root names), the package JaCoCo counts, and each root's
+# sources, as "<root>:<tree-relative source dir>".
+system_roots=(common client hdfs)
+system_package=org.apache.hadoop
+system_sources=(
+  client:hadoop-hdfs-project/hadoop-hdfs-client/src/main/java
+  hdfs:hadoop-hdfs-project/hadoop-hdfs/src/main/java
+)
 
 system_paths() {
   module=${repo}/hadoop-hdfs-project/hadoop-hdfs

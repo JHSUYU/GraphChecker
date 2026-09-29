@@ -17,6 +17,15 @@ solr_seed=F0993D5343E20BA4
 # GraphChecker's jar follows the tree's classpath: the tree's own libraries
 # (Guava, protobuf, commons-io) are not the engine's versions.
 system_jar_first=false
+# The tree's own code, for coverage and for the ad-hoc checks' scan: its class
+# roots (system_root names), the package JaCoCo counts, and each root's
+# sources, as "<root>:<tree-relative source dir>".
+system_roots=(solrj core)
+system_package=org.apache.solr
+system_sources=(
+  solrj:solr/solrj/src/java
+  core:solr/core/src/java
+)
 
 system_paths() {
   module=${repo}/solr/core

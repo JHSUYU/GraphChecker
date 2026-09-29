@@ -1856,6 +1856,15 @@ campaign_plan() {
   fi
   schedule_output_dir="${iteration_dir}"
   do_schedule
+  # A sweep declares "first" (RuntimeWorkflowDiscovery.FIRST): PLAN resolved
+  # it against this recording, and every later stage takes that address.
+  if [[ "${declared_target_occurrence}" == first ]]; then
+    declared_target_occurrence=$(jq -r '.target.occurrenceId // ""' "${index}")
+    [[ -n "${declared_target_occurrence}" ]] \
+      || campaign_fail PLAN ConcolicScheduler "${index}" \
+        "the schedule index names no target for the declared first occurrence"
+    campaign_log "declared target first = ${declared_target_occurrence}"
+  fi
   # Every later consumer reads this iteration's frozen copy, never the mutable
   # discovery output.
   runtime_region_plan="${frozen}"

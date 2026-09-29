@@ -1,15 +1,16 @@
 # Ad-hoc coordination checks of HDFS: a throw whose guard compares what one
 # node holds with what another sent, and which a workload's healthy path
-# evaluates and passes (tools/analysis: throwsites.py, coverage.sh,
-# reached.py).  One case per check and workload, "<check>.<workload>":
-# checks.tsv declares the checks and the workloads each is reached on,
-# occurrences.tsv each case's target occurrence (discovered, README of lib).
-# All run one JDK 8 tree, gc/hdfs-17967-pathC; tools/analysis/mkadhoc.py
-# annotates it and writes targets/.  DataXceiver is never woven.
-# Coverage counts the whole JVM, set-up before the recording window
-# included; only a discovery run says the window reaches a check (the
-# PacketResponder seqno check ran only for mirror's pre-window client write:
-# the window's DataNode transfer starts no responder, so it is not a case).
+# evaluates and passes (tools/adhoc: sites.py, coverage.sh, reach.py).  One
+# case per check and workload, "<check>.<workload>": checks.tsv declares the
+# checks and the workloads each is reached on.  All run one JDK 8 tree,
+# gc/hdfs-17967-pathC; tools/adhoc/annotate.py annotates it and writes
+# targets/.  The target is the occurrence occurrences.tsv names, else the
+# first observed occurrence of the check in the campaign's own recording.
+# DataXceiver is never woven.  Coverage counts the whole JVM, set-up before
+# the recording window included; only a discovery run says the window
+# reaches a check (the PacketResponder seqno check ran only for mirror's
+# pre-window client write: the window's DataNode transfer starts no
+# responder, so it is not a case).
 check=${1%%.*}
 workload=${1#*.}
 [[ -n "${check}" && "${workload}" != "$1" ]] || {
@@ -27,6 +28,7 @@ IFS=$'\t' read -r _ _ _ own workloads <<<"${row}"
 target_spec=${here}/targets/${check}.yaml
 target_occurrence=$(awk -F'\t' -v c="$1" '$1 == c {print $2}' \
   "${here}/occurrences.tsv")
+target_occurrence=${target_occurrence:-first}
 # The family scope carries the IPC and SASL doors; Sender carries the
 # data-transfer SEND door, one per op.  No door on reads: every pipeline ack
 # is one, and a door per packet admits an occurrence per packet.
