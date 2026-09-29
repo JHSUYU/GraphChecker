@@ -135,18 +135,69 @@ final class ConcolicResultPublisher {
         return charged;
     }
 
+    /**
+     * Ends a focused replay at its witness: the case's declared occurrence
+     * observed the fatal, which answers the replay's question, and what the
+     * workload does after it no stage reads (SOLR-18406: a follower retried
+     * the download it could no longer get, every bound lifted, until the
+     * worker's clock killed the JVM and the witness session was withdrawn).
+     * Once, on a thread of its own: every publication in flight settles
+     * (the witness's own among them), every activation still live is
+     * stranded now rather than after a grace its retries keep resetting,
+     * and the replay ends as every replay does ({@link JUnitMethodRunner}).
+     */
+    static void concludeAtWitness() {
+        synchronized (PUBLICATION_LOCK) {
+            if (concludingAtWitness) return;
+            concludingAtWitness = true;
+        }
+        ThreadGroup root = Thread.currentThread().getThreadGroup();
+        while (root.getParent() != null) root = root.getParent();
+        new Thread(root, new Runnable() {
+            @Override
+            public void run() {
+                List<ActiveRegion> stranded = new ArrayList<>();
+                synchronized (PUBLICATION_LOCK) {
+                    while (resultPublicationsInFlight > 0) {
+                        try {
+                            PUBLICATION_LOCK.wait();
+                        } catch (InterruptedException ignored) {
+                            // The witness stands; settle and end regardless.
+                        }
+                    }
+                    stranded.addAll(ACTIVE.values());
+                }
+                for (ActiveRegion active : stranded) {
+                    strandWithoutTerminal(active, "AT_WITNESS: the region"
+                            + " root was still running when the declared"
+                            + " occurrence observed the fatal, and the replay"
+                            + " ended there");
+                }
+                JUnitMethodRunner.exit(0);
+            }
+        }, "causynth-witness-stop").start();
+    }
+
+    /** Guarded by {@link #PUBLICATION_LOCK}. */
+    private static boolean concludingAtWitness;
+
     /** Names one activation whose root never reached a terminal. */
     private static void strandWithoutTerminal(ActiveRegion active) {
+        strandWithoutTerminal(active, "TERMINAL_NEVER_REACHED: the"
+                + " region root was still running " + TERMINAL_GRACE_MILLIS
+                + "ms after the workload ended and charged no loop body in"
+                + " that time, so this occurrence reached no NORMAL, THROW"
+                + " or bounded CUT terminal");
+    }
+
+    private static void strandWithoutTerminal(ActiveRegion active,
+                                              String detail) {
         if (!active.finished.compareAndSet(false, true)) return;
         active.releaseActivation();
         active.abandoned = true;
         ACTIVE.remove(active.token, active);
         endLiveSelectedRegion();
-        taskUnanswered(active.activation, "TERMINAL_NEVER_REACHED: the"
-                + " region root was still running " + TERMINAL_GRACE_MILLIS
-                + "ms after the workload ended and charged no loop body in"
-                + " that time, so this occurrence reached no NORMAL, THROW"
-                + " or bounded CUT terminal");
+        taskUnanswered(active.activation, detail);
     }
 
     static void beginLiveSelectedRegion() {

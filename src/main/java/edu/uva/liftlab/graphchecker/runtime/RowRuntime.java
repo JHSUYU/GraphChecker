@@ -486,6 +486,10 @@ public final class RowRuntime {
         session.target(TargetRow.of(sessionId(), sequence(seq), occurrence,
                 Text.safe(anchorSiteId), Text.safe(phiTerm), observedFatal,
                 reachedAnchor));
+        if (observedFatal && reachedAnchor
+                && FocusedReplay.declaredTarget(occurrence)) {
+            ConcolicResultPublisher.concludeAtWitness();
+        }
     }
 
     /** One decision's predicate in the polarity of its fatal arm, or "". */

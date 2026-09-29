@@ -56,6 +56,9 @@ import java.util.Set;
  * worker per obligation).</p>
  */
 public final class ExploreMain {
+    /** One wave's manifest: its anchors, tasks and verdict counts. */
+    static final String MANIFEST_FILE = "explore_manifest.json";
+
     private ExploreMain() {
     }
 
@@ -251,7 +254,7 @@ public final class ExploreMain {
                 RowCodec::writeGap);
         JsonObject manifest = manifest(roots, tasks, why, frontier, open,
                 topologyEpoch, gaps, slots, skeleton, exposed, witness);
-        Files.write(out.resolve("explore_manifest.json"),
+        Files.write(out.resolve(MANIFEST_FILE),
                 (pretty(manifest) + System.lineSeparator())
                         .getBytes(StandardCharsets.UTF_8));
         return manifest;

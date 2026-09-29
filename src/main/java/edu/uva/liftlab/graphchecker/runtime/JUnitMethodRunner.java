@@ -19,29 +19,41 @@ public final class JUnitMethodRunner {
         }
         int status = 0;
         try {
-            try {
-                JUnitLifecycle.run(args);
-            } catch (Throwable failure) {
-                // The replay's outcome is read from stderr.
-                failure.printStackTrace(System.err);
-                status = 1;
-            } finally {
-                // Publications first: closing under a pending one is refused.
-                ConcolicResultPublisher.awaitSelectedResultPublications();
-                // Run totals here, on the one exit path every replay takes,
-                // not in a conditional shutdown hook (once per JVM).
-                ConcolicResultPublisher.publishRunTotals();
-                reportWorkloadSessionClose();
-            }
+            JUnitLifecycle.run(args);
+        } catch (Throwable failure) {
+            // The replay's outcome is read from stderr.
+            failure.printStackTrace(System.err);
+            status = 1;
+        }
+        try {
+            // Publications first: closing under a pending one is refused.
+            ConcolicResultPublisher.awaitSelectedResultPublications();
         } catch (Throwable publicationFailure) {
-            // A failure while unwinding must not skip the exit below.
             publicationFailure.printStackTrace(System.err);
             status = 1;
         }
-        // Explicit exit: non-daemon cluster threads may outlive the test.
-        // 0 when the method returned, 1 when it, a publication or the close
-        // failed.
-        System.exit(status);
+        exit(status);
+    }
+
+    /**
+     * The one end of a replay, the workload's or its witness's
+     * ({@code ConcolicResultPublisher#concludeAtWitness}): the run totals
+     * (here, not in a conditional shutdown hook: once per JVM), the session's
+     * close, and an explicit exit, since non-daemon cluster threads may
+     * outlive the test.  0 when the method returned, 1 when it, a
+     * publication or the close failed.
+     */
+    static void exit(int status) {
+        int code = status;
+        try {
+            ConcolicResultPublisher.publishRunTotals();
+            reportWorkloadSessionClose();
+        } catch (Throwable closeFailure) {
+            // A failure while unwinding must not skip the exit below.
+            closeFailure.printStackTrace(System.err);
+            code = 1;
+        }
+        System.exit(code);
     }
 
     /**

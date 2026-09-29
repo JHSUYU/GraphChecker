@@ -3,7 +3,6 @@ package edu.uva.liftlab.graphchecker.explore;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
@@ -118,8 +117,8 @@ public final class ConfirmMain {
     static JsonObject write(Path iteration, Path claimFile,
                             Path manifestFile, Path out) throws IOException {
         Files.createDirectories(out);
-        JsonObject claim = json(claimFile);
-        JsonObject manifest = json(manifestFile);
+        JsonObject claim = ExploreCodec.readObject(claimFile);
+        JsonObject manifest = ExploreCodec.readObject(manifestFile);
         JsonObject decided = claim.getAsJsonObject("claim");
         int ordinal = decided.get("valuationOrdinal").getAsInt();
         JsonObject valuation = valuation(claim, ordinal);
@@ -237,7 +236,8 @@ public final class ConfirmMain {
         RowCodec.writeJsonl(out.resolve(Confirmation.FILE), edges);
 
         // An obligation that flips nothing: the values drive every decision.
-        JsonObject focus = ExploreCodec.writeFocusRow(anchor, seedSessionId,
+        JsonObject focus = ExploreCodec.writeFocusRow(anchor, anchor,
+                seedSessionId,
                 Collections.<OccurrenceAddress>emptyList(),
                 Obligation.confirming(OBLIGATION_ID, OBLIGATION_ID, pathId,
                         assignments, answers, Collections.<String>emptyList()),
@@ -603,8 +603,4 @@ public final class ConfirmMain {
                 + ", which it does not state");
     }
 
-    private static JsonObject json(Path file) throws IOException {
-        return JsonParser.parseString(new String(Files.readAllBytes(file),
-                StandardCharsets.UTF_8)).getAsJsonObject();
-    }
 }

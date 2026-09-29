@@ -1,7 +1,9 @@
 package edu.uva.liftlab.graphchecker.explore;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
+import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import edu.uva.liftlab.graphchecker.smt.Z3;
 
 import edu.uva.liftlab.graphchecker.contract.GapClass;
@@ -117,9 +119,26 @@ public final class ObligationSolverMain {
         Task task = candidate.task;
         return publish(out, outcome.obligation, outcome.result, outcome.smt2,
                 outcome.gaps, ExploreCodec.writeFocusRow(task.focused(),
-                        task.seedSessionId(), task.factor(),
+                        declaredTarget(obligations), task.seedSessionId(),
+                        task.factor(),
                         outcome.obligation, outcome.inheritedFlips,
                         outcome.clockDeltas, outcome.rootMints, cut));
+    }
+
+    /**
+     * The case's declared occurrence, as the wave planned it: the one anchor
+     * {@code explore_manifest.json} resolved beside the wave's obligations
+     * (a selector or {@code first} already resolved), or null.
+     */
+    private static OccurrenceAddress declaredTarget(Path obligations)
+            throws IOException {
+        Path manifest = obligations.resolveSibling(
+                ExploreMain.MANIFEST_FILE);
+        if (!Files.isRegularFile(manifest)) return null;
+        JsonArray anchors = JsonFields.array(
+                ExploreCodec.readObject(manifest), "anchors");
+        return anchors.size() == 1
+                ? OccurrenceAddress.parse(anchors.get(0).getAsString()) : null;
     }
 
     /** Where the prefix is cut: the TARGET (flip occurrence, focus, factor),

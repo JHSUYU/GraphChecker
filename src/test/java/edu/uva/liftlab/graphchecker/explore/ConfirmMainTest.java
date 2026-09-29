@@ -342,6 +342,8 @@ public class ConfirmMainTest {
         assertEquals(0, row.getAsJsonArray("inheritedFlips").size());
         assertEquals(ANCHOR, row.get("focused").getAsString());
         assertEquals(anchor.id(), row.get("focusedOccurrenceId").getAsString());
+        assertEquals("the replay ends once the anchor observes the fatal",
+                ANCHOR, row.get("declaredTarget").getAsString());
         assertEquals("seed", row.get("seedSessionId").getAsString());
         JsonObject roots = row.getAsJsonObject("rootAssignments");
         assertEquals("the world the selected session ran", "119980",

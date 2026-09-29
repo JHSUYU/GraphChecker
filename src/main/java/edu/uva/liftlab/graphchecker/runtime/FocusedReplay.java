@@ -112,6 +112,23 @@ public final class FocusedReplay {
      * each assigned root's MINT ({@link #ROOT_MINTS}) and each inherited
      * flip's occurrence.
      */
+    /** The case's declared occurrence, as the focus row states it, or "". */
+    private static String declaredTarget = "";
+
+    /**
+     * Whether this is the case's declared occurrence: a focused replay that
+     * observes the fatal there has answered its question
+     * ({@code ConcolicResultPublisher#concludeAtWitness}).
+     */
+    static boolean declaredTarget(OccurrenceAddress occurrence) {
+        load();
+        if (occurrence == null) return false;
+        synchronized (LOCK) {
+            return !declaredTarget.isEmpty()
+                    && declaredTarget.equals(occurrence.render());
+        }
+    }
+
     public static boolean focused(OccurrenceAddress occurrence) {
         load();
         // The seed focuses nothing.
@@ -567,6 +584,9 @@ public final class FocusedReplay {
                     }
                 }
                 FOCUSED_TASKS.add(optionalString(row, "taskId"));
+                if (declaredTarget.isEmpty()) {
+                    declaredTarget = optionalString(row, "declaredTarget");
+                }
                 // Task.of refuses a null focus, so a row without one makes
                 // no Task instead of throwing.
                 OccurrenceAddress focus = occurrence(row.get("focused"));
@@ -794,6 +814,7 @@ public final class FocusedReplay {
             REFUSALS.clear();
             FLIPPED.clear();
             FOCUSED_TASKS.clear();
+            declaredTarget = "";
             FOCUSED_OCCURRENCES.clear();
             INHERITED.clear();
             INHERITED_OCCURRENCES.clear();

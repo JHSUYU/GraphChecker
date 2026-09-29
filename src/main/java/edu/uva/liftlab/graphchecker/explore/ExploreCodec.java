@@ -3,6 +3,7 @@ package edu.uva.liftlab.graphchecker.explore;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 
 import edu.uva.liftlab.graphchecker.contract.InteractionKind;
 import edu.uva.liftlab.graphchecker.contract.Obligation;
@@ -11,6 +12,10 @@ import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.Task;
 import edu.uva.liftlab.graphchecker.smt.JsonFields;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
@@ -79,9 +84,18 @@ public final class ExploreCodec {
      * the flip ({@code null} when {@code obligation} flips nothing), inherited
      * flips, mint values (a clock as a skew), answers, each root's mint
      * occurrence, unproducible handoffs and the schedule cut ({@code cut} null:
-     * none). Read back by {@link #readWorld}.
+     * none). Read back by {@link #readWorld}.  {@code declaredTarget}, the
+     * case's one occurrence (null: none resolved), is where the replay stops
+     * once it observes the fatal ({@code runtime.FocusedReplay}).
      */
+    /** One JSON object file, as a wave's artifacts are written. */
+    static JsonObject readObject(Path file) throws IOException {
+        return JsonParser.parseString(new String(Files.readAllBytes(file),
+                StandardCharsets.UTF_8)).getAsJsonObject();
+    }
+
     static JsonObject writeFocusRow(OccurrenceAddress focused,
+                                    OccurrenceAddress declaredTarget,
                                     String seedSessionId,
                                     List<OccurrenceAddress> factor,
                                     Obligation obligation,
@@ -96,6 +110,9 @@ public final class ExploreCodec {
         // Render for OccurrenceAddress.parse, id for grep.
         row.addProperty("focused", focused.render());
         row.addProperty("focusedOccurrenceId", focused.id());
+        if (declaredTarget != null) {
+            row.addProperty("declaredTarget", declaredTarget.render());
+        }
         row.addProperty("seedSessionId", seedSessionId);
         JsonArray members = new JsonArray();
         for (OccurrenceAddress member : factor) members.add(member.render());
