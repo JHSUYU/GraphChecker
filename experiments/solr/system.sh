@@ -26,6 +26,9 @@ system_sources=(
   solrj:solr/solrj/src/java
   core:solr/core/src/java
 )
+# Where the nodes coordinate: an ad-hoc sweep ranks these classes' checks
+# first (tools/adhoc/select.py).
+system_focus='\.cloud\.|\.update\.|ReplicationHandler|IndexFetcher|IndexDeletionPolicy|\.core\.(SolrCore|CoreContainer|ZkContainer)|servlet\.HttpSolrCall'
 
 system_paths() {
   module=${repo}/solr/core

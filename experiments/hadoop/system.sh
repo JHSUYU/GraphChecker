@@ -37,6 +37,9 @@ system_sources=(
   client:hadoop-hdfs-project/hadoop-hdfs-client/src/main/java
   hdfs:hadoop-hdfs-project/hadoop-hdfs/src/main/java
 )
+# Where the nodes coordinate: an ad-hoc sweep ranks these classes' checks
+# first (tools/adhoc/select.py).
+system_focus='\.server\.(blockmanagement|datanode|namenode)\.|\.qjournal\.|\.security\.|DataStreamer|DFS(Striped)?(Output|Input)Stream'
 
 system_paths() {
   module=${repo}/hadoop-hdfs-project/hadoop-hdfs
