@@ -519,10 +519,8 @@ public final class RuntimeRegionPlanner {
                     RuntimeSelectedRegionFinalizer.REGION_PORT_SIDE));
             String portId = stringValue(port.get(
                     CommunicationCatalogContract.PORT_ID));
-            String direction = stringValue(port.get(
-                    CommunicationCatalogContract.PORT_DIRECTION));
             if (!("IN".equals(side) || "OUT".equals(side))
-                    || portId.isEmpty() || direction.isEmpty()) {
+                    || portId.isEmpty()) {
                 continue;
             }
             for (RuntimeEvent event : events) {
@@ -530,9 +528,6 @@ public final class RuntimeRegionPlanner {
                 Map<String, Object> capture = new LinkedHashMap<>();
                 capture.put("side", side);
                 capture.put("portId", portId);
-                capture.put("direction", direction);
-                capture.put("transport", port.get(
-                        CommunicationCatalogContract.TRANSPORT));
                 capture.put("eventSeq", event.seq);
                 observed.add(capture);
             }
@@ -575,7 +570,13 @@ public final class RuntimeRegionPlanner {
                 capture) && "METHOD_EXIT_NORMAL".equals(event.kind);
     }
 
-    /** Binds each capture to the boundary of its matching logical exchange. */
+    /**
+     * Binds each capture to the exchange it ran in, one rule for every port:
+     * an OUT capture to the next SEND on its lane, an IN capture to the
+     * latest RECEIVE, whatever the transport or half, which the capture then
+     * states.  A declared direction bound nothing more, and a wrong one
+     * dropped the capture or bound it to an unrelated exchange.
+     */
     private static void bindObservedCommunicationCaptures(
             Collection<Map<String, Object>> activations,
             Map<Long, List<ProtocolEvent>> protocolByActivationRoot,
@@ -597,15 +598,10 @@ public final class RuntimeRegionPlanner {
                     RuntimeSelectedRegionFinalizer
                             .OBSERVED_COMMUNICATION_CAPTURES))) {
                 String side = stringValue(capture.get("side"));
-                String direction = stringValue(capture.get("direction"));
-                String transport = stringValue(capture.get("transport"));
                 long capturedAt = longNumber(capture.get("eventSeq"), -1L);
                 ProtocolEvent boundary = null;
                 for (ProtocolEvent event : protocol) {
-                    if (!transport.equals(event.transport)
-                            || !direction.equals(event.half)
-                            || !("OUT".equals(side)
-                            ? "SEND".equals(event.direction)
+                    if (!("OUT".equals(side) ? "SEND".equals(event.direction)
                             : "RECEIVE".equals(event.direction))) {
                         continue;
                     }
@@ -623,9 +619,9 @@ public final class RuntimeRegionPlanner {
                     // Rewind to the exchange's first physical frame, where
                     // its carried values entered.
                     String exchange = boundary.exchangeLeg();
+                    String transport = boundary.transport;
                     for (ProtocolEvent event : protocol) {
                         if (transport.equals(event.transport)
-                                && direction.equals(event.half)
                                 && "RECEIVE".equals(event.direction)
                                 && event.seq < capturedAt
                                 && exchange.equals(event.exchangeLeg())
@@ -636,6 +632,9 @@ public final class RuntimeRegionPlanner {
                 }
                 if (boundary == null) continue;
                 Map<String, Object> exact = new LinkedHashMap<>(capture);
+                exact.put(CommunicationCatalogContract.TRANSPORT,
+                        boundary.transport);
+                exact.put("half", boundary.half);
                 exact.put("exchangeLeg", boundary.exchangeLeg());
                 exact.put("attemptId", boundary.attemptId);
                 exact.put("transportEventSeq", boundary.seq);
@@ -1230,7 +1229,7 @@ public final class RuntimeRegionPlanner {
      * site each is handed at. */
     public static List<Map<String, Object>> communicationHandoffSites(
             StaticProgram.RegionRow region) {
-        Map<String, Map<String, Object>> byRole = new LinkedHashMap<>();
+        Map<String, Map<String, Object>> byCapture = new LinkedHashMap<>();
         for (boolean inbound : new boolean[]{true, false}) {
             String regionSide = inbound ? "IN" : "OUT";
             for (Map<String, Object> port : inbound
@@ -1242,14 +1241,12 @@ public final class RuntimeRegionPlanner {
                 Map<String, Object> site = communicationHandoffSite(
                         port, regionSide);
                 if (site != null) {
-                    byRole.putIfAbsent(stringValue(site.get(
-                            CommunicationHandoffSpec.SIDE)) + "\n"
-                            + stringValue(site.get(
-                            CommunicationCatalogContract.PORT_ID)), site);
+                    byCapture.putIfAbsent(CommunicationCatalogContract
+                            .captureKey(regionSide, port), site);
                 }
             }
         }
-        return new ArrayList<>(byRole.values());
+        return new ArrayList<>(byCapture.values());
     }
 
     /** One declared port's handoff site, or {@code null}. */
@@ -1264,7 +1261,6 @@ public final class RuntimeRegionPlanner {
         for (String field : new String[]{
                 CommunicationCatalogContract.PORT_ID,
                 CommunicationCatalogContract.PORT_HANDOFF_LEAF_PATH,
-                CommunicationCatalogContract.PORT_DIRECTION,
                 CommunicationCatalogContract.PORT_JAVA_TYPE,
                 CommunicationCatalogContract.PORT_DEFINITION_METHOD,
                 CommunicationCatalogContract.PORT_FRAME_METHOD,

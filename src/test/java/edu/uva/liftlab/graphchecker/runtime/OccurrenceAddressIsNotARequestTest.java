@@ -391,7 +391,7 @@ public class OccurrenceAddressIsNotARequestTest {
                 ordinal, "REGISTERED_SOURCE");
         JsonArray handoffs = new JsonArray();
         handoffs.add(json("{'portId':'" + PORT + "','handoffLeafPath':'" + PORT
-                + "','side':'IN','direction':'RESPONSE','javaType':'int',"
+                + "','side':'IN','javaType':'int',"
                 + "'captureKind':'CALL_RETURN','definitionUnitIndex':2,"
                 + "'declaredCallee':'<a.P: int getKeyId()>',"
                 + "'definitionMethod':'<a.B: void run()>'}"));

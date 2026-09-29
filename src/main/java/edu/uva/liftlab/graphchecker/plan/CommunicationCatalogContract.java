@@ -1,19 +1,22 @@
 package edu.uva.liftlab.graphchecker.plan;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Map;
 import java.util.UUID;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.nonNull;
 
-/** Static catalog of communication call sites, their typed ports and the gaps
- *  discovery could not resolve. A call site is one typed event site inside a
- *  coarse region; this says nothing about fragment identity. {@link
- *  #EXCHANGE_SITE_KEY} is the static identity of a site pair (the join column
- *  for runtime provenance), never a runtime exchange. */
+/** Static catalog of the values messages carry, their typed ports and the
+ *  gaps discovery could not resolve.  A port is one carried value -- a
+ *  message field, or a declared row -- with every capture that writes it and
+ *  every capture that reads it; direction and transport are no part of it
+ *  (the recording binds each capture to its exchange).  {@link
+ *  #EXCHANGE_SITE_KEY} is the static identity of a port, never a runtime
+ *  exchange. */
 public final class CommunicationCatalogContract {
 
     /** Bump whenever a field is added, removed or re-interpreted. */
-    public static final int SCHEMA_VERSION = 4;
+    public static final int SCHEMA_VERSION = 5;
 
     public static final String SCHEMA_VERSION_FIELD = "schemaVersion";
     public static final String KIND = "kind";
@@ -21,12 +24,12 @@ public final class CommunicationCatalogContract {
     public static final String CALL_SITE_ID = "callSiteId";
     public static final String EXCHANGE_SITE_KEY = "exchangeSiteKey";
     public static final String TRANSPORT = "transport";
-    public static final String CLIENT_METHOD = "clientMethod";
     public static final String DECLARED_CALLEE = "declaredCallee";
-    public static final String SERVER_ENTRY_METHOD = "serverEntryMethod";
     public static final String PORT_ID = "portId";
-    public static final String PORT_DIRECTION = "direction";
     public static final String PORT_NAME = "name";
+    /** A port row's captures: those that write it, those that read it. */
+    public static final String PORT_PRODUCERS = "producers";
+    public static final String PORT_CONSUMERS = "consumers";
     public static final String PORT_JAVA_TYPE = "javaType";
     /** Leaf path the handoff broker addresses (may differ from the name). */
     public static final String PORT_HANDOFF_LEAF_PATH = "handoffLeafPath";
@@ -45,9 +48,6 @@ public final class CommunicationCatalogContract {
     public static final String PORT_DEFINITION_UNIT_INDEX =
             "definitionUnitIndex";
 
-    public static final String DIRECTION_REQUEST = "REQUEST";
-    public static final String DIRECTION_RESPONSE = "RESPONSE";
-
     // Discovery never guesses: what it cannot resolve becomes a gap row.
 
     /** The row's class, BLOCKING or DIAGNOSTIC, as a GapRow states it. */
@@ -60,45 +60,43 @@ public final class CommunicationCatalogContract {
     private CommunicationCatalogContract() {
     }
 
-    /** Static key of a client call site + server entry, never one attempt. */
-    public static String exchangeSiteKey(String transport, String protocol,
-                                         String clientCallSiteId,
-                                         String declaredCallee,
-                                         String serverEntryMethod) {
-        String identity = SCHEMA_VERSION + "\n" + nonNull(transport) + "\n"
-                + nonNull(protocol) + "\n" + nonNull(clientCallSiteId) + "\n"
-                + nonNull(declaredCallee) + "\n" + nonNull(serverEntryMethod);
+    /** Static key of one port, never one exchange: {@code port} is its
+     *  identity (a message field, or a declared row's id). */
+    public static String exchangeSiteKey(String port) {
+        String identity = SCHEMA_VERSION + "\n" + nonNull(port);
         return "XCH." + UUID.nameUUIDFromBytes(
                 identity.getBytes(StandardCharsets.UTF_8));
     }
 
-    /** {@code <exchangeSiteKey>.req.<name>}. */
-    public static String requestPortId(String exchangeSiteKey, String name) {
-        return nonNull(exchangeSiteKey) + ".req." + nonNull(name);
+    /** {@code <exchangeSiteKey>.wire.<name>}. */
+    public static String portId(String exchangeSiteKey, String name) {
+        return nonNull(exchangeSiteKey) + WIRE + nonNull(name);
     }
 
-    /** {@code <exchangeSiteKey>.resp}. */
-    public static String responsePortId(String exchangeSiteKey) {
-        return nonNull(exchangeSiteKey) + ".resp";
-    }
+    private static final String WIRE = ".wire.";
 
-    /** {@code <exchangeSiteKey>.resp.<name>}. */
-    public static String namedResponsePortId(String exchangeSiteKey,
-                                             String name) {
-        return responsePortId(exchangeSiteKey) + "." + nonNull(name);
-    }
-
-    /** Whether {@code portId} is key + .resp, .resp.NAME or .req.NAME. */
+    /** Whether {@code portId} is an exchange site key + .wire.NAME. */
     public static boolean declaredPortId(String portId) {
         String value = nonNull(portId);
         int suffix = exchangeSiteKeyLength(value);
-        if (suffix < 0) return false;
-        String tail = value.substring(suffix);
-        if (tail.equals(".resp")) return true;
-        if (tail.startsWith(".resp.")
-                && tail.length() > ".resp.".length()) return true;
-        return tail.startsWith(".req.")
-                && tail.length() > ".req.".length();
+        return suffix >= 0 && value.startsWith(WIRE, suffix)
+                && value.length() > suffix + WIRE.length();
+    }
+
+    /**
+     * One capture of one port on one side.  A port may have several
+     * captures on one side in one region, so this -- never the port id
+     * alone -- is what declares a capture once.
+     */
+    public static String captureKey(String side, Map<String, ?> capture) {
+        return side + "\n" + text(capture.get(PORT_ID)) + "\n"
+                + text(capture.get(CALL_SITE_ID)) + "\n"
+                + text(capture.get(PORT_OUTPUT_CAPTURE_KIND)) + "\n"
+                + text(capture.get(PORT_ARGUMENT_INDEX));
+    }
+
+    private static String text(Object value) {
+        return value == null ? "" : String.valueOf(value);
     }
 
     /** Length of the leading {@code "XCH." + canonical UUID}, or -1. */

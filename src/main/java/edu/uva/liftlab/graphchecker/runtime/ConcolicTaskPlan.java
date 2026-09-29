@@ -937,7 +937,7 @@ final class ConcolicTaskPlan {
         /** Every test of a disjunctive target guard and its fatal arm, the
          *  target branch first; empty for one guard. */
         final Map<String, Boolean> targetGuards = new LinkedHashMap<>();
-        /** Declared communication ports handed to the VM, by port role. */
+        /** One declared handoff site of each communication port role. */
         final Map<String, CommunicationHandoffSpec>
                 communicationHandoffs = new LinkedHashMap<>();
         /** Exact baseline hook executions, in recorded event order. */
@@ -1027,18 +1027,15 @@ final class ConcolicTaskPlan {
             }
             for (CommunicationHandoffSpec site
                     : task.communicationHandoffs()) {
-                // A region holding both sides of a cut declares a port once
-                // per role.
-                if (communicationHandoffs.put(handoffKey(site.portId(),
-                        site.outgoing()), site) != null) {
-                    throw new IllegalArgumentException(
-                            "communication port declares two handoff sites "
-                            + "in " + taskId + ": " + site.portId());
-                }
+                // A port may have several captures per role here; replay
+                // asks only whether the role is declared and keys the rest
+                // on the port id.
+                communicationHandoffs.putIfAbsent(handoffKey(site.portId(),
+                        site.outgoing()), site);
             }
         }
 
-        /** The declared handoff site of one communication port role. */
+        /** A declared handoff site of one communication port role. */
         CommunicationHandoffSpec communicationHandoff(
                 String portId, boolean exporting) {
             return communicationHandoffs.get(handoffKey(portId, exporting));

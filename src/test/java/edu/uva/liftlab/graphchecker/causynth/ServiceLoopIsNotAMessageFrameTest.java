@@ -246,11 +246,9 @@ public class ServiceLoopIsNotAMessageFrameTest {
                                             String frameMethod) {
         Map<String, Object> port = new LinkedHashMap<>();
         port.put(CommunicationCatalogContract.PORT_ID,
-                "XCH.0.resp.block-key-id");
+                "XCH.0.wire.block-key-id");
         port.put(CommunicationCatalogContract.PORT_NAME, "block-key-id");
         port.put(CommunicationCatalogContract.PORT_JAVA_TYPE, "int");
-        port.put(CommunicationCatalogContract.PORT_DIRECTION,
-                CommunicationCatalogContract.DIRECTION_RESPONSE);
         port.put(CommunicationCatalogContract.PORT_DEFINITION_METHOD,
                 definitionMethod);
         port.put(CommunicationCatalogContract.PORT_DEFINITION_UNIT_INDEX, 9);

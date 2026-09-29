@@ -15,7 +15,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.function.Predicate;
-import static edu.uva.liftlab.graphchecker.causynth.MapFields.asMap;
+import static edu.uva.liftlab.graphchecker.causynth.MapFields.rows;
 import static edu.uva.liftlab.graphchecker.causynth.MapFields.text;
 
 /** Builds candidate region skeletons around execution-context entries. */
@@ -51,7 +51,7 @@ final class SymbolicRegionPlanner {
                 new LinkedHashMap<>();
         private final Map<String, String> authorities;
         private final Set<String> failure = new LinkedHashSet<>();
-        /** Either capture of a wire value may own an occurrence. */
+        /** Any capture of a wire value may own an occurrence. */
         private final Set<String> communication;
         private final Set<String> state = new LinkedHashSet<>();
 
@@ -200,8 +200,8 @@ final class SymbolicRegionPlanner {
     }
 
     /**
-     * README section 3: declares every cut's ports on the regions owning its
-     * two sides -- the producer's region gets an OUT, the consumer's an IN.
+     * README section 3: declares every capture of every port on the regions
+     * holding it -- a producer's region gets an OUT, a consumer's an IN.
      * Composition substitutes the producer expression directly; both ends are
      * still declared so an absent or ambiguous handoff fails closed.  A value
      * held across a synchronous call stays in one region and has no port.
@@ -229,15 +229,18 @@ final class SymbolicRegionPlanner {
         }
     }
 
-    /** Declares the producer and consumer of one exact wire value. */
+    /** Declares every producer and consumer of one wire port. */
     private static void declareWirePort(
             StaticProgram program, Map<String, Object> site,
             Map<String, Map<String, Map<String, Object>>> byRegion) {
-        Map<String, Object> producer = asMap(site.get(WireFlowCatalog.PRODUCER));
-        Map<String, Object> consumer = asMap(site.get(WireFlowCatalog.CONSUMER));
-        if (producer == null || consumer == null) return;
-        declareWireEndpoint(program, site, producer, "OUT", byRegion);
-        declareWireEndpoint(program, site, consumer, "IN", byRegion);
+        for (Map<String, Object> producer : rows(site.get(
+                CommunicationCatalogContract.PORT_PRODUCERS))) {
+            declareWireEndpoint(program, site, producer, "OUT", byRegion);
+        }
+        for (Map<String, Object> consumer : rows(site.get(
+                CommunicationCatalogContract.PORT_CONSUMERS))) {
+            declareWireEndpoint(program, site, consumer, "IN", byRegion);
+        }
     }
 
     private static void declareWireEndpoint(
@@ -260,23 +263,22 @@ final class SymbolicRegionPlanner {
             for (String field : new String[]{
                     CommunicationCatalogContract.PORT_NAME,
                     CommunicationCatalogContract.PORT_JAVA_TYPE,
-                    CommunicationCatalogContract.TRANSPORT,
-                    CommunicationCatalogContract.PORT_DIRECTION,
-                    CommunicationCatalogContract.EXCHANGE_SITE_KEY,
-                    CommunicationCatalogContract.CALL_SITE_ID}) {
+                    CommunicationCatalogContract.EXCHANGE_SITE_KEY}) {
                 row.put(field, flow.get(field));
             }
             row.put(CommunicationCatalogContract.PORT_HANDOFF_LEAF_PATH,
                     portId);
             row.putAll(capture);
-            ports.putIfAbsent(side + "\n" + portId, row);
+            ports.putIfAbsent(CommunicationCatalogContract.captureKey(side,
+                    row), row);
         }
         if (regions.isEmpty()) {
             program.communicationGaps.add(CommunicationCatalogPlanner.gap(
                     GapKind.COMMUNICATION_REQUEST_PORT_UNRESOLVED,
                     GapClass.BLOCKING,
                     "NO_REGION_HOLDS_WIRE_CAPTURE", method,
-                    text(flow.get(CommunicationCatalogContract.CALL_SITE_ID)),
+                    text(capture.get(
+                            CommunicationCatalogContract.CALL_SITE_ID)),
                     portId));
         }
     }
@@ -306,15 +308,15 @@ final class SymbolicRegionPlanner {
         return result;
     }
 
-    /** Every declared producer and consumer capture method. */
+    /** Every capture method of every wire port. */
     private static Set<String> communicationEndpoints(
             StaticProgram program) {
         Set<String> entries = new LinkedHashSet<>();
         for (Map<String, Object> site : program.communicationCallSites) {
-            for (String endpoint : new String[]{
-                    WireFlowCatalog.PRODUCER, WireFlowCatalog.CONSUMER}) {
-                Map<String, Object> capture = asMap(site.get(endpoint));
-                if (capture != null) {
+            for (String side : new String[]{
+                    CommunicationCatalogContract.PORT_PRODUCERS,
+                    CommunicationCatalogContract.PORT_CONSUMERS}) {
+                for (Map<String, Object> capture : rows(site.get(side))) {
                     entries.add(text(capture.get(CommunicationCatalogContract
                             .PORT_DEFINITION_METHOD)));
                 }

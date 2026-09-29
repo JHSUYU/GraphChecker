@@ -20,7 +20,6 @@ public final class CommunicationHandoffSpec {
 
     private final String portId;
     private final String leafPath;
-    private final String direction;
     private final String side;
     private final String captureKind;
     private final String method;
@@ -33,8 +32,6 @@ public final class CommunicationHandoffSpec {
         portId = optionalString(row, CommunicationCatalogContract.PORT_ID);
         leafPath = optionalString(row,
                 CommunicationCatalogContract.PORT_HANDOFF_LEAF_PATH);
-        direction = optionalString(row,
-                CommunicationCatalogContract.PORT_DIRECTION);
         String javaType = optionalString(row,
                 CommunicationCatalogContract.PORT_JAVA_TYPE);
         side = optionalString(row, SIDE);
@@ -52,9 +49,7 @@ public final class CommunicationHandoffSpec {
         if (portId.isEmpty() || leafPath.isEmpty() || javaType.isEmpty()
                 || method.isEmpty()
                 || !(OUT.equals(side) || IN.equals(side))
-                || !(CommunicationCatalogContract.DIRECTION_REQUEST.equals(
-                direction) || CommunicationCatalogContract.DIRECTION_RESPONSE
-                .equals(direction)) || !validCapture()) {
+                || !validCapture()) {
             throw new IllegalArgumentException(
                     "invalid communication handoff: " + portId);
         }

@@ -402,45 +402,67 @@ final class SeedBackwardStaticAnalyzer {
                 discoveredExceptionSeedCount == 0 ? 0 : 1);
     }
 
-    /** Seeds both captures of every configured wire flow. */
+    /** Seeds every capture of every declared wire port. */
     private void seedDeclaredWireFlows() {
         for (WireFlowCatalog.WireFlow flow : wireFlows.flows()) {
-            SootMethod producerMethod = concreteMethod(flow.producer.method);
-            SootMethod consumerMethod = concreteMethod(flow.consumer.method);
-            if (producerMethod == null || consumerMethod == null
-                    || !ensureLoaded(producerMethod)
-                    || !ensureLoaded(consumerMethod)) {
-                throw new IllegalStateException(
-                        "Could not load wire flow endpoints: " + flow.id);
-            }
-            Fact producerFact = captureFact(flow.producer);
-            Fact consumerFact = captureFact(flow.consumer);
-            String producer = captureNode(flow.producer, producerFact);
-            String consumer = captureNode(flow.consumer, consumerFact);
-            if (producer.isEmpty() || consumer.isEmpty()) {
-                throw new IllegalStateException(
-                        "Could not resolve wire flow captures: " + flow.id);
-            }
-            relevant(flow.producer.method).add(producer);
-            relevant(flow.consumer.method).add(consumer);
-            selectedMethods.add(flow.producer.method);
-            selectedMethods.add(flow.consumer.method);
+            seedPort(flow);
+        }
+    }
+
+    /**
+     * Demands every capture of one port and joins each producer to each
+     * consumer, so the slice continues on the sending side.  Idempotent: a
+     * port that gains captures is seeded again.
+     */
+    private void seedPort(WireFlowCatalog.WireFlow flow) {
+        List<String> producers = new ArrayList<>();
+        List<Fact> producerFacts = new ArrayList<>();
+        for (WireFlowCatalog.CaptureSite producer : flow.producers) {
+            String node = seedCapture(flow, producer);
+            Fact fact = captureFact(producer);
+            producers.add(node);
+            producerFacts.add(fact);
             if (WireFlowCatalog.CaptureSite.CALL_ARGUMENT.equals(
-                    flow.producer.kind)) {
-                MethodSig callee = parseMethodSig(flow.producer.callee);
+                    producer.kind)) {
+                MethodSig callee = parseMethodSig(producer.callee);
                 if (callee == null) {
                     throw new IllegalStateException(
                             "Could not resolve wire producer call: "
                                     + flow.id);
                 }
-                addEdge("wire_capture_argument", producer,
-                        formalParam(callee, flow.producer.index),
-                        flow.producer.method, producerFact);
+                addEdge("wire_capture_argument", node,
+                        formalParam(callee, producer.index),
+                        producer.method, fact);
             }
-            addEdge("wire_handoff", producer, consumer,
-                    flow.consumer.method,
-                    consumerFact == null ? producerFact : consumerFact);
         }
+        for (WireFlowCatalog.CaptureSite consumer : flow.consumers) {
+            String node = seedCapture(flow, consumer);
+            Fact fact = captureFact(consumer);
+            for (int index = 0; index < producers.size(); index++) {
+                addEdge("wire_handoff", producers.get(index), node,
+                        consumer.method,
+                        fact == null ? producerFacts.get(index) : fact);
+            }
+        }
+    }
+
+    /** Loads one capture's method and demands its value there. */
+    private String seedCapture(WireFlowCatalog.WireFlow flow,
+                               WireFlowCatalog.CaptureSite site) {
+        if (!ensureLoaded(concreteMethod(site.method))) {
+            throw new IllegalStateException("Could not load wire flow "
+                    + "capture: " + flow.id + " at " + site.method);
+        }
+        Fact fact = captureFact(site);
+        String node = captureNode(site, fact);
+        if (node.isEmpty()) {
+            throw new IllegalStateException(
+                    "Could not resolve wire flow capture: " + flow.id
+                            + " at " + site.siteId());
+        }
+        relevant(site.method).add(node);
+        selectedMethods.add(site.method);
+        return node;
     }
 
     /**

@@ -178,7 +178,7 @@ public class RegionFoldPlanTest {
     private static final String LEAF_REGION = "REGION.leaf";
     private static final String EXCHANGE =
             "XCH.da84e470-fe7e-3068-b93f-caafeef64a70";
-    private static final String PORT_ID = EXCHANGE + ".req.key-id";
+    private static final String PORT_ID = EXCHANGE + ".wire.key-id";
     private static final String HANDLER_ADDRESS =
             "wl/dn1#epoch0/region/" + HANDLER_REGION + "/ctx:Root:SASL#1";
     private static final String GUARD_SITE = LEAF + "#u5";
@@ -204,8 +204,6 @@ public class RegionFoldPlanTest {
         port.put("dependencyRole", "VALUE_FRONTIER");
         port.put("name", "key-id");
         port.put("javaType", "int");
-        port.put("transport", "HDFS_SASL");
-        port.put("direction", "REQUEST");
         port.put("exchangeSiteKey", EXCHANGE);
         port.put("callSiteId", LEAF);
         port.put("handoffLeafPath", PORT_ID);

@@ -34,7 +34,11 @@ final class CommunicationCatalogPlanner {
         final Set<String> callSiteCallees = new LinkedHashSet<>();
     }
 
-    /** Publishes declared wire flows and loops in the selected slice. */
+    /**
+     * Publishes the wire ports and the loops of the selected slice; seeding a
+     * port's captures selected their methods.  A port with no capture on one
+     * side carries nothing.
+     */
     static Result plan(Collection<String> selectedMethods,
                        Function<String, Body> bodies,
                        List<WireFlowCatalog.WireFlow> flows,
@@ -42,16 +46,15 @@ final class CommunicationCatalogPlanner {
         Result result = new Result();
         List<String> ordered = new ArrayList<>(new TreeSet<>(
                 selectedMethods));
-        Set<String> selected = new LinkedHashSet<>(ordered);
         for (WireFlowCatalog.WireFlow flow : flows) {
-            if (!selected.contains(flow.producer.method)
-                    || !selected.contains(flow.consumer.method)) continue;
+            if (flow.producers.isEmpty() || flow.consumers.isEmpty()) continue;
             result.callSites.add(flow.row());
-            for (WireFlowCatalog.CaptureSite endpoint
-                    : new WireFlowCatalog.CaptureSite[]{
-                    flow.producer, flow.consumer}) {
-                if (!endpoint.callee.isEmpty()) {
-                    result.callSiteCallees.add(endpoint.callee);
+            List<WireFlowCatalog.CaptureSite> captures =
+                    new ArrayList<>(flow.producers);
+            captures.addAll(flow.consumers);
+            for (WireFlowCatalog.CaptureSite capture : captures) {
+                if (!capture.callee.isEmpty()) {
+                    result.callSiteCallees.add(capture.callee);
                 }
             }
         }

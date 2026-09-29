@@ -351,8 +351,8 @@ is the current design; this is its summary.
 - **Fault points (§1).** A fault is a decision at a transport door: every tree's
   `Client$Connection.sendRpcRequest` (IPC) and `SaslDataTransferClient.doSaslHandshake`
   (SASL) call `Debug.makeSymbolicBoolean("FAULT:<TRANSPORT>:<DIRECTION>")` unconditionally and
-  throw on true. The marker is declared iff the case's `communication-mappings.jsonl` maps that
-  transport (`WireFlowCatalog.declaredTransports`, `StaticScopeMap.declaredFault`). PLAN admits
+  throw on true. The marker is declared iff the case's `communication-mappings.jsonl` has a DOOR
+  on that transport (`WireFlowCatalog.declaredTransports`, `StaticScopeMap.declaredFault`). PLAN admits
   the firing occurrence as a declared site (`EXPLICIT_SYMBOLIC_FAULT` action, `LOCAL_DEFINITION`
   mint), the seed mints a MARKER root (recorded `false`), the branch on it is a symbolic decision,
   and `ClosurePlanner` makes every marker decision of a task — and of the control producer of the

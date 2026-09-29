@@ -25,14 +25,18 @@ import java.util.Map;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 
-/** Strict, transport-neutral declarations of values carried by messages. */
+/**
+ * The values messages carry, one port per value: a port is one carried value
+ * with every capture that writes it and every capture that reads it.  A
+ * declared row states one of each; direction and transport are no part of
+ * it, since the recording binds each capture to the exchange it ran in and
+ * replay keys everything on the port id.
+ */
 public final class WireFlowCatalog {
     static final String PROPERTY = "causynth.communication.mappings";
     static final String ENVIRONMENT = "CAUSYNTH_COMMUNICATION_MAPPINGS";
     static final String KIND = "WIRE_FLOW";
-    static final int SCHEMA_VERSION = 1;
-    static final String PRODUCER = "producer";
-    static final String CONSUMER = "consumer";
+    static final int SCHEMA_VERSION = 2;
 
     private final List<WireFlow> flows;
 
@@ -122,15 +126,15 @@ public final class WireFlowCatalog {
     }
 
     /**
-     * The mapped transports, of flows and doors: a door fault
+     * The doors' transports: a door fault
      * {@code FAULT:<TRANSPORT>:<DIRECTION>[:<kind>]} exists exactly for
      * these.  Read off the raw rows, before method resolution.
      */
     public static java.util.Set<String> declaredTransports() {
         java.util.Set<String> found = new java.util.LinkedHashSet<String>();
         try {
-            for (Row row : rows()) {
-                String transport = string(row.json, "transport");
+            for (JsonObject door : rowsOfKind(DoorWeave.KIND)) {
+                String transport = string(door, "transport");
                 if (!transport.isEmpty()) found.add(transport);
             }
         } catch (IOException unreadable) {
@@ -154,19 +158,14 @@ public final class WireFlowCatalog {
                             + KIND);
         }
         String id = string(row, "id");
-        String transport = string(row, "transport");
-        String direction = string(row, "direction").toUpperCase();
         String javaType = string(row, "javaType");
-        if (id.isEmpty() || transport.isEmpty() || javaType.isEmpty()
-                || !(CommunicationCatalogContract.DIRECTION_REQUEST.equals(
-                direction) || CommunicationCatalogContract.DIRECTION_RESPONSE
-                .equals(direction))) {
+        if (id.isEmpty() || javaType.isEmpty()) {
             throw new IllegalArgumentException(
-                    "wire flow requires id, transport, REQUEST/RESPONSE and javaType");
+                    "wire flow requires id and javaType");
         }
-        CaptureSite producer = CaptureSite.parse(object(row, PRODUCER),
+        CaptureSite producer = CaptureSite.parse(object(row, "producer"),
                 methods, frameMethod(row, "producerFrameMethod", methods));
-        CaptureSite consumer = CaptureSite.parse(object(row, CONSUMER),
+        CaptureSite consumer = CaptureSite.parse(object(row, "consumer"),
                 methods, frameMethod(row, "consumerFrameMethod", methods));
         if (!javaType.equals(producer.javaType)
                 || !javaType.equals(consumer.javaType)) {
@@ -174,8 +173,10 @@ public final class WireFlowCatalog {
                     + id + ": " + producer.javaType + " -> "
                     + consumer.javaType + " (declared " + javaType + ")");
         }
-        return new WireFlow(id, transport, direction, javaType,
-                producer, consumer);
+        WireFlow flow = new WireFlow(id, id, javaType);
+        flow.producers.add(producer);
+        flow.consumers.add(consumer);
+        return flow;
     }
 
     /**
@@ -215,65 +216,47 @@ public final class WireFlowCatalog {
                 ? fallback : value.getAsInt();
     }
 
+    /**
+     * One port: every producer exports into {@link #portId} and every
+     * consumer attaches from it, so a capture site belongs to one port.
+     */
     static final class WireFlow {
         final String id;
-        final String transport;
-        final String direction;
         final String javaType;
-        final CaptureSite producer;
-        final CaptureSite consumer;
         final String exchangeSiteKey;
         final String portId;
+        final List<CaptureSite> producers = new ArrayList<>();
+        final List<CaptureSite> consumers = new ArrayList<>();
 
-        private WireFlow(String id, String transport, String direction,
-                         String javaType, CaptureSite producer,
-                         CaptureSite consumer) {
+        /** A port named {@code id}, keyed by {@code identity}. */
+        WireFlow(String id, String identity, String javaType) {
             this.id = id;
-            this.transport = transport;
-            this.direction = direction;
             this.javaType = javaType;
-            this.producer = producer;
-            this.consumer = consumer;
             exchangeSiteKey = CommunicationCatalogContract.exchangeSiteKey(
-                    transport, id, client().siteId(), client().callee,
-                    server().method);
-            portId = CommunicationCatalogContract.DIRECTION_REQUEST.equals(
-                    direction)
-                    ? CommunicationCatalogContract.requestPortId(
-                    exchangeSiteKey, id)
-                    : CommunicationCatalogContract.namedResponsePortId(
-                    exchangeSiteKey, id);
-        }
-
-        CaptureSite client() {
-            return CommunicationCatalogContract.DIRECTION_REQUEST.equals(
-                    direction) ? producer : consumer;
-        }
-
-        CaptureSite server() {
-            return CommunicationCatalogContract.DIRECTION_REQUEST.equals(
-                    direction) ? consumer : producer;
+                    identity);
+            portId = CommunicationCatalogContract.portId(exchangeSiteKey, id);
         }
 
         Map<String, Object> row() {
             Map<String, Object> row = CommunicationCatalogPlanner.newRow(KIND);
             row.put("id", id);
-            row.put(CommunicationCatalogContract.TRANSPORT, transport);
-            row.put(CommunicationCatalogContract.PORT_DIRECTION, direction);
             row.put(CommunicationCatalogContract.PORT_JAVA_TYPE, javaType);
             row.put(CommunicationCatalogContract.EXCHANGE_SITE_KEY,
                     exchangeSiteKey);
             row.put(CommunicationCatalogContract.PORT_ID, portId);
             row.put(CommunicationCatalogContract.PORT_NAME, id);
-            row.put(CommunicationCatalogContract.CALL_SITE_ID,
-                    client().siteId());
-            row.put(CommunicationCatalogContract.CLIENT_METHOD,
-                    client().method);
-            row.put(CommunicationCatalogContract.SERVER_ENTRY_METHOD,
-                    server().method);
-            row.put(PRODUCER, producer.row());
-            row.put(CONSUMER, consumer.row());
+            row.put(CommunicationCatalogContract.PORT_PRODUCERS,
+                    rows(producers));
+            row.put(CommunicationCatalogContract.PORT_CONSUMERS,
+                    rows(consumers));
             return row;
+        }
+
+        private static List<Map<String, Object>> rows(
+                List<CaptureSite> captures) {
+            List<Map<String, Object>> rows = new ArrayList<>();
+            for (CaptureSite capture : captures) rows.add(capture.row());
+            return rows;
         }
     }
 
@@ -384,7 +367,6 @@ public final class WireFlowCatalog {
             return unitIndex < 0 ? method
                     : SiteId.of(method, unitIndex);
         }
-
         Map<String, Object> row() {
             Map<String, Object> row = new LinkedHashMap<>();
             row.put(CommunicationCatalogContract.CALL_SITE_ID, siteId());

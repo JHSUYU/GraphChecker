@@ -236,13 +236,10 @@ public final class RuntimeSelectedRegionFinalizer {
     /** One declared cut port of one region, built once from its skeleton. */
     private static final class CutPort {
         private final String side;
-        private final String portId;
         private final Map<String, Object> row;
 
-        private CutPort(String side, String portId,
-                        Map<String, Object> row) {
+        private CutPort(String side, Map<String, Object> row) {
             this.side = side;
-            this.portId = portId;
             this.row = row;
         }
     }
@@ -260,8 +257,7 @@ public final class RuntimeSelectedRegionFinalizer {
                     : cutPortRows(skeleton, program.regionGraph(
                             skeleton.regionId)).entrySet()) {
                 for (Map<String, Object> row : side.getValue()) {
-                    ports.add(new CutPort(side.getKey(),
-                            text(row.get("portId")), row));
+                    ports.add(new CutPort(side.getKey(), row));
                 }
             }
             if (!ports.isEmpty()) byRegion.put(skeleton.regionId, ports);
@@ -322,20 +318,17 @@ public final class RuntimeSelectedRegionFinalizer {
             List<Map<String, Object>> inputs = rows(
                     region.get("symbolicInputs"));
             List<Map<String, Object>> outputs = rows(region.get("outputs"));
-            // A cut has one region-level declaration and zero or more
+            // A capture has one region-level declaration and zero or more
             // occurrence-owned instances of that declaration.
-            Set<String> inputIds = declaredPortIds(inputs);
-            Set<String> outputIds = declaredPortIds(outputs);
+            Set<String> held = declaredCaptures(inputs, "IN");
+            held.addAll(declaredCaptures(outputs, "OUT"));
             for (CutPort port : declared) {
-                if ("IN".equals(port.side)) {
-                    if (inputIds.add(port.portId)) {
-                        inputs.add(new LinkedHashMap<>(port.row));
-                    }
-                } else if ("OUT".equals(port.side)) {
-                    if (outputIds.add(port.portId)) {
-                        outputs.add(new LinkedHashMap<>(port.row));
-                    }
+                if (!held.add(CommunicationCatalogContract.captureKey(
+                        port.side, port.row))) {
+                    continue;
                 }
+                ("IN".equals(port.side) ? inputs : outputs).add(
+                        new LinkedHashMap<>(port.row));
             }
             region.put("symbolicInputs", inputs);
             region.put("outputs", outputs);
@@ -382,16 +375,19 @@ public final class RuntimeSelectedRegionFinalizer {
         return "";
     }
 
-    /** Region-level port declarations, excluding occurrence-owned copies. */
-    private static Set<String> declaredPortIds(
-            List<Map<String, Object>> ports) {
-        Set<String> ids = new LinkedHashSet<>();
+    /** Region-level capture declarations on one side, excluding
+     *  occurrence-owned copies. */
+    private static Set<String> declaredCaptures(
+            List<Map<String, Object>> ports, String side) {
+        Set<String> captures = new LinkedHashSet<>();
         for (Map<String, Object> port : ports) {
-            if (!text(port.get("occurrenceId")).isEmpty()) continue;
-            String id = text(port.get("portId"));
-            if (!id.isEmpty()) ids.add(id);
+            if (!text(port.get("occurrenceId")).isEmpty()
+                    || text(port.get("portId")).isEmpty()) {
+                continue;
+            }
+            captures.add(CommunicationCatalogContract.captureKey(side, port));
         }
-        return ids;
+        return captures;
     }
 
     /**
