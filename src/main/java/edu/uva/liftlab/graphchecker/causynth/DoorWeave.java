@@ -7,8 +7,10 @@ import soot.BooleanType;
 import soot.Local;
 import soot.RefType;
 import soot.Scene;
+import soot.SootClass;
 import soot.SootMethod;
 import soot.SootMethodRef;
+import soot.Type;
 import soot.Unit;
 import soot.VoidType;
 import soot.jimple.IntConstant;
@@ -113,9 +115,14 @@ final class DoorWeave {
                 "makeSymbolicBoolean",
                 Collections.singletonList(RefType.v("java.lang.String")),
                 BooleanType.v(), true);
+        // (String) where the kind declares it, else (): ZooKeeper's
+        // KeeperException.ConnectionLossException has only the latter.
+        List<Type> parameters = messageConstructor(kind)
+                ? Collections.<Type>singletonList(
+                RefType.v("java.lang.String"))
+                : Collections.<Type>emptyList();
         SootMethodRef init = Scene.v().makeMethodRef(
-                CausynthPipeline.phantomClass(kind), "<init>",
-                Collections.singletonList(RefType.v("java.lang.String")),
+                CausynthPipeline.phantomClass(kind), "<init>", parameters,
                 VoidType.v(), false);
         Local chosen = CausynthPipeline.newTraceLocal(body, BooleanType.v(),
                 "$fault");
@@ -129,10 +136,23 @@ final class DoorWeave {
                 IntConstant.v(0)), next));
         units.add(jimple.newAssignStmt(failure,
                 jimple.newNewExpr(RefType.v(kind))));
-        units.add(jimple.newInvokeStmt(jimple.newSpecialInvokeExpr(failure,
-                init, StringConstant.v("symbolic " + marker))));
+        units.add(jimple.newInvokeStmt(parameters.isEmpty()
+                ? jimple.newSpecialInvokeExpr(failure, init)
+                : jimple.newSpecialInvokeExpr(failure, init,
+                StringConstant.v("symbolic " + marker))));
         units.add(jimple.newThrowStmt(failure));
         return units;
+    }
+
+    /** Whether the kind declares a {@code (String)} constructor. */
+    private static boolean messageConstructor(String kind) {
+        SootClass type = Scene.v().forceResolve(kind, SootClass.SIGNATURES);
+        if (type.isPhantom()) {
+            throw new IllegalStateException("DOOR_FAULT_KIND_UNAVAILABLE: "
+                    + kind);
+        }
+        return type.declaresMethod("<init>", Collections.<Type>singletonList(
+                RefType.v("java.lang.String")));
     }
 
     private static Stmt firstCall(Body body, String callee) {
