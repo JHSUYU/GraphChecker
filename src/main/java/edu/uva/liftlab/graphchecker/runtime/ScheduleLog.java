@@ -134,6 +134,12 @@ public final class ScheduleLog {
     /** Threads held at the cut that the watchdog let go, until the wait
      *  ends. */
     private static final Set<Thread> LET_GO = new HashSet<Thread>();
+    /**
+     * Whether this thread's last observed event was a vacant WAKE: one the
+     * recording never made, held at the cut and let go only because the run
+     * could go no further ({@link #vacated}).
+     */
+    private static final ThreadLocal<Boolean> VACANT = new ThreadLocal<Boolean>();
     /** Whether the watchdog let the cut's waits go since a slot was taken. */
     private static boolean letGoSinceProgress;
     private static int firstOpen;
@@ -242,6 +248,7 @@ public final class ScheduleLog {
      *  (a response stands where its request was received). */
     public static boolean observe(ScheduleEvent.Kind kind, String site,
                                   String endpoint, Stance at) {
+        VACANT.remove();
         if (kind == null || !RecordingWindow.opened()) return false;
         mute();
         try {
@@ -252,6 +259,18 @@ public final class ScheduleLog {
         } finally {
             unmute();
         }
+    }
+
+    /**
+     * Whether the event this thread just observed was a vacant WAKE: a turn
+     * the recording never made, which the replay held at the cut and let go
+     * because the run was idle -- something the order waits for waits on it
+     * (a pool's shutdown awaiting the task the turn runs in).  A turn that
+     * may be skipped is skipped then ({@code MessageDoors#vacant}).  Never
+     * true in a recording, which holds nothing.
+     */
+    static boolean vacated() {
+        return Boolean.TRUE.equals(VACANT.get());
     }
 
     /**
@@ -521,6 +540,10 @@ public final class ScheduleLog {
                 if (at == GO) {
                     if (slot < 0) {
                         ranFree++;
+                        if (event.kind == ScheduleEvent.Kind.WAKE
+                                && LET_GO.contains(self)) {
+                            VACANT.set(Boolean.TRUE);
+                        }
                     } else {
                         takeLocked(slot);
                     }

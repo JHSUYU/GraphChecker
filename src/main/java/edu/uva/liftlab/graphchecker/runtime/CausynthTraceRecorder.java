@@ -761,6 +761,11 @@ public final class CausynthTraceRecorder {
         return RuntimeTraceContext.beginTick(owner, roleName);
     }
 
+    /** Whether the tick {@link #beginDaemonTick} opened is a vacant turn. */
+    public static boolean vacantDaemonTick(long token) {
+        return RuntimeTraceContext.vacantTick(token);
+    }
+
     /** Closes the tick {@link #beginDaemonTick} opened. */
     public static void endDaemonTick(long token) {
         RuntimeTraceContext.endTick(token);

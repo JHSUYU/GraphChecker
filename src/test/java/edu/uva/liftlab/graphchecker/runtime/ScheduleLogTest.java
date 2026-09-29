@@ -450,7 +450,7 @@ public class ScheduleLogTest {
     /**
      * The request that makes x first sleeps a wait the recording never
      * made: held at the cut, with the run idle, it is let go before x is
-     * given up, and x is taken.
+     * given up, and x is taken.  The turn it let go is vacant; x's is not.
      */
     @Test(timeout = 20000L)
     public void anIdleRunLetsTheCutsWaitsGoBeforeGivingUp() throws Exception {
@@ -458,7 +458,9 @@ public class ScheduleLogTest {
         String site = "tick.once";
         ScheduleLog.enforceForTests(prefix("x"));
         ScheduleLog.observe(ScheduleEvent.Kind.WAKE, site);
+        assertTrue("a turn let go is vacant", ScheduleLog.vacated());
         ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+        assertFalse("a slotted event is not", ScheduleLog.vacated());
         assertEquals(Arrays.asList(site, "x"), sites());
         String progress = ScheduleLog.progress();
         assertTrue(progress, progress.contains("1 taken, 0 given up"));

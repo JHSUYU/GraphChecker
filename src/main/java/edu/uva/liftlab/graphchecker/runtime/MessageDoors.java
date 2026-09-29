@@ -236,6 +236,17 @@ public final class MessageDoors {
         return CausynthTraceRecorder.beginDaemonTick(owner, role);
     }
 
+    /**
+     * Whether the turn {@link #beginTick} opened is vacant: one the recording
+     * never made, which a replay held and let go only because the run could
+     * go no further (a pool's shutdown awaiting the timer task it runs in).
+     * A tick site whose turn may be skipped -- a poll, not a queue's consumer
+     * -- skips it; the recording, which holds nothing, has no vacant turn.
+     */
+    public static boolean vacant(long tick) {
+        return CausynthTraceRecorder.vacantDaemonTick(tick);
+    }
+
     /** Closes the tick {@link #beginTick} opened. */
     public static void endTick(long token) {
         CausynthTraceRecorder.endDaemonTick(token);

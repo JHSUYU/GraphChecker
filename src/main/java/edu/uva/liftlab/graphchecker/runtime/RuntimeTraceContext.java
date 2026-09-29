@@ -432,7 +432,14 @@ final class RuntimeTraceContext {
         if (ScheduleLog.observe(ScheduleEvent.Kind.WAKE, site)) {
             scope.tickSite = site;
         }
+        scope.vacant = ScheduleLog.vacated();
         return token;
+    }
+
+    /** Whether the tick {@link #beginTick} opened is a vacant turn. */
+    static boolean vacantTick(long token) {
+        ScopeFrame tick = standing(CURRENT.get(), token);
+        return tick != null && tick.vacant;
     }
 
     /**
@@ -1056,6 +1063,9 @@ final class RuntimeTraceContext {
         private boolean turn;
         /** The tick's site when its WAKE was written, else null. */
         private String tickSite;
+        /** Whether this tick's turn is one the recording never made
+         *  ({@link ScheduleLog#vacated}). */
+        private boolean vacant;
         private final SourceRef source;
         private final Frame activeFrame;
         private final SourceRef frameSource;
