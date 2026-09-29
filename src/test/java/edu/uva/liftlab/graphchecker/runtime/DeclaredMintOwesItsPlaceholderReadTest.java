@@ -328,12 +328,12 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
 
     /**
      * A version stored outside every region (VM 22f2707a1) has no write row
-     * to join, so the read of it states what that store left -- a constant
-     * -- or the composer has nothing to pin it to (commit-gs v74: the GS an
-     * IPC handler's updatePipeline stored, read at the third target).
+     * to join, so the read of it states what it returned (VM f11) or the
+     * composer has nothing to pin it to (commit-gs v74: the GS an IPC
+     * handler's updatePipeline stored, read at the third target).
      */
     @Test
-    public void aReadOfAStoreOutsideEveryRegionStatesTheConstantItLeft()
+    public void aReadOfAStoreOutsideEveryRegionStatesWhatItReturned()
             throws Exception {
         RowRuntime.configure(sessionFile());
         OccurrenceAddress at = address();
@@ -367,6 +367,7 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
         readFrom.addProperty("readEventId", 510L);
         readFrom.add("location", location);
         readFrom.add("observedVersion", observed);
+        readFrom.add("concreteValue", stored);
         JsonObject copy = record("INSTANCE_FIELD/77#24",
                 loggedAt(version(900L + 1L, readFrom)));
         active.sharedStateRecords.put("INSTANCE_FIELD/10#40", stamp);
@@ -379,7 +380,7 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
             if (row.observedVersion() == 456L) stated = row;
         }
         assertNotNull("the read of the outside store is a row", stated);
-        assertEquals("and states what the store left", "1003",
+        assertEquals("and states what the read returned", "1003",
                 stated.concreteValue());
     }
 

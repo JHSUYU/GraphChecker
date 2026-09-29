@@ -45,7 +45,10 @@ unless stated. Every row carries `sessionId` (the replay session that produced i
 - `WriteRow(sessionId, Endpoint endpoint, LocationId location, long version,
   String expressionRef)`
 - `ReadRow(sessionId, Endpoint endpoint, LocationId location, long observedVersion
-  /*-1 unknown*/, String symbol, String concreteValue /*nullable*/)`
+  /*-1 unknown*/, String symbol, String concreteValue /*nullable*/)` — `concreteValue`
+  is what the read returned (`ReadRow.returned`): a scalar's literal, a String as its
+  JSON string literal, null as `N`; absent for an identity.  A read joins its write,
+  else its version's mint, and only then pins to it.
 - `RootMintRow(sessionId, occurrence, String rootId, String symbol, RootKind kind,
   String recordedValue, String domainMin /*resolved absolute, nullable*/, String
   domainMax, boolean declared)` — `enum RootKind { MARKER, INTEGRAL, CLOCK }`.

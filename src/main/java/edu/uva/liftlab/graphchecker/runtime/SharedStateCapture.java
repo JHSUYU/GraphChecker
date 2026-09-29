@@ -314,12 +314,13 @@ final class SharedStateCapture {
             "STATIC_FIELD", "ARRAY_ELEMENT", LOCATION_KIND_MAP_STATE);
     /**
      * Kinds of published version a location may carry: the VM's
-     * {@code STATE_<operation>} vocabulary (SharedFieldVersions::version_label).
-     * Trap: an operation missing here fails the whole envelope, so the
-     * location loses every version.
+     * {@code STATE_<operation>} vocabulary (SharedFieldVersions::version_label),
+     * and UNOBSERVED: a word the read found that no hooked store left, which
+     * names no writer.  Trap: an operation missing here fails the whole
+     * envelope, so the location loses every version.
      */
     private static final Set<String> VERSION_KINDS = names("INITIAL", "WRITE",
-            "RMW", "STATE", "STATE_PUT", "STATE_REMOVE", "STATE_REMOVE_IF",
+            "RMW", "UNOBSERVED", "STATE", "STATE_PUT", "STATE_REMOVE", "STATE_REMOVE_IF",
             "STATE_CLEAR", "STATE_REMOVE_AT", "STATE_CLEAR_VIEW",
             "STATE_ADD", "STATE_APPEND", "STATE_INSERT", "STATE_WRITE");
     /** The version kind every location may publish, whatever its shape. */

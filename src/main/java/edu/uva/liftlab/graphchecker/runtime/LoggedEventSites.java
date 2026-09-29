@@ -205,15 +205,6 @@ final class LoggedEventSites {
         return null;
     }
 
-    /**
-     * Whether the version with this id was stored outside every region: its
-     * log record names no activation (VM 22f2707a1).
-     */
-    static boolean storedOutsideEveryRegion(long versionId) {
-        Logged logged = LOGGED.get(Long.valueOf(versionId));
-        return logged != null && logged.activation <= 0L;
-    }
-
     /** The activation the event states, its own or its log record's. */
     private static long activationOf(JsonObject node, long eventId) {
         long activation = optionalLongInteger(node, "regionEnterEventId", -1L);

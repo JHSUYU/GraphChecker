@@ -269,7 +269,11 @@ public final class Composer {
             return unattestedRoots;
         }
 
-        /** Path id -> the interleaving that path's reads actually took. */
+        /**
+         * Path id -> the interleaving that path's anchor reads actually
+         * took: each STATE family's arm the run took
+         * ({@link ComposedFamilies#stateFamilies}).
+         */
         public List<String> observedReads(String pathId) {
             return asserted(observedReads.get(pathId));
         }
@@ -362,7 +366,7 @@ public final class Composer {
      */
     private final Map<String, Set<String>> unattestedRoots =
             new LinkedHashMap<String, Set<String>>();
-    /** Path id -> what its reads observed, one term per symbol. */
+    /** Path id -> the family arms its anchor reads took. */
     private final Map<String, List<String>> observedReads =
             new LinkedHashMap<String, List<String>>();
     /**
@@ -674,8 +678,8 @@ public final class Composer {
         //      lowering so every leaf naming them resolves, not just later
         //      ones.
         Set<String> answered = new LinkedHashSet<String>();
-        statedReads(session, reached.keySet(), relevant, refusals, joins,
-                answered);
+        statedReads(session, reached.keySet(), relevant, rows, refusals,
+                joins, answered);
 
         // (1) The valuation this replay ran under, for every VARIED root
         //     (a root may be written and never branched on).  Declared roots
@@ -698,7 +702,7 @@ public final class Composer {
         //     symbol: a read with family alternatives must not also be
         //     asserted here.
         stateJoins(session, reached.keySet(), relevant, rows, refusals,
-                joined, observed, joins, answered);
+                joined, joins, answered);
 
         // (4) pi_p: decisions STRICTLY BEFORE the target's seq.  The anchor
         //     decision shares the target's seq; including it would
@@ -779,7 +783,7 @@ public final class Composer {
         //     A read a family gives alternatives to takes its value there.
         Set<String> chosen = composedFamilies.stateFamilies(path,
                 ordinal, selector, joined, joins, interactionIds,
-                familyTerms);
+                familyTerms, observed);
         // (8) And the state joins this conjunction ASKS ABOUT.
         terms.addAll(statedJoins(joins, chosen, terms, familyTerms));
 
@@ -1318,18 +1322,24 @@ public final class Composer {
     /**
      * Read := the value the ROW states, bound before any lowering: the PIN
      * half of {@link #stateJoins}, hoisted so every leaf naming the symbol
-     * resolves.  Only for reads the write log does not cover; rows stating
+     * resolves.  Only for reads neither the write log nor a mint covers
+     * (a root's version is its mint's, whatever the run read); rows stating
      * no value are left to the join half.  {@code answered} keeps one
      * refusal per row across both halves.
      */
     void statedReads(String session, Set<String> occurrences,
-                     Independence relevant, List<GapRow> refusals,
-                     Map<String, String> joins, Set<String> answered) {
+                     Independence relevant, SmtLowering.SessionJoin join,
+                     List<GapRow> refusals, Map<String, String> joins,
+                     Set<String> answered) {
         for (ReadRow read : statedRows(session, occurrences)) {
             if (read.symbol() == null || read.symbol().isEmpty()) continue;
             if (!relevant.keeps(read)) continue;
             if (joins.containsKey(read.symbol())) continue;
             if (joinable(session, read)) continue;
+            if (!"".equals(SmtLowering.mintedReadSymbol(join,
+                    read.observedVersion()))) {
+                continue;
+            }
             pin(session, read, refusals, joins, answered);
         }
     }
@@ -1371,20 +1381,18 @@ public final class Composer {
     }
 
     /**
-     * Read := the expression of the write version it observed; then PIN;
-     * then REFUSE.  No "latest write", no choice between writers.
+     * Read := the expression of the write version it observed; then its
+     * MINT; then PIN; then REFUSE.  No "latest write", no choice between
+     * writers.
      */
     void stateJoins(String session, Set<String> occurrences,
                     Independence relevant, SmtLowering.SessionJoin join,
                     List<GapRow> refusals, List<ReadRow> joined,
-                    List<String> observed, Map<String, String> joins,
-                    Set<String> answered) {
-        /** Name -> the one statement this path makes under it. */
-        Map<String, String> statedOnce = new LinkedHashMap<String, String>();
+                    Map<String, String> joins, Set<String> answered) {
         for (ReadRow read : statedRows(session, occurrences)) {
             if (read.symbol() == null || read.symbol().isEmpty()) continue;
             if (!relevant.keeps(read)) continue;
-            // Family alternatives and observed values are the anchor's only.
+            // Family alternatives are the anchor's only.
             boolean atAnchor = anchor.id().equals(
                     read.endpoint().occurrence().id());
             String key = SmtLowering.locationKey(read.location());
@@ -1414,11 +1422,7 @@ public final class Composer {
                     lowering.declareStated(read.symbol(), value.sort);
                     joins.put(read.symbol(), "(= " + read.symbol() + " "
                             + value.text + ")");
-                    if (atAnchor) {
-                        joined.add(read);
-                        observe(session, read, statedOnce, observed,
-                                refusals);
-                    }
+                    if (atAnchor) joined.add(read);
                     continue;
                 }
             }
@@ -1431,17 +1435,12 @@ public final class Composer {
                         && "".equals(SmtLowering.mintedReadSymbol(join,
                         read.observedVersion()))) {
                     joined.add(read);
-                    observe(session, read, statedOnce, observed, refusals);
                 }
                 continue;
             }
-            // The row's own value (non-joinable rows were asked at step 0).
-            if (answered.contains(read.symbol())
-                    || pin(session, read, refusals, joins, answered)) {
-                continue;
-            }
             // What the MINT that created this version gave it, keyed by
-            // `mintVersion` alone (CONTRACT v2.4).
+            // `mintVersion` alone (CONTRACT v2.4), before the value the read
+            // returned: a root's version moves with the root.
             String minted = SmtLowering.mintedReadSymbol(join,
                     read.observedVersion());
             if (minted == null) {
@@ -1488,6 +1487,11 @@ public final class Composer {
                         + minted + ")");
                 continue;
             }
+            // The row's own value (non-joinable rows were asked at step 0).
+            if (answered.contains(read.symbol())
+                    || pin(session, read, refusals, joins, answered)) {
+                continue;
+            }
             refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
                     GapClass.DIAGNOSTIC, key + "@" + read.observedVersion(),
                     (write == null ? "no write of this location at this "
@@ -1496,30 +1500,6 @@ public final class Composer {
                             + "refusal is stated beside this)")
                             + ", and the recording states no value the read "
                             + "returned"));
-        }
-    }
-
-    /**
-     * What an anchor read RETURNED (the interleaving the run took), kept
-     * beside its join or pin for the claim policy.  One statement per
-     * symbol; conflicting rows refuse.
-     */
-    private static void observe(String session, ReadRow read,
-                                Map<String, String> statedOnce,
-                                List<String> observed,
-                                List<GapRow> refusals) {
-        String literal = smtLiteral(read.concreteValue());
-        if (literal.isEmpty()) return;
-        String name = "observed_read__" + ArtifactIO.digest(read.symbol(), 10);
-        String statement = "(= " + read.symbol() + " " + literal + ")";
-        String held = statedOnce.put(name, statement);
-        if (held == null) {
-            observed.add(statement);
-        } else if (!held.equals(statement)) {
-            refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
-                    GapClass.BLOCKING, read.symbol(), "two read rows of this "
-                            + "occurrence state different values for one "
-                            + "symbol: " + held + " and " + statement));
         }
     }
 

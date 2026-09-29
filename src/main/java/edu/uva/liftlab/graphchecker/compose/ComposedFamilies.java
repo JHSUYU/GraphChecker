@@ -598,11 +598,10 @@ final class ComposedFamilies {
                     delivered, reached,
                     composer.reachedConditions(session, reached));
             Set<String> answered = new LinkedHashSet<String>();
-            composer.statedReads(session, reached.keySet(), relevant, local,
-                    joins, answered);
+            composer.statedReads(session, reached.keySet(), relevant, rows,
+                    local, joins, answered);
             composer.stateJoins(session, reached.keySet(), relevant, rows,
-                    local, new ArrayList<ReadRow>(),
-                    new ArrayList<String>(), joins, answered);
+                    local, new ArrayList<ReadRow>(), joins, answered);
             conjuncts.addAll(composer.closureConditions(session, reached,
                     relevant, local));
             // Nested families go under this FAMILY's guard, not this
@@ -800,14 +799,19 @@ final class ComposedFamilies {
      * every joined read of every location it writes, its body stated once;
      * then exactly-one PER LOCATION over its writers (none for a single
      * writer).  Choosing a writer for one location and not another would
-     * be half a block moved.
+     * be half a block moved.  {@code recorded} receives each family's arm
+     * the run took -- the observed writer's selector, or the pins' when no
+     * region wrote the version read: the pairing a witness re-pairs if it
+     * needs another.  A read's value is no such statement, since a joined
+     * value moves with the valuation while its pairing stays.
      */
     Set<String> stateFamilies(Corpus.RecordedPath path,
                               int ordinal, String selector,
                               List<ReadRow> joined,
                               Map<String, String> pins,
                               Set<String> reached,
-                              List<String> stated) {
+                              List<String> stated,
+                              List<String> recorded) {
         String session = path.sessionId;
         Set<String> chosen = new LinkedHashSet<String>();
         // Reads grouped by location: every read of it takes the same arm.
@@ -827,6 +831,9 @@ final class ComposedFamilies {
         // the arm that is the run's own interleaving.
         Map<String, List<String>> observedPins =
                 new LinkedHashMap<String, List<String>>();
+        // Otherwise the writer occurrence of the version its reads observed.
+        Map<String, String> observedWriter =
+                new LinkedHashMap<String, String>();
         for (Map.Entry<String, List<ReadRow>> entry
                 : byLocation.entrySet()) {
             List<ReadRow> reads = entry.getValue();
@@ -872,8 +879,12 @@ final class ComposedFamilies {
             // Its writer ran outside every region, so no arm states what the
             // read returned: the pins do, as one more arm.
             List<String> observedPin = new ArrayList<String>();
-            if (corpus.writeOf(session, entry.getKey(),
-                    reads.get(0).observedVersion()) == null) {
+            WriteRow observedWrite = corpus.writeOf(session, entry.getKey(),
+                    reads.get(0).observedVersion());
+            if (observedWrite != null) {
+                observedWriter.put(entry.getKey(),
+                        observedWrite.endpoint().occurrence().id());
+            } else {
                 for (String symbol : symbols) {
                     String pin = pins.get(symbol);
                     if (pin != null && !observedPin.contains(pin)) {
@@ -928,6 +939,8 @@ final class ComposedFamilies {
                 if (name != null) selectors.add(name);
             }
             List<String> observedPin = observedPins.get(location.getKey());
+            String taken = selectorOf.get(observedWriter.get(
+                    location.getKey()));
             if (observedPin != null) {
                 String name = "observed_arm__" + ordinal + "__"
                         + ArtifactIO.digest(location.getKey() + "|"
@@ -946,8 +959,12 @@ final class ComposedFamilies {
                         Collections.<String>emptyList(), session,
                         Collections.<Arms.Arm>emptyList()));
                 selectors.add(name);
+                taken = name;
             }
             if (selectors.size() < 2) continue;
+            if (taken != null && !recorded.contains(taken)) {
+                recorded.add(taken);
+            }
             String formula = Arms.exactlyOne(selectors);
             stated.add(formula);
             lowering.assertNamed("state_family__" + ordinal + "__"

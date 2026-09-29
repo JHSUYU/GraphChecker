@@ -853,10 +853,9 @@ public final class SmtLowering {
                         primitiveString(expression, "_java_type")), expected);
             }
         }
-        JsonElement concrete = expression.get("concreteValue");
-        if (concrete != null && !concrete.isJsonNull()) {
-            return dispatch(concrete, expected, origin + ":pinned");
-        }
+        Term pinned = statedValue(ReadRow.returned(expression),
+                primitiveString(expression, "_java_type"));
+        if (pinned != null) return pinned;
         return unstated("Read:" + key + "@" + version,
                 "no write of this location at this version in this session, "
                         + "and the recording states no value it returned",
@@ -911,20 +910,27 @@ public final class SmtLowering {
     /**
      * The term one row states as the value its read returned, or null (the
      * caller names the refusal).  The one reading of a recorded value, for
-     * pins and {@code concreteValue} alike: a reference or {@code "N"} goes
-     * through {@link #symbolTerm}; a scalar is its literal.
+     * pins and {@code concreteValue} alike, spelled as
+     * {@link ReadRow#returned} spells it: a String is its content, a
+     * reference or {@code "N"} goes through {@link #symbolTerm}, and a
+     * scalar is its literal at the row's Java type.
      */
     Term statedValue(String concreteValue, String javaType) {
         String text = concreteValue == null ? "" : concreteValue.trim();
         if (text.isEmpty()) return null;
+        String string = ReadRow.stringContent(text);
+        if (string != null) return Term.nonNullString(quote(string), "true");
         if (VmExpressionIr.SYMBOLIC_NULL.equals(text)
                 || VmRows.referencedObjectRid(text) > 0L) {
             return symbolTerm(symbolNode(text, javaType), null);
         }
-        String literal = smtLiteral(text);
-        if (literal.isEmpty()) return null;
         Sort sort = JavaSmtSorts.sortOfJava(javaType);
-        if (!sort.scalar()) return null;
+        String literal = sort == Sort.BOOL
+                ? ("1".equals(text) ? "true" : "0".equals(text) ? "false" : "")
+                : sort.floating() ? JavaPrimitiveSmtSemantics.floatingLiteral(
+                        text, floatingKind(sort))
+                : sort == Sort.INT ? smtLiteral(text) : null;
+        if (literal == null || literal.isEmpty()) return null;
         return Term.of(literal, sort,
                 JavaPrimitiveSmtSemantics.widthOfJavaType(javaType));
     }

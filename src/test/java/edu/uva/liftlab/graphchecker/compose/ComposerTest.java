@@ -2935,12 +2935,14 @@ public class ComposerTest {
                         "INSTANCE_FIELD/216#24#PLACEHOLDER#0:READ",
                         at("now#1", 0), 0),
                 CLOCK_CELL, CLOCK_MINT, CLOCK_MINT, CLOCK, "J", null);
-        // And the reader of that version: no write of the location at it,
-        // and the row states no value either.
+        // And the reader of that version: no write of the location at it.
+        // Its row states the instant it returned, as every scalar read does,
+        // and that value must not pin a root's version: the mint binds it.
         session.read(Endpoint.of(ANCHOR,
                         "INSTANCE_FIELD/216#24#READ_FROM#0:READ",
                         at("now#2", 0), 0),
-                CLOCK_CELL, CLOCK_MINT, CLOCK_READ, "J", null);
+                CLOCK_CELL, CLOCK_MINT, CLOCK_READ, "J",
+                Long.toString(INSTANT));
         if (alsoUnrooted) {
             session.placeholder(Endpoint.of(ANCHOR,
                             "INSTANCE_FIELD/22#24#PLACEHOLDER#0:READ",

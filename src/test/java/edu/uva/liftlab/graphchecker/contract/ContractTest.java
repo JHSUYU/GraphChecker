@@ -66,6 +66,33 @@ public class ContractTest {
      *  whose every node names the one below twice is 2^64 nodes as a tree (a
      *  File.getParent chain left finalize-gs a8's table unwritable).  A ref
      *  is the content's, whatever the objects and their member order. */
+    /**
+     * What a read node returned, as its row spells it: no String content
+     * reads as a number, an identity or null, and an identity states none.
+     */
+    @Test
+    public void aReadRowSpellsWhatItsReadReturned() {
+        JsonObject constant = new JsonObject();
+        constant.addProperty("_type", "ConstExpr");
+        constant.addProperty("_exp", "Y_J_1003");
+        Object[][] cases = {
+                {constant, "1003", null},
+                {new com.google.gson.JsonPrimitive("N"), "\"N\"", "N"},
+                {new com.google.gson.JsonPrimitive("Y_I_2 \"q\""),
+                        "\"Y_I_2 \\\"q\\\"\"", "Y_I_2 \"q\""},
+                {com.google.gson.JsonNull.INSTANCE, "N", null},
+                {null, null, null}};
+        for (Object[] each : cases) {
+            JsonObject node = new JsonObject();
+            if (each[0] != null) {
+                node.add("concreteValue", (com.google.gson.JsonElement) each[0]);
+            }
+            String spelled = ReadRow.returned(node);
+            assertEquals(String.valueOf(each[0]), each[1], spelled);
+            assertEquals(each[2], ReadRow.stringContent(spelled));
+        }
+    }
+
     @Test
     public void aSessionLogHoldsTheDagAndRefsNameContent()
             throws IOException {

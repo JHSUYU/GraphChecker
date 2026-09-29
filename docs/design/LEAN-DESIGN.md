@@ -42,7 +42,8 @@ Fatal_T = ⋁_p ( selector_p ⇒ π_p ∧ φ_p ∧ reads_p ∧ valuation_p ), on
 - Roots by kind: MARKER free in {recorded, flipped}; INTEGRAL in its declared relative window; CLOCK ≥ 0; else pinned.
 - One lowering (quantifier-free where the recording states the size); z3 per valuation; `unknown`/`error` = named gap.
 - Claims: MARKER_FLIPPED, CLOCK_SKEW, MESSAGE_PAIRING_FLIPPED, STATE_PAIRING_FLIPPED, RECORDED_FAILURE_EXPLAINED,
-  NO_SUPPORTED_WITNESS; polarity gate = the recorded valuation's disjunct is unsat.
+  NO_SUPPORTED_WITNESS; polarity gate = the recorded valuation's disjunct is unsat.  A read's recorded pairing
+  is its STATE family's arm the run took, never its value (a joined value moves with the valuation).
 
 ## 5. Deleted (not derivable from §1–§4)
 Carrier layer (region-entry container/reference inputs, `BOUNDED_CONTAINER_STATE`, `REFERENCE_CARRIER`,

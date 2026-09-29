@@ -1,5 +1,10 @@
 package edu.uva.liftlab.graphchecker.contract;
 
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
+
 /**
  * CONTRACT-SPEC 2: one read, the consumer half of a STATE interaction.  An
  * unknown {@code observedVersion} is -1, never 0: a wrong join is a
@@ -96,9 +101,37 @@ public final class ReadRow extends Value {
         return javaType;
     }
 
-    /** What the read actually saw, or {@code null}. */
+    /** What the read returned, spelled as {@link #returned} says, or null. */
     public String concreteValue() {
         return concreteValue;
+    }
+
+    /**
+     * What one read node states it returned, as {@link #concreteValue}
+     * spells it: a scalar constant's payload ({@code Y_I_2} is {@code 2}), a
+     * String as its JSON string literal -- quoted, so no content reads as a
+     * number or an identity -- and Java null as {@code N}.  Null when the
+     * node states nothing: it returned an identity, which no value pins.
+     */
+    public static String returned(JsonObject node) {
+        JsonElement value = node == null ? null : node.get("concreteValue");
+        if (value == null) return null;
+        if (value.isJsonNull()) return VmExpressionIr.SYMBOLIC_NULL;
+        if (value.isJsonPrimitive()) {
+            return value.getAsJsonPrimitive().isString() ? value.toString()
+                    : null;
+        }
+        if (!value.isJsonObject()) return null;
+        JsonElement constant = value.getAsJsonObject().get("_exp");
+        return constant == null || !constant.isJsonPrimitive() ? null
+                : VmExpressionIr.constantPayload(constant.getAsString());
+    }
+
+    /** The content of a String {@link #returned} spelled, else null. */
+    public static String stringContent(String spelled) {
+        String text = spelled == null ? "" : spelled.trim();
+        if (text.isEmpty() || text.charAt(0) != '"') return null;
+        return new JsonParser().parse(text).getAsString();
     }
 
     @Override
