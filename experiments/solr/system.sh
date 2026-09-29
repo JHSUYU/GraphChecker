@@ -62,6 +62,7 @@ system_jvm_properties() {
     "-Djetty.testMode=1" "-Djetty.insecurerandom=1"
     "-Dsolr.directoryFactory=org.apache.solr.core.MockDirectoryFactory"
     "-Djdk.map.althashing.threshold=0"
+    "-Djava.security.egd=file:/dev/./urandom"
     "-Dcausynth.cluster.automatic=true"
   )
 }

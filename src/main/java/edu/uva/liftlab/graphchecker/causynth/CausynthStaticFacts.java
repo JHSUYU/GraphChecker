@@ -12,6 +12,10 @@ import soot.SootFieldRef;
 import soot.jimple.ArrayRef;
 import soot.jimple.DefinitionStmt;
 import soot.jimple.FieldRef;
+import soot.jimple.GotoStmt;
+import soot.jimple.IfStmt;
+import soot.jimple.LookupSwitchStmt;
+import soot.jimple.TableSwitchStmt;
 import soot.jimple.InstanceFieldRef;
 import soot.jimple.Stmt;
 
@@ -123,7 +127,7 @@ public final class CausynthStaticFacts {
             this.unit = unit;
             this.method = method;
             this.unitIndex = unitIndex;
-            this.unitText = unit.toString();
+            this.unitText = ownText(unit);
             this.defs = valueStrings(unit.getDefBoxes());
             this.uses = valueStrings(unit.getUseBoxes());
             this.fieldDefs = fieldRefs(unit.getDefBoxes());
@@ -142,6 +146,32 @@ public final class CausynthStaticFacts {
             this.isBranch = lower.startsWith("if ")
                     || lower.startsWith("tableswitch")
                     || lower.startsWith("lookupswitch");
+        }
+
+        /**
+         * The unit's own text.  Soot prints a branch with the statement it
+         * jumps to ({@code if $r38 != null goto $r39 = virtualinvoke
+         * $r38.<..getRouter()>()}), and every text reader here -- the invoke
+         * base, the actual arguments -- read that statement's call as the
+         * branch's: the guard's operand was the "receiver" and was dropped,
+         * so solr-18413's deciding guard {@code targetColl == null} named no
+         * operand and no failure target.
+         */
+        static String ownText(Unit unit) {
+            if (unit instanceof IfStmt) {
+                return "if " + ((IfStmt) unit).getCondition();
+            }
+            if (unit instanceof GotoStmt) {
+                return "goto";
+            }
+            if (unit instanceof TableSwitchStmt) {
+                return "tableswitch(" + ((TableSwitchStmt) unit).getKey() + ")";
+            }
+            if (unit instanceof LookupSwitchStmt) {
+                return "lookupswitch(" + ((LookupSwitchStmt) unit).getKey()
+                        + ")";
+            }
+            return unit.toString();
         }
 
         private static String invokeSignature(Unit unit) {
