@@ -793,7 +793,9 @@ public final class Composer {
     private void refused(List<GapRow> rows) {
         gaps.addAll(rows);
         if (firstRefusal.isEmpty() && !rows.isEmpty()) {
-            firstRefusal = rows.get(0).subject();
+            GapRow first = rows.get(0);
+            firstRefusal = first.kind() + " " + first.subject() + ": "
+                    + first.detail();
         }
     }
 

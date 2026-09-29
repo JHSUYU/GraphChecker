@@ -52,6 +52,11 @@ for n, case in sorted(cases.items(), key=lambda item: int(item[0])):
         row["finding"] = (result.get("findingKind", "") + " "
                           + ",".join(r if isinstance(r, str) else r.get("rootId", "")
                                      for r in result.get("movedRoots", []) or []))[:160]
+        # What refused the witness, occurrence addresses elided.
+        blockers = result.get("blockers") or []
+        if blockers:
+            row["reason"] = re.sub(r"\S*/region/\S*", "<occ>", blockers[0]["kind"]
+                                   + " " + blockers[0]["detail"])[:200]
     elif lines:
         logs = [p for p in glob.glob(os.path.join(root, "logs", "*.log"))
                 if "driver" not in p]
