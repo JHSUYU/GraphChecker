@@ -728,10 +728,11 @@ public final class CausynthPipeline {
 
     /**
      * Where a loop-body frame opens: the outermost declared control edge
-     * whose body successor dominates the demanded unit.  Trap: the header's
-     * lexical successor is often the guard itself ({@code hasNext()}), and
-     * opening there counts the terminal false check.  Other shapes are
-     * refused.
+     * whose body successor dominates the demanded unit, or the header when
+     * none does (the demanded unit comes first in the body).  Trap: the
+     * header's lexical successor is often the guard itself ({@code
+     * hasNext()}), and opening there counts the terminal false check.  Other
+     * shapes are refused.
      */
     private static CfgLoopControl.Edge loopBodyEntry(
             Body body, CfgLoopControl.NaturalLoop loop,
@@ -782,6 +783,14 @@ public final class CausynthPipeline {
             }
         }
 
+        if (demandedEntries.isEmpty() && !loop.backedges.isEmpty()) {
+            // The demanded unit comes before every declared control of the
+            // body -- a while (true) whose exits are a return and a throw
+            // (FsDatasetImpl.initReplicaRecovery's retry loop): each of its
+            // runs is the header's once, so the frame opens at the header.
+            return new CfgLoopControl.Edge(loop.backedges.get(0).source,
+                    loop.header);
+        }
         List<CfgLoopControl.Edge> outermost = new ArrayList<>();
         for (CfgLoopControl.Edge candidate : demandedEntries) {
             boolean nested = false;

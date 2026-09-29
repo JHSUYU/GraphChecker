@@ -63,6 +63,13 @@ for n, case in sorted(cases.items(), key=lambda item: int(item[0])):
         text = open(logs[0], errors="replace").read() if logs else ""
         stage = re.findall(r"stage=(\w+)", text)
         reason = re.findall(r"reason=(.*)", text)
+        if not stage:
+            # A stage's own Java main failed: the last stage begun, and the
+            # exception it died of.
+            stage = re.findall(r"\[campaign\] stage (\w+)", text)
+            reason = re.findall(r'Exception in thread "main" (.*)|^Error: (.*)',
+                                text, re.M)
+            reason = ["".join(found) for found in reason]
         row["class"] = "STOPPED"
         row["stage"] = stage[-1] if stage else ""
         row["reason"] = (reason[-1] if reason else "")[:200]
