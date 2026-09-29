@@ -576,10 +576,13 @@ public final class CausynthTraceRecorder {
                     + MapFields.safe(half), refused.getMessage());
             return 0L;
         }
-        // The schedule's RECV, under the scope the message opened.
+        // The schedule's RECV, under the scope the message opened; an
+        // unawaited receipt's work is no part of the order.
         if (awaited) {
             ScheduleLog.observe(ScheduleEvent.Kind.RECV,
                     MapFields.safe(transport) + "#" + MapFields.safe(half));
+        } else {
+            ScheduleLog.unawaited(transport);
         }
         if (awaited && REQUEST.equals(half)) {
             RECEIPTS.put(receiptKey(transport, correlationId, attemptId),

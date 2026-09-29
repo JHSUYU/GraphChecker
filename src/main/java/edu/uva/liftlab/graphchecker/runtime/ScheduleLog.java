@@ -205,11 +205,33 @@ public final class ScheduleLog {
     private static Stance standing() {
         try {
             CausalContext context = Identity.contextHere();
-            return context.isLost() ? null : new Stance(contextOf(context),
+            return context.isLost() || unordered(context) ? null
+                    : new Stance(contextOf(context),
                     Identity.innermostRegionId());
         } catch (Throwable unnamed) {
             return null;
         }
+    }
+
+    /** The transports whose receipts no order awaits ({@link #unawaited}). */
+    private static final Set<String> UNAWAITED =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /**
+     * A transport's receipt is never awaited (a shared store's read: how
+     * many notifications a run takes is the store's timing), so neither is
+     * the work it causes: an event in a context it anchored is free, as a
+     * Lost one is, in the recording and in every replay.
+     */
+    static void unawaited(String transport) {
+        UNAWAITED.add(Text.safe(transport).toUpperCase(java.util.Locale.ROOT));
+    }
+
+    private static boolean unordered(CausalContext context) {
+        if (!(context instanceof CausalContext.Anchor)) return false;
+        String site = ((CausalContext.Anchor) context).rpcSite();
+        int slash = site.indexOf('/');
+        return UNAWAITED.contains(slash < 0 ? site : site.substring(0, slash));
     }
 
     /** The same, standing where {@code at} says rather than on this thread

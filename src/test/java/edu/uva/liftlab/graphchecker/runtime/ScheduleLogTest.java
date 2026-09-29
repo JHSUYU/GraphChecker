@@ -481,6 +481,33 @@ public class ScheduleLogTest {
                 ScheduleLog.progress().contains("2 open at the window's close"));
     }
 
+    /**
+     * A store's notification is awaited by no order, and neither is the
+     * work it causes: an event after the callback's read is free.
+     */
+    @Test(timeout = 20000L)
+    public void aStoreNotificationsWorkIsNoPartOfTheOrder() throws Exception {
+        final Object owner = new Object();
+        RuntimeTraceContext.registerSource(owner, NODE);
+        MessageDoors.stored("STORE", "/k@1", owner);
+        written.clear();
+        Thread callback = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                MessageDoors.notified(new Runnable() {
+                    @Override
+                    public void run() {
+                        MessageDoors.fetched("STORE", "/k@1", owner);
+                        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "y");
+                    }
+                });
+            }
+        });
+        callback.start();
+        callback.join(5000L);
+        assertTrue(sites().toString(), sites().isEmpty());
+    }
+
     /** A WAKE or turn the recording did not make before x waits at the cut. */
     @Test(timeout = 20000L)
     public void aWakeTheRecordingDidNotMakeSleepsThroughThePrefix()
