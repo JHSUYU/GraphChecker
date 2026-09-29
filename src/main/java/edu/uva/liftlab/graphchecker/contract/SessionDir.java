@@ -30,7 +30,7 @@ public final class SessionDir extends Value {
     public static final String OBLIGATIONS = "obligations.jsonl";
     /** The run's {@link ScheduleEvent}s in order; not a row kind. */
     public static final String SCHEDULE = "schedule.jsonl";
-    public static final String EXPRESSIONS = "expressions.json";
+    public static final String EXPRESSIONS = "expressions.jsonl";
     /** The role this session STATES it ran as ({@link SessionManifest}). */
     public static final String MANIFEST = "manifest.json";
 

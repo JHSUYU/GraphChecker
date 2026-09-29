@@ -271,7 +271,7 @@ public final class RowInvariants {
                     "invariant 3 (HANDOVER SS1.3: a term's references are "
                             + "resolved through the SESSION's "
                             + "ExpressionTable): this session's "
-                            + "expressions.json holds " + table.refs().size()
+                            + "expressions.jsonl holds " + table.refs().size()
                             + " expression(s) and not this one");
         }
     }
@@ -846,7 +846,7 @@ public final class RowInvariants {
             for (String symbol : symbols) {
                 if (!where.containsKey(symbol)) {
                     where.put(symbol,
-                            "expressions.json ref=" + entry.getKey());
+                            "expressions.jsonl ref=" + entry.getKey());
                 }
             }
         }

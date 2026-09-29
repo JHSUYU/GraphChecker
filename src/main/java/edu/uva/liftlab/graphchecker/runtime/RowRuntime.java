@@ -9,6 +9,7 @@ import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
+import edu.uva.liftlab.graphchecker.contract.ExpressionRefs;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
 import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
@@ -21,7 +22,6 @@ import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.SessionDir;
-import edu.uva.liftlab.graphchecker.contract.SharedExpressionTable;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.smt.Arms;
@@ -91,11 +91,10 @@ public final class RowRuntime {
             sessionId = sessionId(resultFile);
             Path sessions = declaredSessionsRoot();
             publisher = sessions == null
-                    ? SessionPublisher.of(iterationOf(resultFile), sessionId,
-                            expressions)
+                    ? SessionPublisher.of(iterationOf(resultFile), sessionId)
                     : SessionPublisher.at(SessionDir.of(sessions.getParent()
                             == null ? sessions : sessions.getParent(),
-                            sessionId), expressions);
+                            sessionId));
         }
         // The schedule goes with the rows; events from before the open are
         // kept and written first.
@@ -632,9 +631,7 @@ public final class RowRuntime {
             return "";
         }
         JsonObject object = expression.getAsJsonObject();
-        // Content-addressed over the DAG: each shared node hashed once, where
-        // serializing the tree costs its expansion.
-        String ref = "EXPR." + expressions.digest(object).substring(0, 16);
+        String ref = expressions.ref(object);
         SessionPublisher session = publisher;
         if (session != null) session.expression(ref, object);
         return ref;
@@ -813,9 +810,8 @@ public final class RowRuntime {
         }
     }
 
-    /** The anchors of every expression filed, by the node they name. */
-    private static volatile SharedExpressionTable.Codec expressions =
-            new SharedExpressionTable.Codec();
+    /** The refs of every expression filed, by the node they name. */
+    private static volatile ExpressionRefs expressions = new ExpressionRefs();
 
     /** Events already stated (every kind), so one event is one occurrence's. */
     private static final Map<String, Boolean> CLAIMED_EVENTS =
@@ -942,7 +938,7 @@ public final class RowRuntime {
             AMBIENT.clear();
             CLAIMED_EVENTS.clear();
             MINT_LABELS.clear();
-            expressions = new SharedExpressionTable.Codec();
+            expressions = new ExpressionRefs();
             Identity.resetForTests();
             CLOCK_CELLS.clear();
             publisher = null;

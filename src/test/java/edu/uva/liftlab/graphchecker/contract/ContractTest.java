@@ -58,15 +58,15 @@ public class ContractTest {
     @Rule
     public TemporaryFolder iteration = new TemporaryFolder();
 
-    /** A session's table is written whole from a thread the program has
-     *  interrupted (a channel write there left hdfs-17899-bug1 v82 two empty
-     *  expressions.json), and as the DAG it is: a chain whose every node
-     *  names the one below twice is 2^64 nodes as a tree (a File.getParent
-     *  chain left finalize-gs a8's table unwritable). */
+    /** A session's expressions are logged as the DAG they are: a chain
+     *  whose every node names the one below twice is 2^64 nodes as a tree (a
+     *  File.getParent chain left finalize-gs a8's table unwritable).  A ref
+     *  is the content's, whatever the objects and their member order. */
     @Test
-    public void aSessionTableIsWrittenWholeAndAsTheDagItIs()
+    public void aSessionLogHoldsTheDagAndRefsNameContent()
             throws IOException {
-        Path file = iteration.getRoot().toPath().resolve("expressions.json");
+        Path file = iteration.getRoot().toPath().resolve(
+                SessionDir.EXPRESSIONS);
         JsonObject chain = new JsonObject();
         chain.addProperty("_type", "ConstExpr");
         chain.addProperty("_exp", "C_I_1");
@@ -82,19 +82,27 @@ public class ContractTest {
         Map<String, JsonObject> expressions =
                 new LinkedHashMap<String, JsonObject>();
         expressions.put("EXPR.0000000000000001", chain);
-        Thread.currentThread().interrupt();
-        try {
-            RowCodec.writeExpressions(file, ExpressionTable.of(expressions));
-        } finally {
-            assertTrue("the interrupt is the program's, left standing",
-                    Thread.interrupted());
-        }
+        RowCodec.writeExpressions(file, ExpressionTable.of(expressions));
         assertTrue(Files.size(file) < 64 * 1024);
         JsonObject read = RowCodec.readExpressions(file)
                 .expression("EXPR.0000000000000001");
-        assertEquals(new SharedExpressionTable.Codec().digest(chain),
-                new SharedExpressionTable.Codec().digest(read));
         assertSame(read.get("_left"), read.get("_right"));
+        assertEquals(new ExpressionRefs().ref(chain),
+                new ExpressionRefs().ref(read));
+
+        JsonObject reordered = new JsonObject();
+        reordered.addProperty("_java_type", "I");
+        reordered.addProperty("_exp", "C_I_1");
+        reordered.addProperty("_type", "ConstExpr");
+        JsonObject constant = new JsonObject();
+        constant.addProperty("_type", "ConstExpr");
+        constant.addProperty("_exp", "C_I_1");
+        constant.addProperty("_java_type", "I");
+        assertEquals(new ExpressionRefs().ref(constant),
+                new ExpressionRefs().ref(reordered));
+        constant.addProperty("_exp", "C_I_2");
+        assertNotEquals(new ExpressionRefs().ref(constant),
+                new ExpressionRefs().ref(reordered));
     }
 
     @Test

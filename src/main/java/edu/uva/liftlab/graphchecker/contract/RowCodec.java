@@ -479,27 +479,23 @@ public final class RowCodec {
         }
     }
 
-    /** The session's shared expressions, written as one JSON object. */
+    /** A whole table as one session's expression log. */
     public static void writeExpressions(Path file, ExpressionTable table)
             throws IOException {
-        writeObject(file, table.toJson());
+        SessionExpressionLog.Writer log = new SessionExpressionLog.Writer();
+        List<JsonObject> lines = new ArrayList<>();
+        lines.add(SessionExpressionLog.header());
+        for (Map.Entry<String, JsonObject> entry
+                : table.expressions().entrySet()) {
+            lines.addAll(log.lines(entry.getKey(), entry.getValue()));
+        }
+        writeJsonl(file, lines);
     }
 
-    /** {@link #writeExpressions(Path, ExpressionTable)} over the writer's
-     *  own codec, which keeps the anchors of every node it hashed. */
-    public static void writeExpressions(Path file, ExpressionTable table,
-                                        SharedExpressionTable.Codec codec)
-            throws IOException {
-        writeObject(file, table.toJson(codec));
-    }
-
-    /** The session's shared expressions; a missing file is the empty table. */
+    /** The session's expressions; a missing file is the empty table. */
     public static ExpressionTable readExpressions(Path file)
             throws IOException {
-        if (file == null || !Files.isRegularFile(file)) {
-            return ExpressionTable.empty();
-        }
-        return ExpressionTable.fromJson(readObject(file));
+        return SessionExpressionLog.read(file);
     }
 
     /** The role this session states, as one JSON object. */

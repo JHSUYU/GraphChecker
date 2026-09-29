@@ -92,18 +92,6 @@ public final class SharedExpressionTable {
             return expandArtifact(artifact, resolver);
         }
 
-        /** Interns one expression from an already validated VM DAG.
-         *  Package-local: not a trust boundary like {@link #expand}; known
-         *  children are reused. */
-        synchronized JsonElement internExpression(JsonObject expression) {
-            return resolver.internExpression(expression);
-        }
-
-        /** Loads portable definitions before a mixed native/portable decode. */
-        synchronized void collectTables(JsonObject artifact) {
-            if (artifact != null) resolver.collectTables(artifact);
-        }
-
         /** One portable artifact: each expression a reference, each node
          *  defined once. */
         public synchronized JsonObject compact(JsonObject artifact) {
@@ -111,29 +99,10 @@ public final class SharedExpressionTable {
             return compactDecodedArtifact(artifact, builder());
         }
 
-        /** The SHA-256 hex of one expression's Merkle anchor. */
-        public synchronized String digest(JsonObject expression) {
-            JsonElement compact = builder().compact(expression, false);
-            String anchor = isReference(compact) ? anchor(compact)
-                    : anchorFor(compact.getAsJsonObject());
-            return anchor.substring(PREFIX.length());
-        }
-
         private Builder builder() {
             return new Builder(resolver.definitions,
                     resolver.anchorsByExpanded);
         }
-    }
-
-    private static boolean isReference(JsonElement value) {
-        if (!declaresReference(value)) return false;
-        JsonObject reference = value.getAsJsonObject();
-        return referenceMembers(reference, reference.has(FIELD));
-    }
-
-    private static String anchor(JsonElement reference) {
-        return isReference(reference)
-                ? optionalString(reference.getAsJsonObject(), ANCHOR) : "";
     }
 
     private static JsonObject reference(String anchor) {
@@ -494,89 +463,6 @@ public final class SharedExpressionTable {
             Dag<String> dag = anchors(anchor -> definitions.containsKey(anchor)
                     ? new JsonObject() : incoming.get(anchor));
             for (String anchor : incoming.keySet()) dag.require(anchor);
-        }
-
-        private JsonElement internExpression(JsonObject expression) {
-            if (expression == null || !SharedExpressionTable.expression(
-                    expression)) {
-                throw new IllegalArgumentException(
-                        "VM definition must contain a concrete expression");
-            }
-            Set<JsonElement> active = Collections.newSetFromMap(
-                    new IdentityHashMap<JsonElement, Boolean>());
-            JsonElement root = internCompact(expression,
-                    new IdentityHashMap<JsonElement, JsonElement>(), active);
-            if (!isReference(root)) {
-                throw new IllegalStateException(
-                        "interned expression did not produce a reference");
-            }
-            JsonElement result = expanded.get(anchor(root));
-            if (result == null) {
-                throw new IllegalStateException(
-                        "interned expression has no expanded value");
-            }
-            return result;
-        }
-
-        private JsonElement internCompact(
-                JsonElement value,
-                IdentityHashMap<JsonElement, JsonElement> memo,
-                Set<JsonElement> active) {
-            if (value == null || value.isJsonNull()) return JsonNull.INSTANCE;
-            if (value.isJsonPrimitive()) return value.deepCopy();
-            JsonElement memoized = memo.get(value);
-            if (memoized != null) return memoized;
-            if (!active.add(value)) {
-                throw new IllegalArgumentException(
-                        "cyclic expanded VM expression graph");
-            }
-            JsonElement result;
-            if (value.isJsonArray()) {
-                JsonArray copy = new JsonArray();
-                for (JsonElement child : value.getAsJsonArray()) {
-                    copy.add(internCompact(child, memo, active));
-                }
-                result = copy;
-            } else {
-                JsonObject source = value.getAsJsonObject();
-                if (declaresReference(source)) {
-                    requireReference(source, false);
-                    String heldAnchor = exactString(source, ANCHOR);
-                    if (!definitions.containsKey(heldAnchor)) {
-                        throw new IllegalArgumentException(
-                                "missing shared expression definition: "
-                                        + heldAnchor);
-                    }
-                    result = reference(heldAnchor);
-                } else {
-                    String heldAnchor = anchorsByExpanded.get(source);
-                    if (heldAnchor != null) {
-                        result = reference(heldAnchor);
-                    } else {
-                        JsonObject compact = new JsonObject();
-                        for (Map.Entry<String, JsonElement> field
-                                : source.entrySet()) {
-                            if (portableMember(field.getKey(),
-                                    field.getValue())) {
-                                compact.add(field.getKey(), internCompact(
-                                        field.getValue(), memo, active));
-                            }
-                        }
-                        if (!SharedExpressionTable.expression(source)) {
-                            result = compact;
-                        } else {
-                            String computed = anchorFor(compact);
-                            definitions.putIfAbsent(computed, compact);
-                            anchorsByExpanded.put(source, computed);
-                            expanded.putIfAbsent(computed, source);
-                            result = reference(computed);
-                        }
-                    }
-                }
-            }
-            active.remove(value);
-            memo.put(value, result);
-            return result;
         }
 
         private JsonElement expand(JsonElement value, Set<String> active,

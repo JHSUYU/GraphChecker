@@ -55,13 +55,16 @@ unless stated. Every row carries `sessionId` (the replay session that produced i
   `enum GapKind { ADMISSION_GAP, TOPOLOGY_DIVERGENCE, UNATTESTED_ARM, UNSTATED_VALUE,
   UNPRODUCIBLE_ANSWER, FORMULA_SAT_AT_RECORDED_VALUATION, DECLARATION_MISSING,
   LINEAGE_LOST }`, `enum GapClass { BLOCKING, DIAGNOSTIC }`.
-- `ExpressionTable` — per session `expressions.json`: `ref → expression JSON` in the
-  existing shared-expression format: each member an `EXPR.v1.*` reference into one
-  `sharedExpressionTable`, each node defined once (read back shared); a ref is
-  `EXPR.` + the first 16 hex of the expression's Merkle anchor.
+- `ExpressionTable` — per session `expressions.jsonl` (`SessionExpressionLog`), appended as
+  the replay files each expression: a header line, then each expression node once, children
+  first, a child named by its session-local node number, and one line per ref naming its node
+  (read back shared).  A ref is `EXPR.` + the 16 hex of a 64-bit Merkle hash over the
+  expression DAG (`ExpressionRefs`: member names sorted, scalars' text, children's hashes), so
+  equal expressions have equal refs in every session.  No SHA-256 in the replay: the concolic
+  interpreter spent 2.1 ms a node on it.
 - `SessionDir` — layout helper: `activations.jsonl, decisions.jsonl, exports.jsonl,
   attaches.jsonl, writes.jsonl, reads.jsonl, roots.jsonl, targets.jsonl, gaps.jsonl,
-  expressions.json` under `<iteration>/sessions/<sessionId>/`; `RowCodec` (Gson)
+  expressions.jsonl` under `<iteration>/sessions/<sessionId>/`; `RowCodec` (Gson)
   reads/writes each kind; readers must never need to parse another kind's file.
 
 ## 3. Exploration contract (`d3.explore` writes, runtime reads)

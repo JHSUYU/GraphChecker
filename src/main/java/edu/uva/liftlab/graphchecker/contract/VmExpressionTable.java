@@ -52,7 +52,8 @@ public final class VmExpressionTable {
         return false;
     }
 
-    /** Decodes a region's VM envelopes, interning equal nodes. */
+    /** Decodes a region's VM envelopes, each VM node one object however
+     *  many envelopes name it. */
     public static final class Store {
         private final SharedExpressionTable.Codec codec =
                 new SharedExpressionTable.Codec();
@@ -75,18 +76,9 @@ public final class VmExpressionTable {
         }
 
         public synchronized JsonObject importEnvelope(JsonObject envelope) {
-            JsonObject expanded;
-            if (usesNativeDag(envelope)) {
-                // Register portable tables beside the VM table first;
-                // RawResolver alone walks the native table.
-                collectPortableTables(envelope, codec,
-                        Collections.newSetFromMap(
-                                new IdentityHashMap<JsonElement, Boolean>()));
-                expanded = rawResolver.importEnvelope(envelope, codec);
-            } else {
-                expanded = codec.expand(envelope);
-            }
-            return expanded;
+            return usesNativeDag(envelope)
+                    ? rawResolver.importEnvelope(envelope)
+                    : codec.expand(envelope);
         }
 
         public synchronized JsonElement importField(String serialized,
@@ -95,33 +87,6 @@ public final class VmExpressionTable {
             JsonElement value = envelope.get(field);
             return value == null || value.isJsonNull() ? null : value;
         }
-
-        private static void collectPortableTables(
-                JsonElement value, SharedExpressionTable.Codec codec,
-                Set<JsonElement> seen) {
-            if (value == null || value.isJsonNull()
-                    || value.isJsonPrimitive() || !seen.add(value)) return;
-            if (value.isJsonArray()) {
-                for (JsonElement child : value.getAsJsonArray()) {
-                    collectPortableTables(child, codec, seen);
-                }
-                return;
-            }
-            JsonObject object = value.getAsJsonObject();
-            JsonElement table = object.get(SharedExpressionTable.FIELD);
-            if (table != null) {
-                JsonObject tableOnly = new JsonObject();
-                tableOnly.add(SharedExpressionTable.FIELD, table);
-                codec.collectTables(tableOnly);
-            }
-            for (Map.Entry<String, JsonElement> field : object.entrySet()) {
-                if (!FIELD.equals(field.getKey())
-                        && !SharedExpressionTable.FIELD.equals(
-                                field.getKey())) {
-                    collectPortableTables(field.getValue(), codec, seen);
-                }
-            }
-        }
     }
 
     private static final class RawResolver {
@@ -129,14 +94,13 @@ public final class VmExpressionTable {
                 new LinkedHashMap<>();
         private final Map<RawKey, JsonElement> expanded =
                 new LinkedHashMap<>();
-        /** Resolves one self-contained envelope, interning each new definition
+        /** Resolves one self-contained envelope, each definition expanded
          *  once. */
-        private JsonObject importEnvelope(
-                JsonObject artifact, SharedExpressionTable.Codec codec) {
+        private JsonObject importEnvelope(JsonObject artifact) {
             Set<RawKey> supplied = new LinkedHashSet<>();
             collectTables(artifact, supplied);
             validateDefinitions(artifact, supplied);
-            JsonElement expandedArtifact = expandInterned(artifact, codec);
+            JsonElement expandedArtifact = expand(artifact);
             if (!expandedArtifact.isJsonObject()) {
                 throw new IllegalArgumentException(
                         "VM artifact root must be object");
@@ -230,15 +194,13 @@ public final class VmExpressionTable {
             }
         }
 
-        private JsonElement expandInterned(
-                JsonElement value,
-                SharedExpressionTable.Codec codec) {
+        private JsonElement expand(JsonElement value) {
             if (value == null || value.isJsonNull()) return JsonNull.INSTANCE;
             if (value.isJsonPrimitive()) return value.deepCopy();
             if (value.isJsonArray()) {
                 JsonArray result = new JsonArray();
                 for (JsonElement child : value.getAsJsonArray()) {
-                    result.add(expandInterned(child, codec));
+                    result.add(expand(child));
                 }
                 return result;
             }
@@ -247,17 +209,14 @@ public final class VmExpressionTable {
                 RawKey key = rawKey(source, REFERENCE_TYPE);
                 JsonElement held = expanded.get(key);
                 if (held != null) return held;
-                JsonObject definition = definitions.get(key);
-                JsonElement local = expandInterned(definition, codec);
+                JsonElement local = expand(definitions.get(key));
                 if (!local.isJsonObject()) {
                     throw new IllegalArgumentException(
                             "VM expression definition is not an object: "
                                     + key);
                 }
-                JsonElement interned = codec.internExpression(
-                        local.getAsJsonObject());
-                JsonElement raced = expanded.putIfAbsent(key, interned);
-                return raced == null ? interned : raced;
+                expanded.put(key, local);
+                return local;
             }
             JsonObject result = new JsonObject();
             for (Map.Entry<String, JsonElement> field : source.entrySet()) {
@@ -266,7 +225,7 @@ public final class VmExpressionTable {
                 result.add(field.getKey(), "pathGuard".equals(field.getKey())
                         && (child == null || child.isJsonNull())
                         ? emptyConjunction()
-                        : expandInterned(child, codec));
+                        : expand(child));
             }
             return result;
         }

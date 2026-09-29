@@ -23,7 +23,6 @@ import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.SessionDir;
-import edu.uva.liftlab.graphchecker.contract.SharedExpressionTable;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import java.nio.file.Files;
@@ -167,14 +166,13 @@ public class RowRuntimeTest {
     /**
      * A session the campaign withdrew stays withdrawn: a replay killed at its
      * bound still shuts down, and its last table rewrite brought back a
-     * directory holding only expressions.json (hdfs-11741 v85, IMPORT).
+     * directory holding only its expression table (hdfs-11741 v85, IMPORT).
      */
     @Test
     public void aWithdrawnSessionIsNotWrittenBack() throws Exception {
         SessionDir layout = SessionDir.of(iteration.getRoot().toPath(),
                 "withdrawn");
-        SessionPublisher session = SessionPublisher.at(layout,
-                new SharedExpressionTable.Codec());
+        SessionPublisher session = SessionPublisher.at(layout);
         Files.move(layout.dir(), iteration.getRoot().toPath().resolve("aside"));
         session.close();
         JsonObject constant = new JsonObject();

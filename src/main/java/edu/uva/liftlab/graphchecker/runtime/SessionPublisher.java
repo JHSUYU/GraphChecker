@@ -5,14 +5,13 @@ import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
-import edu.uva.liftlab.graphchecker.contract.ExpressionTable;
 import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
-import edu.uva.liftlab.graphchecker.contract.SharedExpressionTable;
 import edu.uva.liftlab.graphchecker.contract.SessionDir;
+import edu.uva.liftlab.graphchecker.contract.SessionExpressionLog;
 import edu.uva.liftlab.graphchecker.contract.SessionManifest;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
@@ -23,8 +22,10 @@ import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -35,25 +36,17 @@ import java.util.Set;
  */
 public final class SessionPublisher {
     private static final Object LOCK = new Object();
-    /** How often a live session's expression table is written again. */
-    private static final long REWRITE_MS = 30_000L;
-    private static final long REWRITE_SHARE = 4L;
     private static final Map<String, SessionPublisher> SESSIONS =
             new LinkedHashMap<String, SessionPublisher>();
 
     private final SessionDir layout;
     private final Map<String, BufferedWriter> writers =
             new LinkedHashMap<String, BufferedWriter>();
-    private final Map<String, JsonObject> expressions =
-            new LinkedHashMap<String, JsonObject>();
-    /** The rows' codec, which hashed each node as the rows named it: the
-     *  table is written from the anchors it holds, however often. */
-    private final SharedExpressionTable.Codec codec;
-    /** When the table was last written, to write it again by the clock. */
-    private long tableWrittenAt;
-    /** How long that write took: the next waits {@link #REWRITE_SHARE}
-     *  times as long at least. */
-    private long tableWriteMillis;
+    /** The refs filed, each once. */
+    private final Set<String> expressionRefs = new HashSet<String>();
+    /** Numbers the nodes the expression log holds. */
+    private final SessionExpressionLog.Writer expressionLog =
+            new SessionExpressionLog.Writer();
     /**
      * Statements written under the key the contract makes them one row by:
      * a root per (occurrence, rootId), an unreached target per (occurrence,
@@ -64,29 +57,23 @@ public final class SessionPublisher {
      */
     private final Set<String> stated = new HashSet<String>();
     private boolean failed;
-    /** Once closed, every further expression is written as it is filed. */
-    private boolean closed;
 
-    private SessionPublisher(SessionDir layout,
-                             SharedExpressionTable.Codec codec) {
+    private SessionPublisher(SessionDir layout) {
         this.layout = layout;
-        this.codec = codec;
     }
 
     /** The publisher of one session, created once per JVM. */
-    public static SessionPublisher of(Path iteration, String sessionId,
-                                      SharedExpressionTable.Codec codec) {
-        return at(SessionDir.of(iteration, sessionId), codec);
+    public static SessionPublisher of(Path iteration, String sessionId) {
+        return at(SessionDir.of(iteration, sessionId));
     }
 
     /** The publisher of one session under an explicit sessions root. */
-    static SessionPublisher at(SessionDir layout,
-                               SharedExpressionTable.Codec codec) {
+    static SessionPublisher at(SessionDir layout) {
         String key = layout.dir().toAbsolutePath().toString();
         synchronized (LOCK) {
             SessionPublisher publisher = SESSIONS.get(key);
             if (publisher == null) {
-                publisher = new SessionPublisher(layout, codec);
+                publisher = new SessionPublisher(layout);
                 publisher.open();
                 SESSIONS.put(key, publisher);
             }
@@ -110,6 +97,10 @@ public final class SessionPublisher {
                         layout.schedule()}) {
                     if (!Files.exists(file)) Files.createFile(file);
                 }
+                if (!Files.exists(layout.expressions())) {
+                    append(layout.expressions(),
+                            SessionExpressionLog.header());
+                }
                 RowCodec.writeManifest(layout.manifest(),
                         SessionManifest.of(layout.sessionId(),
                                 FocusedReplay.focusedSession()
@@ -120,7 +111,6 @@ public final class SessionPublisher {
                 fail(unwritable);
             }
         }
-        writeExpressions();
     }
 
     public void activation(ActivationRow row) {
@@ -190,54 +180,31 @@ public final class SessionPublisher {
                 RowCodec.writeObligationResult(row));
     }
 
-    /** Files one expression under the ref the rows name it by. */
+    /** Files one expression under the ref the rows name it by: the nodes
+     *  the log does not hold yet, then the ref. */
     public void expression(String ref, JsonObject expression) {
         String key = Text.safe(ref);
         if (key.isEmpty() || expression == null) return;
         synchronized (LOCK) {
-            if (expressions.containsKey(key)) return;
-            expressions.put(key, expression);
-            // The table is one JSON object, written whole: again at most
-            // every REWRITE_MS while the run lasts (a killed replay keeps a
-            // usable table), at close, and at once for any expression after
-            // close.  By count it was rewritten every 64th expression, which
-            // is quadratic in a session of 350,000; by the clock alone, once
-            // one write outlasted REWRITE_MS (a 12 MB table in the concolic
-            // interpreter), every expression after it wrote the table again.
-            // So a write waits out REWRITE_SHARE times the last one's length:
-            // the rewrites take a fifth of the run at most.
-            long now = System.currentTimeMillis();
-            if (!closed && now - tableWrittenAt < Math.max(REWRITE_MS,
-                    REWRITE_SHARE * tableWriteMillis)) return;
-            tableWrittenAt = now;
-        }
-        writeExpressions();
-    }
-
-    private void writeExpressions() {
-        synchronized (LOCK) {
-            if (failed || withdrawn()) return;
-            long started = System.currentTimeMillis();
-            try {
-                // Always written, even empty.
-                RowCodec.writeExpressions(layout.expressions(),
-                        ExpressionTable.of(expressions), codec);
-            } catch (IOException unwritable) {
-                fail(unwritable);
-            }
-            tableWrittenAt = System.currentTimeMillis();
-            tableWriteMillis = tableWrittenAt - started;
+            if (failed || !expressionRefs.add(key)) return;
+            append(layout.expressions(), expressionLog.lines(key, expression));
         }
     }
 
     private void append(Path file, JsonObject row) {
+        append(file, Collections.singletonList(row));
+    }
+
+    private void append(Path file, List<JsonObject> rows) {
         synchronized (LOCK) {
             if (failed) return;
             try {
                 BufferedWriter writer = writer(file);
                 if (writer == null) return;
-                writer.write(RowCodec.toLine(row));
-                writer.newLine();
+                for (JsonObject row : rows) {
+                    writer.write(RowCodec.toLine(row));
+                    writer.newLine();
+                }
                 writer.flush();
             } catch (IOException unwritable) {
                 fail(unwritable);
@@ -282,8 +249,6 @@ public final class SessionPublisher {
     /** Closes every open file of this session. */
     public void close() {
         synchronized (LOCK) {
-            closed = true;
-            writeExpressions();
             for (BufferedWriter writer : writers.values()) {
                 try {
                     writer.flush();

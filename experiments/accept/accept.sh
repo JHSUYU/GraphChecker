@@ -200,7 +200,6 @@ ACCEPT_KEEP_GLOBS=(
   'schedule/iteration-*/execution_task_plan.jsonl'
   'schedule/iteration-*/runtime_workflow_schedule_index.json'
   'schedule/iteration-*/sessions/*/*.jsonl'
-  'schedule/iteration-*/sessions/*/expressions.json'
   'schedule/iteration-*/sessions/*/manifest.json'
   'schedule/iteration-*/session_census.jsonl'
   'schedule/iteration-*/slots.jsonl'

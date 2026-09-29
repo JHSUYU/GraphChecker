@@ -132,7 +132,7 @@ One replay writes one session directory, `<iteration>/sessions/<sessionId>/`
 (`contract/SessionDir.java`): `manifest.json` stating the role it ran as — `SEED` or
 `FOCUSED`, and a manifest that states none is refused — one JSONL file per row kind
 (`activations`, `decisions`, `roots`, `reads`, `writes`, `exports`, `attaches`, `targets`,
-`obligations`, `gaps`), and `expressions.json`, the session's own expression table that every
+`obligations`, `gaps`), and `expressions.jsonl`, the session's own expression log that every
 reference in its rows must resolve in. One kind per file is the point: a reader of reads
 never parses writes.
 

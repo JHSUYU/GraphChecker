@@ -2171,8 +2171,8 @@ campaign_import_session() {
         '{schemaVersion: 1, kind: "SESSION_CENSUS", topologyEpoch: $epoch,
           sessionId: $session, rowKind: $kind, rows: $rows}' >>"${census}"
     done
-    [[ -s "${session}expressions.json" ]] \
-      || missing="${missing} ${name}/expressions.json"
+    [[ -s "${session}expressions.jsonl" ]] \
+      || missing="${missing} ${name}/expressions.jsonl"
   done
   [[ "${count}" -gt 0 ]] || campaign_fail IMPORT SessionDir "${sessions}" \
     "the replay published no session directory"
@@ -3741,7 +3741,7 @@ campaign_emit() {
     "${iteration_dir}/session_census.jsonl") || campaign_fail EMIT CAMPAIGN \
     "${iteration_dir}/session_census.jsonl" "the session census is malformed"
   session_bytes=$(find "${iteration_dir}/sessions" -type f \
-    \( -name '*.jsonl' -o -name 'expressions.json' \) -printf '%s\n' \
+    -name '*.jsonl' -printf '%s\n' \
     | awk '{n += $1} END {print n + 0}')
   if ! artifacts_json=$(campaign_artifact_digests); then
     campaign_fail EMIT CAMPAIGN "${campaign_final}" \

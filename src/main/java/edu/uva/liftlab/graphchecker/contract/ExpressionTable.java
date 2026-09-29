@@ -1,17 +1,15 @@
 package edu.uva.liftlab.graphchecker.contract;
 
-import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 
 /**
- * CONTRACT-SPEC 2: the session's {@code expressions.json}, ref to the VM's
- * expression object unchanged.  Rows carry refs into this shared DAG, never
- * inlined trees; the file holds it as a DAG too ({@link SharedExpressionTable}).
+ * CONTRACT-SPEC 2: the session's expressions, ref to the VM's expression
+ * object unchanged.  Rows carry refs into this shared DAG, never inlined
+ * trees; the file holds it as a DAG too ({@link SessionExpressionLog}).
  */
 public final class ExpressionTable extends Value {
     private final Map<String, JsonObject> expressions;
@@ -29,22 +27,6 @@ public final class ExpressionTable extends Value {
         return new ExpressionTable(Collections.<String, JsonObject>emptyMap());
     }
 
-    /** Reads the file's form: one member per reference, a node shared in
-     *  the file shared in memory. */
-    public static ExpressionTable fromJson(JsonObject json) {
-        Map<String, JsonObject> expressions = new LinkedHashMap<>();
-        for (Map.Entry<String, JsonElement> member
-                : new SharedExpressionTable.Codec().expand(json).entrySet()) {
-            if (!member.getValue().isJsonObject()) {
-                throw new IllegalArgumentException(
-                        "expression " + member.getKey() + " is not an object");
-            }
-            expressions.put(member.getKey(),
-                    member.getValue().getAsJsonObject());
-        }
-        return of(expressions);
-    }
-
     /** The expression behind one reference, or {@code null}. */
     public JsonObject expression(String ref) {
         return ref == null ? null : expressions.get(ref);
@@ -56,22 +38,6 @@ public final class ExpressionTable extends Value {
 
     public Map<String, JsonObject> expressions() {
         return expressions;
-    }
-
-    /** The file's form: one member per reference, each node defined once
-     *  in the shared table. */
-    public JsonObject toJson() {
-        return toJson(new SharedExpressionTable.Codec());
-    }
-
-    /** {@link #toJson()} over a codec that already hashed some nodes: a
-     *  table written again and again hashes each node once. */
-    public JsonObject toJson(SharedExpressionTable.Codec codec) {
-        JsonObject json = new JsonObject();
-        for (Map.Entry<String, JsonObject> entry : expressions.entrySet()) {
-            json.add(entry.getKey(), entry.getValue());
-        }
-        return codec.compact(json);
     }
 
     @Override
