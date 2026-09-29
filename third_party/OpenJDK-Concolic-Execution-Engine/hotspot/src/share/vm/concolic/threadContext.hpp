@@ -63,8 +63,11 @@ private:
     PathCondition auxiliary_path_condition;
     std::vector<int> auxiliary_path_condition_indices;
     std::vector<BranchEvent> branch_events;
+    // How many of branch_events a read has returned: the runtime reads after
+    // every decision, and a whole-frame read each time is quadratic in them.
+    size_t branch_events_read;
 
-    RegionFrame() : enter_event_id(0) {}
+    RegionFrame() : enter_event_id(0), branch_events_read(0) {}
     ~RegionFrame() {
       branch_path_condition.gc();
       auxiliary_path_condition.gc();
@@ -243,11 +246,14 @@ public:
                                int opcode);
   void record_branch_conditions(const exp_list_t &expressions, bool outcome,
                                 int opcode);
-  /** The CONCOLIC_THREAD_BRANCH_EVENTS envelope; NULL means no context. */
+  /** The CONCOLIC_THREAD_BRANCH_EVENTS envelope of every event of the
+   *  current frame; NULL means no context. */
   static std::string serialize_branch_events(const ThreadContext *context);
-  std::string get_branch_events() const {
-    return serialize_branch_events(this);
-  }
+  /** The same envelope of the events no read has returned yet, which it
+   *  marks read. */
+  static std::string serialize_unread_branch_events(ThreadContext *context);
+  static std::string serialize_branch_events_from(
+      const ThreadContext *context, size_t first);
 
   void set_pc_admitted(bool pathConditionAdmitted);
   int pause_path_condition_recording();

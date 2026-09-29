@@ -356,6 +356,22 @@ void ThreadContext::record_branch_conditions(const exp_list_t &expressions,
 
 std::string ThreadContext::serialize_branch_events(
     const ThreadContext *context) {
+  return serialize_branch_events_from(context, 0);
+}
+
+std::string ThreadContext::serialize_unread_branch_events(
+    ThreadContext *context) {
+  RegionFrame *frame = (context == NULL || context->_region_stack.empty())
+      ? NULL : context->_region_stack.back();
+  if (frame == NULL) return serialize_branch_events_from(context, 0);
+  std::string unread =
+      serialize_branch_events_from(context, frame->branch_events_read);
+  frame->branch_events_read = frame->branch_events.size();
+  return unread;
+}
+
+std::string ThreadContext::serialize_branch_events_from(
+    const ThreadContext *context, size_t first) {
   using namespace rapidjson;
   const RegionFrame *frame =
       (context == NULL || context->_region_stack.empty())
@@ -378,7 +394,7 @@ std::string ThreadContext::serialize_branch_events(
   writer.Key("events");
   writer.StartArray();
   const size_t event_count = frame == NULL ? 0 : frame->branch_events.size();
-  for (size_t index = 0; index < event_count; ++index) {
+  for (size_t index = first; index < event_count; ++index) {
     const BranchEvent &event = frame->branch_events[index];
     writer.StartObject();
     writer.Key("eventId");

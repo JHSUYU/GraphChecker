@@ -212,10 +212,13 @@ public final class RegionBranchEventApiSmoke {
             input.value += 0;
         }
         System.resumeConcolicPathCondition();
+        // A read returns the events recorded since the previous one: a
+        // replay reads after every decision, and a whole-frame read each
+        // time was quadratic in the frame's decisions.
         String afterPause = System.getConcolicBranchEvents();
         check(pausedEvent == 0L, "paused marker must be rejected");
-        check(beforePause.equals(afterPause),
-                "paused bookkeeping changed branch events");
+        check(afterPause.contains("\"events\":[]"),
+                "paused bookkeeping added branch events: " + afterPause);
 
         final String[] foreignEvents = new String[1];
         final long[] foreignMarker = new long[1];
@@ -235,7 +238,9 @@ public final class RegionBranchEventApiSmoke {
                         && foreignEvents[0].contains("\"events\":[]"),
                 "foreign thread observed owner events: " + foreignEvents[0]);
 
-        String events = System.getConcolicBranchEvents();
+        check(System.getConcolicBranchEvents().contains("\"events\":[]"),
+                "a foreign read changed the owner's unread events");
+        String events = beforePause;
         check(events.contains("\"kind\":\"CONCOLIC_THREAD_BRANCH_EVENTS\""),
                 "missing branch event envelope: " + events);
         check(events.contains("\"active\":true"),

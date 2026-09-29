@@ -788,7 +788,7 @@ jlong ConcolicMngr::markBranch(const char *site_id, int occurrence) {
 }
 
 std::string ConcolicMngr::getBranchEvents() {
-  return ThreadContext::serialize_branch_events(ctx);
+  return ThreadContext::serialize_unread_branch_events(ctx);
 }
 
 void ConcolicMngr::pausePathConditionRecording() {

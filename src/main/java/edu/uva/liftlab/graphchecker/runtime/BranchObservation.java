@@ -192,7 +192,10 @@ final class BranchObservation {
             String expression, boolean outcome, int occurrence,
             SwitchExpectation expected, long vmEventId) throws Exception {
         int baseline = active.lastPathConditionSize;
-        // One read of the event stream, used by both questions asked of it.
+        // One read of the event stream, used by both questions asked of it:
+        // the events since the previous read (VM f10), this decision's
+        // among them.  The whole frame each time was quadratic in its
+        // decisions (hdfs-17960's NameNode restart decides 1561).
         JsonElement events = ConcolicRegionRuntime.parseJson(
                 api.branchEvents());
         List<Integer> eventConditionIndices =
