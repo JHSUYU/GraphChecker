@@ -275,7 +275,7 @@ public class RowRuntimeTest {
         AtomicReference<Endpoint> response = new AtomicReference<>();
         Thread handler = poolThreadCreatedOutsideAnyScope(() -> {
             long inbound = RuntimeTraceContext.enterInbound(header,
-                    "HADOOP_IPC", "corr-1", "0", "REQUEST", null);
+                    "HADOOP_IPC", "corr-1", "0", "REQUEST", null, "");
             response.set(Identity.messageSent(NN.key(), "HADOOP_IPC",
                     "corr-1", "RESPONSE", Identity.responseEndpoint(NN.key(),
                             "HADOOP_IPC", "RESPONSE")));
@@ -311,7 +311,7 @@ public class RowRuntimeTest {
             Identity.occurrence(NN.key(), "REGION.doAs", true);
             for (String[] request : requests) {
                 long inbound = RuntimeTraceContext.enterInbound(request[1],
-                        "HADOOP_IPC", request[0], "0", "REQUEST", null);
+                        "HADOOP_IPC", request[0], "0", "REQUEST", null, "");
                 ids.add(Identity.responseEndpoint(NN.key(), "HADOOP_IPC",
                         "RESPONSE").id());
                 RuntimeTraceContext.exitInbound(inbound);
@@ -1818,7 +1818,7 @@ public class RowRuntimeTest {
                 Identity.enterFrame("Server$RpcCall.run()#u33", null);
                 long propagating = Identity.enterFrame("Propagation.inbound()#u7", null);
                 long inbound = RuntimeTraceContext.enterInbound(header,
-                        "HADOOP_IPC", "corr-1", "attempt-0", "REQUEST", null);
+                        "HADOOP_IPC", "corr-1", "attempt-0", "REQUEST", null, "");
                 Identity.exitFrame(propagating);
                 Identity.enterFrame("NameNodeRpcServer.saveNamespace()#u40", null);
                 onHandler.set(Identity.atScope().render());
@@ -1880,7 +1880,7 @@ public class RowRuntimeTest {
             Identity.exitFrame(sending);
             response = installResponses
                     ? RuntimeTraceContext.enterInbound(header, "HADOOP_IPC",
-                            "corr-" + rpc, "0", "RESPONSE", client)
+                            "corr-" + rpc, "0", "RESPONSE", client, "")
                     : 0L;
             Identity.exitFrame(retrying);
             Identity.exitFrame(call);

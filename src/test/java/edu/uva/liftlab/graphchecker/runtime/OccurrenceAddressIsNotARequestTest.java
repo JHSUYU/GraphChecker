@@ -241,7 +241,7 @@ public class OccurrenceAddressIsNotARequestTest {
 
         // The value arrives through an owner nobody registered: a connection.
         long inbound = RuntimeTraceContext.enterInbound(header, "IPC",
-                "corr-1", "attempt-1", "REQUEST", new Object());
+                "corr-1", "attempt-1", "REQUEST", new Object(), "");
 
         assertEquals("the thread still runs as the DataNode", TARGET_DN,
                 RuntimeTraceContext.currentSource().key());

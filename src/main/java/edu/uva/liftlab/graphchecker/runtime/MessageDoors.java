@@ -37,10 +37,10 @@ public final class MessageDoors {
             new ConcurrentHashMap<String, Outbound>();
 
     /**
-     * While the thread runs a store's notification ({@link #notified}):
-     * {@code TRUE} until a read names its cause, {@code FALSE} after.
+     * While the thread runs a store's notification ({@link #notified}): its
+     * kind until a read names its cause, {@code null} after (and outside).
      */
-    private static final ThreadLocal<Boolean> NOTIFIED = new ThreadLocal<>();
+    private static final ThreadLocal<String> NOTIFIED = new ThreadLocal<>();
 
     private MessageDoors() {
     }
@@ -149,9 +149,13 @@ public final class MessageDoors {
      * stored ({@link #fetched}) is the message that caused it, and the
      * callback's end ends it.  Whatever lineage the callback's pooled thread
      * inherited is the pool's, not the notification's cause.
+     *
+     * @param kind what is notified (the watcher's class): one change the
+     *             store reports to two watchers is read by two callbacks,
+     *             each an occurrence of its own
      */
-    public static void notified(Runnable callback) {
-        NOTIFIED.set(Boolean.TRUE);
+    public static void notified(String kind, Runnable callback) {
+        NOTIFIED.set(Text.safe(kind));
         try {
             callback.run();
         } finally {
@@ -171,15 +175,18 @@ public final class MessageDoors {
      * timing lets it.
      */
     public static void fetched(String transport, String key, Object owner) {
-        if (!Boolean.TRUE.equals(NOTIFIED.get())) return;
+        String kind = NOTIFIED.get();
+        if (kind == null) return;
         Outbound message = STORED.get(transport + "\n" + key);
         if (message == null) return;
-        NOTIFIED.set(Boolean.FALSE);
+        NOTIFIED.remove();
         endInbound(true);
         SymbolicMessageEnvelope.clearInbound();
+        // The notified kind is part of the context the callback's work is
+        // addressed by, never of the pairing with the write.
         long token = message.trace.isEmpty() ? 0L
                 : CausynthTraceRecorder.inboundExchange(message.trace,
-                transport, key, "1", REQUEST, owner, false);
+                transport, key, "1", REQUEST, owner, false, kind);
         if (!message.symbolic.isEmpty()) {
             SymbolicMessageEnvelope.installInbound(message.symbolic);
         }

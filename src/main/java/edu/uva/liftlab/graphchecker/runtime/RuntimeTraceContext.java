@@ -539,9 +539,15 @@ final class RuntimeTraceContext {
     }
 
     /** Installs one received message and its exact transport exchange. */
+    /**
+     * @param via the receiving side's own name for where the message arrived
+     *            (a store notification's watcher), "" for none: part of the
+     *            context the work it opens is addressed by, never of the
+     *            pairing with its sender
+     */
     static long enterInbound(String header, String transport,
                              String correlationId, String attemptId,
-                             String half, Object localOwner) {
+                             String half, Object localOwner, String via) {
         MessageContext remote = MessageContext.parse(header);
         State state = CURRENT.get();
         long token = nextId();
@@ -579,7 +585,9 @@ final class RuntimeTraceContext {
                                 state.flow.exchangeCorrelationId,
                                 state.flow.exchangeHalf),
                 // Api is the last segment (ComposeMain.apiOf).
-                normalizedUpper(transport) + "/"
+                normalizedUpper(transport)
+                        + (Text.safe(via).isEmpty() ? ""
+                        : "." + normalizedUpper(via)) + "/"
                         + MapFields.safe(remote.requestApi));
         publishCausalSource(state);
         return token;

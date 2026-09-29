@@ -551,7 +551,7 @@ public final class CausynthTraceRecorder {
                                        String attemptId, String half,
                                        Object localOwner) {
         return inboundExchange(header, transport, correlationId, attemptId,
-                half, localOwner, true);
+                half, localOwner, true, "");
     }
 
     /**
@@ -559,16 +559,19 @@ public final class CausynthTraceRecorder {
      *                shared store is not, since how many times a reader
      *                reads one version is the store's timing
      *                ({@link MessageDoors#fetched})
+     * @param via     the receiving side's own name for where it arrived (a
+     *                store notification's watcher), "" for none
      */
     public static long inboundExchange(String header, String transport,
                                        String correlationId,
                                        String attemptId, String half,
-                                       Object localOwner, boolean awaited) {
+                                       Object localOwner, boolean awaited,
+                                       String via) {
         initialize();
         long token;
         try {
             token = RuntimeTraceContext.enterInbound(header, transport,
-                    correlationId, attemptId, half, localOwner);
+                    correlationId, attemptId, half, localOwner, via);
         } catch (IllegalArgumentException refused) {
             // Same refusal as outbound; 0 means no scope installed.
             RowRuntime.messageContextRefused("inbound "
@@ -582,7 +585,8 @@ public final class CausynthTraceRecorder {
             ScheduleLog.observe(ScheduleEvent.Kind.RECV,
                     MapFields.safe(transport) + "#" + MapFields.safe(half));
         } else {
-            ScheduleLog.unawaited(transport);
+            ScheduleLog.unawaited(Text.safe(via).isEmpty() ? transport
+                    : transport + "." + via);
         }
         if (awaited && REQUEST.equals(half)) {
             RECEIPTS.put(receiptKey(transport, correlationId, attemptId),

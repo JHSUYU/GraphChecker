@@ -494,7 +494,7 @@ public class ScheduleLogTest {
         Thread callback = new Thread(new Runnable() {
             @Override
             public void run() {
-                MessageDoors.notified(new Runnable() {
+                MessageDoors.notified("Watcher", new Runnable() {
                     @Override
                     public void run() {
                         MessageDoors.fetched("STORE", "/k@1", owner);
