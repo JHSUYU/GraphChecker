@@ -3461,6 +3461,66 @@ public class ComposerTest {
         }
     }
 
+    /**
+     * A recorded expression is walked once per node and to its end: a map
+     * whose every put names the map below twice is 2^64 paths as a tree, and
+     * one put 100000 deep passed the depth caps (512 for a term's symbols
+     * and for the container subterms a query declares) or overflowed a
+     * recursion.  The lowering itself recurses, on the engine's stack
+     * (java.sh -Xss512m), so it runs on one here; the walks do not.
+     */
+    @Test(timeout = 300_000L)
+    public void aDeepSharedChainIsWalkedToItsEnd() throws Exception {
+        String deepest = "M_I_deepest";
+        Map<String, VmTermLowering.Sort> declared =
+                new LinkedHashMap<String, VmTermLowering.Sort>();
+        declared.put(deepest, VmTermLowering.Sort.INT);
+        declared.put("M_I_key", VmTermLowering.Sort.INT);
+        for (int depth : new int[]{64, 100_000}) {
+            boolean doubled = depth == 64;
+            JsonObject key = symbol("M_I_key", "I");
+            JsonObject map = relation("ASSOCIATIVE", "PUT",
+                    "java/util/HashMap", snapshot(), integer("I", 0L),
+                    symbol(deepest, "I"));
+            for (int level = 1; level < depth; level++) {
+                map = relation("ASSOCIATIVE", "PUT", "java/util/HashMap", map,
+                        integer("I", level), doubled ? relation("ASSOCIATIVE",
+                                "READ", "I", map, key)
+                                : integer("I", level));
+            }
+            JsonObject read = relation("ASSOCIATIVE", "READ", "I", map, key);
+            Set<String> symbols = new LinkedHashSet<String>();
+            edu.uva.liftlab.graphchecker.smt.Arms.symbolsIn(read, symbols);
+            assertTrue(depth + ": " + symbols, symbols.contains(deepest));
+            assertFalse(depth + ": walked whole, no marker",
+                    VmRows.truncated(read));
+
+            SmtLowering lowering = new SmtLowering(declared);
+            lowering.begin("t", SmtLowering.NO_JOIN, ExpressionTable.empty());
+            String[] text = new String[1];
+            Thread engine = new Thread(null, () -> text[0] = lowering.dispatch(
+                    read, VmTermLowering.Sort.INT, "deep").text,
+                    "engine-stack", 512L << 20);
+            engine.start();
+            engine.join();
+            lowering.end();
+            assertTrue(depth + ": the map is one named subterm per put",
+                    text[0].contains("container_dag__"));
+            assertTrue(depth + ": the query reaches the deepest put's symbol",
+                    lowering.reachedSymbols(text[0],
+                            new LinkedHashSet<String>(), null)
+                            .contains(deepest));
+            List<String> names = new ArrayList<String>();
+            for (SmtLowering.Declaration declaration : lowering.reachedBy(
+                    Collections.singletonList(text[0]))) {
+                names.add(declaration.name);
+            }
+            assertTrue(depth + ": and declares it", names.contains(deepest));
+            assertTrue(depth + ": after every put above it",
+                    names.size() > depth);
+        }
+    }
+
     private static JsonObject vmLeaf(String type, String exp,
                                      String javaType) {
         JsonObject leaf = new JsonObject();

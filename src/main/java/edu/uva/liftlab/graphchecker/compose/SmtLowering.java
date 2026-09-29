@@ -27,6 +27,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -1483,23 +1484,43 @@ public final class SmtLowering {
         Set<String> done = new LinkedHashSet<String>();
         if (texts != null) {
             for (String text : texts) {
-                reach(text, done, ordered, 0);
+                reach(text, done, ordered);
             }
         }
         return ordered;
     }
 
+    /**
+     * One text's declarations, a subterm after the ones its body names, on a
+     * stack: a container's mutation chain is one subterm per mutation, and
+     * a cap at depth 512 left the deeper ones undeclared.
+     */
     private void reach(String text, Set<String> done,
-                       List<Declaration> ordered, int depth) {
-        if (text == null || text.isEmpty() || depth > 512) return;
-        for (String token : SmtNames.names(text)) {
+                       List<Declaration> ordered) {
+        if (text == null || text.isEmpty()) return;
+        List<Iterator<String>> names = new ArrayList<Iterator<String>>();
+        // The subterm each level of names is the body of; null for the text.
+        List<SharedTerm> bodies = new ArrayList<SharedTerm>();
+        names.add(SmtNames.names(text).iterator());
+        bodies.add(null);
+        while (!names.isEmpty()) {
+            int top = names.size() - 1;
+            if (!names.get(top).hasNext()) {
+                names.remove(top);
+                SharedTerm shared = bodies.remove(top);
+                if (shared != null) {
+                    ordered.add(new Declaration(shared.name,
+                            shared.sort.smt, shared.body));
+                }
+                continue;
+            }
+            String token = names.get(top).next();
             if (!done.add(token)) continue;
             SharedTerm shared = sharedByName.get(token);
             if (shared != null) {
                 // Its own dependencies first: a define-fun may name another.
-                reach(shared.body, done, ordered, depth + 1);
-                ordered.add(new Declaration(shared.name, shared.sort.smt,
-                        shared.body));
+                names.add(SmtNames.names(shared.body).iterator());
+                bodies.add(shared);
                 continue;
             }
             Declared held = declarations.get(token);
@@ -1524,7 +1545,7 @@ public final class SmtLowering {
      */
     public Set<String> reachedSymbols(String text, Set<String> into,
                                       Set<String> states) {
-        reachedSymbols(text, new LinkedHashSet<String>(), into, states, 0);
+        reachedSymbols(text, new LinkedHashSet<String>(), into, states);
         return into;
     }
 
@@ -1535,18 +1556,26 @@ public final class SmtLowering {
         return into;
     }
 
+    /** On a stack, as {@link #reach}: capped at depth 512, a mutation chain
+     *  hid the symbols of its deeper subterms. */
     private void reachedSymbols(String text, Set<String> seen,
-                                Set<String> into, Set<String> states,
-                                int depth) {
-        if (text == null || text.isEmpty() || depth > 512) return;
-        for (String name : SmtNames.names(text)) {
+                                Set<String> into, Set<String> states) {
+        if (text == null || text.isEmpty()) return;
+        Deque<Iterator<String>> names = new ArrayDeque<Iterator<String>>();
+        names.push(SmtNames.names(text).iterator());
+        while (!names.isEmpty()) {
+            if (!names.peek().hasNext()) {
+                names.pop();
+                continue;
+            }
+            String name = names.peek().next();
             if (SmtNames.BUILTIN.contains(name) || !seen.add(name)) continue;
             SharedTerm shared = sharedByName.get(name);
             if (shared != null) {
                 // v_C (CLOSURE-V2): a term reaching the dag rests on the
                 // state it stands for, which its body does not name.
                 if (states != null) states.addAll(shared.states);
-                reachedSymbols(shared.body, seen, into, states, depth + 1);
+                names.push(SmtNames.names(shared.body).iterator());
                 continue;
             }
             // Only recorded names can be asked of the corpus.

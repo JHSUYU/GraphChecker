@@ -185,91 +185,116 @@ public final class ContainerSmtCodec {
      * read-from arms) out of the formula, so such a carrier is kept.
      */
     private static boolean evidencedContainerIdentity(JsonElement expression) {
-        if (expression == null || !expression.isJsonObject()) return false;
-        JsonObject node = expression.getAsJsonObject();
-        if (VmRows.GUARDED_READ_TYPE.equals(
-                optionalString(node, "_type"))
-                || VmExpressionIr.consumerBoundary(node)
-                || VmExpressionIr.isCanonicalMapStateReference(
-                optionalString(node, "_exp"))) {
-            return true;
+        JsonElement cursor = expression;
+        while (cursor != null && cursor.isJsonObject()) {
+            JsonObject node = cursor.getAsJsonObject();
+            if (VmRows.GUARDED_READ_TYPE.equals(
+                    optionalString(node, "_type"))
+                    || VmExpressionIr.consumerBoundary(node)
+                    || VmExpressionIr.isCanonicalMapStateReference(
+                    optionalString(node, "_exp"))) {
+                return true;
+            }
+            // A local mutation inherits the identity of the state it rests
+            // on, however long the chain of them.
+            if (!EXPRESSION_TYPE.equals(optionalString(node, "_type"))) {
+                return false;
+            }
+            cursor = node.get("receiver");
         }
-        // A local mutation inherits the identity of the state it rests on.
-        return EXPRESSION_TYPE.equals(optionalString(node, "_type"))
-                && evidencedContainerIdentity(node.get("receiver"));
+        return false;
     }
 
-    /** Resolves {@code READ(WRITE(s, j, v), i)} to the stored {@code v}. */
+    /**
+     * Resolves {@code READ(WRITE(s, j, v), i)} to the stored {@code v},
+     * projected through the value-propagation wrappers above it.
+     */
     private static JsonElement storedIndexedWrite(JsonElement receiver,
                                                   JsonElement index,
                                                   String selectedJavaType) {
         Integer wanted = exactIndexLiteral(index);
         if (wanted == null) return null;
-        return storedIndexedWrite(receiver, wanted, selectedJavaType,
-                new IdentityHashMap<JsonElement, JsonElement>());
+        List<JsonObject> wrappers = new ArrayList<JsonObject>();
+        JsonElement cursor = receiver;
+        while (cursor != null && cursor.isJsonObject()) {
+            JsonObject root = cursor.getAsJsonObject();
+            if (wrapper(root)) {
+                wrappers.add(root);
+                cursor = wrapped(root);
+                continue;
+            }
+            JsonElement below = cursor;
+            while (below != null && below.isJsonObject()) {
+                JsonObject node = below.getAsJsonObject();
+                JsonArray arguments = array(node, "arguments");
+                if (!EXPRESSION_TYPE.equals(optionalString(node, "_type"))
+                        || !"INDEXED".equals(optionalString(node, "shape"))
+                        || !"WRITE".equals(
+                        optionalString(node, "operation"))) {
+                    break;
+                }
+                if (arguments.size() != 2) return null;
+                Integer written = exactIndexLiteral(arguments.get(0));
+                if (written == null) return null;
+                if (written.intValue() == wanted) {
+                    // The stored value is an immutable propagated graph.
+                    return rewrapped(wrappers, arguments.get(1),
+                            selectedJavaType);
+                }
+                below = node.get("receiver");
+            }
+            // A local WRITE prefix may itself rest on a propagated array
+            // family.
+            if (below == cursor) return null;
+            cursor = below;
+        }
+        return null;
     }
 
     /**
-     * Projects one literal indexed read through value-propagation wrappers,
-     * which are kept: their selector and event stay the value's authority.
+     * Whether a container value sits beneath a value-propagation wrapper: a
+     * consumer boundary, or a guarded read of the version it observed.  The
+     * walks down such chains are loops: a container's history is one
+     * guarded read per version, and a recursion along it was as deep.
      */
-    private static JsonElement storedIndexedWrite(
-            JsonElement receiver, int wanted, String selectedJavaType,
-            IdentityHashMap<JsonElement, JsonElement> memo) {
-        if (receiver == null || !receiver.isJsonObject()) return null;
-        // A pure function of a decoder-owned DAG: memoize per node.
-        if (memo.containsKey(receiver)) return memo.get(receiver);
-        JsonElement answer = storedIndexedWriteUncached(receiver, wanted,
-                selectedJavaType, memo);
-        memo.put(receiver, answer);
-        return answer;
+    private static boolean wrapper(JsonObject node) {
+        return VmExpressionIr.consumerBoundary(node)
+                || VmRows.GUARDED_READ_TYPE.equals(
+                optionalString(node, "_type"));
     }
 
-    private static JsonElement storedIndexedWriteUncached(
-            JsonElement receiver, int wanted, String selectedJavaType,
-            IdentityHashMap<JsonElement, JsonElement> memo) {
-        JsonObject root = receiver.getAsJsonObject();
-        if (VmExpressionIr.consumerBoundary(root)) {
-            JsonElement selected = storedIndexedWrite(
-                    root.get(VmExpressionIr.EXPRESSION), wanted,
-                    selectedJavaType, memo);
-            if (selected == null) return null;
-            JsonObject projected = JsonFields.shallowCopy(root);
-            projected.addProperty("_java_type", selectedJavaType);
-            projected.add(VmExpressionIr.EXPRESSION, selected);
-            return projected;
+    /** The value one {@link #wrapper} carries, or null. */
+    private static JsonElement wrapped(JsonObject wrapper) {
+        if (VmExpressionIr.consumerBoundary(wrapper)) {
+            return wrapper.get(VmExpressionIr.EXPRESSION);
         }
-        if (VmRows.GUARDED_READ_TYPE.equals(optionalString(root, "_type"))) {
-            JsonObject observed = observedVersion(root);
-            JsonElement written = observed == null ? null
-                    : observed.get(VmExpressionIr.EXPRESSION);
-            if (written == null) return null;
-            JsonElement selected = storedIndexedWrite(written, wanted,
-                    selectedJavaType, memo);
-            return selected == null ? null : projectedRead(root, observed,
-                    selected, selectedJavaType);
-        }
-        JsonElement cursor = receiver;
-        while (cursor != null && cursor.isJsonObject()) {
-            JsonObject node = cursor.getAsJsonObject();
-            JsonArray arguments = array(node, "arguments");
-            if (!EXPRESSION_TYPE.equals(optionalString(node, "_type"))
-                    || !"INDEXED".equals(optionalString(node, "shape"))
-                    || !"WRITE".equals(optionalString(node, "operation"))) {
-                break;
+        JsonObject observed = observedVersion(wrapper);
+        return observed == null ? null
+                : observed.get(VmExpressionIr.EXPRESSION);
+    }
+
+    /**
+     * {@code value} put back beneath the wrappers it was found under (listed
+     * outermost first), each restated at {@code javaType}: their selector
+     * and event stay the value's authority.
+     */
+    private static JsonElement rewrapped(List<JsonObject> wrappers,
+                                         JsonElement value,
+                                         String javaType) {
+        JsonElement projected = value;
+        for (int index = wrappers.size() - 1; index >= 0; index--) {
+            JsonObject wrapper = wrappers.get(index);
+            if (VmExpressionIr.consumerBoundary(wrapper)) {
+                JsonObject boundary = JsonFields.shallowCopy(wrapper);
+                boundary.addProperty("_java_type", javaType);
+                boundary.add(VmExpressionIr.EXPRESSION, projected);
+                projected = boundary;
+            } else {
+                projected = projectedRead(wrapper, observedVersion(wrapper),
+                        projected, javaType);
             }
-            if (arguments.size() != 2) return null;
-            Integer written = exactIndexLiteral(arguments.get(0));
-            if (written == null) return null;
-            if (written.intValue() == wanted) {
-                // The stored value is an immutable propagated graph.
-                return arguments.get(1);
-            }
-            cursor = node.get("receiver");
         }
-        // A local WRITE prefix may itself rest on a propagated array family.
-        return cursor == receiver ? null
-                : storedIndexedWrite(cursor, wanted, selectedJavaType, memo);
+        return projected;
     }
 
     /** Skips the writes a size query cannot observe. */
@@ -595,8 +620,9 @@ public final class ContainerSmtCodec {
      * (Solr's cluster state, one per notification) is a put per entry, and
      * lowering every one of them was millions of container terms for a query
      * that reads one key.  The walk stops at the first mutation at the key
-     * (its answer), at a key that is not a literal, or at the chain's base;
-     * what remains is lowered as the whole state was.  Never an absent-key
+     * (its answer), at a key that is not a literal, or at the chain's base,
+     * never at a depth (512 lowered the rest of a longer map whole); what
+     * remains is lowered as the whole state was.  Never an absent-key
      * default over the passed puts: only literal keys are compared, and two
      * distinct literals are distinct values.
      */
@@ -609,7 +635,7 @@ public final class ContainerSmtCodec {
         JsonElement state = receiverIr;
         String literal = literalKey(key);
         if (literal != null) {
-            for (int depth = 0; depth < CONTAINER_CHAIN_LIMIT; depth++) {
+            while (true) {
                 Mutation mutation = associativeMutation(state);
                 if (mutation == null || !("PUT".equals(mutation.operation)
                         || "REMOVE".equals(mutation.operation))) {
@@ -688,12 +714,13 @@ public final class ContainerSmtCodec {
      *
      * <p>Trap: never replace this with an "absent-key default" over the
      * chain's constant PUT keys -- a symbolic PUT key makes that default
-     * contradict the chain.</p>
+     * contradict the chain.  Walked to its end: stopped at depth 512, a
+     * longer chain passed unrefused whatever its base.</p>
      */
     private static void requireStatedContainerBase(
             JsonElement expression, Term key, Host host) {
         JsonElement chain = expression;
-        for (int depth = 0; depth < CONTAINER_CHAIN_LIMIT; depth++) {
+        while (true) {
             Mutation mutation = associativeMutation(chain);
             if (mutation == null) {
                 host.unsupported(VmRows.CONTAINER_BASE_UNSTATED + ":"
@@ -704,8 +731,6 @@ public final class ContainerSmtCodec {
             chain = mutation.receiver;
         }
     }
-
-    private static final int CONTAINER_CHAIN_LIMIT = 512;
 
     /** The value at one key, or the null cell where the key is absent. */
     private static Term associativeRead(Term state, Term key, Host host) {
@@ -829,13 +854,14 @@ public final class ContainerSmtCodec {
 
     /**
      * The keys a view's state was put with above an exact empty base, or
-     * null when the chain ends anywhere else and so bounds nothing.
+     * null when the chain ends anywhere else and so bounds nothing -- or
+     * runs past {@link #VIEW_CHAIN_LIMIT}.
      */
     private static List<JsonElement> associativeViewKeys(
             JsonElement state) {
         List<JsonElement> keys = new ArrayList<JsonElement>();
         JsonElement chain = state;
-        for (int depth = 0; depth < CONTAINER_CHAIN_LIMIT; depth++) {
+        for (int depth = 0; depth < VIEW_CHAIN_LIMIT; depth++) {
             Mutation mutation = associativeMutation(chain);
             if (mutation == null) return null;
             if (emptiesState(mutation.operation)) {
@@ -849,6 +875,13 @@ public final class ContainerSmtCodec {
         }
         return null;
     }
+
+    /**
+     * The longest chain a view's bijection is stated over: its facts grow
+     * with the square of the puts, and a longer chain is refused by name
+     * ({@link #ASSOC_VIEW_SIZE_UNSTATED}), never cut.
+     */
+    private static final int VIEW_CHAIN_LIMIT = 512;
 
     /** What a refused view names itself by: its own top operation. */
     private static String associativeStateSubject(JsonElement state) {
@@ -1072,93 +1105,60 @@ public final class ContainerSmtCodec {
         return value == null ? null : host.share(value);
     }
 
+    /** The view a read selects beneath iterators and {@link #wrapper}s. */
     private static String selectedReadViewKind(JsonElement expression) {
-        if (expression == null || !expression.isJsonObject()) return "";
-        JsonObject object = expression.getAsJsonObject();
-        if (VmExpressionIr.consumerBoundary(object)) {
-            JsonElement payload = object.get(VmExpressionIr.EXPRESSION);
-            return payload == null || !payload.isJsonObject() ? ""
-                    : selectedReadViewKind(payload);
-        }
-        if (EXPRESSION_TYPE.equals(optionalString(object, "_type"))) {
+        JsonElement cursor = expression;
+        while (cursor != null && cursor.isJsonObject()) {
+            JsonObject object = cursor.getAsJsonObject();
+            if (wrapper(object)) {
+                cursor = wrapped(object);
+                continue;
+            }
+            if (!EXPRESSION_TYPE.equals(optionalString(object, "_type"))) {
+                return "";
+            }
             String operation = optionalString(object, "operation");
             if ("ENTRY_VIEW".equals(operation)
                     || "KEY_VIEW".equals(operation)
                     || "VALUE_VIEW".equals(operation)) {
                 return operation;
             }
-            return "ITERATOR".equals(operation)
-                    ? selectedReadViewKind(object.get("receiver")) : "";
+            if (!"ITERATOR".equals(operation)) return "";
+            cursor = object.get("receiver");
         }
-        if (!VmRows.GUARDED_READ_TYPE.equals(optionalString(object, "_type"))) {
-            return "";
-        }
-        JsonObject observed = observedVersion(object);
-        JsonElement written = observed == null ? null
-                : observed.get(VmExpressionIr.EXPRESSION);
-        return written == null || !written.isJsonObject() ? ""
-                : selectedReadViewKind(written);
+        return "";
     }
 
     /**
      * Projects a view through value-preserving wrappers down to its
-     * {@code AssocState}; selectors and provenance stay on the wrappers.
+     * {@code AssocState}; selectors and provenance stay on the wrappers
+     * ({@link #rewrapped}).
      */
     private static JsonElement selectedViewState(
             JsonElement expression, String kind) {
-        return selectedViewState(expression, kind,
-                new IdentityHashMap<JsonElement, JsonElement>());
-    }
-
-    /** Copy-on-write projection over one decoder-owned expression DAG. */
-    private static JsonElement selectedViewState(
-            JsonElement expression, String kind,
-            IdentityHashMap<JsonElement, JsonElement> memo) {
-        if (expression == null || !expression.isJsonObject()
-                || kind == null || kind.isEmpty()) {
-            return null;
-        }
-        if (memo.containsKey(expression)) {
-            return memo.get(expression);
-        }
-        JsonObject object = expression.getAsJsonObject();
-        if (VmExpressionIr.consumerBoundary(object)) {
-            JsonElement payload = selectedViewState(
-                    object.get(VmExpressionIr.EXPRESSION), kind, memo);
-            if (payload == null) return null;
-            JsonObject normalized = JsonFields.shallowCopy(object);
-            normalized.addProperty("_java_type", "java/util/Map");
-            normalized.add(VmExpressionIr.EXPRESSION, payload);
-            memo.put(expression, normalized);
-            return normalized;
-        }
-        if (EXPRESSION_TYPE.equals(optionalString(object, "_type"))) {
+        if (kind == null || kind.isEmpty()) return null;
+        List<JsonObject> wrappers = new ArrayList<JsonObject>();
+        JsonElement cursor = expression;
+        while (cursor != null && cursor.isJsonObject()) {
+            JsonObject object = cursor.getAsJsonObject();
+            if (wrapper(object)) {
+                wrappers.add(object);
+                cursor = wrapped(object);
+                continue;
+            }
+            if (!EXPRESSION_TYPE.equals(optionalString(object, "_type"))) {
+                return null;
+            }
             String operation = optionalString(object, "operation");
+            JsonElement receiver = object.get("receiver");
             if (kind.equals(operation)) {
-                JsonElement receiver = object.get("receiver");
-                if (receiver == null || !receiver.isJsonObject()) return null;
-                memo.put(expression, receiver);
-                return receiver;
+                return receiver == null || !receiver.isJsonObject() ? null
+                        : rewrapped(wrappers, receiver, "java/util/Map");
             }
             if (!"ITERATOR".equals(operation)) return null;
-            JsonElement result = selectedViewState(object.get("receiver"),
-                    kind, memo);
-            if (result != null) memo.put(expression, result);
-            return result;
+            cursor = receiver;
         }
-        if (!VmRows.GUARDED_READ_TYPE.equals(optionalString(object, "_type"))) {
-            return null;
-        }
-        JsonObject observed = observedVersion(object);
-        JsonElement written = observed == null ? null
-                : observed.get(VmExpressionIr.EXPRESSION);
-        if (written == null) return null;
-        JsonElement state = selectedViewState(written, kind, memo);
-        if (state == null) return null;
-        JsonObject normalized = projectedRead(object, observed, state,
-                "java/util/Map");
-        memo.put(expression, normalized);
-        return normalized;
+        return null;
     }
 
 
