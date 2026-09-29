@@ -41,6 +41,15 @@ public final class MessageDoors {
      * kind until a read names its cause, {@code null} after (and outside).
      */
     private static final ThreadLocal<String> NOTIFIED = new ThreadLocal<>();
+    /**
+     * How many notifications of one kind on one node have read each version
+     * ({@link #fetched}).  Two watchers of one kind on one node both parse a
+     * version (Solr registers a StateWatcher per refresh): the second parse
+     * was the first's address, so the plan kept one, and SOLR-18413's leader
+     * read the objects of the parse no replay recorded.
+     */
+    private static final Map<String, Integer> DELIVERIES =
+            new ConcurrentHashMap<String, Integer>();
 
     private MessageDoors() {
     }
@@ -183,10 +192,15 @@ public final class MessageDoors {
         endInbound(true);
         SymbolicMessageEnvelope.clearInbound();
         // The notified kind is part of the context the callback's work is
-        // addressed by, never of the pairing with the write.
+        // addressed by, never of the pairing with the write; so is which of
+        // the node's deliveries of this version it is, from the second on.
+        int delivery = DELIVERIES.merge(RuntimeTraceContext.ownedSource(owner)
+                .key() + "\n" + transport + "\n" + key + "\n" + kind, 1,
+                Integer::sum);
+        String via = delivery == 1 ? kind : kind + "." + delivery;
         long token = message.trace.isEmpty() ? 0L
                 : CausynthTraceRecorder.inboundExchange(message.trace,
-                transport, key, "1", REQUEST, owner, false, kind);
+                transport, key, "1", REQUEST, owner, false, via);
         if (!message.symbolic.isEmpty()) {
             SymbolicMessageEnvelope.installInbound(message.symbolic);
         }
