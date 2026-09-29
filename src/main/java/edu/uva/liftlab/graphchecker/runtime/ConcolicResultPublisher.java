@@ -8,7 +8,7 @@ import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
 import edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.RawSharedStateReadOut;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -30,10 +30,15 @@ final class ConcolicResultPublisher {
     private static final Object PUBLICATION_LOCK = new Object();
     private static final AtomicLong PUBLICATION_THREAD_COUNTER =
             new AtomicLong();
-    /** Publication must not hold an RPC handler after the VM read-out. */
+    /**
+     * Publication must not hold an RPC handler after the VM read-out, and
+     * must not drop a completed occurrence either: its queue has no bound.
+     * Bounded at 128, it rejected SOLR-18406's declared occurrence while the
+     * interpreter was still hashing the expressions of earlier ones.
+     */
     private static final ThreadPoolExecutor RESULT_PUBLICATION_EXECUTOR =
             new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
-                    new ArrayBlockingQueue<Runnable>(128),
+                    new LinkedBlockingQueue<Runnable>(),
                     new ThreadFactory() {
                         @Override
                         public Thread newThread(Runnable runnable) {
@@ -52,7 +57,7 @@ final class ConcolicResultPublisher {
                             thread.setDaemon(true);
                             return thread;
                         }
-                    }, new ThreadPoolExecutor.AbortPolicy());
+                    });
     /** Guarded by {@link #PUBLICATION_LOCK}. */
     private static int resultPublicationsInFlight;
     /** Live selected activations not yet publishing. */
