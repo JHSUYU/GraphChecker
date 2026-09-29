@@ -539,6 +539,20 @@ public final class CausynthTraceRecorder {
                                        String correlationId,
                                        String attemptId, String half,
                                        Object localOwner) {
+        return inboundExchange(header, transport, correlationId, attemptId,
+                half, localOwner, true);
+    }
+
+    /**
+     * @param awaited whether the schedule holds this receipt: a read of a
+     *                shared store is not, since how many times a reader
+     *                reads one version is the store's timing
+     *                ({@link MessageDoors#fetched})
+     */
+    public static long inboundExchange(String header, String transport,
+                                       String correlationId,
+                                       String attemptId, String half,
+                                       Object localOwner, boolean awaited) {
         initialize();
         long token;
         try {
@@ -552,9 +566,11 @@ public final class CausynthTraceRecorder {
             return 0L;
         }
         // The schedule's RECV, under the scope the message opened.
-        ScheduleLog.observe(ScheduleEvent.Kind.RECV,
-                MapFields.safe(transport) + "#" + MapFields.safe(half));
-        if (REQUEST.equals(half)) {
+        if (awaited) {
+            ScheduleLog.observe(ScheduleEvent.Kind.RECV,
+                    MapFields.safe(transport) + "#" + MapFields.safe(half));
+        }
+        if (awaited && REQUEST.equals(half)) {
             RECEIPTS.put(receiptKey(transport, correlationId, attemptId),
                     new Receipt(ScheduleLog.stanceHere(),
                             Identity.responseEndpoint(RuntimeTraceContext
@@ -766,6 +782,12 @@ public final class CausynthTraceRecorder {
         writeSourceTraceLine("REQUEST_BEGIN", source, null, requestId,
                 MapFields.safe(apiName), 0);
         return requestId;
+    }
+
+    /** Whether the calling thread stands in no scope at all: no node named
+     *  explicitly, no lineage frame. */
+    static boolean unscoped() {
+        return RuntimeTraceContext.explicitSource() == null && !Lineage.named();
     }
 
     /** The kind a workload registers its own clients under. */

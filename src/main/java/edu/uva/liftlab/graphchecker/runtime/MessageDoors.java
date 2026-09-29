@@ -1,5 +1,8 @@
 package edu.uva.liftlab.graphchecker.runtime;
 
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
 /**
  * THE message doors a system's transports call, whatever the system: a
  * request or a response leaves (outbound) carrying the sender's GraphChecker
@@ -23,6 +26,15 @@ public final class MessageDoors {
     public static final String RESPONSE = "RESPONSE";
 
     private static final ThreadLocal<Inbound> CURRENT = new ThreadLocal<>();
+
+    /**
+     * What each version of a shared store carried when it was written
+     * ({@link #stored}), by transport and key.  The store is the nodes' own
+     * (ZooKeeper, in a cluster that runs in one JVM): the table is its
+     * metadata, not a channel of the engine's.
+     */
+    private static final Map<String, Outbound> STORED =
+            new ConcurrentHashMap<String, Outbound>();
 
     private MessageDoors() {
     }
@@ -110,6 +122,44 @@ public final class MessageDoors {
         if (scope.token > 0L) {
             CausynthTraceRecorder.endInboundExchange(scope.token);
         }
+    }
+
+    /**
+     * A write to a store the nodes share: a message sent where it is written
+     * (a schedule SEND) and received wherever a node later reads that
+     * version, any number of times.
+     *
+     * @param key the location and the version this write made
+     */
+    public static void stored(String transport, String key, Object owner) {
+        Outbound message = outbound(transport, key, "1", REQUEST, owner,
+                null);
+        if (message.active()) STORED.put(transport + "\n" + key, message);
+    }
+
+    /**
+     * A read of a version a {@link #stored} write made.  On a thread that
+     * stands in no scope -- a store's callback, which nothing else
+     * attributes -- the read is the message that caused the work that
+     * follows, and installs the writer's context: each version read is an
+     * occurrence of its own, named by the write.  The schedule never waits
+     * for it: ZooKeeper folds the changes that arrive before a watch is set
+     * again into one event, so how many times a reader reads is the store's
+     * timing.  A thread already in a scope keeps its own.
+     */
+    public static void fetched(String transport, String key, Object owner) {
+        if (!CausynthTraceRecorder.unscoped()) return;
+        Outbound message = STORED.get(transport + "\n" + key);
+        if (message == null) return;
+        endInbound(true);
+        SymbolicMessageEnvelope.clearInbound();
+        long token = message.trace.isEmpty() ? 0L
+                : CausynthTraceRecorder.inboundExchange(message.trace,
+                transport, key, "1", REQUEST, owner, false);
+        if (!message.symbolic.isEmpty()) {
+            SymbolicMessageEnvelope.installInbound(message.symbolic);
+        }
+        CURRENT.set(new Inbound(token, key, "1", REQUEST));
     }
 
     /** The exchange the thread serves, or {@code null}. */
