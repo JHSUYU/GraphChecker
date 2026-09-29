@@ -17,8 +17,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * attribute is still pushed, marked lost: the row states it.</p>
  *
  * <p>The stack is inheritable, so a new thread starts in its creator's
- * scope; {@link #capture()} / {@link #restore} carry a scope to a pool thread
- * created earlier (executor, IPC {@code Server.Call} queue), which an
+ * scope, a pool's own worker excepted ({@link PoolWorkers});
+ * {@link #capture()} / {@link #restore} carry a scope to a pool thread
+ * (executor, IPC {@code Server.Call} queue), which an
  * {@code InheritableThreadLocal} does not reach.</p>
  */
 public final class Lineage {
@@ -35,7 +36,8 @@ public final class Lineage {
 
                 @Override
                 protected List<Frame> childValue(List<Frame> parent) {
-                    return parent == null ? new ArrayList<Frame>()
+                    return parent == null || PoolWorkers.constructing()
+                            ? new ArrayList<Frame>()
                             : new ArrayList<Frame>(parent);
                 }
             };

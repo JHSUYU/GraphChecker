@@ -890,7 +890,8 @@ final class RuntimeTraceContext {
         // Unresolved: resolving would touch the child's thread-locals.
         Frame frame = parent.frames.peek();
         child.source = frame == null ? parent.source : frame.source;
-        child.flow = parent.flow;
+        // A pool's worker works for its node, in no request of its own.
+        if (!PoolWorkers.constructing()) child.flow = parent.flow;
         return child;
     }
 

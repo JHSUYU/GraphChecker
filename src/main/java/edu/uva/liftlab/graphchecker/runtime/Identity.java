@@ -40,9 +40,10 @@ public final class Identity {
 
                 @Override
                 protected State childValue(State parent) {
-                    // A thread starts where it was created; the explicit
-                    // carry is for a pool thread created before the work.
-                    return parent == null ? new State() : parent.copy();
+                    // A thread starts where it was created, but for a pool's
+                    // worker: every task carries its own start explicitly.
+                    return parent == null || PoolWorkers.constructing()
+                            ? new State() : parent.copy();
                 }
             };
 
