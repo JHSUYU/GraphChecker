@@ -90,23 +90,14 @@ public final class VmExpressionIr {
         return carries(expression, SYMBOL_TYPE::equals);
     }
 
-    /** Whether any node of the tree has a {@code _type} {@code wanted} names. */
+    /** Whether any node of the tree has a {@code _type} {@code wanted}
+     *  names ({@link ExpressionWalk}: walked as a tree, a shared chain is
+     *  2^depth paths). */
     private static boolean carries(JsonElement expression,
                                    Predicate<String> wanted) {
-        if (expression == null || expression.isJsonNull()) return false;
-        if (expression.isJsonArray()) {
-            for (JsonElement child : expression.getAsJsonArray()) {
-                if (carries(child, wanted)) return true;
-            }
-            return false;
-        }
-        if (!expression.isJsonObject()) return false;
-        JsonObject node = expression.getAsJsonObject();
-        if (wanted.test(optionalString(node, "_type"))) return true;
-        for (java.util.Map.Entry<String, JsonElement> member
-                : node.entrySet()) {
-            if (!"_type".equals(member.getKey())
-                    && carries(member.getValue(), wanted)) {
+        for (ExpressionWalk walk = ExpressionWalk.of(expression);
+             walk.hasNext(); ) {
+            if (wanted.test(optionalString(walk.next(), "_type"))) {
                 return true;
             }
         }

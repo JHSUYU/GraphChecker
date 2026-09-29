@@ -25,6 +25,7 @@ import edu.uva.liftlab.graphchecker.compose.JavaSmtSorts;
 import edu.uva.liftlab.graphchecker.compose.SmtLowering;
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Sort;
 import edu.uva.liftlab.graphchecker.smt.Arms;
+import edu.uva.liftlab.graphchecker.smt.ExpressionWalk;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
@@ -903,9 +904,6 @@ public final class Corpus implements Arms.Rows {
         return found;
     }
 
-    /** Walk depth for state reads inside one expression. */
-    private static final int EXPRESSION_DEPTH = 64;
-
     /** One shared-state read a published expression states, and the version the
      *  producer had in hand. */
     public static final class StateRead {
@@ -945,7 +943,7 @@ public final class Corpus implements Arms.Rows {
         JsonObject expression = expression(sessionId, expressionRef);
         if (expression == null) return found;
         Map<String, Long> read = new LinkedHashMap<String, Long>();
-        readNodes(expression, read, 0);
+        readNodes(expression, read, ExpressionWalk.identitySet());
         for (Map.Entry<String, Long> each : read.entrySet()) {
             WriteRow latest = null;
             for (WriteRow write : writesOf(sessionId, each.getKey())) {
@@ -969,8 +967,9 @@ public final class Corpus implements Arms.Rows {
         Map<String, Long> read = new LinkedHashMap<String, Long>();
         java.util.regex.Matcher refs = EXPRESSION_REF.matcher(
                 term == null ? "" : term);
+        Set<JsonElement> walked = ExpressionWalk.identitySet();
         while (refs.find()) {
-            readNodes(expression(sessionId, refs.group()), read, 0);
+            readNodes(expression(sessionId, refs.group()), read, walked);
         }
         return read.keySet();
     }
@@ -979,31 +978,26 @@ public final class Corpus implements Arms.Rows {
             java.util.regex.Pattern.compile("EXPR\\.[0-9a-f]+");
 
     /** Location key -> the latest event id one expression read it at (any node
-     *  with location + readEventId). */
+     *  with location + readEventId), each node once ({@link ExpressionWalk};
+     *  capped at depth 64, the walk dropped the reads below it). */
     private static void readNodes(JsonElement expression,
-                                  Map<String, Long> into, int depth) {
-        if (expression == null || depth > EXPRESSION_DEPTH) return;
-        if (expression.isJsonArray()) {
-            for (JsonElement each : expression.getAsJsonArray()) {
-                readNodes(each, into, depth + 1);
+                                  Map<String, Long> into,
+                                  Set<JsonElement> walked) {
+        for (ExpressionWalk walk = ExpressionWalk.of(expression, walked);
+             walk.hasNext(); ) {
+            JsonObject node = walk.next();
+            JsonElement location = node.get("location");
+            JsonElement at = node.get("readEventId");
+            if (location == null || !location.isJsonObject() || at == null
+                    || !at.isJsonPrimitive()) {
+                continue;
             }
-            return;
-        }
-        if (!expression.isJsonObject()) return;
-        JsonObject node = expression.getAsJsonObject();
-        JsonElement location = node.get("location");
-        JsonElement at = node.get("readEventId");
-        if (location != null && location.isJsonObject() && at != null
-                && at.isJsonPrimitive()) {
             String key = SmtLowering.locationKey(location.getAsJsonObject());
             long event = at.getAsLong();
             Long held = into.get(key);
             if (held == null || held.longValue() < event) {
                 into.put(key, Long.valueOf(event));
             }
-        }
-        for (Map.Entry<String, JsonElement> member : node.entrySet()) {
-            readNodes(member.getValue(), into, depth + 1);
         }
     }
 

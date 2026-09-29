@@ -7,6 +7,7 @@ import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.smt.ExpressionWalk;
 import edu.uva.liftlab.graphchecker.smt.VmRows;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -130,22 +131,6 @@ final class RowPublication {
             return stated.substring(4);
         }
         return stated;
-    }
-
-    /**
-     * The depth every recursive expression walk here stops at.  A cut is
-     * stated as a gap, so "cut" never reads as "the VM named nothing".
-     */
-    static final int WALK_DEPTH = 8;
-
-    /** States that one walk stopped at {@link #WALK_DEPTH}. */
-    static boolean cut(String walk, int depth) {
-        if (depth <= WALK_DEPTH) return false;
-        RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, walk,
-                "this expression walk stopped at depth " + WALK_DEPTH
-                        + ", so \"no answer\" here is the walk's bound and"
-                        + " not the expression's silence");
-        return true;
     }
 
     /**
@@ -305,7 +290,7 @@ final class RowPublication {
                                     Set<String> published) {
         JsonElement value = node.get("concreteValue");
         if (value == null || value.isJsonNull()) return;
-        JsonObject read = nestedRead(value, 0);
+        JsonObject read = nestedRead(value);
         String locationKey = read == null ? ""
                 : SharedStateCapture.locationKeyOf(object(read, "location"));
         LocationId location = locationId(locationKey);
@@ -325,7 +310,7 @@ final class RowPublication {
         long event = eventOf(node);
         if (event < 0L) event = eventOf(value);
         if (event < 0L && read != null) event = eventOf(read);
-        String stated = literal(leaf(value, 0));
+        String stated = literal(leaf(value));
         if (observed < 0L && stated.isEmpty()) {
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                     locationKey, "a projected read states neither the"
@@ -409,29 +394,48 @@ final class RowPublication {
                 : optionalLongInteger(object, "eventId", -1L);
     }
 
-    /** The read a value node states under the VM's boundary wrappers. */
-    static JsonObject nestedRead(JsonElement value, int depth) {
-        if (cut("nestedRead", depth)) return null;
-        if (value == null || !value.isJsonObject()) return null;
-        JsonObject object = value.getAsJsonObject();
-        if ("ReadFromExpression".equals(optionalString(object, "_type"))) {
-            return object;
+    /**
+     * The read a value node states under the VM's boundary wrappers,
+     * however many: cut at depth 8, a deeper one was a gap and no read.
+     */
+    static JsonObject nestedRead(JsonElement value) {
+        for (JsonElement cursor = value;
+             cursor != null && cursor.isJsonObject();
+             cursor = cursor.getAsJsonObject().get("expression")) {
+            JsonObject object = cursor.getAsJsonObject();
+            if ("ReadFromExpression".equals(optionalString(object, "_type"))) {
+                return object;
+            }
         }
-        return nestedRead(object.get("expression"), depth + 1);
+        return null;
     }
 
-    /** The literal a value node states, under the VM's wrappers. */
-    private static String leaf(JsonElement value, int depth) {
-        if (cut("leaf", depth)) return "";
-        if (value == null || value.isJsonNull()) return "";
-        if (value.isJsonPrimitive()) return value.getAsString();
-        if (!value.isJsonObject()) return "";
-        JsonObject object = value.getAsJsonObject();
-        String spelling = optionalString(object, "_exp");
-        if (!spelling.isEmpty()) return spelling;
-        String nested = leaf(object.get("expression"), depth + 1);
-        if (!nested.isEmpty()) return nested;
-        return leaf(object.get("concreteValue"), depth + 1);
+    /**
+     * The literal a value node states under the VM's wrappers: its own
+     * spelling, else its expression's, else its concrete value's.  Each node
+     * once, on a stack: cut at depth 8, a deeper one was a gap and no
+     * value.
+     */
+    private static String leaf(JsonElement value) {
+        List<JsonElement> pending = new ArrayList<JsonElement>();
+        Set<JsonElement> walked = ExpressionWalk.identitySet();
+        pending.add(value);
+        while (!pending.isEmpty()) {
+            JsonElement node = pending.remove(pending.size() - 1);
+            if (node == null || node.isJsonNull()) continue;
+            if (node.isJsonPrimitive()) {
+                String spelled = node.getAsString();
+                if (!spelled.isEmpty()) return spelled;
+                continue;
+            }
+            if (!node.isJsonObject() || !walked.add(node)) continue;
+            JsonObject object = node.getAsJsonObject();
+            String spelling = optionalString(object, "_exp");
+            if (!spelling.isEmpty()) return spelling;
+            pending.add(object.get("concreteValue"));
+            pending.add(object.get("expression"));
+        }
+        return "";
     }
 
     /**

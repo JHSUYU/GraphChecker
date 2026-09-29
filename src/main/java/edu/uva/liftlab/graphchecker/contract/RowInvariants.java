@@ -509,7 +509,7 @@ public final class RowInvariants {
         }
         if (!REFERENCE.matcher(text).matches()) return null;
         Object value = value(session.expressions().expression(text),
-                declared, 0);
+                declared);
         if (!(value instanceof Boolean)) return null;
         boolean held = ((Boolean) value).booleanValue();
         return Boolean.valueOf(negated != held);
@@ -524,10 +524,64 @@ public final class RowInvariants {
         return negation.substring(5, negation.length() - 1).trim();
     }
 
-    /** One VM expression at the recorded valuation: Boolean, Long or null. */
-    private static Object value(JsonObject node, Map<String, String> declared,
-                                int depth) {
-        if (node == null || depth > 64) return null;
+    /**
+     * One VM expression at the recorded valuation: Boolean, Long or null.
+     * Each node once, operands first, on a stack: operands are shared nodes
+     * (as a tree, a chain naming the node below twice is 2^depth paths),
+     * and a cap at depth 64 left a deeper term unjudged.
+     */
+    private static Object value(JsonObject root,
+                                Map<String, String> declared) {
+        if (root == null) return null;
+        Map<JsonObject, Object> values =
+                new IdentityHashMap<JsonObject, Object>();
+        List<JsonObject> pending = new ArrayList<JsonObject>();
+        pending.add(root);
+        while (!pending.isEmpty()) {
+            JsonObject node = pending.get(pending.size() - 1);
+            JsonObject[] operands = operands(node);
+            boolean ready = true;
+            for (JsonObject operand : operands) {
+                if (operand != null && !values.containsKey(operand)) {
+                    pending.add(operand);
+                    ready = false;
+                }
+            }
+            if (!ready) continue;
+            pending.remove(pending.size() - 1);
+            values.put(node, value(node, operands, values, declared));
+        }
+        return values.get(root);
+    }
+
+    /** The nodes one node's value is computed from; null where absent. */
+    private static JsonObject[] operands(JsonObject node) {
+        String type = primitiveString(node, "_type");
+        if ("ConsumerBoundaryExpression".equals(type)) {
+            return new JsonObject[]{member(node, "expression")};
+        }
+        if ("ReadFromExpression".equals(type)) {
+            // What the read returned is what the write it observed stated.
+            return new JsonObject[]{member(member(node, "observedVersion"),
+                    "expression")};
+        }
+        if ("BinaryExpression".equals(type)) {
+            return new JsonObject[]{member(node, "_left"),
+                    member(node, "_right")};
+        }
+        return new JsonObject[0];
+    }
+
+    private static JsonObject member(JsonObject node, String name) {
+        JsonElement value = node == null ? null : node.get(name);
+        return value != null && value.isJsonObject()
+                ? value.getAsJsonObject() : null;
+    }
+
+    /** One node's value, its operands' already in {@code values}. */
+    private static Object value(JsonObject node, JsonObject[] operands,
+                                Map<JsonObject, Object> values,
+                                Map<String, String> declared) {
         String type = primitiveString(node, "_type");
         if ("SymbolExpression".equals(type)) {
             String recorded = declared.get(primitiveString(node, "_exp"));
@@ -540,19 +594,14 @@ public final class RowInvariants {
                     ? (Object) Boolean.valueOf(!"0".equals(value.group(2)))
                     : (Object) Long.valueOf(value.group(2));
         }
-        if ("ConsumerBoundaryExpression".equals(type)) {
-            return value(object(node, "expression"), declared, depth + 1);
+        if (operands.length == 0) return null;
+        Object[] held = new Object[operands.length];
+        for (int index = 0; index < operands.length; index++) {
+            held[index] = values.get(operands[index]);
+            if (held[index] == null) return null;
         }
-        if ("ReadFromExpression".equals(type)) {
-            // What the read returned is what the write it observed stated.
-            return value(object(object(node, "observedVersion"),
-                    "expression"), declared, depth + 1);
-        }
-        if (!"BinaryExpression".equals(type)) return null;
-        Object left = value(object(node, "_left"), declared, depth + 1);
-        Object right = value(object(node, "_right"), declared, depth + 1);
-        if (left == null || right == null) return null;
-        return apply(primitiveString(node, "_op"), left, right);
+        return operands.length == 1 ? held[0]
+                : apply(primitiveString(node, "_op"), held[0], held[1]);
     }
 
     private static Object apply(String op, Object left, Object right) {
@@ -842,7 +891,7 @@ public final class RowInvariants {
         for (Map.Entry<String, JsonObject> entry
                 : session.expressions().expressions().entrySet()) {
             Set<String> symbols = new LinkedHashSet<String>();
-            Arms.symbolsIn(entry.getValue(), symbols, 0, walked);
+            Arms.symbolsIn(entry.getValue(), symbols, walked);
             for (String symbol : symbols) {
                 if (!where.containsKey(symbol)) {
                     where.put(symbol,
@@ -865,7 +914,7 @@ public final class RowInvariants {
         if (MINTED.matcher(text).matches()) {
             symbols.add(text);
         } else {
-            Arms.symbolsIn(session.expressions().expression(text), symbols, 0);
+            Arms.symbolsIn(session.expressions().expression(text), symbols);
         }
         for (String symbol : symbols) {
             if (!where.containsKey(symbol)) where.put(symbol, place);

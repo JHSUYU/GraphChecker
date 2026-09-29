@@ -5,9 +5,11 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /** The single polarity algebra for binary concolic branch predicates. */
@@ -19,45 +21,72 @@ public final class BranchPredicateAlgebra {
 
     /** Capture view of a VM-owned predicate with null members removed.
      *  Copy-on-write: untouched subtrees keep their identity (decoder anchors).
-     */
+     *  Each node once, children first, on a stack: the capture runs on the
+     *  workload's thread, whose stack a recursion along a deep predicate
+     *  would overflow. */
     static JsonElement canonicalView(JsonElement predicate) {
-        return canonicalView(predicate,
-                new IdentityHashMap<JsonElement, JsonElement>());
+        if (predicate == null) return JsonNull.INSTANCE;
+        Map<JsonElement, JsonElement> views =
+                new IdentityHashMap<JsonElement, JsonElement>();
+        List<JsonElement> pending = new ArrayList<JsonElement>();
+        pending.add(predicate);
+        while (!pending.isEmpty()) {
+            JsonElement node = pending.get(pending.size() - 1);
+            if (!composite(node) || views.containsKey(node)) {
+                pending.remove(pending.size() - 1);
+                continue;
+            }
+            boolean ready = true;
+            for (JsonElement child : node.isJsonArray()
+                    ? node.getAsJsonArray()
+                    : node.getAsJsonObject().asMap().values()) {
+                if (composite(child) && !views.containsKey(child)) {
+                    pending.add(child);
+                    ready = false;
+                }
+            }
+            if (!ready) continue;
+            pending.remove(pending.size() - 1);
+            views.put(node, node.isJsonArray()
+                    ? view(node.getAsJsonArray(), views)
+                    : view(node.getAsJsonObject(), views));
+        }
+        return composite(predicate) ? views.get(predicate) : predicate;
     }
 
-    private static JsonElement canonicalView(
-            JsonElement value,
-            IdentityHashMap<JsonElement, JsonElement> memo) {
-        if (value == null || value.isJsonNull() || value.isJsonPrimitive()) {
-            return value == null ? JsonNull.INSTANCE : value;
-        }
-        JsonElement held = memo.get(value);
-        if (held != null) return held;
-        if (value.isJsonArray()) {
-            JsonArray source = value.getAsJsonArray();
-            JsonArray copy = null;
-            for (int index = 0; index < source.size(); index++) {
-                JsonElement child = source.get(index);
-                JsonElement canonical = canonicalView(child, memo);
-                if (copy == null && canonical != child) {
-                    copy = new JsonArray();
-                    for (int prior = 0; prior < index; prior++) {
-                        copy.add(source.get(prior));
-                    }
+    private static boolean composite(JsonElement value) {
+        return value != null && (value.isJsonArray() || value.isJsonObject());
+    }
+
+    /** One array, each item's view already in {@code views}. */
+    private static JsonElement view(JsonArray source,
+                                    Map<JsonElement, JsonElement> views) {
+        JsonArray copy = null;
+        for (int index = 0; index < source.size(); index++) {
+            JsonElement child = source.get(index);
+            JsonElement canonical = composite(child) ? views.get(child)
+                    : child;
+            if (copy == null && canonical != child) {
+                copy = new JsonArray();
+                for (int prior = 0; prior < index; prior++) {
+                    copy.add(source.get(prior));
                 }
-                if (copy != null) copy.add(canonical);
             }
-            JsonElement result = copy == null ? source : copy;
-            memo.put(value, result);
-            return result;
+            if (copy != null) copy.add(canonical);
         }
-        JsonObject source = value.getAsJsonObject();
+        return copy == null ? source : copy;
+    }
+
+    /** One object without its null members, each member's view already in
+     *  {@code views}. */
+    private static JsonElement view(JsonObject source,
+                                    Map<JsonElement, JsonElement> views) {
         JsonObject copy = null;
         int index = 0;
         for (Map.Entry<String, JsonElement> field : source.entrySet()) {
             JsonElement child = field.getValue();
             JsonElement canonical = child == null || child.isJsonNull()
-                    ? null : canonicalView(child, memo);
+                    ? null : composite(child) ? views.get(child) : child;
             if (copy == null && canonical != child) {
                 copy = new JsonObject();
                 int prior = 0;
@@ -72,9 +101,7 @@ public final class BranchPredicateAlgebra {
             }
             index++;
         }
-        JsonElement result = copy == null ? source : copy;
-        memo.put(value, result);
-        return result;
+        return copy == null ? source : copy;
     }
 
     public static String complementOperator(String operator) {

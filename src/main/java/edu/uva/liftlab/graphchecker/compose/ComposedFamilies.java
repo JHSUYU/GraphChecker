@@ -699,7 +699,7 @@ final class ComposedFamilies {
         JsonObject expression = reader == null ? null
                 : reader.expressions().expression(arm.expressionRef());
         Set<String> symbols = new LinkedHashSet<String>();
-        if (expression != null) Arms.symbolsIn(expression, symbols, 0);
+        if (expression != null) Arms.symbolsIn(expression, symbols);
         for (Map.Entry<String, List<RootMintRow>> entry
                 : corpus.roots().entrySet()) {
             RootMintRow row = corpus.anyRoot(entry.getKey());

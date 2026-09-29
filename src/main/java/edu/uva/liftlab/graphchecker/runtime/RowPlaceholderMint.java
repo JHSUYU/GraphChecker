@@ -10,6 +10,7 @@ import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
+import edu.uva.liftlab.graphchecker.smt.ExpressionWalk;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -27,7 +28,6 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalBool;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 // One reader per VM value spelling, shared with RowPublication.
-import static edu.uva.liftlab.graphchecker.runtime.RowPublication.cut;
 import static edu.uva.liftlab.graphchecker.runtime.RowPublication.literal;
 import static edu.uva.liftlab.graphchecker.runtime.RowPublication.nestedRead;
 import static edu.uva.liftlab.graphchecker.runtime.RowPublication.versionOf;
@@ -215,7 +215,7 @@ final class RowPlaceholderMint {
         long observed = location == null ? ReadRow.UNKNOWN_VERSION
                 : Long.parseLong(installedAt[2]);
         if (location == null) {
-            JsonObject read = nestedRead(row.get("expression"), 0);
+            JsonObject read = nestedRead(row.get("expression"));
             locationKey = read == null ? ""
                     : SharedStateCapture.locationKeyOf(
                             object(read, "location"));
@@ -471,38 +471,28 @@ final class RowPlaceholderMint {
 
     /** The first symbol leaf an expression states, or {@code ""}. */
     private static String symbolLeaf(JsonElement expression) {
-        return firstSymbol(expression, 0, "_exp", "symbolLeaf");
+        return firstSymbol(expression, "_exp");
     }
 
     /** The type of the first symbol leaf an expression states. */
     private static String symbolType(JsonElement expression) {
-        return firstSymbol(expression, 0, "_java_type", "symbolType");
+        return firstSymbol(expression, "_java_type");
     }
 
     /**
-     * One member of the first symbol leaf that states it; {@code walk} names
-     * a cut ({@link RowPublication#cut}).
+     * One member of the first symbol leaf that states it, each node once
+     * ({@link ExpressionWalk}; cut at depth 8, a deeper one was a gap and
+     * no symbol).  A symbol leaf is not walked into.
      */
-    private static String firstSymbol(JsonElement node, int depth,
-                                      String member, String walk) {
-        if (cut(walk, depth)) return "";
-        if (node == null || node.isJsonNull()) return "";
-        if (node.isJsonArray()) {
-            for (JsonElement element : node.getAsJsonArray()) {
-                String found = firstSymbol(element, depth + 1, member, walk);
-                if (!found.isEmpty()) return found;
-            }
-            return "";
-        }
-        if (!node.isJsonObject()) return "";
-        JsonObject object = node.getAsJsonObject();
-        if (optionalString(object, "_type").contains("Symbol")) {
-            return optionalString(object, member);
-        }
-        for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
-            String found = firstSymbol(entry.getValue(), depth + 1, member,
-                    walk);
+    private static String firstSymbol(JsonElement expression,
+                                      String member) {
+        for (ExpressionWalk walk = ExpressionWalk.of(expression);
+             walk.hasNext(); ) {
+            JsonObject node = walk.next();
+            if (!optionalString(node, "_type").contains("Symbol")) continue;
+            String found = optionalString(node, member);
             if (!found.isEmpty()) return found;
+            walk.prune();
         }
         return "";
     }

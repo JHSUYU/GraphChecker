@@ -20,7 +20,6 @@ import edu.uva.liftlab.graphchecker.contract.WriteRow;
 
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -494,7 +493,7 @@ public final class Arms {
                 ? pathCondition(decisions, deliveredAt)
                 : new ArrayList<String>();
         Set<String> symbols = new LinkedHashSet<String>();
-        symbolsIn(expression, symbols, 0);
+        symbolsIn(expression, symbols);
         Map<String, String> guard = new LinkedHashMap<String, String>();
         Set<String> guardRoots = new LinkedHashSet<String>();
         for (Map.Entry<String, List<RootMintRow>> entry
@@ -641,43 +640,31 @@ public final class Arms {
     }
 
     /**
-     * Every symbol a recorded expression names, at any depth.  Also IMPORT's
-     * walk (invariant 11, {@code RowInvariants#attributed}).
+     * Every symbol a recorded expression names, at any depth
+     * ({@link ExpressionWalk}; capped at depth 512, it dropped the deeper
+     * ones).  Also IMPORT's walk (invariant 11,
+     * {@code RowInvariants#attributed}).
      */
-    public static void symbolsIn(JsonElement expression, Set<String> into,
-                                 int depth) {
-        symbolsIn(expression, into, depth, Collections.newSetFromMap(
-                new IdentityHashMap<JsonElement, Boolean>()));
+    public static void symbolsIn(JsonElement expression, Set<String> into) {
+        symbolsIn(expression, into, ExpressionWalk.identitySet());
     }
 
     /**
-     * The same walk, each shared subtree once: {@code walked} holds nodes by
-     * identity, and a caller walking many expressions of one table passes
-     * one set -- expanded, they share subtrees, and walked as trees one
-     * session's table ran IMPORT out of heap (hdfs-11741 v74).
+     * The same walk over the nodes not in {@code walked} yet: a caller
+     * walking many expressions of one table passes one set -- expanded,
+     * they share subtrees, and walked as trees one session's table ran
+     * IMPORT out of heap (hdfs-11741 v74).
      */
     public static void symbolsIn(JsonElement expression, Set<String> into,
-                                 int depth, Set<JsonElement> walked) {
-        if (expression == null || expression.isJsonNull() || depth > 512
-                || expression.isJsonPrimitive() || !walked.add(expression)) {
-            return;
-        }
-        if (expression.isJsonArray()) {
-            for (JsonElement child : expression.getAsJsonArray()) {
-                symbolsIn(child, into, depth + 1, walked);
+                                 Set<JsonElement> walked) {
+        for (ExpressionWalk walk = ExpressionWalk.of(expression, walked);
+             walk.hasNext(); ) {
+            JsonObject node = walk.next();
+            if (VmExpressionIr.SYMBOL_TYPE.equals(
+                    VmExpressionIr.typeOf(node))) {
+                String raw = JsonFields.optionalString(node, "_exp");
+                if (!raw.isEmpty()) into.add(raw);
             }
-            return;
-        }
-        JsonObject node = expression.getAsJsonObject();
-        if (VmExpressionIr.SYMBOL_TYPE.equals(VmExpressionIr.typeOf(node))) {
-            String raw = JsonFields.optionalString(node, "_exp");
-            if (!raw.isEmpty()) into.add(raw);
-        }
-        for (JsonElement child : node.asMap().values()) {
-            if (child.isJsonPrimitive()) continue;
-            // An array's items sit one level below its owner, as members do.
-            symbolsIn(child, into, child.isJsonArray() ? depth : depth + 1,
-                    walked);
         }
     }
 

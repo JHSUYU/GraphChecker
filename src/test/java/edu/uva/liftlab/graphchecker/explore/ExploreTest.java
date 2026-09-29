@@ -3727,6 +3727,49 @@ public class ExploreTest {
         }
     }
 
+    /**
+     * The locations a term reads are every read node its expression holds,
+     * each node walked once and to the end: a chain whose nodes name the one
+     * below twice is 2^64 paths as a tree, and a read 100000 deep lay past
+     * the walk's depth-64 cap.
+     */
+    @Test(timeout = 120_000L)
+    public void aTermRestsOnAReadDeepInASharedChain() throws Exception {
+        JsonObject location = new JsonObject();
+        location.addProperty("locationKind", "MAP_STATE");
+        location.addProperty("ownerSymRid", 474L);
+        location.addProperty("slot", -3L);
+        JsonObject read = new JsonObject();
+        read.addProperty("_type", "ReadFromExpression");
+        read.addProperty("_java_type", "I");
+        read.add("location", location);
+        read.addProperty("readEventId", 9L);
+        JsonObject one = new JsonObject();
+        one.addProperty("_type", "ConstExpr");
+        one.addProperty("_java_type", "I");
+        one.addProperty("_exp", "Y_I_1");
+        for (int depth : new int[]{64, 100_000}) {
+            JsonObject chain = read;
+            for (int level = 0; level < depth; level++) {
+                JsonObject sum = new JsonObject();
+                sum.addProperty("_type", "BinaryExpression");
+                sum.addProperty("_op", "+");
+                sum.add("_left", chain);
+                sum.add("_right", depth == 64 ? chain : one);
+                chain = sum;
+            }
+            Path iteration = tree.newFolder("deep-" + depth).toPath();
+            Session session = new Session(iteration, "s-deep");
+            session.activation(TARGET, false);
+            session.expression("EXPR.0000000000000001", chain);
+            session.flush();
+            assertEquals(depth + " levels", Collections.singleton(
+                    SmtLowering.locationKey(location)),
+                    Corpus.read(iteration, null).readLocations("s-deep",
+                            "(not EXPR.0000000000000001)"));
+        }
+    }
+
     /** One session of a synthetic corpus, written in the contract's layout. */
     private static final class Session {
         private final SessionDir dir;

@@ -1977,6 +1977,83 @@ public class RowRuntimeTest {
         return (String) address.invoke(null, NN.key(), regionId);
     }
 
+    /**
+     * What the runtime reads out of an expression -- a mint's symbol, the
+     * read under wrappers, a written value's java type, a branch's witness
+     * -- is read once per node and to its end: a chain whose nodes name the
+     * one below twice is 2^64 paths as a tree, and one 100000 deep passed
+     * the walks' cuts (8, 8, 64) or overflowed a recursion on the
+     * workload's own thread.
+     */
+    @Test(timeout = 120_000L)
+    public void aDeepSharedChainIsReadToItsEnd() throws Exception {
+        RowRuntime.configure(sessionFile());
+        JsonObject deepest = new JsonObject();
+        deepest.addProperty("_type", "SymbolExpression");
+        deepest.addProperty("_exp", "M_J_deepest");
+        deepest.addProperty("_java_type", "J");
+        JsonObject untyped = new JsonObject();
+        untyped.addProperty("_type", "ConstExpr");
+        untyped.addProperty("_exp", "Y_J_1");
+        long version = 200L;
+        for (int depth : new int[]{64, 100_000}) {
+            JsonObject chain = deepest;
+            JsonObject read = vmRead(version);
+            JsonObject wrapped = read;
+            for (int level = 0; level < depth; level++) {
+                JsonObject sum = new JsonObject();
+                sum.addProperty("_type", "BinaryExpression");
+                sum.addProperty("_op", "+");
+                sum.add("_left", chain);
+                sum.add("_right", depth == 64 ? chain : untyped);
+                // A null member, so the witness copies every node.
+                sum.add("_guard", com.google.gson.JsonNull.INSTANCE);
+                chain = sum;
+                JsonObject boundary = new JsonObject();
+                boundary.addProperty("_type", "ConsumerBoundaryExpression");
+                boundary.add("expression", wrapped);
+                wrapped = boundary;
+            }
+            JsonObject row = new JsonObject();
+            row.add("expression", chain);
+            assertEquals(depth + " levels", "M_J_deepest",
+                    RowPlaceholderMint.vmSymbol(row));
+            assertTrue(depth + " levels",
+                    RowPublication.nestedRead(wrapped) == read);
+            JsonObject witness = edu.uva.liftlab.graphchecker.plan
+                    .BranchWitness.immutablePredicate(chain)
+                    .toImmutableJsonView()
+                    .getAsJsonObject("sourceSatisfiedPredicate");
+            assertFalse(witness.has("_guard"));
+            assertEquals(depth == 64, witness.get("_left")
+                    == witness.get("_right"));
+            java.util.Set<String> symbols = new java.util.HashSet<String>();
+            Arms.symbolsIn(witness, symbols);
+            assertTrue(depth + " levels: " + symbols,
+                    symbols.contains("M_J_deepest"));
+            // One occurrence per chain: two writes at one site of one
+            // occurrence are two events on the same frames.
+            OccurrenceAddress occurrence = address(
+                    "hdfs-17899/target-dn#epoch0", "REGION.deep",
+                    CausalContext.of(Role.of("DEEP"), "", depth),
+                    ExecutionIndex.parse("DataXceiver.run()#u9@0"));
+            RowRuntime.write(occurrence, version,
+                    Endpoint.stateSite("java.util.concurrent.atomic"
+                            + ".AtomicInteger", "getAndIncrement", "()I", 12,
+                            true), LocationId.of(LocationKind.INSTANCE, "22",
+                            "24"), version++, chain, "",
+                    "Caller.body()#u9@1");
+        }
+        RowRuntime.closeSession();
+        List<WriteRow> writes = RowCodec.readAll(session().writes(),
+                RowCodec::readWrite);
+        assertEquals(2, writes.size());
+        for (WriteRow write : writes) {
+            assertEquals("the deepest node states the type", "J",
+                    write.javaType());
+        }
+    }
+
     private Path sessionFile() throws Exception {
         Path results = iteration.getRoot().toPath()
                 .resolve("iteration-0000").resolve("seed-result")

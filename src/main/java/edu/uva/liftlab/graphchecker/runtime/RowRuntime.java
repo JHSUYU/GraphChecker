@@ -26,6 +26,7 @@ import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
+import edu.uva.liftlab.graphchecker.smt.ExpressionWalk;
 import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
 import java.io.IOException;
 import java.lang.management.ManagementFactory;
@@ -714,15 +715,14 @@ public final class RowRuntime {
      * {@code _java_type} in the expression tree, depth-first in member order
      * (an operator node states none; its operands do).
      */
-    private static String javaType(String declared, JsonObject expression,
-                                   String walk) {
+    private static String javaType(String declared, JsonObject expression) {
         String type = Text.safe(declared);
         if (!type.isEmpty()) return type;
         // Java null is a reference, whichever field it was stored into (the
         // VM's null symbol states no class): a null store into a tracked
         // reference field is a write a later read joins.
         return isNull(expression) ? NULL_REFERENCE_TYPE
-                : statedType(expression, 0, walk);
+                : statedType(expression);
     }
 
     /** The java type of a written {@code null}: a reference (Ref sort). */
@@ -747,8 +747,7 @@ public final class RowRuntime {
     private static String statedJavaType(String kind, String subject,
                                          String declared,
                                          JsonObject expression) {
-        String type = javaType(declared, expression,
-                kind + " type of " + subject);
+        String type = javaType(declared, expression);
         if (!type.isEmpty()) return type;
         gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, subject,
                 "this " + kind + " states no java type and its expression"
@@ -757,47 +756,29 @@ public final class RowRuntime {
         return "";
     }
 
-    /** The {@link #javaType} walk bound; a cut is named, never silent. */
-    private static final int TYPE_WALK_DEPTH = 64;
-
-    private static String statedType(JsonElement node, int depth,
-                                     String walk) {
-        if (depth > TYPE_WALK_DEPTH) {
-            gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
-                    firstNonBlank(walk, sessionId()),
-                    "this expression walk stopped at depth "
-                            + TYPE_WALK_DEPTH + ", so \"no java type\" here"
-                            + " is the walk's bound and not the"
-                            + " expression's silence");
-            return "";
-        }
-        if (node == null) return "";
-        if (node.isJsonArray()) {
-            for (JsonElement item : node.getAsJsonArray()) {
-                String found = statedType(item, depth + 1, walk);
-                if (!found.isEmpty()) return found;
+    /**
+     * The first type the expression states, each node once
+     * ({@link ExpressionWalk}): cut at depth 64, a deeper one was a gap and
+     * no row.
+     */
+    private static String statedType(JsonObject expression) {
+        for (ExpressionWalk walk = ExpressionWalk.of(expression);
+             walk.hasNext(); ) {
+            JsonObject object = walk.next();
+            JsonElement own = object.get("_java_type");
+            if (own != null && own.isJsonPrimitive()) {
+                String stated = Text.safe(own.getAsString());
+                if (!stated.isEmpty()) return stated;
             }
-            return "";
-        }
-        if (!node.isJsonObject()) return "";
-        JsonObject object = node.getAsJsonObject();
-        JsonElement own = object.get("_java_type");
-        if (own != null && own.isJsonPrimitive()) {
-            String stated = Text.safe(own.getAsString());
-            if (!stated.isEmpty()) return stated;
-        }
-        // A String method's result is typed by the method, not its operands.
-        if (VmExpressionIr.STRING_OPERATION_TYPE.equals(
-                VmExpressionIr.typeOf(object))) {
-            JsonElement name = object.get("_name");
-            return VmExpressionIr.stringOperationType(
-                    name == null || !name.isJsonPrimitive() ? ""
-                            : name.getAsString());
-        }
-        for (Map.Entry<String, JsonElement> member
-                : object.entrySet()) {
-            String found = statedType(member.getValue(), depth + 1, walk);
-            if (!found.isEmpty()) return found;
+            // A String method's result is typed by the method, not its
+            // operands.
+            if (VmExpressionIr.STRING_OPERATION_TYPE.equals(
+                    VmExpressionIr.typeOf(object))) {
+                JsonElement name = object.get("_name");
+                return VmExpressionIr.stringOperationType(
+                        name == null || !name.isJsonPrimitive() ? ""
+                                : name.getAsString());
+            }
         }
         return "";
     }
@@ -937,6 +918,7 @@ public final class RowRuntime {
         synchronized (LOCK) {
             AMBIENT.clear();
             CLAIMED_EVENTS.clear();
+            ENDPOINTS.clear();
             MINT_LABELS.clear();
             expressions = new ExpressionRefs();
             Identity.resetForTests();
