@@ -81,7 +81,24 @@ std::string ContainerSupport::java_type(oop result, BasicType declared) {
 }
 
 bool ContainerSupport::follows_callee_body(const std::string &callee_name) {
-  return callee_name == "<init>";
+  // Methods that only READ the container they are called on.  Their bodies
+  // run as written and what they return is concrete: no container relation
+  // is claimed for it, and nothing the state holds changes.  Aborting one
+  // ended the thread's whole path condition on a logged toString() or a
+  // stream over values() (SOLR-18413: LinkedHashMap.getOrDefault in every
+  // cluster-state parse, LinkedValues.spliterator in Slice.getReplicas).
+  // getNode is HashMap's own lookup, which getOrDefault's body calls.  A
+  // mutation nobody modeled still fails closed: it would leave a versioned
+  // state incomplete.
+  static const char *const READS[] = {
+      "<init>", "toString", "hashCode", "equals", "getOrDefault", "getNode",
+      "containsValue", "contains", "containsAll", "toArray", "forEach",
+      "forEachRemaining", "spliterator", "stream", "parallelStream",
+      "indexOf", "lastIndexOf"};
+  for (size_t index = 0; index < sizeof(READS) / sizeof(READS[0]); ++index) {
+    if (callee_name == READS[index]) return true;
+  }
+  return false;
 }
 
 bool ContainerSupport::claims_state(MethodSymbolizerHandle &handle) {

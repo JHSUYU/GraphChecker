@@ -30,8 +30,9 @@ void constrain_result(MethodSymbolizerHandle &handle,
 void constrain_position(const char *shape, Expression *state,
                         Expression *position, bool allow_end = false);
 void attach_result(oop result, Expression *expression, oop owner = NULL);
-// True for a call whose body the engine can follow instead of summarizing.
-// A constructor's receiver is freshly allocated, so no tracked container
+// True for a call whose body the engine can follow instead of summarizing:
+// a constructor, or a method that only reads its container (its result is
+// concrete).  A constructor's receiver is freshly allocated, so no tracked container
 // state exists that letting the body run could make stale; and the body's
 // own container operations are already modeled, so a copy constructor over a
 // tracked container is rebuilt exactly by the hooks that are already there.
