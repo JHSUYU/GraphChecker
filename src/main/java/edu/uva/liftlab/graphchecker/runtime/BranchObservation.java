@@ -127,7 +127,7 @@ final class BranchObservation {
                     decision);
             replayContradicted = active.replayPrefixContradicted();
             // A bounded loop may run the planned target occurrence at another
-            // one: targetReach keeps the planner's address, the mapping the
+            // one: targetReach keeps the planner's ordinal, the mapping the
             // actual occurrence.
             boolean permuted = decision.addressesPermutedTargetOccurrence()
                     && FocusedReplay.focused(active.d3Address);
@@ -142,9 +142,11 @@ final class BranchObservation {
                 // elsewhere names no event here, and every flip's disjunct is
                 // wanted).  Recording continues: the occurrence still owes
                 // RPC, state and throw effects.
-                active.recordTargetReach(
-                        permuted ? active.activation.targetBranchSite
-                                : branchSite,
+                // The test that decided, at the planner's ordinal when a
+                // loop permuted it: a disjunctive target is read from the
+                // test the occurrence reached it at, and SOLR-18406's flipped
+                // replay decided the second (#u20) with the first never run.
+                active.recordTargetReach(branchSite,
                         permuted ? active.activation.targetBranchOccurrence
                                 : prepared.occurrence,
                         decision.outcome(), vmEventId);
