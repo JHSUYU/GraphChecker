@@ -17,6 +17,15 @@ solr_seed=F0993D5343E20BA4
 # GraphChecker's jar follows the tree's classpath: the tree's own libraries
 # (Guava, protobuf, commons-io) are not the engine's versions.
 system_jar_first=false
+# The classes the fault doors live in (the ad-hoc case's
+# communication-mappings.jsonl: DOOR rows): the HTTP client's send and
+# receive, and ZooKeeper writes.  No door on ZooKeeper reads: every
+# cluster-state read and watch is one, and a door per read admits an
+# occurrence per read.
+solr_door_scope=(
+  solrj:org/apache/solr/client/solrj/impl/HttpSolrClient
+  solrj:org/apache/solr/common/cloud/SolrZkClient
+)
 # The tree's own code, for coverage and for the ad-hoc checks' scan: its class
 # roots (system_root names), the package JaCoCo counts, and each root's
 # sources, as "<root>:<tree-relative source dir>".
