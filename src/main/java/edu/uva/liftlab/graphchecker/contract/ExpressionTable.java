@@ -61,11 +61,17 @@ public final class ExpressionTable extends Value {
     /** The file's form: one member per reference, each node defined once
      *  in the shared table. */
     public JsonObject toJson() {
+        return toJson(new SharedExpressionTable.Codec());
+    }
+
+    /** {@link #toJson()} over a codec that already hashed some nodes: a
+     *  table written again and again hashes each node once. */
+    public JsonObject toJson(SharedExpressionTable.Codec codec) {
         JsonObject json = new JsonObject();
         for (Map.Entry<String, JsonObject> entry : expressions.entrySet()) {
             json.add(entry.getKey(), entry.getValue());
         }
-        return new SharedExpressionTable.Codec().compact(json);
+        return codec.compact(json);
     }
 
     @Override

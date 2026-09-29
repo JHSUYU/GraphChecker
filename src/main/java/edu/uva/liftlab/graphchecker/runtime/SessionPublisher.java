@@ -11,6 +11,7 @@ import edu.uva.liftlab.graphchecker.contract.ObligationResult;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
+import edu.uva.liftlab.graphchecker.contract.SharedExpressionTable;
 import edu.uva.liftlab.graphchecker.contract.SessionDir;
 import edu.uva.liftlab.graphchecker.contract.SessionManifest;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
@@ -34,6 +35,8 @@ import java.util.Set;
  */
 public final class SessionPublisher {
     private static final Object LOCK = new Object();
+    /** How often a live session's expression table is written again. */
+    private static final long REWRITE_MS = 30_000L;
     private static final Map<String, SessionPublisher> SESSIONS =
             new LinkedHashMap<String, SessionPublisher>();
 
@@ -42,6 +45,12 @@ public final class SessionPublisher {
             new LinkedHashMap<String, BufferedWriter>();
     private final Map<String, JsonObject> expressions =
             new LinkedHashMap<String, JsonObject>();
+    /** Hashes each expression node once, however often the table is
+     *  written again. */
+    private final SharedExpressionTable.Codec codec =
+            new SharedExpressionTable.Codec();
+    /** When the table was last written, to write it again by the clock. */
+    private long tableWrittenAt;
     /**
      * Statements written under the key the contract makes them one row by:
      * a root per (occurrence, rootId), an unreached target per (occurrence,
@@ -181,10 +190,14 @@ public final class SessionPublisher {
         synchronized (LOCK) {
             if (expressions.containsKey(key)) return;
             expressions.put(key, expression);
-            // The table is one JSON object: rewrite it every 64th
-            // expression (quadratic otherwise; a killed replay keeps a usable
-            // table), at close, and at once for any expression after close.
-            if (!closed && expressions.size() % 64 != 0) return;
+            // The table is one JSON object, written whole: again at most
+            // every REWRITE_MS while the run lasts (a killed replay keeps a
+            // usable table), at close, and at once for any expression after
+            // close.  By count it was rewritten every 64th expression, which
+            // is quadratic in a session of 350,000.
+            long now = System.currentTimeMillis();
+            if (!closed && now - tableWrittenAt < REWRITE_MS) return;
+            tableWrittenAt = now;
         }
         writeExpressions();
     }
@@ -195,7 +208,7 @@ public final class SessionPublisher {
             try {
                 // Always written, even empty.
                 RowCodec.writeExpressions(layout.expressions(),
-                        ExpressionTable.of(expressions));
+                        ExpressionTable.of(expressions), codec);
             } catch (IOException unwritable) {
                 fail(unwritable);
             }

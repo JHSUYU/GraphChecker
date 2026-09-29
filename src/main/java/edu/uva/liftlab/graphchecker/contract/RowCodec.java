@@ -481,6 +481,14 @@ public final class RowCodec {
         writeObject(file, table.toJson());
     }
 
+    /** {@link #writeExpressions(Path, ExpressionTable)} over the writer's
+     *  own codec, which keeps the anchors of every node it hashed. */
+    public static void writeExpressions(Path file, ExpressionTable table,
+                                        SharedExpressionTable.Codec codec)
+            throws IOException {
+        writeObject(file, table.toJson(codec));
+    }
+
     /** The session's shared expressions; a missing file is the empty table. */
     public static ExpressionTable readExpressions(Path file)
             throws IOException {
