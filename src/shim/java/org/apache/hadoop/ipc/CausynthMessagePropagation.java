@@ -19,44 +19,38 @@ package org.apache.hadoop.ipc;
 
 import java.util.UUID;
 
-import edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder;
-import edu.uva.liftlab.graphchecker.runtime.SymbolicMessageEnvelope;
+import edu.uva.liftlab.graphchecker.runtime.MessageDoors;
 
 /**
- * THE Hadoop shim: message-carried GraphChecker context for Hadoop IPC and
- * SASL, and the workload's registration and recording boundary.
+ * THE Hadoop shim: Hadoop IPC and the SASL data-transfer exchange on {@link
+ * MessageDoors}, the transport-neutral doors every system calls.
  *
  * <p>Published by GraphChecker (the {@code hadoop-shim} classifier jar, and
  * inside the main jar every Hadoop tree already compiles against), so every
- * tree calls ONE version.  It used to be a file in each tree: six versions in
- * three lineages over nine trees, and a tree cut from another carried a
- * different subset.  What a tree keeps is the calls -- the IPC and SASL wire
- * propagation the design's transport mapping needs, its fault markers and
- * symbolize hooks, its daemon ticks -- and nothing that compensates for
- * attribution: {@code runtime.Attribution} names the node of every thread,
- * and a start carries its scope to its claim, in both passes.</p>
+ * tree calls ONE version.  What is Hadoop's own here: the transport names,
+ * the IPC correlation id, and the SASL exchange -- one handshake of several
+ * messages on one thread, opened by a thread that may itself be serving a
+ * request.  Everything else delegates.</p>
  */
 public final class CausynthMessagePropagation {
   public static final String IPC = "HADOOP_IPC";
   public static final String SASL = "HDFS_SASL";
 
-  private static final ThreadLocal<Inbound> CURRENT = new ThreadLocal<>();
   private static final ThreadLocal<String> PENDING_SASL = new ThreadLocal<>();
   /**
    * The exchange this thread was SERVING when it opened a SASL exchange of
    * its own as a client, set aside unended until that exchange closes.
    */
-  private static final ThreadLocal<Inbound> SERVING = new ThreadLocal<>();
+  private static final ThreadLocal<MessageDoors.Inbound> SERVING =
+      new ThreadLocal<>();
+  private static final ThreadLocal<Integer> SASL_DEPTH =
+      ThreadLocal.withInitial(() -> 0);
 
   private CausynthMessagePropagation() {
   }
 
-  /**
-   * The request scope of the calling thread, as a value the work it is
-   * creating can carry to whatever thread later sends it.
-   */
   public static Object captureScope() {
-    return CausynthTraceRecorder.captureScope();
+    return MessageDoors.captureScope();
   }
 
   public static Outbound outbound(String transport, String correlationId,
@@ -68,11 +62,8 @@ public final class CausynthMessagePropagation {
   /** The same leg, for work carrying the scope it was created in. */
   public static Outbound outbound(String transport, String correlationId,
       String attemptId, String half, Object localOwner, Object scope) {
-    String trace = CausynthTraceRecorder.outboundExchange(transport,
-        correlationId, attemptId, half, localOwner, scope);
-    String symbolic = SymbolicMessageEnvelope.takeOutbound();
-    return trace.isEmpty() && symbolic.isEmpty() ? Outbound.EMPTY
-        : new Outbound(correlationId, attemptId, trace, symbolic);
+    return new Outbound(MessageDoors.outbound(transport, correlationId,
+        attemptId, half, localOwner, scope));
   }
 
   public static String rpcCorrelation(byte[] clientId, int callId) {
@@ -93,62 +84,18 @@ public final class CausynthMessagePropagation {
   public static Inbound inbound(String trace, String symbolic,
       String transport, String correlationId, String attemptId, String half,
       Object localOwner) {
-    return inbound(trace, symbolic, transport, correlationId, attemptId,
-        half, localOwner, false);
-  }
-
-  private static Inbound inbound(String trace, String symbolic,
-      String transport, String correlationId, String attemptId, String half,
-      Object localOwner, boolean preserveSymbolic) {
-    endInbound(!preserveSymbolic);
-    if (!preserveSymbolic) {
-      SymbolicMessageEnvelope.clearInbound();
-    }
-    boolean hasTrace = trace != null && !trace.isEmpty();
-    boolean hasSymbolic = symbolic != null && !symbolic.isEmpty();
-    if (!hasTrace && !hasSymbolic) {
-      return Inbound.EMPTY;
-    }
-    long token = hasTrace
-        ? CausynthTraceRecorder.inboundExchange(trace, transport,
-            correlationId, attemptId, half, localOwner)
-        : 0L;
-    if (hasSymbolic) {
-      SymbolicMessageEnvelope.installInbound(symbolic);
-    }
-    Inbound scope = new Inbound(token, correlationId, attemptId, half);
-    CURRENT.set(scope);
-    return scope;
+    return new Inbound(MessageDoors.inbound(trace, symbolic, transport,
+        correlationId, attemptId, half, localOwner, false));
   }
 
   public static void endInbound(Inbound scope) {
-    if (scope == null || scope == Inbound.EMPTY) {
-      return;
+    if (scope != null) {
+      MessageDoors.endInbound(scope.door);
     }
-    if (CURRENT.get() != scope) {
-      // Already ended by the next message's install, which is not a
-      // workload error.
-      return;
-    }
-    endInbound();
   }
 
   public static void endInbound() {
-    endInbound(true);
-  }
-
-  private static void endInbound(boolean clearSymbolic) {
-    Inbound scope = CURRENT.get();
-    if (scope == null) {
-      return;
-    }
-    CURRENT.remove();
-    if (clearSymbolic) {
-      SymbolicMessageEnvelope.clearInbound();
-    }
-    if (scope.token > 0L) {
-      CausynthTraceRecorder.endInboundExchange(scope.token);
-    }
+    MessageDoors.endInbound();
   }
 
   /**
@@ -171,10 +118,9 @@ public final class CausynthMessagePropagation {
     SASL_DEPTH.set(depth + 1);
     if (depth == 0) {
       PENDING_SASL.set("hdfs-sasl-" + UUID.randomUUID());
-      Inbound serving = CURRENT.get();
+      MessageDoors.Inbound serving = MessageDoors.setAside();
       if (serving != null) {
         SERVING.set(serving);
-        CURRENT.remove();
       }
     }
   }
@@ -187,16 +133,13 @@ public final class CausynthMessagePropagation {
     }
     SASL_DEPTH.remove();
     PENDING_SASL.remove();
-    endInbound();
-    Inbound serving = SERVING.get();
+    MessageDoors.endInbound();
+    MessageDoors.Inbound serving = SERVING.get();
     if (serving != null) {
       SERVING.remove();
-      CURRENT.set(serving);
+      MessageDoors.restore(serving);
     }
   }
-
-  private static final ThreadLocal<Integer> SASL_DEPTH =
-      ThreadLocal.withInitial(() -> 0);
 
   /**
    * Emits the next message of the current SASL exchange.
@@ -219,15 +162,15 @@ public final class CausynthMessagePropagation {
     if (correlationId != null) {
       // The previous message of THIS exchange -- the server's answer -- is
       // over; a served exchange was set aside by beginSasl.
-      endInbound();
-      return outbound(SASL, correlationId, "1", "REQUEST", null);
+      MessageDoors.endInbound();
+      return outbound(SASL, correlationId, "1", MessageDoors.REQUEST, null);
     }
-    Inbound current = CURRENT.get();
-    if (current != null && "REQUEST".equals(current.half)) {
+    MessageDoors.Inbound current = MessageDoors.current();
+    if (current != null && MessageDoors.REQUEST.equals(current.half)) {
       return outbound(SASL, current.correlationId, current.attemptId,
-          "RESPONSE", null);
+          MessageDoors.RESPONSE, null);
     }
-    endInbound();
+    MessageDoors.endInbound();
     return Outbound.EMPTY;
   }
 
@@ -237,8 +180,9 @@ public final class CausynthMessagePropagation {
       String correlationId, String attemptId) {
     boolean response = correlationId != null
         && correlationId.equals(PENDING_SASL.get());
-    return inbound(trace, symbolic, SASL, correlationId, attemptId,
-        response ? "RESPONSE" : "REQUEST", null, true);
+    return new Inbound(MessageDoors.inbound(trace, symbolic, SASL,
+        correlationId, attemptId,
+        response ? MessageDoors.RESPONSE : MessageDoors.REQUEST, null, true));
   }
 
   /**
@@ -247,27 +191,27 @@ public final class CausynthMessagePropagation {
    */
   public static long enterCarriedScope(Object scope, String role,
       String api) {
-    return CausynthTraceRecorder.enterCarriedScope(scope, role, api);
+    return MessageDoors.enterCarriedScope(scope, role, api);
   }
 
   /** Leaves the scope {@link #enterCarriedScope} entered. */
   public static void exitCarriedScope(long token) {
-    CausynthTraceRecorder.exitCarriedScope(token);
+    MessageDoors.exitCarriedScope(token);
   }
 
   /** Opens one daemon tick as a root of its own: a service-loop turn. */
   public static long beginTick(Object owner, String role) {
-    return CausynthTraceRecorder.beginDaemonTick(owner, role);
+    return MessageDoors.beginTick(owner, role);
   }
 
   /** Closes the tick {@link #beginTick} opened. */
   public static void endTick(long token) {
-    CausynthTraceRecorder.endDaemonTick(token);
+    MessageDoors.endTick(token);
   }
 
   /** Opens the recorded window: the workload's recording boundary. */
   public static void startRecording() {
-    CausynthTraceRecorder.startRecording();
+    MessageDoors.startRecording();
   }
 
   /**
@@ -276,70 +220,56 @@ public final class CausynthMessagePropagation {
    * retain, the gap that must still be open) is not the workload's to make.
    */
   public static boolean replaying() {
-    return CausynthTraceRecorder.replaying();
+    return MessageDoors.replaying();
   }
 
   public static void registerSource(Object anchor, String kind, String role,
       String sourceId, long epoch) {
-    CausynthTraceRecorder.registerSource(anchor, kind, role, sourceId, epoch);
+    MessageDoors.registerSource(anchor, kind, role, sourceId, epoch);
   }
 
   public static void registerSourceAlias(Object alias, Object anchor) {
-    CausynthTraceRecorder.registerSourceAlias(alias, anchor);
+    MessageDoors.registerSourceAlias(alias, anchor);
   }
 
   /**
    * Registers one node: its anchor as the source, and every object the node
-   * runs its work through as the same node.
-   *
-   * <p>The objects are what the attribution rule finds on a thread's frames
-   * -- the RPC server a handler serves, the SASL server a connection
-   * handshakes with, the DataNode a daemon was started from -- so naming
-   * them here is what attributes work nothing else scopes.  A null or
-   * repeated alias is skipped.</p>
+   * runs its work through as the same node -- the RPC server a handler
+   * serves, the SASL server a connection handshakes with, the DataNode a
+   * daemon was started from.
    */
   public static void registerNode(Object anchor, String kind, String role,
       String sourceId, Object... aliases) {
-    registerSource(anchor, kind, role, sourceId, 0L);
-    if (aliases == null) {
-      return;
-    }
-    for (Object alias : aliases) {
-      if (alias == null || alias == anchor) {
-        continue;
-      }
-      registerSourceAlias(alias, anchor);
-    }
+    MessageDoors.registerNode(anchor, kind, role, sourceId, aliases);
   }
 
   public static void restartSource(Object anchor, String kind, String role,
       String sourceId, long epoch) {
-    CausynthTraceRecorder.restartSource(anchor, kind, role, sourceId, epoch);
+    MessageDoors.restartSource(anchor, kind, role, sourceId, epoch);
   }
 
   public static long beginRequest(Object source, String api) {
-    endInbound();
-    return CausynthTraceRecorder.beginSourceRequest(source, api);
+    return MessageDoors.beginRequest(source, api);
   }
 
   public static void endRequest(long request, String api) {
-    endInbound();
-    CausynthTraceRecorder.endSourceRequest(request, api);
+    MessageDoors.endRequest(request, api);
   }
 
+  /** What one outbound IPC or SASL message carries. */
   public static final class Outbound {
-    private static final Outbound EMPTY = new Outbound("", "", "", "");
+    private static final Outbound EMPTY =
+        new Outbound(MessageDoors.outboundNone());
     public final String correlationId;
     public final String attemptId;
     public final String trace;
     public final String symbolic;
 
-    private Outbound(String correlationId, String attemptId, String trace,
-        String symbolic) {
-      this.correlationId = correlationId;
-      this.attemptId = attemptId;
-      this.trace = trace;
-      this.symbolic = symbolic == null ? "" : symbolic;
+    private Outbound(MessageDoors.Outbound door) {
+      this.correlationId = door.correlationId;
+      this.attemptId = door.attemptId;
+      this.trace = door.trace;
+      this.symbolic = door.symbolic;
     }
 
     public boolean active() {
@@ -347,19 +277,12 @@ public final class CausynthMessagePropagation {
     }
   }
 
+  /** One installed inbound IPC or SASL message. */
   public static final class Inbound {
-    private static final Inbound EMPTY = new Inbound(0L, "", "", "");
-    private final long token;
-    private final String correlationId;
-    private final String attemptId;
-    private final String half;
+    private final MessageDoors.Inbound door;
 
-    private Inbound(long token, String correlationId, String attemptId,
-        String half) {
-      this.token = token;
-      this.correlationId = correlationId;
-      this.attemptId = attemptId;
-      this.half = half;
+    private Inbound(MessageDoors.Inbound door) {
+      this.door = door;
     }
   }
 }
