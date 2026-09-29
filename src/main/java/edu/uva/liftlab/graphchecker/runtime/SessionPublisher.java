@@ -37,6 +37,7 @@ public final class SessionPublisher {
     private static final Object LOCK = new Object();
     /** How often a live session's expression table is written again. */
     private static final long REWRITE_MS = 30_000L;
+    private static final long REWRITE_SHARE = 4L;
     private static final Map<String, SessionPublisher> SESSIONS =
             new LinkedHashMap<String, SessionPublisher>();
 
@@ -51,6 +52,9 @@ public final class SessionPublisher {
             new SharedExpressionTable.Codec();
     /** When the table was last written, to write it again by the clock. */
     private long tableWrittenAt;
+    /** How long that write took: the next waits {@link #REWRITE_SHARE}
+     *  times as long at least. */
+    private long tableWriteMillis;
     /**
      * Statements written under the key the contract makes them one row by:
      * a root per (occurrence, rootId), an unreached target per (occurrence,
@@ -194,9 +198,14 @@ public final class SessionPublisher {
             // every REWRITE_MS while the run lasts (a killed replay keeps a
             // usable table), at close, and at once for any expression after
             // close.  By count it was rewritten every 64th expression, which
-            // is quadratic in a session of 350,000.
+            // is quadratic in a session of 350,000; by the clock alone, once
+            // one write outlasted REWRITE_MS (a 12 MB table in the concolic
+            // interpreter), every expression after it wrote the table again.
+            // So a write waits out REWRITE_SHARE times the last one's length:
+            // the rewrites take a fifth of the run at most.
             long now = System.currentTimeMillis();
-            if (!closed && now - tableWrittenAt < REWRITE_MS) return;
+            if (!closed && now - tableWrittenAt < Math.max(REWRITE_MS,
+                    REWRITE_SHARE * tableWriteMillis)) return;
             tableWrittenAt = now;
         }
         writeExpressions();
@@ -205,6 +214,7 @@ public final class SessionPublisher {
     private void writeExpressions() {
         synchronized (LOCK) {
             if (failed || withdrawn()) return;
+            long started = System.currentTimeMillis();
             try {
                 // Always written, even empty.
                 RowCodec.writeExpressions(layout.expressions(),
@@ -212,6 +222,8 @@ public final class SessionPublisher {
             } catch (IOException unwritable) {
                 fail(unwritable);
             }
+            tableWrittenAt = System.currentTimeMillis();
+            tableWriteMillis = tableWrittenAt - started;
         }
     }
 
