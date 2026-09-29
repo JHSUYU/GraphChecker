@@ -121,8 +121,8 @@ public final class ConcolicInstrumentationSelections {
             rootLoopDemandedUnitIndex = task.rootLoopDemandedUnitIndex();
             rootLoopControlSites = task.rootLoopControlSites();
             materializations = ConcolicMaterializationSelection.from(symbolic);
-            materializations.addObservedWriteSites(
-                    task.observedWriteSites());
+            materializations.addObservedSites(
+                    task.observedSites());
             communicationHandoffs = task.communicationHandoffs();
             configuredSourcePhases = task.configuredSourcePhases();
 
@@ -365,7 +365,7 @@ public final class ConcolicInstrumentationSelections {
         private final Map<String, AccessorCallTarget> accessorCallsBySite =
                 new LinkedHashMap<>();
         /** Planned observed stores of a declared input's cell, by site. */
-        private final Map<String, ObservedWriteTarget> observedWritesBySite =
+        private final Map<String, ObservedSite> observedSitesBySite =
                 new LinkedHashMap<>();
 
         private static ConcolicMaterializationSelection from(
@@ -441,12 +441,13 @@ public final class ConcolicInstrumentationSelections {
         }
 
         /**
-         * Registers the planned observed write sites (a by-value cell has no
-         * version log until observed): a call storing into an atomic's value,
-         * or a {@code putfield} ({@code declaredCallee} empty).  One site
-         * naming two cells is refused.
+         * Registers the planned observed sites of tracked cells (a by-value
+         * cell has no version log until observed): a call storing into an
+         * atomic's value, a {@code putfield} ({@code declaredCallee} empty),
+         * or a {@code getfield} ({@code read}).  One site naming two cells is
+         * refused.
          */
-        private void addObservedWriteSites(JsonArray sites)
+        private void addObservedSites(JsonArray sites)
                 throws IOException {
             for (JsonElement element : sites == null
                     ? new JsonArray() : sites) {
@@ -457,28 +458,30 @@ public final class ConcolicInstrumentationSelections {
                 String siteId = optionalString(site, "siteId");
                 String callee = optionalString(site, "declaredCallee");
                 String cell = optionalString(site, "cell");
+                boolean read = site.has("read")
+                        && site.get("read").getAsBoolean();
                 if (method.isEmpty() || unitIndex < 0 || siteId.isEmpty()
                         || cell.isEmpty()
                         || !siteId.equals(SiteId.of(method, unitIndex))) {
                     throw unsupported(site);
                 }
-                if (conflicts(new ObservedWriteTarget(method, unitIndex,
-                        siteId, callee, cell))) {
+                if (conflicts(new ObservedSite(method, unitIndex,
+                        siteId, callee, cell, read))) {
                     throw new IOException(
-                            "OBSERVED_WRITE_SITE_CONFLICT: " + siteId);
+                            "OBSERVED_SITE_CONFLICT: " + siteId);
                 }
             }
         }
 
         /** Records {@code target}; true when a different one holds its site. */
-        private boolean conflicts(ObservedWriteTarget target) {
-            ObservedWriteTarget held = observedWritesBySite.putIfAbsent(
+        private boolean conflicts(ObservedSite target) {
+            ObservedSite held = observedSitesBySite.putIfAbsent(
                     target.siteId, target);
             return held != null && !held.sameObservation(target);
         }
 
-        Collection<ObservedWriteTarget> observedWrites() {
-            return observedWritesBySite.values();
+        Collection<ObservedSite> observedSites() {
+            return observedSitesBySite.values();
         }
 
         private void addLocal(String method, String local, int unitIndex) {
@@ -617,11 +620,11 @@ public final class ConcolicInstrumentationSelections {
             mergeNested(localsByMethod, other.localsByMethod);
             mergeSets(methodArguments, other.methodArguments);
             fields.putAll(other.fields);
-            for (ObservedWriteTarget target
-                    : other.observedWritesBySite.values()) {
+            for (ObservedSite target
+                    : other.observedSitesBySite.values()) {
                 if (conflicts(target)) {
                     throw new IllegalStateException(
-                            "OBSERVED_WRITE_SITE_CAMPAIGN_CONFLICT: "
+                            "OBSERVED_SITE_CAMPAIGN_CONFLICT: "
                                     + target.siteId);
                 }
             }
@@ -636,26 +639,30 @@ public final class ConcolicInstrumentationSelections {
         }
     }
 
-    /** One store of a declared input's cell that the replay observes. */
-    static final class ObservedWriteTarget {
+    /** One access of a tracked cell that the replay observes before it. */
+    static final class ObservedSite {
         final String method;
         final int unitIndex;
         final String siteId;
         final String declaredCallee;
         final String cell;
+        /** A read ({@code getfield}) rather than a store. */
+        final boolean read;
 
-        ObservedWriteTarget(String method, int unitIndex, String siteId,
-                            String declaredCallee, String cell) {
+        ObservedSite(String method, int unitIndex, String siteId,
+                     String declaredCallee, String cell, boolean read) {
             this.method = method;
             this.unitIndex = unitIndex;
             this.siteId = siteId;
             this.declaredCallee = declaredCallee;
             this.cell = cell;
+            this.read = read;
         }
 
-        boolean sameObservation(ObservedWriteTarget other) {
+        boolean sameObservation(ObservedSite other) {
             return other != null && declaredCallee.equals(
-                    other.declaredCallee) && cell.equals(other.cell);
+                    other.declaredCallee) && cell.equals(other.cell)
+                    && read == other.read;
         }
     }
 

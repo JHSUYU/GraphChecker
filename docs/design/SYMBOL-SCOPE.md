@@ -150,13 +150,16 @@ methods, STATE families and their arms, formula size, replay slowdown.
    the window), so the concrete store it precedes is a WRITE and a later getfield
    resolves over the log; until 578bd7e2f the observation only set the shadow and no
    observed concrete store left a version.
-   Open: a store is observed only inside a running task, so a read of a location no
-   task wrote yet files no ReadRow, the closure demands no writer, and the writer
-   never becomes a task (visible-gs: the DataXceiver stores the replica's GS, the
-   IPC handler reads it, neither joins).  §3.1's writer index closes this loop: the
-   recording hooks the candidate read and write sites of the tracked fields by
-   concrete object, `Writers_W(l)` is built from it, and PLAN makes the writers of
-   every location a target-relevant occurrence read into tasks.
+   A read site is observed as a store is (2026-09-29): a read of a location no store
+   of the window reached still starts its log, states the INITIAL it saw, and names
+   the cell's carrier, so the closure asks the cell's static writers on the reader's
+   node about it (SOLR-18406: nothing deletes the reserved commit point in the
+   recording, and the replication request reads its `deleted` flag).  A store's
+   guards include those of the calls into its method, a few calls up: the commit
+   point's `deleted = true` runs only where the deletion policy called its
+   `delete()`, which a clock guard decides.  Open still: a writer region no session
+   activated on the reader's node stays out of the closure (visible-gs), which
+   §3.1's writer index by concrete object would close.
 2. **Scope growth** (§2): the declared class list is the fixpoint's start.
 3. **Wire pairing** (F3): protobuf `Builder.setF` / `getF` pairs per message type,
    direction from the RPC interface's request/response types, IPC and DataTransfer

@@ -923,18 +923,24 @@ void ConcolicMngr::observeExactPrimitiveField(
 
   SymInstance *instance = ctx->get_or_alloc_sym_inst(owner());
   if (instance == NULL) return;
+  SharedFieldVersions::Location location(instance->get_sym_rid(),
+                                         field.offset(),
+                                         SharedFieldVersions::LOC_INSTANCE_FIELD);
+  // A log that stands is the location's: its shadow is the value a symbolic
+  // or versioned store left there, which a read's observation must not
+  // replace with the concrete one.
+  if (SharedFieldVersions::is_tracked(location)) return;
   Expression *observed =
       SharedFieldVersions::field_value(owner(), field.offset(), type);
   instance->set_sym_exp(field.offset(), observed);
   // The observation starts the field's log.  A concrete store is versioned
-  // only where a log exists, and the woven write site calls here just before
-  // its store: without a base the store would leave no version and a reader
-  // in another occurrence would join no writer.  The base is the value from
-  // before the window, which a read of it is pinned to.
-  SharedFieldVersions::publish_initial(
-      SharedFieldVersions::Location(instance->get_sym_rid(), field.offset(),
-                                    SharedFieldVersions::LOC_INSTANCE_FIELD),
-      observed, SharedFieldVersions::InitialSnapshot());
+  // only where a log exists, and the woven site calls here just before its
+  // access: without a base a store would leave no version and a reader in
+  // another occurrence would join no writer, and a read of a location no
+  // store of the window reached would state no version at all.  The base is
+  // the value from before the window, which a read of it is pinned to.
+  SharedFieldVersions::publish_initial(location, observed,
+                                       SharedFieldVersions::InitialSnapshot());
   ctx->set_pc_admitted(true);
 }
 

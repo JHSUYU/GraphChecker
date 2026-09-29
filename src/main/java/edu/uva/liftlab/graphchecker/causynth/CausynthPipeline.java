@@ -1,6 +1,6 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
-import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ObservedWriteTarget;
+import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ObservedSite;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.AccessorCallTarget;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.ConcolicMaterializationSelection;
 import edu.uva.liftlab.graphchecker.causynth.ConcolicInstrumentationSelections.InstrumentationPlan;
@@ -489,7 +489,7 @@ public final class CausynthPipeline {
                 envelope.configuredSourcePhaseSites.values(), refs);
         instrumentConcolicAccessorCallContexts(envelope.materializations,
                 refs);
-        instrumentConcolicObservedWriteSites(envelope.materializations,
+        instrumentConcolicObservedSites(envelope.materializations,
                 refs);
         instrumentConcolicMethodArguments(envelope.materializations, refs);
         instrumentConcolicMaterializations(envelope, refs);
@@ -1914,60 +1914,65 @@ public final class CausynthPipeline {
     }
 
     /**
-     * Observes a tracked cell before each store into it, starting its version
-     * log: before the {@code putfield}, or before the call when the store is
-     * an atomic's RMW (no application {@code putfield}).  A store before the
-     * constructor call that makes its object has no object to observe yet.
+     * Observes a tracked cell before each access of it, starting its version
+     * log where none stands: before the {@code putfield}, before the call
+     * when the store is an atomic's RMW (no application {@code putfield}),
+     * and before the {@code getfield} of a read.  An access before the
+     * constructor call that makes its object has no object to observe yet,
+     * and a read site that is no {@code getfield} of its cell observes
+     * nothing.
      */
-    private void instrumentConcolicObservedWriteSites(
+    private void instrumentConcolicObservedSites(
             ConcolicMaterializationSelection selection, HookCatalog refs) {
-        int unconstructed = 0;
-        for (ObservedWriteTarget target : selection.observedWrites()) {
+        int unobserved = 0;
+        for (ObservedSite target : selection.observedSites()) {
             Body body = selectedBody(target.method,
-                    "OBSERVED_WRITE_SITE_METHOD", target.siteId);
+                    "OBSERVED_SITE_METHOD", target.siteId);
             Stmt selected;
             Value owner;
             if (target.declaredCallee.isEmpty()) {
-                selected = originalStore(body, target);
+                selected = originalAccess(body, target);
                 if (selected == null) {
-                    unconstructed++;
+                    unobserved++;
                     continue;
                 }
-                owner = ((InstanceFieldRef) ((AssignStmt) selected)
-                        .getLeftOp()).getBase();
+                owner = accessedField((AssignStmt) selected, target.read)
+                        .getBase();
             } else {
                 selected = originalCall(body, target.unitIndex,
-                        target.siteId, "OBSERVED_WRITE_SITE_NOT_UNIQUE",
-                        "OBSERVED_WRITE_SITE_INVOKE_NOT_FOUND");
+                        target.siteId, "OBSERVED_SITE_NOT_UNIQUE",
+                        "OBSERVED_SITE_INVOKE_NOT_FOUND");
                 requireCallee(selected, target.declaredCallee,
-                        "OBSERVED_WRITE_SITE_DECLARED_CALLEE_MISMATCH",
+                        "OBSERVED_SITE_DECLARED_CALLEE_MISMATCH",
                         target.siteId);
                 InvokeExpr invocation = selected.getInvokeExpr();
                 if (!(invocation instanceof InstanceInvokeExpr)) {
                     throw new IllegalStateException(
-                            "OBSERVED_WRITE_SITE_REQUIRES_INSTANCE_RECEIVER: "
+                            "OBSERVED_SITE_REQUIRES_INSTANCE_RECEIVER: "
                                     + target.siteId);
                 }
                 owner = ((InstanceInvokeExpr) invocation).getBase();
             }
             List<Unit> before = new ArrayList<>();
             Value receiver = objectArg(body, owner, before);
-            refs.bracket(before, Hook.OBSERVE_DECLARED_WRITE_SITE,
+            refs.bracket(before, Hook.OBSERVE_TRACKED_SITE,
                     StringConstant.v(target.siteId),
                     StringConstant.v(target.cell), receiver);
             insertBeforeSequence(body, selected, before);
         }
-        if (unconstructed > 0) {
-            LOG.info("Left {} tracked store(s) before their object's "
-                    + "constructor call unobserved", unconstructed);
+        if (unobserved > 0) {
+            LOG.info("Left {} tracked access(es) unobserved: before their "
+                    + "object's constructor call, or a read site that is no "
+                    + "getfield of its cell", unobserved);
         }
     }
 
     /**
-     * The original {@code putfield} into the target's cell, or null when it
-     * runs before the constructor call that makes its object.
+     * The original {@code putfield} into, or {@code getfield} of, the
+     * target's cell; null when it runs before the constructor call that makes
+     * its object, or when a read site is no {@code getfield} of its cell.
      */
-    private static Stmt originalStore(Body body, ObservedWriteTarget target) {
+    private static Stmt originalAccess(Body body, ObservedSite target) {
         tagOriginalUnits(snapshotUnits(body));
         Stmt selected = null;
         Unit constructed = null;
@@ -1977,27 +1982,37 @@ public final class CausynthPipeline {
             }
             if (originalUnitIndex(unit) != target.unitIndex) continue;
             if (selected != null || !(unit instanceof AssignStmt)) {
+                if (target.read) return null;
                 throw new IllegalStateException(
-                        "OBSERVED_WRITE_SITE_NOT_UNIQUE: " + target.siteId);
+                        "OBSERVED_SITE_NOT_UNIQUE: " + target.siteId);
             }
             selected = (Stmt) unit;
-            if (!(((AssignStmt) unit).getLeftOp() instanceof InstanceFieldRef)
-                    || !target.cell.equals(CausynthStaticFacts
-                    .declaredFieldSignature(((InstanceFieldRef) ((AssignStmt)
-                            unit).getLeftOp()).getFieldRef()))) {
+            InstanceFieldRef field = accessedField((AssignStmt) unit,
+                    target.read);
+            if (field == null || !target.cell.equals(CausynthStaticFacts
+                    .declaredFieldSignature(field.getFieldRef()))) {
+                if (target.read) return null;
                 throw new IllegalStateException(
-                        "OBSERVED_WRITE_SITE_STORE_NOT_FOUND: "
+                        "OBSERVED_SITE_STORE_NOT_FOUND: "
                                 + target.siteId + " stores no " + target.cell);
             }
             if (body.getMethod().isConstructor() && constructed == null) {
                 return null;
             }
         }
-        if (selected == null) {
+        if (selected == null && !target.read) {
             throw new IllegalStateException(
-                    "OBSERVED_WRITE_SITE_STORE_NOT_FOUND: " + target.siteId);
+                    "OBSERVED_SITE_STORE_NOT_FOUND: " + target.siteId);
         }
         return selected;
+    }
+
+    /** The instance field an assignment reads or stores, or null. */
+    private static InstanceFieldRef accessedField(AssignStmt access,
+                                                  boolean read) {
+        Value field = read ? access.getRightOp() : access.getLeftOp();
+        return field instanceof InstanceFieldRef ? (InstanceFieldRef) field
+                : null;
     }
 
     /** Whether {@code unit} is a constructor's own this/super constructor
@@ -3314,7 +3329,7 @@ public final class CausynthPipeline {
         THROW_CONFIGURED_SOURCE_PHASE_SITE,
         ENTER_ACCESSOR_CALL_CONTEXT,
         EXIT_ACCESSOR_CALL_CONTEXT,
-        OBSERVE_DECLARED_WRITE_SITE,
+        OBSERVE_TRACKED_SITE,
         MATERIALIZE_ARGUMENT,
         SYMBOLIZE_ARGUMENT,
         MATERIALIZE_METHOD_ARGUMENT,
@@ -3477,8 +3492,8 @@ public final class CausynthPipeline {
                             IntType.v(), string, string, object)
                     .add(Hook.EXIT_ACCESSOR_CALL_CONTEXT, runtime,
                             "exitAccessorCallContext", VoidType.v(), LongType.v())
-                    .add(Hook.OBSERVE_DECLARED_WRITE_SITE, runtime,
-                            "observeDeclaredWriteSite", VoidType.v(), string,
+                    .add(Hook.OBSERVE_TRACKED_SITE, runtime,
+                            "observeTrackedSite", VoidType.v(), string,
                             string, object)
                     .add(Hook.MATERIALIZE_ARGUMENT, runtime,
                             "materializeArgument", object, LongType.v(),

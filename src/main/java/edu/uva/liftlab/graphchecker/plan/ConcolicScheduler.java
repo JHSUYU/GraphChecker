@@ -148,13 +148,14 @@ public final class ConcolicScheduler {
 
             result.add(scheduled);
         }
-        // Stores of tracked cells the replay must observe: campaign-wide, on
-        // every task, since whichever occurrence writes first starts the log.
-        JsonArray writeSites = loaded.staticScopeMap.observedWriteSites();
-        if (writeSites.size() > 0) {
+        // Accesses of tracked cells the replay must observe: campaign-wide,
+        // on every task, since whichever occurrence reaches a cell first
+        // starts its log.
+        JsonArray observed = loaded.staticScopeMap.observedSites();
+        if (observed.size() > 0) {
             for (ExecutionTask task : result) {
-                task.json().add(ExecutionTask.OBSERVED_WRITE_SITES,
-                        writeSites.deepCopy());
+                task.json().add(ExecutionTask.OBSERVED_SITES,
+                        observed.deepCopy());
             }
         }
         return result;

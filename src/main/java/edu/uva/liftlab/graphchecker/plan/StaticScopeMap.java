@@ -39,7 +39,7 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.strings;
  *       field (an atomic's value included) the slice both reads and stores
  *       (SYMBOL-SCOPE F2) -- whose value a branch decides on, a few flows on
  *       and before any store.  Its stores are versioned from the first
- *       ({@link #observedWriteSites}), and an occurrence of a region reading
+ *       ({@link #observedSites}), and an occurrence of a region reading
  *       it observes its branches from entry, so what it decides on shared
  *       state joins the writers of that state.  A read nothing decides on
  *       only feeds data -- a token's bytes, a digest -- where a symbol costs
@@ -114,6 +114,12 @@ public final class StaticScopeMap {
         /** The guards of those guards, and theirs ({@link Site#chain}); a
          *  guard set with no CFG behind it states none. */
         default List<Guard> chainOf(String siteId) {
+            return Collections.<Guard>emptyList();
+        }
+
+        /** The guards of the calls that run {@code method}, a few calls up:
+         *  a store runs only where a call into its method did. */
+        default List<Guard> callsInto(String method) {
             return Collections.<Guard>emptyList();
         }
     }
@@ -382,7 +388,7 @@ public final class StaticScopeMap {
                 if (versionable.test(field)
                         && deciding.contains(text(edge.get("toCell")))) {
                     add(found, seen, retained, READ_SITE, method, unitIndex,
-                            field, "", "", "");
+                            field, field, "", "");
                 }
                 continue;
             }
@@ -534,8 +540,21 @@ public final class StaticScopeMap {
             List<Guard> found = guards == null
                     ? Collections.<Guard>emptyList()
                     : guards.of(site.siteId);
-            Site guarded = site.withGuards(found == null
+            List<Guard> all = new ArrayList<Guard>(found == null
                     ? Collections.<Guard>emptyList() : found);
+            if (WRITE_SITE.equals(site.role) && guards != null) {
+                // A store is control-dependent on the calls into its
+                // method too: a commit point's `deleted` is set by its own
+                // delete(), which the deletion policy calls only when the
+                // commit's reservation (a clock) has run out.
+                Set<String> named = new LinkedHashSet<String>();
+                for (Guard guard : all) named.add(guard.siteId());
+                for (Guard guard : guards.callsInto(
+                        SiteId.methodOf(site.siteId))) {
+                    if (named.add(guard.siteId())) all.add(guard);
+                }
+            }
+            Site guarded = site.withGuards(all);
             if (TARGET_SITE.equals(site.role) && guards != null) {
                 guarded = guarded.withChain(guards.chainOf(site.siteId));
             }
@@ -953,13 +972,28 @@ public final class StaticScopeMap {
      */
     public Set<String> carriersAt(String recordedSite, String javaType) {
         Set<String> carriers = new LinkedHashSet<String>();
-        for (Site named : sitesAt(recordedSite)) {
-            if (!named.carrier.isEmpty() && sameType(
-                    descriptorOfCellType(named.cell), javaType)) {
-                carriers.add(named.carrier);
-            }
+        String site = recordedSite == null ? "" : recordedSite;
+        // A version recorded at a read site is the INITIAL a read's
+        // observation started the location's log with: its carrier is the
+        // field read.
+        for (Site named : ofRole(WRITE_SITE, row -> true)) {
+            carriersInMethod(named, site, javaType, carriers);
+        }
+        for (Site named : ofRole(READ_SITE, row -> true)) {
+            carriersInMethod(named, site, javaType, carriers);
         }
         return carriers;
+    }
+
+    private static void carriersInMethod(Site named, String recordedSite,
+                                         String javaType,
+                                         Set<String> carriers) {
+        if (!named.vmSite.isEmpty()
+                && recordedSite.startsWith(named.vmSite + "#")
+                && !named.carrier.isEmpty()
+                && sameType(descriptorOfCellType(named.cell), javaType)) {
+            carriers.add(named.carrier);
+        }
     }
 
     /** Every write site in the METHOD of one recorded site (not the bci). */
@@ -1007,10 +1041,14 @@ public final class StaticScopeMap {
         return ofRole(EXPORT_SITE, site -> site.portId.equals(portId));
     }
 
-    /** Every store into a tracked cell ({@link #READ_SITE}): the replay
-     *  versions the cell from it, so a read of the cell has a writer to join
-     *  whatever value the store wrote (REPORT-P2N, for every cell). */
-    public JsonArray observedWriteSites() {
+    /** Every access of a tracked cell ({@link #READ_SITE}), each observed
+     *  before it runs: a store, so the replay versions the cell from it and
+     *  a read of the cell has a writer to join whatever value the store
+     *  wrote (REPORT-P2N, for every cell); and a read, so a location no store
+     *  of the window reached still has a log -- its INITIAL -- that the read
+     *  states and the closure asks the cell's writers about (SS3.1's
+     *  Writers_W(l), SYMBOL-SCOPE SS6). */
+    public JsonArray observedSites() {
         Set<String> tracked = new LinkedHashSet<String>();
         for (Site site : ofRole(READ_SITE, read -> true)) {
             tracked.add(site.cell);
@@ -1018,7 +1056,8 @@ public final class StaticScopeMap {
         JsonArray found = new JsonArray();
         Set<String> seen = new LinkedHashSet<String>();
         for (Site site : sites) {
-            if (!WRITE_SITE.equals(site.role)
+            boolean read = READ_SITE.equals(site.role);
+            if (!read && !WRITE_SITE.equals(site.role)
                     || !tracked.contains(site.cell)
                     || !seen.add(site.siteId)) {
                 continue;
@@ -1029,6 +1068,7 @@ public final class StaticScopeMap {
             row.addProperty("siteId", site.siteId);
             row.addProperty("declaredCallee", site.declaredCallee);
             row.addProperty("cell", site.cell);
+            row.addProperty("read", read);
             found.add(row);
         }
         return found;

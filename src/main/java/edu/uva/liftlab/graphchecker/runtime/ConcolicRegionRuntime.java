@@ -721,17 +721,20 @@ public final class ConcolicRegionRuntime {
 
 
     /**
-     * Starts versioning a declared region input's cell at this write.
+     * Starts versioning a tracked cell at this access, unless its log
+     * already stands.
      *
      * <p>The VM logs a location only from its first symbolic value, so
      * earlier concrete stores leave no writer for a later read to join.
      * This attaches the current value as a concrete leaf (no new input),
-     * after which the store -- including an Atomic RMW, linearized by the
-     * VM -- publishes a version.  PLAN decides which sites are observed.</p>
+     * after which a store -- including an Atomic RMW, linearized by the VM
+     * -- publishes a version, and a read states the version it saw, the
+     * INITIAL one when no store of the window came first.  PLAN decides
+     * which sites are observed.</p>
      */
-    public static void observeDeclaredWriteSite(String siteId,
-                                                String fieldSignature,
-                                                Object receiver) {
+    public static void observeTrackedSite(String siteId,
+                                          String fieldSignature,
+                                          Object receiver) {
         ActiveRegion active = activeRegion();
         if (active == null || receiver == null
                 || safe(fieldSignature).isEmpty()) {
@@ -744,7 +747,7 @@ public final class ConcolicRegionRuntime {
             // Not one lost row: every later read of the cell joins nothing.
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                     firstNonBlank(safe(siteId), safe(fieldSignature)),
-                    "this write site could not start the VM's version log"
+                    "this access could not start the VM's version log"
                             + " for " + safe(fieldSignature) + ", so every"
                             + " later read of that location joins to no"
                             + " writer: " + rootCause(failure));

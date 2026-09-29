@@ -158,8 +158,8 @@ public class SymbolicRootPolicyTest {
 
     /**
      * SYMBOL-SCOPE F2: a primitive instance cell the slice both reads and
-     * stores, and a branch decides on, is tracked -- every store of it is
-     * observed, a {@code putfield} as well as an atomic's RMW, and a region
+     * stores, and a branch decides on, is tracked -- every access of it is
+     * observed, a read, a {@code putfield} and an atomic's RMW, and a region
      * reading it observes its branches from entry.  A cell no read of the
      * slice reaches, or whose reads only feed data or the wire, is not.
      */
@@ -172,13 +172,19 @@ public class SymbolicRootPolicyTest {
                 atomicStore(), counterRead(), counterStore(),
                 guard(GET_NUM_LOCAL), guard(GET_NUM + "::$i1")), apart,
                 Collections.<String>emptySet(), method -> false);
-        JsonArray sites = tracked.observedWriteSites();
-        assertEquals("the atomic's RMW and the putfield", 2, sites.size());
-        assertEquals(DELETE + "#u35", member(sites, 0, "siteId"));
-        assertEquals(DECREMENT, member(sites, 0, "declaredCallee"));
-        assertEquals(DELETE + "#u40", member(sites, 1, "siteId"));
+        JsonArray sites = tracked.observedSites();
+        assertEquals("both reads, the atomic's RMW and the putfield", 4,
+                sites.size());
+        assertEquals(GET_NUM + "#u2", member(sites, 0, "siteId"));
+        assertEquals("true", member(sites, 0, "read"));
+        assertEquals(DELETE + "#u35", member(sites, 1, "siteId"));
+        assertEquals(DECREMENT, member(sites, 1, "declaredCallee"));
+        assertEquals("false", member(sites, 1, "read"));
+        assertEquals(GET_NUM + "#u4", member(sites, 2, "siteId"));
+        assertEquals("true", member(sites, 2, "read"));
+        assertEquals(DELETE + "#u40", member(sites, 3, "siteId"));
         assertEquals("a putfield names no callee", "",
-                member(sites, 1, "declaredCallee"));
+                member(sites, 3, "declaredCallee"));
         ConcolicScheduler.SymbolicInputSelection selection =
                 ConcolicScheduler.SymbolicInputSelection.read(tracked,
                         catalog());
@@ -191,19 +197,19 @@ public class SymbolicRootPolicyTest {
         assertEquals("a store no read of the slice reaches is not observed",
                 0, map(Arrays.asList(atomicStore(), counterStore()), apart,
                         Collections.<String>emptySet(), method -> false)
-                        .observedWriteSites().size());
+                        .observedSites().size());
         assertEquals("nor one whose reads no branch decides on", 0,
                 map(Arrays.asList(atomicRead(), atomicStore(), counterRead(),
                         counterStore()), apart,
                         Collections.<String>emptySet(), method -> false)
-                        .observedWriteSites().size());
+                        .observedSites().size());
         assertEquals("nor one whose reads a receiver decides on (F3)", 0,
                 map(Arrays.asList(counterRead(), counterStore(),
                         edge("{\"kind\":\"wire_handoff\",\"fromCell\":\""
                                 + GET_NUM + "::$i1\",\"toCell\":\"" + DELETE
                                 + "::$i3\"}"), guard(DELETE + "::$i3")),
                         apart, Collections.<String>emptySet(),
-                        method -> false).observedWriteSites().size());
+                        method -> false).observedSites().size());
     }
 
     /** The published scope map of these edges, through the artifact the way

@@ -32,6 +32,9 @@ public final class RegionObservedConcreteWriteSmoke {
                 "generationStamp", "J");
         block.generationStamp = 2L;
         block.numBytes = 8L;
+        // A read site observes too; a log that stands is left alone.
+        System.observeExactPrimitiveField(block, Block.class.getName(),
+                "generationStamp", "J");
         Sink sink = new Sink();
         sink.value = block.generationStamp;
         require(sink.value == 2L, "the store did not run concretely");
@@ -41,6 +44,8 @@ public final class RegionObservedConcreteWriteSmoke {
         require(evidence.contains("\"selected\":true"), evidence);
         require(evidence.contains("\"versionKind\":\"INITIAL\""), evidence);
         require(evidence.contains("\"versionKind\":\"WRITE\""), evidence);
+        require(count(evidence, "\"versionKind\":\"INITIAL\"") == 1,
+                evidence);
         require(count(evidence, "\"readerContextId\"") == 1, evidence);
 
         String read = System.getSymbolicFieldExpression(sink,

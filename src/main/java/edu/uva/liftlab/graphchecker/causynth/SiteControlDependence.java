@@ -63,13 +63,48 @@ public final class SiteControlDependence {
             }
             bySite.put(siteId, computed);
         }
+        final Map<String, MethodGuards> callers = byMethod;
         return new StaticScopeMap.Guards() {
+            private CallSites calls;
+
             @Override
             public List<StaticScopeMap.Guard> of(String siteId) {
                 MethodGuards computed = bySite.get(siteId);
                 return computed == null
                         ? Collections.<StaticScopeMap.Guard>emptyList()
                         : computed.at(SiteId.unitIndexOf(siteId));
+            }
+
+            @Override
+            public List<StaticScopeMap.Guard> callsInto(String method) {
+                if (calls == null) calls = CallSites.ofApplication();
+                List<StaticScopeMap.Guard> found =
+                        new ArrayList<StaticScopeMap.Guard>();
+                Set<String> named = new LinkedHashSet<String>();
+                Set<String> visited = new LinkedHashSet<String>();
+                List<String> level = Collections.singletonList(method);
+                for (int depth = 0; depth < CALL_DEPTH && !level.isEmpty();
+                     depth++) {
+                    List<String> next = new ArrayList<String>();
+                    for (String callee : level) {
+                        if (!visited.add(callee)) continue;
+                        for (String call : calls.into(callee)) {
+                            String caller = SiteId.methodOf(call);
+                            MethodGuards guards = callers.get(caller);
+                            if (guards == null) {
+                                guards = MethodGuards.of(caller);
+                                callers.put(caller, guards);
+                            }
+                            for (StaticScopeMap.Guard guard
+                                    : guards.at(SiteId.unitIndexOf(call))) {
+                                if (named.add(guard.siteId())) found.add(guard);
+                            }
+                            next.add(caller);
+                        }
+                    }
+                    level = next;
+                }
+                return found;
             }
 
             @Override
@@ -80,6 +115,71 @@ public final class SiteControlDependence {
                         : computed.chain(SiteId.unitIndexOf(siteId));
             }
         };
+    }
+
+    /** How many calls up a store's calls-into guards reach. */
+    private static final int CALL_DEPTH = 3;
+
+    /**
+     * Where each method of the analysed program is called from: the call
+     * site ids, by callee, a virtual call counting for every override the
+     * hierarchy dispatches it to.
+     */
+    private static final class CallSites {
+        private final Map<String, List<String>> byCallee;
+
+        private CallSites(Map<String, List<String>> byCallee) {
+            this.byCallee = byCallee;
+        }
+
+        static CallSites ofApplication() {
+            Map<String, List<String>> byCallee =
+                    new LinkedHashMap<String, List<String>>();
+            for (soot.SootClass owner : new ArrayList<soot.SootClass>(
+                    soot.Scene.v().getApplicationClasses())) {
+                for (soot.SootMethod method
+                        : new ArrayList<soot.SootMethod>(owner.getMethods())) {
+                    Body body = method.isConcrete()
+                            ? CausynthStaticFacts.activeBody(method) : null;
+                    if (body == null) continue;
+                    for (Unit unit : body.getUnits()) {
+                        soot.jimple.Stmt stmt = (soot.jimple.Stmt) unit;
+                        if (!stmt.containsInvokeExpr()) continue;
+                        String site = SiteId.of(method.getSignature(),
+                                originalIndex(body, unit));
+                        for (soot.SootMethod callee
+                                : targets(stmt.getInvokeExpr())) {
+                            byCallee.computeIfAbsent(callee.getSignature(),
+                                    key -> new ArrayList<String>()).add(site);
+                        }
+                    }
+                }
+            }
+            return new CallSites(byCallee);
+        }
+
+        /** The methods one call may run; none when the hierarchy cannot
+         *  resolve it (a phantom supertype). */
+        private static Collection<soot.SootMethod> targets(
+                soot.jimple.InvokeExpr call) {
+            try {
+                soot.SootMethod declared = call.getMethod();
+                if (call instanceof soot.jimple.StaticInvokeExpr
+                        || call instanceof soot.jimple.SpecialInvokeExpr) {
+                    return Collections.singletonList(declared);
+                }
+                return soot.Scene.v().getOrMakeFastHierarchy()
+                        .resolveAbstractDispatch(declared.getDeclaringClass(),
+                                declared);
+            } catch (RuntimeException unresolved) {
+                return Collections.<soot.SootMethod>emptyList();
+            }
+        }
+
+        List<String> into(String callee) {
+            List<String> sites = byCallee.get(callee);
+            return sites == null ? Collections.<String>emptyList() : sites;
+        }
     }
 
     /** One unit's original index in its body ({@link

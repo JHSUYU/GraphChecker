@@ -42,8 +42,8 @@ public final class ExecutionTask extends PlanRow {
         return value;
     }
 
-    /** Write sites of a declared input's cell the replay must observe. */
-    public static final String OBSERVED_WRITE_SITES = "observedWriteSites";
+    /** Accesses of a tracked cell the replay observes before they run. */
+    public static final String OBSERVED_SITES = "observedSites";
     /** Set when the task's region reads a tracked cell: its occurrence
      *  observes branches from entry (SYMBOL-SCOPE F2). */
     public static final String READS_TRACKED_STATE = "readsTrackedState";
@@ -269,11 +269,12 @@ public final class ExecutionTask extends PlanRow {
         return CommunicationHandoffSpec.decode(encoded);
     }
 
-    /** Write sites of a declared input's cell that the replay must OBSERVE: a
-     *  cell nothing symbolic reached keeps no version log, so the concrete
-     *  value becomes its first expression and later writes are versions a
-     *  reader can join to. */
-    public JsonArray observedWriteSites() {
-        return array(encoded, OBSERVED_WRITE_SITES).deepCopy();
+    /** Accesses of a tracked cell the replay must OBSERVE: a cell nothing
+     *  symbolic reached keeps no version log, so the concrete value becomes
+     *  its first expression, later writes are versions a reader can join to,
+     *  and a read states the version it saw ({@link
+     *  StaticScopeMap#observedSites}). */
+    public JsonArray observedSites() {
+        return array(encoded, OBSERVED_SITES).deepCopy();
     }
 }
