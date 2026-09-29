@@ -26,11 +26,13 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Supplier;
 
 import static edu.uva.liftlab.graphchecker.compose.VmTermLowering.and;
 import static edu.uva.liftlab.graphchecker.compose.VmTermLowering.expressionJavaType;
@@ -191,7 +193,7 @@ public final class SmtLowering {
     private final ExpressionTable table;
 
     /** Side conditions the conjunction now open raised, or null. */
-    private List<String> openSideConditions;
+    private Set<String> openSideConditions;
     private List<String> openRefusals;
     private String scope = "";
     private SessionJoin join = NO_JOIN;
@@ -199,6 +201,24 @@ public final class SmtLowering {
     private ExpressionTable openTable;
     /** The conjunctions a nested lowering interrupted, innermost first. */
     private final Deque<Frame> frames = new ArrayDeque<Frame>();
+    /**
+     * THE MEMO: what each node of the decoder-owned expression DAG lowered
+     * to, per expected sort, with the refusals its lowering raised.  A node
+     * is reached along every path to it; walked again, the chain beneath it
+     * was lowered again (a Solr cluster state rebuilt per notification:
+     * millions of terms), and a refused leaf minted a fresh name at each
+     * visit, so no subterm above it deduplicated.  One conjunction has one
+     * memo ({@link #begin}): a hit's side conditions are already in it.  An
+     * entry holds while the declarations it read stand; a name newly stated
+     * clears the memo ({@link #put}).
+     */
+    private Map<Memoized.Key, Memoized> memo =
+            new HashMap<Memoized.Key, Memoized>();
+    /**
+     * The refusals each memoized lowering in progress raised, innermost
+     * last; null while it raised none.
+     */
+    private final List<Set<String>> raising = new ArrayList<Set<String>>();
 
     /** The lowering of one CORPUS: its rows declare every symbol. */
     public SmtLowering(Map<String, Sort> declaredSymbols) {
@@ -317,15 +337,23 @@ public final class SmtLowering {
      * {@link #declarations()} for the names it reaches.
      */
     public Lowered lower(String expressionRef) {
-        List<String> refusalsBefore =
-                new ArrayList<String>(unsupported);
-        Term value = reference(expressionRef, "lower:" + expressionRef);
+        raising.add(null);
+        Term value;
+        Set<String> refused;
+        try {
+            value = reference(expressionRef, "lower:" + expressionRef);
+        } finally {
+            refused = raising.remove(raising.size() - 1);
+        }
+        if (refused != null) {
+            for (String subject : refused) raised(subject);
+        }
         if (value == null) {
             return Lowered.refused("ABSENT_EXPRESSION:" + expressionRef);
         }
-        List<String> refused = new ArrayList<String>(unsupported);
-        refused.removeAll(refusalsBefore);
-        if (!refused.isEmpty()) return Lowered.refused(refused.get(0));
+        if (refused != null) {
+            return Lowered.refused(refused.iterator().next());
+        }
         return new Lowered(value.text, value.sort.smt, "");
     }
 
@@ -454,42 +482,121 @@ public final class SmtLowering {
         // mid-path; overwriting the path's frame would leave the rest of the
         // path with no join, no table and no refusal sink.
         frames.push(new Frame(openSideConditions, openRefusals, scope, join,
-                openTable));
-        this.openSideConditions = new ArrayList<String>();
+                openTable, memo));
+        this.openSideConditions = new LinkedHashSet<String>();
         this.openRefusals = new ArrayList<String>();
         this.scope = sessionId;
         this.join = sessionJoin;
         this.openTable = expressions;
+        this.memo = new HashMap<Memoized.Key, Memoized>();
     }
 
     /** Closes it, answering the side conditions its lowering raised. */
     public List<String> end() {
-        List<String> conditions = openSideConditions;
+        List<String> conditions = new ArrayList<String>(openSideConditions);
         Frame previous = frames.pop();
         openSideConditions = previous.conditions;
         openRefusals = previous.refusals;
         scope = previous.scope;
         join = previous.join;
         openTable = previous.table;
+        memo = previous.memo;
         return conditions;
     }
 
     /** One enclosing conjunction, kept while a nested one is open. */
     private static final class Frame {
-        private final List<String> conditions;
+        private final Set<String> conditions;
         private final List<String> refusals;
         private final String scope;
         private final SessionJoin join;
         private final ExpressionTable table;
+        private final Map<Memoized.Key, Memoized> memo;
 
-        private Frame(List<String> conditions, List<String> refusals,
-                      String scope, SessionJoin join, ExpressionTable table) {
+        private Frame(Set<String> conditions, List<String> refusals,
+                      String scope, SessionJoin join, ExpressionTable table,
+                      Map<Memoized.Key, Memoized> memo) {
             this.conditions = conditions;
             this.refusals = refusals;
             this.scope = scope;
             this.join = join;
             this.table = table;
+            this.memo = memo;
         }
+    }
+
+    /** One node's lowering at one expected sort, and what it refused. */
+    private static final class Memoized {
+        private final Object value;
+        private final Set<String> refusals;
+
+        private Memoized(Object value, Set<String> refusals) {
+            this.value = value;
+            this.refusals = refusals;
+        }
+
+        /** A node by identity (the decoder shares it), and the sort asked. */
+        private static final class Key {
+            private final JsonElement node;
+            private final Object expected;
+
+            private Key(JsonElement node, Object expected) {
+                this.node = node;
+                this.expected = expected;
+            }
+
+            @Override
+            public boolean equals(Object other) {
+                if (!(other instanceof Key)) return false;
+                Key key = (Key) other;
+                return node == key.node && expected == key.expected;
+            }
+
+            @Override
+            public int hashCode() {
+                return 31 * System.identityHashCode(node)
+                        + System.identityHashCode(expected);
+            }
+        }
+    }
+
+    /**
+     * One node lowered once per conjunction ({@link #memo}); a hit raises
+     * again, to the lowerings enclosing it, the refusals it raised.
+     */
+    @SuppressWarnings("unchecked")
+    private <T> T memoized(JsonElement node, Object expected,
+                           Supplier<T> lowering) {
+        if (node == null || !node.isJsonObject()) return lowering.get();
+        Memoized.Key key = new Memoized.Key(node, expected);
+        Memoized held = memo.get(key);
+        if (held == null) {
+            raising.add(null);
+            T value;
+            Set<String> raised;
+            try {
+                value = lowering.get();
+            } finally {
+                raised = raising.remove(raising.size() - 1);
+            }
+            held = new Memoized(value, raised == null
+                    ? Collections.<String>emptySet() : raised);
+            memo.put(key, held);
+        }
+        for (String subject : held.refusals) raised(subject);
+        return (T) held.value;
+    }
+
+    /** Hands one refusal to the innermost memoized lowering in progress. */
+    private void raised(String subject) {
+        int top = raising.size() - 1;
+        if (top < 0) return;
+        Set<String> held = raising.get(top);
+        if (held == null) {
+            held = new LinkedHashSet<String>();
+            raising.set(top, held);
+        }
+        held.add(subject);
     }
 
     /** What the conjunction now open refused. */
@@ -914,6 +1021,9 @@ public final class SmtLowering {
     // Containers.
     // ------------------------------------------------------------------
 
+    /** The memo's sort for a container operand, whatever was expected. */
+    private static final Object CONTAINER_OPERAND = new Object();
+
     private ContainerSmtCodec.Host host(final String origin) {
         return new ContainerSmtCodec.Host() {
             @Override
@@ -955,12 +1065,14 @@ public final class SmtLowering {
                     JsonElement expression,
                     ContainerSmtCodec.Sort expected) {
                 if (ContainerSmtCodec.handles(expression)) {
-                    return name(ContainerSmtCodec.term(
-                            expression.getAsJsonObject(), this));
+                    return memoized(expression, CONTAINER_OPERAND,
+                            () -> name(ContainerSmtCodec.term(
+                                    expression.getAsJsonObject(), this)));
                 }
                 if (ContainerSmtCodec.handlesField(expression)) {
-                    return name(ContainerSmtCodec.field(
-                            expression.getAsJsonObject(), this));
+                    return memoized(expression, CONTAINER_OPERAND,
+                            () -> name(ContainerSmtCodec.field(
+                                    expression.getAsJsonObject(), this)));
                 }
                 Term value = dispatch(expression,
                         VmTermLowering.sortOfContainer(expected),
@@ -1123,6 +1235,10 @@ public final class SmtLowering {
      */
     private void put(String name, Sort sort, boolean stated) {
         Declared held = declarations.get(name);
+        if (stated && (held == null || !held.stated)) {
+            // A read of this name lowers to it from now on, not inlined.
+            memo = new HashMap<Memoized.Key, Memoized>();
+        }
         if (held != null && held.sort != sort) {
             String detail = held.sort + " and " + sort;
             sortConflicts.put(name, detail);
@@ -1195,9 +1311,7 @@ public final class SmtLowering {
             return;
         }
         if (openSideConditions != null) {
-            if (!openSideConditions.contains(predicate)) {
-                openSideConditions.add(predicate);
-            }
+            openSideConditions.add(predicate);
         } else {
             assertPlain(predicate);
         }
@@ -1205,6 +1319,7 @@ public final class SmtLowering {
 
     private void refuse(String subject, String detail) {
         unsupported.add(subject);
+        raised(subject);
         if (openRefusals != null) openRefusals.add(subject);
         if (detail != null && !detail.isEmpty()) {
             unsupportedDetail.put(subject, detail);
@@ -1566,15 +1681,17 @@ public final class SmtLowering {
      */
     public Term dispatch(JsonElement expression, Sort expected,
                         String origin) {
-        Term value = lowered(expression, expected, origin);
-        if (expression != null && expression.isJsonObject()) {
-            JsonElement observed = expression.getAsJsonObject()
-                    .get(VmRows.RECORDED_READING);
-            if (observed != null && !observed.isJsonNull()) {
-                recordedReading(value, observed, origin);
+        return memoized(expression, expected, () -> {
+            Term value = lowered(expression, expected, origin);
+            if (expression != null && expression.isJsonObject()) {
+                JsonElement observed = expression.getAsJsonObject()
+                        .get(VmRows.RECORDED_READING);
+                if (observed != null && !observed.isJsonNull()) {
+                    recordedReading(value, observed, origin);
+                }
             }
-        }
-        return value;
+            return value;
+        });
     }
 
     private Term lowered(JsonElement expression, Sort expected,

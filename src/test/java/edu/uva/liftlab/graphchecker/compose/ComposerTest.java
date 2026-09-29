@@ -3250,7 +3250,9 @@ public class ComposerTest {
     /**
      * One reference, one rule: lowered alone (the flip solver's and the
      * closure planner's entry) it states where it is defined, as it does
-     * when a published term names it.
+     * when a published term names it.  A node two expressions share is one
+     * construct, lowered once: refused, it is one fresh name, and each
+     * expression lowered alone is refused for it.
      */
     @Test
     public void aLoweredReferenceStatesWhereItIsDefined() throws Exception {
@@ -3259,6 +3261,13 @@ public class ComposerTest {
         seed.activation(PRODUCER);
         seed.expression("EXPR.v1.quotient", binary("/",
                 symbol("dividend", "I"), symbol("divisor", "I")));
+        JsonObject unmodeled = new JsonObject();
+        unmodeled.addProperty("_type", "UnmodeledExpression");
+        unmodeled.addProperty("_java_type", "I");
+        seed.expression("EXPR.00000000000001e1", binary("<", unmodeled,
+                symbol("dividend", "I")));
+        seed.expression("EXPR.00000000000001e2", binary(">", unmodeled,
+                symbol("divisor", "I")));
         seed.write();
         SmtLowering lowering = Corpus.read(iteration, null).lowering("s0");
         SmtLowering.Lowered quotient = lowering.lower("EXPR.v1.quotient");
@@ -3267,6 +3276,17 @@ public class ComposerTest {
                 lowering.facts(Collections.singletonList(quotient.text()));
         assertTrue("and the JVM divided, so the divisor was not zero: "
                 + facts, facts.contains("(not (= divisor 0))"));
+        Set<String> free = new LinkedHashSet<String>();
+        for (String reference : Arrays.asList("EXPR.00000000000001e1",
+                "EXPR.00000000000001e2")) {
+            assertFalse(reference + " is refused",
+                    lowering.lower(reference).ok());
+            for (String name : SmtNames.names(
+                    lowering.statedTerm(reference, "test"))) {
+                if (name.startsWith("unsupported__")) free.add(name);
+            }
+        }
+        assertEquals("one construct, one name: " + free, 1, free.size());
     }
 
     /** The ordinal one selector was made under. */
