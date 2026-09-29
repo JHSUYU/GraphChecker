@@ -193,13 +193,12 @@ bool SymMap::invoke_method_helper(MethodSymbolizerHandle &handle) {
   }
   if (ContainerSupport::claims_state(handle)
       && !ContainerSupport::follows_callee_body(callee_name)) {
-    // A selected map is shared, so this thread's abort is not the whole cost:
-    // an operation nobody modeled may have changed a state that other threads
-    // still read.  Mark the location before failing closed, so later queries
-    // cannot treat the retained writer set as complete.
-    ContainerSupport::mark_state_gap(
-        handle.get_param<oop>(0), "ASSOCIATIVE_OPERATION_UNSUPPORTED");
-    ConcolicMngr::ctx->abort_symbolic_execution(ContainerSupport::unsupported(
+    // An operation nobody modeled may have changed a state that other threads
+    // still read.  The location is marked and the map leaves the model
+    // (abandon_state), so later queries cannot treat the retained writer set as
+    // complete, and this thread goes on concretely for this map alone.
+    ContainerSupport::abandon_state(handle.get_param<oop>(0),
+        ContainerSupport::unsupported(
         "ASSOCIATIVE_OPERATION_UNSUPPORTED", handle).c_str());
   }
   return false;
@@ -214,12 +213,11 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
       || method == "compute" || method == "computeIfAbsent"
       || method == "computeIfPresent" || method == "merge") {
     // The mutation ran concretely and produced no version.  On a selected map
-    // that is a writer no later read can name, so say so permanently first --
-    // the abort below only ends *this* thread's path condition, while the
-    // missing writer is a fact about the location every other thread reads.
-    ContainerSupport::mark_state_gap(
-        handle.get_param<oop>(0), "ASSOCIATIVE_MUTATOR_UNSUPPORTED");
-    ConcolicMngr::ctx->abort_symbolic_execution(ContainerSupport::unsupported(
+    // that is a writer no later read can name: abandon_state says so
+    // permanently for the location every other thread reads, and drops the
+    // map from the model.
+    ContainerSupport::abandon_state(handle.get_param<oop>(0),
+        ContainerSupport::unsupported(
         "ASSOCIATIVE_MUTATOR_UNSUPPORTED", handle).c_str());
     return NULL;
   }
@@ -334,17 +332,17 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
       // stated is the whole difference between a view this engine does not
       // know how to follow and an entry it could not name.
       if (backing_map == NULL) {
-        ConcolicMngr::ctx->abort_symbolic_execution(
+        ContainerSupport::abandon_state(handle.get_param<oop>(0),
             "ASSOCIATIVE_VIEW_OWNER_MISSING");
         return NULL;
       }
       if (base == NULL) {
-        ConcolicMngr::ctx->abort_symbolic_execution(
+        ContainerSupport::abandon_state(handle.get_param<oop>(0),
             "ASSOCIATIVE_VIEW_OWNER_STATE_MISSING");
         return NULL;
       }
       if (removed_key == NULL) {
-        ConcolicMngr::ctx->abort_symbolic_execution(
+        ContainerSupport::abandon_state(handle.get_param<oop>(0),
             "ASSOCIATIVE_VIEW_REMOVED_KEY_MISSING");
         return NULL;
       }
@@ -362,7 +360,7 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
     Expression *root = ConcolicMngr::ctx->container_state(
         receiver_object, "ASSOCIATIVE");
     if (root == NULL || position < 0) {
-      ConcolicMngr::ctx->abort_symbolic_execution(
+      ContainerSupport::abandon_state(handle.get_param<oop>(0),
           "ASSOCIATIVE_ITERATOR_REMOVE_WITHOUT_NEXT");
       return NULL;
     }
@@ -396,7 +394,7 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
     Expression *root = ConcolicMngr::ctx->container_state(
         receiver_object, "ASSOCIATIVE");
     if (root == NULL) {
-      ConcolicMngr::ctx->abort_symbolic_execution(
+      ContainerSupport::abandon_state(handle.get_param<oop>(0),
           "ASSOCIATIVE_VIEW_OWNER_MISSING");
       return NULL;
     }
@@ -410,19 +408,15 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
     // A symbolic argument can make an unrelated map invocation enter this
     // helper even though the receiver itself is not one of the selected
     // shared carriers.  Its concrete body remains the only semantics claimed
-    // for that map, so do not discard the selected region for it.  Fail
-    // closed only when this receiver is selected: then the unsupported
-    // mutation really would leave a versioned state incomplete.
-    if (ContainerSupport::mark_state_gap(
-            receiver_object, "ASSOCIATIVE_REMOVE_OVERLOAD_UNSUPPORTED")) {
-      ConcolicMngr::ctx->abort_symbolic_execution(
-          ContainerSupport::unsupported(
-              "ASSOCIATIVE_REMOVE_OVERLOAD_UNSUPPORTED", handle).c_str());
-    }
+    // for that map: it leaves the model, and a selected location is marked
+    // incomplete, since the unsupported mutation left its versions so.
+    ContainerSupport::abandon_state(receiver_object,
+        ContainerSupport::unsupported(
+        "ASSOCIATIVE_REMOVE_OVERLOAD_UNSUPPORTED", handle).c_str());
     return NULL;
   }
   if (method == "clear" && !root_map) {
-    ConcolicMngr::ctx->abort_symbolic_execution(
+    ContainerSupport::abandon_state(handle.get_param<oop>(0),
         "ASSOCIATIVE_VIEW_CLEAR_UNSUPPORTED");
     return NULL;
   }

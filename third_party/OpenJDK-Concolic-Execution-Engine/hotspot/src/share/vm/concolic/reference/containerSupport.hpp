@@ -228,6 +228,13 @@ jlong publish_state(oop container, Expression *new_state,
 // exploration but cannot close coverage.  `reason` names the gap in the
 // evidence report. Returns true when a selected location was marked.
 bool mark_state_gap(oop container, const char *reason);
+// An operation the model cannot follow reached a container: its writer set is
+// marked incomplete (mark_state_gap) and its modeled state is dropped, so it
+// runs concretely until a modeled operation roots it again.  The thread's
+// symbolic execution goes on: only this container left the model.  Aborting
+// the thread instead lost every other value it carried (SOLR-18413: the
+// update whose expiry clock decides the rule, at replicas.removeIf).
+void abandon_state(oop container, const std::string &reason);
 
 /** One query bound to the state it may have observed. */
 struct StateQuery {

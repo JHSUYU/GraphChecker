@@ -462,6 +462,10 @@ void ThreadContext::set_container_state(oop container, Expression *state) {
   heap().set_container_state(container, state);
 }
 
+void ThreadContext::forget_container_state(oop container) {
+  heap().forget_container_state(container);
+}
+
 void ThreadContext::write_array_element(arrayOop array, int index,
                                         Expression *expression) {
   heap().write_array_element(array, index, expression);

@@ -53,11 +53,10 @@ bool SymSet::invoke_method_helper(MethodSymbolizerHandle &handle) {
   }
   if (ContainerSupport::claims_state(handle)
       && !ContainerSupport::follows_callee_body(callee_name)) {
-    // See the same line in symbolicMap.cpp: the abort ends this thread, the
+    // See the same line in symbolicMap.cpp: the set leaves the model, and the
     // mark keeps every other reader of a selected container honest.
-    ContainerSupport::mark_state_gap(
-        handle.get_param<oop>(0), "ASSOCIATIVE_OPERATION_UNSUPPORTED");
-    ConcolicMngr::ctx->abort_symbolic_execution(ContainerSupport::unsupported(
+    ContainerSupport::abandon_state(handle.get_param<oop>(0),
+        ContainerSupport::unsupported(
         "ASSOCIATIVE_OPERATION_UNSUPPORTED", handle).c_str());
   }
   return false;

@@ -227,6 +227,9 @@ public:
   sym_rid_t canonical_container_id(oop container) const;
   Expression *find_container_state(oop container) const;
   void set_container_state(oop container, Expression *state);
+  // Drops the state of the container (and of every view or cursor aliased to
+  // it): a later modeled operation roots it afresh.
+  void forget_container_state(oop container);
   void alias_container(oop derived, oop owner);
   int next_container_position(oop cursor);
   int current_container_position(oop cursor);

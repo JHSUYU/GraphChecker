@@ -653,6 +653,13 @@ jlong ContainerSupport::publish_state(oop container, Expression *new_state,
       operation);
 }
 
+void ContainerSupport::abandon_state(oop container,
+                                     const std::string &reason) {
+  if (container == NULL || ConcolicMngr::ctx == NULL) return;
+  mark_state_gap(container, reason.c_str());
+  ConcolicMngr::ctx->forget_container_state(container);
+}
+
 bool ContainerSupport::mark_state_gap(oop container, const char *reason) {
   if (!SharedFieldVersions::has_carriers()) return false;
   SharedFieldVersions::Location location = state_location(container);

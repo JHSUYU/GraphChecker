@@ -210,6 +210,21 @@ void SessionSymbolicHeap::set_container_state(oop container, Expression *state) 
   _container_states[canonical_container_id_locked(id)] = state;
 }
 
+void SessionSymbolicHeap::forget_container_state(oop container) {
+  if (container == NULL) return;
+  HeapLock guard(this);
+  sym_rid_t id = NULL_SYM_RID;
+  if (container->is_array()) {
+    if (!container->is_symbolic()) return;
+    id = container->get_sym_rid();
+  } else {
+    SymInstance *instance = find_sym_inst_locked(container);
+    if (instance == NULL) return;
+    id = instance->get_sym_rid();
+  }
+  _container_states.erase(canonical_container_id_locked(id));
+}
+
 void SessionSymbolicHeap::write_array_element(arrayOop array, int index,
                                         Expression *expression) {
   if (array == NULL || expression == NULL || index < 0

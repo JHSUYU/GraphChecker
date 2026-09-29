@@ -65,15 +65,13 @@ bool SymList::invoke_method_helper(MethodSymbolizerHandle &handle) {
     oop receiver = handle.get_param<oop>(0);
     if (callee_name == "listIterator"
         && callee->size_of_parameters() != 1) {
-      ConcolicMngr::ctx->abort_symbolic_execution(
+      ContainerSupport::abandon_state(handle.get_param<oop>(0),
           "INDEXED_LIST_ITERATOR_OFFSET_UNSUPPORTED");
       return false;
     }
     if ((callee_name == "add" || callee_name == "set")
         && !ContainerSupport::indexed(receiver)) {
-      ContainerSupport::mark_state_gap(
-          receiver, "INDEXED_LIST_ITERATOR_MUTATOR_UNSUPPORTED");
-      ConcolicMngr::ctx->abort_symbolic_execution(
+      ContainerSupport::abandon_state(receiver,
           "INDEXED_LIST_ITERATOR_MUTATOR_UNSUPPORTED");
       return false;
     }
@@ -110,13 +108,12 @@ bool SymList::invoke_method_helper(MethodSymbolizerHandle &handle) {
   }
   if (ContainerSupport::claims_state(handle)
       && !ContainerSupport::follows_callee_body(callee_name)) {
-    // A selected list is shared, so this thread's abort is not the whole
-    // cost: an operation nobody modeled may have changed a state that other
-    // regions still read.  Mark the location before failing closed, so later
-    // queries cannot treat the retained writer set as complete.
-    ContainerSupport::mark_state_gap(
-        handle.get_param<oop>(0), "INDEXED_OPERATION_UNSUPPORTED");
-    ConcolicMngr::ctx->abort_symbolic_execution(ContainerSupport::unsupported(
+    // An operation nobody modeled may have changed a state that other regions
+    // still read.  The location is marked and the list leaves the model
+    // (abandon_state), so later queries cannot treat the retained writer set as
+    // complete, and this thread goes on concretely for this list alone.
+    ContainerSupport::abandon_state(handle.get_param<oop>(0),
+        ContainerSupport::unsupported(
         "INDEXED_OPERATION_UNSUPPORTED", handle).c_str());
   }
   return false;
@@ -150,12 +147,14 @@ Expression *SymList::published_array(MethodSymbolizerHandle &handle,
                                      Expression *receiver,
                                      const exp_list_t &arguments) {
   if (receiver == NULL) {
-    ConcolicMngr::ctx->abort_symbolic_execution(ContainerSupport::unsupported(
+    ContainerSupport::abandon_state(handle.get_param<oop>(0),
+        ContainerSupport::unsupported(
         "INDEXED_TO_ARRAY_RECEIVER_UNSUPPORTED", handle).c_str());
     return NULL;
   }
   if (arguments.size() > 1) {
-    ConcolicMngr::ctx->abort_symbolic_execution(ContainerSupport::unsupported(
+    ContainerSupport::abandon_state(handle.get_param<oop>(0),
+        ContainerSupport::unsupported(
         "INDEXED_TO_ARRAY_OVERLOAD_UNSUPPORTED", handle).c_str());
     return NULL;
   }
@@ -163,7 +162,8 @@ Expression *SymList::published_array(MethodSymbolizerHandle &handle,
   oop published = result_type == T_ARRAY || result_type == T_OBJECT
       ? handle.get_result<oop>(result_type) : NULL;
   if (published == NULL || !published->is_array()) {
-    ConcolicMngr::ctx->abort_symbolic_execution(ContainerSupport::unsupported(
+    ContainerSupport::abandon_state(handle.get_param<oop>(0),
+        ContainerSupport::unsupported(
         "INDEXED_TO_ARRAY_RESULT_NOT_AN_ARRAY", handle).c_str());
     return NULL;
   }
@@ -179,7 +179,7 @@ Expression *SymList::published_array(MethodSymbolizerHandle &handle,
     if (!ContainerSupport::measures(declared, receiver)) {
       std::string gap("INDEXED_TO_ARRAY_DESTINATION_MAY_HAVE_ROOM_TO_SPARE:");
       gap += ContainerSupport::measurement(declared, receiver);
-      ConcolicMngr::ctx->abort_symbolic_execution(
+      ContainerSupport::abandon_state(handle.get_param<oop>(0),
           ContainerSupport::unsupported(gap.c_str(), handle).c_str());
       return NULL;
     }
@@ -215,9 +215,7 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
     arguments.push_back(parameters[index]);
   }
   if (!root_container && (method == "add" || method == "set")) {
-    ContainerSupport::mark_state_gap(
-        receiver_object, "INDEXED_LIST_ITERATOR_MUTATOR_UNSUPPORTED");
-    ConcolicMngr::ctx->abort_symbolic_execution(
+    ContainerSupport::abandon_state(receiver_object,
         "INDEXED_LIST_ITERATOR_MUTATOR_UNSUPPORTED");
     return NULL;
   }
@@ -284,11 +282,9 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
     }
     // remove(Object) has no indexed relation: the position it removed is not
     // recoverable from the argument.  It ran concretely, so a selected list
-    // has a writer no later read can name - say so permanently before failing
-    // closed, since this thread's abort ends only this path condition.
-    ContainerSupport::mark_state_gap(
-        receiver_object, "INDEXED_REMOVE_OBJECT_UNSUPPORTED");
-    ConcolicMngr::ctx->abort_symbolic_execution(
+    // has a writer no later read can name: abandon_state says so permanently
+    // and drops the list from the model.
+    ContainerSupport::abandon_state(receiver_object,
         "INDEXED_REMOVE_OBJECT_UNSUPPORTED");
     return NULL;
   }
@@ -341,16 +337,12 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
       Expression *removed_index =
           ConcolicMngr::ctx->take_view_removal_argument();
       if (backing_list == NULL) {
-        ContainerSupport::mark_state_gap(
-            receiver_object, "INDEXED_VIEW_OWNER_MISSING");
-        ConcolicMngr::ctx->abort_symbolic_execution(
+        ContainerSupport::abandon_state(receiver_object,
             "INDEXED_VIEW_OWNER_MISSING");
         return NULL;
       }
       if (base == NULL || removed_index == NULL) {
-        ContainerSupport::mark_state_gap(
-            receiver_object, "INDEXED_VIEW_REMOVED_INDEX_MISSING");
-        ConcolicMngr::ctx->abort_symbolic_execution(
+        ContainerSupport::abandon_state(receiver_object,
             "INDEXED_VIEW_REMOVED_INDEX_MISSING");
         return NULL;
       }
@@ -367,9 +359,7 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
     Expression *root = ConcolicMngr::ctx->container_state(
         receiver_object, "INDEXED");
     if (root == NULL || position < 0) {
-      ContainerSupport::mark_state_gap(
-          receiver_object, "INDEXED_ITERATOR_REMOVE_WITHOUT_NEXT");
-      ConcolicMngr::ctx->abort_symbolic_execution(
+      ContainerSupport::abandon_state(receiver_object,
           "INDEXED_ITERATOR_REMOVE_WITHOUT_NEXT");
       return NULL;
     }
@@ -398,9 +388,7 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
         "INDEXED", receiver, arguments[0]);
   }
   if (method == "remove" && !root_container) {
-    ContainerSupport::mark_state_gap(
-        receiver_object, "ITERATOR_REMOVE_UNSUPPORTED");
-    ConcolicMngr::ctx->abort_symbolic_execution(
+    ContainerSupport::abandon_state(receiver_object,
         "ITERATOR_REMOVE_UNSUPPORTED");
     return NULL;
   }
@@ -419,7 +407,7 @@ Expression *SymList::finish_method_helper(MethodSymbolizerHandle &handle) {
     return result;
   }
   if (method == "listIterator" && !arguments.empty()) {
-    ConcolicMngr::ctx->abort_symbolic_execution(
+    ContainerSupport::abandon_state(handle.get_param<oop>(0),
         "INDEXED_LIST_ITERATOR_OFFSET_UNSUPPORTED");
     return NULL;
   }
