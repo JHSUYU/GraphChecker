@@ -533,6 +533,20 @@ final class SharedStateCapture {
         return fault != null && fault.startsWith(CONTAINER_BASE_UNSTATED_FAULT);
     }
 
+    /**
+     * Whether a version is a scalar field's INITIAL: the value from before
+     * the window, which whichever access first observed the field started
+     * its log with.  No occurrence wrote it, so it is no write row, and a
+     * read of it is the recording's (pinned).  A container's INITIAL is the
+     * base its chain of mutations stands on, and stays one.
+     */
+    static boolean scalarInitial(JsonObject version, LocationId location) {
+        return INITIAL_VERSION_KIND.equals(
+                optionalString(version, "versionKind"))
+                && (location.kind() == LocationKind.INSTANCE
+                || location.kind() == LocationKind.STATIC);
+    }
+
     /** Whether a version was stored outside every region: it names no
      *  writer context, region, task or activation at all. */
     static boolean unattributed(JsonObject version) {

@@ -325,11 +325,12 @@ public final class ClosurePlanner {
         // demand is asked of the group, not each member.
         Set<String> demanded = demanded(corpus, demand, group);
         List<Demand> next = new ArrayList<Demand>();
+        List<Demand> factor = new ArrayList<Demand>();
         for (OccurrenceAddress member : group) {
             if (!member.equals(demand.occurrence)) {
                 // A factor member inherits the reason; being a factor is not
                 // its own.
-                next.add(new Demand(member, demand.why, false));
+                factor.add(new Demand(member, demand.why, false));
             }
             for (AttachRow attach : corpus.attachesOn(member)) {
                 if (!demanded.contains(attach.symbol())) {
@@ -350,6 +351,11 @@ public final class ClosurePlanner {
         }
         statedReads(corpus, map, demand, next, gaps);
         controlProducer(corpus, demand, next);
+        // A demand's causes come before its co-readers: when the task bound
+        // truncates the closure, it is a co-reader that waits (SOLR-18406:
+        // 63 replication requests reading the commit points' flags filled
+        // the bound before the flag's writer).
+        next.addAll(factor);
         return next;
     }
 
@@ -394,6 +400,7 @@ public final class ClosurePlanner {
                     sessionId, contributed.substring(split + 1))) {
                 writersOfVersion(corpus, map, sessionId, demand.occurrence,
                         read.locationKey(), read.write().version(),
+                        Collections.<String>emptySet(),
                         demand.occurrence.render(),
                         read.locationKey() + " (read at event "
                                 + read.readEventId() + ")", into, gaps);
@@ -553,7 +560,9 @@ public final class ClosurePlanner {
         writersOfVersion(corpus, map, row.sessionId(),
                 row.endpoint().occurrence(),
                 SmtLowering.locationKey(row.location()),
-                row.observedVersion(), row.endpoint().toString(),
+                row.observedVersion(),
+                map.carriersAt(row.endpoint().site(), row.javaType()),
+                row.endpoint().toString(),
                 String.valueOf(row.location()), into, gaps);
     }
 
@@ -561,6 +570,9 @@ public final class ClosurePlanner {
      * The closure's growth by one read of one version of one location, whether
      * the runtime stated it as a row or only in an expression (E2).
      *
+     * @param readCarriers the carriers the read's own site names (a read
+     *                     of a version no store of the window wrote: its
+     *                     INITIAL)
      * @param subject what a diagnostic about this read is addressed at
      * @param located how the location reads in that diagnostic
      */
@@ -569,10 +581,12 @@ public final class ClosurePlanner {
                                          OccurrenceAddress reader,
                                          String locationKey,
                                          long observedVersion,
+                                         Set<String> readCarriers,
                                          String subject, String located,
                                          List<Demand> into,
                                          List<GapRow> gaps) {
         Set<String> carriers = carriersOf(corpus, map, locationKey);
+        carriers.addAll(readCarriers);
         for (WriteRow write : corpus.eligibleWrites(sessionId, locationKey,
                 observedVersion, reader)) {
             Demand paired = new Demand(write.endpoint().occurrence(),
