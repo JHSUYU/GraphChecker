@@ -37,7 +37,15 @@ final class ConcolicResultPublisher {
                     new ThreadFactory() {
                         @Override
                         public Thread newThread(Runnable runnable) {
-                            Thread thread = new Thread(runnable,
+                            // In the JVM's root group, not the group of the
+                            // test that first published: a test framework
+                            // fails its suite on a thread its group leaks.
+                            ThreadGroup root =
+                                    Thread.currentThread().getThreadGroup();
+                            while (root.getParent() != null) {
+                                root = root.getParent();
+                            }
+                            Thread thread = new Thread(root, runnable,
                                     "causynth-result-publication-"
                                             + PUBLICATION_THREAD_COUNTER
                                             .incrementAndGet());

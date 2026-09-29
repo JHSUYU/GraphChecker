@@ -5,8 +5,8 @@ test_class=org.apache.solr.cloud.TestCausynthMigrateRuleTarget
 test_method=updateAfterRuleExpiryAndTargetDeletion
 # The source leader's update of a!2, after the target's deletion: its
 # routing rule had expired, so its path left at the expiry check before the
-# target lookup (the first observed occurrence is a!1's, before MIGRATE).
-target_occurrence='auto0/node0#epoch0/region/REGION.f92dbcb6-b4d2-39a2-82db-2f935a7bd391/ctx:Anchor:db22b71b0e24dc0b@SOLR_HTTP/.update/idx:<org.apache.solr.update.processor.DistributedZkUpdateProcessor: void processAdd(org.apache.solr.update.AddUpdateCommand)>@0'
+# target lookup: the leader's second update, a!1's being the first.
+target_occurrence='auto0/node0#epoch0/region/REGION.f92dbcb6-b4d2-39a2-82db-2f935a7bd391#2'
 scope=(
   core:org/apache/solr/update/processor/DistributedZkUpdateProcessor
   core:org/apache/solr/update/processor/DistributedUpdateProcessor
