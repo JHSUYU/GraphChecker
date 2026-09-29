@@ -418,6 +418,9 @@ public final class ClosurePlanner {
         Set<String> named = new LinkedHashSet<String>();
         List<ReadRow> reads = new ArrayList<ReadRow>();
         for (OccurrenceAddress member : group) {
+            reads.addAll(corpus.readsOn(member));
+        }
+        for (OccurrenceAddress member : group) {
             for (Corpus.RecordedPath path : corpus.pathsOf(member)) {
                 for (DecisionRow decision : path.decisions) {
                     if (!demand.flipSites.contains(decision.siteId())) {
@@ -425,6 +428,8 @@ public final class ClosurePlanner {
                     }
                     reaches(corpus, path.sessionId, FlipQuery.statedTerm(
                             corpus, path.sessionId, decision.term()), named);
+                    readsUnder(corpus, path.sessionId, decision.term(),
+                            reads, named);
                 }
             }
             if (demand.anchor) {
@@ -432,9 +437,10 @@ public final class ClosurePlanner {
                     reaches(corpus, target.sessionId(),
                             FlipQuery.statedTerm(corpus, target.sessionId(),
                                     target.phiTerm()), named);
+                    readsUnder(corpus, target.sessionId(), target.phiTerm(),
+                            reads, named);
                 }
             }
-            reads.addAll(corpus.readsOn(member));
         }
         for (String contributed : demand.contributed) {
             int split = contributed.indexOf('|');
@@ -467,6 +473,27 @@ public final class ClosurePlanner {
             }
         }
         return named;
+    }
+
+    /**
+     * The read rows a term's expressions read by structure, into {@code
+     * named}: a scalar read the lowering joined to its version's value is
+     * inlined there, and still what the term rests on (SOLR-18406: the phi
+     * reads a commit point's `deleted` flag at its INITIAL, which the join
+     * made the constant false).
+     */
+    private static void readsUnder(Corpus corpus, String sessionId,
+                                   String term, List<ReadRow> reads,
+                                   Set<String> named) {
+        Set<String> locations = corpus.readLocations(sessionId, term);
+        if (locations.isEmpty()) return;
+        for (ReadRow row : reads) {
+            if (sessionId.equals(row.sessionId()) && !row.symbol().isEmpty()
+                    && locations.contains(
+                    SmtLowering.locationKey(row.location()))) {
+                named.add(row.symbol());
+            }
+        }
     }
 
     /**
@@ -673,15 +700,23 @@ public final class ClosurePlanner {
     }
 
     /** Whether an occurrence's region would RUN a static site: by HOLDING its
-     *  method, not region-id equality. Under the fold rule a site of R is
-     *  recorded under an enclosing R', while the map names only the innermost
-     *  holder. Falls back to id equality when the map knows no method set. */
+     *  method, or a method whose calls run it ({@link
+     *  StaticScopeMap.Site#callers}), not region-id equality. Under the fold
+     *  rule a site of R is recorded under an enclosing R', while the map
+     *  names only the innermost holder; and a store no recorded run entered
+     *  is run by the region that calls into it (SOLR-18406: nothing deleted
+     *  the reserved commit point, and the checkpoint that would have calls
+     *  its delete()). Falls back to id equality when the map knows no method
+     *  set. */
     private static boolean holds(StaticScopeMap map, String regionId,
                                  StaticScopeMap.Site site) {
         Set<String> methods = map.methodsOf(regionId);
-        return methods.isEmpty()
-                ? site.regionId.equals(regionId)
-                : methods.contains(SiteId.methodOf(site.siteId));
+        if (methods.isEmpty()) return site.regionId.equals(regionId);
+        if (methods.contains(SiteId.methodOf(site.siteId))) return true;
+        for (String caller : site.callers) {
+            if (methods.contains(caller)) return true;
+        }
+        return false;
     }
 
     /** Whether some session of this corpus ran one occurrence. */

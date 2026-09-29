@@ -944,6 +944,23 @@ public final class Corpus implements Arms.Rows {
         return found;
     }
 
+    /** The locations a term's expressions read, by their structure: every
+     *  {@code EXPR} reference the term text names, expanded.  A lowering that
+     *  joins a scalar read to the value its version holds no longer names
+     *  the read, and what a value rests on is the closure's question. */
+    public Set<String> readLocations(String sessionId, String term) {
+        Map<String, Long> read = new LinkedHashMap<String, Long>();
+        java.util.regex.Matcher refs = EXPRESSION_REF.matcher(
+                term == null ? "" : term);
+        while (refs.find()) {
+            readNodes(expression(sessionId, refs.group()), read, 0);
+        }
+        return read.keySet();
+    }
+
+    private static final java.util.regex.Pattern EXPRESSION_REF =
+            java.util.regex.Pattern.compile("EXPR\\.[0-9a-f]+");
+
     /** Location key -> the latest event id one expression read it at (any node
      *  with location + readEventId). */
     private static void readNodes(JsonElement expression,

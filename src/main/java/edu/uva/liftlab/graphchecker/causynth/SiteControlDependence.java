@@ -77,10 +77,45 @@ public final class SiteControlDependence {
 
             @Override
             public List<StaticScopeMap.Guard> callsInto(String method) {
-                if (calls == null) calls = CallSites.ofApplication();
                 List<StaticScopeMap.Guard> found =
                         new ArrayList<StaticScopeMap.Guard>();
                 Set<String> named = new LinkedHashSet<String>();
+                for (String call : callSitesInto(method)) {
+                    String caller = SiteId.methodOf(call);
+                    MethodGuards guards = callers.get(caller);
+                    if (guards == null) {
+                        guards = MethodGuards.of(caller);
+                        callers.put(caller, guards);
+                    }
+                    // The call's guards and theirs: in `if (a || b) return;
+                    // call();` the call is control-dependent on b alone, and
+                    // b on a.
+                    int unit = SiteId.unitIndexOf(call);
+                    List<StaticScopeMap.Guard> deciding =
+                            new ArrayList<StaticScopeMap.Guard>(
+                                    guards.at(unit));
+                    deciding.addAll(guards.chain(unit));
+                    for (StaticScopeMap.Guard guard : deciding) {
+                        if (named.add(guard.siteId())) found.add(guard);
+                    }
+                }
+                return found;
+            }
+
+            @Override
+            public List<String> callersOf(String method) {
+                Set<String> found = new LinkedHashSet<String>();
+                for (String call : callSitesInto(method)) {
+                    found.add(SiteId.methodOf(call));
+                }
+                return new ArrayList<String>(found);
+            }
+
+            /** The call sites that run {@code method}, {@link #CALL_DEPTH}
+             *  calls up. */
+            private List<String> callSitesInto(String method) {
+                if (calls == null) calls = CallSites.ofApplication();
+                List<String> found = new ArrayList<String>();
                 Set<String> visited = new LinkedHashSet<String>();
                 List<String> level = Collections.singletonList(method);
                 for (int depth = 0; depth < CALL_DEPTH && !level.isEmpty();
@@ -89,24 +124,8 @@ public final class SiteControlDependence {
                     for (String callee : level) {
                         if (!visited.add(callee)) continue;
                         for (String call : calls.into(callee)) {
-                            String caller = SiteId.methodOf(call);
-                            MethodGuards guards = callers.get(caller);
-                            if (guards == null) {
-                                guards = MethodGuards.of(caller);
-                                callers.put(caller, guards);
-                            }
-                            // The call's guards and theirs: in `if (a || b)
-                            // return; call();` the call is control-dependent
-                            // on b alone, and b on a.
-                            int unit = SiteId.unitIndexOf(call);
-                            List<StaticScopeMap.Guard> deciding =
-                                    new ArrayList<StaticScopeMap.Guard>(
-                                            guards.at(unit));
-                            deciding.addAll(guards.chain(unit));
-                            for (StaticScopeMap.Guard guard : deciding) {
-                                if (named.add(guard.siteId())) found.add(guard);
-                            }
-                            next.add(caller);
+                            found.add(call);
+                            next.add(SiteId.methodOf(call));
                         }
                     }
                     level = next;

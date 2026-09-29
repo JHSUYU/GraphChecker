@@ -123,6 +123,11 @@ public final class StaticScopeMap {
         default List<Guard> callsInto(String method) {
             return Collections.<Guard>emptyList();
         }
+
+        /** The methods of those calls. */
+        default List<String> callersOf(String method) {
+            return Collections.<String>emptyList();
+        }
     }
 
     /** One branch a site is control-dependent on, with the arm that reaches it
@@ -197,6 +202,10 @@ public final class StaticScopeMap {
          * up, and the expiry is what a witness moves.
          */
         public final List<Guard> chain;
+        /** WRITE_SITE: the methods whose calls run the site's method, a few
+         *  calls up ({@link Guards#callersOf}): a region running one of them
+         *  may run the store though no recorded occurrence entered it. */
+        public final List<String> callers;
 
         Site(String role, String regionId, String siteId, String vmSite,
              String cell, String carrier, String portId,
@@ -205,14 +214,16 @@ public final class StaticScopeMap {
             this(role, regionId, siteId, vmSite, cell, carrier, portId,
                     declaredCallee, local, declared, guards, guardOutcomes,
                     Collections.<String, Guard>emptyMap(),
-                    Collections.<Guard>emptyList());
+                    Collections.<Guard>emptyList(),
+                    Collections.<String>emptyList());
         }
 
         Site(String role, String regionId, String siteId, String vmSite,
              String cell, String carrier, String portId,
              String declaredCallee, String local, Declared declared,
              List<String> guards, List<Boolean> guardOutcomes,
-             Map<String, Guard> guardDeciders, List<Guard> chain) {
+             Map<String, Guard> guardDeciders, List<Guard> chain,
+             List<String> callers) {
             this.declared = declared;
             this.role = role;
             this.regionId = regionId;
@@ -231,6 +242,8 @@ public final class StaticScopeMap {
                     new LinkedHashMap<String, Guard>(guardDeciders));
             this.chain = Collections.unmodifiableList(
                     new ArrayList<Guard>(chain));
+            this.callers = Collections.unmodifiableList(
+                    new ArrayList<String>(callers));
         }
 
         Site withGuards(List<Guard> found) {
@@ -246,13 +259,19 @@ public final class StaticScopeMap {
             }
             return new Site(role, regionId, siteId, vmSite, cell, carrier,
                     portId, declaredCallee, local, declared, sites,
-                    outcomes, deciders, chain);
+                    outcomes, deciders, chain, callers);
         }
 
         Site withChain(List<Guard> found) {
             return new Site(role, regionId, siteId, vmSite, cell, carrier,
                     portId, declaredCallee, local, declared, guards,
-                    guardOutcomes, guardDeciders, found);
+                    guardOutcomes, guardDeciders, found, callers);
+        }
+
+        Site withCallers(List<String> found) {
+            return new Site(role, regionId, siteId, vmSite, cell, carrier,
+                    portId, declaredCallee, local, declared, guards,
+                    guardOutcomes, guardDeciders, chain, found);
         }
 
         /**
@@ -556,6 +575,10 @@ public final class StaticScopeMap {
                 }
             }
             Site guarded = site.withGuards(all);
+            if (WRITE_SITE.equals(site.role) && guards != null) {
+                guarded = guarded.withCallers(
+                        guards.callersOf(SiteId.methodOf(site.siteId)));
+            }
             if (TARGET_SITE.equals(site.role) && guards != null) {
                 guarded = guarded.withChain(guards.chainOf(site.siteId));
             }
@@ -625,6 +648,11 @@ public final class StaticScopeMap {
             JsonArray chain = new JsonArray();
             for (Guard guard : site.chain) chain.add(guardJson(guard));
             row.add("chain", chain);
+        }
+        if (!site.callers.isEmpty()) {
+            JsonArray callers = new JsonArray();
+            for (String caller : site.callers) callers.add(caller);
+            row.add("callers", callers);
         }
         return row;
     }
@@ -899,7 +927,7 @@ public final class StaticScopeMap {
                     optionalString(row, "portId"),
                     optionalString(row, "declaredCallee"),
                     optionalString(row, "local"), declared, guards, outcomes,
-                    deciders(row), chain(row)));
+                    deciders(row), chain(row), strings(row, "callers")));
         }
         return new StaticScopeMap(sites, readRegions(file));
     }

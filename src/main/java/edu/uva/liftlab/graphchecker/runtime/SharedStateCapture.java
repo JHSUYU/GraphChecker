@@ -194,6 +194,8 @@ final class SharedStateCapture {
             JsonObject version = element.getAsJsonObject();
             JsonObject entry = new JsonObject();
             copyIfPresent(version, entry, "fieldVersionId");
+            // Its kind: a scalar's INITIAL is no write (scalarInitial).
+            copyIfPresent(version, entry, "versionKind");
             // Site and activation: the two halves of the WriteRow's
             // endpoint identity (IDENTITY-V3 sec 1); dropping them merges
             // distinct writes into one endpoint.
