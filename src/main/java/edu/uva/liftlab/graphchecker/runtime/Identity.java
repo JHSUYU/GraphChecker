@@ -12,8 +12,10 @@ import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import java.lang.ref.Reference;
 import java.lang.ref.ReferenceQueue;
 import java.lang.ref.WeakReference;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -68,8 +70,11 @@ public final class Identity {
         /** Whether this thread has looked for the start that created it. */
         private boolean claimed;
         private int scopeBase;
-        /** Depth of the claimed start frame, or -1 when none. */
-        private int startDepth = -1;
+        /**
+         * The depths of the claimed start frames, innermost first: a task a
+         * task runs (a FutureTask inside an executor's wrapper) nests.
+         */
+        private final Deque<Integer> starts = new ArrayDeque<Integer>();
         /** The region activations open on this thread, innermost last. */
         private final List<Region> regions = new ArrayList<Region>();
         /**
@@ -149,13 +154,30 @@ public final class Identity {
         private void openStart(Frame frame, int startedIn) {
             // A pool thread drops its finished task's start frame (and the
             // scope it carried) before taking the next; a nested start nests.
-            if (startDepth >= 0 && startDepth == depth() - 1) {
-                levels.remove(startDepth + 1);
-                RuntimeTraceContext.releaseCarried();
+            if (innermostStart() == depth() - 1 && depth() > 0) {
+                levels.remove(depth());
+                closeStartsFrom(depth());
             }
-            startDepth = depth();
+            starts.push(depth());
             // The frame belongs to the window the start was counted in.
             levels.add(new Level(frame, 0L, null, startedIn));
+        }
+
+        /** The depth of the innermost claimed start frame, or -1. */
+        private int innermostStart() {
+            return starts.isEmpty() ? -1 : starts.peek();
+        }
+
+        /**
+         * Closes every claimed start at depth {@code depth} or deeper, whose
+         * level is gone: its work and the scope it carried are over, one
+         * carried scope per start.
+         */
+        private void closeStartsFrom(int depth) {
+            while (!starts.isEmpty() && starts.peek() >= depth) {
+                starts.pop();
+                RuntimeTraceContext.releaseCarried();
+            }
         }
 
         /**
@@ -564,12 +586,8 @@ public final class Identity {
             while (state.levels.size() > index) {
                 state.levels.remove(state.levels.size() - 1);
             }
-            if (state.startDepth >= state.depth()) {
-                // The start frame closed with this level: its work and
-                // carried scope are over.
-                state.startDepth = -1;
-                RuntimeTraceContext.releaseCarried();
-            }
+            // A start frame closed with this level: its work is over.
+            state.closeStartsFrom(state.depth());
             // Clamp the scope root to the deepest level still shared: a
             // scope opened inside a returning call (inbound propagation)
             // would otherwise index from a gone level and collide.  This
@@ -619,8 +637,8 @@ public final class Identity {
     public static int scopeStart(Hop hop) {
         State state = state();
         int before = state.scopeBase;
-        state.scopeBase = hop == Hop.STARTED_ROOT && state.startDepth >= 0
-                ? Math.min(state.startDepth, state.depth())
+        state.scopeBase = hop == Hop.STARTED_ROOT && state.innermostStart() >= 0
+                ? Math.min(state.innermostStart(), state.depth())
                 : state.depth();
         return before;
     }
@@ -677,17 +695,20 @@ public final class Identity {
         State state = state();
         if (state.regions.isEmpty()) return;
         Region closed = state.regions.remove(state.regions.size() - 1);
-        if (closed.occurrence != null && state.startDepth >= closed.base) {
-            // Work the occurrence claimed ends with it: its start level and
-            // the scope it carried close here, not at the next claim.  A
+        int claimed = -1;
+        for (int start : state.starts) {
+            if (start >= closed.base) claimed = start;
+        }
+        if (closed.occurrence != null && claimed >= 0) {
+            // Work the occurrence claimed ends with it: its start levels and
+            // the scopes they carried close here, not at the next claim.  A
             // region that drains a queue (BlockManager's processQueue) would
             // otherwise close a level deeper than it opened.  A folded entry's
             // marker shares its occurrence's base and closes nothing.
-            while (state.depth() > state.startDepth) {
+            while (state.depth() > claimed) {
                 state.levels.remove(state.levels.size() - 1);
             }
-            state.startDepth = -1;
-            RuntimeTraceContext.releaseCarried();
+            state.closeStartsFrom(claimed);
             state.journal();
         }
         // A closed occurrence makes no further event (ScheduleLog).

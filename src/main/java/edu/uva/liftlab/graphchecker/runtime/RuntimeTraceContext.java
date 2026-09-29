@@ -226,11 +226,14 @@ final class RuntimeTraceContext {
      */
     static void claimCarried(Object carrier) {
         Seed seed = takeSeed(carrier);
-        if (seed == null) return;
-        boolean flow = !seed.flow.requestKey.isEmpty()
+        boolean flow = seed != null && !seed.flow.requestKey.isEmpty()
                 && !seed.flow.requestApi.isEmpty();
-        if (seed.source == null && !flow && !seed.lineage.names()) return;
-        releaseCarried();
+        if (seed == null
+                || seed.source == null && !flow && !seed.lineage.names()) {
+            // A start that carried nothing still gets its release.
+            CARRIED.get().push(0L);
+            return;
+        }
         State state = CURRENT.get();
         long token = nextId();
         ScopeFrame scope = new ScopeFrame(token, state);
@@ -241,20 +244,33 @@ final class RuntimeTraceContext {
         state.scopes.push(scope);
         if (seed.source != null) state.source = seed.source;
         state.flow = seed.flow;
-        CARRIED.set(token);
+        CARRIED.get().push(token);
         publishCausalSource(state);
     }
 
-    /** Leaves the scope the last claim on this thread entered, if any. */
+    /**
+     * Leaves the scope the innermost claim on this thread entered: one
+     * release per claim, so a nested task's end leaves its caller's scope
+     * standing.  A scope an outer close already closed stays closed.
+     */
     static void releaseCarried() {
-        Long token = CARRIED.get();
-        if (token == null) return;
-        CARRIED.remove();
-        restoreScope(token);
+        Deque<Long> carried = CARRIED.get();
+        if (carried.isEmpty()) return;
+        long token = carried.pop();
+        if (token != 0L) restoreScope(token);
     }
 
-    /** The token of the carried scope this thread's claimed work runs in. */
-    private static final ThreadLocal<Long> CARRIED = new ThreadLocal<Long>();
+    /**
+     * The tokens of the carried scopes this thread's claimed work runs in,
+     * innermost first, 0 for a claim that carried none.
+     */
+    private static final ThreadLocal<Deque<Long>> CARRIED =
+            new ThreadLocal<Deque<Long>>() {
+                @Override
+                protected Deque<Long> initialValue() {
+                    return new ArrayDeque<Long>();
+                }
+            };
 
     /** Attribution rule 1: the innermost explicit scope's node, or null. */
     static SourceRef explicitSource() {
@@ -724,9 +740,6 @@ final class RuntimeTraceContext {
             scope.activeFrame.source = scope.frameSource;
             scope.activeFrame.remoteParentSpanId = scope.frameRemoteParentSpanId;
         }
-        if (CARRIED.get() != null && CARRIED.get() == scope.token) {
-            CARRIED.remove();
-        }
     }
 
     /** Hands the thread's new source to the occurrence running on it. */
@@ -747,6 +760,7 @@ final class RuntimeTraceContext {
             ASYNC_SEEDS.clear();
         }
         CURRENT.remove();
+        CARRIED.remove();
         IDS.set(1L);
         // A fixture models an open recording window.
         RecordingWindow.reset();
