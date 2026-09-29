@@ -659,26 +659,36 @@ public final class SmtLowering {
 
     /**
      * Where a String operation is defined: each dereferenced operand is a
-     * non-null String, and every operand evaluated.
+     * non-null String, and every operand evaluated.  Operands of unknown
+     * nullness are refused before ({@link #nullnessUnknown}).
      */
     private static String stringDefinedness(List<Term> dereferenced,
                                             List<Term> evaluated) {
         List<String> values = new ArrayList<String>();
         for (Term value : dereferenced) {
-            if (value.sort != Sort.STRING) {
-                values.add("false");
-                continue;
-            }
             values.add(value.precondition);
-            String nullness = value.stringNullness.isEmpty()
-                    ? "true" : value.stringNullness;
-            values.add("false".equals(value.stringNullness) ? "true"
-                    : "(not " + nullness + ")");
+            values.add(stringNonNull(value));
         }
         for (Term value : evaluated) {
             values.add(value.precondition);
         }
         return and(values);
+    }
+
+    /**
+     * Whether an operation dereferences a String whose nullness nothing
+     * stated (a container codec's value): its definedness cannot be said,
+     * so it is refused, as {@code == null} and {@code equals} are.  Taken as
+     * null, it asserted {@code (not true)} into every query on SOLR-18413's
+     * update path and made each flip UNSAT.
+     */
+    private static boolean nullnessUnknown(List<Term> dereferenced) {
+        for (Term value : dereferenced) {
+            if (value.sort == Sort.STRING && value.stringNullness.isEmpty()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** One integral term's Java domain, asserted once per term. */
@@ -2240,6 +2250,10 @@ public final class SmtLowering {
         String javaType = expressionJavaType(params.get(0));
         Term value = dispatch(params.get(0), null, origin + ":toString");
         if (value.sort == Sort.STRING) {
+            if (nullnessUnknown(Collections.singletonList(value))) {
+                return refuse(Reason.JAVA_STRING_NULLNESS_UNKNOWN, origin,
+                        "toString", Sort.STRING);
+            }
             return Term.nonNullString(value.text, stringDefinedness(
                     Collections.singletonList(value),
                     Collections.<Term>emptyList()));
@@ -2283,6 +2297,10 @@ public final class SmtLowering {
             }
             bounds.add(bound);
         }
+        if (nullnessUnknown(Collections.singletonList(receiver))) {
+            return refuse(Reason.JAVA_STRING_NULLNESS_UNKNOWN, origin,
+                    "substring", Sort.STRING);
+        }
         String length = "(str.len " + receiver.text + ")";
         String begin = bounds.get(0).text;
         String end = bounds.size() == 2 ? bounds.get(1).text : length;
@@ -2313,6 +2331,10 @@ public final class SmtLowering {
                 && ("charAt".equals(operation)
                 || argument.sort != Sort.STRING))) {
             return codecGap(operation, "PARAMETER_SORT", origin, Sort.INT);
+        }
+        if (nullnessUnknown(Arrays.asList(receiver, argument))) {
+            return refuse(Reason.JAVA_STRING_NULLNESS_UNKNOWN, origin,
+                    operation, Sort.INT);
         }
         String text = receiver.text;
         String length = "(str.len " + text + ")";
@@ -2370,6 +2392,10 @@ public final class SmtLowering {
             return codecGap("equals", "NON_STRING_PARAMETER", origin,
                     Sort.BOOL);
         }
+        if (nullnessUnknown(Collections.singletonList(receiver))) {
+            return refuse(Reason.JAVA_STRING_NULLNESS_UNKNOWN, origin,
+                    "equals:0", Sort.BOOL);
+        }
         String predicate;
         if (argument.isNullReference()) {
             predicate = "false";
@@ -2411,6 +2437,11 @@ public final class SmtLowering {
                         "NON_STRING_PARAMETER", origin, resultSort));
             }
             result.add(value);
+        }
+        if (nullnessUnknown(result)) {
+            return new StringParameters(null, refuse(
+                    Reason.JAVA_STRING_NULLNESS_UNKNOWN, origin, operation,
+                    resultSort));
         }
         return new StringParameters(result, null);
     }
