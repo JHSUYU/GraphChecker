@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""select.py <system-dir> <sweep-dir> <adhoc-experiment-dir> <checks> [per-check]
+"""select.py <system-dir> <sweep-dir> <adhoc-experiment-dir> <checks> [per-check] [tree]
 
 Chooses a sweep's checks and cases from what reach.py found: ranks every
 reached check by how much of its guard is state that another node sends or a
@@ -14,7 +14,12 @@ fastest workloads, no workload on more than four checks.  Prints the case ids,
 sweep's "<test class><TAB><method>" rows), cov-jobs.txt and cov-fanout.log
 (the coverage sweep's fanout.sh jobs and log: how long each workload ran).
 The system's system.sh names in system_focus the classes where its nodes
-coordinate; their checks rank first."""
+coordinate; their checks rank first.
+
+A timeout's check is never chosen: an automatic cluster lifts every bound
+sized for a native run, so no replay reaches it.  Given the <tree> the sweep
+annotates, a check whose line no longer holds its `throw new` (the tree moved
+since coverage) is skipped and named on stderr."""
 import collections
 import json
 import os
@@ -25,6 +30,7 @@ import sys
 system_dir, sweep, experiment = sys.argv[1], sys.argv[2], sys.argv[3]
 wanted = int(sys.argv[4])
 per_check = int(sys.argv[5]) if len(sys.argv) > 5 else 2
+tree = sys.argv[6] if len(sys.argv) > 6 else ""
 PER_CLASS, PER_WORKLOAD = 3, 4
 
 focus = subprocess.run(
@@ -54,11 +60,21 @@ VALIDATION = (r"== null|!= null|isEmpty\(\)|instanceof|Preconditions|[Pp]arams?\
 # A node's own disk: the layout it upgrades from, what it finds on start-up.
 LOCAL = (r"[Ll]ayout[Vv]ersion|LAYOUT|getPreviousDir|canRollback|StartupOption"
          r"|[Ss]ymlink|isReservedName|logVersion|exists\(\)")
+TIMEOUT_EXCEPTIONS = {"TimeoutException", "SocketTimeoutException"}
 ARGUMENT_EXCEPTIONS = {
     "IllegalArgumentException", "HadoopIllegalArgumentException",
     "InvalidPathException", "AclException", "SyntaxError",
     "AccessControlException", "UnsupportedOperationException",
     "NumberFormatException", "InvalidRequestException"}
+
+
+def holds_throw(path, line):
+    """Whether the tree's line still is the check's `throw new`."""
+    try:
+        lines = open(path).read().split("\n")
+    except OSError:
+        return False
+    return 0 < line <= len(lines) and "throw new" in lines[line - 1]
 
 
 def score(check):
@@ -109,6 +125,13 @@ for check in reached:
         break
     cls = check["cls"].rsplit(".", 1)[-1]
     if (check["file"], check["throwLine"]) in declared or per_class[cls] == PER_CLASS:
+        continue
+    if check["exception"] in TIMEOUT_EXCEPTIONS:
+        continue
+    if tree and not holds_throw(os.path.join(tree, check["file"]),
+                                check["throwLine"]):
+        print("skipped, moved since coverage: %s:%d"
+              % (check["file"], check["throwLine"]), file=sys.stderr)
         continue
     usable = sorted((seconds[w], w) for w in check["workloads"]
                     if w in seconds and len(classes[w.split(".")[0]]) == 1
