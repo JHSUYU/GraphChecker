@@ -1215,15 +1215,17 @@ public final class RuntimeSelectedRegionFinalizer {
                 new LinkedHashMap<>();
         private final Map<String, Map<String, List<String>>>
                 explicitFatalSeedsBySite = new LinkedHashMap<>();
-        /** The guards that DECIDE the annotated throw (the scope map's
-         *  TARGET_SITE rows); a {@code failureTarget} branch is any guard on a
-         *  path to it, and observing one of those is not reaching it. */
-        private final Set<String> decidingGuards = new LinkedHashSet<>();
+        /** The decisions on the way to the annotated throw (the scope map's
+         *  TARGET_SITE rows, {@link StaticScopeMap.Site#pathSites}): an
+         *  activation that took one is an occurrence the failure is about,
+         *  whether or not it went on to the throw.  A {@code failureTarget}
+         *  branch the rows do not name is none of these. */
+        private final Set<String> pathSites = new LinkedHashSet<>();
 
         private RegionDemandIndex(StaticProgram program,
                                   StaticScopeMap scopeMap) {
             for (StaticScopeMap.Site target : scopeMap.targetSites()) {
-                decidingGuards.addAll(target.guards);
+                pathSites.addAll(target.pathSites());
             }
             // Every observed activation, not only port holders: the walk
             // needs each occurrence's text.
@@ -1296,7 +1298,7 @@ public final class RuntimeSelectedRegionFinalizer {
                 }
                 String site = text(evidence.get("siteId"));
                 if (explicit.containsKey(site)
-                        && decidingGuards.contains(site)) {
+                        && pathSites.contains(site)) {
                     evidenceBySite.computeIfAbsent(site,
                             ignored -> new ArrayList<>()).add(evidence);
                 }

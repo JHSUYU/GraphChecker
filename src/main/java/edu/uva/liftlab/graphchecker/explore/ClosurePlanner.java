@@ -114,10 +114,18 @@ public final class ClosurePlanner {
         Map<String, Demand> demands = new LinkedHashMap<String, Demand>();
         Deque<String> pending = new ArrayDeque<String>();
         Demand start = new Demand(anchor, CLOSURE_MEMBER, true);
-        // The anchor flips only the target's guard set (CLOSURE-V2 SS1); the
-        // throw itself is no branch.
+        // The anchor flips only the decisions on its way to the throw: the
+        // target's guard set (CLOSURE-V2 SS1) and, when no run of it reached
+        // the throw, the chain its path left by; flipping a chain guard of a
+        // path that went on to the throw only leaves it.  The throw itself is
+        // no branch.
+        boolean reached = false;
+        for (TargetRow row : corpus.targetsOn(anchor)) {
+            reached |= row.reachedAnchor();
+        }
         for (StaticScopeMap.Site target : scope.targetSites()) {
-            start.flipSites.addAll(target.guards);
+            start.flipSites.addAll(reached ? target.guards
+                    : target.pathSites());
         }
         demands.put(anchor.id(), start);
         pending.add(anchor.id());

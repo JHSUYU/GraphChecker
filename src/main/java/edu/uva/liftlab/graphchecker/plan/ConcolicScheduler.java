@@ -508,6 +508,25 @@ public final class ConcolicScheduler {
     private static List<JsonObject> fatalBranches(JsonArray branches,
                                                   StaticScopeMap scopeMap)
             throws IOException {
+        // An occurrence whose path left before the throw -- it took a chain
+        // decision and no deciding guard (StaticScopeMap.Site#chain) --
+        // stands at the deciding guard it never reached.
+        boolean reached = false;
+        boolean left = false;
+        Set<String> chain = new LinkedHashSet<>();
+        for (StaticScopeMap.Site target : scopeMap.targetSites()) {
+            chain.addAll(target.pathSites());
+            chain.removeAll(target.guards);
+        }
+        for (JsonElement element : branches) {
+            if (!element.isJsonObject()) continue;
+            JsonObject branch = element.getAsJsonObject();
+            if (!optionalBool(branch, "observed", false)) continue;
+            String siteId = optionalString(branch, "siteId");
+            reached |= fatalArm(scopeMap, siteId) != null;
+            left |= chain.contains(siteId);
+        }
+        boolean unreached = !reached && left;
         Map<String, JsonObject> bySite = new LinkedHashMap<>();
         Set<String> guardedTargets = new LinkedHashSet<>();
         for (JsonElement element : branches) {
@@ -515,7 +534,7 @@ public final class ConcolicScheduler {
             JsonObject branch = element.getAsJsonObject();
             String siteId = optionalString(branch, "siteId");
             if (!optionalBool(branch, "failureTarget", false)
-                    || !optionalBool(branch, "observed", false)
+                    || !(unreached || optionalBool(branch, "observed", false))
                     || fatalArm(scopeMap, siteId) == null) {
                 continue;
             }

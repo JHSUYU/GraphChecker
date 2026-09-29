@@ -110,6 +110,12 @@ public final class StaticScopeMap {
     public interface Guards {
         /** The branches {@code siteId} is control-dependent on. */
         List<Guard> of(String siteId);
+
+        /** The guards of those guards, and theirs ({@link Site#chain}); a
+         *  guard set with no CFG behind it states none. */
+        default List<Guard> chainOf(String siteId) {
+            return Collections.<Guard>emptyList();
+        }
     }
 
     /** One branch a site is control-dependent on, with the arm that reaches it
@@ -175,6 +181,15 @@ public final class StaticScopeMap {
         public final List<Boolean> guardOutcomes;
         /** The deciders of those guards that have one, by guard site. */
         public final Map<String, Guard> guardDeciders;
+        /**
+         * TARGET_SITE: the guards on every path to {@link #guards}, each on
+         * its arm toward the throw -- their guards, and theirs, within the
+         * method.  An occurrence that decided one of them is an occurrence the
+         * failure is about whether or not it went on to the throw: an update
+         * that found its routing rule expired never looked the rule's target
+         * up, and the expiry is what a witness moves.
+         */
+        public final List<Guard> chain;
 
         Site(String role, String regionId, String siteId, String vmSite,
              String cell, String carrier, String portId,
@@ -182,14 +197,15 @@ public final class StaticScopeMap {
              List<String> guards, List<Boolean> guardOutcomes) {
             this(role, regionId, siteId, vmSite, cell, carrier, portId,
                     declaredCallee, local, declared, guards, guardOutcomes,
-                    Collections.<String, Guard>emptyMap());
+                    Collections.<String, Guard>emptyMap(),
+                    Collections.<Guard>emptyList());
         }
 
         Site(String role, String regionId, String siteId, String vmSite,
              String cell, String carrier, String portId,
              String declaredCallee, String local, Declared declared,
              List<String> guards, List<Boolean> guardOutcomes,
-             Map<String, Guard> guardDeciders) {
+             Map<String, Guard> guardDeciders, List<Guard> chain) {
             this.declared = declared;
             this.role = role;
             this.regionId = regionId;
@@ -206,6 +222,8 @@ public final class StaticScopeMap {
                     new ArrayList<Boolean>(guardOutcomes));
             this.guardDeciders = Collections.unmodifiableMap(
                     new LinkedHashMap<String, Guard>(guardDeciders));
+            this.chain = Collections.unmodifiableList(
+                    new ArrayList<Guard>(chain));
         }
 
         Site withGuards(List<Guard> found) {
@@ -221,7 +239,31 @@ public final class StaticScopeMap {
             }
             return new Site(role, regionId, siteId, vmSite, cell, carrier,
                     portId, declaredCallee, local, declared, sites,
-                    outcomes, deciders);
+                    outcomes, deciders, chain);
+        }
+
+        Site withChain(List<Guard> found) {
+            return new Site(role, regionId, siteId, vmSite, cell, carrier,
+                    portId, declaredCallee, local, declared, guards,
+                    guardOutcomes, guardDeciders, found);
+        }
+
+        /**
+         * The decisions an occurrence the failure is about takes on its way to
+         * the throw: the deciding guards, and the {@link #chain} with the
+         * helper branch that decides a chain guard where one does.  A
+         * deciding guard's own decider is the fatal predicate's, the
+         * composition's question, and no path decision.
+         */
+        public Set<String> pathSites() {
+            Set<String> sites = new LinkedHashSet<String>(guards);
+            for (Guard guard : chain) {
+                sites.add(guard.siteId());
+                if (guard.decider() != null) {
+                    sites.add(guard.decider().siteId());
+                }
+            }
+            return sites;
         }
 
         /** The arm of {@code guardSiteId} that reaches this site, or null. */
@@ -492,8 +534,12 @@ public final class StaticScopeMap {
             List<Guard> found = guards == null
                     ? Collections.<Guard>emptyList()
                     : guards.of(site.siteId);
-            rows.add(row(site.withGuards(found == null
-                    ? Collections.<Guard>emptyList() : found)));
+            Site guarded = site.withGuards(found == null
+                    ? Collections.<Guard>emptyList() : found);
+            if (TARGET_SITE.equals(site.role) && guards != null) {
+                guarded = guarded.withChain(guards.chainOf(site.siteId));
+            }
+            rows.add(row(guarded));
         }
         return rows;
     }
@@ -555,7 +601,32 @@ public final class StaticScopeMap {
             }
             row.add("guardDeciders", deciders);
         }
+        if (!site.chain.isEmpty()) {
+            JsonArray chain = new JsonArray();
+            for (Guard guard : site.chain) chain.add(guardJson(guard));
+            row.add("chain", chain);
+        }
         return row;
+    }
+
+    private static JsonObject guardJson(Guard guard) {
+        JsonObject json = new JsonObject();
+        json.addProperty("siteId", guard.siteId());
+        json.addProperty("outcome", guard.outcome());
+        if (guard.decider() != null) {
+            json.add("decider", guardJson(guard.decider()));
+        }
+        return json;
+    }
+
+    private static Guard guardOf(JsonObject json) {
+        JsonElement outcome = json.get("outcome");
+        JsonElement decider = json.get("decider");
+        return new Guard(optionalString(json, "siteId"),
+                outcome == null || outcome.isJsonNull() ? null
+                        : Boolean.valueOf(outcome.getAsBoolean()),
+                decider == null || !decider.isJsonObject() ? null
+                        : guardOf(decider.getAsJsonObject()));
     }
 
     /** ROOT_SITE rows of an edge defining a local of its own method from a
@@ -808,9 +879,20 @@ public final class StaticScopeMap {
                     optionalString(row, "portId"),
                     optionalString(row, "declaredCallee"),
                     optionalString(row, "local"), declared, guards, outcomes,
-                    deciders(row)));
+                    deciders(row), chain(row)));
         }
         return new StaticScopeMap(sites, readRegions(file));
+    }
+
+    /** A row's {@code chain}. */
+    private static List<Guard> chain(JsonObject row) {
+        List<Guard> chain = new ArrayList<Guard>();
+        JsonElement stated = row.get("chain");
+        if (stated == null || !stated.isJsonArray()) return chain;
+        for (JsonElement guard : stated.getAsJsonArray()) {
+            if (guard.isJsonObject()) chain.add(guardOf(guard.getAsJsonObject()));
+        }
+        return chain;
     }
 
     /** A row's {@code guardDeciders}, by guard site. */

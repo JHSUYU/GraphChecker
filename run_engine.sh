@@ -2058,12 +2058,14 @@ a truncated run and its log is in ${worker}/replay.log"
       -name activations.jsonl -size +0c -print -quit 2>/dev/null) || live=""
     [[ -n "${live}" ]] || campaign_fail REPLAY WORKLOAD "${sessions}" \
       "the concolic replay published no activation row (exit ${status}); the workload terminated before its selected regions ran and its exception is in ${worker}/replay.log"
-    # Some region ran, but not the failure target.  EXPLORE still plans the
-    # TARGET member the kept slice names, and refuses it as
+    # Some region ran, but not the failure target's occurrence.  EXPLORE
+    # still plans the TARGET member the kept slice names, and refuses it as
     # NO_OBSERVED_PATH_SEED -- stages and one JVM wave away from the workload
-    # exception that caused it.  Name the unreached target here instead,
-    # beside the log that holds that exception.  The target row states it:
-    # reachedAnchor says whether this session reached the anchor at all.
+    # exception that caused it.  Name the missing target here instead, beside
+    # the log that holds that exception.  A target occurrence publishes its
+    # target row whether its path reached the throw or left before it (the
+    # scope map's chain); reachedAnchor says which, and exploration flips the
+    # decision it left by.
     local declared_target reached=""
     local -a target_rows=()
     # The annotated target's method, off the TARGET_SITE row of the static
@@ -2081,7 +2083,6 @@ a truncated run and its log is in ${worker}/replay.log"
     if [[ -n "${declared_target}" && ${#target_rows[@]} -gt 0 ]]; then
       reached=$(jq -r -n --arg target "${declared_target}" '
         [inputs
-          | select(.reachedAnchor == true)
           | select(.anchorSiteId | startswith($target + "#"))
           | .anchorSiteId] | first // ""' "${target_rows[@]}") \
         || campaign_fail REPLAY WORKLOAD "${sessions}" \
@@ -2089,7 +2090,7 @@ a truncated run and its log is in ${worker}/replay.log"
     fi
     [[ -n "${declared_target}" && -n "${reached}" ]] || campaign_fail REPLAY \
       WORKLOAD "${sessions}" \
-      "the concolic replay reached no TARGET_REACH occurrence (exit ${status}); no session published a target row that reached ${declared_target:-the declared target}; the workload's terminating exception is in ${worker}/replay.log"
+      "the concolic replay ran no TARGET_REACH occurrence (exit ${status}); no session published a target row of ${declared_target:-the declared target}; the workload's terminating exception is in ${worker}/replay.log"
   fi
   campaign_log "replay role=${role} exit=${status} sessions=${sessions}"
 }

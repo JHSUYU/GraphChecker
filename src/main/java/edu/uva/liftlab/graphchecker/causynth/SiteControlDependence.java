@@ -50,8 +50,8 @@ public final class SiteControlDependence {
     public static StaticScopeMap.Guards over(Collection<String> siteIds) {
         Map<String, MethodGuards> byMethod =
                 new LinkedHashMap<String, MethodGuards>();
-        final Map<String, List<StaticScopeMap.Guard>> guards =
-                new LinkedHashMap<String, List<StaticScopeMap.Guard>>();
+        final Map<String, MethodGuards> bySite =
+                new LinkedHashMap<String, MethodGuards>();
         for (String siteId : siteIds == null
                 ? Collections.<String>emptyList() : siteIds) {
             String method = SiteId.methodOf(siteId);
@@ -61,15 +61,23 @@ public final class SiteControlDependence {
                 computed = MethodGuards.of(method);
                 byMethod.put(method, computed);
             }
-            guards.put(siteId, computed.at(SiteId.unitIndexOf(siteId)));
+            bySite.put(siteId, computed);
         }
         return new StaticScopeMap.Guards() {
             @Override
             public List<StaticScopeMap.Guard> of(String siteId) {
-                List<StaticScopeMap.Guard> found = guards.get(siteId);
-                return found == null
+                MethodGuards computed = bySite.get(siteId);
+                return computed == null
                         ? Collections.<StaticScopeMap.Guard>emptyList()
-                        : found;
+                        : computed.at(SiteId.unitIndexOf(siteId));
+            }
+
+            @Override
+            public List<StaticScopeMap.Guard> chainOf(String siteId) {
+                MethodGuards computed = bySite.get(siteId);
+                return computed == null
+                        ? Collections.<StaticScopeMap.Guard>emptyList()
+                        : computed.chain(SiteId.unitIndexOf(siteId));
             }
         };
     }
@@ -164,6 +172,33 @@ public final class SiteControlDependence {
             List<StaticScopeMap.Guard> computed = compute(unitIndex);
             cache.put(Integer.valueOf(unitIndex), computed);
             return computed;
+        }
+
+        /**
+         * The guards of the unit's guards, and theirs, each on its arm toward
+         * the guard it controls: every decision an occurrence takes on its way
+         * to the unit, outermost last, the unit's own guards excluded.  A
+         * guard met twice (a loop's) is named once.
+         */
+        public List<StaticScopeMap.Guard> chain(int unitIndex) {
+            List<StaticScopeMap.Guard> direct = at(unitIndex);
+            Set<String> named = new LinkedHashSet<String>();
+            for (StaticScopeMap.Guard guard : direct) named.add(guard.siteId());
+            List<StaticScopeMap.Guard> chain =
+                    new ArrayList<StaticScopeMap.Guard>();
+            Deque<StaticScopeMap.Guard> work =
+                    new ArrayDeque<StaticScopeMap.Guard>(direct);
+            while (!work.isEmpty()) {
+                StaticScopeMap.Guard guard = work.removeFirst();
+                for (StaticScopeMap.Guard outer
+                        : at(SiteId.unitIndexOf(guard.siteId()))) {
+                    if (named.add(outer.siteId())) {
+                        chain.add(outer);
+                        work.add(outer);
+                    }
+                }
+            }
+            return Collections.unmodifiableList(chain);
         }
 
         /**
