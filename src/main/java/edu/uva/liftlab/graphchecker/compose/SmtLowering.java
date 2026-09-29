@@ -351,10 +351,8 @@ public final class SmtLowering {
         if (value == null) {
             return Lowered.refused("ABSENT_EXPRESSION:" + expressionRef);
         }
-        if (refused != null) {
-            return Lowered.refused(refused.iterator().next());
-        }
-        return new Lowered(value.text, value.sort.smt, "");
+        return new Lowered(value.text, value.sort.smt, refused == null
+                ? "" : refused.iterator().next());
     }
 
     /**
@@ -428,7 +426,12 @@ public final class SmtLowering {
         return value;
     }
 
-    /** One lowered expression: its text, its sort, its symbols, or why not. */
+    /**
+     * One lowered expression: its text, its sort, its symbols, and why it
+     * is refused.  A refused construct inside it is a fresh name, so the
+     * text still names what the rest reaches (the closure's question); only
+     * an unrefused one may stand in a query ({@link #ok}).
+     */
     public static final class Lowered {
         private final String text;
         private final String sort;
@@ -448,6 +451,7 @@ public final class SmtLowering {
             return refusal.isEmpty() && !text.isEmpty();
         }
 
+        /** The lowered text, a refused construct as its fresh name. */
         public String text() {
             return text;
         }

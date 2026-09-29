@@ -3252,7 +3252,7 @@ public class ComposerTest {
      * closure planner's entry) it states where it is defined, as it does
      * when a published term names it.  A node two expressions share is one
      * construct, lowered once: refused, it is one fresh name, and each
-     * expression lowered alone is refused for it.
+     * expression lowered alone is refused for it, its text still naming it.
      */
     @Test
     public void aLoweredReferenceStatesWhereItIsDefined() throws Exception {
@@ -3279,10 +3279,9 @@ public class ComposerTest {
         Set<String> free = new LinkedHashSet<String>();
         for (String reference : Arrays.asList("EXPR.00000000000001e1",
                 "EXPR.00000000000001e2")) {
-            assertFalse(reference + " is refused",
-                    lowering.lower(reference).ok());
-            for (String name : SmtNames.names(
-                    lowering.statedTerm(reference, "test"))) {
+            SmtLowering.Lowered lowered = lowering.lower(reference);
+            assertFalse(reference + " is refused", lowered.ok());
+            for (String name : SmtNames.names(lowered.text())) {
                 if (name.startsWith("unsupported__")) free.add(name);
             }
         }
