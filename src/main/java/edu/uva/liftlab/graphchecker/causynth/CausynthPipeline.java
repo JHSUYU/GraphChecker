@@ -1546,6 +1546,9 @@ public final class CausynthPipeline {
                     List<Unit> before = new ArrayList<>();
                     int started = 0;
                     for (Value carried : startedWork(stmt.getInvokeExpr())) {
+                        if (sentinel(body, stmt.getInvokeExpr(), carried)) {
+                            continue;
+                        }
                         Value carrier = objectArg(body, carried, before);
                         if (carrier instanceof NullConstant) continue;
                         refs.bracket(before, Hook.START_WORK,
@@ -1713,6 +1716,38 @@ public final class CausynthPipeline {
             case "boolean": return BooleanType.v();
             default: return RefType.v(name);
         }
+    }
+
+    /**
+     * Whether a queue element is a sentinel: the value of a final field, the
+     * same object every time it is offered (a poison pill, a wake-up
+     * marker).  It names no one piece of work, and how often it is offered
+     * is the consumers' timing: Solr's ConcurrentUpdateHttp2SolrClient
+     * offers its backdoor element once per runner still alive at close.
+     */
+    private static boolean sentinel(Body body, InvokeExpr invoke,
+                                    Value element) {
+        if (!(invoke instanceof InstanceInvokeExpr)
+                || !(element instanceof Local)
+                || !WorkStartSites.submitsToQueue(
+                        invoke.getMethodRef().name(), invoke.getArgCount(),
+                        hierarchyOf(invoke.getMethodRef().declaringClass()))) {
+            return false;
+        }
+        boolean defined = false;
+        for (Unit unit : body.getUnits()) {
+            if (!(unit instanceof AssignStmt)
+                    || ((AssignStmt) unit).getLeftOp() != element) {
+                continue;
+            }
+            Value source = ((AssignStmt) unit).getRightOp();
+            if (!(source instanceof FieldRef)
+                    || !((FieldRef) source).getField().isFinal()) {
+                return false;
+            }
+            defined = true;
+        }
+        return defined;
     }
 
     /** Whether this invocation takes work a producer put on a queue. */
