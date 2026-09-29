@@ -1551,6 +1551,7 @@ public final class CausynthPipeline {
                     Unit last = replaceTimedWait(body, stmt, site);
                     if (last != null) waited++;
                     else last = stmt;
+                    replaceRandom(body, stmt, site);
                     if (claims && last instanceof AssignStmt
                             && ((AssignStmt) last).getLeftOp()
                                     instanceof Local
@@ -1627,6 +1628,69 @@ public final class CausynthPipeline {
                 Jimple.v().newCastExpr(returned, wanted));
         body.getUnits().insertAfter(cast, stmt);
         return cast;
+    }
+
+    /** The runtime's seeded stand-ins for unseeded randomness. */
+    private static final String RANDOMS_CLASS =
+            "edu.uva.liftlab.graphchecker.runtime.Randoms";
+
+    /**
+     * Seeds one unseeded draw by where it is drawn ({@code runtime.Randoms}):
+     * {@code Math.random()}, {@code Collections.shuffle(List)} and {@code
+     * UUID.randomUUID()} become their stand-ins, and {@code new Random()}
+     * takes its seed from one, in both passes, so a replay draws what the
+     * recording drew.
+     */
+    private static void replaceRandom(Body body, Stmt stmt, String site) {
+        InvokeExpr invoke = stmt.getInvokeExpr();
+        SootMethodRef callee = invoke.getMethodRef();
+        String signature = callee.getSignature();
+        SootClass randoms = phantomClass(RANDOMS_CLASS);
+        RefType string = RefType.v("java.lang.String");
+        if (invoke instanceof SpecialInvokeExpr
+                && "<java.util.Random: void <init>()>".equals(signature)) {
+            Local seed = newTraceLocal(body, LongType.v(), "$causynthSeed");
+            body.getUnits().insertBefore(Jimple.v().newAssignStmt(seed,
+                    Jimple.v().newStaticInvokeExpr(Scene.v().makeMethodRef(
+                            randoms, "constructed",
+                            Collections.<Type>singletonList(string),
+                            LongType.v(), true),
+                            StringConstant.v(site))), stmt);
+            SootMethodRef seeded = Scene.v().makeMethodRef(
+                    callee.declaringClass(), "<init>",
+                    Collections.<Type>singletonList(LongType.v()),
+                    VoidType.v(), false);
+            stmt.getInvokeExprBox().setValue(Jimple.v().newSpecialInvokeExpr(
+                    (Local) ((SpecialInvokeExpr) invoke).getBase(), seeded,
+                    seed));
+            return;
+        }
+        String name;
+        Type returns;
+        List<Type> parameters = new ArrayList<>();
+        switch (signature) {
+            case "<java.lang.Math: double random()>":
+                name = "random";
+                returns = soot.DoubleType.v();
+                break;
+            case "<java.util.Collections: void shuffle(java.util.List)>":
+                name = "shuffle";
+                returns = VoidType.v();
+                parameters.add(RefType.v("java.util.List"));
+                break;
+            case "<java.util.UUID: java.util.UUID randomUUID()>":
+                name = "randomUUID";
+                returns = RefType.v("java.util.UUID");
+                break;
+            default:
+                return;
+        }
+        parameters.add(string);
+        List<Value> arguments = new ArrayList<>(invoke.getArgs());
+        arguments.add(StringConstant.v(site));
+        stmt.getInvokeExprBox().setValue(Jimple.v().newStaticInvokeExpr(
+                Scene.v().makeMethodRef(randoms, name, parameters, returns,
+                        true), arguments));
     }
 
     /** The Soot type a {@link WorkStartSites.TimedWait} names. */
