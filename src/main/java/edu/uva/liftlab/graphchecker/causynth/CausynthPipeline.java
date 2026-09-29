@@ -961,7 +961,10 @@ public final class CausynthPipeline {
         }
         boolean fallThrough = edge.source.fallsThrough()
                 && body.getUnits().getSuccOf(edge.source) == edge.target;
-        if (matchingTargets.isEmpty() && !fallThrough) {
+        boolean headerEntry = edge.target == loop.header;
+        // A header entry takes every edge into the header, whichever one
+        // the selection named.
+        if (!headerEntry && matchingTargets.isEmpty() && !fallThrough) {
             throw new IllegalStateException(
                     "LOOP_BODY_ROOT_ENTRY_UNAVAILABLE: " + loopId
                             + " no longer has its selected body edge in "
@@ -969,7 +972,6 @@ public final class CausynthPipeline {
         }
 
         Unit first = entry.get(0);
-        boolean headerEntry = edge.target == loop.header;
         if (headerEntry) {
             // Preheader and latches all enter the header: every normal entry
             // opens an activation; trap UnitBoxes are not rewritten.
