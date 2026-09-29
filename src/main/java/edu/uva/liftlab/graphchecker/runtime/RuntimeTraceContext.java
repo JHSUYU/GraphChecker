@@ -3,15 +3,12 @@ package edu.uva.liftlab.graphchecker.runtime;
 import static edu.uva.liftlab.graphchecker.runtime.RuntimeRegionPlanner.UNREGISTERED_SOURCE;
 
 import edu.uva.liftlab.graphchecker.causynth.MapFields;
-import edu.uva.liftlab.graphchecker.contract.GapClass;
-import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.Role;
 import edu.uva.liftlab.graphchecker.contract.ScheduleEvent;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.Base64;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.Deque;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
@@ -782,49 +779,22 @@ final class RuntimeTraceContext {
     }
 
     /**
-     * The source one root activation is attributed to: where it RAN, by
-     * execution scope only.  Never null.
+     * The node one root activation ran on: {@link Attribution} asked at its
+     * entry, else the unregistered source.  Never null.
      *
-     * <p>The planner's rule ({@link #attributedActivationSource}) with the
-     * stamp computed live and no frame stamps yet, as at a root entry; one
-     * function for recorder, planner and replay, since a replay-only variant
-     * miscounts occurrences per node.  Trap: never fall back to the PLANNED
-     * node; unstamped activations belong to the unregistered
-     * population.</p>
+     * <p>THE node of an occurrence, one function for all three stages: the
+     * recorder mints the address with it, the replay mints the address it
+     * admits by with it, and the planner reads the node back out of the
+     * recorded address ({@code RuntimeRegionPlanner#recordedNode}).  Traps:
+     * never fall back to the PLANNED node, and never name the node of a frame
+     * entered later -- a planner that took the unique stamp among the
+     * activation's frames anchored the q13 dzup target (SolrCore.execute,
+     * reached over a raw HttpClient request) on auto0/node0 while its address
+     * said workload/unregistered, and the replay dropped it at close.</p>
      */
     static SourceRef activationSource(Object receiver) {
-        return attributedActivationSource(Attribution.resolve(receiver),
-                Collections.<SourceRef>emptyList());
-    }
-
-    /**
-     * One activation's source: its own stamp, else the unique stamp among
-     * its frames (in recorded order), else the unregistered source.  Never
-     * null.  Disagreeing frames are a named gap (contradictory, not missing,
-     * evidence).
-     */
-    static SourceRef attributedActivationSource(
-            SourceRef stamp, Collection<SourceRef> frameStamps) {
-        if (stamp != null) return stamp;
-        SourceRef unique = null;
-        if (frameStamps != null) {
-            for (SourceRef frame : frameStamps) {
-                if (frame == null) continue;
-                if (unique == null) {
-                    unique = frame;
-                } else if (!unique.key().equals(frame.key())) {
-                    RowRuntime.gap(GapKind.LINEAGE_LOST,
-                            GapClass.DIAGNOSTIC,
-                            unique.key() + " vs " + frame.key(),
-                            "two frames of one activation name two"
-                                    + " components, so the run attributes it"
-                                    + " to no node and counts it in the"
-                                    + " unregistered population");
-                    return UNREGISTERED_SOURCE;
-                }
-            }
-        }
-        return unique == null ? UNREGISTERED_SOURCE : unique;
+        SourceRef source = Attribution.resolve(receiver);
+        return source == null ? UNREGISTERED_SOURCE : source;
     }
 
     /**

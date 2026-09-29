@@ -3,6 +3,11 @@ package edu.uva.liftlab.graphchecker.runtime;
 import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
+import edu.uva.liftlab.graphchecker.contract.CausalContext;
+import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
+import edu.uva.liftlab.graphchecker.contract.NodeId;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
+import edu.uva.liftlab.graphchecker.contract.Role;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import org.junit.Rule;
 import org.junit.Test;
@@ -107,16 +112,11 @@ public class RegionFoldPlanTest {
      */
     @Test
     public void anOccurrenceDeclaresWhatFoldedIntoIt() throws Exception {
-        RuntimeRegionPlanner.Result activations = RuntimeRegionPlanner
-                .planSkeletonGraph(cutSkeletons(), cutEvents(), cutRuntime(),
-                        Collections.<RuntimeRegionPlanner.ProtocolEvent>
-                                emptyList(), Collections.<String>emptySet());
-        RuntimeSelectedRegionFinalizer.Result closure =
-                RuntimeSelectedRegionFinalizer.finalizeRegions(
-                        cutGraph(), cutSkeletons(), "test",
-                        Arrays.asList(HANDLER, LEAF),
-                        activations.runtimeInstances, cutObservations(),
-                        cutScopeMap());
+        List<RuntimeRegionPlanner.MethodEvent> events = cutEvents(
+                RuntimeRegionPlanner.UNREGISTERED_SOURCE, true,
+                RuntimeRegionPlanner.UNREGISTERED_SOURCE, DN1);
+        RuntimeRegionPlanner.Result activations = activations(events);
+        RuntimeSelectedRegionFinalizer.Result closure = closure(activations);
 
         assertEquals("the folded region has no row: it has no occurrence",
                 1, closure.regions.size());
@@ -132,19 +132,8 @@ public class RegionFoldPlanTest {
                         "configuredSourcePhaseDeclarations")).size());
 
         // And both reach the occurrence's plan row, which is what the
-        // replay and the composer read.  The bound is the campaign's, and
-        // the plan builder refuses to invent one; this fixture declares no
-        // loop, so any bound serves.
-        String bound = System.getProperty("causynth.loop.default.bound");
-        System.setProperty("causynth.loop.default.bound", "8");
-        try {
-        RuntimeRegionPlanner.Result plan = RuntimeRegionPlanner.plan(
-                closure.regions, "test", activations.runtimeInstances,
-                cutEvents(), cutRuntime(),
-                Collections.<RuntimeRegionPlanner.FieldAccessEvent>
-                        emptyList(),
-                Collections.<RuntimeRegionPlanner.ProtocolEvent>emptyList(),
-                closure.gaps);
+        // replay and the composer read.
+        RuntimeRegionPlanner.Result plan = plan(closure, activations, events);
         assertEquals(1, plan.regionPlans.size());
         Map<String, Object> row = plan.regionPlans.get(0);
         assertTrue("the consumer side of the cut is on the occurrence that "
@@ -152,6 +141,109 @@ public class RegionFoldPlanTest {
                 PORT_ID));
         assertEquals("and so is the phase the recording executed there",
                 1, ((Collection<?>) row.get("configuredSourcePhases")).size());
+    }
+
+    /**
+     * A ROW NAMES THE NODE ITS ADDRESS NAMES: sourceKey, relation and causal
+     * anchor, whatever the root or a frame entered later was stamped with,
+     * because the replay admits an activation by that address alone.
+     *
+     * <p>The first row is the q13 dzup shape: an unstamped root (a raw
+     * HttpClient request into SolrCore.execute), a frame below it on
+     * auto0/node0, an address on workload/unregistered.  The planner once
+     * took the frame's node, and the replay dropped the target at close.  A
+     * row naming another node anyway is a BLOCKING PLAN gap named by its
+     * occurrence, never a drop at replay.</p>
+     */
+    @Test
+    @SuppressWarnings("unchecked")
+    public void aRowNamesTheNodeItsAddressNames() throws Exception {
+        SourceRef dn1 = new SourceRef("CLUSTER_NODE", "DATANODE", "wl/dn1",
+                0L);
+        SourceRef node0 = new SourceRef("CLUSTER_NODE", "SOLR",
+                "auto0/node0", 0L);
+        // The root's stamp, whether its own receiver stamped it, the folded
+        // frame's stamp, the recorded address's node, the anchor kind.
+        Object[][] rows = {
+                {null, false, node0,
+                        RuntimeRegionPlanner.UNREGISTERED_SOURCE.key(),
+                        RuntimeRegionPlanner.ANCHOR_UNREGISTERED_SOURCE},
+                {dn1, true, node0, DN1,
+                        RuntimeRegionPlanner.ANCHOR_REGISTERED_SOURCE},
+                {dn1, false, null, DN1,
+                        RuntimeRegionPlanner.ANCHOR_INHERITED_CONTEXT},
+        };
+        for (Object[] row : rows) {
+            String node = (String) row[3];
+            List<RuntimeRegionPlanner.MethodEvent> events = cutEvents(
+                    (SourceRef) row[0], (Boolean) row[1], (SourceRef) row[2],
+                    node);
+            RuntimeRegionPlanner.Result activations = activations(events);
+            RuntimeRegionPlanner.Result plan = plan(closure(activations),
+                    activations, events);
+            Map<String, Object> planned = plan.regionPlans.get(0);
+            Map<String, Object> selector =
+                    (Map<String, Object>) planned.get("rootSelector");
+            Map<?, ?> anchor = (Map<?, ?>) selector.get("causalAnchor");
+            assertEquals(node, planned.get("sourceKey"));
+            assertEquals(node, anchor.get("sourceKey"));
+            assertEquals(node, row[4], anchor.get("kind"));
+            assertEquals(NodeId.parse(node).node() + "/relation/"
+                    + HANDLER_REGION, planned.get("relationKey"));
+            assertTrue(node + ": " + plan.planGaps, plan.planGaps.isEmpty());
+
+            // The anchor the frame-stamp rule published for the q13 target.
+            Map<String, Object> offAddress = new LinkedHashMap<>(planned);
+            Map<String, Object> stamped = new LinkedHashMap<>(selector);
+            stamped.put("causalAnchor", RuntimeRegionPlanner.causalAnchor(
+                    NodeId.parse(node0.key()), false, "", ""));
+            offAddress.put("rootSelector", stamped);
+            List<Map<String, Object>> gaps = new ArrayList<>();
+            RuntimeRegionPlanner.stateAnchorOffAddress(offAddress, gaps);
+            assertEquals(node + ": " + gaps, 1, gaps.size());
+            assertEquals("TASK_UNANSWERED", gaps.get(0).get("kind"));
+            assertEquals("BLOCKING", gaps.get(0).get("cls"));
+            assertEquals(planned.get("occurrenceId"),
+                    gaps.get(0).get("subject"));
+        }
+    }
+
+    /** The activations the fixture's recording planned. */
+    private static RuntimeRegionPlanner.Result activations(
+            List<RuntimeRegionPlanner.MethodEvent> events) {
+        return RuntimeRegionPlanner.planSkeletonGraph(cutSkeletons(), events,
+                cutRuntime(),
+                Collections.<RuntimeRegionPlanner.ProtocolEvent>emptyList(),
+                Collections.<String>emptySet());
+    }
+
+    /** The fixture's finalized closure over those activations. */
+    private RuntimeSelectedRegionFinalizer.Result closure(
+            RuntimeRegionPlanner.Result activations) throws IOException {
+        return RuntimeSelectedRegionFinalizer.finalizeRegions(cutGraph(),
+                cutSkeletons(), "test", Arrays.asList(HANDLER, LEAF),
+                activations.runtimeInstances, cutObservations(),
+                cutScopeMap());
+    }
+
+    /**
+     * The plan rows of that closure.  The bound is the campaign's and the
+     * plan builder refuses to invent one; this fixture declares no loop, so
+     * any bound serves.
+     */
+    private static RuntimeRegionPlanner.Result plan(
+            RuntimeSelectedRegionFinalizer.Result closure,
+            RuntimeRegionPlanner.Result activations,
+            List<RuntimeRegionPlanner.MethodEvent> events) {
+        String bound = System.getProperty("causynth.loop.default.bound");
+        System.setProperty("causynth.loop.default.bound", "8");
+        try {
+            return RuntimeRegionPlanner.plan(closure.regions, "test",
+                    activations.runtimeInstances, events, cutRuntime(),
+                    Collections.<RuntimeRegionPlanner.FieldAccessEvent>
+                            emptyList(),
+                    Collections.<RuntimeRegionPlanner.ProtocolEvent>
+                            emptyList(), closure.gaps);
         } finally {
             if (bound == null) {
                 System.clearProperty("causynth.loop.default.bound");
@@ -179,8 +271,7 @@ public class RegionFoldPlanTest {
     private static final String EXCHANGE =
             "XCH.da84e470-fe7e-3068-b93f-caafeef64a70";
     private static final String PORT_ID = EXCHANGE + ".wire.key-id";
-    private static final String HANDLER_ADDRESS =
-            "wl/dn1#epoch0/region/" + HANDLER_REGION + "/ctx:Root:SASL#1";
+    private static final String DN1 = "wl/dn1#epoch0";
     private static final String GUARD_SITE = LEAF + "#u5";
     private static final String PHASE_SITE = LEAF + "#u7";
     private static final String OPERAND = LEAF + "::r1";
@@ -228,11 +319,20 @@ public class RegionFoldPlanTest {
                 RuntimeSelectedRegionFinalizer.SKELETON_KIND, "test");
     }
 
-    /** The handler opens an occurrence; the leaf folds into it. */
-    private static List<RuntimeRegionPlanner.MethodEvent> cutEvents() {
+    /**
+     * The handler opens an occurrence on {@code node}; the leaf folds into
+     * it.  Each entry carries the stamp it was recorded with.
+     */
+    private static List<RuntimeRegionPlanner.MethodEvent> cutEvents(
+            SourceRef handlerStamp, boolean receiverAttributed,
+            SourceRef leafStamp, String node) {
+        String address = OccurrenceAddress.of(NodeId.parse(node),
+                HANDLER_REGION, CausalContext.of(Role.of("SASL"), "", 1),
+                ExecutionIndex.empty()).render();
         return Arrays.asList(
-                entry(10L, HANDLER, 0L, HANDLER_ADDRESS, false),
-                entry(20L, LEAF, 10L, "", true));
+                entry(10L, HANDLER, 0L, address, false, handlerStamp,
+                        receiverAttributed),
+                entry(20L, LEAF, 10L, "", true, leafStamp, false));
     }
 
     /** The fatal guard the leaf decided, and the hook site it executed. */
@@ -360,10 +460,16 @@ public class RegionFoldPlanTest {
     private static RuntimeRegionPlanner.MethodEvent entry(
             long callId, String method, long parentCallId, String address,
             boolean folded) {
+        return entry(callId, method, parentCallId, address, folded,
+                RuntimeRegionPlanner.UNREGISTERED_SOURCE, true);
+    }
+
+    private static RuntimeRegionPlanner.MethodEvent entry(
+            long callId, String method, long parentCallId, String address,
+            boolean folded, SourceRef stamp, boolean receiverAttributed) {
         return new RuntimeRegionPlanner.MethodEvent(callId, "test", "main",
                 1L, method, 1, "o.a.h.BlockTokenSecretManager", callId,
-                parentCallId, 0L, 1L, 1L, 0L,
-                RuntimeRegionPlanner.UNREGISTERED_SOURCE, true, "", "",
-                address, folded);
+                parentCallId, 0L, 1L, 1L, 0L, stamp, receiverAttributed, "",
+                "", address, folded);
     }
 }

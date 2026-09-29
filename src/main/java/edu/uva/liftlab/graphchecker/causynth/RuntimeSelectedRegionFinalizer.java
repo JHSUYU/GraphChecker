@@ -1173,11 +1173,12 @@ public final class RuntimeSelectedRegionFinalizer {
     }
 
     /**
-     * Records one finalizer gap once per (kind, subject), stating its own
-     * class like a {@link edu.uva.liftlab.graphchecker.contract.GapRow}.
+     * Records one plan gap once per (kind, subject), stating its own class
+     * like a {@link edu.uva.liftlab.graphchecker.contract.GapRow}; the one
+     * spelling of a runtime plan's gap rows, the finalizer's and PLAN's.
      */
-    private static void planGap(List<Map<String, Object>> gaps, GapKind kind,
-                                GapClass cls, String subject, String detail) {
+    public static void planGap(List<Map<String, Object>> gaps, GapKind kind,
+                               GapClass cls, String subject, String detail) {
         for (Map<String, Object> existing : gaps) {
             if (kind.name().equals(text(existing.get("kind")))
                     && subject.equals(text(existing.get("subject")))) {

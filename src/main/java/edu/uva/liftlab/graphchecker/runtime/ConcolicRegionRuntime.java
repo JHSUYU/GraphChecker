@@ -409,11 +409,10 @@ public final class ConcolicRegionRuntime {
             }
             active.claimActivation();
             RowRuntime.configure(configuration().resultFile);
-            // The node it RAN on (planner's attribution rule), not the node
-            // the plan addressed -- that is what it is checked against.
-            SourceRef ranOn = RuntimeTraceContext.activationSource(receiver);
+            // The node it RAN on, by the function its admission and the
+            // recording both addressed it with; never the planned node.
             active.d3Address = RowRuntime.beginActivation(active.token,
-                    ranOn == null ? safe(admitted.sourceKey) : ranOn.key(),
+                    RuntimeTraceContext.activationSource(receiver).key(),
                     admitted.regionId, admitted.taskId);
             ACTIVE.put(active.token, active);
             pushActiveRegion(active);
@@ -1230,22 +1229,14 @@ public final class ConcolicRegionRuntime {
 
     /** The admission gates a finished occurrence must pass to publish. */
     private static void judgeFinishedOccurrence(ActiveRegion active) {
-        // First: is this the addressed occurrence at all?
-        String unaddressed =
-                active.activation.rootContextSelector.unconfirmed(
-                        active.attributedSourceKeys());
-        if (!unaddressed.isEmpty()) {
-            // The candidate loop working, not a finding: no durable row.
-            active.activation.noteUnaddressedCandidate(
-                    ConcolicTaskPlan.RefusedCandidate.stated(unaddressed));
-            active.releaseActivation();
-            active.abandoned = true;
-            endLiveSelectedRegion();
-            return;
-        }
-        // Claimed: a later rejection owns the sole diagnostic, so it is not
-        // also reported as unmatched at termination.  An activation missing
-        // the target event still publishes, with targetReached:false.
+        // Claimed: it was admitted by its whole address, node included, at
+        // entry (ConcolicTaskPlan#refusal), and nothing it entered since
+        // re-attributes it.  A close-time recheck against the sources its
+        // frames published was the replay half of the planner's frame-stamp
+        // rule; it dropped the q13 dzup target.  A later rejection owns the
+        // sole diagnostic, so it is not also reported as unmatched at
+        // termination.  An activation missing the target event still
+        // publishes, with targetReached:false.
         configuration().markOccurrenceClaimed(active.activation);
 
         if (active.replayPrefixContradicted()) {

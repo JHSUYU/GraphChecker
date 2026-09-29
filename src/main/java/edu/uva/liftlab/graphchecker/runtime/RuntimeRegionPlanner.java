@@ -12,6 +12,10 @@ import edu.uva.liftlab.graphchecker.causynth.CausynthStaticFacts;
 import edu.uva.liftlab.graphchecker.causynth.MapFields;
 import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.causynth.StaticProgram;
+import edu.uva.liftlab.graphchecker.contract.GapClass;
+import edu.uva.liftlab.graphchecker.contract.GapKind;
+import edu.uva.liftlab.graphchecker.contract.NodeId;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.plan.CommunicationCatalogContract;
 import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
 import edu.uva.liftlab.graphchecker.plan.ConfiguredSourcePhaseContract;
@@ -475,10 +479,9 @@ public final class RuntimeRegionPlanner {
         activation.put("anchorMethods", observedAnchors);
         activation.put("selection", skeleton.selection);
         activation.put("test", root.test);
-        // Identity v3: the recorded address, verbatim; never re-derived.
+        // Identity v3: the recorded address, verbatim; never re-derived.  It
+        // is also the one statement of the node the activation ran on.
         activation.put("occurrenceAddress", root.occurrenceAddress);
-        putTraceContext(activation, root,
-                activationSource(root, stampedSources(calls, trace)));
         // The recorded lane, for #bindObservedCommunicationCaptures only:
         // per-recording, so never in the frozen plan.
         if (root.laneId > 0L) activation.put("laneId", root.laneId);
@@ -957,16 +960,14 @@ public final class RuntimeRegionPlanner {
             boolean target = Boolean.TRUE.equals(MapFields.booleanValue(
                     seed.get(RuntimeSelectedRegionFinalizer
                             .FAILURE_TARGET_OCCURRENCE)));
+            // The target's request flow is its deciding frame's; its node is
+            // the occurrence's, like every other row's.
             MethodEvent semanticContext = target
                     ? trace.selectedTargetContext(root, calls, branches)
                     : root;
-            // Same source upgrade as the seed, same call set.
-            List<SourceRef> stamped = stampedSources(calls, trace);
-            SourceRef rootSource = activationSource(root, stamped);
-            SourceRef source = semanticContext.source != null
-                    ? semanticContext.source : rootSource;
+            NodeId node = recordedNode(root);
             int replayInvocationOrdinal = replayInvocationOrdinals.merge(
-                    replayInvocationScope(regionId, root, rootSource),
+                    replayInvocationScope(regionId, root, node),
                     1, Integer::sum);
             // Minted by the finalizer; an unretained activation has none.
             String occurrenceId = stringValue(seed.get("occurrenceId"));
@@ -1021,7 +1022,7 @@ public final class RuntimeRegionPlanner {
             }
             // Minted once: replay address and input to the published name.
             Map<String, Object> plannedRootSelector = rootSelector(root,
-                    rootSource, semanticContext.requestKey,
+                    node, semanticContext.requestKey,
                     semanticContext.requestApi, replayInvocationOrdinal);
             String plannedActivationId = activationId(occurrenceId,
                     plannedRootSelector);
@@ -1068,9 +1069,8 @@ public final class RuntimeRegionPlanner {
             if (!handoffSites.isEmpty()) {
                 plan.put(CommunicationHandoffSpec.FIELD, handoffSites);
             }
-            String plannedRelationKey = relationKey(source, regionId);
-            plan.put("relationKey", plannedRelationKey);
-            putTraceContext(plan, semanticContext, source);
+            plan.put("relationKey", relationKey(node, regionId));
+            putTraceContext(plan, semanticContext, node);
             plan.put("rootSelector", plannedRootSelector);
             if (!region.anchorMethod.isEmpty()) {
                 plan.put("targetMethod", region.anchorMethod);
@@ -1086,6 +1086,7 @@ public final class RuntimeRegionPlanner {
                 }
             }
             plan.put("closureGoals", Collections.singletonList(goal));
+            stateAnchorOffAddress(plan, result.planGaps);
             result.regionPlans.add(plan);
             planByOccurrence.put(occurrenceId, plan);
         }
@@ -1303,13 +1304,15 @@ public final class RuntimeRegionPlanner {
                 stringValue(port.get("portId")));
     }
 
-    /** The semantic source and request this row belongs to. */
+    /**
+     * The node and request one row belongs to: the node its occurrence ran
+     * on, the request its semantic frame ran under.
+     */
     private static void putTraceContext(Map<String, Object> target,
-                                        MethodEvent event,
-                                        SourceRef resolved) {
+                                        MethodEvent event, NodeId node) {
         // sourceKey only: node and epoch are parsed out of it
         // (OccurrenceAddress); nothing re-spells it.
-        target.put("sourceKey", sourceOf(resolved).key());
+        target.put("sourceKey", node.render());
         if (!event.requestKey.isEmpty()) {
             target.put("requestKey", event.requestKey);
         }
@@ -1559,7 +1562,7 @@ public final class RuntimeRegionPlanner {
 
     /** The replay address of one activation: root, receiver, causal anchor. */
     static Map<String, Object> rootSelector(
-            MethodEvent root, SourceRef source, String requestKey,
+            MethodEvent root, NodeId node, String requestKey,
             String requestApi, int invocationOrdinal) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("method", root.method);
@@ -1569,8 +1572,8 @@ public final class RuntimeRegionPlanner {
             result.put("kind", "RECEIVER_CONTEXT");
             result.put("receiverClass", root.receiverType);
         }
-        result.put(CAUSAL_ANCHOR,
-                causalAnchor(root, source, requestKey, requestApi));
+        result.put(CAUSAL_ANCHOR, causalAnchor(node, root.receiverAttributed,
+                requestKey, requestApi));
         result.put(ROOT_INVOCATION_ORDINAL, invocationOrdinal);
         return result;
     }
@@ -1583,23 +1586,32 @@ public final class RuntimeRegionPlanner {
     /** The activation ran on a source the application registered. */
     static final String ANCHOR_REGISTERED_SOURCE = "REGISTERED_SOURCE";
     /** The activation registered no source and ran under the default. */
-    public static final String ANCHOR_UNREGISTERED_SOURCE = "UNREGISTERED_SOURCE";
+    static final String ANCHOR_UNREGISTERED_SOURCE = "UNREGISTERED_SOURCE";
     /** The source was inherited from the creating thread's context. */
-    public static final String ANCHOR_INHERITED_CONTEXT = "INHERITED_CONTEXT";
+    static final String ANCHOR_INHERITED_CONTEXT = "INHERITED_CONTEXT";
 
-    /** What causally produced this activation, named rather than counted. */
-    private static Map<String, Object> causalAnchor(MethodEvent root,
-                                                    SourceRef source,
-                                                    String requestKey,
-                                                    String requestApi) {
+    /**
+     * What causally produced an activation on {@code node}, named rather than
+     * counted: the one anchor rule, for a recorded occurrence and for one a
+     * replay exposed ({@code ExposedRegionPlanMain}) alike.
+     *
+     * @param node               the node its occurrence address names
+     * @param receiverAttributed whether the root's receiver is itself
+     *                           registered, which only a recorded root can say
+     */
+    public static Map<String, Object> causalAnchor(NodeId node,
+                                                   boolean receiverAttributed,
+                                                   String requestKey,
+                                                   String requestApi) {
+        String sourceKey = node.render();
         Map<String, Object> anchor = new LinkedHashMap<>();
-        anchor.put("sourceKey", source.key());
-        anchor.put("kind", UNREGISTERED_SOURCE.key().equals(source.key())
+        anchor.put("sourceKey", sourceKey);
+        anchor.put("kind", UNREGISTERED_SOURCE.key().equals(sourceKey)
                 ? ANCHOR_UNREGISTERED_SOURCE
                 // Only a receiver's own registration is re-checkable by
                 // object identity at replay; the other way round collapses
                 // source/epoch aliases.
-                : root != null && root.receiverAttributed
+                : receiverAttributed
                 ? ANCHOR_REGISTERED_SOURCE : ANCHOR_INHERITED_CONTEXT);
         if (requestKey != null && !requestKey.isEmpty()) {
             anchor.put("requestKey", requestKey);
@@ -1612,37 +1624,49 @@ public final class RuntimeRegionPlanner {
 
     /** Grouping key for the replay ordinal; not an identity. */
     private static String replayInvocationScope(
-            String regionId, MethodEvent root, SourceRef source) {
-        return source.key() + "\n" + safe(regionId) + "\n"
-                + safe(root == null ? "" : root.method);
+            String regionId, MethodEvent root, NodeId node) {
+        return node.render() + "\n" + safe(regionId) + "\n"
+                + safe(root.method);
     }
 
-
-    /** Every distinct logical source the frames of one activation carry, in
-     * recorded order (README Step 4: the root's stamp alone may be
-     * unregistered while its next frame names the node). */
-    private static List<SourceRef> stampedSources(Set<Long> calls,
-                                                  TraceIndex trace) {
-        List<MethodEvent> frames = new ArrayList<>();
-        for (Long call : calls) {
-            MethodEvent frame = trace.methodByCall.get(call);
-            if (frame != null && frame.source != null) frames.add(frame);
-        }
-        frames.sort(Comparator.comparingLong(frame -> frame.seq));
-        List<SourceRef> sources = new ArrayList<>();
-        Set<String> seen = new LinkedHashSet<>();
-        for (MethodEvent frame : frames) {
-            if (seen.add(frame.source.key())) sources.add(frame.source);
-        }
-        return sources;
+    /**
+     * The node one activation ran on: the node of its recorded address, which
+     * the recorder minted at the root's entry with {@link
+     * RuntimeTraceContext#activationSource} and a replay admits it by.  Read,
+     * never re-derived (Identity v3): the unique stamp among the frames it
+     * entered later once stood in for an unstamped root, and anchored the
+     * q13 dzup target on a node its address did not name.
+     */
+    private static NodeId recordedNode(MethodEvent root) {
+        return OccurrenceAddress.parse(root.occurrenceAddress).node();
     }
 
-    /** One activation's source by {@link
-     * RuntimeTraceContext#attributedActivationSource}, the rule replay runs. */
-    private static SourceRef activationSource(MethodEvent root,
-                                              List<SourceRef> stamped) {
-        return RuntimeTraceContext.attributedActivationSource(
-                root == null ? null : root.source, stamped);
+    /**
+     * PLAN's check of one row against what the replay admits by: its
+     * {@code sourceKey} and causal anchor name the node of its occurrence
+     * address.  A row naming another node is a task no activation can
+     * answer, stated here as a BLOCKING {@code TASK_UNANSWERED} named by its
+     * occurrence.  The q13 dzup target (anchor auto0/node0, address on
+     * workload/unregistered) was instead dropped at close with a DIAGNOSTIC
+     * row, and its campaign stopped at REPLAY without a target row.
+     */
+    static void stateAnchorOffAddress(Map<String, Object> plan,
+                                      List<Map<String, Object>> planGaps) {
+        String occurrenceId = stringValue(plan.get("occurrenceId"));
+        String node = OccurrenceAddress.parse(occurrenceId).node().render();
+        Object selector = plan.get("rootSelector");
+        Object anchor = selector instanceof Map
+                ? ((Map<?, ?>) selector).get(CAUSAL_ANCHOR) : null;
+        String anchored = anchor instanceof Map
+                ? stringValue(((Map<?, ?>) anchor).get("sourceKey")) : "";
+        String sourceKey = stringValue(plan.get("sourceKey"));
+        if (node.equals(anchored) && node.equals(sourceKey)) return;
+        RuntimeSelectedRegionFinalizer.planGap(planGaps,
+                GapKind.TASK_UNANSWERED, GapClass.BLOCKING, occurrenceId,
+                "its causal anchor names " + anchored + " and its sourceKey "
+                        + sourceKey + ", but its occurrence address runs it on "
+                        + node + "; the replay admits an activation by that"
+                        + " address alone, so no activation can answer it");
     }
 
     /** Total logical scope of one traced event; an unregistered workload is
@@ -1652,9 +1676,9 @@ public final class RuntimeRegionPlanner {
     }
 
 
-    /** One region occurrence's relation identity on one source. */
-    private static String relationKey(SourceRef source, String regionId) {
-        return source.id() + "/relation/" + regionId;
+    /** One region occurrence's relation identity on its node. */
+    public static String relationKey(NodeId node, String regionId) {
+        return node.node() + "/relation/" + regionId;
     }
 
     /** Per-recording correlation key of a seed, never published (see

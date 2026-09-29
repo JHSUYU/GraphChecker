@@ -175,11 +175,6 @@ final class ConcolicTaskPlan {
                             : activationSource.key()));
         }
 
-        /** The same, where the refusal itself names where it ran. */
-        static RefusedCandidate stated(String said) {
-            return new RefusedCandidate(said, null, "");
-        }
-
         /**
          * One refused candidate as a sentence: always states the thread and
          * a difference ({@link #difference} says so when there is none).
@@ -303,8 +298,8 @@ final class ConcolicTaskPlan {
             long enclosingInvocationEvent) {
         SourceRef registeredReceiverSource =
                 RuntimeTraceContext.sourceFor(receiver);
-        // Where this activation ran, by the function the recorder and the
-        // planner used.
+        // Where this activation ran, by the function the recorder minted
+        // its address with.
         SourceRef activationSource =
                 RuntimeTraceContext.activationSource(receiver);
         RuntimeTraceContext.View context = RuntimeTraceContext.current();
@@ -472,8 +467,8 @@ final class ConcolicTaskPlan {
 
     /**
      * The node and epoch this activation is counted in: {@link
-     * RuntimeTraceContext#activationSource}, the same function the recorder
-     * stamped {@code METHOD_ENTER} with and the planner counted by.  Read at
+     * RuntimeTraceContext#activationSource}, the function the recorder
+     * minted the address with, whose node the planner reads back.  Read at
      * activation start from the registry {@link #lifecycleMismatch} and the
      * configured-source mint also read, so the three agree.
      */
@@ -481,12 +476,10 @@ final class ConcolicTaskPlan {
                                    SourceRef activationSource) {
         String planned = safe(task.sourceKey);
         if (!RuntimeTraceContext.declaresEpoch(planned)) return planned;
-        // Never fall back to the planned node: an unattributed activation
-        // counts in the unregistered source, as the planner counted it, or
-        // it steals the planned node's k.
-        return activationSource == null
-                ? RuntimeRegionPlanner.UNREGISTERED_SOURCE.key()
-                : activationSource.key();
+        // Never the planned node: an unattributed activation counts in the
+        // unregistered source, as its recorded address does, or it steals
+        // the planned node's k.
+        return activationSource.key();
     }
 
     /**
@@ -744,36 +737,6 @@ final class ConcolicTaskPlan {
             return receiverRuntimeClass.isEmpty()
                     || receiver != null && receiverRuntimeClass.equals(
                             receiver.getClass().getName());
-        }
-
-        /**
-         * Why the candidate that just ran is not the addressed occurrence, or
-         * {@code ""} when it is.
-         */
-        String unconfirmed(Set<String> attributedSourceKeys) {
-            if (attributedSourceKeys.isEmpty()) {
-                // Unattributed is the UNREGISTERED source's occurrence,
-                // never the planned node's next k.
-                return OccurrenceBinding.UNREGISTERED_SOURCE_KEY.equals(
-                        sourceKey) ? ""
-                        : "occurrence ran on "
-                        + OccurrenceBinding.UNREGISTERED_SOURCE_KEY
-                        + " (nothing attributed it to any node), but its"
-                        + " anchor names " + sourceKey;
-            }
-            boolean sameSource = false;
-            for (String attributed : attributedSourceKeys) {
-                if (RuntimeTraceContext.sameSourceIdentity(
-                        sourceKey, attributed)) {
-                    sameSource = true;
-                    break;
-                }
-            }
-            if (!sameSource) {
-                return "occurrence ran on " + attributedSourceKeys
-                        + ", but its anchor names " + sourceKey;
-            }
-            return "";
         }
 
         /** This address on one line, for a named gap. */

@@ -28,7 +28,12 @@ public enum GapKind {
     DECLARATION_MISSING,
     /** An address degraded because a lineage hop was unattributable. */
     LINEAGE_LOST,
-    /** A planned task no activation of this replay answered. */
+    /**
+     * A planned task no activation of this replay answered (DIAGNOSTIC: the
+     * replay states what ran instead).  BLOCKING when PLAN states it: a row
+     * whose anchor names a node its occurrence address does not, which no
+     * activation can answer.
+     */
     TASK_UNANSWERED,
     /**
      * One planned task answered at two addresses across the corpus.

@@ -160,17 +160,13 @@ public final class ExposedRegionPlanMain {
                 skeleton.regionId).get(0);
         RuntimeRegionPlanner.declareCutPortCells(region);
 
-        Map<String, Object> anchor = new LinkedHashMap<>();
-        anchor.put("sourceKey", sourceKey);
-        anchor.put("kind", RuntimeRegionPlanner.UNREGISTERED_SOURCE.key()
-                .equals(sourceKey)
-                ? RuntimeRegionPlanner.ANCHOR_UNREGISTERED_SOURCE
-                : RuntimeRegionPlanner.ANCHOR_INHERITED_CONTEXT);
-        // The selector names root method and anchor node, no receiver class.
+        // The selector names root method and anchor node, no receiver class;
+        // the anchor is the node its address names, by the planner's rule.
         Map<String, Object> rootSelector = new LinkedHashMap<>();
         rootSelector.put("method", skeleton.rootMethod);
         rootSelector.put("kind", "GLOBAL_INVOCATION");
-        rootSelector.put("causalAnchor", anchor);
+        rootSelector.put("causalAnchor", RuntimeRegionPlanner.causalAnchor(
+                address.node(), false, "", ""));
         rootSelector.put("invocationOrdinal", 1);
 
         Map<String, Object> goal = new LinkedHashMap<>();
@@ -208,8 +204,8 @@ public final class ExposedRegionPlanMain {
         if (!handoffs.isEmpty()) {
             plan.put(CommunicationHandoffSpec.FIELD, handoffs);
         }
-        plan.put("relationKey", address.node().node() + "/relation/"
-                + skeleton.regionId);
+        plan.put("relationKey", RuntimeRegionPlanner.relationKey(
+                address.node(), skeleton.regionId));
         plan.put("sourceKey", sourceKey);
         plan.put("rootSelector", rootSelector);
         if (!skeleton.anchorMethod.isEmpty()) {
