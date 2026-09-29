@@ -50,10 +50,13 @@ final class ConcolicResultPublisher {
                             while (root.getParent() != null) {
                                 root = root.getParent();
                             }
+                            // Compaction recurses along an expression
+                            // chain: the engine's stack (java.sh -Xss).
                             Thread thread = new Thread(root, runnable,
                                     "causynth-result-publication-"
                                             + PUBLICATION_THREAD_COUNTER
-                                            .incrementAndGet());
+                                            .incrementAndGet(),
+                                    512L << 20);
                             thread.setDaemon(true);
                             return thread;
                         }
