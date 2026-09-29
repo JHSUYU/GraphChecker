@@ -915,7 +915,7 @@ public class RowRuntimeTest {
             throws Exception {
         java.lang.reflect.Method fault = SharedStateCapture.class
                 .getDeclaredMethod("versionFault", JsonObject.class,
-                        boolean.class);
+                        boolean.class, java.util.Set.class);
         fault.setAccessible(true);
         for (Object[] each : new Object[][]{
                 {41L, "REGION.a", "TASK.a", 7L, true},
@@ -928,7 +928,8 @@ public class RowRuntimeTest {
             version.addProperty("regionId", (String) each[1]);
             version.addProperty("taskId", (String) each[2]);
             version.addProperty("writerContextId", (Long) each[3]);
-            String said = (String) fault.invoke(null, version, false);
+            String said = (String) fault.invoke(null, version, false,
+                    new java.util.HashSet<Object>());
             assertEquals(Arrays.toString(each), each[4],
                     !said.contains("names no writer case"));
         }

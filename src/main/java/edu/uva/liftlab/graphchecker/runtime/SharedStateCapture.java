@@ -141,13 +141,17 @@ final class SharedStateCapture {
                             + " locations and carries " + locations.size());
             return;
         }
+        // One document's versions share their subexpressions (one import):
+        // a node scanned clean once is not scanned again.
+        Set<JsonElement> clean = Collections.newSetFromMap(
+                new IdentityHashMap<JsonElement, Boolean>());
         for (JsonElement element : locations) {
             if (!element.isJsonObject()) {
                 refuse(MALFORMED_ENVELOPE, "",
                         "tracked location is not an object");
                 continue;
             }
-            fileVersionsEnvelope(element.getAsJsonObject(), active);
+            fileVersionsEnvelope(element.getAsJsonObject(), active, clean);
         }
     }
 
@@ -159,8 +163,9 @@ final class SharedStateCapture {
      * names the fault that replaced it (and files nothing).
      */
     private static void fileVersionsEnvelope(JsonObject envelope,
-                                             ActiveRegion active) {
-        String fault = versionsFault(envelope);
+                                             ActiveRegion active,
+                                             Set<JsonElement> clean) {
+        String fault = versionsFault(envelope, clean);
         String locationKey = locationKey(envelope);
         if (!fault.isEmpty()) {
             refuse(expressionSerializationTruncationFault(fault)
@@ -337,7 +342,7 @@ final class SharedStateCapture {
 
     /** Whether an expression tree contains the VM's truncation marker. */
     private static boolean containsVmSerializationTruncation(
-            JsonElement expression) {
+            JsonElement expression, Set<JsonElement> clean) {
         if (expression == null) return false;
         Deque<JsonElement> pending = new ArrayDeque<>();
         Set<JsonElement> visited = Collections.newSetFromMap(
@@ -347,7 +352,8 @@ final class SharedStateCapture {
             JsonElement current = pending.pop();
             if (current != null && !current.isJsonNull()
                     && !current.isJsonPrimitive()
-                    && !visited.add(current)) continue;
+                    && (clean.contains(current)
+                    || !visited.add(current))) continue;
             if (current.isJsonArray()) {
                 for (JsonElement child : current.getAsJsonArray()) {
                     if (child != null) pending.push(child);
@@ -366,6 +372,8 @@ final class SharedStateCapture {
                 if (child != null) pending.push(child);
             }
         }
+        // Scanned whole and found clean: no later scan re-enters it.
+        clean.addAll(visited);
         return false;
     }
 
@@ -437,7 +445,8 @@ final class SharedStateCapture {
     }
 
     /** Admits one version-store envelope: {@code ""} or the refusal reason. */
-    private static String versionsFault(JsonObject envelope) {
+    private static String versionsFault(JsonObject envelope,
+                                        Set<JsonElement> clean) {
         if (envelope == null || envelope.size() == 0) {
             return "no version envelope";
         }
@@ -477,7 +486,8 @@ final class SharedStateCapture {
         Set<Long> versionIds = new LinkedHashSet<>();
         for (JsonElement element : versions) {
             if (!element.isJsonObject()) return "version is not an object";
-            String fault = versionFault(element.getAsJsonObject(), mapState);
+            String fault = versionFault(element.getAsJsonObject(), mapState,
+                    clean);
             if (!fault.isEmpty()) return fault;
             long id = optionalLongInteger(element.getAsJsonObject(),
                     "fieldVersionId", 0L);
@@ -558,7 +568,8 @@ final class SharedStateCapture {
                 && optionalString(version, "taskId").isEmpty();
     }
 
-    private static String versionFault(JsonObject version, boolean mapState) {
+    private static String versionFault(JsonObject version, boolean mapState,
+                                       Set<JsonElement> clean) {
         long id = optionalLongInteger(version, "fieldVersionId", 0L);
         if (id <= 0L) return "version has no fieldVersionId";
         String versionKind = optionalString(version, "versionKind");
@@ -589,11 +600,12 @@ final class SharedStateCapture {
         if (expression == null || expression.isJsonNull()) {
             return "version " + id + " carries no value expression";
         }
-        if (containsVmSerializationTruncation(expression)) {
+        if (containsVmSerializationTruncation(expression, clean)) {
             return VM_EXPRESSION_SERIALIZATION_TRUNCATED
                     + ": version " + id + " value expression";
         }
-        if (containsVmSerializationTruncation(version.get("pathGuard"))) {
+        if (containsVmSerializationTruncation(version.get("pathGuard"),
+                clean)) {
             return VM_EXPRESSION_SERIALIZATION_TRUNCATED
                     + ": version " + id + " path guard";
         }
