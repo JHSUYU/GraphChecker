@@ -761,7 +761,8 @@ public final class CausynthTraceRecorder {
         initialize();
         SourceRef source = RuntimeTraceContext.explicitSource();
         if (source == null || !WORKLOAD_KIND.equals(source.kind())) return 0L;
-        long requestId = RuntimeTraceContext.beginRequest(source, apiName);
+        long requestId = RuntimeTraceContext.beginRequest(source, apiName,
+                true);
         writeSourceTraceLine("REQUEST_BEGIN", source, null, requestId,
                 MapFields.safe(apiName), 0);
         return requestId;

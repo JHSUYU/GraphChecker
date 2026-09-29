@@ -112,6 +112,16 @@ final class RuntimeTraceContext {
     }
 
     static long beginRequest(SourceRef requestedSource, String apiName) {
+        return beginRequest(requestedSource, apiName, false);
+    }
+
+    /**
+     * @param ownRoot the request is a root of its own even inside another
+     *                ({@link Lineage#pushCallRoot}); otherwise it roots the
+     *                lineage only where none stands
+     */
+    static long beginRequest(SourceRef requestedSource, String apiName,
+                             boolean ownRoot) {
         if (requestedSource == null) {
             throw new IllegalArgumentException("request source is required");
         }
@@ -125,8 +135,9 @@ final class RuntimeTraceContext {
         if (normalizedApi.isEmpty()) normalizedApi = "request";
         ScopeFrame scope = new ScopeFrame(requestId, state);
         // The workload's action roots this lineage.
-        scope.lineageToken = Lineage.push(source.key(), Role.CLIENT,
-                normalizedApi);
+        scope.lineageToken = ownRoot
+                ? Lineage.pushCallRoot(source.key(), Role.CLIENT, normalizedApi)
+                : Lineage.push(source.key(), Role.CLIENT, normalizedApi);
         // The key's ordinal is the lineage's k; it addresses nothing.
         String requestKey = source.key() + "/request/" + normalizedApi
                 + "#" + Lineage.rootWindowIndex();

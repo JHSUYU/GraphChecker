@@ -110,6 +110,15 @@ public final class Lineage {
         return push(nodeKey, role, api, true, true);
     }
 
+    /**
+     * Enters one ROOT hop that is a request, not a turn: a call the workload
+     * makes is its own root, never nested in the request it runs under, and
+     * keeps its k whenever it began.
+     */
+    public static long pushCallRoot(String nodeKey, Role role, String api) {
+        return push(nodeKey, role, api, true, false);
+    }
+
     private static long push(String nodeKey, Role role, String api,
                              boolean root, boolean turn) {
         List<Frame> stack = STACK.get();
