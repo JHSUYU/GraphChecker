@@ -79,6 +79,10 @@ public final class ScheduleLog {
     /** An event that waits nowhere: it is written now. */
     private static final int GO = -2;
 
+    /** How long a let-go wait has to make progress before the watchdog
+     *  gives slots up after all. */
+    static final long LET_GO_GRACE_MS = 2000L;
+
     /** A stall this many timeouts long is given up whatever the CPU does. */
     static final int CEILING = 8;
     private static final long CPU_SAMPLE_MS = 1000L;
@@ -844,13 +848,16 @@ public final class ScheduleLog {
         }
         letGo += count;
         letGoSinceProgress = true;
+        // The run was idle a whole timeout already: the waits let go have a
+        // grace, not another timeout, to make progress.
+        long now = System.currentTimeMillis();
         stateLocked("schedule-let-go#" + firstOpen, count + " wait(s) held at"
                 + " the cut (" + held + ") for " + idle + " ms with the run"
                 + " idle, while " + (firstOpen < order.size()
                         ? order.get(firstOpen).render() : "nothing")
                 + " at slot " + firstOpen + " did not happen: they are let"
                 + " go before any slot is given up");
-        lastProgress = System.currentTimeMillis();
+        lastProgress = now - Math.max(0L, timeoutMillis() - LET_GO_GRACE_MS);
         cpuSampledAt = 0L;
         LOCK.notifyAll();
     }
