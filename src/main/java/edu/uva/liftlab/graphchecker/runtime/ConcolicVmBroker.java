@@ -168,7 +168,7 @@ final class ConcolicVmBroker {
     }
 
     /**
-     * Attaches the current value of one exact int/long field as its concrete
+     * Attaches the current value of one exact integral field as its concrete
      * expression ({@code ConExpression}, not a symbolic input).  Its point:
      * the VM versions only tracked locations, so without it a selected write
      * site would publish nothing.

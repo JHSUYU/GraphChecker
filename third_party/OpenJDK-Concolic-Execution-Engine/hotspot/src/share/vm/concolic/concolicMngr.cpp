@@ -909,21 +909,22 @@ void ConcolicMngr::observeExactPrimitiveField(
   Klass *declaring = OopUtils::get_local_fd_by_name(
       owner(), std::string(declaring_class), std::string(field_name),
       std::string(descriptor), field);
+  BasicType type = declaring == NULL ? T_ILLEGAL : field.field_type();
+  // The integral types: what a store publishes and a read arms
+  // (armSharedPrimitiveFieldRead) alike.  A flag -- a commit point's
+  // `deleted` -- is shared state as much as a counter is.
   if (declaring == NULL || field.is_static()
-      || (strcmp(descriptor, "I") != 0
-          && strcmp(descriptor, "J") != 0)) {
+      || !(type == T_BOOLEAN || type == T_BYTE || type == T_CHAR
+           || type == T_SHORT || type == T_INT || type == T_LONG)) {
     tty->print_cr(
-        "Warning: observeExactPrimitiveField supports only exact int/long fields");
+        "Warning: observeExactPrimitiveField supports only exact integral fields");
     return;
   }
 
   SymInstance *instance = ctx->get_or_alloc_sym_inst(owner());
   if (instance == NULL) return;
-  Expression *observed = strcmp(descriptor, "I") == 0
-      ? static_cast<Expression *>(
-          new ConExpression(owner()->int_field(field.offset())))
-      : static_cast<Expression *>(
-          new ConExpression(owner()->long_field(field.offset())));
+  Expression *observed =
+      SharedFieldVersions::field_value(owner(), field.offset(), type);
   instance->set_sym_exp(field.offset(), observed);
   // The observation starts the field's log.  A concrete store is versioned
   // only where a log exists, and the woven write site calls here just before

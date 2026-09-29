@@ -128,7 +128,7 @@ methods, STATE families and their arms, formula size, replay slowdown.
 
 ## 6. Automation, in order
 
-1. **F2 from `S`**: the scope map classifies as tracked every read of an int or long
+1. **F2 from `S`**: the scope map classifies as tracked every read of an integral (boolean to long)
    instance field `S` also stores, when a branch decides on the value within a few
    flows, before any store and on this side of the wire (`StaticScopeMap#READ_SITE`);
    every store of it is an observed write site, and a region reading it records its
@@ -140,8 +140,9 @@ methods, STATE families and their arms, formula size, replay slowdown.
    read into the SASL user name that the DataNode checks, went through DIGEST-MD5 into
    the session cipher, and bug3's fault-world expressions reached 33 MB of CBC writes.  A static final field is a
    constant, no shared state (`SymbolicRegionPlanner#failureRelevantState`).
-   Only int and long fields: the VM's `observeExactPrimitiveField` versions no
-   other type.  A container, a reference or a string -- where most of HDFS's
+   Integral fields only (boolean, byte, char, short, int, long; until 2026-09-29 int and
+   long, which left SOLR-18406's commit-point `deleted` flag unversioned): the VM's
+   `observeExactPrimitiveField` versions no other type.  A container, a reference or a string -- where most of HDFS's
    shared state lives (a key map, a lease holder) -- is versioned only once a
    symbolic value is stored into it; observing one from its first concrete store
    needs a VM hook of its own (the container log's INITIAL version exists).

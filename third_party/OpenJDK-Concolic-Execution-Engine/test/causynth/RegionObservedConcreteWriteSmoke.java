@@ -1,5 +1,5 @@
 /**
- * Contract smoke for an observed concrete store of a plain int or long field.
+ * Contract smoke for an observed concrete store of a plain integral field.
  *
  * <p>A woven write site of a tracked field (SYMBOL-SCOPE F2) calls {@code
  * observeExactPrimitiveField} just before its store.  The value it stores is
@@ -8,16 +8,19 @@
  * window, then the store as a WRITE.  A later read resolves over the log and
  * names that WRITE, which is what lets a reader in another occurrence join
  * the writer.  A field of the same object no write site observed stays
- * untracked.</p>
+ * untracked.  A flag is observed as a counter is: a commit point's
+ * {@code deleted}, set where a deletion policy let it go.</p>
  */
 public final class RegionObservedConcreteWriteSmoke {
     private static final class Block {
         long generationStamp = 1L;
         long numBytes = 7L;
+        boolean deleted;
     }
 
     private static final class Sink {
         long value;
+        boolean flag;
     }
 
     public static void main(String[] args) {
@@ -45,6 +48,22 @@ public final class RegionObservedConcreteWriteSmoke {
         require(read.contains(
                 "\"expressionAuthority\":\"VM_GUARDED_READ_FROM_V1\""), read);
         require(read.contains("\"versionKind\":\"WRITE\""), read);
+
+        System.observeExactPrimitiveField(block, Block.class.getName(),
+                "deleted", "Z");
+        block.deleted = true;
+        sink.flag = block.deleted;
+        require(sink.flag, "the flag's store did not run concretely");
+        String flagged = System.getSharedFieldVersions(block,
+                Block.class.getName(), "deleted", "Z");
+        require(flagged.contains("\"selected\":true"), flagged);
+        require(flagged.contains("\"versionKind\":\"INITIAL\""), flagged);
+        require(flagged.contains("\"versionKind\":\"WRITE\""), flagged);
+        String flagRead = System.getSymbolicFieldExpression(sink,
+                Sink.class.getName(), "flag", "Z", Boolean.valueOf(sink.flag));
+        require(flagRead.contains(
+                "\"expressionAuthority\":\"VM_GUARDED_READ_FROM_V1\""),
+                flagRead);
 
         String untouched = System.getSharedFieldVersions(block,
                 Block.class.getName(), "numBytes", "J");

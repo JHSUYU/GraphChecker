@@ -35,7 +35,7 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.strings;
  *       with its {@code carrier} field, versioned leaf {@code cell} and region
  *       (generalises REPORT-P2N's {@code observedWriteSites} to every cell of
  *       the slice).</li>
- *   <li>{@code READ_SITE}: a read of a TRACKED cell -- an int or long instance
+ *   <li>{@code READ_SITE}: a read of a TRACKED cell -- an integral instance
  *       field (an atomic's value included) the slice both reads and stores
  *       (SYMBOL-SCOPE F2) -- whose value a branch decides on, a few flows on
  *       and before any store.  Its stores are versioned from the first
