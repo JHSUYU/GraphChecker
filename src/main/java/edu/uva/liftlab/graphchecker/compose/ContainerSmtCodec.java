@@ -526,23 +526,16 @@ public final class ContainerSmtCodec {
                                     Host host, Set<JsonElement> views) {
         JsonElement receiverIr = associativeStateExpression(
                 expression.get("receiver"));
+        if (("READ".equals(operation) || "CONTAINS".equals(operation))
+                && arguments.size() == 1) {
+            return associativeLookup(receiverIr, operation,
+                    arguments.get(0), javaType, host);
+        }
         Term receiver = associativeState(expression.get("receiver"),
                 host);
         if (receiver == null) return null;
         if ("SIZE".equals(operation)) {
             return associativeSize(receiver, host);
-        }
-        if ("CONTAINS".equals(operation) && arguments.size() == 1) {
-            Term key = host.box(arguments.get(0));
-            return key == null ? null
-                    : associativeHas(receiver, key, host);
-        }
-        if ("READ".equals(operation) && arguments.size() == 1) {
-            Term key = host.box(arguments.get(0));
-            if (key == null) return null;
-            requireStatedContainerBase(receiverIr, key, host);
-            return host.unbox(associativeRead(receiver, key, host),
-                    javaType);
         }
         if ("IS_EMPTY".equals(operation) && arguments.size() == 0) {
             return new Term("(= " + associativeSize(receiver, host).text
@@ -592,6 +585,72 @@ public final class ContainerSmtCodec {
                     Sort.ASSOCIATIVE);
         }
         return unmodeled("ASSOCIATIVE", operation, arguments, host);
+    }
+
+    /**
+     * A read or membership test at one key.  With a literal key, the chain's
+     * mutations at other literal keys cannot touch it and are passed in the
+     * IR, never lowered: a map the recording rebuilt from a store's bytes
+     * (Solr's cluster state, one per notification) is a put per entry, and
+     * lowering every one of them was millions of container terms for a query
+     * that reads one key.  The walk stops at the first mutation at the key
+     * (its answer), at a key that is not a literal, or at the chain's base;
+     * what remains is lowered as the whole state was.  Never an absent-key
+     * default over the passed puts: only literal keys are compared, and two
+     * distinct literals are distinct values.
+     */
+    private static Term associativeLookup(JsonElement receiverIr,
+                                          String operation, JsonElement key,
+                                          String javaType, Host host) {
+        Term wanted = host.box(key);
+        if (wanted == null) return null;
+        boolean read = "READ".equals(operation);
+        JsonElement state = receiverIr;
+        String literal = literalKey(key);
+        if (literal != null) {
+            for (int depth = 0; depth < CONTAINER_CHAIN_LIMIT; depth++) {
+                Mutation mutation = associativeMutation(state);
+                if (mutation == null || !("PUT".equals(mutation.operation)
+                        || "REMOVE".equals(mutation.operation))) {
+                    break;
+                }
+                String at = literalKey(mutation.arguments.get(0));
+                if (at == null) break;
+                if (at.equals(literal)) {
+                    boolean removed = "REMOVE".equals(mutation.operation);
+                    if (!read) {
+                        return new Term(removed ? "false" : "true",
+                                Sort.BOOL);
+                    }
+                    Term value = removed ? new Term(NULL_CELL, Sort.VALUE)
+                            : host.box(mutation.arguments.get(1));
+                    return value == null ? null : host.unbox(value, javaType);
+                }
+                state = mutation.receiver;
+            }
+        }
+        Term receiver = associativeState(state, host);
+        if (receiver == null) return null;
+        if (!read) return associativeHas(receiver, wanted, host);
+        requireStatedContainerBase(state, wanted, host);
+        return host.unbox(associativeRead(receiver, wanted, host), javaType);
+    }
+
+    /**
+     * A key the VM stated as one constant -- a string or a number, no symbol
+     * inside -- as its Java type and payload, or null.  Two keys are equal
+     * Java keys exactly when these agree (an Integer is no Long's key).
+     */
+    private static String literalKey(JsonElement key) {
+        String type = VmExpressionIr.typeOf(key);
+        if (!("ConstExpr".equals(type) || "ConStringSymbolExp".equals(type))
+                || VmExpressionIr.carriesPropagatedValue(key)) {
+            return null;
+        }
+        JsonObject constant = key.getAsJsonObject();
+        return optionalString(constant, "_java_type") + "|"
+                + VmExpressionIr.constantPayload(
+                optionalString(constant, "_exp"));
     }
 
     /** An operation this codec has no relation for, refused by name. */

@@ -2303,6 +2303,9 @@ public class ComposerTest {
             session.expression("EXPR.0000000000000e4" + index,
                     viewKey(held, index));
         }
+        // And one read of it at a literal key.
+        session.expression("EXPR.0000000000000e50", relation("ASSOCIATIVE",
+                "READ", "I", held, integer("I", 10L)));
         // And phi reads the array cell the decision above compares: every
         // read of one location is one variable, so that decision is what
         // phi rests on (a decision sharing nothing with phi or a root is
@@ -2530,6 +2533,20 @@ public class ComposerTest {
         // one key and leaves another at none, which is how hdfs-11741's
         // composed query delivered 182906, 182908, 182908, 182907 out of an
         // export that held 182905, 182906, 182907, 182908.
+        // A READ AT A LITERAL KEY IS ANSWERED BY ITS OWN PUT: the puts at
+        // other literal keys cannot touch it and are not lowered.  A map
+        // rebuilt from a store's bytes (Solr's cluster state, one per
+        // notification) was millions of named container states otherwise.
+        String lookup = lowering.statedTerm("EXPR.0000000000000e50",
+                "lookup");
+        assertFalse("the read is lowered", lookup.isEmpty());
+        for (SmtLowering.Declaration declaration : lowering.reachedBy(
+                Collections.singletonList(lookup))) {
+            assertFalse("the read reaches no put of the map: "
+                            + declaration.render(),
+                    declaration.render().contains("assoc_put"));
+        }
+
         String[] position = new String[3];
         for (int index = 0; index < position.length; index++) {
             position[index] = lowering.statedTerm(
