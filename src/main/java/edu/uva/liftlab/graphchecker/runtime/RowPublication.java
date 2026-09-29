@@ -289,8 +289,11 @@ final class RowPublication {
                             + " cannot say which storage it read");
             return;
         }
-        long observed = versionOf(node);
-        if (observed < 0L && read != null) observed = versionOf(read);
+        // The row's location is the nested read's, so its version is too,
+        // joinability included: the projection's own observedVersion states
+        // no writerSetComplete, and once VM f11 found a location incomplete
+        // the two spelled one read event as two rows (SOLR-18406 s48).
+        long observed = versionOf(read);
         long event = eventOf(node);
         if (event < 0L) event = eventOf(value);
         if (event < 0L && read != null) event = eventOf(read);
