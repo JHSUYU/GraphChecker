@@ -784,12 +784,6 @@ public final class CausynthTraceRecorder {
         return requestId;
     }
 
-    /** Whether the calling thread stands in no scope at all: no node named
-     *  explicitly, no lineage frame. */
-    static boolean unscoped() {
-        return RuntimeTraceContext.explicitSource() == null && !Lineage.named();
-    }
-
     /** The kind a workload registers its own clients under. */
     public static final String WORKLOAD_KIND = "EXTERNAL_APP";
 

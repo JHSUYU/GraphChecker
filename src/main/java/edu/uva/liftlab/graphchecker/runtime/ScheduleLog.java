@@ -73,7 +73,8 @@ public final class ScheduleLog {
     static final long DEFAULT_TIMEOUT_MS = 15000L;
     /** Give-ups past the cut before the rest is let go as a whole. */
     static final int REST_STALLS = 2;
-    /** Where a wait no slot holds waits while the prefix stands. */
+    /** Where a wait no slot holds waits while the prefix stands and its
+     *  context has no slot left. */
     private static final int AT_THE_CUT = -1;
     /** An event that waits nowhere: it is written now. */
     private static final int GO = -2;
@@ -113,6 +114,9 @@ public final class ScheduleLog {
             new HashMap<String, ArrayDeque<Integer>>();
     /** Per recorded occurrence, the slots its events were. */
     private static final Map<String, List<Integer>> BY_OCCURRENCE =
+            new HashMap<String, List<Integer>>();
+    /** Per event context, the slots its events were. */
+    private static final Map<String, List<Integer>> BY_CONTEXT =
             new HashMap<String, List<Integer>>();
     /** Per WAKE key, the slot it took: where its turn began. */
     private static final Map<String, Integer> TAKEN_WAKES =
@@ -519,16 +523,33 @@ public final class ScheduleLog {
     /**
      * Where {@code event}, whose slot is {@code slot} (-1: none), waits now,
      * or {@link #GO}.  An unrecorded WAKE is slept through while the prefix
-     * stands: it waits AT THE CUT, counted by the watchdog.  INTERRUPT is
-     * never held.
+     * stands: it waits AT THE CUT, counted by the watchdog -- unless the
+     * recording made that wait and its context has a slot left.  Then it is
+     * a loop polling once more than recorded for what a free event brings
+     * (a store's notification), and only its next turn makes that slot's
+     * event: it waits until the slot is due.  INTERRUPT is never held.
      */
     private static int waitsAtLocked(Pending event, int slot) {
         if (slot < 0) {
-            return event.kind == ScheduleEvent.Kind.WAKE
-                    && prefixStandsLocked() ? AT_THE_CUT : GO;
+            if (event.kind != ScheduleEvent.Kind.WAKE
+                    || !prefixStandsLocked()) {
+                return GO;
+            }
+            int next = SLOTS.containsKey(event.key)
+                    ? nextOpenLocked(BY_CONTEXT.get(event.context)) : -1;
+            return next < 0 ? AT_THE_CUT : dueLocked(next) ? GO : next;
         }
         return event.kind == ScheduleEvent.Kind.INTERRUPT
                 || !heldKind(slot) || dueLocked(slot) ? GO : slot;
+    }
+
+    /** The first open slot of {@code slots}, or -1. */
+    private static int nextOpenLocked(List<Integer> slots) {
+        if (slots == null) return -1;
+        for (int slot : slots) {
+            if (slot >= firstOpen && state[slot] == OPEN) return slot;
+        }
+        return -1;
     }
 
     /** Whether a slot holds its event: before the cut, or a WAKE. */
@@ -834,6 +855,7 @@ public final class ScheduleLog {
         state = new byte[all.size()];
         SLOTS.clear();
         BY_OCCURRENCE.clear();
+        BY_CONTEXT.clear();
         TAKEN_WAKES.clear();
         WAITERS.clear();
         openHeld = 0;
@@ -853,6 +875,12 @@ public final class ScheduleLog {
                 }
                 held.add(index);
             }
+            List<Integer> own = BY_CONTEXT.get(event.context());
+            if (own == null) {
+                own = new ArrayList<Integer>();
+                BY_CONTEXT.put(event.context(), own);
+            }
+            own.add(index);
             if (heldKind(index)) openHeld++;
         }
         firstOpen = 0;
@@ -921,6 +949,7 @@ public final class ScheduleLog {
             state = new byte[0];
             SLOTS.clear();
             BY_OCCURRENCE.clear();
+            BY_CONTEXT.clear();
             TAKEN_WAKES.clear();
             WAITERS.clear();
             firstOpen = 0;

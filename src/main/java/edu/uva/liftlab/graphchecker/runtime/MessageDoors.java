@@ -36,7 +36,10 @@ public final class MessageDoors {
     private static final Map<String, Outbound> STORED =
             new ConcurrentHashMap<String, Outbound>();
 
-    /** Set while the thread runs a store's notification ({@link #notified}). */
+    /**
+     * While the thread runs a store's notification ({@link #notified}):
+     * {@code TRUE} until a read names its cause, {@code FALSE} after.
+     */
     private static final ThreadLocal<Boolean> NOTIFIED = new ThreadLocal<>();
 
     private MessageDoors() {
@@ -142,8 +145,10 @@ public final class MessageDoors {
 
     /**
      * A store's notification (a ZooKeeper watch event) run by its callback:
-     * the first version the callback reads ({@link #fetched}) is the message
-     * that caused it, and the callback's end ends it.
+     * the first version the callback reads that a write of the window
+     * stored ({@link #fetched}) is the message that caused it, and the
+     * callback's end ends it.  Whatever lineage the callback's pooled thread
+     * inherited is the pool's, not the notification's cause.
      */
     public static void notified(Runnable callback) {
         NOTIFIED.set(Boolean.TRUE);
@@ -156,22 +161,20 @@ public final class MessageDoors {
     }
 
     /**
-     * A read of a version a {@link #stored} write made.  Inside a
-     * notification that nothing else attributes, the read is the message
-     * that caused the work that follows, and installs the writer's context:
+     * A read of a version a {@link #stored} write made.  The first such read
+     * of a notification installs the writer's context, on the reading node:
      * each version read is an occurrence of its own, named by the write.
      * The schedule never waits for it: ZooKeeper folds the changes that
      * arrive before a watch is set again into one event, so how many
      * notifications a run takes is the store's timing.  Any other read is
      * data, not a cause: a loop that polls the store reads as often as its
-     * timing lets it, and a thread already in a scope keeps its own.
+     * timing lets it.
      */
     public static void fetched(String transport, String key, Object owner) {
-        if (NOTIFIED.get() == null || !CausynthTraceRecorder.unscoped()) {
-            return;
-        }
+        if (!Boolean.TRUE.equals(NOTIFIED.get())) return;
         Outbound message = STORED.get(transport + "\n" + key);
         if (message == null) return;
+        NOTIFIED.set(Boolean.FALSE);
         endInbound(true);
         SymbolicMessageEnvelope.clearInbound();
         long token = message.trace.isEmpty() ? 0L

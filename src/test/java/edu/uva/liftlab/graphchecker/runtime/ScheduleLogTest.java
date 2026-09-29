@@ -420,6 +420,39 @@ public class ScheduleLogTest {
                 ScheduleLog.progress().contains(" 1 given up"));
     }
 
+    /**
+     * A wait the recording made, polled once more than recorded (what it
+     * polls for came later on a free thread), goes once its context's next
+     * slot is due: only its next turn makes that slot's event.
+     */
+    @Test(timeout = 20000L)
+    public void aRecordedWaitPolledOnceMoreGoesWhenItsNextSlotIsDue()
+            throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        final String site = "<P: void waitToSee()>#u69";
+        List<ScheduleEvent> order = new ArrayList<ScheduleEvent>();
+        order.add(event(ScheduleEvent.Kind.WAKE, site));
+        order.addAll(prefix("x"));
+        ScheduleLog.enforceForTests(order);
+        Thread poller = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    TimedWaits.sleep(10L, site);
+                    TimedWaits.sleep(10L, site);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+                ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+            }
+        });
+        poller.start();
+        poller.join(5000L);
+        assertFalse("the second poll is no daemon turn held at the cut",
+                poller.isAlive());
+        assertEquals(Arrays.asList(site, site, "x"), sites());
+    }
+
     /** A WAKE or turn the recording did not make before x waits at the cut. */
     @Test(timeout = 20000L)
     public void aWakeTheRecordingDidNotMakeSleepsThroughThePrefix()

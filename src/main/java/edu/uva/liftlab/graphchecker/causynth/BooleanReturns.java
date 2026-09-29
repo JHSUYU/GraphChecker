@@ -4,6 +4,7 @@ import edu.uva.liftlab.graphchecker.plan.SiteId;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import soot.Body;
 import soot.Local;
+import soot.Scene;
 import soot.SootMethod;
 import soot.Unit;
 import soot.Value;
@@ -21,6 +22,7 @@ import soot.jimple.SwitchStmt;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * A guard testing a boolean a helper returned, where the helper's value is
@@ -82,8 +84,8 @@ final class BooleanReturns {
                 takenReaches);
     }
 
-    /** The non-overridable method whose call is the local's one definition,
-     *  or null. */
+    /** The one method the local's one defining call can run -- a static,
+     *  private or final one, or one no loaded class overrides -- or null. */
     private static SootMethod onlyCallDefining(Body body, Local local) {
         InvokeExpr call = null;
         for (Unit unit : body.getUnits()) {
@@ -98,9 +100,21 @@ final class BooleanReturns {
         if (call == null) return null;
         SootMethod helper = CausynthStaticFacts.method(
                 call.getMethodRef().getSignature());
-        return helper != null && helper.isConcrete()
-                && (helper.isStatic() || helper.isPrivate()
-                || helper.isFinal()) ? helper : null;
+        if (helper == null || !helper.isConcrete()) return null;
+        if (helper.isStatic() || helper.isPrivate() || helper.isFinal()) {
+            return helper;
+        }
+        Set<SootMethod> targets;
+        try {
+            targets = Scene.v().getOrMakeFastHierarchy()
+                    .resolveAbstractDispatch(helper.getDeclaringClass(),
+                            helper);
+        } catch (RuntimeException unresolved) {
+            // A phantom supertype: the overrides are unknown.
+            return null;
+        }
+        return targets.size() == 1 && targets.contains(helper) ? helper
+                : null;
     }
 
     /** The constant an arm returns, walking only constant stores and jumps;
