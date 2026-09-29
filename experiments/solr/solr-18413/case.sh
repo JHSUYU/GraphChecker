@@ -3,7 +3,10 @@
 repo=/u/vnr3ne/lucene-solr-8_11
 test_class=org.apache.solr.cloud.TestCausynthMigrateRuleTarget
 test_method=updateAfterRuleExpiryAndTargetDeletion
-target_occurrence=""
+# The source leader's update of a!2, after the target's deletion: its
+# routing rule had expired, so its path left at the expiry check before the
+# target lookup (the first observed occurrence is a!1's, before MIGRATE).
+target_occurrence="auto0/node0#epoch0/region/REGION.f92dbcb6-b4d2-39a2-82db-2f935a7bd391/ctx:Anchor:10caf620b7e70099@SOLR_HTTP/test/idx:<org.apache.solr.update.processor.DistributedZkUpdateProcessor: void processAdd(org.apache.solr.update.AddUpdateCommand)>@0"
 scope=(
   core:org/apache/solr/update/processor/DistributedZkUpdateProcessor
   core:org/apache/solr/update/processor/DistributedUpdateProcessor
