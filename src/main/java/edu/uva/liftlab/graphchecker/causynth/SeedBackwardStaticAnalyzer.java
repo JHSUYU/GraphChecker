@@ -144,6 +144,10 @@ final class SeedBackwardStaticAnalyzer {
     private final Set<String> mutationIndexedFields = new LinkedHashSet<>();
     private final Map<String, Set<String>> relevantFieldEffectsByMethod =
             new LinkedHashMap<>();
+    /** Per method, the relevant field cells it stores a constant into
+     *  ({@link #expandStoreCallerGuards}). */
+    private final Map<String, Set<String>> constantStoresByMethod =
+            new LinkedHashMap<>();
     private final Map<String, Set<String>> relevantByMethod = new LinkedHashMap<>();
     private final Set<String> dirtyMethods = new LinkedHashSet<>();
     private final Set<String> selectedMethods =
@@ -628,6 +632,7 @@ final class SeedBackwardStaticAnalyzer {
             expandFieldWriters(method);
             expandConstructorCallers(method);
             expandMethodCallers(method);
+            expandStoreCallerGuards(method);
         }
     }
 
@@ -847,6 +852,11 @@ final class SeedBackwardStaticAnalyzer {
         if (!fieldHit) {
             return;
         }
+        if (fact.unit instanceof AssignStmt
+                && ((AssignStmt) fact.unit).getRightOp() instanceof Constant) {
+            constantStoresByMethod.computeIfAbsent(method,
+                    ignored -> new LinkedHashSet<>()).add(fieldNode);
+        }
         if (sources.isEmpty()) {
             sources = Collections.singletonList(factNode(fact));
         }
@@ -977,6 +987,61 @@ final class SeedBackwardStaticAnalyzer {
                         callsiteFact);
             }
         });
+    }
+
+    /** How many calls up a constant store's callers' guards are sliced. */
+    private static final int STORE_CALLER_DEPTH = 3;
+
+    /**
+     * A constant store carries no data: its cause is the branches that let
+     * it run -- those of its own method ({@link #processFieldWrites}) and
+     * those of the calls into its method, {@link #STORE_CALLER_DEPTH} calls
+     * up, a virtual call included (SOLR-18406: Lucene's
+     * CommitPoint.delete() sets {@code deleted = true}, and Solr's deletion
+     * policy calls it through IndexCommit.delete() only when the commit's
+     * reservation, a clock, has run out).  Each call's deciding operands are
+     * demanded in its method, guarding the stored cells, and a dispatched
+     * call links its caller to the method it runs.
+     */
+    private void expandStoreCallerGuards(String method) {
+        Set<String> stored = constantStoresByMethod.get(method);
+        if (stored == null || stored.isEmpty()) {
+            return;
+        }
+        buildGlobalStaticIndex();
+        Set<String> visited = new LinkedHashSet<>();
+        List<String> level = Collections.singletonList(method);
+        for (int depth = 0; depth < STORE_CALLER_DEPTH && !level.isEmpty();
+             depth++) {
+            List<String> next = new ArrayList<>();
+            for (String callee : level) {
+                if (!visited.add(callee)) continue;
+                List<String> declared = new ArrayList<>();
+                declared.add(callee);
+                declared.addAll(resolveDispatchSources(callee));
+                for (String target : declared) {
+                    forEachCallsite(methodCallersByCallee, target,
+                            (callsite, callsiteFact) -> {
+                        if (!expandOnce("STORE_CALLER_GUARDS", method,
+                                callsite.method, callsiteFact.unitIndex)) {
+                            return;
+                        }
+                        loadMethod(concreteMethod(callsite.method));
+                        selectedMethods.add(callsite.method);
+                        if (!target.equals(callee)) {
+                            addEdge("dispatch_activation",
+                                    factNode(callsiteFact),
+                                    callee + ".activation", callsite.method,
+                                    callsiteFact);
+                        }
+                        demandControllingGuards(callsite.method, callsiteFact,
+                                relevant(callsite.method), stored);
+                        next.add(callsite.method);
+                    });
+                }
+            }
+            level = next;
+        }
     }
 
     private void selectActivationCaller(String kind, String targetMethod,
