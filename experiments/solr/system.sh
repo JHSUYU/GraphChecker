@@ -26,6 +26,22 @@ solr_door_scope=(
   solrj:org/apache/solr/client/solrj/impl/HttpSolrClient
   solrj:org/apache/solr/common/cloud/SolrZkClient
 )
+# The cluster state's family: the classes that hold it (every node parses
+# ClusterState and its collections, slices and replicas out of ZooKeeper) and
+# the Overseer's writers of it.  A guard over the state then reads a tracked
+# container another region wrote, whose writer the exploration may choose;
+# without them it reads concrete objects no root reaches (123 of sweep q5's
+# checks).  SOLR-18413's case scope holds the same classes.
+solr_state_scope=(
+  solrj:org/apache/solr/common/cloud/ClusterState
+  solrj:org/apache/solr/common/cloud/DocCollection
+  solrj:org/apache/solr/common/cloud/Slice
+  solrj:org/apache/solr/common/cloud/Replica
+  core:org/apache/solr/cloud/overseer/ZkStateWriter
+  core:org/apache/solr/cloud/overseer/SliceMutator
+  core:org/apache/solr/cloud/overseer/ReplicaMutator
+  core:org/apache/solr/cloud/overseer/CollectionMutator
+)
 # The tree's own code, for coverage and for the ad-hoc checks' scan: its class
 # roots (system_root names), the package JaCoCo counts, and each root's
 # sources, as "<root>:<tree-relative source dir>".

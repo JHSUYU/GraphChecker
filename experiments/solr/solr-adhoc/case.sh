@@ -22,8 +22,9 @@ target_spec=${here}/targets/${check}.yaml
 target_occurrence=$(awk -F'\t' -v c="$1" '$1 == c {print $2}' \
   "${here}/occurrences.tsv")
 target_occurrence=${target_occurrence:-first}
-# The doors (system.sh) and the check's own class.
-scope=("${solr_door_scope[@]}" "${own}")
+# The doors and the cluster state's family (system.sh), and the check's own
+# class.
+scope=("${solr_door_scope[@]}" "${solr_state_scope[@]}" "${own}")
 test_method=${workload#*-}
 test_class=$(cd "${repo}/solr/build/solr-core/classes/test" \
   && find . -name "${workload%%-*}.class" | sed 's#^\./##; s#\.class$##; s#/#.#g')
