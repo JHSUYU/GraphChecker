@@ -14,6 +14,7 @@ import java.util.Collections;
 import java.util.List;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 /** IDENTITY-IMPL D: a case declaration is resolved against the seed session. */
@@ -58,9 +59,14 @@ public class PlanTest {
                 DN0.render() + "/region/" + REGION + "#1", seed));
 
         // An address that is already resolved passes through untouched, which
-        // is what a re-run hands back out of a previous manifest.
+        // is what a re-run hands back out of a previous manifest; declared,
+        // it names that occurrence and no other.
         assertEquals(second,
                 SelectorResolution.resolve(second.render(), seed));
+        assertTrue(RuntimeWorkflowDiscovery.declares(second.render(),
+                second.render()));
+        assertFalse(RuntimeWorkflowDiscovery.declares(second.render(),
+                first.render()));
 
         // k beyond what the seed holds, or a node the seed never ran the
         // region on, is a case pointed at an execution this recording does

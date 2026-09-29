@@ -153,12 +153,24 @@ public final class RuntimeWorkflowDiscovery {
         }
     }
 
+    /** Whether a declaration is a resolved occurrence address. */
+    private static boolean resolved(String declared) {
+        try {
+            OccurrenceAddress.parse(declared);
+            return true;
+        } catch (RuntimeException notAnAddress) {
+            return false;
+        }
+    }
+
     /** Whether a declaration names this occurrence (full address, or selector
      *  ignoring k). */
     static boolean declares(String declared, String occurrenceId) {
         String value = declared == null ? "" : declared.trim();
         if (value.isEmpty()) return false;
         if (value.equals(occurrenceId)) return true;
+        // A resolved address names the occurrence it spells and no other.
+        if (resolved(value)) return false;
         // Unreadable plan id or declaration is a failure, not "no match".
         final OccurrenceAddress address;
         try {
