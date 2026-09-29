@@ -2044,8 +2044,9 @@ ${campaign_local_scratch_root}/$(basename "${worker}")}" \
 replay_timeout_s=${campaign_adapter_timeout_s}"
     else
       campaign_replay_killed="was killed (exit ${status}) after ${lived}s, \
-inside its ${campaign_adapter_timeout_s}s bound: by the kernel's memory \
-killer or an operator"
+inside its ${campaign_adapter_timeout_s}s bound: by its memory \
+reservation (the replay log says so), the kernel's memory killer or an \
+operator"
     fi
     campaign_log "replay role=${role} ${campaign_replay_killed} \
 (exit ${status}); its session states no verdict: ${sessions}"

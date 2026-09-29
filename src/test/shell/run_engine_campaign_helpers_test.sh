@@ -1346,7 +1346,7 @@ concolic_replay_command='kill -KILL $$'
 $(cat "${worker_dir}/worker.log")"
 [[ "$(jq -r '.verdict + " " + .detail' \
     "${worker_dir}/obligation_result.jsonl")" \
-    == "NOT_ADMITTED replay was killed (exit 137) after "*"s, inside its 60s bound: by the kernel's memory killer or an operator" ]] \
+    == "NOT_ADMITTED replay was killed (exit 137) after "*"s, inside its 60s bound: by its memory reservation (the replay log says so), the kernel's memory killer or an operator" ]] \
   || fail "a replay killed inside its bound is recorded as something else: \
 $(cat "${worker_dir}/obligation_result.jsonl")"
 

@@ -82,6 +82,13 @@ heap_mb=$(( ${CAUSYNTH_OBLIGATION_MEMORY_MB:-0} / 2 ))
 # noInflation: a reflective call is served by a generated accessor from its
 # first call, not by the native one for fifteen calls and a generated one
 # after, so one write through reflection names one site in every run.
+# The host's memory gate reserves obligation_memory_mb for this JVM, and
+# nothing else holds it to that: a replay whose native symbolic state ran
+# away reached 27 GB, and the kernel killed what it chose on the host
+# (hdfs-17960 v96).  One that outgrows twice its reservation is ended here,
+# and says so; the heap alone is 2 GB at least, so a small reservation is
+# no hard bound on a JVM that stays well.
+reserve_mb=${CAUSYNTH_OBLIGATION_MEMORY_MB:-0}
 set +e
 "${jdk}/bin/java" -ea -Xmx${heap_mb}m -Djava.awt.headless=true \
   -Dsun.reflect.noInflation=true \
@@ -90,8 +97,26 @@ set +e
   "${properties[@]}" "${workload_properties[@]+"${workload_properties[@]}"}" \
   "${extra[@]+"${extra[@]}"}" -cp "${classpath}" \
   edu.uva.liftlab.graphchecker.runtime.JUnitMethodRunner \
-  "${test_class}" "${test_method}"
+  "${test_class}" "${test_method}" &
+jvm=$!
+watchdog=""
+if (( reserve_mb > 0 )); then
+  while kill -0 "${jvm}" 2>/dev/null; do
+    rss_kb=$(awk '/VmRSS/ {print $2}' "/proc/${jvm}/status" 2>/dev/null)
+    if (( ${rss_kb:-0} / 1024 > 2 * reserve_mb )); then
+      echo "causynth: the workload JVM's resident memory reached" \
+        "$(( rss_kb / 1024 )) MB, over twice the ${reserve_mb} MB its" \
+        "host reserved for it; ended" >&2
+      kill -9 "${jvm}"
+      break
+    fi
+    sleep 2
+  done &
+  watchdog=$!
+fi
+wait "${jvm}"
 status=$?
+[[ -z ${watchdog} ]] || kill "${watchdog}" 2>/dev/null
 set -e
 if [[ -n ${results:-} ]]; then
   [[ -s ${results} ]] || exit $((status == 0 ? 2 : status))
