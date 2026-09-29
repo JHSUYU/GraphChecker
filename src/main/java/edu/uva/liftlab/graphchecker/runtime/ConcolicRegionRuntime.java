@@ -14,6 +14,7 @@ import edu.uva.liftlab.graphchecker.runtime.BranchObservation.BranchDecision;
 import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
 import edu.uva.liftlab.graphchecker.runtime.LoopAccounting.LoopBoundCut;
 import edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.RawSharedStateReadOut;
+import edu.uva.liftlab.graphchecker.smt.JsonFields;
 import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayDeque;
 import java.util.Deque;
@@ -1271,6 +1272,25 @@ public final class ConcolicRegionRuntime {
     }
 
     /**
+     * Names an activation the VM aborted (its {@code abortReason}: a
+     * container operation it does not model, a shadow stack out of frames):
+     * the thread ran on concretely from there, so its decisions stop and the
+     * published path is a prefix nobody stated.  BLOCKING, never silent.
+     */
+    private static void aborted(ActiveRegion active, JsonElement summary) {
+        if (!summary.isJsonObject()) return;
+        JsonObject region = summary.getAsJsonObject();
+        if (!JsonFields.optionalBool(region, "aborted", false)) return;
+        RowRuntime.gap(GapKind.UNATTESTED_ARM, GapClass.BLOCKING,
+                firstNonBlank(active.address(), Long.toString(active.token)),
+                "the VM aborted this activation's symbolic execution ("
+                        + firstNonBlank(JsonFields.optionalString(region,
+                        "abortReason"), "no reason stated") + "), so every"
+                        + " decision it took afterwards is unrecorded and the"
+                        + " published path is a prefix nobody stated");
+    }
+
+    /**
      * Reads one occurrence and closes its VM region on the owner thread;
      * decoding and publication go to the daemon pool.
      *
@@ -1310,8 +1330,9 @@ public final class ConcolicRegionRuntime {
                                     + rootCause(throwable));
                 }
             }
-            api.finish();
+            JsonElement summary = parseJson(api.finish());
             engineFinished = true;
+            if (publishRows) aborted(active, summary);
             // Symbolic values flow back to the caller, so open its gate too.
             if (enclosingRegion != null && active.pathRecordingStarted) {
                 enclosingRegion.pathRecordingStarted = true;
