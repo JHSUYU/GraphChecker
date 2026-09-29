@@ -6,7 +6,8 @@
 # most <heads-per-host> heads on each (default 1), its obligations on all ten
 # (CAUSYNTH_CAMPAIGN_WORKER_HOSTS), every lift's memory gated for both
 # (fanout.sh, run_engine's host gate).  A sweep keeps what a verdict needs
-# (PRUNE=1) and gives each case CASE_TIMEOUT_SECONDS (default 5400).  Case n
+# (PRUNE=1) and gives each case CASE_TIMEOUT_SECONDS (default 5400), on the
+# concolic VM image VM_IMAGE (default $GC_OUT/vm-f6/j2sdk-image).  Case n
 # of the file writes $GC_OUT/accept-<round>-<n>; <round>-cases.tsv maps n to
 # the case id.
 set -uo pipefail
@@ -23,7 +24,7 @@ jobs="${out}/sweep-${round}-jobs.txt"
 : > "${out}/sweep-${round}-cases.tsv"
 for n in "${!cases[@]}"; do
   printf '%s\t%s\n' "${n}" "${cases[$n]}" >> "${out}/sweep-${round}-cases.tsv"
-  printf '%s\n' "PRUNE=1 CASE_TIMEOUT_SECONDS=${CASE_TIMEOUT_SECONDS:-5400} CAUSYNTH_CAMPAIGN_WORKER_HOSTS='${lifts}' CAUSYNTH_CONCOLIC_JOBS=${CONCOLIC_JOBS:-4} GC_OUT=${out} CAUSYNTH_CUSTOM_JDK_HOME=${out}/vm-f5/j2sdk-image bash ${snapshot}/tools/rounds/launch-run.sh ${snapshot} '${cases[$n]}' ${round}-${n}" >> "${jobs}"
+  printf '%s\n' "PRUNE=1 CASE_TIMEOUT_SECONDS=${CASE_TIMEOUT_SECONDS:-5400} CAUSYNTH_CAMPAIGN_WORKER_HOSTS='${lifts}' CAUSYNTH_CONCOLIC_JOBS=${CONCOLIC_JOBS:-4} GC_OUT=${out} CAUSYNTH_CUSTOM_JDK_HOME=${VM_IMAGE:-${out}/vm-f6/j2sdk-image} bash ${snapshot}/tools/rounds/launch-run.sh ${snapshot} '${cases[$n]}' ${round}-${n}" >> "${jobs}"
 done
 JOB_MEMORY_MB=${HEAD_MEMORY_MB:-12000} exec bash "${here}/fanout.sh" "${jobs}" \
   "${out}/sweep-${round}-logs" "${heads}"
