@@ -135,6 +135,9 @@ final class SeedBackwardStaticAnalyzer {
             new LinkedHashMap<>();
     private final Map<String, List<Callsite>> methodCallersByCallee =
             new LinkedHashMap<>();
+    /** The abstract types outside the scope that an application class runs
+     *  a body of ({@link #buildGlobalStaticIndex}). */
+    private final Set<String> dispatchOwners = new LinkedHashSet<>();
     /** Every application call site of the explicit boolean fault hook. */
     private final Map<String, List<Integer>> explicitFaultUnitsByMethod =
             new LinkedHashMap<>();
@@ -1160,6 +1163,19 @@ final class SeedBackwardStaticAnalyzer {
         int indexedMethods = 0;
         int indexedFacts = 0;
         globalStaticIndexBuilt = true;
+        // A call through an abstract type an application class runs a body
+        // of is a call into the application, whatever scope the type is in:
+        // Solr's IndexCommit.delete() runs Lucene's CommitPoint.delete().
+        for (SootClass sootClass : classesByName.values()) {
+            for (String name : hierarchyNames(sootClass)) {
+                SootClass type = sceneClass(name);
+                if (type != null && !type.isApplicationClass()
+                        && !skipDispatchOwner(name)
+                        && (type.isInterface() || type.isAbstract())) {
+                    dispatchOwners.add(name);
+                }
+            }
+        }
         for (SootMethod method : allMethodsBySignature.values()) {
             if (!method.isConcrete()
                     || !method.getDeclaringClass().isApplicationClass()) {
@@ -1222,7 +1238,8 @@ final class SeedBackwardStaticAnalyzer {
                             ignored -> new ArrayList<>()).add(index);
                     indexedInvoke = true;
                 }
-                if (sig != null && isApplicationClassName(sig.owner)) {
+                if (sig != null && (isApplicationClassName(sig.owner)
+                        || dispatchOwners.contains(sig.owner))) {
                     String unitText = unit.toString();
                     String receiver = canonical(methodSignature,
                             invokeBaseLocal(unitText));
