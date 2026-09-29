@@ -27,12 +27,35 @@
  */
 class ReadFromExpression : public Expression {
 public:
+  /**
+   * What the read returned, when it is a value rather than an identity: a
+   * primitive's constant, null, or a String's content.
+   *
+   * A read joins to the expression of the write it observed, and pins to
+   * the value it returned when it cannot: the write does not lower, or the
+   * writer set is incomplete and the read states no version at all.  Reads
+   * used to state no value, so SOLR-18406's read of a String field of
+   * ReplicationHandler$DirectoryFileStream (initWrite#288), whose observed
+   * write did not lower, had nothing to pin to and the composition refused
+   * all four paths to the anchor; a read of an UNOBSERVED version, whose
+   * location's writer set is incomplete by definition, would have had
+   * nothing either.  Any other object is an identity no formula can pin, and
+   * stays unstated.
+   */
+  struct Returned {
+    enum Kind { UNSTATED, CONSTANT, NULL_REFERENCE, STRING };
+    Kind kind;
+    Expression *constant;
+    std::string content;
+    Returned() : kind(UNSTATED), constant(NULL) {}
+  };
+
   ReadFromExpression(jlong observed_version_id,
                      const std::string &observed_version_kind,
                      Expression *observed_value,
                      const std::string &java_type, jlong read_event_id,
                      sym_rid_t owner, int slot, const char *location_kind,
-                     bool writer_set_complete,
+                     bool writer_set_complete, const Returned &returned,
                      const std::string &site_class = std::string(),
                      const std::string &site_method = std::string(),
                      const std::string &site_descriptor = std::string(),
@@ -65,6 +88,7 @@ private:
   sym_rid_t _owner;
   int _slot;
   bool _writer_set_complete;
+  Returned _returned;
 };
 
 #endif // ENABLE_CONCOLIC

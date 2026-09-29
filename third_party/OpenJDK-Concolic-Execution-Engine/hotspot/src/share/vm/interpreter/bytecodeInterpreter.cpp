@@ -447,6 +447,36 @@
           if (THREAD->has_pending_exception()) goto label;         \
         }
 
+#ifdef ENABLE_CONCOLIC
+// The word the primitive operand on top of the stack denotes, narrowed to
+// the field's own type as the heap holds it: the one encoding a version's
+// stored word and a read's loaded word are compared in.  Unstated for a
+// reference.
+static SharedFieldVersions::ConcreteBits concolic_top_word(
+    TosState tos, intptr_t *topOfStack) {
+  typedef SharedFieldVersions::ConcreteBits Word;
+  switch (tos) {
+    case ztos: return Word(T_BOOLEAN, SharedFieldVersions::raw_bits(
+                   (jboolean)(STACK_INT(-1) & 1)));
+    case btos: return Word(T_BYTE, SharedFieldVersions::raw_bits(
+                   (jbyte) STACK_INT(-1)));
+    case ctos: return Word(T_CHAR, SharedFieldVersions::raw_bits(
+                   (jchar) STACK_INT(-1)));
+    case stos: return Word(T_SHORT, SharedFieldVersions::raw_bits(
+                   (jshort) STACK_INT(-1)));
+    case itos: return Word(T_INT, SharedFieldVersions::raw_bits(
+                   (jint) STACK_INT(-1)));
+    case ltos: return Word(T_LONG, SharedFieldVersions::raw_bits(
+                   (jlong) STACK_LONG(-1)));
+    case ftos: return Word(T_FLOAT, SharedFieldVersions::raw_bits(
+                   (jfloat) STACK_FLOAT(-1)));
+    case dtos: return Word(T_DOUBLE, SharedFieldVersions::raw_bits(
+                   (jdouble) STACK_DOUBLE(-1)));
+    default:   return Word();
+  }
+}
+#endif
+
 /*
  * BytecodeInterpreter::run(interpreterState istate)
  * BytecodeInterpreter::runWithChecks(interpreterState istate)
@@ -2360,13 +2390,18 @@ run:
     }                                                                          \
   }
 
-#define CONCOLIC_ALOAD_RESOLVE(T)                                              \
+// `bits` is the word the load pushed: what the element held, and what the
+// read returned.
+#define CONCOLIC_ALOAD_RESOLVE(T, bits)                                        \
   if (aload_selected) {                                                        \
     BasicType element_type =                                                   \
         arrObj->klass() == Universe::boolArrayKlassObj() ? T_BOOLEAN : (T);    \
+    const SharedFieldVersions::ConcreteBits aload_word(element_type, (bits));  \
     SharedFieldVersions::ReadResult resolved;                                  \
     if (SharedFieldVersions::resolve_read(                                     \
-            aload_location, element_type, &resolved)) {                        \
+            aload_location, element_type, aload_word,                          \
+            SharedFieldVersions::returned_value(aload_word, NULL),             \
+            &resolved)) {                                                      \
       if (resolved.expression != NULL) {                                       \
         ConcolicMngr::ctx->set_stack_value(                                    \
             aload_anchor, aload_slots, resolved.expression,                    \
@@ -2430,7 +2465,7 @@ run:
   }
 #else
 #define CONCOLIC_ALOAD_CARRIER
-#define CONCOLIC_ALOAD_RESOLVE(T)
+#define CONCOLIC_ALOAD_RESOLVE(T, bits)
 #define CONCOLIC_ALOAD(T, T2, arrayOff, res_off, res_slots)
 #endif
 
@@ -2443,7 +2478,8 @@ run:
           (void)extra;                                                                \
           SET_ ## stackRes(*(T2 *)(((address) arrObj->base(T)) + index * sizeof(T2)), \
                            -2);                                                       \
-          CONCOLIC_ALOAD_RESOLVE(T);                                                  \
+          CONCOLIC_ALOAD_RESOLVE(                                                     \
+              T, SharedFieldVersions::raw_bits((T2) stackRes(-2)));                   \
           UPDATE_PC_AND_TOS_AND_CONTINUE(1, -1);                                      \
       }
 
@@ -2454,7 +2490,8 @@ run:
           CONCOLIC_ALOAD_CARRIER                                                           \
           CONCOLIC_ALOAD(T, T2, -2, -1, 2);                                                \
           SET_ ## stackRes(*(T2 *)(((address) arrObj->base(T)) + index * sizeof(T2)), -1); \
-          CONCOLIC_ALOAD_RESOLVE(T);                                                       \
+          CONCOLIC_ALOAD_RESOLVE(                                                          \
+              T, SharedFieldVersions::raw_bits((T2) stackRes(-1)));                        \
           (void)extra;                                                                     \
           UPDATE_PC_AND_CONTINUE(1);                                                       \
       }
@@ -2540,7 +2577,11 @@ run:
           if (aload_selected) {
             SharedFieldVersions::ReadResult resolved;
             if (SharedFieldVersions::resolve_read(
-                    aload_location, T_OBJECT, &resolved)) {
+                    aload_location, T_OBJECT,
+                    SharedFieldVersions::ConcreteBits(),
+                    SharedFieldVersions::returned_value(
+                        SharedFieldVersions::ConcreteBits(), STACK_OBJECT(-2)),
+                    &resolved)) {
               if (resolved.expression != NULL) {
                 ConcolicMngr::ctx->set_stack_value(
                     aload_anchor, aload_slots, resolved.expression,
@@ -2604,8 +2645,9 @@ run:
       published = SharedFieldVersions::primitive_expression(T, (bits));        \
     }                                                                          \
     SharedFieldVersions::publish_value(                                        \
-        astore_location, published, astore_guard, astore_symbolic,             \
-        SharedFieldVersions::VERSION_WRITE);                                   \
+        astore_location, published,                                            \
+        SharedFieldVersions::ConcreteBits(T, (bits)), astore_guard,            \
+        astore_symbolic, SharedFieldVersions::VERSION_WRITE);                  \
   }
 
 #define CONCOLIC_ASTORE(arrayOff, delta, value_slots, value, T)                \
@@ -2773,8 +2815,9 @@ run:
                   SharedFieldVersions::reference_expression(STACK_OBJECT(-1));
             }
             SharedFieldVersions::publish_value(
-                astore_location, published, astore_guard, astore_symbolic,
-                SharedFieldVersions::VERSION_WRITE);
+                astore_location, published,
+                SharedFieldVersions::ConcreteBits(), astore_guard,
+                astore_symbolic, SharedFieldVersions::VERSION_WRITE);
           }
 #endif
           UPDATE_PC_AND_TOS_AND_CONTINUE(1, -3);
@@ -2820,14 +2863,21 @@ run:
           CHECK_NULL(ary);
 #ifdef ENABLE_CONCOLIC
           if (ConcolicMngr::can_do_concolic()) {
-            if (ary->is_symbolic()
-                && !ConcolicMngr::ctx->holds_concrete_elements(ary)) {
+            const bool shadowed = ary->is_symbolic()
+                && !ConcolicMngr::ctx->holds_concrete_elements(ary);
+            Expression *state = shadowed
+                ? ConcolicMngr::ctx->container_state(ary, "INDEXED") : NULL;
+            ContainerExpression *relation =
+                state == NULL ? NULL : state->as_container_expression();
+            // A length that is a constant is the concrete one: the loop
+            // bound of hdfs-17960's inode-map scan (`index < entries.length`)
+            // otherwise recorded a SIZE comparison per bucket.
+            if (shadowed
+                && (relation == NULL || !relation->has_constant_size())) {
               sym_rid_t sym_arr_oid = ary->get_sym_rid();
               exp_list_t no_arguments;
               Expression *length_exp = new ContainerExpression(
-                  "INDEXED", "SIZE",
-                  ConcolicMngr::ctx->container_state(ary, "INDEXED"),
-                  no_arguments, T_INT);
+                  "INDEXED", "SIZE", state, no_arguments, T_INT);
               ConcolicMngr::ctx->set_stack_value(
                   GET_STACK_OFFSET - 1, 1, length_exp, sym_arr_oid,
                   FIELD_INDEX_ARRAY_LENGTH);
@@ -3239,6 +3289,12 @@ run:
           }
 
 #ifdef ENABLE_CONCOLIC
+          // The word the load took is what the location held; taken before a
+          // replay override replaces the operand, and from the operand rather
+          // than the heap, which a concurrent writer may have moved on since.
+          const SharedFieldVersions::ConcreteBits loaded_word = carrier_read
+              ? concolic_top_word(tos_type, topOfStack)
+              : SharedFieldVersions::ConcreteBits();
           // Change only the concrete operand consumed by this execution.
           // resolve_read below still installs the complete guarded
           // ReadFromExpression as the shadow value.
@@ -3261,8 +3317,13 @@ run:
           if (carrier_read) {
             BasicType read_type = as_BasicType(tos_type);
             SharedFieldVersions::ReadResult resolved;
+            // What the program was handed: the override's word, if any.
             if (SharedFieldVersions::resolve_read(
-                    carrier_location, read_type, &resolved)) {
+                    carrier_location, read_type, loaded_word,
+                    SharedFieldVersions::returned_value(
+                        concolic_top_word(tos_type, topOfStack),
+                        tos_type == atos ? STACK_OBJECT(-1) : (oop) NULL),
+                    &resolved)) {
               if (resolved.expression != NULL) {
                 ConcolicMngr::ctx->set_stack_value(
                     carrier_anchor, carrier_slots, resolved.expression,
@@ -3289,34 +3350,15 @@ run:
           // replace that resolved read with a projection, dropping the
           // carrier's published version chain out of the formula.
           if (reference_owner != NULL) {
-            jlong observed_bits = 0;
-            bool primitive_field = true;
-            switch (tos_type) {
-              case ztos: observed_bits = SharedFieldVersions::raw_bits(
-                             (jboolean)(STACK_INT(-1) & 1)); break;
-              case btos: observed_bits = SharedFieldVersions::raw_bits(
-                             (jbyte) STACK_INT(-1)); break;
-              case ctos: observed_bits = SharedFieldVersions::raw_bits(
-                             (jchar) STACK_INT(-1)); break;
-              case stos: observed_bits = SharedFieldVersions::raw_bits(
-                             (jshort) STACK_INT(-1)); break;
-              case itos: observed_bits = SharedFieldVersions::raw_bits(
-                             (jint) STACK_INT(-1)); break;
-              case ltos: observed_bits = SharedFieldVersions::raw_bits(
-                             (jlong) STACK_LONG(-1)); break;
-              case ftos: observed_bits = SharedFieldVersions::raw_bits(
-                             (jfloat) STACK_FLOAT(-1)); break;
-              case dtos: observed_bits = SharedFieldVersions::raw_bits(
-                             (jdouble) STACK_DOUBLE(-1)); break;
-              default:   primitive_field = false; break;
-            }
-            if (primitive_field) {
-              BasicType field_type = as_BasicType(tos_type);
+            const SharedFieldVersions::ConcreteBits observed_word =
+                concolic_top_word(tos_type, topOfStack);
+            if (observed_word.stated()) {
+              BasicType field_type = observed_word.type;
               Expression *observed =
                   ConcolicMngr::ctx->get_stack_slot(dependent_anchor);
               if (observed == NULL) {
                 observed = SharedFieldVersions::primitive_expression(
-                    field_type, observed_bits);
+                    field_type, observed_word.bits);
               }
               Expression *concrete_owner =
                   SharedFieldVersions::reference_expression(obj);
@@ -3561,35 +3603,18 @@ run:
           // heap: re-reading would report whatever a concurrent writer left
           // there and attribute it to this thread.
           if (carrier_write) {
+            const SharedFieldVersions::ConcreteBits stored =
+                concolic_top_word(tos_type, topOfStack);
             Expression *published = carrier_value;
-            if (tos_type == atos) {
-              if (published == NULL) {
-                published =
-                    SharedFieldVersions::reference_expression(STACK_OBJECT(-1));
-              }
-            } else {
-              BasicType stored_type = as_BasicType(tos_type);
-              jlong bits;
-              switch (tos_type) {
-                case ltos: bits = SharedFieldVersions::raw_bits(
-                               (jlong) STACK_LONG(-1)); break;
-                case ftos: bits = SharedFieldVersions::raw_bits(
-                               (jfloat) STACK_FLOAT(-1)); break;
-                case dtos: bits = SharedFieldVersions::raw_bits(
-                               (jdouble) STACK_DOUBLE(-1)); break;
-                case ztos: bits = SharedFieldVersions::raw_bits(
-                               (jboolean)(STACK_INT(-1) & 1)); break;
-                default:   bits = SharedFieldVersions::raw_bits(
-                               (jint) STACK_INT(-1)); break;
-              }
-              if (published == NULL) {
-                published = SharedFieldVersions::primitive_expression(
-                    stored_type, bits);
-              }
+            if (published == NULL) {
+              published = tos_type == atos
+                  ? SharedFieldVersions::reference_expression(STACK_OBJECT(-1))
+                  : SharedFieldVersions::primitive_expression(stored.type,
+                                                              stored.bits);
             }
             SharedFieldVersions::publish_value(
-                carrier_location, published, carrier_guard, carrier_symbolic,
-                SharedFieldVersions::VERSION_WRITE);
+                carrier_location, published, stored, carrier_guard,
+                carrier_symbolic, SharedFieldVersions::VERSION_WRITE);
           }
 #endif
 

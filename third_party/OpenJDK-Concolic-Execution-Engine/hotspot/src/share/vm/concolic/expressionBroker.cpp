@@ -395,8 +395,13 @@ jlong ConcolicMngr::attachExpression(
     // Folded outside every engine lock, as the store's concurrency contract
     // requires; the same guard a putfield of this value would publish.
     Expression *guard = ctx->path_guard();
-    SharedFieldVersions::publish_value(location, attached, guard, true,
-                                       SharedFieldVersions::VERSION_WRITE);
+    // The attach names the value the field holds, so that word is the one
+    // this version stored.
+    SharedFieldVersions::publish_value(
+        location, attached,
+        SharedFieldVersions::field_bits(owner(), field.offset(),
+                                        field.field_type()),
+        guard, true, SharedFieldVersions::VERSION_WRITE);
   }
   ctx->set_pc_admitted(true);
   for (int index = 0; index < pause_depth; ++index) {

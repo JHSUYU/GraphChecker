@@ -1,6 +1,10 @@
 /** A read at a symbolic index names an array and writes nothing: a scan at
  *  concrete indices afterwards (length included) reads what the heap holds,
- *  while an element written symbolically stays symbolic. */
+ *  while an element written symbolically stays symbolic.  Once written, the
+ *  array's elements are read through its state, but a concrete position and
+ *  the constant length still constrain nothing: hdfs-17960's FSImageSaver
+ *  recorded `k >= 0`, `k < SIZE` and the loop bound for each of ~1M buckets
+ *  and was killed at 27 GB. */
 public final class RegionSymbolicIndexScanSmoke {
     private static final class Input {
         int value = 5;
@@ -47,7 +51,15 @@ public final class RegionSymbolicIndexScanSmoke {
         boolean decision = counts[3] > 0;
         String written = System.getConcolicPathConditionRange(
                 0, Integer.MAX_VALUE);
+        int total = 0;
+        for (int i = 0; i < counts.length; i++) total += counts[i];
+        sink = total;
+        String rescanned = System.getConcolicPathConditionRange(
+                0, Integer.MAX_VALUE);
         System.finishConcolicRegion();
+        require(rescanned.length() - written.length() < 512, "a concrete "
+                + "scan of a written array constrained the path by "
+                + (rescanned.length() - written.length()) + " characters");
         require(decision && named != null && counted == 0
                         && written.length() > after.length()
                         && written.contains("INDEX_SOURCE"),

@@ -5,6 +5,7 @@
 
 #include "concolic/defs.hpp"
 #include "concolic/exp/expression.hpp"
+#include "concolic/exp/readFromExpression.hpp"
 #include "oops/oop.inline.hpp"
 
 #include <pthread.h>
@@ -57,9 +58,22 @@
  * records the value that store wrote, taken from the operand stack rather than
  * re-read from the heap.  Re-reading would report whatever a concurrent writer
  * left behind and attribute it to this thread; taking the operand it actually
- * stored is exact regardless of what else is running.  The pairing is
- * one-to-one: no version exists for a store that did not happen, and no store
- * to a selected location fails to produce one.
+ * stored is exact regardless of what else is running.  No version exists for
+ * a store that did not happen.
+ *
+ * The converse does not hold, and a scalar version says so by carrying the
+ * concrete word its store left (`Version::stored`).  A write the hooks never
+ * see still changes the heap: an AtomicInteger bumped by a thread outside
+ * every region (the atomic model runs only under a context), Unsafe,
+ * reflection.  Solr's SolrCore.close() decrements `refCount` and returns
+ * early while the count stays positive; the HTTP request's open() increment
+ * ran before any region, so the read resolved to a stale version, the term
+ * said `count <= 0` while the run returned, and IMPORT refused the session.
+ * A scalar read therefore states the word it loaded, and when the newest
+ * version's word differs the read publishes a VERSION_UNOBSERVED version
+ * holding the loaded constant, with no writer, and clears
+ * `writer_set_complete` (`plan_read`).  Whole-state versions carry no word:
+ * a container state is not one.
  *
  * ---------------------------------------------------------------------------
  * Retention, and what an incomplete writer set means
@@ -172,7 +186,31 @@ public:
     // whichever model published the state, and baking a collection's verbs
     // into this store would make a generic service the owner of one model's
     // semantics.
-    VERSION_STATE = 3
+    VERSION_STATE = 3,
+    // A write no hook saw, published by the read that found its word in the
+    // heap: the loaded constant, no writer, no region, no guard.
+    VERSION_UNOBSERVED = 4
+  };
+
+  /**
+   * The concrete word one scalar store left, or one scalar read loaded.
+   *
+   * In the raw_bits() encoding, typed so that the word can be turned back
+   * into the constant it denotes.  T_ILLEGAL means no word is stated: a
+   * reference (its word is an address the collector moves) and a whole
+   * container state have none, and two words compare only when both are
+   * stated.
+   */
+  struct ConcreteBits {
+    BasicType type;
+    jlong bits;
+    ConcreteBits() : type(T_ILLEGAL), bits(0) {}
+    ConcreteBits(BasicType word_type, jlong word_bits)
+        : type(word_type), bits(word_bits) {}
+    bool stated() const { return type != T_ILLEGAL; }
+    bool contradicts(const ConcreteBits &other) const {
+      return stated() && other.stated() && bits != other.bits;
+    }
   };
 
   /**
@@ -264,6 +302,9 @@ public:
     jlong region_enter_event_id;
     // The value written.  Never NULL: a concrete store publishes a constant.
     Expression *value;
+    // The concrete word the store left, when it is a scalar's; what a later
+    // read of the heap is checked against (see plan_read).
+    ConcreteBits stored;
     // Conjunction of the writer's path condition at the write, or NULL for the
     // empty conjunction (true).
     Expression *path_guard;
@@ -319,13 +360,17 @@ public:
     // The site the read stood at, for the node build_read_from emits.
     EventSite site;
     // The version live when the read ran: the newest one retained for the
-    // location.  The run performed one read and the location held one value;
-    // the set of versions it did not hold was never evidence about it.
+    // location, or the UNOBSERVED one the read published when the word it
+    // loaded is not that version's.  The run performed one read and the
+    // location held one value; the set of versions it did not hold was never
+    // evidence about it.
     Version observed;
     // Coverage metadata.  False once a writer has been lost or an untracked
     // one was detected; it blocks closed/final claims but never changes which
     // version the read observed.
     bool writer_set_complete;
+    // What the read returned; see ReadFromExpression::Returned.
+    ReadFromExpression::Returned returned;
     ReadPlan() : read_event_id(0), writer_set_complete(true) {}
   };
 
@@ -338,7 +383,16 @@ public:
   static jlong live_version(const Location &location,
                             std::string *version_kind);
 
-  static bool plan_read(const Location &location, ReadPlan *plan);
+  /**
+   * Decides and records one read of a tracked location.
+   *
+   * `loaded` is the word the read took from the heap (unstated for a
+   * reference or a container query).  When the newest version stated a
+   * different word, a write no hook saw came between, and the read publishes
+   * it as a VERSION_UNOBSERVED version and observes that.
+   */
+  static bool plan_read(const Location &location, const ConcreteBits &loaded,
+                        ReadPlan *plan);
 
   /**
    * The read-from node every reader of a selected location publishes.
@@ -358,12 +412,25 @@ public:
 
   /**
    * Resolves one read of a selected location against its versions.
+   * `loaded` is the word the read took from the heap, as for plan_read;
+   * `returned` is what the read handed the program (returned_value), which a
+   * replay's armed override can make a different word.
    *
    * Returns false when the location is not selected, leaving *result at
    * its empty value.
    */
   static bool resolve_read(const Location &location, BasicType type,
+                           const ConcreteBits &loaded,
+                           const ReadFromExpression::Returned &returned,
                            ReadResult *result);
+
+  /**
+   * What a scalar read returned, as its read node states it: the constant
+   * of a stated `word`, else null or a String's content for `reference`,
+   * else nothing.
+   */
+  static ReadFromExpression::Returned returned_value(const ConcreteBits &word,
+                                                     oop reference);
 
   /**
    * One-shot concrete operand override; symbolic resolve_read is unchanged.
@@ -469,9 +536,13 @@ public:
    * there it must be, or a later read would resolve to an expression this
    * store has overwritten -- and is free everywhere else.
    *
+   * `stored` is the concrete word the store left, unstated for a reference
+   * or a whole state.
+   *
    * Returns the new fieldVersionId, or 0 when nothing was recorded.
    */
   static jlong publish_value(const Location &location, Expression *value,
+                             const ConcreteBits &stored,
                              Expression *path_guard, bool symbolic,
                              int version_kind,
                              const char *operation = NULL);
@@ -488,6 +559,7 @@ public:
    * Returns 0 when the location is already tracked.
    */
   static jlong publish_initial(const Location &location, Expression *base,
+                               const ConcreteBits &stored,
                                const InitialSnapshot &snapshot);
 
   /**
@@ -501,6 +573,7 @@ public:
    * that decides, from the value, whether the write is kept at all.
    */
   static jlong publish(const Location &location, Expression *value,
+                       const ConcreteBits &stored,
                        Expression *path_guard, int version_kind,
                        const char *operation = NULL,
                        bool start_tracking = false,
@@ -516,10 +589,6 @@ public:
    * there is nothing to keep honest.
    */
   static bool mark_writer_set_incomplete(const Location &location);
-
-  /** Copies out this location's versions.  Empty when it is not selected. */
-  static bool versions_of(const Location &location, VersionList *out,
-                          bool *writer_set_complete);
 
   // Raw bits of one stored primitive, in the one encoding both the version
   // and the read compare against.  Float and double go through their bit
@@ -537,6 +606,13 @@ public:
   /** Builds the constant/reference expression that describes a stored value. */
   static Expression *primitive_expression(BasicType type, jlong bits);
   static Expression *reference_expression(oop value);
+
+  /**
+   * The word a primitive field holds right now; unstated for a reference.
+   * For a publisher that states the value a field already holds (a mint, an
+   * observation, an attach) rather than one it is storing.
+   */
+  static ConcreteBits field_bits(oop owner, int field_offset, BasicType type);
 
   /**
    * What a field holds right now, as an expression.
@@ -711,6 +787,8 @@ private:
   static pthread_mutex_t _mutex;
 
   static Slot *find_slot_locked(const Location &location);
+  // Appends under _mutex, dropping the oldest version past the bound.
+  static void append_locked(Slot *slot, const Version &version);
 };
 
 #endif // ENABLE_CONCOLIC

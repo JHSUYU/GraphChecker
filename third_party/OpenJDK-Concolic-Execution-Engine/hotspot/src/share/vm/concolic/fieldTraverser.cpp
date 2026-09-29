@@ -307,8 +307,12 @@ bool FieldSymbolizer::do_field_helper(fieldDescriptor *fd, oop obj) {
     // Folded outside every engine lock, as the store's concurrency contract
     // requires; the same guard a putfield would publish.
     Expression *guard = _ctx.path_guard();
+    // The symbol stands for the word the field holds, which is the word a
+    // later read of it must find there.
     jlong minted_version = SharedFieldVersions::publish_value(
-        location, symbol, guard, true, SharedFieldVersions::VERSION_WRITE);
+        location, symbol,
+        SharedFieldVersions::field_bits(obj, fd->offset(), type), guard,
+        true, SharedFieldVersions::VERSION_WRITE);
     std::string minted_version_kind;
     if (minted_version > 0) {
       minted_version_kind = SharedFieldVersions::version_kind_name(

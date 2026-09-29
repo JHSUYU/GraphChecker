@@ -22,11 +22,15 @@ struct AtomicOperation {
   // compareAndSet / weakCompareAndSet.  Modeled by its observed arm only; see
   // finish_method_helper.
   bool is_cas;
+  // Where a CAS's `update` argument starts.  A long argument occupies two
+  // local slots, so it starts one slot later on AtomicLong than on
+  // AtomicInteger.
+  int update_offset;
   SymbolicOp operation;
 
   AtomicOperation()
       : type(T_ILLEGAL), returns_old_value(false), takes_delta(false),
-        is_cas(false), operation(op_null) {}
+        is_cas(false), update_offset(0), operation(op_null) {}
 };
 
 bool decode_operation(MethodSymbolizerHandle &handle,
@@ -70,6 +74,7 @@ bool decode_operation(MethodSymbolizerHandle &handle,
   if ((name == "compareAndSet" || name == "weakCompareAndSet")
       && signature == expected_cas) {
     operation->is_cas = true;
+    operation->update_offset = operation->type == T_INT ? 2 : 3;
     return true;
   }
   return false;
@@ -129,15 +134,50 @@ Expression *prepare_current_value(oop receiver, BasicType type,
 }
 
 
+/**
+ * The concrete words an atomic read and left, taken from the call's own
+ * arguments and result.  The heap after the call cannot say what the
+ * linearization read -- the operation has overwritten it -- and may already
+ * hold a later writer's word.
+ */
+SharedFieldVersions::ConcreteBits argument_word(MethodSymbolizerHandle &handle,
+                                                int offset, BasicType type) {
+  // The offset get_primitive_exp takes: a long spans two local slots.
+  offset += type2size[type] - 1;
+  return SharedFieldVersions::ConcreteBits(type, type == T_INT
+      ? SharedFieldVersions::raw_bits(handle.get_param<jint>(offset))
+      : SharedFieldVersions::raw_bits(handle.get_param<jlong>(offset)));
+}
+
+jlong result_bits(MethodSymbolizerHandle &handle, BasicType type) {
+  return type == T_INT
+      ? SharedFieldVersions::raw_bits(handle.get_result<jint>(T_INT))
+      : SharedFieldVersions::raw_bits(handle.get_result<jlong>(T_LONG));
+}
+
+// `word + delta` or `word - delta` in the atomic's own width, wrapping as
+// Java does.
+jlong apply_delta(BasicType type, bool add, jlong word, jlong delta) {
+  if (type == T_INT) {
+    return SharedFieldVersions::raw_bits(add
+        ? java_add((jint) word, (jint) delta)
+        : java_subtract((jint) word, (jint) delta));
+  }
+  return add ? java_add(word, delta) : java_subtract(word, delta);
+}
+
 Expression *resolve_selected_old(SymInstance *receiver_instance,
                                  const fieldDescriptor &field,
-                                 BasicType type) {
+                                 BasicType type,
+                                 const SharedFieldVersions::ConcreteBits &read) {
   if (receiver_instance == NULL) return NULL;
   SharedFieldVersions::Location location(
       receiver_instance->get_sym_rid(), field.offset(),
       SharedFieldVersions::LOC_INSTANCE_FIELD);
   SharedFieldVersions::ReadResult resolved;
-  if (!SharedFieldVersions::resolve_read(location, type, &resolved)
+  if (!SharedFieldVersions::resolve_read(
+          location, type, read,
+          SharedFieldVersions::returned_value(read, NULL), &resolved)
       || resolved.expression == NULL) {
     SharedFieldVersions::mark_writer_set_incomplete(location);
     return NULL;
@@ -161,6 +201,7 @@ Expression *unit_delta(BasicType type) {
 void publish_linearization(SymInstance *receiver_instance,
                            const fieldDescriptor &field,
                            Expression *new_value,
+                           const SharedFieldVersions::ConcreteBits &stored,
                            Expression *extra_guard) {
   SharedFieldVersions::Location location(
       receiver_instance->get_sym_rid(), field.offset(),
@@ -174,7 +215,8 @@ void publish_linearization(SymInstance *receiver_instance,
   // An atomic's new value is built from its old one, so it is symbolic by
   // construction and is kept by value like any other symbolic store.
   SharedFieldVersions::publish_value(
-      location, new_value, guard, true, SharedFieldVersions::VERSION_RMW);
+      location, new_value, stored, guard, true,
+      SharedFieldVersions::VERSION_RMW);
 }
 
 }  // namespace
@@ -196,12 +238,9 @@ bool SymbolicAtomic::invoke_method_helper(MethodSymbolizerHandle &handle) {
   }
 
   if (operation.is_cas) {
-    // A long argument occupies two local slots, so the second argument starts
-    // one slot later on AtomicLong than on AtomicInteger.
-    const int update_offset = operation.type == T_INT ? 2 : 3;
     Expression *expect = handle.get_primitive_exp(1, operation.type);
     Expression *update =
-        handle.get_primitive_exp(update_offset, operation.type);
+        handle.get_primitive_exp(operation.update_offset, operation.type);
     if (expect == NULL || update == NULL) return false;
     handle.get_param_list().push_back(old_value);
     handle.get_param_list().push_back(expect);
@@ -243,8 +282,15 @@ Expression *SymbolicAtomic::finish_method_helper(
         receiver_instance->get_sym_rid(), value.offset(),
         SharedFieldVersions::LOC_INSTANCE_FIELD);
     if (SharedFieldVersions::is_tracked(location)) {
+      // The word the compare read: `expect` when it matched.  A failed CAS
+      // stored nothing, so the heap still holds the word it lost to unless a
+      // later writer has stored since; it is the one place that word is.
+      const SharedFieldVersions::ConcreteBits compared = succeeded
+          ? argument_word(handle, 1, operation.type)
+          : SharedFieldVersions::field_bits(receiver, value.offset(),
+                                            operation.type);
       old_value = resolve_selected_old(
-          receiver_instance, value, operation.type);
+          receiver_instance, value, operation.type, compared);
       if (old_value == NULL) return NULL;
     }
     Expression *matched = new OpSymExpression(
@@ -260,7 +306,9 @@ Expression *SymbolicAtomic::finish_method_helper(
       receiver_instance->mark_field_written(value.offset());
       receiver_instance->set_sym_exp(value.offset(), update);
       publish_linearization(
-          receiver_instance, value, update, matched);
+          receiver_instance, value, update,
+          argument_word(handle, operation.update_offset, operation.type),
+          matched);
       return matched;
     }
     // A failed CAS publishes no writer version. Its boolean result still uses
@@ -272,12 +320,24 @@ Expression *SymbolicAtomic::finish_method_helper(
   if (handle.get_param_list().size() != 2) return NULL;
   Expression *old_value = handle.get_param_list()[0];
   Expression *delta = handle.get_param_list()[1];
+  // The words either side of the linearization, from the result and the
+  // concrete delta: getAndX returns the old word, xAndGet the new one.
+  const bool add = operation.operation == op_add;
+  const jlong delta_bits = operation.takes_delta
+      ? argument_word(handle, 1, operation.type).bits : 1;
+  const jlong returned = result_bits(handle, operation.type);
+  const SharedFieldVersions::ConcreteBits before(operation.type,
+      operation.returns_old_value
+          ? returned : apply_delta(operation.type, !add, returned, delta_bits));
+  const SharedFieldVersions::ConcreteBits after(operation.type,
+      operation.returns_old_value
+          ? apply_delta(operation.type, add, returned, delta_bits) : returned);
   SharedFieldVersions::Location location(
       receiver_instance->get_sym_rid(), value.offset(),
       SharedFieldVersions::LOC_INSTANCE_FIELD);
   if (SharedFieldVersions::is_tracked(location)) {
     old_value = resolve_selected_old(
-        receiver_instance, value, operation.type);
+        receiver_instance, value, operation.type, before);
     if (old_value == NULL) return NULL;
   }
   Expression *new_value = new OpSymExpression(
@@ -285,7 +345,7 @@ Expression *SymbolicAtomic::finish_method_helper(
   receiver_instance->mark_field_written(value.offset());
   receiver_instance->set_sym_exp(value.offset(), new_value);
   publish_linearization(
-      receiver_instance, value, new_value, NULL);
+      receiver_instance, value, new_value, after, NULL);
   return operation.returns_old_value ? old_value : new_value;
 }
 

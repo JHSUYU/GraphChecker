@@ -559,7 +559,8 @@ void ContainerSupport::state_base_before_operation(oop container) {
   if (SharedFieldVersions::is_tracked(location)) return;
   Expression *base = ConcolicMngr::ctx->find_container_state(container);
   if (base == NULL) return;
-  SharedFieldVersions::publish_initial(location, base, snapshot);
+  SharedFieldVersions::publish_initial(
+      location, base, SharedFieldVersions::ConcreteBits(), snapshot);
 }
 
 void ContainerSupport::snapshot_for_receiver(
@@ -641,16 +642,18 @@ jlong ContainerSupport::publish_state(oop container, Expression *new_state,
       // as an empty container.
       SharedFieldVersions::InitialSnapshot snapshot;
       snapshot_for_receiver(container, &snapshot, false);
-      SharedFieldVersions::publish_initial(location, base, snapshot);
+      SharedFieldVersions::publish_initial(
+          location, base, SharedFieldVersions::ConcreteBits(), snapshot);
     }
   }
   // The publishing task already names the merged local path case.  Copying
   // the complete PC into every PUT/REMOVE version is both redundant and
   // prohibitively large in service loops; the Composer binds read-from arms
-  // to that task's case selector instead.
+  // to that task's case selector instead.  A whole state is not one word,
+  // so the version states none.
   return SharedFieldVersions::publish_value(
-      location, new_state, NULL, true, SharedFieldVersions::VERSION_STATE,
-      operation);
+      location, new_state, SharedFieldVersions::ConcreteBits(), NULL, true,
+      SharedFieldVersions::VERSION_STATE, operation);
 }
 
 void ContainerSupport::abandon_state(oop container,
@@ -686,13 +689,15 @@ ContainerSupport::StateQuery ContainerSupport::query_state(
     snapshot_for_receiver(container, &snapshot, true);
     Expression *base = ConcolicMngr::ctx->find_container_state(container);
     if (base == NULL) return answer;
-    SharedFieldVersions::publish_initial(location, base, snapshot);
+    SharedFieldVersions::publish_initial(
+        location, base, SharedFieldVersions::ConcreteBits(), snapshot);
     if (!SharedFieldVersions::is_tracked(location)) return answer;
   }
   answer.selected = true;
 
   SharedFieldVersions::ReadPlan plan;
-  if (!SharedFieldVersions::plan_read(location, &plan)) {
+  if (!SharedFieldVersions::plan_read(
+          location, SharedFieldVersions::ConcreteBits(), &plan)) {
     return answer;
   }
 
@@ -826,11 +831,27 @@ void ContainerSupport::constrain_position(
     const char *shape, Expression *state, Expression *position,
     bool allow_end) {
   if (state == NULL || position == NULL) return;
+  // A concrete position constrains nothing by itself: `k >= 0` is a constant
+  // the run already decided, and so is `k < SIZE` when the size is constant
+  // too -- a Java array's length.  hdfs-17960's FSImageSaver scanned the
+  // NameNode's inode map, a LightWeightGSet whose ~1M-bucket array an earlier
+  // region had stored into under symbolic guards, and recorded both facts
+  // per bucket: native RSS went from 300 MB to 27 GB in a minute and the
+  // kernel killed the JVM.
+  jint concrete = 0;
+  const bool constant_position = position->concrete_int_value(&concrete);
+  if (!constant_position) {
+    ConcolicMngr::record_path_condition(new OpSymExpression(
+        position, new ConExpression((jint)0), op_ge, true));
+  }
+  ContainerExpression *relation = state->as_container_expression();
+  if (constant_position && relation != NULL
+      && relation->has_constant_size()) {
+    return;
+  }
   exp_list_t no_arguments;
   Expression *size =
       new ContainerExpression(shape, "SIZE", state, no_arguments, T_INT);
-  ConcolicMngr::record_path_condition(new OpSymExpression(
-      position, new ConExpression((jint)0), op_ge, true));
   ConcolicMngr::record_path_condition(new OpSymExpression(
       position, size, allow_end ? op_le : op_lt, true));
 }

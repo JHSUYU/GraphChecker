@@ -93,11 +93,15 @@ public:
     return callee_method->result_type();
   }
 
+  // A result starts in the slot just above the callee's top of stack
+  // whatever its width: a long or double is one VMJavaVal64 at &stack[1],
+  // exactly where the bytecodes' STACK_LONG(-1) finds it.  Reading at
+  // stack() + size took the slot past it for every long and double result --
+  // an AtomicLong's getAndDecrement of 5 came back as 0x7f5c00000001.
   template<class T>
   T get_result(BasicType type) {
-    int result_slots = type2size[type];
-    assert(result_slots >= 0 && result_slots <= 2, "what?");
-    return *(T *) (_callee_istate->stack() + result_slots);
+    assert(type2size[type] == 1 || type2size[type] == 2, "what?");
+    return *(T *) (_callee_istate->stack() + 1);
   }
 
   inline void set_caller_frame(ZeroFrame *caller_frame) {

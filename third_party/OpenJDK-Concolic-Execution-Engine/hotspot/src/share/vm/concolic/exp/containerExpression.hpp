@@ -27,6 +27,8 @@ class ContainerExpression : public Expression {
   // guard is oriented as the *removal condition* (true => the key is gone),
   // independent of which way the concrete run branched.
   Expression *_guard;
+  // See has_constant_size().
+  bool _constant_size;
 
  public:
   ContainerExpression(const char *shape, const char *operation,
@@ -43,6 +45,12 @@ class ContainerExpression : public Expression {
   }
 
   virtual ContainerExpression *as_container_expression() { return this; }
+
+  // Whether SIZE of this state is a constant: the STATE root of a Java array
+  // allocated with a concrete length, and every WRITE over one, which
+  // replaces an element in place.  Decided at construction from the
+  // receiver's answer, so asking costs nothing however long the chain is.
+  bool has_constant_size() const { return _constant_size; }
 
   const std::string &get_operation() const { return _operation; }
   const std::string &get_shape() const { return _shape; }

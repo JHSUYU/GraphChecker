@@ -125,17 +125,20 @@ bool SharedFieldVersions::is_tracked(const Location &location) {
 
 jlong SharedFieldVersions::publish_initial(const Location &location,
                                            Expression *base,
+                                           const ConcreteBits &stored,
                                            const InitialSnapshot &snapshot) {
   if (!location.is_valid() || base == NULL) return 0;
   if (is_tracked(location)) return 0;
   // The base a later mutation extends.  Published as its own version so the
   // log begins where the container did, which is what a relation chain stands
   // on: without it the first PUT has no receiver a reader can resolve.
-  return publish(location, base, NULL, VERSION_INITIAL, NULL, true, &snapshot);
+  return publish(location, base, stored, NULL, VERSION_INITIAL, NULL, true,
+                 &snapshot);
 }
 
 jlong SharedFieldVersions::publish_value(const Location &location,
                                          Expression *value,
+                                         const ConcreteBits &stored,
                                          Expression *path_guard,
                                          bool symbolic, int version_kind,
                                          const char *operation) {
@@ -164,11 +167,12 @@ jlong SharedFieldVersions::publish_value(const Location &location,
       && (!has_carriers() || !is_tracked(location))) {
     return 0;
   }
-  return publish(location, value, path_guard, version_kind, operation,
+  return publish(location, value, stored, path_guard, version_kind, operation,
                  symbolic || guarded);
 }
 
 jlong SharedFieldVersions::publish(const Location &location, Expression *value,
+                                   const ConcreteBits &stored,
                                    Expression *path_guard,
                                    int version_kind,
                                    const char *operation,
@@ -183,6 +187,7 @@ jlong SharedFieldVersions::publish(const Location &location, Expression *value,
   version.version_kind = version_kind;
   if (named) version.operation = operation;
   version.value = value;
+  version.stored = stored;
   version.path_guard = path_guard;
   if (snapshot != NULL) {
     version.initial_snapshot_present = snapshot->present();
@@ -210,6 +215,11 @@ jlong SharedFieldVersions::publish(const Location &location, Expression *value,
     slot = &_slots[location];
     _carrier_count = (int) _slots.size();
   }
+  append_locked(slot, version);
+  return version_id;
+}
+
+void SharedFieldVersions::append_locked(Slot *slot, const Version &version) {
   slot->versions.push_back(version);
   if (slot->versions.size() > MAX_VERSIONS_PER_LOCATION) {
     // A dropped writer is a writer a later read can no longer name.  Say so
@@ -217,7 +227,6 @@ jlong SharedFieldVersions::publish(const Location &location, Expression *value,
     slot->versions.erase(slot->versions.begin());
     slot->writer_set_complete = false;
   }
-  return version_id;
 }
 
 bool SharedFieldVersions::mark_writer_set_incomplete(
@@ -231,34 +240,39 @@ bool SharedFieldVersions::mark_writer_set_incomplete(
   return true;
 }
 
-bool SharedFieldVersions::versions_of(const Location &location,
-                                      VersionList *out,
-                                      bool *writer_set_complete) {
-  if (out == NULL) return false;
-  out->clear();
-  if (writer_set_complete != NULL) *writer_set_complete = true;
-  if (!location.is_valid()) return false;
-  VERSION_LOCK;
-  if (!_open) return false;
-  Slot *slot = find_slot_locked(location);
-  if (slot == NULL) return false;
-  *out = slot->versions;
-  if (writer_set_complete != NULL) {
-    *writer_set_complete = slot->writer_set_complete;
-  }
-  return true;
-}
-
 bool SharedFieldVersions::plan_read(const Location &location,
+                                    const ConcreteBits &loaded,
                                     ReadPlan *plan) {
   if (plan == NULL) return false;
   *plan = ReadPlan();
   if (!location.is_valid() || ConcolicMngr::ctx == NULL) return false;
 
-  VersionList versions;
+  // Versions are appended in publish order and their ids come from the one
+  // session counter, so the last one is the newest and is what the location
+  // held when this read ran -- unless the word the read loaded says not.
+  Version newest;
   bool complete = true;
-  if (!versions_of(location, &versions, &complete) || versions.empty()) {
-    return false;
+  {
+    VERSION_LOCK;
+    Slot *slot = _open ? find_slot_locked(location) : NULL;
+    if (slot == NULL || slot->versions.empty()) return false;
+    newest = slot->versions.back();
+    complete = slot->writer_set_complete;
+  }
+
+  // The heap holds a word the newest version did not store, so a write no
+  // hook saw came between them (see the header: Solr's refCount).  It is
+  // stated as what it is -- the loaded constant, written by nobody the log
+  // can name -- rather than resolved to a version the heap no longer held.
+  // Built outside the lock, and minted before the read so that it precedes
+  // the read on the session clock.
+  const bool stale = newest.stored.contradicts(loaded);
+  Version unobserved;
+  if (stale) {
+    unobserved.version_id = GlobalSymbolicSession::next_event_id();
+    unobserved.version_kind = VERSION_UNOBSERVED;
+    unobserved.value = primitive_expression(loaded.type, loaded.bits);
+    unobserved.stored = loaded;
   }
 
   // Reading tracked state is what makes this thread's branches relevant, so
@@ -274,11 +288,8 @@ bool SharedFieldVersions::plan_read(const Location &location,
   ConcolicMngr::ctx->set_pc_admitted(true);
 
   plan->read_event_id = GlobalSymbolicSession::next_event_id();
-  // Versions are appended in publish order and their ids come from the one
-  // session counter, so the last one is the newest and is what the location
-  // held when this read ran.
-  plan->observed = versions.back();
-  plan->writer_set_complete = complete;
+  plan->observed = stale ? unobserved : newest;
+  plan->writer_set_complete = complete && !stale;
 
   plan->site = current_site();
 
@@ -293,6 +304,18 @@ bool SharedFieldVersions::plan_read(const Location &location,
   VERSION_LOCK;
   Slot *slot = find_slot_locked(location);
   if (slot != NULL) {
+    if (stale) {
+      // A store's hook publishes after the concrete store, so this read may
+      // have loaded the word of a version that landed since the snapshot
+      // above.  Only a newest version that still disagrees makes the write
+      // unobserved.
+      if (slot->versions.back().stored.contradicts(loaded)) {
+        append_locked(slot, unobserved);
+        slot->writer_set_complete = false;
+      }
+      plan->observed = slot->versions.back();
+    }
+    plan->writer_set_complete = slot->writer_set_complete;
     slot->reads.push_back(record);
     if (slot->reads.size() > MAX_READS_PER_LOCATION) {
       slot->reads.erase(slot->reads.begin());
@@ -324,20 +347,22 @@ Expression *SharedFieldVersions::build_read_from(
       plan.observed.version_id, version_label(plan.observed), observed_value,
       type_name, plan.read_event_id, location.owner, location.slot,
       location_kind_name(location.kind), plan.writer_set_complete,
-      plan.site.class_name, plan.site.method_name,
+      plan.returned, plan.site.class_name, plan.site.method_name,
       plan.site.method_descriptor, plan.site.bci);
   return new ConsumerBoundaryExpression(
       selection, type_name, ConsumerBoundaryExpression::FIELD_READ,
       plan.read_event_id);
 }
 
-bool SharedFieldVersions::resolve_read(const Location &location,
-                                       BasicType type, ReadResult *result) {
+bool SharedFieldVersions::resolve_read(
+    const Location &location, BasicType type, const ConcreteBits &loaded,
+    const ReadFromExpression::Returned &returned, ReadResult *result) {
   if (result == NULL) return false;
   *result = ReadResult();
 
   ReadPlan plan;
-  if (!plan_read(location, &plan)) return false;
+  if (!plan_read(location, loaded, &plan)) return false;
+  plan.returned = returned;
   // For a scalar location the observed value is the observed write's own.
   result->expression = build_read_from(
       plan, location, std::string(1, type2char(type)), plan.observed.value);
@@ -483,37 +508,60 @@ Expression *SharedFieldVersions::primitive_expression(BasicType type,
   }
 }
 
+ReadFromExpression::Returned SharedFieldVersions::returned_value(
+    const ConcreteBits &word, oop reference) {
+  ReadFromExpression::Returned returned;
+  if (word.stated()) {
+    returned.kind = ReadFromExpression::Returned::CONSTANT;
+    returned.constant = primitive_expression(word.type, word.bits);
+  } else if (reference == NULL) {
+    returned.kind = ReadFromExpression::Returned::NULL_REFERENCE;
+  } else if (reference->klass() == SystemDictionary::String_klass()) {
+    ResourceMark rm;
+    returned.kind = ReadFromExpression::Returned::STRING;
+    returned.content = OopUtils::java_string_to_c(reference);
+  }
+  return returned;
+}
+
 Expression *SharedFieldVersions::field_value(oop owner, int field_offset,
                                              BasicType type) {
   if (owner == NULL) return NULL;
+  if (type == T_OBJECT || type == T_ARRAY) {
+    // The identity of the object the field held, in the same spelling an
+    // owner identity has, so the composer can equate this read reference
+    // with the owner of another read; null answers with the null symbol.
+    // An object with no identity yet is given one here exactly as an owner
+    // is given one, which is what makes the answer distinct and stable for
+    // the rest of the session instead of absent.
+    return reference_expression(owner->obj_field(field_offset));
+  }
+  const ConcreteBits held = field_bits(owner, field_offset, type);
+  return primitive_expression(held.type, held.bits);
+}
+
+SharedFieldVersions::ConcreteBits SharedFieldVersions::field_bits(
+    oop owner, int field_offset, BasicType type) {
+  if (owner == NULL) return ConcreteBits();
   switch (type) {
-    case T_OBJECT:
-    case T_ARRAY:
-      // The identity of the object the field held, in the same spelling an
-      // owner identity has, so the composer can equate this read reference
-      // with the owner of another read; null answers with the null symbol.
-      // An object with no identity yet is given one here exactly as an owner
-      // is given one, which is what makes the answer distinct and stable for
-      // the rest of the session instead of absent.
-      return reference_expression(owner->obj_field(field_offset));
     case T_BOOLEAN:
-      return primitive_expression(type, raw_bits(owner->bool_field(field_offset)));
+      return ConcreteBits(type, raw_bits(owner->bool_field(field_offset)));
     case T_BYTE:
-      return primitive_expression(type, raw_bits(owner->byte_field(field_offset)));
+      return ConcreteBits(type, raw_bits(owner->byte_field(field_offset)));
     case T_CHAR:
-      return primitive_expression(type, raw_bits(owner->char_field(field_offset)));
+      return ConcreteBits(type, raw_bits(owner->char_field(field_offset)));
     case T_SHORT:
-      return primitive_expression(type, raw_bits(owner->short_field(field_offset)));
+      return ConcreteBits(type, raw_bits(owner->short_field(field_offset)));
     case T_INT:
-      return primitive_expression(type, raw_bits(owner->int_field(field_offset)));
+      return ConcreteBits(type, raw_bits(owner->int_field(field_offset)));
     case T_LONG:
-      return primitive_expression(type, raw_bits(owner->long_field(field_offset)));
+      return ConcreteBits(type, raw_bits(owner->long_field(field_offset)));
     case T_FLOAT:
-      return primitive_expression(type, raw_bits(owner->float_field(field_offset)));
+      return ConcreteBits(type, raw_bits(owner->float_field(field_offset)));
     case T_DOUBLE:
-      return primitive_expression(type, raw_bits(owner->double_field(field_offset)));
+      return ConcreteBits(type, raw_bits(owner->double_field(field_offset)));
     default:
-      return NULL;
+      return ConcreteBits();
   }
 }
 
@@ -538,11 +586,12 @@ const char *SharedFieldVersions::location_kind_name(int kind) {
 
 const char *SharedFieldVersions::version_kind_name(int kind) {
   switch (kind) {
-    case VERSION_INITIAL: return "INITIAL";
-    case VERSION_WRITE:   return "WRITE";
-    case VERSION_RMW:     return "RMW";
-    case VERSION_STATE:   return "STATE";
-    default:              return "UNKNOWN";
+    case VERSION_INITIAL:    return "INITIAL";
+    case VERSION_WRITE:      return "WRITE";
+    case VERSION_RMW:        return "RMW";
+    case VERSION_STATE:      return "STATE";
+    case VERSION_UNOBSERVED: return "UNOBSERVED";
+    default:                 return "UNKNOWN";
   }
 }
 

@@ -930,8 +930,10 @@ void ConcolicMngr::observeExactPrimitiveField(
   // or versioned store left there, which a read's observation must not
   // replace with the concrete one.
   if (SharedFieldVersions::is_tracked(location)) return;
+  const SharedFieldVersions::ConcreteBits held =
+      SharedFieldVersions::field_bits(owner(), field.offset(), type);
   Expression *observed =
-      SharedFieldVersions::field_value(owner(), field.offset(), type);
+      SharedFieldVersions::primitive_expression(held.type, held.bits);
   instance->set_sym_exp(field.offset(), observed);
   // The observation starts the field's log.  A concrete store is versioned
   // only where a log exists, and the woven site calls here just before its
@@ -939,7 +941,7 @@ void ConcolicMngr::observeExactPrimitiveField(
   // another occurrence would join no writer, and a read of a location no
   // store of the window reached would state no version at all.  The base is
   // the value from before the window, which a read of it is pinned to.
-  SharedFieldVersions::publish_initial(location, observed,
+  SharedFieldVersions::publish_initial(location, observed, held,
                                        SharedFieldVersions::InitialSnapshot());
   ctx->set_pc_admitted(true);
 }

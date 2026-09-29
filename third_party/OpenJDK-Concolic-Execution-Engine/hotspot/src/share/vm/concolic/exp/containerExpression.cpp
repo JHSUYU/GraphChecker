@@ -3,6 +3,25 @@
 #include "concolic/exp/containerExpression.hpp"
 #include "utilities/ostream.hpp"
 
+namespace {
+
+// An INDEXED STATE root carries an array's declared length as its one
+// argument (a list's root carries none), and WRITE never changes a size.
+bool constant_size(const std::string &shape, const std::string &operation,
+                   Expression *receiver, const exp_list_t &arguments) {
+  if (shape != "INDEXED") return false;
+  if (operation == "STATE") {
+    jint length = 0;
+    return arguments.size() == 1
+        && arguments[0]->concrete_int_value(&length);
+  }
+  ContainerExpression *base = receiver == NULL
+      ? NULL : receiver->as_container_expression();
+  return operation == "WRITE" && base != NULL && base->has_constant_size();
+}
+
+}  // namespace
+
 ContainerExpression::ContainerExpression(
     const char *shape, const char *operation, Expression *receiver,
     const exp_list_t &arguments, BasicType result_type,
@@ -14,7 +33,9 @@ ContainerExpression::ContainerExpression(
       _java_type(java_type.empty()
                      ? std::string(1, type2char(result_type))
                      : java_type),
-      _guard(guard) {
+      _guard(guard),
+      _constant_size(constant_size(_shape, _operation, receiver,
+                                   arguments)) {
 }
 
 ContainerExpression::~ContainerExpression() {}

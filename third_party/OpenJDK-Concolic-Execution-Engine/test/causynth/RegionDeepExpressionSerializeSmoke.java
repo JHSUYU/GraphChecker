@@ -313,11 +313,12 @@ public final class RegionDeepExpressionSerializeSmoke {
         require(json.length() <= MAX_DAG_ARTIFACT_BYTES,
                 "linear shared DAG artifact is unexpectedly large: "
                         + json.length());
-        // One definition per operator, plus three for the seed itself: its
-        // symbol, the read node the seed's getfield produced, and that read's
-        // boundary.  A tree rather than a DAG would be 2^SHARED_DAG_DEPTH.
+        // One definition per operator, plus four for the seed itself: its
+        // symbol, the read node the seed's getfield produced, the constant
+        // that read returned, and the read's boundary.  A tree rather than a
+        // DAG would be 2^SHARED_DAG_DEPTH.
         require(count(json, "\"_type\":\"VmExpressionDefinition\"")
-                        == SHARED_DAG_DEPTH + 3,
+                        == SHARED_DAG_DEPTH + 4,
                 "expected one definition per operator plus the seed's read: "
                         + head(json));
         require(count(json, "\"_left\"") == SHARED_DAG_DEPTH,
