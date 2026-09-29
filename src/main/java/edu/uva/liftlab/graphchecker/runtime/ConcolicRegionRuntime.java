@@ -1039,11 +1039,9 @@ public final class ConcolicRegionRuntime {
      *                            replay contract addressed by value
      */
     static boolean statesTargetReach(
-            boolean decided, boolean permutedOccurrence,
-            String targetBranchSite, int targetBranchOccurrence,
-            String branchSite, int occurrence) {
-        return decided && !safe(targetBranchSite).isEmpty()
-                && safe(targetBranchSite).equals(safe(branchSite))
+            boolean decided, boolean permutedOccurrence, boolean targetTest,
+            int targetBranchOccurrence, int occurrence) {
+        return decided && targetTest
                 && (permutedOccurrence
                 || targetBranchOccurrence == occurrence);
     }

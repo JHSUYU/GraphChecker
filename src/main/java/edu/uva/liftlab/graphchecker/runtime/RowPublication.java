@@ -502,8 +502,7 @@ final class RowPublication {
         boolean observedFatal = reached && observed == fatalArm;
         if (reached && task.targetGuards.size() > 1) {
             List<String> arms = new ArrayList<>();
-            observedFatal = disjunction(active.branchMappings,
-                    task.targetGuards, site, ordinal, arms);
+            observedFatal = tookDisjunct(active, arms);
             phi = arms.isEmpty() ? "" : arms.size() == 1 ? arms.get(0)
                     : "(or " + String.join(" ", arms) + ")";
         }
@@ -532,6 +531,16 @@ final class RowPublication {
      *
      * @return whether a test took its fatal arm
      */
+    /** {@link #disjunction} from the test this occurrence reached the
+     *  target at, which need not be the one the recording did. */
+    static boolean tookDisjunct(ActiveRegion active, List<String> arms) {
+        JsonObject reach = active.targetReach;
+        return reach != null && disjunction(active.branchMappings,
+                active.activation.targetGuards,
+                optionalString(reach, "siteId"),
+                optionalInteger(reach, "occurrence", -1), arms);
+    }
+
     static boolean disjunction(List<JsonObject> mappings,
                                Map<String, Boolean> guards,
                                String site, int ordinal,

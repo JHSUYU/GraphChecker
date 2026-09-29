@@ -2040,6 +2040,12 @@ public class RowRuntimeTest {
                     "G#u1", 1, arms));
             assertEquals(row[4], arms);
         }
+        // An evaluation that skipped the recording's first test reaches the
+        // target at the test it did decide (SOLR-18406's second disjunct).
+        List<String> arms = new ArrayList<>();
+        assertTrue(RowPublication.disjunction(Collections.singletonList(
+                decided("G#u3", false, c)), guards, "G#u3", 1, arms));
+        assertEquals(Collections.singletonList(refC), arms);
     }
 
     private static JsonObject predicate(String name) {

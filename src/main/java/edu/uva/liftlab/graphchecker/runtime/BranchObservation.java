@@ -132,9 +132,9 @@ final class BranchObservation {
             boolean permuted = decision.addressesPermutedTargetOccurrence()
                     && FocusedReplay.focused(active.d3Address);
             if (ConcolicRegionRuntime.statesTargetReach(recorded, permuted,
-                    active.activation.targetBranchSite,
+                    active.activation.targetTest(branchSite),
                     active.activation.targetBranchOccurrence,
-                    branchSite, prepared.occurrence)) {
+                    prepared.occurrence)) {
                 // Reaching the target is the site having executed, nothing
                 // else: not gated on a symbolic predicate (a concrete fatal
                 // branch reached by control dependence still reaches), and not

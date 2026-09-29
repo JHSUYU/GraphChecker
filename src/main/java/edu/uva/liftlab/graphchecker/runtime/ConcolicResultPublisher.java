@@ -330,8 +330,9 @@ final class ConcolicResultPublisher {
      */
     private static boolean resultAnswersSelectedGoal(ActiveRegion active) {
         RuntimeTask task = active.activation;
-        if (!task.loopBodyRoot) return true;
-        return !task.capturesTargetReach
-                || task.reachedRequiredTargetOutcome(active.targetReach);
+        if (!task.loopBodyRoot || !task.capturesTargetReach) return true;
+        return task.targetGuards.size() > 1
+                ? RowPublication.tookDisjunct(active, new ArrayList<String>())
+                : task.reachedRequiredTargetOutcome(active.targetReach);
     }
 }

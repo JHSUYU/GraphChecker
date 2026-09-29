@@ -170,7 +170,7 @@ final class ActiveRegion {
             // No path condition was added: the row owns an empty range.
             branchMappings.add(BranchObservation.decisionRow(method,
                     unitIndex, occurrence, 0L, decision.outcome(), 0, 0));
-            if (activation.targetBranchSite.equals(site)
+            if (activation.targetTest(site)
                     && activation.targetBranchOccurrence == occurrence) {
                 // Concrete: it stands after every event so far, so the path
                 // condition before it is every decision the VM recorded.

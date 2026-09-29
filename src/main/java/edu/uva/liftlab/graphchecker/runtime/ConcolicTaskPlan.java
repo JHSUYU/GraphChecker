@@ -1337,6 +1337,14 @@ final class ConcolicTaskPlan {
             if (!loopBodyRoot) completedGoalReserved = true;
         }
 
+        /** Whether a decision at {@code site} reaches the declared target:
+         *  its branch, or any test of its disjunctive guard. */
+        boolean targetTest(String site) {
+            return !targetBranchSite.isEmpty()
+                    && (targetBranchSite.equals(site)
+                    || targetGuards.containsKey(site));
+        }
+
         /** Whether this occurrence witnessed the selected failure outcome. */
         boolean reachedRequiredTargetOutcome(JsonObject reach) {
             return declaresTargetBranch()

@@ -263,6 +263,31 @@ public final class ConcolicScheduler {
         return found;
     }
 
+    /**
+     * Every test of the guard {@code site} belongs to, as its TARGET_SITE row
+     * states it, when there are several: a replay may reach the throw
+     * through a disjunct the recording never evaluated.  SOLR-18406's
+     * {@code (commit != null && commit.isDeleted()) || (commit == null &&
+     * generation < latest)} was recorded on the first; the flipped replay
+     * threw through the second, and a plan naming only the recorded test
+     * stated that occurrence as never reaching its anchor.
+     */
+    static List<StaticScopeMap.Guard> targetGuards(StaticScopeMap map,
+                                                   String site) {
+        List<StaticScopeMap.Guard> guards = new ArrayList<>();
+        for (StaticScopeMap.Site target : map.targetSites()) {
+            if (target.guards.size() < 2 || !target.guards.contains(site)) {
+                continue;
+            }
+            for (String guard : target.guards) {
+                guards.add(new StaticScopeMap.Guard(guard,
+                        fatalArm(map, guard)));
+            }
+            return guards;
+        }
+        return guards;
+    }
+
     /** The helper branch deciding the target guard {@code guardSiteId}, as
      *  the TARGET_SITE rows state it, or null. */
     static StaticScopeMap.Guard fatalDecider(StaticScopeMap map,
@@ -481,33 +506,26 @@ public final class ConcolicScheduler {
             return;
         }
         requireSelectedOccurrence(arguments, goal);
-        List<JsonObject> fatal = fatalBranches(branches, scopeMap);
-        String site = optionalString(fatal.get(0), "siteId");
-        List<StaticScopeMap.Guard> guards = new ArrayList<>();
-        if (fatal.size() > 1) {
-            for (JsonObject guard : fatal) {
-                String guardSite = optionalString(guard, "siteId");
-                guards.add(new StaticScopeMap.Guard(guardSite,
-                        fatalArm(scopeMap, guardSite)));
-            }
-        }
+        JsonObject fatal = fatalBranch(branches, scopeMap);
+        String site = optionalString(fatal, "siteId");
+        List<StaticScopeMap.Guard> guards = targetGuards(scopeMap, site);
         result.add(new Candidate(goal, branches, site,
-                optionalInteger(fatal.get(0), "selectedOccurrence", 1),
+                optionalInteger(fatal, "selectedOccurrence", 1),
                 fatalArm(scopeMap, site).booleanValue(),
                 guards.isEmpty() ? fatalDecider(scopeMap, site) : null,
                 guards, inputActions));
     }
 
     /**
-     * The recorded branches the scope map names as guards of the annotated
-     * throw, in unit order: one for a conjunction ({@code a && b} jumps to
-     * the throw from its last test only), one per test of a disjunction
-     * ({@code a || b} jumps to it from each), whose first test is evaluated
-     * first and so is where the target stands.  None, or guards of two
-     * throws, is a named refusal.
+     * The recorded branch where the target stands: of the ones the scope map
+     * names as guards of the annotated throw, the first in unit order -- one
+     * for a conjunction ({@code a && b} jumps to the throw from its last
+     * test only), the first test the recording evaluated of a disjunction
+     * ({@code a || b} jumps to it from each; {@link #targetGuards} names
+     * them all).  None, or guards of two throws, is a named refusal.
      */
-    private static List<JsonObject> fatalBranches(JsonArray branches,
-                                                  StaticScopeMap scopeMap)
+    private static JsonObject fatalBranch(JsonArray branches,
+                                          StaticScopeMap scopeMap)
             throws IOException {
         // An occurrence whose path left before the throw -- it took a chain
         // decision and no deciding guard (StaticScopeMap.Site#chain) --
@@ -555,10 +573,10 @@ public final class ConcolicScheduler {
                     + " guard(s) the static scope map names: "
                     + bySite.keySet());
         }
-        List<JsonObject> ordered = new ArrayList<>(bySite.values());
-        ordered.sort(Comparator.comparingInt(branch -> SiteId.unitIndexOf(
-                optionalString(branch, "siteId"))));
-        return ordered;
+        // The first test the recording evaluated is where the target stands.
+        return Collections.min(bySite.values(), Comparator.comparingInt(
+                branch -> SiteId.unitIndexOf(optionalString(branch,
+                        "siteId"))));
     }
 
     /** A target goal is the occurrence the arguments selected, if any. */

@@ -146,15 +146,12 @@ public class BranchDecisionRecordingTest {
         for (Object[] decided : decisions) {
             assertEquals(decided[0] + "#" + decided[1], decided[3],
                     ConcolicRegionRuntime.statesTargetReach(true,
-                            (Boolean) decided[2], TARGET, 1,
-                            (String) decided[0], (Integer) decided[1]));
+                            (Boolean) decided[2], TARGET.equals(decided[0]),
+                            1, (Integer) decided[1]));
         }
-        assertFalse("a task naming no target reaches none",
-                ConcolicRegionRuntime.statesTargetReach(true, false, "", 1,
-                        ELSEWHERE, 1));
         assertFalse("a decision with no recorded row states no reach",
-                ConcolicRegionRuntime.statesTargetReach(false, false, TARGET,
-                        1, TARGET, 1));
+                ConcolicRegionRuntime.statesTargetReach(false, false, true,
+                        1, 1));
     }
 
     /**
