@@ -87,6 +87,17 @@ public final class CausynthTraceRecorder {
     }
 
     /**
+     * The workload's test is over: its teardown (a cluster shutting its
+     * nodes down) is no part of what either run controls, and neither
+     * records nor holds it.
+     */
+    public static void stopRecording() {
+        if (!RecordingWindow.opened()) return;
+        RecordingWindow.close();
+        ScheduleLog.windowClosed();
+    }
+
+    /**
      * Whether this JVM is a concolic replay rather than the recording or a
      * native run; workload checks of the recording's world do not hold here.
      */

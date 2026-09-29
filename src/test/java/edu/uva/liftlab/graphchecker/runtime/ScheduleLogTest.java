@@ -465,6 +465,22 @@ public class ScheduleLogTest {
         assertTrue(progress, progress.contains("1 of them let go"));
     }
 
+    /** The workload closes its window: what the order still holds goes. */
+    @Test(timeout = 20000L)
+    public void closingTheWindowLetsTheOrderGo() throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        ScheduleLog.enforceForTests(prefix("x", "y"));
+        Thread y = observer(ScheduleEvent.Kind.SEND, "y");
+        Thread.sleep(200L);
+        assertTrue("y waits for x", y.isAlive());
+        CausynthTraceRecorder.stopRecording();
+        y.join(5000L);
+        assertFalse(y.isAlive());
+        assertFalse(ScheduleLog.enforcing());
+        assertTrue(ScheduleLog.progress(),
+                ScheduleLog.progress().contains("2 open at the window's close"));
+    }
+
     /** A WAKE or turn the recording did not make before x waits at the cut. */
     @Test(timeout = 20000L)
     public void aWakeTheRecordingDidNotMakeSleepsThroughThePrefix()

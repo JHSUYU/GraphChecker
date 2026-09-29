@@ -239,6 +239,11 @@ public final class MessageDoors {
         CausynthTraceRecorder.startRecording();
     }
 
+    /** Closes it: the workload's test is over, its teardown unrecorded. */
+    public static void stopRecording() {
+        CausynthTraceRecorder.stopRecording();
+    }
+
     /**
      * Whether this run is a concolic replay: a world the engine chose, where a
      * workload's check of the RECORDING's world is not the workload's to make.

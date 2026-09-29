@@ -147,6 +147,7 @@ public final class ScheduleLog {
     private static int taken;
     private static int ranFree;
     private static int letGo;
+    private static int closedOpen;
     private static int givenUp;
     private static int stalls;
     private static int dead;
@@ -682,6 +683,33 @@ public final class ScheduleLog {
         LOCK.notifyAll();
     }
 
+    /** The workload closed its window: what the order still holds is let go. */
+    static void windowClosed() {
+        mute();
+        try {
+            synchronized (LOCK) {
+                if (!holds) return;
+                int first = -1;
+                for (int index = firstOpen; index < state.length; index++) {
+                    if (state[index] != OPEN) continue;
+                    if (first < 0) first = index;
+                    markLocked(index, DEAD);
+                    closedOpen++;
+                }
+                if (first >= 0) {
+                    stateLocked("schedule-closed#" + first, closedOpen
+                            + " slot(s) of the order from " + first + " on"
+                            + " (the first " + order.get(first).render()
+                            + ") were open when the workload closed its"
+                            + " window: they are settled");
+                }
+                settleLocked();
+            }
+        } finally {
+            unmute();
+        }
+    }
+
     /** An occurrence closed: its untaken slots are dead. */
     static void closed(String occurrenceId) {
         if (!holds || occurrenceId == null) return;
@@ -984,7 +1012,8 @@ public final class ScheduleLog {
                     + " settled by their turn's END, " + passed
                     + " passed by their own occurrence; " + ranFree
                     + " event(s) ran free, " + letGo + " of them let go at"
-                    + " the cut";
+                    + " the cut; " + closedOpen + " open at the window's"
+                    + " close";
         }
     }
 
@@ -1028,6 +1057,7 @@ public final class ScheduleLog {
             taken = 0;
             ranFree = 0;
             letGo = 0;
+            closedOpen = 0;
             givenUp = 0;
             stalls = 0;
             dead = 0;
