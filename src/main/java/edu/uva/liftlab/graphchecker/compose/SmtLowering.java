@@ -1652,12 +1652,14 @@ public final class SmtLowering {
      * {@link #guardedReadTerm}.</p>
      */
     private static JsonElement observedVersionExpression(JsonObject node) {
+        if (!VmRows.joinable(node)) return null;
         JsonElement observed = node.get(VmRows.OBSERVED_VERSION);
         if (observed == null || !observed.isJsonObject()) return null;
         return observed.getAsJsonObject().get("expression");
     }
 
     private static long observedVersion(JsonObject node) {
+        if (!VmRows.joinable(node)) return -1L;
         JsonElement observed = node.get(
                 VmRows.OBSERVED_VERSION);
         if (observed == null || observed.isJsonNull()) return -1L;

@@ -7,6 +7,7 @@ import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.smt.VmRows;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -389,6 +390,7 @@ final class RowPublication {
 
     /** The version a node observed, or {@code -1}. */
     static long versionOf(JsonObject node) {
+        if (!VmRows.joinable(node)) return -1L;
         JsonElement stated = node == null ? null : node.get("observedVersion");
         if (stated == null) return -1L;
         if (stated.isJsonObject()) {

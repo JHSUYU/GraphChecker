@@ -33,6 +33,7 @@ public final class ContainerSmtCodec {
      * answer), or null when it states none.
      */
     private static JsonObject observedVersion(JsonObject read) {
+        if (!VmRows.joinable(read)) return null;
         JsonObject observed = JsonFields.object(read,
                 VmRows.OBSERVED_VERSION);
         return observed.size() == 0 ? null : observed;

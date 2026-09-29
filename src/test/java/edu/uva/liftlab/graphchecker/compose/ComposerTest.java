@@ -6,6 +6,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
+import edu.uva.liftlab.graphchecker.smt.VmRows;
 import edu.uva.liftlab.graphchecker.smt.Z3;
 import edu.uva.liftlab.graphchecker.contract.ActivationRow;
 import edu.uva.liftlab.graphchecker.contract.CausalContext;
@@ -3269,6 +3270,17 @@ public class ComposerTest {
                 symbol("dividend", "I")));
         seed.expression("EXPR.00000000000001e2", binary(">", unmodeled,
                 symbol("divisor", "I")));
+        // A read joins the write it observed only where the VM saw every
+        // writer of the location.
+        seed.expression("EXPR.00000000000001e3", integer("I", 41L));
+        seed.write(Endpoint.of(ANCHOR, "Saver#store#3:WRITE",
+                at("store#1", 0), 0), LocationId.of(LocationKind.INSTANCE,
+                "7", "3"), 5L, "EXPR.00000000000001e3");
+        JsonObject whole = read("INSTANCE", 7L, 3L, 5L, "I");
+        JsonObject partial = read("INSTANCE", 7L, 3L, 5L, "I");
+        partial.addProperty(VmRows.WRITER_SET_COMPLETE, false);
+        seed.expression("EXPR.00000000000001e4", whole);
+        seed.expression("EXPR.00000000000001e5", partial);
         seed.write();
         SmtLowering lowering = Corpus.read(iteration, null).lowering("s0");
         SmtLowering.Lowered quotient = lowering.lower("EXPR.v1.quotient");
@@ -3287,6 +3299,12 @@ public class ComposerTest {
             }
         }
         assertEquals("one construct, one name: " + free, 1, free.size());
+        assertEquals("a read of a location every writer of which the VM saw"
+                + " is the value written", "41",
+                lowering.lower("EXPR.00000000000001e4").text());
+        assertFalse("one whose writer set is incomplete is not joined to the"
+                + " version it names", lowering.lower("EXPR.00000000000001e5")
+                .text().contains("41"));
     }
 
     /** The ordinal one selector was made under. */

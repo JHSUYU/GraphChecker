@@ -25,6 +25,24 @@ public final class VmRows {
     public static final String GUARDED_READ_TYPE = "ReadFromExpression";
     /** The version a read states it observed. */
     public static final String OBSERVED_VERSION = "observedVersion";
+    /** Whether the VM saw every writer of the location a read observed. */
+    public static final String WRITER_SET_COMPLETE = "writerSetComplete";
+
+    /**
+     * Whether a read's observed version is the value it read.  Not when the
+     * VM says the location's writer set is incomplete: a mutation it does not
+     * model reached the location, so the version is one candidate among
+     * writers nobody stated (SOLR-18406: a list read at its CLEAR version,
+     * refilled since by an unmodeled call, was iterated for three names).
+     * Such a read states no version: a scalar is pinned to what it
+     * returned, a container state is refused.
+     */
+    public static boolean joinable(JsonObject read) {
+        JsonElement complete = read == null ? null
+                : read.get(WRITER_SET_COMPLETE);
+        return complete == null || !complete.isJsonPrimitive()
+                || complete.getAsBoolean();
+    }
     /** What a joined read returned, stamped onto the joined value. */
     public static final String RECORDED_READING = "inSessionRecordedReading";
     /** A container whose base the recording never showed. */
