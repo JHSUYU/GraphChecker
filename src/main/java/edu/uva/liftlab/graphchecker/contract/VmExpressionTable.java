@@ -1,8 +1,9 @@
 package edu.uva.liftlab.graphchecker.contract;
 
+import edu.uva.liftlab.graphchecker.smt.ExpressionWalk;
+
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
-import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
@@ -31,23 +32,17 @@ public final class VmExpressionTable {
     private VmExpressionTable() {
     }
 
-    /** Whether an artifact contains the VM's session-local DAG encoding. */
+    /** Whether an artifact contains the VM's session-local DAG encoding
+     *  ({@link ExpressionWalk}: an inline expression it holds may be as
+     *  deep as the VM's chain). */
     public static boolean usesNativeDag(JsonElement artifact) {
-        if (artifact == null || artifact.isJsonNull()
-                || artifact.isJsonPrimitive()) return false;
-        if (artifact.isJsonArray()) {
-            for (JsonElement child : artifact.getAsJsonArray()) {
-                if (usesNativeDag(child)) return true;
+        for (ExpressionWalk walk = ExpressionWalk.of(artifact);
+             walk.hasNext(); ) {
+            JsonObject object = walk.next();
+            if (object.has(FIELD) || REFERENCE_TYPE.equals(
+                    optionalString(object, "_type"))) {
+                return true;
             }
-            return false;
-        }
-        JsonObject object = artifact.getAsJsonObject();
-        if (object.has(FIELD)
-                || REFERENCE_TYPE.equals(optionalString(object, "_type"))) {
-            return true;
-        }
-        for (Map.Entry<String, JsonElement> field : object.entrySet()) {
-            if (usesNativeDag(field.getValue())) return true;
         }
         return false;
     }
@@ -89,11 +84,34 @@ public final class VmExpressionTable {
         }
     }
 
-    private static final class RawResolver {
+    private static final class RawResolver
+            extends SharedExpressionTable.Expansion<RawKey> {
         private final Map<RawKey, JsonObject> definitions =
                 new LinkedHashMap<>();
-        private final Map<RawKey, JsonElement> expanded =
-                new LinkedHashMap<>();
+
+        private RawResolver() {
+            super("VM expression");
+        }
+
+        @Override
+        RawKey reference(JsonObject object, boolean root) {
+            return REFERENCE_TYPE.equals(optionalString(object, "_type"))
+                    ? rawKey(object, REFERENCE_TYPE) : null;
+        }
+
+        @Override
+        JsonObject definition(RawKey key) {
+            return definitions.get(key);
+        }
+
+        @Override
+        JsonElement member(String name, JsonElement value) {
+            if (FIELD.equals(name)) return null;
+            return "pathGuard".equals(name)
+                    && (value == null || value.isJsonNull())
+                    ? emptyConjunction() : value;
+        }
+
         /** Resolves one self-contained envelope, each definition expanded
          *  once. */
         private JsonObject importEnvelope(JsonObject artifact) {
@@ -192,42 +210,6 @@ public final class VmExpressionTable {
                             "conflicting VM expression definition: " + key);
                 }
             }
-        }
-
-        private JsonElement expand(JsonElement value) {
-            if (value == null || value.isJsonNull()) return JsonNull.INSTANCE;
-            if (value.isJsonPrimitive()) return value.deepCopy();
-            if (value.isJsonArray()) {
-                JsonArray result = new JsonArray();
-                for (JsonElement child : value.getAsJsonArray()) {
-                    result.add(expand(child));
-                }
-                return result;
-            }
-            JsonObject source = value.getAsJsonObject();
-            if (REFERENCE_TYPE.equals(optionalString(source, "_type"))) {
-                RawKey key = rawKey(source, REFERENCE_TYPE);
-                JsonElement held = expanded.get(key);
-                if (held != null) return held;
-                JsonElement local = expand(definitions.get(key));
-                if (!local.isJsonObject()) {
-                    throw new IllegalArgumentException(
-                            "VM expression definition is not an object: "
-                                    + key);
-                }
-                expanded.put(key, local);
-                return local;
-            }
-            JsonObject result = new JsonObject();
-            for (Map.Entry<String, JsonElement> field : source.entrySet()) {
-                if (FIELD.equals(field.getKey())) continue;
-                JsonElement child = field.getValue();
-                result.add(field.getKey(), "pathGuard".equals(field.getKey())
-                        && (child == null || child.isJsonNull())
-                        ? emptyConjunction()
-                        : expand(child));
-            }
-            return result;
         }
     }
 

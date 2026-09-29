@@ -1,6 +1,8 @@
 package edu.uva.liftlab.graphchecker.contract;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import edu.uva.liftlab.graphchecker.smt.Arms;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -11,8 +13,10 @@ import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -103,6 +107,71 @@ public class ContractTest {
         constant.addProperty("_exp", "C_I_2");
         assertNotEquals(new ExpressionRefs().ref(constant),
                 new ExpressionRefs().ref(reordered));
+    }
+
+    /**
+     * A VM chain is imported and judged once per node and to its end: one
+     * whose nodes name the one below twice is 2^64 paths as a tree, and one
+     * 100000 deep overflowed the import's recursion (the publication thread
+     * was given a 512 MB stack for it) and passed the gate's depth-64 cap
+     * unjudged.
+     */
+    @Test(timeout = 120_000L)
+    public void aDeepSharedChainIsImportedAndJudgedToItsEnd()
+            throws IOException {
+        for (int depth : new int[]{64, 100_000}) {
+            boolean doubled = depth == 64;
+            // The VM's own encoding: node k names node k-1 by its id.
+            JsonArray definitions = new JsonArray();
+            definitions.add(vmDefinition(1, binary("!=",
+                    symbol("M_Z_marker"), literal("Y_Z_0"))));
+            for (int id = 2; id <= depth; id++) {
+                definitions.add(vmDefinition(id, binary("==",
+                        vmReference(id - 1), doubled ? vmReference(id - 1)
+                                : literal("Y_Z_1"))));
+            }
+            JsonObject table = new JsonObject();
+            table.addProperty("schemaVersion", 1);
+            table.addProperty("kind", VmExpressionTable.KIND);
+            table.addProperty("authority", VmExpressionTable.AUTHORITY);
+            table.addProperty("sessionId", 1L);
+            table.addProperty("definitionCount", depth);
+            table.add("definitions", definitions);
+            JsonObject envelope = new JsonObject();
+            envelope.add(VmExpressionTable.FIELD, table);
+            envelope.add("expression", vmReference(depth));
+            JsonObject chain = new VmExpressionTable.Store()
+                    .importEnvelope(envelope).getAsJsonObject("expression");
+            if (doubled) assertSame(chain.get("_left"), chain.get("_right"));
+            Set<String> symbols = new LinkedHashSet<>();
+            Arms.symbolsIn(chain, symbols);
+            assertTrue(depth + ": " + symbols, symbols.contains("M_Z_marker"));
+
+            // True at the marker the session minted, so outcome=false is
+            // the complement of what the term held.
+            Rows flipped = clean();
+            flipped.expressions.put("EXPR.0000000000000001", chain);
+            flipped.decisions.set(0, DecisionRow.of("s-gate", 12L,
+                    flipped.anchor, "Guard#u8", 1, false,
+                    "EXPR.0000000000000001",
+                    Collections.<String, Long>emptyMap()));
+            assertInvariant(6, GapClass.BLOCKING, "field=outcome", flipped);
+        }
+    }
+
+    private static JsonObject vmReference(long id) {
+        JsonObject reference = new JsonObject();
+        reference.addProperty("_type", VmExpressionTable.REFERENCE_TYPE);
+        reference.addProperty("sessionId", 1L);
+        reference.addProperty("expressionId", id);
+        return reference;
+    }
+
+    private static JsonObject vmDefinition(long id, JsonObject expression) {
+        JsonObject definition = vmReference(id);
+        definition.addProperty("_type", VmExpressionTable.DEFINITION_TYPE);
+        definition.add("expression", expression);
+        return definition;
     }
 
     @Test

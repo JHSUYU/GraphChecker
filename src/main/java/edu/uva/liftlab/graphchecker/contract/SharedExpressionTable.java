@@ -8,13 +8,15 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -50,37 +52,9 @@ public final class SharedExpressionTable {
     private SharedExpressionTable() {
     }
 
-    /** Compacts a graph whose content-addressed definitions are trusted. */
-    private static JsonObject compactDecodedArtifact(JsonObject artifact,
-                                                     Builder builder) {
-        JsonElement compact = builder.compact(artifact, true);
-        if (!compact.isJsonObject()) {
-            throw new IllegalArgumentException("artifact root must be object");
-        }
-        builder.validateReferences();
-        JsonObject result = compact.getAsJsonObject();
-        if (!builder.reachable.isEmpty()) {
-            result.add(FIELD, builder.encode());
-        }
-        return result;
-    }
-
-    private static JsonObject expandArtifact(JsonObject artifact,
-                                             Resolver resolver) {
-        JsonElement expanded = resolver.expand(artifact,
-                new HashSet<String>(), true);
-        if (!expanded.isJsonObject()) {
-            throw new IllegalArgumentException("artifact root must be object");
-        }
-        return expanded.getAsJsonObject();
-    }
-
     /**
-     * One store of anchors, each distinct node (by identity) hashed once:
-     * decodes envelopes, compacts the graphs it holds, and content-addresses
-     * an expression.  A walk that re-hashed shared nodes costs the tree, not
-     * the DAG: a File.getParent chain (finalize-gs a8) was 389066 nodes of
-     * 198 distinct, and its session table never finished writing.
+     * One store of verified anchors: decodes envelopes, each definition
+     * expanded once however many envelopes name it.
      */
     public static final class Codec {
         private final Resolver resolver = new Resolver();
@@ -89,27 +63,13 @@ public final class SharedExpressionTable {
             if (artifact == null) return new JsonObject();
             requirePortableArtifact(artifact);
             resolver.collectTables(artifact);
-            return expandArtifact(artifact, resolver);
+            JsonElement expanded = resolver.expand(artifact);
+            if (!expanded.isJsonObject()) {
+                throw new IllegalArgumentException(
+                        "artifact root must be object");
+            }
+            return expanded.getAsJsonObject();
         }
-
-        /** One portable artifact: each expression a reference, each node
-         *  defined once. */
-        public synchronized JsonObject compact(JsonObject artifact) {
-            if (artifact == null) return new JsonObject();
-            return compactDecodedArtifact(artifact, builder());
-        }
-
-        private Builder builder() {
-            return new Builder(resolver.definitions,
-                    resolver.anchorsByExpanded);
-        }
-    }
-
-    private static JsonObject reference(String anchor) {
-        JsonObject result = new JsonObject();
-        result.addProperty("_type", REFERENCE_TYPE);
-        result.addProperty(ANCHOR, anchor);
-        return result;
     }
 
     private static boolean expression(JsonObject value) {
@@ -233,13 +193,6 @@ public final class SharedExpressionTable {
         }
     }
 
-    /** Drops null members, except {@code pathGuard} (empty conjunction). */
-    private static boolean portableMember(String name, JsonElement value) {
-        return !FIELD.equals(name)
-                && ("pathGuard".equals(name)
-                || value != null && !value.isJsonNull());
-    }
-
     private static void requireAnchor(String value) {
         if (value == null || !value.startsWith(PREFIX)
                 || value.length() != PREFIX.length() + 64) {
@@ -259,14 +212,15 @@ public final class SharedExpressionTable {
     /**
      * THE DAG CHECK of every expression table: each key a walk reaches is
      * defined ({@code definition} answers null otherwise) and none lies on a
-     * cycle. {@code references} visits the keys one value names.
+     * cycle. {@code references} visits the keys one value names.  Depth
+     * first on a stack: a definition chain is as deep as the VM's
+     * expression chain.
      */
     static final class Dag<K> {
         private final String noun;
         private final Function<K, JsonObject> definition;
         private final BiConsumer<JsonElement, Consumer<K>> references;
-        final Set<K> visited = new LinkedHashSet<>();
-        private final Set<K> active = new LinkedHashSet<>();
+        private final Set<K> visited = new HashSet<>();
 
         Dag(String noun, Function<K, JsonObject> definition,
             BiConsumer<JsonElement, Consumer<K>> references) {
@@ -277,6 +231,27 @@ public final class SharedExpressionTable {
 
         void require(K key) {
             if (visited.contains(key)) return;
+            Set<K> active = new HashSet<>();
+            Deque<K> path = new ArrayDeque<>();
+            Deque<Iterator<K>> named = new ArrayDeque<>();
+            enter(key, active, path, named);
+            while (!named.isEmpty()) {
+                if (named.peek().hasNext()) {
+                    K next = named.peek().next();
+                    if (!visited.contains(next)) {
+                        enter(next, active, path, named);
+                    }
+                    continue;
+                }
+                named.pop();
+                K done = path.pop();
+                active.remove(done);
+                visited.add(done);
+            }
+        }
+
+        private void enter(K key, Set<K> active, Deque<K> path,
+                           Deque<Iterator<K>> named) {
             JsonObject defined = definition.apply(key);
             if (defined == null) {
                 throw new IllegalArgumentException(
@@ -286,9 +261,142 @@ public final class SharedExpressionTable {
                 throw new IllegalArgumentException(
                         "cyclic " + noun + " definition: " + key);
             }
-            references.accept(defined, this::require);
-            active.remove(key);
-            visited.add(key);
+            List<K> keys = new ArrayList<>();
+            references.accept(defined, keys::add);
+            path.push(key);
+            named.push(keys.iterator());
+        }
+    }
+
+    /**
+     * THE EXPANSION of every expression table: a copy of one value in which
+     * each reference is its definition's expansion, each definition expanded
+     * once, so the copy shares what the table shares.  On a stack: a
+     * reference chain is as deep as the VM's expression chain, and the
+     * recursion along it needed the publication thread's 512 MB stack.
+     */
+    abstract static class Expansion<K> {
+        private final String noun;
+        private final Map<K, JsonElement> expanded = new HashMap<>();
+
+        Expansion(String noun) {
+            this.noun = noun;
+        }
+
+        /** The key {@code object} references, or null for a plain object;
+         *  {@code root}: it is the artifact itself. */
+        abstract K reference(JsonObject object, boolean root);
+
+        /** The definition one key names, or null. */
+        abstract JsonObject definition(K key);
+
+        /** What the copy of a plain object holds for one member, still to
+         *  expand; null drops the member. */
+        abstract JsonElement member(String name, JsonElement value);
+
+        final JsonElement expand(JsonElement root) {
+            Deque<Copy<K>> copies = new ArrayDeque<>();
+            Set<K> active = new HashSet<>();
+            JsonElement done = enter(root, true, copies, active);
+            while (!copies.isEmpty()) {
+                Copy<K> copy = copies.peek();
+                if (done != null) copy.add(done);
+                JsonElement next = copy.next(this);
+                if (next != null) {
+                    done = enter(next, false, copies, active);
+                    continue;
+                }
+                copies.pop();
+                done = copy.result;
+                if (copy.key != null) {
+                    active.remove(copy.key);
+                    expanded.put(copy.key, done);
+                }
+            }
+            return done;
+        }
+
+        /** A value's copy when it is whole already, else null with the copy
+         *  it needs pushed. */
+        private JsonElement enter(JsonElement value, boolean root,
+                                  Deque<Copy<K>> copies, Set<K> active) {
+            if (value == null || value.isJsonNull()) return JsonNull.INSTANCE;
+            if (value.isJsonPrimitive()) return value.deepCopy();
+            K key = value.isJsonObject()
+                    ? reference(value.getAsJsonObject(), root) : null;
+            if (key == null) {
+                copies.push(new Copy<K>(value));
+                return null;
+            }
+            JsonElement held = expanded.get(key);
+            if (held != null) return held;
+            JsonObject definition = definition(key);
+            if (definition == null) {
+                throw new IllegalArgumentException(
+                        "missing " + noun + " definition: " + key);
+            }
+            if (!active.add(key)) {
+                throw new IllegalArgumentException(
+                        "cyclic " + noun + " definition: " + key);
+            }
+            copies.push(new Copy<K>(key, definition));
+            return null;
+        }
+    }
+
+    /** One copy in progress: a plain object or array, or one key's value. */
+    private static final class Copy<K> {
+        /** The key whose definition this copy expands, or null. */
+        private final K key;
+        private final Iterator<JsonElement> items;
+        private final Iterator<Map.Entry<String, JsonElement>> members;
+        private JsonElement result;
+        /** The member the next value fills. */
+        private String name;
+
+        private Copy(JsonElement plain) {
+            this.key = null;
+            if (plain.isJsonArray()) {
+                items = plain.getAsJsonArray().iterator();
+                members = null;
+                result = new JsonArray();
+            } else {
+                items = null;
+                members = plain.getAsJsonObject().entrySet().iterator();
+                result = new JsonObject();
+            }
+        }
+
+        private Copy(K key, JsonObject definition) {
+            this.key = key;
+            items = Collections.<JsonElement>singletonList(definition)
+                    .iterator();
+            members = null;
+        }
+
+        /** The next value to expand into this copy, or null when whole. */
+        private JsonElement next(Expansion<K> expansion) {
+            if (items != null) return items.hasNext() ? items.next() : null;
+            while (members.hasNext()) {
+                Map.Entry<String, JsonElement> member = members.next();
+                JsonElement value = expansion.member(member.getKey(),
+                        member.getValue());
+                if (value != null) {
+                    name = member.getKey();
+                    return value;
+                }
+            }
+            return null;
+        }
+
+        private void add(JsonElement value) {
+            if (key != null) {
+                result = value;
+            } else if (members == null) {
+                result.getAsJsonArray().add(value);
+            } else {
+                result.getAsJsonObject().add(name, value);
+            }
         }
     }
 
@@ -331,95 +439,31 @@ public final class SharedExpressionTable {
                         new IdentityHashMap<JsonElement, Boolean>())));
     }
 
-    /** One compaction over the codec's anchors, adding the ones it hashes. */
-    private static final class Builder {
-        private final Map<String, JsonObject> definitions;
-        private final Map<JsonElement, String> compactedExpressions;
-        private final Set<String> references = new LinkedHashSet<>();
-        private Set<String> reachable = Collections.emptySet();
-
-        private Builder(Map<String, JsonObject> definitions,
-                        Map<JsonElement, String> anchors) {
-            this.definitions = definitions;
-            this.compactedExpressions = anchors;
-        }
-
-        private JsonElement compact(JsonElement value, boolean artifactRoot) {
-            if (value == null || value.isJsonNull()) return JsonNull.INSTANCE;
-            if (value.isJsonPrimitive()) return value.deepCopy();
-            if (value.isJsonArray()) {
-                JsonArray result = new JsonArray();
-                for (JsonElement child : value.getAsJsonArray()) {
-                    result.add(compact(child, false));
-                }
-                return result;
-            }
-            JsonObject source = value.getAsJsonObject();
-            if (declaresReference(source)) {
-                requireReference(source, artifactRoot && source.has(FIELD));
-                String anchor = exactString(source, ANCHOR);
-                references.add(anchor);
-                return reference(anchor);
-            }
-            if (expression(source)) {
-                String held = compactedExpressions.get(source);
-                if (held != null) {
-                    references.add(held);
-                    return reference(held);
-                }
-            }
-            JsonObject result = new JsonObject();
-            for (Map.Entry<String, JsonElement> field : source.entrySet()) {
-                // pathGuard:null = observed empty conjunction; absent = not
-                // captured.
-                if (portableMember(field.getKey(), field.getValue())) {
-                    result.add(field.getKey(), compact(field.getValue(),
-                            false));
-                }
-            }
-            if (!expression(source)) return result;
-            String anchor = anchorFor(result);
-            definitions.putIfAbsent(anchor, result);
-            compactedExpressions.put(source, anchor);
-            references.add(anchor);
-            return reference(anchor);
-        }
-
-        private void validateReferences() {
-            Dag<String> dag = anchors(anchor -> {
-                requireAnchor(anchor);
-                return definitions.get(anchor);
-            });
-            for (String anchor : references) dag.require(anchor);
-            reachable = dag.visited;
-        }
-
-        private JsonObject encode() {
-            JsonObject table = new JsonObject();
-            table.addProperty("schemaVersion", SCHEMA_VERSION);
-            table.addProperty("kind", KIND);
-            table.addProperty("authority", AUTHORITY);
-            List<String> anchors = new ArrayList<>(reachable);
-            Collections.sort(anchors);
-            JsonArray rows = new JsonArray();
-            for (String anchor : anchors) {
-                JsonObject row = new JsonObject();
-                row.addProperty(ANCHOR, anchor);
-                row.add("expression", definitions.get(anchor));
-                rows.add(row);
-            }
-            table.add("definitions", rows);
-            return table;
-        }
-    }
-
-    private static final class Resolver {
+    private static final class Resolver extends Expansion<String> {
         private final Map<String, JsonObject> definitions = new HashMap<>();
-        private final Map<String, JsonElement> expanded = new HashMap<>();
-        private final Map<JsonElement, String> anchorsByExpanded =
-                new IdentityHashMap<>();
         private final Set<JsonElement> collected = Collections.newSetFromMap(
                 new IdentityHashMap<JsonElement, Boolean>());
+
+        private Resolver() {
+            super("shared expression");
+        }
+
+        @Override
+        String reference(JsonObject object, boolean root) {
+            if (!declaresReference(object)) return null;
+            requireReference(object, root && object.has(FIELD));
+            return exactString(object, ANCHOR);
+        }
+
+        @Override
+        JsonObject definition(String anchor) {
+            return definitions.get(anchor);
+        }
+
+        @Override
+        JsonElement member(String name, JsonElement value) {
+            return FIELD.equals(name) ? null : value;
+        }
 
         private void collectTables(JsonElement value) {
             Map<String, JsonObject> incoming = new LinkedHashMap<>();
@@ -463,50 +507,6 @@ public final class SharedExpressionTable {
             Dag<String> dag = anchors(anchor -> definitions.containsKey(anchor)
                     ? new JsonObject() : incoming.get(anchor));
             for (String anchor : incoming.keySet()) dag.require(anchor);
-        }
-
-        private JsonElement expand(JsonElement value, Set<String> active,
-                                   boolean artifactRoot) {
-            if (value == null || value.isJsonNull()) return JsonNull.INSTANCE;
-            if (value.isJsonPrimitive()) return value.deepCopy();
-            if (value.isJsonArray()) {
-                JsonArray result = new JsonArray();
-                for (JsonElement child : value.getAsJsonArray()) {
-                    result.add(expand(child, active, false));
-                }
-                return result;
-            }
-            JsonObject source = value.getAsJsonObject();
-            if (declaresReference(source)) {
-                requireReference(source, artifactRoot && source.has(FIELD));
-                String anchor = exactString(source, ANCHOR);
-                JsonElement held = expanded.get(anchor);
-                if (held != null) return held;
-                JsonObject definition = definitions.get(anchor);
-                if (definition == null) {
-                    throw new IllegalArgumentException(
-                            "missing shared expression definition: "
-                                    + anchor);
-                }
-                if (!active.add(anchor)) {
-                    throw new IllegalArgumentException(
-                            "cyclic shared expression definition: "
-                                    + anchor);
-                }
-                JsonElement result = expand(definition, active, false);
-                active.remove(anchor);
-                expanded.put(anchor, result);
-                anchorsByExpanded.put(result, anchor);
-                return result;
-            }
-            JsonObject result = new JsonObject();
-            for (Map.Entry<String, JsonElement> field : source.entrySet()) {
-                if (!FIELD.equals(field.getKey())) {
-                    result.add(field.getKey(), expand(field.getValue(),
-                            active, false));
-                }
-            }
-            return result;
         }
     }
 }
