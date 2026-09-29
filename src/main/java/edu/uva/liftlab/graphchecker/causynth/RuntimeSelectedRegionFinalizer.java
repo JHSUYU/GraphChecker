@@ -101,6 +101,11 @@ public final class RuntimeSelectedRegionFinalizer {
      */
     public static final String FOLDED_REGION_IDS = "foldedRegionIds";
     /**
+     * Activation member: for each region entry folded into this occurrence,
+     * the methods it was called under, up to and with the occurrence's root.
+     */
+    public static final String FOLDED_ENTRY_CALLERS = "foldedEntryCallers";
+    /**
      * Activation member: this occurrence is the failure the case is about
      * (README TARGET-1).  Stated on the row because under the fold rule the
      * static {@code selection} names the region the failure is in, not the

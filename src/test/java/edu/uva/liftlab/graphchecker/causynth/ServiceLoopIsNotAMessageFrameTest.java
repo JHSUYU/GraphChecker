@@ -77,6 +77,13 @@ public class ServiceLoopIsNotAMessageFrameTest {
                 // the frame.  This is hdfs-11741's IN region, rooted at
                 // convertBlockKeys's own loop, and it keeps that rooting.
                 {"a loop below the frame", decodeRegion(), DECODE_WALK},
+                // SOLR-18406: a region entry folded into the root beside the
+                // loop (checkpoint's onCommit, beside decRef's loop over
+                // files) would be in no occurrence: the root stands.
+                {"a loop that a folded entry is beside",
+                        folded(decodeRegion(), DECODE_FRAME), null},
+                {"a loop that a folded entry is inside",
+                        folded(decodeRegion(), DECODE_WALK), DECODE_WALK},
                 // A port that names no frame method is addressed within its
                 // RPC message: the rule before this one still decides it.
                 {"a port that declares no frame",
@@ -155,6 +162,19 @@ public class ServiceLoopIsNotAMessageFrameTest {
                 port(DECODE_LEAF, DECODE_FRAME),
                 Arrays.asList(callEdge(DECODE_FRAME, 3, DECODE_WALK),
                         callEdge(DECODE_WALK, 7, DECODE_LEAF)));
+    }
+
+    /** {@code built}, with one region entry folded into its activation
+     *  under {@code caller}. */
+    private static Case folded(Case built, String caller) {
+        for (Map<String, Object> activation
+                : built.program.regionActivations(REGION)) {
+            activation.put(RuntimeSelectedRegionFinalizer.FOLDED_ENTRY_CALLERS,
+                    Collections.singletonList(DECODE_WALK.equals(caller)
+                            ? Arrays.asList(DECODE_WALK, DECODE_FRAME)
+                            : Collections.singletonList(DECODE_FRAME)));
+        }
+        return built;
     }
 
     private static final String SET_UP =

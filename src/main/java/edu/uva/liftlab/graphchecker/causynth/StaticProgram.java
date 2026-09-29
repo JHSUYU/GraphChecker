@@ -258,7 +258,8 @@ public final class StaticProgram {
                     int unitIndex = SiteId.unitIndexOf(site);
                     Map<String, Object> loop = iteratedLoopAt(loopsByMethod,
                             iterated, caller, unitIndex);
-                    if (loop != null) {
+                    if (loop != null
+                            && !orphansAFold(caller, regionActivations)) {
                         return rootLoop(loop, caller, unitIndex);
                     }
                     // The walk stops at the root.
@@ -299,6 +300,32 @@ public final class StaticProgram {
             }
         }
         return rootLoop(loop, root, work);
+    }
+
+    /**
+     * Whether rooting at a loop of {@code loopMethod} would leave a region
+     * entry folded into these activations in no occurrence: one the root
+     * called, but not under the loop's method.  Folds are taken while the
+     * whole root is open; rooted at the loop, the root's other work is
+     * nobody's.  SOLR-18406: IndexFileDeleter.checkpoint calls the deletion
+     * policy's onCommit -- the reservation's clock -- beside decRef's loop
+     * over files, which rooted the region and dropped the clock.
+     */
+    private static boolean orphansAFold(
+            String loopMethod,
+            Collection<Map<String, Object>> regionActivations) {
+        for (Map<String, Object> activation : regionActivations) {
+            Object entries = activation.get(
+                    RuntimeSelectedRegionFinalizer.FOLDED_ENTRY_CALLERS);
+            if (!(entries instanceof Collection)) continue;
+            for (Object callers : (Collection<?>) entries) {
+                if (callers instanceof Collection
+                        && !((Collection<?>) callers).contains(loopMethod)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /** The last unit of the loop's control sites, or -1. */

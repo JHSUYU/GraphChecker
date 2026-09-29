@@ -143,7 +143,8 @@ public final class RuntimeRegionPlanner {
                     foldOwners);
         }
         stampActivationContainment(activationByCall, trace);
-        stampFoldedRegionEntries(foldedRoots, foldOwners, activationByCall);
+        stampFoldedRegionEntries(foldedRoots, foldOwners, activationByCall,
+                trace);
         result.runtimeInstances.addAll(activationByCall.values());
         stampRecordedExchanges(result, trace, protocolEvents);
         return result;
@@ -169,7 +170,8 @@ public final class RuntimeRegionPlanner {
     private static void stampFoldedRegionEntries(
             Map<Long, StaticProgram.RegionRow> foldedRoots,
             Map<Long, Long> foldOwners,
-            Map<Long, Map<String, Object>> activationByCall) {
+            Map<Long, Map<String, Object>> activationByCall,
+            TraceIndex trace) {
         List<Long> ordered = new ArrayList<>(foldedRoots.keySet());
         Collections.sort(ordered);
         for (Long folded : ordered) {
@@ -185,6 +187,22 @@ public final class RuntimeRegionPlanner {
             }
             enclosing.put(RuntimeSelectedRegionFinalizer.FOLDED_REGION_IDS,
                     held);
+            // The methods the entry was called under, up to its owner's
+            // root: whether a loop re-rooting the owner still holds it.
+            List<String> callers = new ArrayList<>();
+            MethodEvent event = trace.methodByCall.get(folded);
+            while (event != null && event.callId != owner.longValue()) {
+                event = trace.methodByCall.get(event.parentCallId);
+                if (event != null) callers.add(event.method);
+            }
+            Object prior = enclosing.get(
+                    RuntimeSelectedRegionFinalizer.FOLDED_ENTRY_CALLERS);
+            List<Object> entries = prior instanceof List
+                    ? new ArrayList<Object>((List<?>) prior)
+                    : new ArrayList<Object>();
+            entries.add(callers);
+            enclosing.put(RuntimeSelectedRegionFinalizer.FOLDED_ENTRY_CALLERS,
+                    entries);
         }
     }
 
