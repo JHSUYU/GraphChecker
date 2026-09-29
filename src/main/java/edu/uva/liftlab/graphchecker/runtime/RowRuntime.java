@@ -91,10 +91,11 @@ public final class RowRuntime {
             sessionId = sessionId(resultFile);
             Path sessions = declaredSessionsRoot();
             publisher = sessions == null
-                    ? SessionPublisher.of(iterationOf(resultFile), sessionId)
+                    ? SessionPublisher.of(iterationOf(resultFile), sessionId,
+                            expressions)
                     : SessionPublisher.at(SessionDir.of(sessions.getParent()
                             == null ? sessions : sessions.getParent(),
-                            sessionId));
+                            sessionId), expressions);
         }
         // The schedule goes with the rows; events from before the open are
         // kept and written first.

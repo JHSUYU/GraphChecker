@@ -23,6 +23,7 @@ import edu.uva.liftlab.graphchecker.contract.RootKind;
 import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.RowCodec;
 import edu.uva.liftlab.graphchecker.contract.SessionDir;
+import edu.uva.liftlab.graphchecker.contract.SharedExpressionTable;
 import edu.uva.liftlab.graphchecker.contract.TargetRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import java.nio.file.Files;
@@ -172,7 +173,8 @@ public class RowRuntimeTest {
     public void aWithdrawnSessionIsNotWrittenBack() throws Exception {
         SessionDir layout = SessionDir.of(iteration.getRoot().toPath(),
                 "withdrawn");
-        SessionPublisher session = SessionPublisher.at(layout);
+        SessionPublisher session = SessionPublisher.at(layout,
+                new SharedExpressionTable.Codec());
         Files.move(layout.dir(), iteration.getRoot().toPath().resolve("aside"));
         session.close();
         JsonObject constant = new JsonObject();

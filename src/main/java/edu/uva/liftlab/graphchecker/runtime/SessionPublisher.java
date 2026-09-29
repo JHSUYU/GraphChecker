@@ -46,10 +46,9 @@ public final class SessionPublisher {
             new LinkedHashMap<String, BufferedWriter>();
     private final Map<String, JsonObject> expressions =
             new LinkedHashMap<String, JsonObject>();
-    /** Hashes each expression node once, however often the table is
-     *  written again. */
-    private final SharedExpressionTable.Codec codec =
-            new SharedExpressionTable.Codec();
+    /** The rows' codec, which hashed each node as the rows named it: the
+     *  table is written from the anchors it holds, however often. */
+    private final SharedExpressionTable.Codec codec;
     /** When the table was last written, to write it again by the clock. */
     private long tableWrittenAt;
     /** How long that write took: the next waits {@link #REWRITE_SHARE}
@@ -68,22 +67,26 @@ public final class SessionPublisher {
     /** Once closed, every further expression is written as it is filed. */
     private boolean closed;
 
-    private SessionPublisher(SessionDir layout) {
+    private SessionPublisher(SessionDir layout,
+                             SharedExpressionTable.Codec codec) {
         this.layout = layout;
+        this.codec = codec;
     }
 
     /** The publisher of one session, created once per JVM. */
-    public static SessionPublisher of(Path iteration, String sessionId) {
-        return at(SessionDir.of(iteration, sessionId));
+    public static SessionPublisher of(Path iteration, String sessionId,
+                                      SharedExpressionTable.Codec codec) {
+        return at(SessionDir.of(iteration, sessionId), codec);
     }
 
     /** The publisher of one session under an explicit sessions root. */
-    static SessionPublisher at(SessionDir layout) {
+    static SessionPublisher at(SessionDir layout,
+                               SharedExpressionTable.Codec codec) {
         String key = layout.dir().toAbsolutePath().toString();
         synchronized (LOCK) {
             SessionPublisher publisher = SESSIONS.get(key);
             if (publisher == null) {
-                publisher = new SessionPublisher(layout);
+                publisher = new SessionPublisher(layout, codec);
                 publisher.open();
                 SESSIONS.put(key, publisher);
             }
