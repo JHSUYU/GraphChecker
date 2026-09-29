@@ -36,6 +36,9 @@ public final class MessageDoors {
     private static final Map<String, Outbound> STORED =
             new ConcurrentHashMap<String, Outbound>();
 
+    /** Set while the thread runs a store's notification ({@link #notified}). */
+    private static final ThreadLocal<Boolean> NOTIFIED = new ThreadLocal<>();
+
     private MessageDoors() {
     }
 
@@ -138,17 +141,35 @@ public final class MessageDoors {
     }
 
     /**
-     * A read of a version a {@link #stored} write made.  On a thread that
-     * stands in no scope -- a store's callback, which nothing else
-     * attributes -- the read is the message that caused the work that
-     * follows, and installs the writer's context: each version read is an
-     * occurrence of its own, named by the write.  The schedule never waits
-     * for it: ZooKeeper folds the changes that arrive before a watch is set
-     * again into one event, so how many times a reader reads is the store's
-     * timing.  A thread already in a scope keeps its own.
+     * A store's notification (a ZooKeeper watch event) run by its callback:
+     * the first version the callback reads ({@link #fetched}) is the message
+     * that caused it, and the callback's end ends it.
+     */
+    public static void notified(Runnable callback) {
+        NOTIFIED.set(Boolean.TRUE);
+        try {
+            callback.run();
+        } finally {
+            NOTIFIED.remove();
+            endInbound();
+        }
+    }
+
+    /**
+     * A read of a version a {@link #stored} write made.  Inside a
+     * notification that nothing else attributes, the read is the message
+     * that caused the work that follows, and installs the writer's context:
+     * each version read is an occurrence of its own, named by the write.
+     * The schedule never waits for it: ZooKeeper folds the changes that
+     * arrive before a watch is set again into one event, so how many
+     * notifications a run takes is the store's timing.  Any other read is
+     * data, not a cause: a loop that polls the store reads as often as its
+     * timing lets it, and a thread already in a scope keeps its own.
      */
     public static void fetched(String transport, String key, Object owner) {
-        if (!CausynthTraceRecorder.unscoped()) return;
+        if (NOTIFIED.get() == null || !CausynthTraceRecorder.unscoped()) {
+            return;
+        }
         Outbound message = STORED.get(transport + "\n" + key);
         if (message == null) return;
         endInbound(true);
