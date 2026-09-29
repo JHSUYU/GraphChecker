@@ -20,7 +20,7 @@ row=$(awk -F'\t' -v c="${check}" '$1 == c' "${here}/checks.tsv")
 IFS=$'\t' read -r _ _ _ own _ <<<"${row}"
 target_spec=${here}/targets/${check}.yaml
 target_occurrence=$(awk -F'\t' -v c="$1" '$1 == c {print $2}' \
-  "${here}/occurrences.tsv" 2>/dev/null)
+  "${here}/occurrences.tsv")
 target_occurrence=${target_occurrence:-first}
 scope=("${own}")
 test_method=${workload#*-}
