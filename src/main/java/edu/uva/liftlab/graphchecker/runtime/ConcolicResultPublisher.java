@@ -8,6 +8,7 @@ import edu.uva.liftlab.graphchecker.runtime.ConcolicTaskPlan.RuntimeTask;
 import edu.uva.liftlab.graphchecker.runtime.SharedStateCapture.RawSharedStateReadOut;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
@@ -53,7 +54,7 @@ final class ConcolicResultPublisher {
                             // Compaction recurses along an expression
                             // chain: the engine's stack (java.sh -Xss).
                             Thread thread = new Thread(root, runnable,
-                                    "causynth-result-publication-"
+                                    PUBLICATION_THREAD_PREFIX
                                             + PUBLICATION_THREAD_COUNTER
                                             .incrementAndGet(),
                                     512L << 20);
@@ -61,6 +62,8 @@ final class ConcolicResultPublisher {
                             return thread;
                         }
                     });
+    private static final String PUBLICATION_THREAD_PREFIX =
+            "causynth-result-publication-";
     /** Guarded by {@link #PUBLICATION_LOCK}. */
     private static int resultPublicationsInFlight;
     /** Live selected activations not yet publishing. */
@@ -264,8 +267,29 @@ final class ConcolicResultPublisher {
             runTotalsPublished = true;
         }
         configuration().publishUnansweredAddresses();
-        // Called from every exit path: a halt runs no shutdown hook.
-        RowRuntime.closeSession();
+        // Called from every exit path: a halt runs no shutdown hook.  On the
+        // publication thread: the session's close writes the expression
+        // table, whose walks recurse along a chain as deep as the rows'
+        // (a replay's main thread has 1 MB; four sweep q9 sessions lost
+        // their table to a StackOverflowError there).
+        onPublicationThread(RowRuntime::closeSession);
+    }
+
+    /** Runs one step on the publication thread and waits for it. */
+    private static void onPublicationThread(Runnable step) {
+        if (Thread.currentThread().getName().startsWith(
+                PUBLICATION_THREAD_PREFIX)) {
+            step.run();
+            return;
+        }
+        try {
+            RESULT_PUBLICATION_EXECUTOR.submit(step).get();
+        } catch (ExecutionException failed) {
+            throw new IllegalStateException(failed.getCause());
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(interrupted);
+        }
     }
 
     private static boolean runTotalsPublished;
