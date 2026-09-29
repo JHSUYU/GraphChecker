@@ -85,6 +85,10 @@ final class JUnitLifecycle {
         }
         Class<?> testClass = Class.forName(args[0]);
         Method testMethod = testMethod(testClass, args[1]);
+        if (declaresRunner(testClass)) {
+            runWithItsRunner(testClass, testMethod.getName());
+            return;
+        }
         Throwable failure = null;
         // A static field's extension is the class's; an instance field's,
         // the test's alone.
@@ -123,6 +127,60 @@ final class JUnitLifecycle {
                     null, null, classExtensions);
         }
         rethrow(failure);
+    }
+
+    /** What names a JUnit 4 class's own runner; it is inherited. */
+    private static final String[] RUN_WITH = {"org.junit.runner.RunWith"};
+
+    /** Whether the class or a superclass names the runner that runs it. */
+    private static boolean declaresRunner(Class<?> testClass) {
+        for (Class<?> type = testClass; type != null;
+             type = type.getSuperclass()) {
+            if (hasAnnotation(type.getDeclaredAnnotations(), RUN_WITH)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Runs one method of a class that names its runner, by that runner
+     * ({@code RandomizedRunner} for every Lucene and Solr test): the rules,
+     * the randomized context and the threads the runner gives a test are the
+     * test's own, and reflection cannot stand in for them -- a Solr test
+     * calls {@code random()}, which only the runner's thread answers.  The
+     * runner is the workload's JUnit, reached reflectively.  A method the
+     * runner skipped is refused like a missing one: a session would be
+     * published for a workload that never ran.
+     */
+    private static void runWithItsRunner(Class<?> testClass, String method)
+            throws Exception {
+        ClassLoader loader = testClass.getClassLoader();
+        Class<?> requestType = Class.forName("org.junit.runner.Request", true,
+                loader);
+        Object request = requestType.getMethod("method", Class.class,
+                String.class).invoke(null, testClass, method);
+        Class<?> coreType = Class.forName("org.junit.runner.JUnitCore", true,
+                loader);
+        Object result = coreType.getMethod("run", requestType)
+                .invoke(coreType.getConstructor().newInstance(), request);
+        Class<?> resultType = result.getClass();
+        List<?> failures = (List<?>) resultType.getMethod("getFailures")
+                .invoke(result);
+        Throwable failure = null;
+        for (Object each : failures) {
+            failure = merge(failure, (Throwable) each.getClass()
+                    .getMethod("getException").invoke(each));
+        }
+        rethrow(failure);
+        int ran = (Integer) resultType.getMethod("getRunCount").invoke(result);
+        int ignored = (Integer) resultType.getMethod("getIgnoreCount")
+                .invoke(result);
+        if (ran != 1 || ignored != 0) {
+            throw new NoSuchMethodException("its runner ran " + ran
+                    + " and ignored " + ignored + " test(s) for "
+                    + testClass.getName() + "#" + method);
+        }
     }
 
     /**
