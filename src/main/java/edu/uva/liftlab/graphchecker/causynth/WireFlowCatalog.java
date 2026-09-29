@@ -116,6 +116,15 @@ public final class WireFlowCatalog {
         return flows;
     }
 
+    /** Whether a declared port holds a capture at {@code site}: it is that
+     *  port's, and no rule derives another there. */
+    boolean captures(CaptureSite site) {
+        for (WireFlow flow : flows) {
+            if (flow.captures(site)) return true;
+        }
+        return false;
+    }
+
     /** The mapping's rows of one other kind ({@link DoorWeave#KIND}). */
     static List<JsonObject> rowsOfKind(String kind) throws IOException {
         List<JsonObject> found = new ArrayList<>();
@@ -237,6 +246,16 @@ public final class WireFlowCatalog {
             portId = CommunicationCatalogContract.portId(exchangeSiteKey, id);
         }
 
+        boolean captures(CaptureSite site) {
+            for (CaptureSite held : producers) {
+                if (held.site().equals(site.site())) return true;
+            }
+            for (CaptureSite held : consumers) {
+                if (held.site().equals(site.site())) return true;
+            }
+            return false;
+        }
+
         Map<String, Object> row() {
             Map<String, Object> row = CommunicationCatalogPlanner.newRow(KIND);
             row.put("id", id);
@@ -252,10 +271,13 @@ public final class WireFlowCatalog {
             return row;
         }
 
+        /** In site order: a derived port gains consumers in worklist order. */
         private static List<Map<String, Object>> rows(
                 List<CaptureSite> captures) {
+            List<CaptureSite> ordered = new ArrayList<>(captures);
+            ordered.sort(java.util.Comparator.comparing(CaptureSite::site));
             List<Map<String, Object>> rows = new ArrayList<>();
-            for (CaptureSite capture : captures) rows.add(capture.row());
+            for (CaptureSite capture : ordered) rows.add(capture.row());
             return rows;
         }
     }
@@ -284,6 +306,14 @@ public final class WireFlowCatalog {
             this.unitIndex = unitIndex;
             this.javaType = javaType;
             this.frameMethod = frameMethod;
+        }
+
+        /** A call capture a rule found, framed by its RPC message. */
+        static CaptureSite call(String method, String kind, int index,
+                                String callee, int unitIndex,
+                                String javaType) {
+            return new CaptureSite(method, kind, index, callee, unitIndex,
+                    javaType, "");
         }
 
         private static CaptureSite parse(JsonObject row,
@@ -366,6 +396,11 @@ public final class WireFlowCatalog {
         String siteId() {
             return unitIndex < 0 ? method
                     : SiteId.of(method, unitIndex);
+        }
+
+        /** Where the capture is: its site, kind and argument. */
+        String site() {
+            return kind + "@" + siteId() + "#" + index;
         }
         Map<String, Object> row() {
             Map<String, Object> row = new LinkedHashMap<>();

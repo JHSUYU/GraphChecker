@@ -188,6 +188,9 @@ final class SeedBackwardStaticAnalyzer {
     private final Map<Fact, List<String>> canonicalLocalUsesCache =
             new LinkedHashMap<>();
     private final WireFlowCatalog wireFlows;
+    /** The ports {@link #deriveWirePort} found, by message field. */
+    private final Map<String, WireFlowCatalog.WireFlow> derivedPorts =
+            new LinkedHashMap<>();
     /** README section 5's declared per-loop {@code K_L}. */
     private final DeclaredLoopBodyBounds loopBodyBounds;
     private boolean globalStaticIndexBuilt;
@@ -285,10 +288,12 @@ final class SeedBackwardStaticAnalyzer {
     private void planCommunicationCatalog(StaticProgram result) {
         List<String> selected = new ArrayList<>(selectedMethods);
         Collections.sort(selected);
+        List<WireFlowCatalog.WireFlow> ports =
+                new ArrayList<>(wireFlows.flows());
+        ports.addAll(derivedPorts.values());
         CommunicationCatalogPlanner.Result discovered =
                 CommunicationCatalogPlanner.plan(selected,
-                        this::jimpleBody, wireFlows.flows(),
-                        loopBodyBounds);
+                        this::jimpleBody, ports, loopBodyBounds);
         // A pure function of the selected set: replace, never append.
         result.communicationCallSites.clear();
         result.retainedLoops.clear();
@@ -444,6 +449,93 @@ final class SeedBackwardStaticAnalyzer {
                         fact == null ? producerFacts.get(index) : fact);
             }
         }
+    }
+
+    /** The field types a derived port carries: primitives and strings. */
+    private static final Set<String> WIRE_LEAF_TYPES = names("boolean",
+            "byte", "char", "short", "int", "long", "float", "double",
+            "java.lang.String");
+
+    /**
+     * F3: a demanded {@code x = r.<M: T getF()>()} on a protobuf message M
+     * reads a value some process wrote through {@code M$Builder.setF(T)}.
+     * The call is a consumer of port (M, F), every call of that setter in
+     * the analysed program is a producer, and each producer's argument is
+     * demanded in turn, so the slice continues on the sending side.  Only
+     * demanded getters derive, so the ports stay few; a capture a declared
+     * row holds is that row's.
+     */
+    private void deriveWirePort(String method, Fact fact, MethodSig getter,
+                                List<String> defs, Set<String> relevant) {
+        if (!getter.params.isEmpty() || !getter.name.startsWith("get")
+                || getter.name.length() == "get".length()
+                || !WIRE_LEAF_TYPES.contains(getter.returnType)
+                || !exactIntersects(relevant, defs)
+                || !protobufMessage(getter.owner)) {
+            return;
+        }
+        WireFlowCatalog.CaptureSite consumer =
+                WireFlowCatalog.CaptureSite.call(method,
+                        WireFlowCatalog.CaptureSite.CALL_RETURN, -1,
+                        getter.raw, fact.unitIndex, getter.returnType);
+        if (wireFlows.captures(consumer)) return;
+        WireFlowCatalog.WireFlow port = memoized(derivedPorts,
+                getter.owner + "." + getter.name.substring(3),
+                identity -> derivedPort(identity, getter));
+        if (port.producers.isEmpty()) return;
+        if (!port.captures(consumer)) port.consumers.add(consumer);
+        seedPort(port);
+    }
+
+    /** Port (M, F), named {@code auto:<M's simple name>.<F>}, with its
+     *  producers: every call of {@code M$Builder.setF(T)}, argument 0. */
+    private WireFlowCatalog.WireFlow derivedPort(String identity,
+                                                 MethodSig getter) {
+        String message = getter.owner;
+        String field = getter.name.substring(3);
+        WireFlowCatalog.WireFlow port = new WireFlowCatalog.WireFlow(
+                "auto:" + message.substring(Math.max(message.lastIndexOf('.'),
+                        message.lastIndexOf('$')) + 1) + "." + field,
+                identity, getter.returnType);
+        String builder = message + "$Builder";
+        String setter = "<" + builder + ": " + builder + " set" + field + "("
+                + getter.returnType + ")>";
+        buildGlobalStaticIndex();
+        for (Callsite call : methodCallersByCallee.getOrDefault(setter,
+                Collections.<Callsite>emptyList())) {
+            WireFlowCatalog.CaptureSite producer =
+                    WireFlowCatalog.CaptureSite.call(call.method,
+                            WireFlowCatalog.CaptureSite.CALL_ARGUMENT, 0,
+                            setter, call.unitIndex, getter.returnType);
+            if (!wireFlows.captures(producer)) port.producers.add(producer);
+        }
+        return port;
+    }
+
+    /**
+     * A generated protobuf message: its hierarchy reaches the runtime's
+     * GeneratedMessage or GeneratedMessageV3 in whatever package a build
+     * relocates protobuf to (Hadoop's org.apache.hadoop.thirdparty.protobuf).
+     */
+    private boolean protobufMessage(String className) {
+        SootClass type = sceneClass(className);
+        if (type == null) return false;
+        for (String name : hierarchyNames(type)) {
+            if (name.endsWith(".protobuf.GeneratedMessage")
+                    || name.endsWith(".protobuf.GeneratedMessageV3")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** A protobuf builder's field setter, {@code B B.setF(T)} of a nested
+     *  {@code $Builder}: its calls are a derived port's producers wherever
+     *  the message is ({@link #derivedPort}). */
+    private static boolean builderSetter(MethodSig sig) {
+        return sig.name.startsWith("set") && sig.params.size() == 1
+                && sig.owner.endsWith("$Builder")
+                && sig.owner.equals(sig.returnType);
     }
 
     /** Loads one capture's method and demands its value there. */
@@ -1262,7 +1354,8 @@ final class SeedBackwardStaticAnalyzer {
                 }
                 boolean constructor = sig != null && "<init>".equals(sig.name);
                 if (sig != null && (isApplicationClassName(sig.owner)
-                        || !constructor && dispatchOwners.contains(sig.owner))) {
+                        || !constructor && dispatchOwners.contains(sig.owner)
+                        || builderSetter(sig))) {
                     String unitText = unit.toString();
                     String receiver = canonical(methodSignature,
                             invokeBaseLocal(unitText));
@@ -1525,6 +1618,7 @@ final class SeedBackwardStaticAnalyzer {
                     callerRelevant);
             return;
         }
+        deriveWirePort(callerMethod, fact, callee, defs, callerRelevant);
         processSemanticContainerOperation(callerMethod, fact,
                 callee, defs, callerRelevant);
         processSemanticContainerMutation(callerMethod, fact,
