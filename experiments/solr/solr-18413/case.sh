@@ -11,6 +11,7 @@ scope=(
   core:org/apache/solr/update/processor/DistributedZkUpdateProcessor
   core:org/apache/solr/update/processor/DistributedUpdateProcessor
   core:org/apache/solr/cloud/api/collections/MigrateCmd
+  core:org/apache/solr/cloud/overseer/SliceMutator
   solrj:org/apache/solr/common/cloud/RoutingRule
   solrj:org/apache/solr/common/cloud/ClusterState
   solrj:org/apache/solr/common/cloud/DocCollection

@@ -193,6 +193,22 @@ public final class MessageDoors {
         CURRENT.set(new Inbound(token, key, "1", REQUEST));
     }
 
+    /**
+     * An item of a store's queue (ZooKeeper's sequential nodes: the Solr
+     * Overseer's state-update queue) taken by the one consumer that
+     * processes it: what its writer staged on it -- the values a {@code
+     * WIRE_FLOW} carries -- arrives with it and stays until the next item.
+     * The consumer's context stays its own: which turn takes an item is the
+     * queue's batching, and each turn is ordered as a tick of its own.
+     */
+    public static void consumed(String transport, String key) {
+        SymbolicMessageEnvelope.clearInbound();
+        Outbound message = STORED.get(transport + "\n" + key);
+        if (message != null && !message.symbolic.isEmpty()) {
+            SymbolicMessageEnvelope.installInbound(message.symbolic);
+        }
+    }
+
     /** The exchange the thread serves, or {@code null}. */
     public static Inbound current() {
         return CURRENT.get();
