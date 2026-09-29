@@ -6,6 +6,7 @@ import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 
 import edu.uva.liftlab.graphchecker.annotation.Debug;
+import edu.uva.liftlab.graphchecker.causynth.RuntimeSelectedRegionFinalizer;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
 import java.io.IOException;
@@ -428,6 +429,13 @@ public final class StaticScopeMap {
         keepTrackedReads(found);
         for (Region region : retained) {
             for (Map<String, Object> port : region.ports) {
+                // The producer side only: an attach defines no port value,
+                // and read as an export it made the consumer's own region a
+                // static candidate producer of what it received.
+                if (!"OUT".equals(text(port.get(RuntimeSelectedRegionFinalizer
+                        .REGION_PORT_SIDE)))) {
+                    continue;
+                }
                 String portId = text(port.get(
                         CommunicationCatalogContract.PORT_ID));
                 String method = text(port.get(CommunicationCatalogContract

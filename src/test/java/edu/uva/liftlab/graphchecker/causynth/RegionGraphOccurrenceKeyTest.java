@@ -238,14 +238,24 @@ public class RegionGraphOccurrenceKeyTest {
                         "unitIndex", 12, "toCell", decrement + "::$r5"));
         Map<String, Object> port = row(
                 CommunicationCatalogContract.PORT_ID, "XCH.a.resp.count",
+                RuntimeSelectedRegionFinalizer.REGION_PORT_SIDE, "OUT",
                 CommunicationCatalogContract.PORT_DEFINITION_METHOD, saver,
                 CommunicationCatalogContract.PORT_DEFINITION_UNIT_INDEX, 9);
+        // The same port's attach defines nothing: no export site.
+        Map<String, Object> attach = row(
+                CommunicationCatalogContract.PORT_ID, "XCH.a.resp.count",
+                RuntimeSelectedRegionFinalizer.REGION_PORT_SIDE, "IN",
+                CommunicationCatalogContract.PORT_DEFINITION_METHOD,
+                decrement,
+                CommunicationCatalogContract.PORT_DEFINITION_UNIT_INDEX, 3);
         List<Map<String, Object>> regions = Arrays.asList(
                 // The enclosing request region holds every method below it.
                 row("regionId", "REGION.request", "methods", Arrays.asList(
                         "<example.Rpc: void handle()>", increment, decrement)),
                 row("regionId", "REGION.delete", "methods",
-                        Collections.singletonList(decrement)),
+                        Collections.singletonList(decrement),
+                        "communicationPorts",
+                        Collections.singletonList(attach)),
                 row("regionId", "REGION.create", "methods",
                         Collections.singletonList(increment)),
                 row("regionId", "REGION.save", "methods",
@@ -301,8 +311,9 @@ public class RegionGraphOccurrenceKeyTest {
                 Arrays.asList(decrement + "#u7", decrement + "#u15"), guards);
         assertEquals("and the arm of each guard that reaches it",
                 Arrays.asList(Boolean.TRUE, Boolean.FALSE), arms);
-        // The port's producer side, and the annotated target.
-        assertEquals(1, map.exportsOf("XCH.a.resp.count").size());
+        // The port's producer side only, and the annotated target.
+        assertEquals("the attach in REGION.delete is no export", 1,
+                map.exportsOf("XCH.a.resp.count").size());
         assertEquals("REGION.save",
                 map.exportsOf("XCH.a.resp.count").get(0).regionId);
         assertEquals(1, map.targetSites().size());
