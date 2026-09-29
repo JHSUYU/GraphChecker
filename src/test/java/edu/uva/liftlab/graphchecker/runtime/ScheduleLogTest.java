@@ -399,8 +399,13 @@ public class ScheduleLogTest {
                 Collections.singletonList("<C: void t()>#u2"), sites());
     }
 
+    /**
+     * A wait no slot holds waits at the cut; with the run idle it is let
+     * go, and its own deadline ends it.  Nothing gives x up: no one waits
+     * for it.
+     */
     @Test(timeout = 20000L)
-    public void aWaitNoSlotHoldsWaitsAtTheCutAndAStuckPrefixIsGivenUp()
+    public void aWaitNoSlotHoldsWaitsAtTheCutUntilTheRunIdles()
             throws Exception {
         System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "300");
         final String site = "<C: boolean waitForWork()>#u21";
@@ -414,10 +419,10 @@ public class ScheduleLogTest {
                 TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before)
                         >= 1400L);
         assertEquals(Collections.singletonList(site), sites());
-        assertFalse("nothing made x and the run was idle: given up",
+        assertTrue("nothing made x, and no one waits for it",
                 ScheduleLog.enforcing());
         assertTrue(ScheduleLog.progress(),
-                ScheduleLog.progress().contains(" 1 given up"));
+                ScheduleLog.progress().contains("1 of them let go"));
     }
 
     /**
@@ -429,28 +434,35 @@ public class ScheduleLogTest {
     public void aRecordedWaitPolledOnceMoreGoesWhenItsNextSlotIsDue()
             throws Exception {
         System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
-        final String site = "<P: void waitToSee()>#u69";
+        String site = "tick.poll";
         List<ScheduleEvent> order = new ArrayList<ScheduleEvent>();
         order.add(event(ScheduleEvent.Kind.WAKE, site));
         order.addAll(prefix("x"));
         ScheduleLog.enforceForTests(order);
-        Thread poller = new Thread(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    TimedWaits.sleep(10L, site);
-                    TimedWaits.sleep(10L, site);
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                }
-                ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
-            }
-        });
-        poller.start();
-        poller.join(5000L);
-        assertFalse("the second poll is no daemon turn held at the cut",
-                poller.isAlive());
+        ScheduleLog.observe(ScheduleEvent.Kind.WAKE, site);
+        ScheduleLog.observe(ScheduleEvent.Kind.WAKE, site);
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
         assertEquals(Arrays.asList(site, site, "x"), sites());
+        assertTrue(ScheduleLog.progress(),
+                ScheduleLog.progress().contains("2 taken, 0 given up"));
+    }
+
+    /**
+     * The request that makes x first sleeps a wait the recording never
+     * made: held at the cut, with the run idle, it is let go before x is
+     * given up, and x is taken.
+     */
+    @Test(timeout = 20000L)
+    public void anIdleRunLetsTheCutsWaitsGoBeforeGivingUp() throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "1000");
+        String site = "tick.once";
+        ScheduleLog.enforceForTests(prefix("x"));
+        ScheduleLog.observe(ScheduleEvent.Kind.WAKE, site);
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+        assertEquals(Arrays.asList(site, "x"), sites());
+        String progress = ScheduleLog.progress();
+        assertTrue(progress, progress.contains("1 taken, 0 given up"));
+        assertTrue(progress, progress.contains("1 of them let go"));
     }
 
     /** A WAKE or turn the recording did not make before x waits at the cut. */

@@ -124,6 +124,14 @@ public final class ScheduleLog {
     /** The threads waiting for a turn, each with the slot it waits at. */
     private static final Map<Thread, Integer> WAITERS =
             new HashMap<Thread, Integer>();
+    /** What each thread held AT THE CUT last waited to make. */
+    private static final Map<Thread, Pending> HELD_AT_CUT =
+            new HashMap<Thread, Pending>();
+    /** Threads held at the cut that the watchdog let go, until the wait
+     *  ends. */
+    private static final Set<Thread> LET_GO = new HashSet<Thread>();
+    /** Whether the watchdog let the cut's waits go since a slot was taken. */
+    private static boolean letGoSinceProgress;
     private static int firstOpen;
     /**
      * The first open slot in a later event's way; an open WAKE never is,
@@ -138,6 +146,7 @@ public final class ScheduleLog {
     private static int restStalls;
     private static int taken;
     private static int ranFree;
+    private static int letGo;
     private static int givenUp;
     private static int stalls;
     private static int dead;
@@ -267,6 +276,7 @@ public final class ScheduleLog {
     static void withdraw(Wake wake) {
         if (wake == null) return;
         synchronized (LOCK) {
+            LET_GO.remove(Thread.currentThread());
             if (WAITERS.remove(Thread.currentThread()) != null) {
                 LOCK.notifyAll();
             }
@@ -346,6 +356,10 @@ public final class ScheduleLog {
             this.occurrence = occurrence;
             this.endpoint = endpoint;
             this.key = ScheduleEvent.key(kind, context, site);
+        }
+
+        private String render() {
+            return kind.name() + " " + site + " @ " + context;
         }
     }
 
@@ -499,6 +513,7 @@ public final class ScheduleLog {
             appendLocked(event);
         } finally {
             WAITERS.remove(self);
+            LET_GO.remove(self);
         }
     }
 
@@ -537,7 +552,11 @@ public final class ScheduleLog {
             }
             int next = SLOTS.containsKey(event.key)
                     ? nextOpenLocked(BY_CONTEXT.get(event.context)) : -1;
-            return next < 0 ? AT_THE_CUT : dueLocked(next) ? GO : next;
+            if (next >= 0) return dueLocked(next) ? GO : next;
+            Thread self = Thread.currentThread();
+            if (LET_GO.contains(self)) return GO;
+            HELD_AT_CUT.put(self, event);
+            return AT_THE_CUT;
         }
         return event.kind == ScheduleEvent.Kind.INTERRUPT
                 || !heldKind(slot) || dueLocked(slot) ? GO : slot;
@@ -572,6 +591,7 @@ public final class ScheduleLog {
         ScheduleEvent event = order.get(slot);
         markLocked(slot, TAKEN);
         taken++;
+        letGoSinceProgress = false;
         if (event.kind() == ScheduleEvent.Kind.WAKE) {
             TAKEN_WAKES.put(event.key(), slot);
         } else if (event.kind() == ScheduleEvent.Kind.END) {
@@ -705,6 +725,10 @@ public final class ScheduleLog {
         long idle = now - lastProgress;
         if (idle < timeout) return false;
         if (idle < CEILING * timeout && computingLocked(now)) return false;
+        if (!letGoSinceProgress && WAITERS.containsValue(AT_THE_CUT)) {
+            letGoAtTheCutLocked(idle);
+            return true;
+        }
         // An AT_THE_CUT waiter bounds a give-up at the cut.
         int earliest = Integer.MAX_VALUE;
         for (int slot : WAITERS.values()) {
@@ -744,14 +768,51 @@ public final class ScheduleLog {
                         + " first " + order.get(first).render() + ") did not"
                         + " happen for " + idle + " ms with the run idle,"
                         + " while " + (atTheCut
-                                ? "a wait the order does not name waited at"
-                                + " the cut"
+                                ? heldAtTheCutLocked() + " waited at the cut"
                                 : order.get(earliest).render()
                                 + " waited at slot " + earliest)
                         + ": they are given up, and each still takes its"
                         + " slot if it comes");
         settleLocked();
         return true;
+    }
+
+    /**
+     * Lets every wait held at the cut go, once per slot taken.  With the
+     * run idle, a wait the recording never made -- a pool thread's, a loop
+     * one turn longer than recorded -- may be what the order's next event is
+     * behind, and giving the order up to the cut settles nothing that holds
+     * it.  Its event runs free.
+     */
+    private static void letGoAtTheCutLocked(long idle) {
+        String held = heldAtTheCutLocked();
+        int count = 0;
+        for (Map.Entry<Thread, Integer> waiter : WAITERS.entrySet()) {
+            if (waiter.getValue() != AT_THE_CUT) continue;
+            LET_GO.add(waiter.getKey());
+            count++;
+        }
+        letGo += count;
+        letGoSinceProgress = true;
+        stateLocked("schedule-let-go#" + firstOpen, count + " wait(s) held at"
+                + " the cut (" + held + ") for " + idle + " ms with the run"
+                + " idle, while " + (firstOpen < order.size()
+                        ? order.get(firstOpen).render() : "nothing")
+                + " at slot " + firstOpen + " did not happen: they are let"
+                + " go before any slot is given up");
+        lastProgress = System.currentTimeMillis();
+        cpuSampledAt = 0L;
+        LOCK.notifyAll();
+    }
+
+    /** The first wait held at the cut, as it names itself. */
+    private static String heldAtTheCutLocked() {
+        for (Map.Entry<Thread, Integer> waiter : WAITERS.entrySet()) {
+            Pending held = waiter.getValue() == AT_THE_CUT
+                    ? HELD_AT_CUT.get(waiter.getKey()) : null;
+            if (held != null) return "the unrecorded " + held.render();
+        }
+        return "a wait the order does not name";
     }
 
     /**
@@ -858,6 +919,9 @@ public final class ScheduleLog {
         BY_CONTEXT.clear();
         TAKEN_WAKES.clear();
         WAITERS.clear();
+        HELD_AT_CUT.clear();
+        LET_GO.clear();
+        letGoSinceProgress = false;
         openHeld = 0;
         for (int index = 0; index < all.size(); index++) {
             ScheduleEvent event = all.get(index);
@@ -919,7 +983,8 @@ public final class ScheduleLog {
                     + " settled by their occurrence's close, " + settledByEnd
                     + " settled by their turn's END, " + passed
                     + " passed by their own occurrence; " + ranFree
-                    + " event(s) ran free";
+                    + " event(s) ran free, " + letGo + " of them let go at"
+                    + " the cut";
         }
     }
 
@@ -952,6 +1017,9 @@ public final class ScheduleLog {
             BY_CONTEXT.clear();
             TAKEN_WAKES.clear();
             WAITERS.clear();
+            HELD_AT_CUT.clear();
+            LET_GO.clear();
+            letGoSinceProgress = false;
             firstOpen = 0;
             firstBlocking = 0;
             openHeld = 0;
@@ -959,6 +1027,7 @@ public final class ScheduleLog {
             restStalls = 0;
             taken = 0;
             ranFree = 0;
+            letGo = 0;
             givenUp = 0;
             stalls = 0;
             dead = 0;
