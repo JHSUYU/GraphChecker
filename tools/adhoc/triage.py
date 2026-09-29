@@ -11,7 +11,8 @@ Classes:
                 engine filtered
   NO_WITNESS    the corpus supports no witness (or none at the recorded path)
   STOPPED       the campaign failed at a stage: the stage and its reason
-  RUNNING       no summary yet"""
+  RUNNING       started, no verdict yet
+  PENDING       not started"""
 import csv
 import glob
 import json
@@ -27,14 +28,15 @@ rows = []
 for n, case in sorted(cases.items(), key=lambda item: int(item[0])):
     root = os.path.join(out, "accept-%s-%s" % (round_name, n))
     summary = os.path.join(root, "summary.tsv")
-    row = {"n": n, "case": case, "class": "RUNNING", "elapsed": "",
-           "finding": "", "confirmed": "", "stage": "", "reason": ""}
-    if os.path.exists(summary):
-        lines = list(csv.DictReader(open(summary), delimiter="\t"))
-        if lines:
-            last = lines[-1]
-            row["elapsed"] = last.get("elapsed", "")
-            row["finding"] = last.get("finding", "")[:160]
+    row = {"n": n, "case": case,
+           "class": "RUNNING" if os.path.isdir(root) else "PENDING",
+           "elapsed": "", "finding": "", "confirmed": "", "stage": "",
+           "reason": ""}
+    lines = (list(csv.DictReader(open(summary), delimiter="\t"))
+             if os.path.exists(summary) else [])
+    if lines:
+        row["elapsed"] = lines[-1].get("elapsed", "")
+        row["finding"] = lines[-1].get("finding", "")[:160]
     results = glob.glob(os.path.join(root, "out", "*", "schedule", "final", "result.json"))
     if results:
         result = json.load(open(results[0]))
@@ -50,7 +52,7 @@ for n, case in sorted(cases.items(), key=lambda item: int(item[0])):
         row["finding"] = (result.get("findingKind", "") + " "
                           + ",".join(r if isinstance(r, str) else r.get("rootId", "")
                                      for r in result.get("movedRoots", []) or []))[:160]
-    elif os.path.exists(summary):
+    elif lines:
         logs = [p for p in glob.glob(os.path.join(root, "logs", "*.log"))
                 if "driver" not in p]
         text = open(logs[0], errors="replace").read() if logs else ""

@@ -766,7 +766,11 @@ do_workload() {
   # file).  Which regions the run exercised is read off this trace by the
   # aggregation below, which writes them to ${trace_dir}/region_skeletons.jsonl.
   CAUSYNTH_TRACE_MODE=region-state do_analyze
-  run_configured_workload
+  local status=0
+  run_configured_workload || status=$?
+  (( status == 0 )) || campaign_fail SEED WORKLOAD "${trace_dir}" \
+    "the recorded workload exited ${status}: the test failed, or its run" \
+    "never opened a recording window (its output is above)"
   require_file "static scope map" "${causynth_static_scope_map}"
   run_java_main edu.uva.liftlab.graphchecker.runtime.CausynthTraceRecorder \
     --trace-dir "${trace_dir}" \
