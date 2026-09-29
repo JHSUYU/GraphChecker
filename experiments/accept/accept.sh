@@ -63,8 +63,8 @@ ACCEPT_DISK_WAIT_S=${DISK_WAIT_SECONDS:-1800}
 ACCEPT_CASE_CAP_MB=${CASE_CAP_MB:-300}
 ACCEPT_PRUNE=${PRUNE:-0}
 
-# This file lives at <repo>/experiments/hadoop/accept/accept.sh.
-SELF_REPO=$(cd "$here/../../.." && pwd -P)
+# This file lives at <repo>/experiments/accept/accept.sh.
+SELF_REPO=$(cd "$here/../.." && pwd -P)
 DRY=${DRY:-0}
 if [[ -n "${JAR:-}" ]]; then
   REPO=$(cd "$(dirname "$(dirname "$JAR")")" 2>/dev/null && pwd -P || echo "")
@@ -74,7 +74,7 @@ else
 fi
 IMG=${CAUSYNTH_CUSTOM_JDK_HOME:-}
 # Every case runs through the one launcher; a case directory is declarations.
-ACCEPT_LIB="$REPO/experiments/hadoop/lib"
+ACCEPT_LIB="$REPO/experiments/lib"
 OUT=${OUT:-$SELF_REPO/target/accept}
 read -r -a CASE_LIST <<<"${CASES-${ACCEPT_ALL_CASES[*]}}"
 CASE_TIMEOUT=${CASE_TIMEOUT_SECONDS:-21600}
@@ -84,19 +84,24 @@ acc_log() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*"; }
 acc_free_gb() { df --output=avail -BG / | tail -1 | tr -dc 0-9; }
 acc_dir_mb() { du -sm "$1" 2>/dev/null | cut -f1; }
 
-# The experiment directory a case id lives in: the longest "-"-prefix of the
-# id that names one (hdfs-17899-bug1 lives in hdfs-17899, adhoc-recv-seqno.mirror
-# in adhoc).
+# The experiment a case id lives in, under any system's directory: the
+# longest "-"-prefix of the id that names one (hdfs-17899-bug1 lives in
+# hadoop/hdfs-17899, adhoc-recv-seqno.mirror in hadoop/adhoc, solr-18413 in
+# solr/solr-18413), as <system>/<experiment>.
 acc_experiment_of() {
-  local exp=$1
-  until [[ -d "$REPO/experiments/hadoop/$exp" || "$exp" != *-* ]]; do
+  local exp=$1 d
+  while :; do
+    for d in "$REPO"/experiments/*/"$exp"; do
+      [[ -f "$d/case.sh" ]] && { echo "${d#"$REPO"/experiments/}"; return 0; }
+    done
+    [[ "$exp" == *-* ]] || break
     exp=${exp%-*}
   done
-  echo "$exp"
+  echo "none/$1"
 }
 # The case id's rest after its experiment directory: the run.sh argument.
 acc_case_arg_of() {
-  local exp; exp=$(acc_experiment_of "$1")
+  local exp; exp=$(basename "$(acc_experiment_of "$1")")
   [[ "$exp" == "$1" ]] && echo "" || echo "${1#"$exp"-}"
 }
 acc_case_dir() {
@@ -132,7 +137,7 @@ acc_build_jar() {
   return $rc
 }
 
-# The case directory holds declarations; experiments/hadoop/lib/run.sh turns
+# The case directory holds declarations; experiments/lib/run.sh turns
 # them into the campaign's environment and runs run_engine.sh with the case's
 # workflow.properties.  This function starts that and states the two things a
 # harness run must not inherit -- a fresh output directory and the VM image --
@@ -141,7 +146,7 @@ acc_run_case() {  # acc_run_case <case-id>
   local case_id=$1
   local exp; exp=$(acc_experiment_of "$case_id")
   local arg; arg=$(acc_case_arg_of "$case_id")
-  local dir="$REPO/experiments/hadoop/$exp"
+  local dir="$REPO/experiments/$exp"
   local out="$OUT/out/$case_id"
   local log="$OUT/logs/$case_id.log" rc
 
@@ -293,9 +298,9 @@ if [[ "$SKIP_BUILD" == 1 ]]; then
 else
   check jar ok "$JAR (built by this run)"
 fi
-[[ -n "$REPO" && -x "$REPO/run_engine.sh" && -d "$REPO/experiments/hadoop" ]] \
+[[ -n "$REPO" && -x "$REPO/run_engine.sh" && -d "$REPO/experiments/lib" ]] \
   && check "repo root" ok "$REPO ($(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo 'not a git tree'))" \
-  || check "repo root" no "no run_engine.sh and experiments/hadoop under '$REPO'"
+  || check "repo root" no "no run_engine.sh and experiments/lib under '$REPO'"
 [[ "$JAR" == "$REPO/target/$ACCEPT_JAR_NAME" ]] \
   && check "jar in repo" ok "the campaigns run out of the jar's own tree" \
   || check "jar in repo" no "$JAR is not $REPO/target/$ACCEPT_JAR_NAME"
@@ -307,7 +312,7 @@ for tool in jq python3 setsid timeout mvn; do
                                 || check "$tool" no "not on PATH"
 done
 for c in "${CASE_LIST[@]}"; do
-  d="$REPO/experiments/hadoop/$(acc_experiment_of "$c")"
+  d="$REPO/experiments/$(acc_experiment_of "$c")"
   [[ -f "$d/case.sh" && -f "$d/workflow.properties" ]] \
     && check "experiment $c" ok "lib/run.sh $d $(acc_case_arg_of "$c") campaign" \
     || check "experiment $c" no "no case.sh + workflow.properties at $d"
@@ -322,7 +327,7 @@ echo "== commands per case"
 for c in "${CASE_LIST[@]}"; do
   cat <<CMD
   --- $c
-  (d=$REPO/experiments/hadoop/$(acc_experiment_of "$c"); \\
+  (d=$REPO/experiments/$(acc_experiment_of "$c"); \\
      export CAUSYNTH_OUTPUT_DIR=$OUT/out/$c CAUSYNTH_CUSTOM_JDK_HOME=$IMG; \\
      bash $ACCEPT_LIB/run.sh \$d "$(acc_case_arg_of "$c")" validate && \\
      bash $ACCEPT_LIB/run.sh \$d "$(acc_case_arg_of "$c")" campaign)

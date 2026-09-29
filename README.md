@@ -333,7 +333,7 @@ starter's node, held by reference. `ROLE.*` occurrences appear only when all thr
 reported as `LINEAGE_LOST`.
 
 **Case-preparation rules the design needed on contact** (all general, all in
-`experiments/hadoop/lib/README.md`): registration precedes any traffic; one request, one
+`experiments/lib/README.md`): registration precedes any traffic; one request, one
 scope; in-window per-node loops walk `CausynthCluster.dataNodes()` (sorted by registered name);
 the block a case reads its roles off is pinned to a named node; each DataNode gets its own IPC
 connections; nothing set up before the window may expire on the wall clock (idle-connection and
@@ -397,7 +397,7 @@ bash src/test/shell/run_engine_campaign_helpers_test.sh   # run BOTH before ever
 
 `-o` (offline) is deliberate: `~/.m2` is NFS-shared and a Hadoop build in parallel with a Maven
 resolve corrupted `maven-metadata-local.xml` once. Hadoop trees are built by
-`experiments/hadoop/lib/run.sh <case dir> <case id> build` (installs the GraphChecker API and
+`experiments/lib/run.sh <case dir> <case id> build` (installs the GraphChecker API and
 shim into the local repository, compiles the tree with JDK 8, runs the workload test once
 natively); build chains for several trees use `MAVEN_REPO_LOCAL` copies (`~/.m2b-repository`,
 `~/.m2c-repository`) and `SKIP_GRAPHCHECKER_INSTALL=1`. **Never rebuild a tree while a campaign
@@ -409,7 +409,7 @@ changed").
 A case directory under `experiments/hadoop/` holds declarations only (`case.sh`,
 `workflow.properties`, `target.yaml`, `root-domains.jsonl`,
 `communication-mappings.jsonl`, `loop-bounds*.jsonl`); everything executable is
-`experiments/hadoop/lib/` (its README lists the scripts and the workload rules). The loop-bounds
+`experiments/lib/` (its README lists the scripts and the workload rules). The loop-bounds
 files key loops by Jimple unit id (`<method>#uNN`); **any edit to an instrumented method shifts
 the ids after it** — re-read them from `region_skeletons.jsonl.gz` (`loopControlSiteIds`) after
 a tree edit. Per-case notes: `experiments/hadoop/<case>/README.md`.
@@ -441,7 +441,7 @@ its memory shows. The ledger is one directory per host under `~/gc-out/hosts/` (
 mkdir lock, the recent starts, the last `MemAvailable` reading); a slot that does not fit waits
 and logs `obligation … waits for memory on <host>: …` once. `tools/rounds/launch-run.sh` is
 what each head runs (it sets `JAR`, `CASES`, `OUT`, `Z3_BIN`, `CAUSYNTH_CUSTOM_JDK_HOME`,
-`SKIP_BUILD=1` and execs `experiments/hadoop/accept/accept.sh`). The acceptance rule is in `experiments/hadoop/accept/README.md`: `SAT_CANDIDATE`,
+`SKIP_BUILD=1` and execs `experiments/accept/accept.sh`). The acceptance rule is in `experiments/accept/README.md`: `SAT_CANDIDATE`,
 `FINAL_READY`, no BLOCKING gap at any stage, the case's expected mechanism (`EXPECTED_MECHANISM`
 in `report.py`: 17960 `MARKER_FLIPPED` on `SNAPSHOT_DELETION_ORDERED=false`; 11741 `CLOCK_SKEW`
 (no expiry check: a branch flip alone reaches it) or `MARKER_FLIPPED`;
@@ -628,7 +628,7 @@ that `main` moves and the parked housekeeping is due.
    constants its `path_fatal` names, closed over the message families asserted under the same
    selector, each arm binding `v_H` to the producer's expression with the producer path's own
    condition -- and no fatal condition to name a boundary variable no family binds
-   (`experiments/hadoop/accept/cone.py`, gate in `report.py`, `25d5120b2`). This is the paper's
+   (`experiments/accept/cone.py`, gate in `report.py`, `25d5120b2`). This is the paper's
    causality as the formula carries it: a value crosses a thread or process boundary as the
    producer's expression and the composer merges the producers. v37, all nine PASS and all
    confirmed:
@@ -884,8 +884,8 @@ src/shim/                                     the hadoop-shim jar the trees call
 src/test/                                     125 @Test + src/test/shell/run_engine_campaign_helpers_test.sh
 run_engine.sh                                 the campaign driver
 experiments/hadoop/<case>/                    declarations + README per case (a tree's edits are its own gc/<case> branch)
-experiments/hadoop/lib/                       the one harness every case runs through (README: workload rules)
-experiments/hadoop/accept/                    accept.sh, probe.sh, report.py (README: what PASS means)
+experiments/lib/                       the one harness every case runs through (README: workload rules)
+experiments/accept/                    accept.sh, probe.sh, report.py (README: what PASS means)
 experiments/hadoop/adhoc/                     the ad-hoc checks: checks.tsv, occurrences.tsv, one case.sh (§17)
 tools/analysis/                               coverage, throwsites/reached, occurrences, graphdiff, chaincheck, PairingProbe
 tools/rounds/                                 launch-round.sh, launch-run.sh, round-monitor.sh (§8)
@@ -901,13 +901,13 @@ docs/reports/                                 dated reports (2026-09-26: fault i
 
 The design documents are kept verbatim because the code cites them by section; where this
 README and one of them disagree, the rows decide. The owner's schedule/attribution design of §6
-and the case-preparation rules are not in `docs/`; §6 and `experiments/hadoop/lib/README.md`
+and the case-preparation rules are not in `docs/`; §6 and `experiments/lib/README.md`
 are their record.
 
 ## 14. The whole-source read (2026-09-23): defects, redundancy, and the order to fix them
 
 Read package by package on 2026-09-23 under the rule of §12 (contract, runtime, plan,
-causynth, smt, explore, compose, shim, `run_engine.sh`, `experiments/hadoop/lib` and
+causynth, smt, explore, compose, shim, `run_engine.sh`, `experiments/lib` and
 `accept`, `tools/rounds`, one case directory, the tests). Every item names its file, so
 `git grep` verifies it; nothing here is fixed until §10 says so. D = a defect that costs a
 case; R = redundancy, dead code, a fallback or a second spelling, which the owner's rule

@@ -66,21 +66,21 @@ independent, and each replay loads that checkout's common, client and HDFS class
 this directory, replacing `bug1` as needed:
 
 ```bash
-../lib/run.sh . bug1 build      # installs the current GraphChecker API, builds that checkout,
+../../lib/run.sh . bug1 build      # installs the current GraphChecker API, builds that checkout,
                          # runs the concrete workload test, refuses unless it alone passes
-../lib/run.sh . bug1 validate
-../lib/run.sh . bug1 campaign
+../../lib/run.sh . bug1 validate
+../../lib/run.sh . bug1 campaign
 ```
 
 `lib/run.sh` sets a per-case `CAUSYNTH_OUTPUT_DIR` and `CAUSYNTH_CACHE_DIR`; override
 `CAUSYNTH_OUTPUT_DIR` with a fresh directory per campaign. Each workload opens its recording
 boundary only after its stable node and application sources and aliases are registered. The
-in-tree acceptance harness (`experiments/hadoop/accept/README.md`) runs campaign, z3 probe
+in-tree acceptance harness (`experiments/accept/README.md`) runs campaign, z3 probe
 and report together, one case at a time:
 
 ```bash
 export CAUSYNTH_CUSTOM_JDK_HOME=/absolute/path/to/j2sdk-image
-CASES="hdfs-17899-bug1 hdfs-17899-bug2 hdfs-17899-bug3" bash experiments/hadoop/accept/accept.sh
+CASES="hdfs-17899-bug1 hdfs-17899-bug2 hdfs-17899-bug3" bash experiments/accept/accept.sh
 ```
 
 ## What the harness expects

@@ -33,8 +33,8 @@ fi
 
 mkdir -p ${trace:+"${trace}"} ${results:+"$(dirname "${results}")"}
 
-# Where the JVM puts its temp files and MiniDFSCluster its name directories,
-# edit logs and block data.  The worker directory is on the shared home, so
+# Where the JVM puts its temp files and the cluster its data
+# (system_jvm_properties).  The worker directory is on the shared home, so
 # by default this is an fsync-heavy little filesystem per concurrent replay
 # on one NFS mount; CAUSYNTH_LOCAL_SCRATCH moves it to a local disk instead.
 # Nothing downstream reads either: what a replay PUBLISHES is its session and
@@ -60,6 +60,12 @@ if [[ -n ${CAUSYNTH_LOCAL_SCRATCH:-} ]]; then
   fi
 fi
 mkdir -p "${tmpdir}" "${datadir}"
+system_jvm_properties "${tmpdir}" "${datadir}"
+if [[ ${system_jar_first} == true ]]; then
+  classpath="${classes}:${jar}:${cp}"
+else
+  classpath="${classes}:${cp}:${jar}"
+fi
 
 # Extra JVM options for every workload JVM of a run, recording and replays
 # alike -- a debugging switch, empty by default.
@@ -80,9 +86,9 @@ set +e
 "${jdk}/bin/java" -ea -Xmx${heap_mb}m -Djava.awt.headless=true \
   -Dsun.reflect.noInflation=true \
   -Dorg.slf4j.simpleLogger.defaultLogLevel=warn \
-  -Djava.io.tmpdir="${tmpdir}" -Dtest.build.data="${datadir}" \
+  -Djava.io.tmpdir="${tmpdir}" "${jvm_properties[@]}" \
   "${properties[@]}" "${workload_properties[@]+"${workload_properties[@]}"}" \
-  "${extra[@]+"${extra[@]}"}" -cp "${classes}:${jar}:${cp}" \
+  "${extra[@]+"${extra[@]}"}" -cp "${classpath}" \
   edu.uva.liftlab.graphchecker.runtime.JUnitMethodRunner \
   "${test_class}" "${test_method}"
 status=$?

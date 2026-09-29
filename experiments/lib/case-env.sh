@@ -2,55 +2,51 @@
 #
 #   source case-env.sh <case-dir> <case-id>
 #
-# The case directory holds DECLARATIONS only (case.sh, workflow.properties,
-# target.yaml and the *.jsonl the campaign reads); everything executable is
-# here, one copy for every case.  case.sh sets, for the case id it is given:
-#   repo          the Hadoop worktree the case runs
+# A case directory, experiments/<system>/<case>, holds DECLARATIONS only
+# (case.sh, workflow.properties, target.yaml and the *.jsonl the campaign
+# reads); everything executable is here, one copy for every case of every
+# system.  What a system's trees are -- how they build, where their classes
+# and test reports are, what every workload JVM of theirs needs -- is its
+# experiments/<system>/system.sh, sourced before the case.  case.sh sets,
+# for the case id it is given:
+#   repo          the system's worktree the case runs
 #   test_class    the workload's JUnit class
 #   test_method   its test method
 #   scope         the analysis scope, one "<root>:<class path>" per entry,
-#                 root one of common|client|hdfs; "=" after the root copies
-#                 exactly that class and its nested classes (no prefix glob)
+#                 root one the system names (system_root); "=" after the root
+#                 copies exactly that class and its nested classes (no prefix
+#                 glob)
 # and optionally
 #   target_occurrence   the declared target (empty keeps every observed one)
 #   loop_bounds         default: <case-dir>/loop-bounds.jsonl
 #   target_spec         default: <case-dir>/target.yaml
-#   hadoop_javac        the javac the Hadoop build uses (default: the filter)
-#   classpath_test      the test class whose surefire report states the
-#                       module's test classpath (default: test_class)
+#   classpath_test      the test class whose report states the module's test
+#                       classpath (default: test_class)
 #   workload_properties system properties every workload JVM of the case
 #                       gets (default: none)
+# system.sh defines, after the case is read,
+#   system_paths        sets module, report, test_classes, lineage_roots
+#   system_root <name>  a compiled class root the scope names
+#   system_classpath    prints the workload's classpath
+#   system_build        builds the tree and runs the workload once natively
+#   system_jvm_properties <tmpdir> <datadir>
+#                       sets jvm_properties, what every workload JVM needs
+#   system_jar_first    whether GraphChecker's jar precedes the workload's
+#                       classpath (true) or follows it (false)
 case_dir=${1:?missing case directory}
 case_id=${2-}
 case_dir=$(cd "${case_dir}" && pwd -P)
 case_name=$(basename "${case_dir}")
+system_dir=$(dirname "${case_dir}")
 here=${case_dir}
 loop_bounds=${case_dir}/loop-bounds.jsonl
 target_spec=${case_dir}/target.yaml
 target_occurrence=
-hadoop_javac=
 classpath_test=
 workload_properties=()
 scope=()
-# THE block-key family's shared scope: the SASL data-transfer handshake and
-# the block-token key managers every case of the family turns on, and the IPC
-# client whose propagation calls the causal context travels on.  A case adds
-# only what is its own.  The Hadoop shim is not here: it is GraphChecker's
-# jar, not a class of the tree.
-blockkey_scope=(
-  common:org/apache/hadoop/ipc/Client
-  common:org/apache/hadoop/security/token/delegation/DelegationKey
-  client:org/apache/hadoop/hdfs/protocol/datatransfer/sasl/DataTransferSaslUtil
-  client:org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferClient
-  client:org/apache/hadoop/hdfs/security/token/block/DataEncryptionKey
-  client:org/apache/hadoop/hdfs/protocolPB/PBHelperClient
-  hdfs:org/apache/hadoop/hdfs/protocol/datatransfer/sasl/SaslDataTransferServer
-  hdfs:org/apache/hadoop/hdfs/protocolPB/PBHelper
-  hdfs:org/apache/hadoop/hdfs/security/token/block/BlockKey
-  hdfs:org/apache/hadoop/hdfs/security/token/block/BlockPoolTokenSecretManager
-  hdfs:org/apache/hadoop/hdfs/security/token/block/BlockTokenSecretManager
-  hdfs:org/apache/hadoop/hdfs/security/token/block/ExportedBlockKeys
-)
+# shellcheck source=/dev/null
+source "${system_dir}/system.sh"
 # shellcheck source=/dev/null
 source "${case_dir}/case.sh" "${case_id}"
 # The discovery hook, for every case alike: set but EMPTY, PLAN refuses with
@@ -58,8 +54,7 @@ source "${case_dir}/case.sh" "${case_id}"
 # occurrence -- the one honest way to re-read an address after an identity
 # change.
 target_occurrence=${CAUSYNTH_TARGET_OCCURRENCE_OVERRIDE-${target_occurrence}}
-module=${repo}/hadoop-hdfs-project/hadoop-hdfs
-report=${module}/target/surefire-reports/TEST-${classpath_test:-${test_class}}.xml
+system_paths
 tag=${case_name}${case_id:+-${case_id}}
 analysis=/tmp/graphchecker-${tag}-classes
 test_name=${test_class}#${test_method}

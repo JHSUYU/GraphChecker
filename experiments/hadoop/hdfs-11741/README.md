@@ -31,20 +31,20 @@ Hadoop checkout `/u/vnr3ne/hadoop-hdfs-11741`, branch `gc/hdfs-11741`. From this
 directory:
 
 ```bash
-../lib/run.sh . "" build        # installs the current GraphChecker API, builds the tree,
+../../lib/run.sh . "" build        # installs the current GraphChecker API, builds the tree,
                       # runs the concrete workload test, refuses unless it alone passes
-../lib/run.sh . "" validate
-../lib/run.sh . "" campaign
+../../lib/run.sh . "" validate
+../../lib/run.sh . "" campaign
 ```
 
 Use a fresh `CAUSYNTH_OUTPUT_DIR` per campaign. The recording opens only after the workload
 has registered its stable node sources and aliases, so cluster startup creates no
 unregistered regions. The in-tree acceptance harness
-(`experiments/hadoop/accept/README.md`) runs campaign, z3 probe and report together:
+(`experiments/accept/README.md`) runs campaign, z3 probe and report together:
 
 ```bash
 export CAUSYNTH_CUSTOM_JDK_HOME=/absolute/path/to/j2sdk-image
-CASES=hdfs-11741 bash experiments/hadoop/accept/accept.sh
+CASES=hdfs-11741 bash experiments/accept/accept.sh
 ```
 
 ## What the harness expects

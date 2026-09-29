@@ -103,19 +103,19 @@ decided by wall-clock timing: rotations and heartbeats are driven explicitly by 
 From this directory, replacing `pathA` as needed:
 
 ```bash
-../lib/run.sh . pathA build      # installs the current GraphChecker API, builds that worktree,
+../../lib/run.sh . pathA build      # installs the current GraphChecker API, builds that worktree,
                           # runs the concrete workload test, refuses unless it alone passes
-../lib/run.sh . pathA validate
-../lib/run.sh . pathA campaign
+../../lib/run.sh . pathA validate
+../../lib/run.sh . pathA campaign
 ```
 
 `lib/run.sh` sets a per-case `CAUSYNTH_OUTPUT_DIR` and `CAUSYNTH_CACHE_DIR`; override
 `CAUSYNTH_OUTPUT_DIR` with a fresh directory per campaign. Or run the acceptance harness
-(`experiments/hadoop/accept/README.md`), which does campaign, z3 probe and report together:
+(`experiments/accept/README.md`), which does campaign, z3 probe and report together:
 
 ```bash
 export CAUSYNTH_CUSTOM_JDK_HOME=/absolute/path/to/j2sdk-image
-CASES="hdfs-17967-pathA hdfs-17967-pathB hdfs-17967-pathC" bash experiments/hadoop/accept/accept.sh
+CASES="hdfs-17967-pathA hdfs-17967-pathB hdfs-17967-pathC" bash experiments/accept/accept.sh
 ```
 
 ## What the harness expects

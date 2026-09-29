@@ -16,4 +16,4 @@ Where the README and one of them disagree, the rows decide.
 Paths inside these files may refer to a decommissioned host; read them as descriptions of what
 an artifact was. The schedule/attribution design (deterministic prefix, rest clock, the
 three-rule resolver) and the case-preparation rules are recorded in the README §6 and in
-`experiments/hadoop/lib/README.md`.
+`experiments/lib/README.md`.

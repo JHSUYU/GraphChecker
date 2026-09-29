@@ -9,18 +9,15 @@ source "${lib}/case-env.sh" "${1:?usage: run.sh <case-dir> <case-id> <command>}"
 command=${3:?missing command}
 shift 3
 if [[ "${command}" == build ]]; then
-  exec bash "${lib}/build.sh" "${repo}" "${test_class}" "${test_method}" \
-    "${hadoop_javac}"
+  system_build
+  exit
 fi
 
 export CAUSYNTH_REPO=${repo}
 export CAUSYNTH_MODULE_DIR=${module}
 export CAUSYNTH_CLASSES_DIR=${analysis}
-# The lineage scope is the whole tree's, whatever the case analyses
-# (plan.LineageScan): a thread start or queue handoff in a class outside the
-# analysis scope is still where a thread's cause comes from.
-export CAUSYNTH_LINEAGE_ROOTS="${repo}/hadoop-common-project/hadoop-common/target/classes:${repo}/hadoop-hdfs-project/hadoop-hdfs-client/target/classes:${module}/target/classes"
-export CAUSYNTH_TEST_CLASSES_DIR=${module}/target/test-classes
+export CAUSYNTH_LINEAGE_ROOTS=${lineage_roots}
+export CAUSYNTH_TEST_CLASSES_DIR=${test_classes}
 export CAUSYNTH_CLASSPATH
 CAUSYNTH_CLASSPATH=$(bash "${lib}/classpath.sh" "${case_dir}" "${case_id}")
 export CAUSYNTH_OUTPUT_DIR=${CAUSYNTH_OUTPUT_DIR:-/tmp/graphchecker-${tag}}
@@ -33,5 +30,5 @@ export CAUSYNTH_WORKLOAD_COMMAND="${lib}/execute.sh ${case_dir} ${case_id}"
 export CAUSYNTH_CONCOLIC_REPLAY_COMMAND="${lib}/execute.sh ${case_dir} ${case_id}"
 export CAUSYNTH_CAMPAIGN_SETUP_COMMAND="${lib}/prepare-analysis.sh ${case_dir} ${case_id}"
 export GRAPH_CHECKER_JAVA=${GRAPH_CHECKER_JAVA:-${lib}/java.sh}
-exec "${lib}/../../../run_engine.sh" --config "${case_dir}/workflow.properties" \
+exec "${lib}/../../run_engine.sh" --config "${case_dir}/workflow.properties" \
   "${command}" "$@"

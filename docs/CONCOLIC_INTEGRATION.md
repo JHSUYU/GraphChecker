@@ -183,8 +183,8 @@ file it publishes, as a named `valuation__…` assertion before `(check-sat)`. A
 `z3 candidate.smt2` therefore answers about *that one valuation* and commonly answers `unsat`
 for exactly that reason — on HDFS-17960 the pin is `(= M_Z_field_SRC…SnapshotManager true)`
 under the comment `; valuation 0: the run as it happened`. To ask the formula at each
-polarity, unpinned, use the acceptance harness's probe, `experiments/hadoop/accept/probe.sh`
-(`experiments/hadoop/accept/README.md`); it is reported and never gated on, because it asks
+polarity, unpinned, use the acceptance harness's probe, `experiments/accept/probe.sh`
+(`experiments/accept/README.md`); it is reported and never gated on, because it asks
 about the whole formula rather than the slice the campaign solved. A zero exit code proves
 nothing.
 

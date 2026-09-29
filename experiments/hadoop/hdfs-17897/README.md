@@ -41,18 +41,18 @@ concurrency is fixed at `concolic_worker_count=8` in `workflow.properties`. From
 directory:
 
 ```bash
-../lib/run.sh . "" build        # installs the current GraphChecker API, builds the tree,
+../../lib/run.sh . "" build        # installs the current GraphChecker API, builds the tree,
                       # runs the concrete workload test, refuses unless it alone passes
-../lib/run.sh . "" validate
-../lib/run.sh . "" campaign
+../../lib/run.sh . "" validate
+../../lib/run.sh . "" campaign
 ```
 
 Use a fresh `CAUSYNTH_OUTPUT_DIR` per campaign. The in-tree acceptance harness
-(`experiments/hadoop/accept/README.md`) runs campaign, z3 probe and report together:
+(`experiments/accept/README.md`) runs campaign, z3 probe and report together:
 
 ```bash
 export CAUSYNTH_CUSTOM_JDK_HOME=/absolute/path/to/j2sdk-image
-CASES=hdfs-17897 bash experiments/hadoop/accept/accept.sh
+CASES=hdfs-17897 bash experiments/accept/accept.sh
 ```
 
 ## The workload

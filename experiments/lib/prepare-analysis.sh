@@ -8,15 +8,6 @@ source "${lib}/case-env.sh" "${1:?missing case directory}" "${2-}"
 mkdir -p "${analysis}"
 find "${analysis}" -type f -delete
 
-root_of() {
-  case "$1" in
-    common) echo "${repo}/hadoop-common-project/hadoop-common/target/classes" ;;
-    client) echo "${repo}/hadoop-hdfs-project/hadoop-hdfs-client/target/classes" ;;
-    hdfs) echo "${module}/target/classes" ;;
-    *) echo "unknown class root: $1" >&2; return 2 ;;
-  esac
-}
-
 # copy <root> <path> <exact>: a PREFIX family ("DataNode" is DataNode* in its
 # package), or with exact=true one class and its nested classes only --
 # "DataXceiver" must not pull in DataXceiverServer.
@@ -56,5 +47,5 @@ for entry in "${scope[@]}"; do
     rootname=${rootname%=}
     exact=true
   fi
-  copy "$(root_of "${rootname}")" "${path}" "${exact}"
+  copy "$(system_root "${rootname}")" "${path}" "${exact}"
 done

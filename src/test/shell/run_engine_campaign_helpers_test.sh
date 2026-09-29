@@ -1969,13 +1969,15 @@ ${campaign_local_scratch_root}"
     || fail "a stated CAUSYNTH_LOCAL_SCRATCH was not taken as the root"
 ) || exit 1
 
-# SCRATCH-2: the case adapter puts java.io.tmpdir and test.build.data under
-# it, in a directory of the worker's own, and REMOVES that directory when the
-# replay exits -- including when it fails.  Only temporary bytes move: the
-# session and the result rows are still written to the shared home.
-execute_sh="${repo}/experiments/hadoop/lib/execute.sh"
-grep -q -- '-Djava.io.tmpdir="${tmpdir}" -Dtest.build.data="${datadir}"' \
+# SCRATCH-2: the case adapter puts java.io.tmpdir and the system's data
+# directory (system_jvm_properties) under it, in a directory of the worker's
+# own, and REMOVES that directory when the replay exits -- including when it
+# fails.  Only temporary bytes move: the session and the result rows are
+# still written to the shared home.
+execute_sh="${repo}/experiments/lib/execute.sh"
+grep -qF -- '-Djava.io.tmpdir="${tmpdir}" "${jvm_properties[@]}"' \
   "${execute_sh}" \
+  && grep -q -- 'system_jvm_properties "${tmpdir}" "${datadir}"' "${execute_sh}" \
   || fail "the adapter no longer takes its scratch paths from one place"
 grep -q 'CAUSYNTH_LOCAL_SCRATCH' "${execute_sh}" \
   || fail "the adapter does not honour CAUSYNTH_LOCAL_SCRATCH"

@@ -7,7 +7,7 @@ test_method=${3:?missing test method}
 # The javac the Hadoop build uses: the case's own when it declares one.
 declared_javac=${4-}
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
-graphchecker=$(cd "${here}/../../.." && pwd -P)
+graphchecker=$(cd "${here}/../.." && pwd -P)
 export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64
 export PATH=${JAVA_HOME}/bin:${PATH}
 

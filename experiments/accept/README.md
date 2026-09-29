@@ -9,8 +9,8 @@ published and compares the mechanism against the case's expected one.
 
 ```bash
 export CAUSYNTH_CUSTOM_JDK_HOME=/absolute/path/to/j2sdk-image   # required
-DRY=1 CASES=hdfs-17960 bash experiments/hadoop/accept/accept.sh # preflight only
-CASES=hdfs-17960 bash experiments/hadoop/accept/accept.sh
+DRY=1 CASES=hdfs-17960 bash experiments/accept/accept.sh # preflight only
+CASES=hdfs-17960 bash experiments/accept/accept.sh
 ```
 
 `accept.sh` builds the jar in the repo it is committed in, then per case runs

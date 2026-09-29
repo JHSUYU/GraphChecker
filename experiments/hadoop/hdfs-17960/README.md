@@ -36,19 +36,19 @@ prepared on; that host is gone. `case.sh` names the checkout, and `artifacts/` s
 because those are a frozen run's own provenance and are not rewritten.) From this directory:
 
 ```bash
-../lib/run.sh . "" build        # installs the current GraphChecker API, builds the tree,
+../../lib/run.sh . "" build        # installs the current GraphChecker API, builds the tree,
                       # runs the concrete workload test, refuses unless it alone passes
-../lib/run.sh . "" validate     # required workflow fields
-../lib/run.sh . "" campaign     # the whole campaign
+../../lib/run.sh . "" validate     # required workflow fields
+../../lib/run.sh . "" campaign     # the whole campaign
 ```
 
 Use a fresh `CAUSYNTH_OUTPUT_DIR` per campaign; the epoch's answer lands under
 `schedule/final`. The in-tree acceptance harness runs the same campaign and then probes and
-reports it (`experiments/hadoop/accept/README.md`):
+reports it (`experiments/accept/README.md`):
 
 ```bash
 export CAUSYNTH_CUSTOM_JDK_HOME=/absolute/path/to/j2sdk-image
-CASES=hdfs-17960 bash experiments/hadoop/accept/accept.sh
+CASES=hdfs-17960 bash experiments/accept/accept.sh
 ```
 
 ## What the harness expects
@@ -109,7 +109,7 @@ Running plain `z3 candidate.smt2` on the published file answers **unsat**, and t
 verdict about the case: the composer pins its own recorded valuation into the file it
 publishes — `artifacts/candidate.smt2` ends with `(assert (! (= M_Z_field_SRC…SnapshotManager
 true) :named valuation__…))` under the comment `; valuation 0: the run as it happened` — so a
-plain run answers about that one valuation. `experiments/hadoop/accept/probe.sh` is what asks
+plain run answers about that one valuation. `experiments/accept/probe.sh` is what asks
 the published formula unpinned, at the accepted assignment and at the other polarity — a
 question about the whole formula rather than about the slice the campaign solved. It is
 reported, never gated on.
