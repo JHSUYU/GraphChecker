@@ -218,6 +218,19 @@ public final class MessageDoors {
         CausynthTraceRecorder.endSourceRequest(request, api);
     }
 
+    /**
+     * One client operation the workload itself makes, a request root of its
+     * own ({@link CausynthTraceRecorder#beginWorkloadCall}); 0, and nothing
+     * begun, on a node's own thread.
+     */
+    public static long beginWorkloadCall(String api) {
+        return CausynthTraceRecorder.beginWorkloadCall(api);
+    }
+
+    public static void endWorkloadCall(long call, String api) {
+        if (call != 0L) endRequest(call, api);
+    }
+
     /** The outbound of a message that carries nothing. */
     public static Outbound outboundNone() {
         return Outbound.EMPTY;

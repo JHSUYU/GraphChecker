@@ -744,6 +744,32 @@ public final class CausynthTraceRecorder {
         return requestId;
     }
 
+    /**
+     * One call the workload itself makes -- a client operation of the test
+     * thread, or of a thread it started -- as a request root of its own,
+     * named by its api: {@code Root(CLIENT/api, k)} counts that api's calls
+     * only.  A test that polls (a status request until an async task
+     * completes, a query until a replica caught up) sends as many polls as
+     * the run's timing gives it; under one request for the whole test every
+     * later call's index moved with them, and so did every occurrence it
+     * caused on the nodes.
+     *
+     * @return the request to end, or 0 when the thread runs no workload
+     *         scope (a node's own thread, or before the window)
+     */
+    public static long beginWorkloadCall(String apiName) {
+        initialize();
+        SourceRef source = RuntimeTraceContext.explicitSource();
+        if (source == null || !WORKLOAD_KIND.equals(source.kind())) return 0L;
+        long requestId = RuntimeTraceContext.beginRequest(source, apiName);
+        writeSourceTraceLine("REQUEST_BEGIN", source, null, requestId,
+                MapFields.safe(apiName), 0);
+        return requestId;
+    }
+
+    /** The kind a workload registers its own clients under. */
+    public static final String WORKLOAD_KIND = "EXTERNAL_APP";
+
     public static void endSourceRequest(long requestId, String apiName) {
         SourceRef source = RuntimeTraceContext.currentSource();
         writeSourceTraceLine("REQUEST_END", source, null, requestId,
