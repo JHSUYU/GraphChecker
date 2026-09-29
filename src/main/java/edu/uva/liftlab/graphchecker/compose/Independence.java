@@ -10,9 +10,13 @@ import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.explore.Corpus;
 import edu.uva.liftlab.graphchecker.smt.Arms;
+import edu.uva.liftlab.graphchecker.smt.JsonFields;
+import edu.uva.liftlab.graphchecker.smt.VmExpressionIr;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -78,9 +82,10 @@ public final class Independence {
                            Collection<String> seedTerms,
                            List<DecisionRow> conditions,
                            List<ReadRow> readRows) {
-        ExpressionTable table = corpus.expressions(session);
         Set<String> seeds = new LinkedHashSet<String>();
-        for (String term : seedTerms) seeds.addAll(leaves(term, table));
+        for (String term : seedTerms) {
+            seeds.addAll(termLeaves(corpus, session, term));
+        }
         for (RootMintRow root : corpus.session(session).roots()) {
             seeds.add(root.symbol());
         }
@@ -98,28 +103,28 @@ public final class Independence {
                                        List<DecisionRow> conditions,
                                        List<ReadRow> readRows) {
         return closure(corpus, session,
-                leaves(guard, corpus.expressions(session)), conditions,
-                readRows);
+                termLeaves(corpus, session, guard), conditions, readRows);
     }
 
     private static Independence closure(Corpus corpus, String session,
                                         Set<String> seeds,
                                         List<DecisionRow> conditions,
                                         List<ReadRow> readRows) {
-        ExpressionTable table = corpus.expressions(session);
         Independence kept = new Independence();
         Set<String> variables = kept.variables;
         variables.addAll(seeds);
         Map<DecisionRow, Set<String>> byCondition =
                 new LinkedHashMap<DecisionRow, Set<String>>();
         for (DecisionRow condition : conditions) {
-            byCondition.put(condition,
-                    leaves(Arms.conjunct(condition), table));
+            byCondition.put(condition, termLeaves(corpus, session,
+                    Arms.conjunct(condition)));
         }
         Map<ReadRow, Set<String>> byRead =
                 new LinkedHashMap<ReadRow, Set<String>>();
         for (ReadRow read : readRows) {
-            byRead.put(read, readLeaves(corpus, session, read, table));
+            byRead.put(read, corpus.leaves(session, "read " + read.seq(),
+                    () -> readLeaves(corpus, session, read,
+                            corpus.expressions(session))));
         }
         for (boolean grew = true; grew; ) {
             grew = false;
@@ -166,6 +171,12 @@ public final class Independence {
         return leaves;
     }
 
+    private static Set<String> termLeaves(Corpus corpus, String session,
+                                          String term) {
+        return corpus.leaves(session, "term " + term,
+                () -> leaves(term, corpus.expressions(session)));
+    }
+
     /** A term's variables: its free names, each expression it references
      *  walked. */
     private static Set<String> leaves(String term, ExpressionTable table) {
@@ -185,35 +196,41 @@ public final class Independence {
         return leaves;
     }
 
+    /** Each node once, by identity: walked as a tree, 18413's cluster-state
+     *  chains kept EXPLORE's planning busy for 20 minutes. */
     private static void expressionLeaves(JsonElement expression,
                                          ExpressionTable table,
                                          Set<String> into,
                                          Set<String> walked) {
         if (expression == null || expression.isJsonNull()) return;
-        Arms.symbolsIn(expression, into, 0);
+        Set<JsonElement> seen = Collections.newSetFromMap(
+                new IdentityHashMap<JsonElement, Boolean>());
         List<JsonElement> pending = new ArrayList<JsonElement>();
         pending.add(expression);
         while (!pending.isEmpty()) {
             JsonElement node = pending.remove(pending.size() - 1);
+            if (node.isJsonPrimitive()) {
+                String text = node.getAsString();
+                if (SmtNames.reference(text) && walked.add(text)) {
+                    JsonObject referenced = table.expression(text);
+                    if (referenced != null) pending.add(referenced);
+                }
+                continue;
+            }
+            if (!seen.add(node)) continue;
             if (node.isJsonArray()) {
                 for (JsonElement child : node.getAsJsonArray()) {
                     pending.add(child);
                 }
                 continue;
             }
-            if (node.isJsonPrimitive()) {
-                String text = node.getAsString();
-                if (SmtNames.reference(text) && walked.add(text)) {
-                    JsonObject referenced = table.expression(text);
-                    if (referenced != null) {
-                        Arms.symbolsIn(referenced, into, 0);
-                        pending.add(referenced);
-                    }
-                }
-                continue;
-            }
             if (!node.isJsonObject()) continue;
             JsonObject object = node.getAsJsonObject();
+            if (VmExpressionIr.SYMBOL_TYPE.equals(
+                    VmExpressionIr.typeOf(object))) {
+                String raw = JsonFields.optionalString(object, "_exp");
+                if (!raw.isEmpty()) into.add(raw);
+            }
             JsonElement location = object.get("location");
             if (location != null && location.isJsonObject()) {
                 String key = SmtLowering.locationKey(

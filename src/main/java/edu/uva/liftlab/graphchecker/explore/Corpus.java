@@ -45,6 +45,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Supplier;
 
 /** One iteration's sessions, indexed: the ONE corpus view both stages read.
  *  Identity is the contract's: an interaction by both endpoints, a location by
@@ -200,6 +201,10 @@ public final class Corpus implements Arms.Rows {
             new LinkedHashMap<String, Sort>();
     /** root id -> whether the corpus ran it at more than one value. */
     private final Map<String, Boolean> varied = new HashMap<String, Boolean>();
+    /** The variables one term or read rests on, per session: a flip's
+     *  dependence asks every earlier condition of its path again. */
+    private final Map<String, Set<String>> leaves =
+            new HashMap<String, Set<String>>();
     /** root id -> every session's mint of it, built on first ask. */
     private Map<String, List<RootMintRow>> roots;
     /** Root symbol -> every root id declared under it. */
@@ -884,6 +889,18 @@ public final class Corpus implements Arms.Rows {
     public ExpressionTable expressions(String sessionId) {
         SessionReader session = sessionById.get(sessionId);
         return session == null ? null : session.expressions();
+    }
+
+    /** What {@code key} rests on in one session, computed once. */
+    public Set<String> leaves(String sessionId, String key,
+                              Supplier<Set<String>> compute) {
+        String cached = sessionId + "\n" + key;
+        Set<String> found = leaves.get(cached);
+        if (found == null) {
+            found = compute.get();
+            leaves.put(cached, found);
+        }
+        return found;
     }
 
     /** Walk depth for state reads inside one expression. */
