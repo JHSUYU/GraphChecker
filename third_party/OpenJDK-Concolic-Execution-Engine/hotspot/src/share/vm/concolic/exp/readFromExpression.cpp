@@ -12,7 +12,7 @@ ReadFromExpression::ReadFromExpression(
     Expression *observed_value, const std::string &java_type,
     jlong read_event_id, sym_rid_t owner, int slot,
     const char *location_kind, bool writer_set_complete,
-    const Returned &returned,
+    const ReturnedValue &returned,
     const std::string &site_class, const std::string &site_method,
     const std::string &site_descriptor, int site_bci)
     : _observed_version_id(observed_version_id),
@@ -71,24 +71,7 @@ void ReadFromExpression::serialize_internal(
   writer.EndObject();
   writer.Key("writerSetComplete");
   writer.Bool(_writer_set_complete);
-  // Absent, not null, when the read returned an identity: null is a value.
-  switch (_returned.kind) {
-    case Returned::CONSTANT:
-      writer.Key("concreteValue");
-      _returned.constant->serialize(writer);
-      break;
-    case Returned::NULL_REFERENCE:
-      writer.Key("concreteValue");
-      writer.Null();
-      break;
-    case Returned::STRING:
-      writer.Key("concreteValue");
-      writer.String(_returned.content.c_str(),
-                    (rapidjson::SizeType) _returned.content.size());
-      break;
-    case Returned::UNSTATED:
-      break;
-  }
+  _returned.serialize(writer);
 
   // Where the read stood.  A consumer that has to tell two reads of one
   // location by one occurrence apart has nothing else to tell them by: the

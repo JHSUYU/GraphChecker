@@ -5,7 +5,6 @@
 
 #include "concolic/defs.hpp"
 #include "concolic/exp/expression.hpp"
-#include "concolic/exp/readFromExpression.hpp"
 #include "oops/oop.inline.hpp"
 
 #include <pthread.h>
@@ -369,8 +368,8 @@ public:
     // one was detected; it blocks closed/final claims but never changes which
     // version the read observed.
     bool writer_set_complete;
-    // What the read returned; see ReadFromExpression::Returned.
-    ReadFromExpression::Returned returned;
+    // What the read returned; see ReturnedValue.
+    ReturnedValue returned;
     ReadPlan() : read_event_id(0), writer_set_complete(true) {}
   };
 
@@ -421,16 +420,16 @@ public:
    */
   static bool resolve_read(const Location &location, BasicType type,
                            const ConcreteBits &loaded,
-                           const ReadFromExpression::Returned &returned,
+                           const ReturnedValue &returned,
                            ReadResult *result);
 
   /**
-   * What a scalar read returned, as its read node states it: the constant
-   * of a stated `word`, else null or a String's content for `reference`,
-   * else nothing.
+   * What a scalar read or a call returned, as its node states it: the
+   * constant of a stated `word`, else null or a String's content for
+   * `reference`, else nothing.
    */
-  static ReadFromExpression::Returned returned_value(const ConcreteBits &word,
-                                                     oop reference);
+  static ReturnedValue returned_value(const ConcreteBits &word,
+                                      oop reference);
 
   /**
    * One-shot concrete operand override; symbolic resolve_read is unchanged.

@@ -43,6 +43,7 @@ cd "$JDK_ROOT"
   test/causynth/RegionSymbolicIndexScanSmoke.java \
   test/causynth/RegionUnattributedWriterSmoke.java \
   test/causynth/RegionLoadedValueSmoke.java \
+  test/causynth/RegionMethodReturnValueSmoke.java \
   test/causynth/RegionReferenceBranchApiSmoke.java \
   test/causynth/RegionRepeatedFieldOwnerMapApiSmoke.java \
   test/causynth/RegionShadowStackLifecycleSmoke.java \
@@ -92,6 +93,7 @@ for smoke in \
   RegionSymbolicIndexScanSmoke \
   RegionUnattributedWriterSmoke \
   RegionLoadedValueSmoke \
+  RegionMethodReturnValueSmoke \
   RegionReferenceBranchApiSmoke \
   RegionRepeatedFieldOwnerMapApiSmoke \
   RegionShadowStackLifecycleSmoke \

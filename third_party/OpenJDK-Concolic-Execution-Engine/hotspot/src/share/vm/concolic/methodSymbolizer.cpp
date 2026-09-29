@@ -16,6 +16,7 @@
 #include "concolic/reference/symbolicMiscObjects.h"
 #include "concolic/reference/symbolicAtomic.hpp"
 #include "concolic/reference/internal/symbolicUnsafe.hpp"
+#include "concolic/sharedFieldVersions.hpp"
 #include "memory/resourceArea.hpp"
 #include "runtime/thread.hpp"
 #include "runtime/signature.hpp"
@@ -274,7 +275,7 @@ MethodSymbolizer::finish_method_helper(MethodSymbolizerHandle &handle) {
       ShouldNotCallThis();
       break;
     default:
-      exp = new MethodReturnSymbolExp(type);
+      exp = new MethodReturnSymbolExp(handle);
   }
 
   ConcolicMngr::record_path_condition(new MethodExpression(
@@ -367,7 +368,34 @@ bool MethodSymbolizer::disabled_class(const std::string &class_name) const {
 
 volatile intptr_t MethodReturnSymbolExp::sym_method_count = 0;
 
-MethodReturnSymbolExp::MethodReturnSymbolExp(BasicType type) {
+template <class T>
+static SharedFieldVersions::ConcreteBits result_as(
+    MethodSymbolizerHandle &handle, BasicType type) {
+  return SharedFieldVersions::ConcreteBits(
+      type, SharedFieldVersions::raw_bits(handle.get_result<T>(type)));
+}
+
+// The word a primitive result left, in the encoding a field's word has, so
+// that a call and a read state one constant one way.
+static SharedFieldVersions::ConcreteBits result_word(
+    MethodSymbolizerHandle &handle, BasicType type) {
+  switch (type) {
+    case T_BOOLEAN: return result_as<jboolean>(handle, type);
+    case T_BYTE:    return result_as<jbyte>(handle, type);
+    case T_CHAR:    return result_as<jchar>(handle, type);
+    case T_SHORT:   return result_as<jshort>(handle, type);
+    case T_INT:     return result_as<jint>(handle, type);
+    case T_LONG:    return result_as<jlong>(handle, type);
+    case T_FLOAT:   return result_as<jfloat>(handle, type);
+    case T_DOUBLE:  return result_as<jdouble>(handle, type);
+    default:
+      ShouldNotReachHere();
+      return SharedFieldVersions::ConcreteBits();
+  }
+}
+
+MethodReturnSymbolExp::MethodReturnSymbolExp(MethodSymbolizerHandle &handle) {
+  const BasicType type = handle.get_result_type();
   char buf[BUF_SIZE];
   stringStream ss(buf, BUF_SIZE);
   _type = type2char(type);
@@ -375,6 +403,14 @@ MethodReturnSymbolExp::MethodReturnSymbolExp(BasicType type) {
   ss.print("return%lu", (ulong) Atomic::add_ptr(
       (intptr_t) 1, &sym_method_count) - 1);
   this->finalize(buf, ss.size());
+  _returned = SharedFieldVersions::returned_value(result_word(handle, type),
+                                                  NULL);
+}
+
+void MethodReturnSymbolExp::serialize_internal(
+    rapidjson::Writer<rapidjson::StringBuffer> &writer) {
+  SymbolExpression::serialize_internal(writer);
+  _returned.serialize(writer);
 }
 
 #endif

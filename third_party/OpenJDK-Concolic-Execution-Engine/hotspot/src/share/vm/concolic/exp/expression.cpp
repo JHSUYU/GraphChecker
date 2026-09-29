@@ -784,4 +784,25 @@ void ConExpression::serialize_internal(rapidjson::Writer<rapidjson::StringBuffer
   writer.String(_str);
 }
 
+void ReturnedValue::serialize(
+    rapidjson::Writer<rapidjson::StringBuffer> &writer) const {
+  // Absent, not null, when nothing is stated: null is a value.
+  switch (kind) {
+    case CONSTANT:
+      writer.Key("concreteValue");
+      constant->serialize(writer);
+      break;
+    case NULL_REFERENCE:
+      writer.Key("concreteValue");
+      writer.Null();
+      break;
+    case STRING:
+      writer.Key("concreteValue");
+      writer.String(content.c_str(), (rapidjson::SizeType) content.size());
+      break;
+    case UNSTATED:
+      break;
+  }
+}
+
 #endif

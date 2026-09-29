@@ -81,12 +81,27 @@ private:
   bool disabled_class(const std::string &class_name) const;
 };
 
+/**
+ * The primitive result of a call the VM does not model: a fresh symbol, tied
+ * to the call's arguments only by the MethodExpression recorded beside it.
+ *
+ * It states the value the call returned, because nothing else declares the
+ * symbol: SOLR-18406's SolrParams.getLong of a request parameter
+ * (Long.parseLong) minted M_J_return28, and the composer cut it as an
+ * undeclared free symbol.
+ */
 class MethodReturnSymbolExp : public SymbolExpression {
   // Minted atomically: any attached thread may symbolize a method return.
   static volatile intptr_t sym_method_count;
 
+  ReturnedValue _returned;
+
 public:
-  MethodReturnSymbolExp(BasicType type);
+  // Mints the result of the call `handle` is finishing.
+  explicit MethodReturnSymbolExp(MethodSymbolizerHandle &handle);
+
+  virtual void serialize_internal(
+      rapidjson::Writer<rapidjson::StringBuffer> &writer);
 };
 
 #endif

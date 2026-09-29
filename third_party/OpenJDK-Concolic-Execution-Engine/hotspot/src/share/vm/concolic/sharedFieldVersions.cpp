@@ -356,7 +356,7 @@ Expression *SharedFieldVersions::build_read_from(
 
 bool SharedFieldVersions::resolve_read(
     const Location &location, BasicType type, const ConcreteBits &loaded,
-    const ReadFromExpression::Returned &returned, ReadResult *result) {
+    const ReturnedValue &returned, ReadResult *result) {
   if (result == NULL) return false;
   *result = ReadResult();
 
@@ -508,17 +508,17 @@ Expression *SharedFieldVersions::primitive_expression(BasicType type,
   }
 }
 
-ReadFromExpression::Returned SharedFieldVersions::returned_value(
-    const ConcreteBits &word, oop reference) {
-  ReadFromExpression::Returned returned;
+ReturnedValue SharedFieldVersions::returned_value(const ConcreteBits &word,
+                                                  oop reference) {
+  ReturnedValue returned;
   if (word.stated()) {
-    returned.kind = ReadFromExpression::Returned::CONSTANT;
+    returned.kind = ReturnedValue::CONSTANT;
     returned.constant = primitive_expression(word.type, word.bits);
   } else if (reference == NULL) {
-    returned.kind = ReadFromExpression::Returned::NULL_REFERENCE;
+    returned.kind = ReturnedValue::NULL_REFERENCE;
   } else if (reference->klass() == SystemDictionary::String_klass()) {
     ResourceMark rm;
-    returned.kind = ReadFromExpression::Returned::STRING;
+    returned.kind = ReturnedValue::STRING;
     returned.content = OopUtils::java_string_to_c(reference);
   }
   return returned;

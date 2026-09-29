@@ -265,6 +265,27 @@ public:
   void serialize_internal(rapidjson::Writer<rapidjson::StringBuffer> &writer);
 };
 
+/**
+ * What a read or a call returned, when it is a value rather than an
+ * identity: a primitive's constant, null, or a String's content.  Any other
+ * object is an identity no formula can pin, and stays unstated.
+ *
+ * A node whose own formula may not decide its value states it, so that the
+ * composer can pin the node to what the run saw: a read whose observed write
+ * does not lower (ReadFromExpression), the result of a call the VM does not
+ * model (MethodReturnSymbolExp).  Both spell it one way, as `concreteValue`.
+ */
+struct ReturnedValue {
+  enum Kind { UNSTATED, CONSTANT, NULL_REFERENCE, STRING };
+  Kind kind;
+  Expression *constant;
+  std::string content;
+  ReturnedValue() : kind(UNSTATED), constant(NULL) {}
+
+  // Writes the `concreteValue` member of the node being serialized.
+  void serialize(rapidjson::Writer<rapidjson::StringBuffer> &writer) const;
+};
+
 typedef std::vector<Expression *> exp_list_t;
 typedef std::map<int, Expression *> exp_map_t;
 
