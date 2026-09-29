@@ -95,8 +95,15 @@ public final class SiteControlDependence {
                                 guards = MethodGuards.of(caller);
                                 callers.put(caller, guards);
                             }
-                            for (StaticScopeMap.Guard guard
-                                    : guards.at(SiteId.unitIndexOf(call))) {
+                            // The call's guards and theirs: in `if (a || b)
+                            // return; call();` the call is control-dependent
+                            // on b alone, and b on a.
+                            int unit = SiteId.unitIndexOf(call);
+                            List<StaticScopeMap.Guard> deciding =
+                                    new ArrayList<StaticScopeMap.Guard>(
+                                            guards.at(unit));
+                            deciding.addAll(guards.chain(unit));
+                            for (StaticScopeMap.Guard guard : deciding) {
                                 if (named.add(guard.siteId())) found.add(guard);
                             }
                             next.add(caller);

@@ -117,8 +117,9 @@ public final class StaticScopeMap {
             return Collections.<Guard>emptyList();
         }
 
-        /** The guards of the calls that run {@code method}, a few calls up:
-         *  a store runs only where a call into its method did. */
+        /** The guards of the calls that run {@code method}, and theirs, a
+         *  few calls up: a store runs only where a call into its method
+         *  did. */
         default List<Guard> callsInto(String method) {
             return Collections.<Guard>emptyList();
         }
