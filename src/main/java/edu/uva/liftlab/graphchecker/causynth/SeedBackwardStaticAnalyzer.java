@@ -1238,14 +1238,15 @@ final class SeedBackwardStaticAnalyzer {
                             ignored -> new ArrayList<>()).add(index);
                     indexedInvoke = true;
                 }
+                boolean constructor = sig != null && "<init>".equals(sig.name);
                 if (sig != null && (isApplicationClassName(sig.owner)
-                        || dispatchOwners.contains(sig.owner))) {
+                        || !constructor && dispatchOwners.contains(sig.owner))) {
                     String unitText = unit.toString();
                     String receiver = canonical(methodSignature,
                             invokeBaseLocal(unitText));
                     List<String> actuals = canonicalPositionList(
                             methodSignature, actualInvokeArgs(unitText));
-                    if ("<init>".equals(sig.name)) {
+                    if (constructor) {
                         addIndexedCallsite(constructorCallersByCallee,
                                 sig.raw, new Callsite(
                                         methodSignature, index, receiver,
@@ -1314,12 +1315,8 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     /** Indexes one recorded call site under its application callee. */
-    private void addIndexedCallsite(Map<String, List<Callsite>> index,
-                                    String callee, Callsite callsite) {
-        MethodSig sig = parseMethodSig(callee);
-        if (sig == null || !isApplicationClassName(sig.owner)) {
-            return;
-        }
+    private static void addIndexedCallsite(Map<String, List<Callsite>> index,
+                                           String callee, Callsite callsite) {
         index.computeIfAbsent(callee, ignored -> new ArrayList<>())
                 .add(callsite);
     }
