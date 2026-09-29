@@ -14,7 +14,7 @@ workload=${1#*.}
   echo "usage: case.sh <check>.<TestClass>-<method>" >&2
   return 2
 }
-repo=/u/vnr3ne/lucene-solr-8_11
+repo=/u/vnr3ne/lucene-solr-8_11-adhoc
 row=$(awk -F'\t' -v c="${check}" '$1 == c' "${here}/checks.tsv")
 [[ -n "${row}" ]] || { echo "unknown ad-hoc check: ${check}" >&2; return 2; }
 IFS=$'\t' read -r _ _ _ own <<<"${row}"
