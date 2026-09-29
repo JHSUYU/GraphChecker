@@ -55,4 +55,7 @@ else
   : > "${out}.lines"
 fi
 rm -f -- "${out}.exec"
+# Whether the run started a node, read by select.py without the lines.
+rm -f -- "${out}.node"
+if grep -q "^${system_node_class}"$'\t' "${out}.lines"; then : > "${out}.node"; fi
 echo "$(basename "${out}") exit=${status} lines=$(wc -l < "${out}.lines")"

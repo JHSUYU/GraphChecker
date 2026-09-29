@@ -43,7 +43,6 @@ def system_value(name):
 
 
 focus = system_value("system_focus")
-node = system_value("system_node_class")
 
 # What the guard reads, weighed by whether a remote write or a clock decides
 # it: a clock or expiry, a version another node stamped, a node's view of the
@@ -86,12 +85,10 @@ def holds_throw(path, line):
 
 
 def starts_a_node(workload):
-    """Whether the workload's coverage ran the system's node class."""
-    try:
-        with open(os.path.join(sweep, "cov", workload + ".lines")) as lines:
-            return any(line.startswith(node + "\t") for line in lines)
-    except OSError:
-        return False
+    """Whether the workload's coverage ran the system's node class: the
+    marker coverage.sh leaves (reading every .lines file took HDFS's 2818
+    workloads over half an hour)."""
+    return os.path.exists(os.path.join(sweep, "cov", workload + ".node"))
 
 
 def score(check):
