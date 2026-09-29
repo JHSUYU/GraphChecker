@@ -29,6 +29,10 @@ system_sources=(
 # Where the nodes coordinate: an ad-hoc sweep ranks these classes' checks
 # first (tools/adhoc/select.py).
 system_focus='\.cloud\.|\.update\.|ReplicationHandler|IndexFetcher|IndexDeletionPolicy|\.core\.(SolrCore|CoreContainer|ZkContainer)|servlet\.HttpSolrCall'
+# A class a workload runs only if it starts a node of the system: a test
+# that starts none opens no recording window, so an ad-hoc sweep does not
+# choose it (tools/adhoc/select.py).
+system_node_class=org/apache/solr/client/solrj/embedded/JettySolrRunner
 
 system_paths() {
   module=${repo}/solr/core

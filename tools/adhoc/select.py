@@ -17,7 +17,9 @@ The system's system.sh names in system_focus the classes where its nodes
 coordinate; their checks rank first.
 
 A timeout's check is never chosen: an automatic cluster lifts every bound
-sized for a native run, so no replay reaches it.  Given the <tree> the sweep
+sized for a native run, so no replay reaches it.  Nor is a workload whose
+coverage never ran the system's node class (system.sh's system_node_class):
+a test that starts no node opens no recording window, so its seed fails.  Given the <tree> the sweep
 annotates, a check whose line no longer holds its `throw new` (the tree moved
 since coverage) is skipped and named on stderr."""
 import collections
@@ -33,9 +35,15 @@ per_check = int(sys.argv[5]) if len(sys.argv) > 5 else 2
 tree = sys.argv[6] if len(sys.argv) > 6 else ""
 PER_CLASS, PER_WORKLOAD = 3, 4
 
-focus = subprocess.run(
-    ["bash", "-c", 'source "$1/system.sh" && printf %s "${system_focus}"',
-     "-", system_dir], check=True, capture_output=True, text=True).stdout
+def system_value(name):
+    return subprocess.run(
+        ["bash", "-c", 'source "$1/system.sh" && printf %%s "${%s}"' % name,
+         "-", system_dir], check=True, capture_output=True,
+        text=True).stdout
+
+
+focus = system_value("system_focus")
+node = system_value("system_node_class")
 
 # What the guard reads, weighed by whether a remote write or a clock decides
 # it: a clock or expiry, a version another node stamped, a node's view of the
@@ -77,6 +85,15 @@ def holds_throw(path, line):
     return 0 < line <= len(lines) and "throw new" in lines[line - 1]
 
 
+def starts_a_node(workload):
+    """Whether the workload's coverage ran the system's node class."""
+    try:
+        with open(os.path.join(sweep, "cov", workload + ".lines")) as lines:
+            return any(line.startswith(node + "\t") for line in lines)
+    except OSError:
+        return False
+
+
 def score(check):
     text = check["cond"] + " " + check["operand"]
     value = sum(weight for weight, pattern in SIGNALS if re.search(pattern, text))
@@ -116,6 +133,10 @@ for row in open(checks_tsv):
         declared.add((source, int(line)))
 
 reached = [json.loads(line) for line in open(os.path.join(sweep, "reached.jsonl"))]
+nodeless = sorted({w for check in reached for w in check["workloads"]
+                   if not starts_a_node(w)})
+for workload in nodeless:
+    print("skipped, starts no node: %s" % workload, file=sys.stderr)
 reached.sort(key=lambda check: (-score(check), len(check["workloads"])))
 per_class = collections.Counter()
 per_workload = collections.Counter()
@@ -134,7 +155,8 @@ for check in reached:
               % (check["file"], check["throwLine"]), file=sys.stderr)
         continue
     usable = sorted((seconds[w], w) for w in check["workloads"]
-                    if w in seconds and len(classes[w.split(".")[0]]) == 1
+                    if w in seconds and w not in nodeless
+                    and len(classes[w.split(".")[0]]) == 1
                     and per_workload[w] < PER_WORKLOAD)
     chosen = [w for _, w in usable[:per_check]]
     if not chosen:
