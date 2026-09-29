@@ -150,6 +150,7 @@ final class ConcolicResultPublisher {
         synchronized (PUBLICATION_LOCK) {
             if (concludingAtWitness) return;
             concludingAtWitness = true;
+            submittedAtWitness = submitted;
         }
         ThreadGroup root = Thread.currentThread().getThreadGroup();
         while (root.getParent() != null) root = root.getParent();
@@ -180,6 +181,15 @@ final class ConcolicResultPublisher {
 
     /** Guarded by {@link #PUBLICATION_LOCK}. */
     private static boolean concludingAtWitness;
+    /**
+     * Publications submitted, and how many were when the witness stood:
+     * one completed after it is no part of the question, and publishing it
+     * kept the queue from ever draining (SOLR-18406's follower retried the
+     * download, each retry an occurrence with its own publication).
+     * Guarded by {@link #PUBLICATION_LOCK}.
+     */
+    private static long submitted;
+    private static long submittedAtWitness = Long.MAX_VALUE;
 
     /** Names one activation whose root never reached a terminal. */
     private static void strandWithoutTerminal(ActiveRegion active) {
@@ -278,11 +288,15 @@ final class ConcolicResultPublisher {
         // the task, never rolls back a reservation another turn relies on.
         active.activation.reserveCompletedEvidence();
         configuration().releaseCandidate(active.activation);
+        final long ordinal;
+        synchronized (PUBLICATION_LOCK) {
+            ordinal = ++submitted;
+        }
         try {
             RESULT_PUBLICATION_EXECUTOR.execute(new Runnable() {
                 @Override
                 public void run() {
-                    publishCompletedResult(active, rawSharedState);
+                    publishCompletedResult(active, rawSharedState, ordinal);
                 }
             });
             return true;
@@ -296,8 +310,21 @@ final class ConcolicResultPublisher {
     }
 
     private static void publishCompletedResult(
-            ActiveRegion active, RawSharedStateReadOut rawSharedState) {
+            ActiveRegion active, RawSharedStateReadOut rawSharedState,
+            long ordinal) {
         try {
+            boolean afterWitness;
+            synchronized (PUBLICATION_LOCK) {
+                afterWitness = ordinal > submittedAtWitness;
+            }
+            if (afterWitness) {
+                configuration().markOccurrenceClaimed(active.activation);
+                taskUnanswered(active.activation, "AT_WITNESS: this"
+                        + " occurrence completed after the declared"
+                        + " occurrence observed the fatal, and the replay"
+                        + " ended there");
+                return;
+            }
             assembleRecordedSharedState(active, rawSharedState);
             // Here, where the write log is assembled: once, on one thread.
             RowPublication.publish(active);
