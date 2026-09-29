@@ -287,7 +287,7 @@ public class ContractTest {
                 null);
         RootMintRow minted = RootMintRow.of("s-17897-1", 2L, producer,
                 "SERIAL_NO", "root_serial_no", RootKind.INTEGRAL, "3", "3",
-                "6", true);
+                "6", true, 0L);
         TargetRow target = TargetRow.of("s-17897-1", 15L, anchor,
                 "BlockTokenSecretManager#retrieve#61", "(= key nil)", true,
                 true);
@@ -520,12 +520,12 @@ public class ContractTest {
         Rows undeclared = clean();
         undeclared.roots.set(0, RootMintRow.of("s-gate", 2L,
                 undeclared.anchor, "CASE.MARKER", "M_Z_marker",
-                RootKind.MARKER, "true", null, null, false));
+                RootKind.MARKER, "true", null, null, false, 0L));
         assertInvariant(8, GapClass.BLOCKING, "field=declared", undeclared);
         Rows unspelled = clean();
         unspelled.roots.set(0, RootMintRow.of("s-gate", 2L, unspelled.anchor,
                 "CASE.MARKER", "M_Z_marker", RootKind.MARKER, "1", null,
-                null, true));
+                null, true, 0L));
         assertInvariant(8, GapClass.BLOCKING, "field=recordedValue",
                 unspelled);
         // 9: phi is published in the FATAL polarity, so an observed fatal
@@ -649,7 +649,7 @@ public class ContractTest {
         // A marker the session minted true, and a term that is true at it.
         rows.roots.add(RootMintRow.of("s-gate", 2L, rows.anchor,
                 "CASE.MARKER", "M_Z_marker", RootKind.MARKER, "true", null,
-                null, true));
+                null, true, 0L));
         rows.expressions.put("EXPR.0000000000000001",
                 binary("!=", symbol("M_Z_marker"), literal("Y_Z_0")));
         rows.expressions.put("EXPR.0000000000000002",

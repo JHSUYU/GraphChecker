@@ -157,6 +157,7 @@ public final class Composer {
         private final List<GapRow> gaps;
         private final List<String> clockCells;
         private final Map<String, Long> clockReadings;
+        private final Map<String, Long> clockNanos;
         private final Map<String, Set<String>> unattestedRoots;
         private final Map<String, List<String>> observedReads;
         private final Map<String, List<String>> observedArrivals;
@@ -169,7 +170,8 @@ public final class Composer {
                             List<Disjunct> disjuncts, List<PathEntry> paths,
                             List<Valuation> valuations,
                             List<String> clockCells,
-                            Map<String, Long> clockReadings) {
+                            Map<String, Long> clockReadings,
+                            Map<String, Long> clockNanos) {
             this.anchor = composed.anchor;
             this.body = body;
             this.disjuncts = Collections.unmodifiableList(disjuncts);
@@ -183,6 +185,7 @@ public final class Composer {
             this.clockCells = Collections.unmodifiableList(clockCells);
             this.clockReadings =
                     Collections.unmodifiableMap(clockReadings);
+            this.clockNanos = Collections.unmodifiableMap(clockNanos);
             this.unattestedRoots =
                     Collections.unmodifiableMap(composed.unattestedRoots);
             this.observedReads =
@@ -253,6 +256,12 @@ public final class Composer {
         /** Clock cell -> one instant some session read it at. */
         public Map<String, Long> clockReadings() {
             return clockReadings;
+        }
+
+        /** Clock cell -> its clock's tick in nanoseconds
+         *  ({@code RootMintRow#clockNanos}). */
+        public Map<String, Long> clockNanos() {
+            return clockNanos;
         }
 
         /** Interaction -> the declared roots its unattested arms mention. */
@@ -517,7 +526,8 @@ public final class Composer {
 
         List<String> clockCells = new ArrayList<String>();
         Map<String, Long> clockReadings = new LinkedHashMap<String, Long>();
-        clocks(clockCells, clockReadings);
+        Map<String, Long> clockNanos = new LinkedHashMap<String, Long>();
+        clocks(clockCells, clockReadings, clockNanos);
         domains();
         lowering.assertIdentitiesDistinct();
         // Corpus inconsistencies (one name, two sorts; one truncated name,
@@ -549,7 +559,7 @@ public final class Composer {
             pins.addAll(valuation.assertions());
         }
         return new Composition(this, lowering.body(pins), disjuncts, entries,
-                valuations, clockCells, clockReadings);
+                valuations, clockCells, clockReadings, clockNanos);
     }
 
     // ------------------------------------------------------------------
@@ -1615,10 +1625,11 @@ public final class Composer {
      * Balancer: {@code Time.now()} for its keys, {@code monotonicNow()}
      * for its SASL user) -- and ordering those against each other made
      * every path false.  One run is far shorter than a clock window, so
-     * two readings of one clock lie within one; readings further apart are
-     * two clocks.</p>
+     * two readings of one clock share a tick and lie within one window;
+     * any other two are two clocks.</p>
      */
-    private void clocks(List<String> cells, Map<String, Long> readings) {
+    private void clocks(List<String> cells, Map<String, Long> readings,
+                        Map<String, Long> ticks) {
         String seed = seed();
         Map<NodeId, List<RootMintRow>> byNode =
                 new LinkedHashMap<NodeId, List<RootMintRow>>();
@@ -1641,11 +1652,13 @@ public final class Composer {
             }
             String instant = Long.toString(reading);
             cells.add(row.symbol());
+            ticks.put(row.symbol(), row.clockNanos());
             RootDomain domain = domainOf(row);
             String floor = domain.min() == null ? instant
                     : integralLiteral(domain.min());
             String ceiling = domain.max() == null
-                    ? JavaPrimitiveSmtSemantics.clockSkewCeiling(instant)
+                    ? JavaPrimitiveSmtSemantics.clockSkewCeiling(instant,
+                            row.clockNanos())
                     : integralLiteral(domain.max());
             roots.put(row.rootId(), RootDomain.of(row.rootId(),
                     RootKind.CLOCK, row.recordedValue(), floor, ceiling));
@@ -1671,10 +1684,15 @@ public final class Composer {
             for (int index = 1; index < mints.size(); index++) {
                 String later = mints.get(index).symbol();
                 long reading = readings.get(later);
+                long tick = ticks.get(later);
+                long window = JavaPrimitiveSmtSemantics.clockTicks(
+                        JavaPrimitiveSmtSemantics.CLOCK_SKEW_WINDOW_NANOS,
+                        tick);
                 for (int before = index - 1; before >= 0; before--) {
                     String earlier = mints.get(before).symbol();
-                    if (Math.abs(readings.get(earlier) - reading)
-                            > JavaPrimitiveSmtSemantics.CLOCK_SKEW_WINDOW_MS) {
+                    if (ticks.get(earlier) != tick
+                            || Math.abs(readings.get(earlier) - reading)
+                            > window) {
                         continue;
                     }
                     lowering.assertNamed("clock_order__" + ArtifactIO.digest(

@@ -166,9 +166,9 @@ public final class CausynthPipeline {
         long skeletonPlanningMillis = elapsedMillis(skeletonPlanningStart);
         // CLOSURE-V2 SS4: before ANY weaving, so site and guard ids are the
         // original unit indices a replay decides at.
+        Map<String, Long> clockTicks = RootCatalog.clockTicks(result.edges);
         List<StaticScopeMap.Site> scopeSites = StaticScopeMap.sites(
-                result.edges, result.regions,
-                RootCatalog.clockCallees(result.edges),
+                result.edges, result.regions, clockTicks,
                 method -> !CausynthStaticFacts.applicationMethod(method),
                 CausynthStaticFacts::versionableField);
         List<JsonObject> scopeMap = StaticScopeMap.rows(scopeSites,
@@ -176,7 +176,7 @@ public final class CausynthPipeline {
                         StaticScopeMap.siteIds(scopeSites)));
         List<JsonObject> frontier = ScopeFrontier.rows(result.edges,
                 CausynthStaticFacts::analysedMethod,
-                RootCatalog.clockCallees(result.edges));
+                clockTicks.keySet());
         long artifactWriteStart = System.nanoTime();
         CausynthArtifactWriter.writeDiscoveryArtifacts(
                 target.outputDir, result, scopeMap, frontier);

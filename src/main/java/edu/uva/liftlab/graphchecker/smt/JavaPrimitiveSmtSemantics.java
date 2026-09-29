@@ -5,6 +5,7 @@ import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.TimeUnit;
 
 /** Shared SMT semantics for Java's integral computational types. */
 public final class JavaPrimitiveSmtSemantics {
@@ -50,7 +51,7 @@ public final class JavaPrimitiveSmtSemantics {
     private static final String JAVA_LONG_MAX = "9223372036854775807";
 
     /**
-     * A CLOCK cell's domain {@code [floor, ceiling]} in ms, the one spelling
+     * A CLOCK cell's domain {@code [floor, ceiling]} in its ticks, the one spelling
      * for {@code explore.FlipQuery} and {@code compose.Composer}.  The floor
      * is the cell's own reading (a clock never turns back); the ceiling is
      * {@link #clockSkewCeiling}.  Both bounds are needed: no ceiling lets z3
@@ -63,14 +64,29 @@ public final class JavaPrimitiveSmtSemantics {
     }
 
     /** Default forward clock window, 30 days; override in root-domains.jsonl. */
-    public static final long CLOCK_SKEW_WINDOW_MS = 2592000000L;
+    public static final long CLOCK_SKEW_WINDOW_NANOS = TimeUnit.DAYS.toNanos(30);
 
     /**
-     * {@code reading + } {@link #CLOCK_SKEW_WINDOW_MS}.  Trap: never
-     * {@code Long.MAX_VALUE} when a reading exists -- the SMT sum cannot
-     * wrap but the JVM's does, so a flip would be admitted by overflow.
+     * One span of time in the ticks of a clock whose tick is {@code
+     * clockNanos} nanoseconds ({@code RootMintRow#clockNanos}).  In
+     * milliseconds for every clock, a {@code nanoTime} reading could move
+     * 2.6 seconds, never the hour of SOLR-18406's commit reservation.
      */
-    public static String clockSkewCeiling(String reading) {
+    public static long clockTicks(long nanos, long clockNanos) {
+        if (clockNanos <= 0L) {
+            throw new IllegalArgumentException("a clock's tick is a positive"
+                    + " number of nanoseconds: " + clockNanos);
+        }
+        return nanos / clockNanos;
+    }
+
+    /**
+     * {@code reading + } {@link #CLOCK_SKEW_WINDOW_NANOS} in the clock's
+     * ticks.  Trap: never {@code Long.MAX_VALUE} when a reading exists --
+     * the SMT sum cannot wrap but the JVM's does, so a flip would be
+     * admitted by overflow.
+     */
+    public static String clockSkewCeiling(String reading, long clockNanos) {
         if (reading == null || reading.trim().isEmpty()) {
             return JAVA_LONG_MAX;
         }
@@ -79,8 +95,8 @@ public final class JavaPrimitiveSmtSemantics {
             if (instant.signum() < 0 || !fitsJavaLong(instant)) {
                 return JAVA_LONG_MAX;
             }
-            BigInteger ceiling =
-                    instant.add(BigInteger.valueOf(CLOCK_SKEW_WINDOW_MS));
+            BigInteger ceiling = instant.add(BigInteger.valueOf(
+                    clockTicks(CLOCK_SKEW_WINDOW_NANOS, clockNanos)));
             return fitsJavaLong(ceiling) ? ceiling.toString()
                     : JAVA_LONG_MAX;
         } catch (NumberFormatException notAnInstant) {

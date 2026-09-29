@@ -17,11 +17,13 @@ public final class RootMintRow extends Value {
     private final String domainMin;
     private final String domainMax;
     private final boolean declared;
+    private final long clockNanos;
 
     private RootMintRow(String sessionId, long seq,
                         OccurrenceAddress occurrence, String rootId,
                         String symbol, RootKind kind, String recordedValue,
-                        String domainMin, String domainMax, boolean declared) {
+                        String domainMin, String domainMax, boolean declared,
+                        long clockNanos) {
         this.sessionId = sessionId;
         this.seq = seq;
         this.occurrence = occurrence;
@@ -32,21 +34,29 @@ public final class RootMintRow extends Value {
         this.domainMin = domainMin;
         this.domainMax = domainMax;
         this.declared = declared;
+        this.clockNanos = clockNanos;
     }
 
     public static RootMintRow of(String sessionId, long seq,
                                  OccurrenceAddress occurrence, String rootId,
                                  String symbol, RootKind kind,
                                  String recordedValue, String domainMin,
-                                 String domainMax, boolean declared) {
+                                 String domainMax, boolean declared,
+                                 long clockNanos) {
+        RootKind stated = Fields.required(kind, "kind");
+        if ((stated == RootKind.CLOCK) != (clockNanos > 0L)) {
+            throw new IllegalArgumentException("clockNanos: a CLOCK root "
+                    + "states its tick and no other root does: " + stated
+                    + " " + clockNanos);
+        }
         return new RootMintRow(Fields.text(sessionId, "sessionId"),
                 Fields.nonNegative(seq, "seq"),
                 Fields.required(occurrence, "occurrence"),
                 Fields.text(rootId, "rootId"), Fields.text(symbol, "symbol"),
-                Fields.required(kind, "kind"),
+                stated,
                 Fields.required(recordedValue, "recordedValue"),
                 Fields.optional(domainMin), Fields.optional(domainMax),
-                declared);
+                declared, clockNanos);
     }
 
     public String sessionId() {
@@ -93,6 +103,16 @@ public final class RootMintRow extends Value {
         return declared;
     }
 
+    /**
+     * A CLOCK's tick: the nanoseconds one unit of its reading is (1 for
+     * {@code nanoTime}, 1,000,000 for {@code currentTimeMillis}); 0 for any
+     * other root.  A clock's window and margin are spans of time, stated in
+     * its own ticks.
+     */
+    public long clockNanos() {
+        return clockNanos;
+    }
+
     /** Whether the root may move at all: an undeclared or undomained root. */
     public boolean pinned() {
         return domainMin == null && domainMax == null;
@@ -101,7 +121,7 @@ public final class RootMintRow extends Value {
     @Override
     Object[] parts() {
         return new Object[] {sessionId, seq, occurrence, rootId, symbol, kind,
-                recordedValue, domainMin, domainMax, declared};
+                recordedValue, domainMin, domainMax, declared, clockNanos};
     }
 
     @Override

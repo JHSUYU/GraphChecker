@@ -61,7 +61,8 @@ final class SymbolizeAction {
     final String accessorImplementationMethod;
     /** How the finalizer classified the port that minted this action. */
     final String sourceKind;
-    final boolean clock;
+    /** A clock's tick in nanoseconds (the plan's), 0 for any other input. */
+    final long clockNanos;
     /** The static site the plan observed this read at, or "". */
     final String siteId;
     /** The recorded event this read was observed at, or -1. */
@@ -121,8 +122,8 @@ final class SymbolizeAction {
         this.accessorImplementationMethod = optionalString(json,
                 "accessorImplementationMethod");
         this.sourceKind = optionalString(json, "sourceKind");
-        this.clock = optionalBool(json,
-                InputActionCatalog.DECLARED_WALL_CLOCK, false);
+        this.clockNanos = optionalLongInteger(json,
+                InputActionCatalog.DECLARED_WALL_CLOCK, 0L);
         this.siteId = optionalString(json, "siteId");
         this.eventSeq = optionalLongInteger(json, "eventSeq", -1L);
         this.recordedPrimitiveValue = optionalBool(json, "observed", false)
@@ -232,7 +233,7 @@ final class SymbolizeAction {
 
     /** A declared wall-clock read with a recorded answer (moved by offset). */
     boolean declaresWallClockRead() {
-        return clock && !recordedPrimitiveValue.isEmpty();
+        return clockNanos > 0L && !recordedPrimitiveValue.isEmpty();
     }
 
     boolean matchesStaticField(String actualMethod,

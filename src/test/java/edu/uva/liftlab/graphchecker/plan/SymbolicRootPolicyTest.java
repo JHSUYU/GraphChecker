@@ -13,7 +13,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -26,7 +25,7 @@ import static org.junit.Assert.assertTrue;
 
 /**
  * What makes a read symbolic: its category, as the static scope map states it
- * ({@link StaticScopeMap#clockCallees}, {@link StaticScopeMap#readSites}), a
+ * ({@link StaticScopeMap#clockTicks}, {@link StaticScopeMap#readSites}), a
  * fault marker in the program's text, a field a hook owns, or a wire cut
  * port.  Every other proposed read is concrete.
  */
@@ -71,9 +70,11 @@ public class SymbolicRootPolicyTest {
     public void onlyARootMakesAReadSymbolic() throws Exception {
         StaticScopeMap map = map(Arrays.asList(clockRead(EXPIRE)),
                 Collections.singletonMap(NN, Collections.singletonList(
-                        EXPIRE)), Collections.singleton(TIMER_NOW),
+                        EXPIRE)), Collections.singletonMap(TIMER_NOW,
+                        1_000_000L),
                 method -> true);
-        assertEquals(Collections.singleton(TIMER_NOW), map.clockCallees());
+        assertEquals(Collections.singletonMap(TIMER_NOW, 1_000_000L),
+                map.clockTicks());
         ConcolicScheduler.SymbolicInputSelection selection =
                 ConcolicScheduler.SymbolicInputSelection.read(map,
                         catalog());
@@ -81,10 +82,10 @@ public class SymbolicRootPolicyTest {
 
         assertTrue("the clock carries the mint marker",
                 selected.get(0).getAsJsonObject().get(ROOT).getAsBoolean());
-        assertTrue("and the clock flag, read off its category",
-                selected.get(0).getAsJsonObject()
+        assertEquals("and the clock's tick, read off its category",
+                1_000_000L, selected.get(0).getAsJsonObject()
                         .get(InputActionCatalog.DECLARED_WALL_CLOCK)
-                        .getAsBoolean());
+                        .getAsLong());
         assertEquals("a read no category names is concrete by name",
                 "CONCRETE", member(selected, 1, "mode"));
         assertEquals(ConcolicScheduler.SymbolicInputSelection.UNDECLARED,
@@ -132,7 +133,7 @@ public class SymbolicRootPolicyTest {
         List<Map<String, Object>> edges = Arrays.asList(atomicRead(),
                 atomicStore());
         StaticScopeMap unwoven = map(edges, apart,
-                Collections.<String>emptySet(), ATOMIC_GET::equals);
+                Collections.<String, Long>emptyMap(), ATOMIC_GET::equals);
         assertEquals(Collections.singleton(StaticScopeMap.readKey(
                 GET_NUM + "#u2", ATOMIC_VALUE)), unwoven.readSites());
         JsonObject port = action("ACCESSOR_RETURN", GET_NUM + "#u2",
@@ -146,12 +147,12 @@ public class SymbolicRootPolicyTest {
                 read.has(InputActionCatalog.DECLARED_WALL_CLOCK));
 
         assertTrue("a woven accessor's read is no placeholder",
-                map(edges, apart, Collections.<String>emptySet(),
+                map(edges, apart, Collections.<String, Long>emptyMap(),
                         method -> false).readSites().isEmpty());
         assertTrue("nor is a read its own region alone stores",
                 map(edges, Collections.singletonMap(NN,
                         Arrays.asList(GET_NUM, DELETE)),
-                        Collections.<String>emptySet(), ATOMIC_GET::equals)
+                        Collections.<String, Long>emptyMap(), ATOMIC_GET::equals)
                         .readSites().isEmpty());
 
     }
@@ -171,7 +172,7 @@ public class SymbolicRootPolicyTest {
         StaticScopeMap tracked = map(Arrays.asList(atomicRead(),
                 atomicStore(), counterRead(), counterStore(),
                 guard(GET_NUM_LOCAL), guard(GET_NUM + "::$i1")), apart,
-                Collections.<String>emptySet(), method -> false);
+                Collections.<String, Long>emptyMap(), method -> false);
         JsonArray sites = tracked.observedSites();
         assertEquals("both reads, the atomic's RMW and the putfield", 4,
                 sites.size());
@@ -196,19 +197,19 @@ public class SymbolicRootPolicyTest {
                 .readsTrackedState(Collections.singleton(DN)));
         assertEquals("a store no read of the slice reaches is not observed",
                 0, map(Arrays.asList(atomicStore(), counterStore()), apart,
-                        Collections.<String>emptySet(), method -> false)
+                        Collections.<String, Long>emptyMap(), method -> false)
                         .observedSites().size());
         assertEquals("nor one whose reads no branch decides on", 0,
                 map(Arrays.asList(atomicRead(), atomicStore(), counterRead(),
                         counterStore()), apart,
-                        Collections.<String>emptySet(), method -> false)
+                        Collections.<String, Long>emptyMap(), method -> false)
                         .observedSites().size());
         assertEquals("nor one whose reads a receiver decides on (F3)", 0,
                 map(Arrays.asList(counterRead(), counterStore(),
                         edge("{\"kind\":\"wire_handoff\",\"fromCell\":\""
                                 + GET_NUM + "::$i1\",\"toCell\":\"" + DELETE
                                 + "::$i3\"}"), guard(DELETE + "::$i3")),
-                        apart, Collections.<String>emptySet(),
+                        apart, Collections.<String, Long>emptyMap(),
                         method -> false).observedSites().size());
     }
 
@@ -216,7 +217,7 @@ public class SymbolicRootPolicyTest {
      *  SEED publishes it and PLAN reads it. */
     private StaticScopeMap map(List<Map<String, Object>> edges,
                                Map<String, List<String>> regionMethods,
-                               Collection<String> clocks,
+                               Map<String, Long> clocks,
                                Predicate<String> unwoven)
             throws IOException {
         List<Map<String, Object>> regions = new java.util.ArrayList<>();
@@ -243,7 +244,7 @@ public class SymbolicRootPolicyTest {
         return ConcolicScheduler.SymbolicInputSelection.read(map(
                 Arrays.asList(clockRead(callee, EXPIRE)),
                 Collections.singletonMap(NN, Collections.singletonList(
-                        EXPIRE)), Collections.singleton(callee),
+                        EXPIRE)), Collections.singletonMap(callee, 1_000_000L),
                 method -> true), catalog());
     }
 

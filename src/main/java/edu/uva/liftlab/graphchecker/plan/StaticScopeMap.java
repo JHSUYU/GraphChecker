@@ -22,6 +22,7 @@ import java.util.Set;
 import java.util.function.Predicate;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalLongInteger;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.optionalString;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.strings;
 
@@ -321,16 +322,21 @@ public final class StaticScopeMap {
         /** {@link #CLOCK_INPUT}, {@link #FAULT_INPUT}, {@link #READ_INPUT},
          *  or "": a read that stays concrete. */
         public final String inputKind;
+        /** A {@link #CLOCK_INPUT}'s tick: the nanoseconds one unit of its
+         *  reading is (causynth.RootCatalog); 0 for any other input. */
+        public final long clockNanos;
 
         public Declared(String kind, String edgeId, String dependencyCell,
                         String implementationMethod, String javaType,
-                        String inputKind) {
+                        String inputKind, long clockNanos) {
             this.kind = safe(kind);
             this.edgeId = safe(edgeId);
             this.dependencyCell = safe(dependencyCell);
             this.implementationMethod = safe(implementationMethod);
             this.javaType = safe(javaType);
             this.inputKind = safe(inputKind);
+            this.clockNanos = CLOCK_INPUT.equals(this.inputKind)
+                    ? clockNanos : 0L;
         }
 
         private static String safe(String value) {
@@ -371,18 +377,18 @@ public final class StaticScopeMap {
      * @param edges        the candidate graph's rows
      * @param regions      region skeletons: {@code regionId}, {@code methods},
      *                     ports
-     * @param clockCallees the clocks the slice reads ({@code
-     *                     causynth.RootCatalog}); they bound the {@code
-     *                     CALL_RETURN} rows.  {@code ACCESSOR_RETURN} rows are
-     *                     bounded by edge kind and published whole.
+     * @param clockTicks   the clocks the slice reads, each with its tick in
+     *                     nanoseconds ({@code causynth.RootCatalog}); they
+     *                     bound the {@code CALL_RETURN} rows.  {@code
+     *                     ACCESSOR_RETURN} rows are bounded by edge kind and
+     *                     published whole.
      * @param unwoven      whether a method runs outside the woven program
      */
     public static List<Site> sites(List<Map<String, Object>> edges,
                                    List<Map<String, Object>> regions,
-                                   Collection<String> clockCallees,
+                                   Map<String, Long> clockTicks,
                                    Predicate<String> unwoven,
                                    Predicate<String> versionable) {
-        Set<String> callees = new LinkedHashSet<String>(clockCallees);
         Set<String> deciding = decidingCells(edges);
         List<Region> retained = regions(regions);
         Set<String> regionRoots = new LinkedHashSet<String>();
@@ -402,7 +408,7 @@ public final class StaticScopeMap {
             }
             addRootSite(found, seen, retained, edge, method, unitIndex);
             addDeclaredSite(found, seen, retained, edge, kind, method,
-                    unitIndex, callees, regionRoots);
+                    unitIndex, clockTicks, regionRoots);
             String field = field(edge);
             if (READ_KINDS.contains(kind)) {
                 if (versionable.test(field)
@@ -482,7 +488,7 @@ public final class StaticScopeMap {
                     new Declared(declared.kind, declared.edgeId,
                             declared.dependencyCell,
                             declared.implementationMethod,
-                            declared.javaType, READ_INPUT),
+                            declared.javaType, READ_INPUT, 0L),
                     site.guards, site.guardOutcomes));
         }
     }
@@ -616,6 +622,9 @@ public final class StaticScopeMap {
             if (!site.declared.inputKind.isEmpty()) {
                 row.addProperty("inputKind", site.declared.inputKind);
             }
+            if (site.declared.clockNanos > 0L) {
+                row.addProperty("clockNanos", site.declared.clockNanos);
+            }
         }
         JsonArray guards = new JsonArray();
         for (String guard : site.guards) guards.add(guard);
@@ -711,23 +720,25 @@ public final class StaticScopeMap {
     private static void addDeclaredSite(
             List<Site> into, Set<String> seen, List<Region> retained,
             Map<String, Object> edge, String kind, String method,
-            int unitIndex, Set<String> clockCallees,
+            int unitIndex, Map<String, Long> clockTicks,
             Set<String> regionMethods) {
         String callee = text(edge.get("invoke"));
         if (callee.isEmpty()) return;
         String cell;
         String implementation = "";
         String inputKind = "";
+        long clockNanos = 0L;
         if ("accessor_field_return".equals(kind)) {
             cell = firstNonBlank(text(edge.get("declaredFieldSignature")),
                     text(edge.get("fromCell")));
             implementation = text(edge.get("accessorImplementationMethod"));
             if (implementation.isEmpty()) return;
         } else if ("call_return".equals(kind)
-                && clockCallees.contains(callee)
+                && clockTicks.containsKey(callee)
                 && !regionMethods.contains(callee)) {
             cell = text(edge.get("fromCell"));
             inputKind = CLOCK_INPUT;
+            clockNanos = clockTicks.get(callee);
         } else if ("explicit_symbolic_fault".equals(kind)
                 && Debug.isBooleanMarkerSignature(callee)
                 && declaredFault(text(edge.get("symbolicName")))) {
@@ -752,7 +763,7 @@ public final class StaticScopeMap {
                     vmSite(method), cell, "", "", callee, "",
                     new Declared(declaredKind, text(edge.get("id")),
                             dependencyCell, implementation, javaType,
-                            inputKind),
+                            inputKind, clockNanos),
                     Collections.<String>emptyList(),
                     Collections.<Boolean>emptyList()));
         }
@@ -917,7 +928,8 @@ public final class StaticScopeMap {
                             optionalString(row, "dependencyCell"),
                             optionalString(row, "implementationMethod"),
                             optionalString(row, "javaType"),
-                            optionalString(row, "inputKind"));
+                            optionalString(row, "inputKind"),
+                            optionalLongInteger(row, "clockNanos", 0L));
             sites.add(new Site(optionalString(row, "role"),
                     optionalString(row, "regionId"),
                     optionalString(row, "siteId"),
@@ -1129,15 +1141,15 @@ public final class StaticScopeMap {
         return found;
     }
 
-    /** The clocks the slice reads: every {@link #CLOCK_INPUT} site's callee.
-     */
-    public Set<String> clockCallees() {
-        Set<String> callees = new LinkedHashSet<String>();
+    /** The clocks the slice reads: every {@link #CLOCK_INPUT} site's
+     *  callee, with its tick in nanoseconds. */
+    public Map<String, Long> clockTicks() {
+        Map<String, Long> ticks = new LinkedHashMap<String, Long>();
         for (Site site : ofRole(DECLARED_SITE, site -> site.declared != null
                 && CLOCK_INPUT.equals(site.declared.inputKind))) {
-            callees.add(site.declaredCallee);
+            ticks.put(site.declaredCallee, site.declared.clockNanos);
         }
-        return callees;
+        return ticks;
     }
 
     /** The reads into a placeholder, one per {@link #READ_INPUT} site, as

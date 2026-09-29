@@ -78,7 +78,7 @@ public class ConfirmMainTest {
     private RootMintRow root(String session, String id, String symbol,
                              RootKind kind, String value) {
         return RootMintRow.of(session, 1L, mint, id, symbol, kind, value,
-                null, null, true);
+                null, null, true, kind == RootKind.CLOCK ? 1_000_000L : 0L);
     }
 
     /** The recording and the selected session, as the corpus holds them. */

@@ -220,10 +220,12 @@ final class FlipQuery {
         /** session -> recorded symbol -> the query's variable for it. */
         private final Map<String, Map<String, String>> renames =
                 new LinkedHashMap<String, Map<String, String>>();
-        /** Every declared CLOCK cell, by variable: what {@code clockDomain}
-         *  bounds and the MARGIN applies to. {@link #clockVariables}
-         *  (read-back) holds only the flipped path's own. */
-        private final Set<String> clockCells = new LinkedHashSet<String>();
+        /** Every declared CLOCK cell, by variable, with its MARGIN in its
+         *  own ticks: what {@code clockDomain} bounds and the margin applies
+         *  to. {@link #clockVariables} (read-back) holds only the flipped
+         *  path's own. */
+        private final Map<String, Long> clockCells =
+                new LinkedHashMap<String, Long>();
         private final List<GapRow> gaps = new ArrayList<GapRow>();
         private String refusal = "";
 
@@ -445,18 +447,18 @@ final class FlipQuery {
          */
         private String demanded(String held, DecisionRow decision) {
             ClockMargin.Strengthened asked = ClockMargin.strengthen(held,
-                    clockCells, ClockMargin.MARGIN_MS);
+                    clockCells);
             for (String atom : asked.unstrengthened) {
                 gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
                         GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC,
                         decision.siteId() + "#" + decision.ordinal(),
-                        "the clock margin of " + ClockMargin.MARGIN_MS
-                                + "ms was not put on the atom " + atom
+                        "the clock margin of one minute was not put on the "
+                                + "atom " + atom
                                 + ": its polarity is not resolved by this "
-                                + "query's connectives, or its operands are "
-                                + "not arithmetic, so the demanded arm is "
-                                + "asked for as the solver's model states "
-                                + "it"));
+                                + "query's connectives, its operands are not "
+                                + "arithmetic, or it compares clocks of two "
+                                + "ticks, so the demanded arm is asked for "
+                                + "as the solver's model states it"));
             }
             return asked.text;
         }
@@ -571,7 +573,8 @@ final class FlipQuery {
                 String reading = clockReading(minted, row.rootId());
                 rootFacts.add(JavaPrimitiveSmtSemantics.clockDomain(variable,
                         reading.isEmpty() ? "0" : reading,
-                        JavaPrimitiveSmtSemantics.clockSkewCeiling(reading)));
+                        JavaPrimitiveSmtSemantics.clockSkewCeiling(reading,
+                                row.clockNanos())));
                 if (!reading.isEmpty()) nearest.put(variable, reading);
                 return;
             }
@@ -1044,7 +1047,10 @@ final class FlipQuery {
                     // Recorded here for the margin rule; every name of a
                     // demanded conjunct passes through here first (see
                     // #rename).
-                    if (clock) clockCells.add(name);
+                    if (clock) {
+                        clockCells.put(name,
+                                ClockMargin.margin(row.clockNanos()));
+                    }
                     declare(name, row.kind() == RootKind.MARKER
                             ? "Bool" : "Int",
                             (clock ? "clock " : "root ") + row.rootId()

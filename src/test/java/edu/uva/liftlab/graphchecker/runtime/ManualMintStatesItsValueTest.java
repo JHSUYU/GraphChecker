@@ -120,8 +120,9 @@ public class ManualMintStatesItsValueTest {
         assertTrue(recorded.get("minted").getAsBoolean());
 
         JsonObject clock = manualRow(clockAction("PORT.now"), "1789358344655");
-        assertTrue("the mint states the clock the case declared",
-                clock.get("clock").getAsBoolean());
+        assertEquals("the mint states the clock the case declared, and "
+                        + "its tick", 1_000_000L,
+                clock.get("clock").getAsLong());
         assertEquals("this execution's own instant, which the window is "
                         + "centred on", "1789358344655",
                 clock.get("observedValue").getAsString());
@@ -988,7 +989,7 @@ public class ManualMintStatesItsValueTest {
     private static JsonObject clockAction(String symbol) {
         JsonObject encoded = action(symbol);
         encoded.addProperty("rootKind", "CALL_RETURN");
-        encoded.addProperty("clock", true);
+        encoded.addProperty("clock", 1_000_000L);
         encoded.addProperty("observed", true);
         encoded.addProperty("primitiveValue", "1789358343989");
         encoded.addProperty("eventSeq", 7L);

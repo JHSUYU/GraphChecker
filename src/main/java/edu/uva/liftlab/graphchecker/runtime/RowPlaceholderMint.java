@@ -130,7 +130,9 @@ final class RowPlaceholderMint {
                     optionalLongInteger(row, "eventSeq", 0L), rootId, symbol,
                     kind, recorded,
                     optionalString(row, "domainMin"),
-                    optionalString(row, "domainMax"), true);
+                    optionalString(row, "domainMax"), true,
+                    optionalLongInteger(row,
+                            InputActionCatalog.DECLARED_WALL_CLOCK, 0L));
         }
         if (!whole) return;
         // Every declared region input this activation never symbolized:
@@ -522,8 +524,8 @@ final class RowPlaceholderMint {
      * the value, because it decides how the composer may move the root.
      */
     private static RootKind kindOf(JsonObject row) {
-        if (optionalBool(row, InputActionCatalog.DECLARED_WALL_CLOCK,
-                false)) {
+        if (optionalLongInteger(row, InputActionCatalog.DECLARED_WALL_CLOCK,
+                0L) > 0L) {
             return RootKind.CLOCK;
         }
         // A configured source states its type only on its symbol; without

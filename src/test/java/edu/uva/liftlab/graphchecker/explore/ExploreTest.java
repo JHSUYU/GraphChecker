@@ -2879,7 +2879,7 @@ public class ExploreTest {
      */
     @Test
     public void everyDemandedClockComparisonCarriesTheMargin() {
-        Set<String> clocks = Collections.singleton("clk_now");
+        Map<String, Long> clocks = Collections.singletonMap("clk_now", 5L);
         // Demanded true: the margin goes on the side that has to be cleared.
         assertEquals("(>= a (+ clk_now 5))",
                 strengthened("(>= a clk_now)", clocks));
@@ -2933,22 +2933,34 @@ public class ExploreTest {
         // And the caller is told which atom it was, once per atom.
         assertEquals("the atom named is the one the rule stopped at",
                 Collections.singletonList(branch),
-                ClockMargin.strengthen(branch, clocks, 5L).unstrengthened);
+                ClockMargin.strengthen(branch, clocks).unstrengthened);
         assertEquals("and under an = it is the comparison itself",
                 Collections.singletonList("(< clk_now 3)"),
                 ClockMargin.strengthen("(= (ite (< clk_now 3) 1 0) 1)",
-                        clocks, 5L).unstrengthened);
+                        clocks).unstrengthened);
         assertTrue("an atom the margin DID reach is not reported",
-                ClockMargin.strengthen("(< a clk_now)", clocks, 5L)
+                ClockMargin.strengthen("(< a clk_now)", clocks)
                         .unstrengthened.isEmpty());
-        // Zero turns the rule off, which is what the property is for.
-        assertEquals("(< a clk_now)",
-                ClockMargin.strengthen("(< a clk_now)", clocks, 0L).text);
-        assertEquals(60_000L, ClockMargin.MARGIN_MS);
+        // A MINUTE IN EACH CLOCK'S OWN TICKS: currentTimeMillis counts ms,
+        // nanoTime ns (SOLR-18406's reservation); an atom comparing the two
+        // has no one margin and is left alone, named.
+        assertEquals(60_000L, ClockMargin.margin(1_000_000L));
+        assertEquals(60_000_000_000L, ClockMargin.margin(1L));
+        Map<String, Long> two = new LinkedHashMap<String, Long>();
+        two.put("clk_ms", ClockMargin.margin(1_000_000L));
+        two.put("clk_ns", ClockMargin.margin(1L));
+        assertEquals("(< (+ clk_ms 60000000000) clk_ns)",
+                ClockMargin.strengthen("(< clk_ms clk_ns)",
+                        Collections.singletonMap("clk_ns",
+                                ClockMargin.margin(1L))).text);
+        assertEquals(Collections.singletonList("(< clk_ms clk_ns)"),
+                ClockMargin.strengthen("(< clk_ms clk_ns)", two)
+                        .unstrengthened);
     }
 
-    private static String strengthened(String term, Set<String> clocks) {
-        return ClockMargin.strengthen(term, clocks, 5L).text;
+    private static String strengthened(String term,
+                                       Map<String, Long> clocks) {
+        return ClockMargin.strengthen(term, clocks).text;
     }
 
     /**
@@ -2992,14 +3004,14 @@ public class ExploreTest {
         assertEquals(detail(direct), Verdict.SAT_MODEL_READY, direct.verdict);
         assertTrue("the demanded atom carries the margin: " + query(direct),
                 query(direct).contains("(not (>= (+ 1500 "
-                        + ClockMargin.MARGIN_MS + ") clk_"));
+                        + ClockMargin.margin(1_000_000L) + ") clk_"));
         long owed = Long.parseLong(RowCodec.readJsonl(direct.directory
                 .resolve(ObligationDir.FOCUSED_TASK)).get(0)
                 .getAsJsonObject("clockDeltas").get("CASE.NOW")
                 .getAsString());
         assertTrue("and the replay is owed a skew that clears the literal by "
                         + "it, not by one millisecond: " + owed,
-                owed >= 1500L + ClockMargin.MARGIN_MS - 1000L);
+                owed >= 1500L + ClockMargin.margin(1_000_000L) - 1000L);
 
         // An atom whose polarity no connective of the query resolves is
         // left exactly as it was, and named once.
@@ -3095,7 +3107,7 @@ public class ExploreTest {
         assertTrue("the flip the child inherited is demanded, so it carries "
                         + "the margin: " + query,
                 query.contains("(>= 100000 (+ clk_CASE_NOW_s_inherit "
-                        + ClockMargin.MARGIN_MS + "))"));
+                        + ClockMargin.margin(1_000_000L) + "))"));
         assertTrue("while the decision that occurrence took BEFORE it is the "
                         + "recording's own arm, asked for as recorded: "
                         + query,
@@ -3109,7 +3121,7 @@ public class ExploreTest {
                 .get("CASE.NOW").getAsString());
         assertTrue("and the model clears the inherited literal by the margin"
                         + " too: " + skew,
-                skew + 1000L <= 100000L - ClockMargin.MARGIN_MS);
+                skew + 1000L <= 100000L - ClockMargin.margin(1_000_000L));
     }
 
     // ---- (6b) a handoff nobody can answer is pinned -------------------
@@ -3789,7 +3801,8 @@ public class ExploreTest {
                           String symbol, RootKind kind, String recorded,
                           String min, String max, boolean declared) {
             roots.add(RootMintRow.of(sessionId, ++seq, occurrence, rootId,
-                    symbol, kind, recorded, min, max, declared));
+                    symbol, kind, recorded, min, max, declared,
+                    kind == RootKind.CLOCK ? 1_000_000L : 0L));
         }
 
         private void export(Endpoint endpoint, String ref, long handle,

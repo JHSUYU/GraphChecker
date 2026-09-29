@@ -728,7 +728,7 @@ final class RootMint {
         // bodies share one address) is a later instant of the same root:
         // it runs at the plant and stays concrete.  One symbol for both
         // would state two values for one source (IMPORT invariant 8).
-        if (action.clock && !CLOCK_READINGS.add(active.rootOwner(
+        if (action.clockNanos > 0L && !CLOCK_READINGS.add(active.rootOwner(
                 action.symbol).address() + "|" + action.symbol)) {
             return planted;
         }
@@ -745,7 +745,7 @@ final class RootMint {
                     // obligation's skew is computed against it
                     // (FlipQuery#clockReading, ObligationFactory).
                     ConcolicRegionRuntime.recordedScalar(
-                            action.clock ? concrete : planted));
+                            action.clockNanos > 0L ? concrete : planted));
             if (!assigned.isEmpty()) {
                 FocusedReplay.planted(action.symbol);
             }

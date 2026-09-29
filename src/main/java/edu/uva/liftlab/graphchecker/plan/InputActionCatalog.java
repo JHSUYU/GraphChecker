@@ -16,9 +16,10 @@ public final class InputActionCatalog {
      *  field nothing symbolic reached. */
     public static final String DECLARED_SYMBOLIC_ROOT =
             "declaredSymbolicRoot";
-    /** Input that is a clock's reading.  The composer moves a clock by an
-     *  offset from the recorded read, so the flag rides on the input row and
-     *  no later stage recognises a clock again. */
+    /** Input that is a clock's reading, stating its tick in nanoseconds.
+     *  The composer moves a clock by an offset from the recorded read, so
+     *  the tick rides on the input row and no later stage recognises a
+     *  clock, or its unit, again. */
     public static final String DECLARED_WALL_CLOCK = "clock";
 
     public enum Mode {

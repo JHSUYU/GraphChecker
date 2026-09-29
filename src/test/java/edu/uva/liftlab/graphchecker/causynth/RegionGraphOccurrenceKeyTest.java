@@ -254,7 +254,8 @@ public class RegionGraphOccurrenceKeyTest {
                         Collections.singletonList(port)));
 
         List<StaticScopeMap.Site> sites = StaticScopeMap.sites(edges, regions,
-                Collections.<String>emptySet(), method -> false, cell -> true);
+                Collections.<String, Long>emptyMap(), method -> false,
+                cell -> true);
         Path file = tree.newFolder("scope-map").toPath()
                 .resolve(StaticScopeMap.FILE);
         StringBuilder text = new StringBuilder();

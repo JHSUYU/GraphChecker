@@ -492,7 +492,7 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
         encoded.addProperty("cell",
                 "<org.apache.hadoop.util.Timer: long now()>.return");
         encoded.addProperty("rootKind", "CALL_RETURN");
-        encoded.addProperty("clock", true);
+        encoded.addProperty("clock", 1_000_000L);
         encoded.addProperty("observed", true);
         encoded.addProperty("primitiveValue", INSTANT);
         encoded.addProperty("eventSeq", 7L);

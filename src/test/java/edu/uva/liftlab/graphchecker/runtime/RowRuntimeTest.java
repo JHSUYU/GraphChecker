@@ -638,10 +638,10 @@ public class RowRuntimeTest {
                 LocationId.of(LocationKind.INSTANCE, "350", "24"), 6253L, "w",
                 "I", "1", "", ReadRow.UNKNOWN_VERSION);
         RowRuntime.rootMint(occurrence, 11L, "HDFS.BLOCK_KEY.SERIAL_NO",
-                "M_I_1", RootKind.INTEGRAL, "3", "3", "6", true);
+                "M_I_1", RootKind.INTEGRAL, "3", "3", "6", true, 0L);
         RowRuntime.rootMint(occurrence, 13L,
                 "HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED", "M_Z_marker",
-                RootKind.MARKER, "true", "", "", true);
+                RootKind.MARKER, "true", "", "", true, 0L);
         RowRuntime.target(occurrence, 15L, "Klass.m()#u8", expression, true,
                 true, true);
         RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.BLOCKING, "s", "d");
@@ -1268,11 +1268,11 @@ public class RowRuntimeTest {
         // Two clocks of one JVM -- the cluster's nodes run in one process --
         // and one root that is not a clock at all.
         RowRuntime.rootMint(occurrence, 3L, "HDFS.KEY.NOW@nn0", "M_J_now_nn0",
-                RootKind.CLOCK, "1789358344655", "", "", true);
+                RootKind.CLOCK, "1789358344655", "", "", true, 1_000_000L);
         RowRuntime.rootMint(occurrence, 4L, "HDFS.KEY.NOW@dn1", "M_J_now_dn1",
-                RootKind.CLOCK, "1789358344999", "", "", true);
+                RootKind.CLOCK, "1789358344999", "", "", true, 1_000_000L);
         RowRuntime.rootMint(occurrence, 5L, "HDFS.BLOCK_KEY.SERIAL_NO",
-                "M_I_serial", RootKind.INTEGRAL, "3", "3", "6", true);
+                "M_I_serial", RootKind.INTEGRAL, "3", "3", "6", true, 0L);
 
         // `key.getExpiryDate() < now`, over nn0's clock alone.
         RowRuntime.decision(occurrence, 12L,

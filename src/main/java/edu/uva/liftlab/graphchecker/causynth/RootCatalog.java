@@ -9,7 +9,11 @@ import soot.jimple.AssignStmt;
 import soot.jimple.BinopExpr;
 import soot.jimple.CastExpr;
 import soot.jimple.Constant;
+import soot.jimple.DivExpr;
+import soot.jimple.IntConstant;
 import soot.jimple.InvokeExpr;
+import soot.jimple.LongConstant;
+import soot.jimple.MulExpr;
 import soot.jimple.NegExpr;
 import soot.jimple.ReturnStmt;
 
@@ -18,6 +22,7 @@ import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.TreeSet;
 
 /**
@@ -39,22 +44,47 @@ final class RootCatalog {
     private static final int MAX_DEPTH = 4;
 
     private final Map<String, Boolean> clocks = new HashMap<String, Boolean>();
+    /** Nanoseconds per tick of each clock found ({@link #tick}). */
+    private final Map<String, Long> ticks = new HashMap<String, Long>();
 
-    /** The clock callees among the candidate graph's call returns. */
-    static Set<String> clockCallees(Collection<Map<String, Object>> edges) {
+    /**
+     * The clock callees among the candidate graph's call returns, each with
+     * its tick in nanoseconds: 1,000,000 for {@code currentTimeMillis}, 1
+     * for {@code nanoTime}, and a wrapper's scaled by its arithmetic ({@code
+     * Time.monotonicNow()} = {@code nanoTime / 1000000} ticks in ms).  A
+     * clock's window and margin are a span of time, so each is stated in
+     * the clock's own tick.
+     */
+    static Map<String, Long> clockTicks(
+            Collection<Map<String, Object>> edges) {
         RootCatalog catalog = new RootCatalog();
-        Set<String> found = new TreeSet<String>();
+        Map<String, Long> found = new TreeMap<String, Long>();
         for (Map<String, Object> edge : edges) {
             if (!"call_return".equals(MapFields.text(edge.get("kind")))) {
                 continue;
             }
             String callee = MapFields.text(edge.get("invoke"));
             if (!callee.isEmpty() && catalog.clock(callee, 0)) {
-                found.add(callee);
+                found.put(callee, catalog.tick(callee));
             }
         }
         return found;
     }
+
+    /** A found clock's tick; a wrapper whose arithmetic scales it by no
+     *  constant it can read ticks in milliseconds, as most clocks do. */
+    private long tick(String signature) {
+        if ("<java.lang.System: long nanoTime()>".equals(signature)) {
+            return 1L;
+        }
+        if ("<java.lang.System: long currentTimeMillis()>".equals(signature)) {
+            return MILLISECOND;
+        }
+        Long known = ticks.get(signature);
+        return known == null ? MILLISECOND : known;
+    }
+
+    private static final long MILLISECOND = 1_000_000L;
 
     private boolean clock(String signature, int depth) {
         if (JVM_CLOCKS.contains(signature)) return true;
@@ -89,15 +119,70 @@ final class RootCatalog {
             }
         }
         boolean returns = false;
+        Long tick = null;
         for (Unit unit : body.getUnits()) {
             if (!(unit instanceof ReturnStmt)) continue;
             returns = true;
-            if (!clockValue(((ReturnStmt) unit).getOp(), definitions,
-                    depth, true)) {
+            Value returned = ((ReturnStmt) unit).getOp();
+            if (!clockValue(returned, definitions, depth, true)) {
                 return false;
             }
+            Long scaled = tickOf(returned, definitions);
+            tick = tick == null || tick.equals(scaled) ? scaled : null;
         }
+        if (returns && tick != null) ticks.put(signature, tick);
         return returns;
+    }
+
+    /**
+     * The tick of a clock value under constant arithmetic, in nanoseconds:
+     * a division by a constant multiplies it, a multiplication divides it,
+     * an offset keeps it; null when no constant scale can be read.
+     */
+    private Long tickOf(Value value, Map<Local, Value> definitions) {
+        if (value instanceof Local) {
+            Value definition = definitions.get(value);
+            return definition == null ? null : tickOf(definition, definitions);
+        }
+        if (value instanceof InvokeExpr) {
+            String callee = ((InvokeExpr) value).getMethodRef().getSignature();
+            return Boolean.TRUE.equals(clocks.get(callee))
+                    || "<java.lang.System: long nanoTime()>".equals(callee)
+                    || "<java.lang.System: long currentTimeMillis()>"
+                    .equals(callee) ? tick(callee) : null;
+        }
+        if (value instanceof CastExpr) {
+            return tickOf(((CastExpr) value).getOp(), definitions);
+        }
+        if (value instanceof NegExpr) {
+            return tickOf(((NegExpr) value).getOp(), definitions);
+        }
+        if (value instanceof BinopExpr) {
+            BinopExpr binop = (BinopExpr) value;
+            Long left = binop.getOp1() instanceof Constant ? null
+                    : tickOf(binop.getOp1(), definitions);
+            Long right = binop.getOp2() instanceof Constant ? null
+                    : tickOf(binop.getOp2(), definitions);
+            long scale = constant(binop.getOp2());
+            if (binop instanceof DivExpr) {
+                return left == null || scale <= 0 ? null : left * scale;
+            }
+            if (binop instanceof MulExpr) {
+                Long clock = left != null ? left : right;
+                long factor = left != null ? scale : constant(binop.getOp1());
+                return clock == null || factor <= 0 || clock % factor != 0
+                        ? null : clock / factor;
+            }
+            return left != null ? left : right;
+        }
+        return null;
+    }
+
+    /** A positive integral constant's value, else 0. */
+    private static long constant(Value value) {
+        if (value instanceof LongConstant) return ((LongConstant) value).value;
+        if (value instanceof IntConstant) return ((IntConstant) value).value;
+        return 0L;
     }
 
     /**

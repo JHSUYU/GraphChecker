@@ -434,7 +434,8 @@ final class ActiveRegion {
         // A declared wall-clock read says so, so no reader guesses a clock
         // from a name.  Trap: never publish the PLAN's instant as its value.
         if (action.declaresWallClockRead()) {
-            row.addProperty(InputActionCatalog.DECLARED_WALL_CLOCK, true);
+            row.addProperty(InputActionCatalog.DECLARED_WALL_CLOCK,
+                    action.clockNanos);
             row.addProperty("eventSeq", action.eventSeq);
         }
         row.addProperty("mintOccurrence",

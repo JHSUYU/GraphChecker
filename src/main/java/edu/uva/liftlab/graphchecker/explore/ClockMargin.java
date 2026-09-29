@@ -7,7 +7,9 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
 /**
  * THE MARGIN a DEMANDED flip over a clock is strengthened by.
@@ -19,7 +21,9 @@ import java.util.Set;
  *
  * <p>So each comparison atom naming a CLOCK cell is demanded with room: {@code
  * a >= b} true becomes {@code a >= b + eps}; demanded FALSE applies the same
- * rule to the asserted negation. {@code eps} = {@value #MARGIN_MS} ms.</p>
+ * rule to the asserted negation. {@code eps} = one minute
+ * ({@link #MARGIN_NANOS}), in the ticks of the clock the atom names; an
+ * atom naming clocks of two ticks is left alone.</p>
  *
  * <p>Trap: a JVM {@code lcmp} lowers to {@link
  * JavaPrimitiveSmtSemantics#integralCompareResult} under {@code (>= ... 0)}; it
@@ -32,7 +36,13 @@ import java.util.Set;
  * through {@code not}, {@code and}, {@code or}.</p>
  */
 public final class ClockMargin {
-    public static final long MARGIN_MS = 60_000L;
+    public static final long MARGIN_NANOS = TimeUnit.MINUTES.toNanos(1);
+
+    /** The margin in the ticks of a clock whose tick is {@code clockNanos}
+     *  nanoseconds ({@code RootMintRow#clockNanos}). */
+    public static long margin(long clockNanos) {
+        return JavaPrimitiveSmtSemantics.clockTicks(MARGIN_NANOS, clockNanos);
+    }
 
     private static final Set<String> COMPARISONS =
             new LinkedHashSet<String>(java.util.Arrays.asList(
@@ -62,18 +72,18 @@ public final class ClockMargin {
     }
 
     /**
-     * One demanded assertion with every clock comparison given {@code epsilon}
-     * of room.
+     * One demanded assertion with every clock comparison given its clock's
+     * margin of room.
      *
      * @param asserted the lowered, renamed text the query asserts
-     * @param clocks   the query's CLOCK cell variables
-     * @param epsilon  the margin; {@code 0} leaves the text alone
+     * @param margins  the query's CLOCK cell variables, each with its
+     *                 margin in its own ticks ({@link #margin})
      */
-    static Strengthened strengthen(String asserted, Set<String> clocks,
-                                   long epsilon) {
+    static Strengthened strengthen(String asserted,
+                                   Map<String, Long> margins) {
         List<String> unreached = new ArrayList<String>();
-        if (asserted == null || asserted.isEmpty() || clocks == null
-                || clocks.isEmpty() || epsilon <= 0) {
+        if (asserted == null || asserted.isEmpty() || margins == null
+                || margins.isEmpty()) {
             return new Strengthened(asserted == null ? "" : asserted,
                     unreached);
         }
@@ -81,7 +91,7 @@ public final class ClockMargin {
         if (root == null) {
             return new Strengthened(asserted, unreached);
         }
-        Walk walk = new Walk(asserted, clocks, epsilon);
+        Walk walk = new Walk(asserted, margins);
         walk.visit(root, Boolean.TRUE);
         return new Strengthened(walk.rewritten(),
                 new ArrayList<String>(walk.unstrengthened));
@@ -107,15 +117,13 @@ public final class ClockMargin {
 
     private static final class Walk {
         private final String source;
-        private final Set<String> clocks;
-        private final long epsilon;
+        private final Map<String, Long> margins;
         private final List<Edit> edits = new ArrayList<Edit>();
         private final Set<String> unstrengthened = new LinkedHashSet<String>();
 
-        private Walk(String source, Set<String> clocks, long epsilon) {
+        private Walk(String source, Map<String, Long> margins) {
             this.source = source;
-            this.clocks = clocks;
-            this.epsilon = epsilon;
+            this.margins = margins;
         }
 
         /** One subterm at the demanded polarity: TRUE (holds if it does), FALSE
@@ -170,11 +178,15 @@ public final class ClockMargin {
                 a = compared[0];
                 b = compared[1];
             }
-            if (!names(a, clocks) && !names(b, clocks)) return;
-            if (polarity == null) {
+            Set<Long> named = new LinkedHashSet<Long>();
+            marginsNamed(a, margins, named);
+            marginsNamed(b, margins, named);
+            if (named.isEmpty()) return;
+            if (polarity == null || named.size() > 1) {
                 unstrengthened.add(node.text());
                 return;
             }
+            long epsilon = named.iterator().next();
             if (!arithmetic(a) || !arithmetic(b)) {
                 unstrengthened.add(node.text());
                 return;
@@ -236,12 +248,18 @@ public final class ClockMargin {
         return new SExpression[]{a, b};
     }
 
-    private static boolean names(SExpression node, Set<String> wanted) {
-        if (node.atom()) return wanted.contains(node.text());
-        for (SExpression child : node.children()) {
-            if (names(child, wanted)) return true;
+    /** Into {@code into}, the margin of every clock cell this term names. */
+    private static void marginsNamed(SExpression node,
+                                     Map<String, Long> margins,
+                                     Set<Long> into) {
+        if (node.atom()) {
+            Long margin = margins.get(node.text());
+            if (margin != null) into.add(margin);
+            return;
         }
-        return false;
+        for (SExpression child : node.children()) {
+            marginsNamed(child, margins, into);
+        }
     }
 
     /** Whether a margin can be added to this term (it must be arithmetic). */

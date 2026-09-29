@@ -1457,7 +1457,7 @@ public class ComposerTest {
                         + "back on the recorded arm: " + at,
                 Long.parseLong(at.trim())
                         > 1000L + edu.uva.liftlab.graphchecker.explore
-                        .ClockMargin.MARGIN_MS);
+                        .ClockMargin.margin(1_000_000L));
 
         // R3: AND A WINDOWED ROOT BESIDE THE CLOCK DOES NOT TAKE THE CLAIM
         // AWAY.  Same clock, plus one declared counter the case gave a
@@ -2888,7 +2888,8 @@ public class ComposerTest {
                         JavaPrimitiveSmtSemantics.clockDomain(CLOCK,
                                 Long.toString(INSTANT),
                                 JavaPrimitiveSmtSemantics.clockSkewCeiling(
-                                        Long.toString(INSTANT))))));
+                                        Long.toString(INSTANT),
+                                        1_000_000L)))));
         assertFalse("and NOT pinned to the instant it read: " + bound.body(),
                 bound.body().contains(SmtNames.legalSymbols(
                         "(= " + CLOCK + " " + INSTANT + ")")));
@@ -2996,7 +2997,7 @@ public class ComposerTest {
         for (String[] cell : cells) {
             session.roots.add(RootMintRow.of("s0", ++session.seq, ANCHOR,
                     cell[0], cell[1], RootKind.CLOCK, cell[2], null, null,
-                    true));
+                    true, 1_000_000L));
             phi.append(" (> ").append(cell[1]).append(" 0)");
         }
         session.target(phi.append(")").toString(), false, true);
@@ -3747,7 +3748,7 @@ public class ComposerTest {
 
         void marker(String recorded) {
             roots.add(RootMintRow.of(id, ++seq, PRODUCER, MARKER_ROOT, MARKER,
-                    RootKind.MARKER, recorded, null, null, true));
+                    RootKind.MARKER, recorded, null, null, true, 0L));
         }
 
         /**
@@ -3760,7 +3761,7 @@ public class ComposerTest {
          */
         void clock(String recorded) {
             roots.add(RootMintRow.of(id, ++seq, ANCHOR, CLOCK_ROOT, CLOCK,
-                    RootKind.CLOCK, recorded, null, null, true));
+                    RootKind.CLOCK, recorded, null, null, true, 1_000_000L));
         }
 
         /** One decision, and the clock cells its predicate read. */
@@ -3774,7 +3775,7 @@ public class ComposerTest {
         /** A declared counter, with the window the CASE states around it. */
         void serial(String recorded, String min, String max) {
             roots.add(RootMintRow.of(id, ++seq, PRODUCER, SERIAL_ROOT,
-                    SERIAL, RootKind.INTEGRAL, recorded, min, max, true));
+                    SERIAL, RootKind.INTEGRAL, recorded, min, max, true, 0L));
         }
 
         void expression(String ref, JsonObject node) {

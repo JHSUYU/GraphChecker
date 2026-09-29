@@ -1093,7 +1093,7 @@ public final class ConcolicScheduler {
      *
      * <ul>
      *   <li>a clock's return, or a READ placeholder's own site ({@link
-     * StaticScopeMap#clockCallees}, {@link StaticScopeMap#readSites}):
+     * StaticScopeMap#clockTicks}, {@link StaticScopeMap#readSites}):
      * mints;</li>
      *   <li>an {@code EXPLICIT_SYMBOLIC_FAULT} marker: mints;</li>
      *   <li>a field a {@code CausynthSymbolicSource} hook owns: the hook mints,
@@ -1109,8 +1109,9 @@ public final class ConcolicScheduler {
     static final class SymbolicInputSelection {
         /** Verdict of a read no declaration names. */
         static final String UNDECLARED = "UNDECLARED_SYMBOLIC_INPUT";
-        /** Every clock's return cell, whatever region reads it. */
-        private final Set<String> clocks;
+        /** Every clock's return cell, whatever region reads it, with its
+         *  clock's tick in nanoseconds. */
+        private final Map<String, Long> clocks;
         /** The READ placeholders ({@link StaticScopeMap#readSites}). */
         private final Set<String> reads;
         /** regionId -> sourceId -> the one field that hook site mints. */
@@ -1118,7 +1119,7 @@ public final class ConcolicScheduler {
         /** The regions reading a tracked cell (SYMBOL-SCOPE F2). */
         private final Set<String> trackedRegions;
         private SymbolicInputSelection(
-                Set<String> clocks, Set<String> reads,
+                Map<String, Long> clocks, Set<String> reads,
                 Map<String, Map<String, String>> minted,
                 Set<String> trackedRegions) {
             this.clocks = clocks;
@@ -1137,7 +1138,7 @@ public final class ConcolicScheduler {
             return false;
         }
 
-        /** The roots the scope map states ({@link StaticScopeMap#clockCallees},
+        /** The roots the scope map states ({@link StaticScopeMap#clockTicks},
          *  {@link StaticScopeMap#readSites}) and the hook declarations of the
          *  region catalog. */
         static SymbolicInputSelection read(StaticScopeMap scopeMap,
@@ -1158,9 +1159,10 @@ public final class ConcolicScheduler {
                             element.getAsJsonObject());
                 }
             }
-            Set<String> clocks = new LinkedHashSet<>();
-            for (String callee : scopeMap.clockCallees()) {
-                clocks.add(callee + ".return");
+            Map<String, Long> clocks = new LinkedHashMap<>();
+            for (Map.Entry<String, Long> clock
+                    : scopeMap.clockTicks().entrySet()) {
+                clocks.put(clock.getKey() + ".return", clock.getValue());
             }
             return new SymbolicInputSelection(clocks, scopeMap.readSites(),
                     minted, scopeMap.trackedRegions());
@@ -1254,7 +1256,7 @@ public final class ConcolicScheduler {
 
         /** A root the scope map states, or a fault marker. */
         private boolean declares(JsonObject action) {
-            return names(clocks, action) || readsAPlaceholder(action)
+            return clockNanos(action) > 0L || readsAPlaceholder(action)
                     || workloadOwnedSymbol(action);
         }
 
@@ -1328,9 +1330,10 @@ public final class ConcolicScheduler {
             // Declared: the replay mints here.
             retained.addProperty(
                     InputActionCatalog.DECLARED_SYMBOLIC_ROOT, true);
-            if (names(clocks, action)) {
+            long clockNanos = clockNanos(action);
+            if (clockNanos > 0L) {
                 retained.addProperty(
-                        InputActionCatalog.DECLARED_WALL_CLOCK, true);
+                        InputActionCatalog.DECLARED_WALL_CLOCK, clockNanos);
             }
         }
 
@@ -1361,7 +1364,18 @@ public final class ConcolicScheduler {
 
         /** Whether one clock cell is admitted, for tests. */
         boolean declares(String name) {
-            return clocks.contains(name);
+            return clocks.containsKey(name);
+        }
+
+        /** The tick, in nanoseconds, of the clock whose cell this action
+         *  names ({@link #names}' cells), or 0 when it names none. */
+        private long clockNanos(JsonObject action) {
+            Long tick = clocks.get(actionPort(action));
+            for (String cell : actionCells(action)) {
+                if (tick != null) break;
+                tick = clocks.get(cell);
+            }
+            return tick == null ? 0L : tick;
         }
 
         /** Whether a name set covers this action's port or any of {@link
@@ -1408,12 +1422,15 @@ public final class ConcolicScheduler {
                         ignored -> new LinkedHashSet<>()).add(from);
             }
             if (copies.isEmpty()) return;
-            Deque<String> pending = new ArrayDeque<>(clocks);
+            Deque<String> pending = new ArrayDeque<>(clocks.keySet());
             while (!pending.isEmpty()) {
-                for (String copied : copies.getOrDefault(
-                        pending.removeFirst(),
+                String named = pending.removeFirst();
+                for (String copied : copies.getOrDefault(named,
                         Collections.<String>emptySet())) {
-                    if (clocks.add(copied)) pending.addLast(copied);
+                    if (clocks.putIfAbsent(copied, clocks.get(named))
+                            == null) {
+                        pending.addLast(copied);
+                    }
                 }
             }
         }

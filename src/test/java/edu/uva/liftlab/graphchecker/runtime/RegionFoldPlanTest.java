@@ -262,7 +262,8 @@ public class RegionFoldPlanTest {
         for (JsonObject row : StaticScopeMap.rows(StaticScopeMap.sites(
                 Collections.singletonList(thrown),
                 Collections.singletonList(region),
-                Collections.<String>emptySet(), method -> false, cell -> true),
+                Collections.<String, Long>emptyMap(), method -> false,
+                cell -> true),
                 site -> Collections.singletonList(new StaticScopeMap.Guard(
                         GUARD_SITE, Boolean.TRUE)))) {
             text.append(row).append('\n');

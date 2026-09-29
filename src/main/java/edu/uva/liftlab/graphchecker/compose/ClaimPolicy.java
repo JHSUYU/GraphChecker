@@ -706,8 +706,8 @@ public final class ClaimPolicy {
     }
 
     /**
-     * The witness with each clock it moves moved {@link ClockMargin#MARGIN_MS}
-     * further the same way, where the formula still reaches the fatal arm
+     * The witness with each clock it moves moved {@link ClockMargin#margin}
+     * (a minute in its ticks) further the same way, where the formula still reaches the fatal arm
      * there; else the witness as it was.  The model is the cheapest world (a
      * token's expiry passed by one millisecond), and the confirming replay
      * reads every clock fresh, so an instant at the boundary falls back on
@@ -730,9 +730,11 @@ public final class ClaimPolicy {
             }
             if (at == reading.longValue()) continue;
             boolean later = at > reading.longValue();
+            long margin = ClockMargin.margin(
+                    composition.clockNanos().get(cell));
             room.add("(assert (! (" + (later ? ">=" : "<=") + " " + cell
                     + " " + integralLiteral(Long.toString(later
-                    ? at + ClockMargin.MARGIN_MS : at - ClockMargin.MARGIN_MS))
+                    ? at + margin : at - margin))
                     + ") :named clock_margin__" + ArtifactIO.digest(cell, 10)
                     + "))");
         }
