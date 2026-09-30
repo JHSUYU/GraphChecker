@@ -797,12 +797,13 @@ public final class Composer {
         // (6) Families: one selector per (producer occurrence, session) for
         //     every interaction reached, under this path's selector.  If no
         //     single session could make all deliveries the path took (PIPELINE
-        //     §8),
-        //     the path is dropped.
+        //     §8), the path is dropped, and what its families stated with it
+        //     (they are held until the path is a disjunct).
         List<String> familyTerms = new ArrayList<String>();
         List<GapRow> unproducible = new ArrayList<GapRow>();
         if (!composedFamilies.closeFamilies(ordinal, selector, session,
                 interactionIds, bound, familyTerms, unproducible)) {
+            composedFamilies.discard();
             refused(unproducible);
             return null;
         }
@@ -814,6 +815,8 @@ public final class Composer {
         // (8) And the state joins this conjunction ASKS ABOUT.
         terms.addAll(statedJoins(joins, chosen, terms, familyTerms));
 
+        // Nothing refuses the path from here: it is a disjunct.
+        composedFamilies.commit();
         lowering.assertNamed("path_fatal__" + ordinal,
                 "(=> " + selector + " " + VmTermLowering.and(terms) + ")");
         observedReads.put(path.pathId, observed);

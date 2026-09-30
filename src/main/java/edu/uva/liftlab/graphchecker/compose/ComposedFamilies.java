@@ -21,6 +21,7 @@ import edu.uva.liftlab.graphchecker.explore.SlotTable;
 import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 
+import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -35,7 +36,8 @@ import static edu.uva.liftlab.graphchecker.compose.VmTermLowering.smtLiteral;
  * The families of one composition: a slot's alternative deliveries in SMT
  * ({@code Arms} decides what an arm IS).  WIRE families via {@link
  * #closeFamilies}, STATE families via {@link #stateFamilies}.  It holds the
- * composition's own collections, not copies, and reaches {@link Composer}
+ * composition's own collections, not copies, into which one path's families
+ * go whole or not at all ({@link #commit}), and reaches {@link Composer}
  * for gaps, the epoch's slot table and the path routines an arm is closed
  * by (closure, stated reads, state joins, prefixes).
  */
@@ -186,6 +188,48 @@ final class ComposedFamilies {
     /** Every arm selector this composition declared, in the order made. */
     Map<String, ArmChoice> armChoices() {
         return Collections.unmodifiableMap(armChoices);
+    }
+
+    /*
+     * ONE PATH'S FAMILIES ARE ALL OR NOTHING.  What closeFamilies and
+     * stateFamilies state for a path -- named assertions, arm choices,
+     * families -- is held here until the path is a disjunct (commit) and
+     * dropped with it (discard).  Stated at once, a path refused at its
+     * second message kept the first message's family under a selector no
+     * partition names, and the next path, composed at the same ordinal,
+     * asserted that name again: z3 answers such a query with an error
+     * (hdfs-17899-bug1 r1: 18 names defined twice, 52 dangling selectors).
+     * Held rather than numbered per attempt: a number burnt on a refused
+     * path would still leave its assertions in the query.
+     */
+    private final List<Map.Entry<String, String>> heldAssertions =
+            new ArrayList<Map.Entry<String, String>>();
+    private final Map<String, ArmChoice> heldChoices =
+            new LinkedHashMap<String, ArmChoice>();
+    private final Map<String, Family> heldFamilies =
+            new LinkedHashMap<String, Family>();
+
+    /** The path is a disjunct: what its families state joins the query. */
+    void commit() {
+        for (Map.Entry<String, String> held : heldAssertions) {
+            lowering.assertNamed(held.getKey(), held.getValue());
+        }
+        armChoices.putAll(heldChoices);
+        families.putAll(heldFamilies);
+        discard();
+    }
+
+    /** The path is refused: nothing its families stated stays. */
+    void discard() {
+        heldAssertions.clear();
+        heldChoices.clear();
+        heldFamilies.clear();
+    }
+
+    /** One named assertion of the path now composed, held ({@link #commit}). */
+    private void hold(String name, String formula) {
+        heldAssertions.add(new AbstractMap.SimpleImmutableEntry<String,
+                String>(name, formula));
     }
 
     /**
@@ -381,14 +425,14 @@ final class ComposedFamilies {
             stated.addAll(nested);
             String same = selectorOf.get(body);
             if (same != null) {
-                armChoices.put(same, armChoices.get(same).alsoBy(session));
+                heldChoices.put(same, heldChoices.get(same).alsoBy(session));
                 continue;
             }
             selectorOf.put(body, selector);
             representatives.add(session);
             selectors.add(selector);
             cases.add("(=> " + selector + " " + body + ")");
-            armChoices.put(selector, ArmChoice.of(name, group,
+            heldChoices.put(selector, ArmChoice.of(name, group,
                     endpointIds(leaves), session, held));
         }
         if (selectors.isEmpty()) {
@@ -415,12 +459,12 @@ final class ComposedFamilies {
                     }
                 }
             }
-            families.put(slot.getKey(), Family.of(slot.getKey(), rows));
+            heldFamilies.put(slot.getKey(), Family.of(slot.getKey(), rows));
         }
         cases.add(0, Arms.exactlyOne(selectors));
         String formula = VmTermLowering.and(cases);
         stated.add(formula);
-        lowering.assertNamed(name, "(=> " + guard + " " + formula + ")");
+        hold(name, "(=> " + guard + " " + formula + ")");
         return true;
     }
 
@@ -882,7 +926,7 @@ final class ComposedFamilies {
                 // Recorded even without a case split: the unattested-arm
                 // gate reads this set.
                 reached.add(arm.slotId());
-                families.put(arm.slotId(), Family.of(arm.slotId(),
+                heldFamilies.put(arm.slotId(), Family.of(arm.slotId(),
                         Collections.singletonList(row(arm))));
                 found.add(arm);
             }
@@ -943,9 +987,8 @@ final class ComposedFamilies {
                     + ArtifactIO.digest(writer.getKey() + "|" + session, 12);
             String formula = "(=> " + name + " " + body + ")";
             stated.add(formula);
-            lowering.assertNamed(assertion,
-                    "(=> " + selector + " " + formula + ")");
-            armChoices.put(name, ArmChoice.of(assertion,
+            hold(assertion, "(=> " + selector + " " + formula + ")");
+            heldChoices.put(name, ArmChoice.of(assertion,
                     writer.getKey(), Collections.<String>emptyList(),
                     session, armsOf(writer.getValue())));
         }
@@ -981,9 +1024,8 @@ final class ComposedFamilies {
                 String formula = "(=> " + name + " "
                         + VmTermLowering.and(observedPin) + ")";
                 stated.add(formula);
-                lowering.assertNamed(assertion,
-                        "(=> " + selector + " " + formula + ")");
-                armChoices.put(name, ArmChoice.of(assertion,
+                hold(assertion, "(=> " + selector + " " + formula + ")");
+                heldChoices.put(name, ArmChoice.of(assertion,
                         "observed:" + location.getKey(),
                         Collections.<String>emptyList(), session,
                         Collections.<Arms.Arm>emptyList()));
@@ -1010,7 +1052,7 @@ final class ComposedFamilies {
             }
             String formula = Arms.exactlyOne(selectors);
             stated.add(formula);
-            lowering.assertNamed("state_family__" + ordinal + "__"
+            hold("state_family__" + ordinal + "__"
                             + ArtifactIO.digest(location.getKey(), 12),
                     "(=> " + selector + " " + formula + ")");
         }
