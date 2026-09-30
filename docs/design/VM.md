@@ -51,7 +51,7 @@ Java paths under `src/main/java/edu/uva/liftlab/graphchecker/`.
 | int/long/float/double arithmetic, `neg`, shifts; the 15 conversions (`TypeCastExpression`) | build the expression; `iand`/`ior`/`ixor` over booleans become `&&`, `\|\|`, `!=` |
 | `lcmp`, `fcmp*`, `dcmp*`, `if*`, `if_icmp*`, `if_acmp*`, `ifnull`/`ifnonnull` | branch conditions |
 | `tableswitch`, `lookupswitch` | the taken case; the default arm is the conjunction of `sel != k` over every key |
-| array loads/stores, `arraylength`, `newarray`/`anewarray` with a symbolic length | INDEXED read/write over the array's container state; a symbolic index records `idx >= 0 && idx < SIZE` |
+| array loads/stores, `arraylength`, `newarray`/`anewarray` with a symbolic length | INDEXED read/write over the array's container state; a symbolic index records `idx >= 0 && idx < SIZE`; a load at a concrete position the recorded writes decide builds no READ (§6) |
 | `getfield`/`getstatic` | the field shadow, resolved through the version log where tracked (§5); a demand-minted `FieldAccessExpression` where the owner is shadowed |
 | `putfield`/`putstatic` | set the field shadow; publish a version (§5) |
 | `invoke*` | argument and return transfer; model dispatch (§4) |
@@ -150,6 +150,16 @@ log opens with an INITIAL version stating what the container held when tracking 
 at 64 members, else a stated refusal (`NO_MODELLED_SHAPE`, `UNREADABLE_CONTAINER`,
 `MUTATED_BEFORE_FIRST_READ`). `compose/ContainerStateModel` and `compose/ContainerSmtCodec` lower
 the chains (`AssocState` for maps, `IndexedState` for lists and arrays).
+
+**Array reads over recorded writes.** The writes at concrete positions of one array chain share
+one index of what was stored where (`ElementWrites`, `ContainerExpression::stored_at`: one lookup,
+no walk of the chain). An array load at a concrete position is answered from it
+(`ContainerSupport#recorded_element`): the value the newest write at that position stored, or,
+for an element no recorded write replaced, the heap's own value as a concrete; no READ node, no
+index and no condition. The load stays a READ below a write at a symbolic position, on a forked
+chain or a consumer-boundary receiver, at a symbolic position, and for an array whose elements are
+an input (one a symbolization reached, or whose shadow stands for a semantic value). The array's
+identity node is built only when it roots a new state.
 
 ## 7. Wire handoff
 

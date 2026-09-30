@@ -15,13 +15,13 @@ through `campaign_fail`, which prints `stage`, `component`, `artifact`, `reason`
 | SEED | `campaign_seed`; `GraphCheckerMain`, `plan.ScopeGrowth`, `plan.LineageScan`, `runtime.CausynthTraceRecorder` | static artifacts, the recording, `seed-skeletons/` | the workload exits nonzero; an artifact is missing or stale |
 | PLAN | `campaign_plan`; `plan.ConcolicScheduler` | `iteration-0000/execution_task_plan.jsonl`, `runtime_workflow_schedule_index.json` | more tasks than `schedule_max_jobs`; the index does not commit the frozen plan; no target |
 | INSTRUMENT | `campaign_instrument`; `GraphCheckerMain`, `causynth.VerifyWovenClasses` | `iteration-0000/instrumented-classes/` | no class woven; a woven class does not verify |
-| REPLAY | `campaign_session_replay`; the adapter (`runtime.*` in the workload JVM) | `iteration-0000/sessions/<seed>/` | killed on a bound; no activation; no target row of the target method |
+| REPLAY | `campaign_session_replay`; the adapter (`runtime.*` in the workload JVM) | `iteration-0000/sessions/<seed>/` | killed on its bound (`seed_replay_time_factor`); no activation; no target row of the target method |
 | IMPORT | `campaign_import_session`; `contract.ImportGateMain` | `session_census.jsonl`, `import_gate.json`, `campaign_gaps.jsonl` | a session file is missing; a BLOCKING row invariant |
 | EXPLORE | `campaign_explore`, `campaign_grow`; `explore.ExploreMain`, `explore.ObligationSolverMain`, `plan.ExposedRegionPlanMain` | `obligations-NNNN/`, `obligation_results.jsonl`, focused sessions | the planner fails; an obligation does not finish; a replay states no verdict; a wave's BLOCKING row invariant (as IMPORT) |
 | — | `campaign_publish_iteration_manifest` | `iteration_manifest.json` | — |
 | COMPOSE | `campaign_compose`; `compose.ComposeMain` | `final/candidate.smt2`, `candidate_composition_manifest.json`, `claim.json` | ComposeMain exits nonzero (every refusal is a claim, not an exit) |
 | SOLVE, DECIDE | `campaign_solve`, `campaign_decide` (read the manifest) | log lines | the manifest states no solver verdict or no valuation rows |
-| CONFIRM | `campaign_confirm`; `explore.ConfirmMain` + one replay | `final/confirm/`, `final/confirm.json` | never (a failure is "unconfirmed") |
+| CONFIRM | `campaign_confirm`; `explore.ConfirmMain`, one replay, `ConfirmMain --sessions` (the decision) | `final/confirm/`, `final/confirm.json` | never (a failure is "unconfirmed") |
 | EMIT | `campaign_emit` | `final/gaps.json`, `result.json`, `run-manifest.json` | a frozen input changed; exit 2 = no `SAT_CANDIDATE`/`UNSAT_CLOSED`, exit 3 = BLOCKING gaps |
 
 There is one iteration (`iteration-0000`); what a replay learns past the recording is taken up by GROW
@@ -76,6 +76,7 @@ marked * below.
 | `schedule_max_jobs`* | the most tasks PLAN may schedule |
 | `solver_timeout_ms`* | one z3 run, in a flip query and in COMPOSE |
 | `replay_timeout_s`* (2400) | the wall clock of one obligation replay |
+| `seed_replay_time_factor`* (40) | the seed replay's wall clock, as a multiple of the recorded workload's (§5) |
 | `region_path_max_waves`* (12), `region_path_max_tasks`, `region_path_max_paths_per_region`, `region_path_max_flips_per_path`, `region_path_max_world_depth`, `region_path_stop_at_fatal` | EXPLORE's bounds (§7.4, §7.9) and the witness stop (§7.1) |
 | `compose_max_valuations`* (16) | the valuations COMPOSE enumerates |
 | `concolic_worker_count`* (8), `campaign_worker_hosts`, `obligation_memory_mb`*, `engine_memory_mb` | slots per host, the hosts, one obligation's memory at the host gate, the head JVMs' heap |
@@ -118,7 +119,9 @@ none.
    pass uses are the skeletons' `loopControlSiteIds`, and any edit to an instrumented method moves
    the ids after it, so a case's loop-bound file is re-read from the skeletons after a tree edit.
 2. `do_workload`: one weave in trace mode `region-state` (lineage classes from `plan.LineageScan`
-   included), then the workload itself (`workload_command`; a nonzero exit fails SEED), then
+   included), then the workload itself (`workload_command`; a nonzero exit fails SEED; its wall
+   time in seconds is kept as `campaign_recorded_workload_s`, the base of the seed replay's
+   bound, §5; the recording itself runs under no bound), then
    `runtime.CausynthTraceRecorder` aggregates the trace into `runtime/concolic_region_plan.jsonl`
    (the runtime region plan) and `runtime/region_skeletons.jsonl`; the recording's
    `runtime/schedule.jsonl` sits beside them.
@@ -152,10 +155,13 @@ the replay's class path, or the stage fails naming the class. GROW re-runs this 
 sessions directory, worker directory and `CAUSYNTH_SCHEDULE_PREFIX`; the seed replay is held to the
 recording's schedule (`recorded_schedule.jsonl`). A replay publishes one session under
 `iteration-0000/sessions/<sessionId>/` (layout in [CONTRACT-SPEC.md §2](CONTRACT-SPEC.md)); with no
-focus row its `manifest.json` states role `SEED`. The seed replay is `required`: a replay killed on a
-bound, a session set with no non-empty `activations.jsonl`, or no `targets.jsonl` row whose
-`anchorSiteId` is in the target method (from the scope map's `TARGET_SITE` row) fails REPLAY. The
-workload's exit code is not the gate (a target that throws exits nonzero by design).
+focus row its `manifest.json` states role `SEED`. The seed replay runs under a wall clock of
+`seed_replay_time_factor` × `campaign_recorded_workload_s` seconds (§2), never less than
+`replay_timeout_s`. It is `required`: a replay killed on that bound or otherwise (the failure
+names what killed it; for the bound, the rule and its numbers, `campaign_adapter_timeout_rule`), a
+session set with no non-empty `activations.jsonl`, or no `targets.jsonl` row whose `anchorSiteId`
+is in the target method (from the scope map's `TARGET_SITE` row) fails REPLAY. The workload's exit
+code is not the gate (a target that throws exits nonzero by design).
 
 A target occurrence publishes its target row whether or not it reached the throw
 (`runtime.RowPublication`): `phiTerm` is the VM's satisfied predicate of the target branch put in
@@ -290,7 +296,12 @@ lowered by the one lowering, `compose.SmtLowering`). Each symbol it names gets o
   container state behind a guard is one variable at the sort its writers deliver.
 
 An undeclared name in the flipped conjunct refuses the query (`DECLARATION_MISSING`); in a prefix
-conjunct it drops the conjunct (DIAGNOSTIC); a malformed lowered term likewise. A symbol no rule binds
+conjunct it drops the conjunct (DIAGNOSTIC); a malformed lowered term likewise. A name is declared
+when the query declares it, a `let` binds it, the fixed preamble states it, or it is a theory
+operator of `compose.SmtNames.BUILTIN`, the one vocabulary every stage reads with, which lists every
+operator the lowering writes (the string operators `str.substr`, `str.indexof`, `str.at`,
+`str.from_code`, `str.to_code` among them, the floating-point operators, `to_fp`, `int2bv`, `bv2int`
+and the `Array` sort); COMPOSE refuses a path on the same test. A symbol no rule binds
 refuses (`UNPRODUCIBLE_ANSWER`); a query with no variable of its own is not asked. A construct the
 lowering refuses inside a stated term becomes a fresh `unsupported__*` constant of its sort and stays
 in the query. Demanded conjuncts (the flip and the inherited flips) get a one-minute clock margin on
@@ -531,11 +542,20 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
   `Confirmation` compares WIRE at the attach and STATE at close, and holds each `ORDER` activation's
   entry until the named activations exit (`causynth.confirm.order.timeout.ms`, 300 s; a stall is a
   mismatch); every difference is a `CONFIRM_MISMATCH` gap in the session. `MARKER` and `ANCHOR` rows
-  are not read by the runtime. An unreadable `expected_edges.jsonl` compares nothing (logged only).
-- Decision (`campaign_confirm_decide`): the replay's verdict is `ADMITTED`, its session has no
-  `CONFIRM_MISMATCH` gap, and some target row of the session has `reachedAnchor` and `observedFatal`.
+  are not read by the runtime. A CONFIRM run (`FocusedReplay.confirming`: its obligation flips
+  nothing) whose `expected_edges.jsonl` is missing or unreadable compares nothing and files one
+  `EDGES:` mismatch at the close, so it confirms nothing.
+- Decision (`ConfirmMain --claim --output <worker> --sessions <dir>`, `ConfirmMain#decide`, which
+  prints `final/confirm.json`), conditions in order, the first that fails named as the reason: the
+  replay's verdict is `ADMITTED`; its session directory exists and its `gaps.jsonl` and
+  `targets.jsonl` are readable (a session that did not publish them answers nothing); no gap is a
+  `CONFIRM_MISMATCH`; and a target row whose occurrence id is the claim's anchor's (the id only
+  the Java address computes) has `reachedAnchor` and `observedFatal` — a fatal at another
+  occurrence of the target site does not confirm. A ConfirmMain that exits nonzero is
+  "unconfirmed" with its log named.
 
-`final/confirm.json`: `{kind: CONFIRMATION, confirmed, reason, sessionId}`.
+`final/confirm.json`: `{schemaVersion 1, kind: CONFIRMATION, confirmed, reason, sessionId}`, the
+same shape for a refusal, `realized.json` and the decision.
 
 ## 11. EMIT
 
@@ -562,7 +582,8 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
 ## 12. Acceptance: `experiments/accept/`
 
 `accept.sh` builds the jar, then per case (one at a time; `CASES`, default the nine HDFS cases of
-`ACCEPT_ALL_CASES`) runs `lib/run.sh <case> validate` and `campaign` under `CASE_TIMEOUT_SECONDS`, then
+`ACCEPT_ALL_CASES`; `EXPECTED_MECHANISM` also names solr-18413 and solr-18406, both `CLOCK_SKEW`)
+runs `lib/run.sh <case> validate` and `campaign` under `CASE_TIMEOUT_SECONDS`, then
 `probe.sh`, `cone.py` and `report.py`, and writes `summary.tsv`. `report.py` passes a case when all
 hold, read off `final/result.json`, `gaps.json` and `cone.json`:
 
@@ -583,10 +604,31 @@ hold, read off `final/result.json`, `gaps.json` and `cone.json`:
 
 `probe.sh` strips the `valuation__` pins from `candidate.smt2` and asks z3 about the formula
 unpinned, with the accepted assignment and with the other polarity; it is reported, never gated on.
+
+Before the cases and before each case, `accept.sh` requires `MIN_FREE_GB` (6) free on the
+filesystem `OUT` is written to (its nearest existing parent before `OUT` exists), `acc_free_gb`;
+a 1 MB probe write there that is refused reads as 0 G (a full disk or a per-user quota `df` does
+not show). The preflight fails by name; a case waits up to `DISK_WAIT_SECONDS` (1800) for room and
+is then skipped as `no disk`.
+
 Ad-hoc sweeps do not use `report.py`: `tools/adhoc/triage.py` classes a case with a `result.json`
 `CONFIRMED` when `claim` is `SAT_CANDIDATE` and `confirmation.confirmed` is true, `REFUTED` when
-`claim` is `SAT_CANDIDATE` without it (which EMIT's downgrade to `SAT_UNCONFIRMED` makes
-unreachable), else `NO_WITNESS`; a case without one is `STOPPED`, `RUNNING` or `PENDING`.
+`claim` is `SAT_UNCONFIRMED` (the confirmation's reason is the row's reason), else `NO_WITNESS`
+(`UNSAT_CLOSED` included). A case without one is `STOPPED` when its summary row exists (the stage
+and reason its logs state: the campaign's own failure, the case timeout, a failed trace
+aggregation, a stage's Java main, the engine's `die`, a full disk or quota), `PENDING` when never
+started, else `RUNNING` while some lift (`LIFTS`, default lift06–15) still runs a process naming
+its directory, `DEAD` when none does.
+
+`tools/regress/offline-ab.sh <baseline-jar> <candidate-jar> [case...]` is the offline regression
+gate: per case of a recorded round (`--round`, default `v94 v93 v92`), it runs every stage that is
+a pure function of the recording once per jar — the static pass, the trace aggregation, PLAN,
+EXPLORE wave 0 and its solves, IMPORT, the closing EXPLORE wave, COMPOSE with SOLVE and DECIDE,
+and CONFIRM's planning — over private iterations that link the recorded sessions, with no
+workload and no replay; `ab_compare.py` prints one table and exits 1 when a gating stage differs,
+2 when one could not be checked. The static pass (Soot) is not deterministic: it runs on one
+thread, is compared canonically and never gates. A round is read as the current engine reads it,
+so the gate needs a round recorded by a build whose row contract HEAD still reads.
 
 ## 13. Reading a run
 

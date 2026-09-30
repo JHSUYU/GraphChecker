@@ -129,7 +129,8 @@ the flip solver:
 - a STATE read's arms are its observed writer plus every attested writer occurrence of the same
   session that is HB-concurrent with the reader (not the same thread, not an anchor-chain
   ancestor either way, both chains reaching a `Root`; a `Lost` context is never concurrent), one
-  arm per writer occurrence at its last write. Locks are not constraints.
+  arm per writer occurrence: the observed writer's at the write the read observed, any other at
+  its last write of the location. Locks are not constraints.
 - an occurrence is attested in a session that has an instrumented activation row for it
   (`Arms#attested`); no witness may move a root inside an unattested arm.
 
@@ -271,8 +272,10 @@ order:
 - an obligation's replay is held to the schedule of the session whose path it flips, cut at its
   target occurrences (`explore/ObligationSolverMain`, `SchedulePrefix#write`), and inherits that
   session's world (its flips and planted values); flips are cut only from ADMITTED sessions
-  (`explore/ObligationFactory`). CONFIRM cuts the selected session's schedule the same way
-  (`explore/ConfirmMain`);
+  (`explore/ObligationFactory`). CONFIRM writes the selected session's schedule unheld
+  (`explore/ConfirmMain`, `SchedulePrefix#write` with `held` false): every event is rest, so only
+  a `WAKE` still waits for what it followed, and the model's order is held by the `ORDER` rows of
+  its expected edges (`runtime/Confirmation`, PIPELINE.md §10);
 - `runtime/TimedWaits` replaces every timed wait in both passes; under a held `WAKE` slot the wait
   runs on virtual time (it ends at a real signal or when its slot is due), and a woven notify marks
   the longest-standing wait.
