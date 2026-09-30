@@ -108,9 +108,13 @@ public final class StaticScopeMap {
     private static final java.util.regex.Pattern LOCAL_CELL =
             java.util.regex.Pattern.compile("^(<.+>)::([^#]+)(?:#.*)?$");
 
+    /** A mutation of the container a local holds, which a later store
+     *  publishes into a field ({@code publishedFrom}: that local). */
+    private static final String PUBLICATION_KIND = "container_publication";
     private static final String[] WRITE_KINDS = {"field_write",
             "field_mutation", "container_mutation_argument",
-            "container_call_mutation_effect", "container_array_store_value"};
+            "container_call_mutation_effect", "container_array_store_value",
+            PUBLICATION_KIND};
     private static final Set<String> READ_KINDS = new LinkedHashSet<String>(
             java.util.Arrays.asList("field_read", "accessor_field_return"));
     private static final String THROW_KIND = "exception_throw";
@@ -222,6 +226,16 @@ public final class StaticScopeMap {
         /** READ_SITE: whether its cell is a static field, whose location is
          *  its class's. */
         public final boolean staticField;
+        /**
+         * WRITE_SITE: the local whose container this mutation builds before
+         * a later store publishes it into {@link #carrier} (solr-18406's
+         * {@code map.put} under {@code !wrapper.isDeleted()} into the map
+         * {@code updateKnownCommitPoints} then stores into {@code
+         * knownCommits}); "" for a store or mutation of the carrier itself.
+         * Its guards shaped the referent the carrier's store publishes
+         * ({@link #constructionGuards}).
+         */
+        public final String publishedFrom;
 
         Site(String role, String regionId, String siteId, String vmSite,
              String cell, String carrier, String portId,
@@ -231,7 +245,7 @@ public final class StaticScopeMap {
                     declaredCallee, local, declared, guards, guardOutcomes,
                     Collections.<String, Guard>emptyMap(),
                     Collections.<Guard>emptyList(),
-                    Collections.<String>emptyList(), "", false);
+                    Collections.<String>emptyList(), "", false, "");
         }
 
         Site(String role, String regionId, String siteId, String vmSite,
@@ -239,8 +253,8 @@ public final class StaticScopeMap {
              String declaredCallee, String local, Declared declared,
              List<String> guards, List<Boolean> guardOutcomes,
              Map<String, Guard> guardDeciders, List<Guard> chain,
-             List<String> callers, String trackedKind,
-             boolean staticField) {
+             List<String> callers, String trackedKind, boolean staticField,
+             String publishedFrom) {
             this.declared = declared;
             this.role = role;
             this.regionId = regionId;
@@ -263,6 +277,7 @@ public final class StaticScopeMap {
                     new ArrayList<String>(callers));
             this.trackedKind = trackedKind == null ? "" : trackedKind;
             this.staticField = staticField;
+            this.publishedFrom = publishedFrom == null ? "" : publishedFrom;
         }
 
         Site withGuards(List<Guard> found) {
@@ -279,21 +294,21 @@ public final class StaticScopeMap {
             return new Site(role, regionId, siteId, vmSite, cell, carrier,
                     portId, declaredCallee, local, declared, sites,
                     outcomes, deciders, chain, callers, trackedKind,
-                    staticField);
+                    staticField, publishedFrom);
         }
 
         Site withChain(List<Guard> found) {
             return new Site(role, regionId, siteId, vmSite, cell, carrier,
                     portId, declaredCallee, local, declared, guards,
                     guardOutcomes, guardDeciders, found, callers,
-                    trackedKind, staticField);
+                    trackedKind, staticField, publishedFrom);
         }
 
         Site withCallers(List<String> found) {
             return new Site(role, regionId, siteId, vmSite, cell, carrier,
                     portId, declaredCallee, local, declared, guards,
                     guardOutcomes, guardDeciders, chain, found, trackedKind,
-                    staticField);
+                    staticField, publishedFrom);
         }
 
         /**
@@ -447,7 +462,7 @@ public final class StaticScopeMap {
                             SiteId.of(method, unitIndex), vmSite(method),
                             field, field, "", "", "", null, NO_GUARDS,
                             NO_OUTCOMES, NO_DECIDERS, NO_CHAIN, NO_CALLERS,
-                            tracked.name(), staticField.test(field)));
+                            tracked.name(), staticField.test(field), ""));
                 }
                 continue;
             }
@@ -458,7 +473,7 @@ public final class StaticScopeMap {
                     SiteId.of(method, unitIndex), vmSite(method),
                     leaf.isEmpty() ? field : leaf, field, "", invoke, "",
                     null, NO_GUARDS, NO_OUTCOMES, NO_DECIDERS, NO_CHAIN,
-                    NO_CALLERS, "", false));
+                    NO_CALLERS, "", false, text(edge.get("publishedFrom"))));
         }
         markReads(found, unwoven);
         keepTrackedReads(found);
@@ -658,6 +673,9 @@ public final class StaticScopeMap {
         }
         if (site.staticField) {
             row.addProperty("static", true);
+        }
+        if (!site.publishedFrom.isEmpty()) {
+            row.addProperty("publishedFrom", site.publishedFrom);
         }
         if (site.declared != null) {
             row.addProperty("declaredKind", site.declared.kind);
@@ -880,7 +898,7 @@ public final class StaticScopeMap {
                     site.declaredCallee, site.local, site.declared,
                     site.guards, site.guardOutcomes, site.guardDeciders,
                     site.chain, site.callers, site.trackedKind,
-                    site.staticField));
+                    site.staticField, site.publishedFrom));
         }
     }
 
@@ -1009,7 +1027,8 @@ public final class StaticScopeMap {
                     optionalString(row, "local"), declared, guards, outcomes,
                     deciders(row), chain(row), strings(row, "callers"),
                     optionalString(row, "trackedKind"),
-                    row.has("static") && row.get("static").getAsBoolean()));
+                    row.has("static") && row.get("static").getAsBoolean(),
+                    optionalString(row, "publishedFrom")));
         }
         return new StaticScopeMap(sites, readRegions(file));
     }
@@ -1114,6 +1133,33 @@ public final class StaticScopeMap {
                 && site.startsWith(named.vmSite + "#"));
     }
 
+    /**
+     * The construction guards of a reference store (R3-REFCONT SS1.6, D5):
+     * the guards, each on the arm that reaches it, of every mutation the
+     * METHOD of one recorded store of {@code carrier} makes on a container
+     * it then publishes into that carrier ({@link Site#publishedFrom}).  A
+     * decision that skipped a mutation leaves no node in the referent's
+     * state, so the referent a writer published rests on these decisions of
+     * its occurrence as much as on the mutations it did make.  Per method,
+     * like {@link #sitesAt}: bci and unit index do not compare.
+     */
+    public List<Guard> constructionGuards(String recordedSite,
+                                          String carrier) {
+        Map<String, Guard> guards = new LinkedHashMap<String, Guard>();
+        for (Site site : sitesAt(recordedSite)) {
+            if (site.publishedFrom.isEmpty()
+                    || !site.carrier.equals(carrier)) {
+                continue;
+            }
+            for (int index = 0; index < site.guards.size(); index++) {
+                guards.putIfAbsent(site.guards.get(index), new Guard(
+                        site.guards.get(index),
+                        site.outcomeOf(site.guards.get(index))));
+            }
+        }
+        return new ArrayList<Guard>(guards.values());
+    }
+
     /** The sites of one role {@code test} holds for, in publication order. */
     private List<Site> ofRole(String role, Predicate<Site> test) {
         List<Site> found = new ArrayList<Site>();
@@ -1160,8 +1206,11 @@ public final class StaticScopeMap {
      * the window reached still has a log -- its INITIAL -- that the read
      * states and the closure asks the cell's writers about (GreyGraph
      * §3.1's Writers_W(l), SYMBOL-SCOPE §5.5).  Each row states its cell's {@code
-     * trackedKind}.  Not observed here: a static cell, whose location is
-     * its class's, which no observer takes yet.
+     * trackedKind}.  Not observed here: a mutation of a container a local
+     * holds before its publication ({@link Site#publishedFrom}), whose
+     * receiver is that local's container, not the carrier's holder -- its
+     * log starts at its first model event; and a static cell, whose location
+     * is its class's, which no observer takes yet.
      */
     public JsonArray observedSites() {
         Map<String, Site> tracked = new LinkedHashMap<String, Site>();
@@ -1174,7 +1223,8 @@ public final class StaticScopeMap {
             boolean read = READ_SITE.equals(site.role);
             Site cell = tracked.get(site.cell);
             if (!read && !WRITE_SITE.equals(site.role) || cell == null
-                    || cell.staticField || !seen.add(site.siteId)) {
+                    || cell.staticField || !site.publishedFrom.isEmpty()
+                    || !seen.add(site.siteId)) {
                 continue;
             }
             JsonObject row = new JsonObject();

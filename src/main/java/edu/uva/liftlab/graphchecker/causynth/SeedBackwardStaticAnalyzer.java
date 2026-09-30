@@ -18,8 +18,10 @@ import soot.SootMethod;
 import soot.Unit;
 import soot.Value;
 import soot.jimple.AssignStmt;
+import soot.jimple.CastExpr;
 import soot.jimple.Constant;
 import soot.jimple.DefinitionStmt;
+import soot.jimple.FieldRef;
 import soot.jimple.IdentityStmt;
 import soot.jimple.IntConstant;
 import soot.jimple.InvokeExpr;
@@ -1843,7 +1845,9 @@ final class SeedBackwardStaticAnalyzer {
 
     /**
      * Mutation counterpart of {@link #processSemanticContainerOperation}: a
-     * relevant container receiver demands its mutators' arguments.
+     * relevant container receiver demands its mutators' arguments, and the
+     * fields it is later published into name the mutation a write of theirs
+     * ({@link #publishMutation}).
      */
     private void processSemanticContainerMutation(
             String callerMethod, Fact fact, MethodSig callee,
@@ -1866,6 +1870,95 @@ final class SeedBackwardStaticAnalyzer {
                     callerMethod, fact);
             callerRelevant.add(argument);
         }
+        publishMutation(callerMethod, fact, receiver);
+    }
+
+    /**
+     * P2(b) (R3-REFCONT): a mutation of the container a local holds shapes
+     * the referent every later store of that local -- or of a copy of it,
+     * before it is redefined -- publishes into a field, and, one call up,
+     * the referent the method returns into each field its callers store
+     * the result into.  One {@code container_publication} edge per field,
+     * from the local ({@code publishedFrom}) to the field at the mutation:
+     * the scope map's write site of that field with the mutation's guards.
+     * solr-18406: {@code updateKnownCommitPoints} puts each commit whose
+     * {@code !wrapper.isDeleted()} holds into a fresh map, then stores the
+     * map into {@code knownCommits}.  A mutation of a field's container
+     * through an alias is {@link #fieldsAliasedByLocal}'s.
+     */
+    private void publishMutation(String method, Fact mutation, String local) {
+        if (!expandOnce("PUBLICATION", method, mutation.unitIndex)) return;
+        Set<String> fields = new LinkedHashSet<>();
+        if (storedFrom(factsByMethod.get(method), mutation.unitIndex, local,
+                fields)) {
+            buildGlobalStaticIndex();
+            List<String> declared = new ArrayList<>();
+            declared.add(method);
+            declared.addAll(resolveDispatchSources(method));
+            for (String callee : declared) {
+                forEachCallsite(methodCallersByCallee, callee,
+                        (callsite, call) -> {
+                    if (call.unit instanceof AssignStmt
+                            && ((AssignStmt) call.unit).getLeftOp()
+                            instanceof Local) {
+                        storedFrom(factsByMethod.get(callsite.method),
+                                call.unitIndex, ((Local) ((AssignStmt)
+                                        call.unit).getLeftOp()).getName(),
+                                fields);
+                    }
+                });
+            }
+        }
+        for (String field : fields) {
+            Map<String, Object> edge = addEdge("container_publication",
+                    canonical(method, local), field, method, mutation);
+            if (edge != null) edge.put("publishedFrom", local);
+        }
+    }
+
+    /**
+     * Adds to {@code fields} each field a fact after {@code index} stores
+     * {@code local}, or a copy of it, into, up to its redefinition.
+     *
+     * @return whether the method returns it
+     */
+    private static boolean storedFrom(List<Fact> facts, int index,
+                                      String local, Set<String> fields) {
+        Set<String> aliases = new LinkedHashSet<>();
+        aliases.add(local);
+        boolean returned = false;
+        for (int at = index + 1; facts != null && at < facts.size()
+                && !aliases.isEmpty(); at++) {
+            Unit unit = facts.get(at).unit;
+            if (unit instanceof ReturnStmt) {
+                returned |= alias(((ReturnStmt) unit).getOp(), aliases);
+                continue;
+            }
+            if (!(unit instanceof AssignStmt)) continue;
+            Value target = ((AssignStmt) unit).getLeftOp();
+            boolean copy = alias(((AssignStmt) unit).getRightOp(), aliases);
+            if (target instanceof FieldRef) {
+                if (copy) {
+                    fields.add(CausynthStaticFacts.declaredFieldSignature(
+                            ((FieldRef) target).getFieldRef()));
+                }
+            } else if (target instanceof Local) {
+                if (copy) {
+                    aliases.add(((Local) target).getName());
+                } else {
+                    aliases.remove(((Local) target).getName());
+                }
+            }
+        }
+        return returned;
+    }
+
+    /** Whether {@code value}, through a cast, is one of the locals. */
+    private static boolean alias(Value value, Set<String> locals) {
+        Value operand = value instanceof CastExpr
+                ? ((CastExpr) value).getOp() : value;
+        return operand instanceof Local
+                && locals.contains(((Local) operand).getName());
     }
 
     /** Bridges an application helper that mutates a container argument. */

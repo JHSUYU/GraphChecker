@@ -85,6 +85,13 @@ The worklist (`runWorklist`, `processMethod`) walks definitions backwards:
   demands its arguments into its receiver (`container_mutation_argument`) and, through a field
   alias, is a `field_mutation` of that field. An application class's calls run the body the slice
   follows: it states no contract. Whether the VM models a class is decided at run time, never here.
+- **Publication** (`publishMutation`): a mutation of the container a local `L` holds shapes the
+  referent every later store of `L` (or of a copy of it, before `L` is redefined) publishes into
+  a field `F`, and, one call up, the referent a method returns into each field its callers store
+  the result into. Each such `F` gets a `container_publication` edge `L -> F` at the mutation
+  (`publishedFrom: L`): the map's write site of `F` there (§5.1). SOLR-18406's
+  `updateKnownCommitPoints` puts each commit whose `!wrapper.isDeleted()` holds into a fresh map,
+  then stores the map into `knownCommits`.
 - **Arrays**: element cells stay in the slice; an index never turns symbolic
   (`processArrayAccesses`). Literals are ignored.
 
@@ -159,7 +166,7 @@ method as the VM spells it, the join with recorded endpoints), `cell`, `carrier`
 | `ROOT_SITE` | a call site whose `<callee>.return` defines a local of its method | `local` |
 | `DECLARED_SITE` | a value entering from outside the slice's text: an `ACCESSOR_RETURN` (a structural accessor; cell = the field) or a `CALL_RETURN` (a clock, a fault marker) | `declaredKind`, `edgeId`, `dependencyCell`, `javaType` (primitive only), `implementationMethod`, `inputKind` (`CLOCK`, `FAULT`, `READ`, or absent), `clockNanos` |
 | `READ_SITE` | a read of a tracked cell (§5.1) | `trackedKind` (`VALUE`, `REFERENCE`), `static` (a static field) |
-| `WRITE_SITE` | a store or container mutation into a field `S` names | `declaredCallee`, `callers` |
+| `WRITE_SITE` | a store or container mutation into a field `S` names | `declaredCallee`, `callers`, `publishedFrom` (the local a publication mutates, §2.2) |
 | `EXPORT_SITE` | the producer capture of a port (OUT side only) | `portId` |
 
 **Guards** (`causynth/SiteControlDependence`): site `t` is control-dependent on branch `b` when
@@ -174,7 +181,8 @@ are post-dominance.
 
 Readers: `ConcolicScheduler` (admission, observed sites), `runtime/GuardedStoreSites` (§5.3),
 `explore/ClosurePlanner` (static producers of a port, `#exportsOf`; static candidate writers of a
-demanded read, §5.5), `RuntimeSelectedRegionFinalizer` (root admission, §4.4).
+demanded read, §5.5), `RuntimeSelectedRegionFinalizer` (root admission, §4.4). For COMPOSE the map
+states each reference store's construction guards (`#constructionGuards`, §5.6).
 
 ## 4. Roots (F1)
 
@@ -277,11 +285,13 @@ A `READ_SITE` is a `field_read` or `accessor_field_return` of a cell that
 - is stored in `S`: some `WRITE_SITE` names the cell (`keepTrackedReads`).
 
 `WRITE_SITE` kinds: `field_write`, `field_mutation`, `container_mutation_argument`,
-`container_call_mutation_effect`, `container_array_store_value`. A write of a JDK atomic --
-`AtomicInteger`, `AtomicLong`, `AtomicBoolean`, `AtomicReference`: `set`, `lazySet`, `getAndSet`,
-`compareAndSet`, `weakCompareAndSet`, `updateAndGet`, `getAndUpdate`, `accumulateAndGet`,
-`getAndAccumulate` and the numeric read-modify-writes -- is a write of its `value` field
-(`plan/SharedFieldFlow#atomicValueField`), one table with its reads (§2.2).
+`container_call_mutation_effect`, `container_array_store_value`, `container_publication`. A write
+of a JDK atomic -- `AtomicInteger`, `AtomicLong`, `AtomicBoolean`, `AtomicReference`: `set`,
+`lazySet`, `getAndSet`, `compareAndSet`, `weakCompareAndSet`, `updateAndGet`, `getAndUpdate`,
+`accumulateAndGet`, `getAndAccumulate` and the numeric read-modify-writes -- is a write of its
+`value` field (`plan/SharedFieldFlow#atomicValueField`), one table with its reads (§2.2). A
+`container_publication` row is a write site of the published field whose guards shaped its
+referent: carrier and cell are the field, `declaredCallee` the mutator, `publishedFrom` the local.
 
 ### 5.2 Observation
 
@@ -301,8 +311,10 @@ Each observed row states its cell's `trackedKind`. A `REFERENCE` cell's access i
 value's, and until the VM's observer takes a reference (R3-REFCONT WP2) the observation is refused
 before the VM by name (`runtime/ConcolicVmBroker`, `REFERENCE_OBSERVATION_UNSUPPORTED`): one
 DIAGNOSTIC `UNSTATED_VALUE` gap per site and session, and the field is versioned only once a
-shadowed object is stored into it. Not observed: a static cell, whose location is its class's
-mirror, which no observer takes yet (the map names it, `static: true`).
+shadowed object is stored into it. Not observed: a `publishedFrom` write site, whose receiver is
+the local's container, not the carrier's holder (its log starts at its first model event); and a
+static cell, whose location is its class's mirror, which no observer takes yet (the map names it,
+`static: true`).
 
 An occurrence of a region that reads a tracked cell records its branches from region entry
 (`SymbolicInputSelection#readsTrackedState`, `StaticScopeMap#trackedRegions`).
@@ -313,7 +325,9 @@ An occurrence of a region that reads a tracked cell records its branches from re
 `WRITE_SITE` (`methodKey`, then its guard site ids, tab-separated), from the map named by
 `CAUSYNTH_STATIC_SCOPE_MAP`; a missing or refused table fails the session by name
 (`GUARDED_STORE_SITES_*`). The VM uses it to version a concrete container mutation made under a
-guard of a listed method that decided symbolically (VM.md §5.3).
+guard of a listed method that decided symbolically (VM.md §5.3). A `publishedFrom` write site's
+guards join its method's line: SOLR-18406's `updateKnownCommitPoints` lists the `isDeleted()`
+branch its `map.put` runs under.
 
 ### 5.4 READ placeholders
 
@@ -330,6 +344,16 @@ and the map for the static write sites of the read's carrier (`#carriersAt`, `#w
 reader's node only. A recorded site's type matches a map row's by sort, or by the value it holds:
 a wrapper location agrees with a row of its primitive (a stored box states its value) and with a
 reference row (a stored null) (`StaticScopeMap#sameType`).
+
+### 5.6 Construction guards
+
+A referent built in a writer before its publication rests on every decision that shaped it,
+including one that skipped a mutation, which leaves no node in its state (R3-REFCONT §1.6).
+`StaticScopeMap#constructionGuards(recordedSite, carrier)` states them for COMPOSE: the guards,
+each on the arm that reaches it, of every `publishedFrom` write site of that carrier in the method
+of a recorded store of it (per method, as `#sitesAt`: bci and unit index do not compare).
+SOLR-18406: the store of `knownCommits` in `updateKnownCommitPoints` rests on the `isDeleted()`
+branch of its loop's `map.put`.
 
 ## 6. Wire ports (F3)
 
