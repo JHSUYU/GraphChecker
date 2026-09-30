@@ -12,12 +12,19 @@ import java.util.Arrays;
  * section as the copy, and keeps overlapping ranges right.  A store no hook
  * sees makes a recorded write stale; the read then states the heap's word,
  * concrete, instead of the stale value.</p>
+ *
+ * <p>An object copy that checks each element's store may throw part way,
+ * running Java, so it holds no stripe: one that will fail throws as the JVM
+ * does and names its tracked destination elements ARRAYCOPY_FAILED; one
+ * that passes names them ARRAYCOPY_STORE_CHECK, since it versions
+ * nothing.</p>
  */
 public final class RegionArrayCopySmoke {
     private static final class Input {
         char c = 'x';
         int n = 7;
         boolean flag = true;
+        String s = "abc";
     }
 
     private static final class Sink {
@@ -37,6 +44,8 @@ public final class RegionArrayCopySmoke {
                 "COPY.N");
         System.symbolizeExactField(in, Input.class.getName(), "flag", "Z",
                 "COPY.FLAG");
+        System.symbolizeExactField(in, Input.class.getName(), "s",
+                "Ljava/lang/String;", "COPY.S");
         Sink sink = new Sink();
 
         // A symbolic element moved by System.arraycopy keeps its value.
@@ -107,6 +116,33 @@ public final class RegionArrayCopySmoke {
         require(sink.c == 'q' && !field(sink, "c", "C",
                         Character.valueOf(sink.c)).contains("COPY.C"),
                 "a stale recorded write was read back");
+
+        // A store-checked copy that fails: the exception, no stripe held.
+        String[] typed = new String[1];
+        typed[0] = in.s;
+        require(System.getSharedElementVersions(typed, 0)
+                        .contains("\"selected\":true"),
+                "the symbolic element store started no log");
+        Object[] mixed = {Integer.valueOf(1)};
+        boolean thrown = false;
+        try {
+            System.arraycopy(mixed, 0, typed, 0, 1);
+        } catch (ArrayStoreException expected) {
+            thrown = true;
+        }
+        String failed = System.getSharedElementVersions(typed, 0);
+        require(thrown && failed.contains("\"ARRAYCOPY_FAILED\"")
+                        && failed.contains("\"unnamedWriter\":true"),
+                "the failing copy is not named: " + failed);
+        // One that passes: copied, and named.
+        String[] checked = new String[1];
+        checked[0] = in.s;
+        Object[] plain = {"plain"};
+        System.arraycopy(plain, 0, checked, 0, 1);
+        String passed = System.getSharedElementVersions(checked, 0);
+        require("plain".equals(checked[0])
+                        && passed.contains("\"ARRAYCOPY_STORE_CHECK\""),
+                "the store-checked copy is not named: " + passed);
 
         System.endConcolic();
         System.out.println("RegionArrayCopySmoke OK");

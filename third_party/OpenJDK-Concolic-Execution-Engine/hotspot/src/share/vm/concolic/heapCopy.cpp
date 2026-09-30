@@ -10,9 +10,12 @@
 #include "concolic/reference/symbolicInstance.hpp"
 #include "concolic/sessionSymbolicHeap.hpp"
 #include "concolic/threadContext.hpp"
+#include "oops/objArrayKlass.hpp"
 #include "oops/objArrayOop.hpp"
 #include "oops/typeArrayKlass.hpp"
 #include "oops/typeArrayOop.hpp"
+#include "oops/fieldStreams.hpp"
+#include "runtime/fieldType.hpp"
 
 #include <algorithm>
 
@@ -85,6 +88,26 @@ void HeapCopy::before_array_copy(ArrayCopy *copy, arrayOop source,
         destination_position + length, &copy->tracked);
   }
   if (!source_shadowed && !copy->shadowed && copy->tracked.empty()) return;
+  if (store_checked(source, destination)) {
+    // Each element's store check runs inside the copy, and one that fails
+    // throws part way -- allocating and running Java, which no held stripe
+    // may span.  A copy that will fail names the destination instead of
+    // describing it.  One that should pass still may not (another thread's
+    // aastore can change the source under it), so it holds no stripe: its
+    // tracked elements are named, not versioned.
+    if (!assignable(source, source_position, destination, length)) {
+      unmodeled(destination, destination_position, length,
+                "ARRAYCOPY_FAILED");
+      return;
+    }
+    for (size_t index = 0; index < copy->tracked.size(); ++index) {
+      SharedFieldVersions::mark_writer_set_incomplete(
+          element_location(destination, copy->tracked[index]),
+          "ARRAYCOPY_STORE_CHECK");
+    }
+    copy->tracked.clear();
+    if (!source_shadowed && !copy->shadowed) return;
+  }
 
   const BasicType type = element_type(source);
   SessionSymbolicHeap *heap = GlobalSymbolicSession::heap();
@@ -125,7 +148,7 @@ void HeapCopy::before_array_copy(ArrayCopy *copy, arrayOop source,
     copy->shadowed = true;
   }
   copy->modeled = copy->shadowed && whole;
-  copy->destination = destination;
+  copy->destination = Handle(Thread::current(), destination);
   copy->destination_position = destination_position;
   copy->length = length;
   copy->path_guard = ctx == NULL ? NULL : ctx->path_guard();
@@ -138,27 +161,80 @@ void HeapCopy::before_array_copy(ArrayCopy *copy, arrayOop source,
   copy->stripes.erase(std::unique(copy->stripes.begin(), copy->stripes.end()),
                       copy->stripes.end());
   // The concrete copy and the tracked elements' versions are one critical
-  // section, as a store and its version are.
+  // section, as a store and its version are.  A copy holding stripes cannot
+  // throw: bounds and element types were checked, and it runs no store
+  // check.
   SharedFieldVersions::lock_stripes(copy->stripes);
+  // A log that began between the scan and the locks: versioned with the
+  // rest when its stripe is held, else named once they are released.
+  std::vector<int> now;
+  SharedFieldVersions::tracked_elements(
+      destination->get_sym_rid(), destination_position,
+      destination_position + length, &now);
+  if (now.size() != copy->tracked.size()) {
+    std::vector<int> held;
+    for (size_t index = 0; index < now.size(); ++index) {
+      const int stripe = SharedFieldVersions::stripe_of(
+          element_location(destination, now[index]));
+      if (std::binary_search(copy->stripes.begin(), copy->stripes.end(),
+                             stripe)) {
+        held.push_back(now[index]);
+      } else {
+        copy->unheld.push_back(now[index]);
+      }
+    }
+    copy->tracked.swap(held);
+  }
   copy->active = true;
+}
+
+bool HeapCopy::store_checked(arrayOop source, arrayOop destination) {
+  // ObjArrayKlass::do_copy's test for its unchecked path.
+  return destination->is_objArray()
+      && !ObjArrayKlass::cast(source->klass())->element_klass()->is_subtype_of(
+             ObjArrayKlass::cast(destination->klass())->element_klass());
+}
+
+bool HeapCopy::assignable(arrayOop source, int source_position,
+                          arrayOop destination, int length) {
+  if (!store_checked(source, destination)) return true;
+  Klass *element = ObjArrayKlass::cast(destination->klass())->element_klass();
+  objArrayOop elements = objArrayOop(source);
+  for (int i = 0; i < length; ++i) {
+    oop value = elements->obj_at(source_position + i);
+    if (value != NULL && !value->klass()->is_subtype_of(element)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void HeapCopy::unmodeled(arrayOop destination, int position, int length,
+                         const char *reason) {
+  if (!destination->is_symbolic()) return;
+  std::vector<int> tracked;
+  SharedFieldVersions::tracked_elements(destination->get_sym_rid(), position,
+                                        position + length, &tracked);
+  for (size_t index = 0; index < tracked.size(); ++index) {
+    SharedFieldVersions::mark_writer_set_incomplete(
+        element_location(destination, tracked[index]), reason);
+  }
+  if (ConcolicMngr::ctx != NULL) {
+    ContainerSupport::mark_state_gap(destination, reason);
+    ConcolicMngr::ctx->forget_container_state(destination);
+  }
 }
 
 void HeapCopy::after_array_copy(ArrayCopy *copy, bool failed) {
   if (!copy->active) return;
   copy->active = false;
-  arrayOop destination = copy->destination;
+  arrayOop destination = (arrayOop) copy->destination();
   const BasicType type = element_type(destination);
   for (size_t index = 0; index < copy->tracked.size(); ++index) {
     const int at = copy->tracked[index];
     const SharedFieldVersions::Location location =
         element_location(destination, at);
-    if (failed) {
-      // An object copy that failed a store check stopped part way: which
-      // elements it reached is not known here.
-      SharedFieldVersions::mark_writer_set_incomplete_locked(
-          location, "ARRAYCOPY_FAILED");
-      continue;
-    }
+    // A copy holding stripes ran no store check, so it did not fail.
     Expression *value = copy->values[at - copy->destination_position];
     SharedFieldVersions::Store store;
     SharedFieldVersions::prepare_store(&store, location, value,
@@ -171,6 +247,11 @@ void HeapCopy::after_array_copy(ArrayCopy *copy, bool failed) {
         type == T_OBJECT ? objArrayOop(destination)->obj_at(at) : (oop) NULL);
   }
   SharedFieldVersions::unlock_stripes(copy->stripes);
+  for (size_t index = 0; index < copy->unheld.size(); ++index) {
+    SharedFieldVersions::mark_writer_set_incomplete(
+        element_location(destination, copy->unheld[index]),
+        "ARRAYCOPY_RACE");
+  }
 
   ThreadContext *ctx = ConcolicMngr::ctx;
   if (ctx == NULL || !copy->shadowed) return;
@@ -229,7 +310,35 @@ void HeapCopy::cloned(oop original, oop clone) {
   SymInstance *shadow = ctx->find_sym_inst(original);
   if (shadow == NULL) return;
   SymInstance *copy = ctx->get_or_alloc_sym_inst(clone);
-  if (copy != NULL) shadow->copy_fields_to(copy);
+  if (copy == NULL) return;
+  shadow->copy_fields_to(copy);
+  if (!SharedFieldVersions::has_carriers()) return;
+  // A tracked field's shadow may be stale -- its newest store came from a
+  // thread outside every region, which versions without touching shadows --
+  // so the copy takes the newest version's value when the clone holds what
+  // it wrote (the word; a reference's shadow expression), and is concrete
+  // otherwise.
+  for (Klass *klass = original->klass(); klass != NULL;
+       klass = klass->super()) {
+    if (!klass->oop_is_instance()) continue;
+    for (JavaFieldStream fields(InstanceKlass::cast(klass)); !fields.done();
+         fields.next()) {
+      if (fields.access_flags().is_static()) continue;
+      const SharedFieldVersions::Location location(
+          original->get_sym_rid(), fields.offset(),
+          SharedFieldVersions::LOC_INSTANCE_FIELD);
+      if (!SharedFieldVersions::is_tracked(location)) continue;
+      const BasicType type = FieldType::basic_type(fields.signature());
+      copy->set_sym_exp(fields.offset(),
+          SharedFieldVersions::newest_value_if_held(
+              location, SharedFieldVersions::Cell(
+                  clone, type,
+                  type == T_OBJECT
+                      && SharedFieldVersions::wrapper_value_type(
+                             fields.signature()) != T_ILLEGAL),
+              copy->get(fields.offset())));
+    }
+  }
 }
 
 #endif // ENABLE_CONCOLIC

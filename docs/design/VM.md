@@ -261,8 +261,8 @@ that does not hold.
 | `Method.invoke`, `Constructor.newInstance` | hooked |
 | byte encode/decode inside one heap array (`i2b`, shifts, `DataOutputStream.writeInt`, heap `ByteBuffer.putLong`) | hooked (INDEXED chains) |
 | `Unsafe.get<Primitive>(Object, long)` | hooked (field shadow, bypassing the version log) |
-| `System.arraycopy`, `Arrays.copyOf` | hooked: element values into the destination's state (a stated word per element; past 16384 elements a shadowed destination's state is dropped and named), tracked destination elements versioned in one critical section with the copy (`VM/concolic/heapCopy.cpp`) |
-| `Object.clone`, array `clone()` | hooked: the clone gets its own identity and the original's field shadows or state |
+| `System.arraycopy`, `Arrays.copyOf` | hooked: element values into the destination's state (a stated word per element; past 16384 elements a shadowed destination's state is dropped and named), tracked destination elements versioned in one critical section with the copy (`VM/concolic/heapCopy.cpp`); an object copy that checks each element's store holds no lock across it: it names its tracked destination elements (`ARRAYCOPY_STORE_CHECK`, or `ARRAYCOPY_FAILED` when it will throw) |
+| `Object.clone`, array `clone()` | hooked: the clone gets its own identity and the original's field shadows or state; a tracked field takes its newest version's value when the clone holds what it wrote (its word; a reference's shadow expression), else is concrete |
 | `Unsafe` puts, CAS, `getAndAdd*`/`getAndSet*` (`ConcurrentHashMap` slots, `lazySet`, `AtomicReference`, field updaters, reflective `Field.set`) on a shadowed object | hooked: versioned with the captured operand; uncaptured ones detected (`UNSAFE_WRITE_UNCAPTURED`) |
 | `String` and `StringBuilder`, boxing, `HashMap`/`ArrayList`/... operations, atomic RMW | modeled (§4) |
 | `Integer.parseInt`, `Long.parseLong` | detected and pinned (return symbol with its concrete value) |

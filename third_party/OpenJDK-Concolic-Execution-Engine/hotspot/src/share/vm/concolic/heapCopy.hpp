@@ -4,6 +4,7 @@
 #ifdef ENABLE_CONCOLIC
 
 #include "concolic/sharedFieldVersions.hpp"
+#include "runtime/handles.hpp"
 
 #include <vector>
 
@@ -31,7 +32,7 @@ public:
    */
   struct ArrayCopy {
     bool active;
-    arrayOop destination;
+    Handle destination;
     int destination_position;
     int length;
     // Per element of the range: what it copies (NULL: the concrete word),
@@ -39,19 +40,31 @@ public:
     std::vector<Expression *> values;
     std::vector<SharedFieldVersions::ConcreteBits> words;
     std::vector<jlong> identities;
-    // The destination's tracked elements, and the stripes they take.
+    // The destination's tracked elements, and the stripes they take;
+    // elements whose log began after the stripes were chosen, named after.
     std::vector<int> tracked;
     std::vector<int> stripes;
+    std::vector<int> unheld;
     bool shadowed;
     bool modeled;
     Expression *path_guard;
     ArrayCopy()
-        : active(false), destination(NULL), destination_position(0),
+        : active(false), destination_position(0),
           length(0), shadowed(false), modeled(false), path_guard(NULL) {}
   };
 
   /** Past this many elements a shadowed destination is not modeled. */
   static const int ARRAYCOPY_MODEL_LIMIT = 16384;
+
+  /** Whether the copy checks each element's store (an object copy whose
+   *  source element class is not the destination's or a subclass). */
+  static bool store_checked(arrayOop source, arrayOop destination);
+  /** Whether every element's store check will pass. */
+  static bool assignable(arrayOop source, int source_position,
+                         arrayOop destination, int length);
+  /** Names a destination range no version will describe. */
+  static void unmodeled(arrayOop destination, int position, int length,
+                        const char *reason);
 
   static void before_array_copy(ArrayCopy *copy, arrayOop source,
                                 int source_position, arrayOop destination,

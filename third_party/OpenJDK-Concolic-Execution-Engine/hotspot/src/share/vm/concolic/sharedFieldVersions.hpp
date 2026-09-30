@@ -457,6 +457,17 @@ public:
   static ReturnedValue returned_value(const ConcreteBits &word,
                                       oop reference);
 
+  /**
+   * The newest version's value of a tracked `location` when `cell` (another
+   * object's copy of it: an Object.clone) holds what that version wrote,
+   * else NULL: the word it stored, or for a reference, which loads no word,
+   * the expression `held` the copied shadow gave it.  What a copy of the
+   * location is, without recording.
+   */
+  static Expression *newest_value_if_held(const Location &location,
+                                          const Cell &cell,
+                                          Expression *held);
+
   /** The version live at `location` right now, without recording. */
   static jlong live_version(const Location &location,
                             std::string *version_kind);

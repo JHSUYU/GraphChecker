@@ -7,6 +7,11 @@
  * the original saw.  The copy now gets a fresh identity whose shadow holds
  * the original's field shadows (an array: its state), and the two part
  * ways at their next store.</p>
+ *
+ * <p>A tracked field's shadow is stale when its newest store came from a
+ * thread outside every region, which versions without touching shadows: the
+ * clone takes the newest version's value when it holds the word that
+ * version stored, and is concrete otherwise.</p>
  */
 public final class RegionCloneSmoke {
     private static final class Input {
@@ -68,6 +73,21 @@ public final class RegionCloneSmoke {
         sink.i = cells[0];
         require(sink.i == 7 && field(sink).contains("CLONE.N"),
                 "a store into the array clone reached the original");
+
+        final Box shared = new Box();
+        shared.value = in.n;
+        Thread outside = new Thread(new Runnable() {
+            public void run() {
+                shared.value = 11;
+            }
+        });
+        outside.start();
+        outside.join();
+        Box later = shared.copy();
+        sink.i = later.value;
+        String fresh = field(sink);
+        require(sink.i == 11 && !fresh.contains("CLONE.N"),
+                "the clone copied a stale shadow: " + fresh);
 
         System.endConcolic();
         System.out.println("RegionCloneSmoke OK");

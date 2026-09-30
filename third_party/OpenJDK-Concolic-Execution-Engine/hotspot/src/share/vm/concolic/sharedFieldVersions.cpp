@@ -472,6 +472,23 @@ bool SharedFieldVersions::plan_read(const Location &location,
   return planned;
 }
 
+Expression *SharedFieldVersions::newest_value_if_held(
+    const Location &location, const Cell &cell, Expression *held) {
+  if (!location.is_valid()) return NULL;
+  const ConcreteBits word = cell_word(location, cell);
+  lock(location);
+  Slot *slot = find_slot(location);
+  Expression *value = NULL;
+  if (slot != NULL && !slot->versions.empty()) {
+    const Version &newest = slot->versions.back();
+    if (word.stated() ? newest.stored.equals(word) : newest.value == held) {
+      value = newest.value;
+    }
+  }
+  unlock(location);
+  return value;
+}
+
 jlong SharedFieldVersions::live_version(const Location &location,
                                         std::string *version_kind) {
   if (version_kind != NULL) version_kind->clear();
