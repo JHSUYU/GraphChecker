@@ -2127,10 +2127,16 @@ public class ComposerTest {
         // the chain is shared under.
         JsonObject two = relation("INDEXED", "INSERT", one,
                 integer("I", 1L), symbol(SERIAL, "I"));
+        // Then written in place and shrunk: a WRITE keeps the size it was
+        // written at, and the removal after it shifts that many cells
+        // (Lucene's deleteCommits compaction was unstated-size without it).
+        JsonObject three = relation("INDEXED", "REMOVE", relation("INDEXED",
+                "WRITE", two, integer("I", 1L), integer("I", 9L)),
+                integer("I", 1L));
         // READ, not SIZE: a size is answered arithmetically along the
         // chain, and it is the STATE the shift has to produce.
         session.expression("EXPR.00000000000000c3", binary("==",
-                relation("INDEXED", "READ", "I", two, integer("I", 0L)),
+                relation("INDEXED", "READ", "I", three, integer("I", 0L)),
                 integer("I", 7L)));
         session.decision(ANCHOR, "anchor#u7", true,
                 "EXPR.00000000000000c3");
@@ -2138,7 +2144,7 @@ public class ComposerTest {
         // a read of one cell is answered through the mutations without
         // materialising the state, and it is this one -- the list as a
         // value -- that needs every index of it written out.
-        session.expression("EXPR.00000000000000c4", two);
+        session.expression("EXPR.00000000000000c4", three);
         session.write(Endpoint.of(ANCHOR, "Saver#snapshots#5:WRITE",
                         at("list#1", 0), 0),
                 LocationId.of(LocationKind.INSTANCE, "8", "16"), 3L,
@@ -2347,12 +2353,15 @@ public class ComposerTest {
                 composition.body().contains("indexed_insert")
                         || composition.body().contains("indexed_remove")
                         || composition.body().contains("indexed_contains"));
-        assertTrue("each insertion carries the operation's own "
-                        + "definedness, at the size the recording stated: "
+        assertTrue("each insertion and the removal carry the operation's "
+                        + "own definedness, at the size the recording "
+                        + "stated and a write in place kept: "
                         + composition.body(),
                 composition.body().contains("(and (<= 0 0) (<= 0 0))")
                         && composition.body().contains(
-                        "(and (<= 0 1) (<= 1 1))"));
+                        "(and (<= 0 1) (<= 1 1))")
+                        && composition.body().contains(
+                        "(and (<= 0 1) (< 1 2))"));
         assertTrue("and the element lands at the index, cell by cell, with "
                         + "no quantifier over the indices",
                 composition.body().contains("(ite (= 0 1) "));

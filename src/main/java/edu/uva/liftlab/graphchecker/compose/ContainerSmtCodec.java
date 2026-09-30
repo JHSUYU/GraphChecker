@@ -513,10 +513,12 @@ public final class ContainerSmtCodec {
         if ("WRITE".equals(operation) && arguments.size() == 2) {
             Term index = host.operand(arguments.get(0), Sort.INT);
             Term value = host.box(arguments.get(1));
+            // In place: the size is the receiver's (dropped, Lucene's
+            // deleteCommits compaction left its REMOVE no size to shift by).
             return index == null || value == null ? null
                     : new Term("(indexed_write " + receiver.text + " "
                     + index.text + " " + value.text + ")",
-                    Sort.INDEXED);
+                    Sort.INDEXED, IntegralWidth.NONE, receiver.indexedSize);
         }
         if ("APPEND".equals(operation) && arguments.size() == 1) {
             Term value = host.box(arguments.get(0));
