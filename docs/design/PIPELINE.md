@@ -440,7 +440,8 @@ subshell, or remotely through `ssh` running `run_engine.sh --run-obligation` wit
 its sha256), and loops. The memory gate (`campaign_host_try_start <host> [need] [ramp]`) is a ledger
 shared by all campaigns and `tools/adhoc/fanout.sh` under `$CAUSYNTH_HOST_LEDGER/<host>/`
 (`tools/lib/gc-env.sh`): each row is `<epoch> <mb> <ramp_s> <id>`, and a start is allowed when
-`MemAvailable − (rows still inside their own ramp) ≥ need + 3072`. An obligation needs
+`MemAvailable − (rows still inside their own ramp) ≥ need + MemTotal × (100 − p) / 100`, where
+`p` is `CAUSYNTH_HOST_MAX_USED_PCT` (70): no start leaves a host more than 70 % full. An obligation needs
 `obligation_memory_mb` for 60 s. The head (`do_campaign`, `campaign_head_charged`) charges each of
 its engine JVMs `engine_memory_mb` (else 8192) for 120 s and its seed and CONFIRM replays
 `obligation_memory_mb` for 300 s, and releases the row when the command returns
