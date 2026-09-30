@@ -71,6 +71,19 @@ DataNode check; the other three NameNode clocks move only because `clock_order` 
 readings ordered, which the cone does not follow, so the cone gate would still fail on them.
 hdfs-17960, hdfs-17897, hdfs-17899-bug1 and hdfs-17967-pathB keep their claims (r3, r7).
 
+Round `rb1` (this branch before the merge of main `69edf0c06`, fresh seeds) failed hdfs-17967-pathB
+and pathC: their witness moved `HDFS.BLOCK_KEY.SERIAL_NO`, not a door. Main's `7e0d8b14e` moves a
+flip query's non-control handoffs with their own run's arms, so a wave-0 flip at
+`retrieveDataEncryptionKey#u8` moved the target DataNode's block keys with the serial, while the
+worker DataNode's SASL key id stayed: main's weave exports it as a constant (R1-ROOTS' `ra1` states
+it as the worker's heartbeat handoff). The replay was answered with key id 119532 where its producer
+sent 119533, and COMPOSE pinned the answer as a literal. HEAD binds an answered handoff by its family
+(R2). Offline over `rb1` (`/bigtemp/vnr3ne/ab/r11741-2-rb1`), both claim `MARKER_FLIPPED` on an IPC
+request door (`REGION.763d087e`), with no unbound boundary variable (`cone.py`); pathC's witness
+needs a CONFIRM replay. Over r8/r7 (`r11741-1-r8r7`, `r11741-1b-r8r7`) the other eight HDFS claims
+are main's, and hdfs-11741's and hdfs-17967-pathA's composition is the branch's before the change
+(`r11741-3-branch-vs-fix`).
+
 The ad-hoc checks have found no new bug; the only confirmed ad-hoc witnesses ever were two
 CLOCK_SKEWs on token-expiry checks, judged to be HDFS's clock-sync assumption.
 
