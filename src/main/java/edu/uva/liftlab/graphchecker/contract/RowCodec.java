@@ -436,6 +436,18 @@ public final class RowCodec {
         return json;
     }
 
+    /**
+     * A schedule mark: where occurrence {@code id} opened, or
+     * {@link ScheduleEvent#WITNESS}; not an event, so readers of events skip
+     * it ({@code SessionReader#readSchedule}).
+     */
+    public static JsonObject writeScheduleMark(String id, long at) {
+        JsonObject json = new JsonObject();
+        json.addProperty("mark", id);
+        json.addProperty("at", at);
+        return json;
+    }
+
     public static ScheduleEvent readScheduleEvent(JsonObject json) {
         return ScheduleEvent.of(number(json, SEQ),
                 ScheduleEvent.Kind.valueOf(string(json, "kind")),

@@ -1219,6 +1219,34 @@ public class ScheduleLogTest {
     }
 
     /**
+     * AN ORDER CUT AT ITS WITNESS ENDS THERE: its run made nothing it does
+     * not list before the witness, so a WAKE it never made -- a daemon's
+     * first turn -- waits until the order has drained, even in the unheld
+     * order CONFIRM writes (hdfs-17967-pathC r1b: the target DataNode's
+     * first BP_SERVICE_ACTOR turn ran free before the anchor and refreshed
+     * the keys the witness had failed on).  Any other event it lacks runs
+     * free, as past any cut.
+     */
+    @Test(timeout = 20000L)
+    public void anOrderCutAtItsWitnessHoldsAWakeItNeverMadeToItsEnd()
+            throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        ScheduleLog.enforceForTests(Collections.<ScheduleEvent>emptyList(),
+                prefix("a", "anchor"), true);
+        Thread daemon = observer(ScheduleEvent.Kind.WAKE, "tick.first");
+        Thread.sleep(300L);
+        assertTrue("the daemon's first turn waits for the witness's order",
+                daemon.isAlive());
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "unnamed");
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "a");
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "anchor");
+        daemon.join(5000L);
+        assertFalse(daemon.isAlive());
+        assertEquals(Arrays.asList("unnamed", "a", "anchor", "tick.first"),
+                sites());
+    }
+
+    /**
      * A stall gives up only what came before the earliest waiting timeout,
      * past the prefix or inside it: a later timeout still waits for what it
      * followed.

@@ -320,6 +320,20 @@ public final class ConcolicRegionRuntime {
         return "UNNAMED_STATUS(" + status + ")";
     }
 
+    /** Set once the run has ended ({@link #endAdmission}). */
+    private static volatile boolean admissionEnded;
+
+    /**
+     * Ends the run's admission: no region starts after it.  The run ends
+     * before its VM session does ({@code JUnitMethodRunner#exit}): cluster
+     * threads outlive the test, and a region they start once the session is
+     * closed opens a fresh one, where every handle the old one made is
+     * foreign.
+     */
+    static void endAdmission() {
+        admissionEnded = true;
+    }
+
     /**
      * Admits the one planned occurrence this root invocation will execute.
      *
@@ -329,7 +343,7 @@ public final class ConcolicRegionRuntime {
     private static ActiveRegion admitRegion(
             ConcolicTaskPlan config, String rootHookGroupKey,
             String rootMethod, Object receiver, Object[] rootArguments) {
-        if (config.tasks.isEmpty() || rootMethod == null) {
+        if (admissionEnded || config.tasks.isEmpty() || rootMethod == null) {
             return null;
         }
         RuntimeTask admitted = selectTask(config, rootHookGroupKey,

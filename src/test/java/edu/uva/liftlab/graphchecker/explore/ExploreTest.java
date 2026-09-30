@@ -3418,6 +3418,12 @@ public class ExploreTest {
         OccurrenceAddress unrelated = occurrence("hdfs-case/dn0",
                 "REGION.elsewhere", CausalContext.of(Role.of("DATA_XCEIVER"),
                         "", 3), "o.a.h.h.s.d.DataXceiver#run#77");
+        // Where a port event ran outside every admitted activation: its
+        // ambient row names the place, and no activation of its region ran
+        // there, so it is no candidate however its region holds the site.
+        OccurrenceAddress ambient = occurrence("hdfs-case/dn0",
+                "REGION.handler", CausalContext.of(Role.of("IPC_HANDLER"),
+                        "", 1), "o.a.h.h.s.b.KeyManager#run#9");
         Endpoint stored = at(enclosing, Endpoint.stateSite(
                         "BlockTokenSecretManager", "addKeys", 12, true),
                 "BlockTokenSecretManager#addKeys#12");
@@ -3427,6 +3433,7 @@ public class ExploreTest {
         seed.activation(enclosing, false);
         seed.activation(holder, false);
         seed.activation(unrelated, false);
+        seed.activation(ambient, false, false);
         seed.symbolic("e.stored", "M_HOFF_KEY");
         seed.write(stored, ALL_KEYS, 5L, "e.stored");
         seed.read(LOOKED_UP, ALL_KEYS, 5L, "M_READ_KEY", "119992");
@@ -3467,12 +3474,15 @@ public class ExploreTest {
         skeletons(iteration,
                 skeleton("REGION.inner", "KeyManager"),
                 skeleton("REGION.holder", "KeyManager", "BPServiceActor"),
+                skeleton("REGION.handler", "KeyManager"),
                 skeleton("REGION.outer", "BlockTokenSecretManager"),
                 skeleton("REGION.elsewhere", "DataXceiver"),
                 skeleton("REGION.target", "BlockTokenSecretManager"));
-        Map<String, String> held = why(ClosurePlanner.plan(
-                Corpus.read(iteration, null), TARGET, ClosurePlanner.DEFAULT_MAX_TASKS,
-                StaticScopeMap.read(mapFile)));
+        ClosurePlanner.Plan plan = ClosurePlanner.plan(
+                Corpus.read(iteration, null), TARGET,
+                ClosurePlanner.DEFAULT_MAX_TASKS,
+                StaticScopeMap.read(mapFile));
+        Map<String, String> held = why(plan);
         assertEquals("the occurrence whose region holds the site's method is"
                         + " the static candidate writer: " + held,
                 ClosurePlanner.STATIC_CANDIDATE_WRITER,
@@ -3480,6 +3490,9 @@ public class ExploreTest {
         assertFalse("and an occurrence of a region that does not hold it is"
                         + " not, though it ran on the same node: " + held,
                 held.containsKey(unrelated.render()));
+        assertFalse("nor is an ambient one, which nothing waits on either: "
+                        + plan.waiting, plan.waiting.contains(ambient)
+                || plan.exposed.containsKey(ambient));
     }
 
     /** Which rule proposed each task of one plan, by focused occurrence. */
@@ -3797,14 +3810,6 @@ public class ExploreTest {
         private void activation(OccurrenceAddress occurrence,
                                 boolean focused) {
             activation(occurrence, focused, true);
-        }
-
-        /**
-         * The lightweight entry hook's row: this region RAN, and nothing
-         * else about it can exist because it was never retained.
-         */
-        private void lightweight(OccurrenceAddress occurrence) {
-            activation(occurrence, false, false);
         }
 
         private void activation(OccurrenceAddress occurrence, boolean focused,

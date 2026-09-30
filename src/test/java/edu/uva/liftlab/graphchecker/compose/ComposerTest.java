@@ -1223,6 +1223,34 @@ public class ComposerTest {
                 across.body().contains("(= vh " + MARKER + ")"));
         assertFalse("so the focused replay's own arrival is not the answer",
                 across.body().contains("(= vh true)"));
+
+        // A REFUSAL IS ITS FRAME'S.  The first corpus again, where s1's run
+        // refused an attach at the anchor itself, which then computed on
+        // the arrival as a constant, and s0's run refused one in an
+        // occurrence no closure here reaches: s1's path is refused, by
+        // name, and s0's is composed as before.
+        Path framed = folder.newFolder("framed").toPath();
+        for (String[] each : new String[][]{{"s0", "10", "false"},
+                {"s1", "20", "true"}}) {
+            Session session = new Session(framed, each[0],
+                    "true".equals(each[2]));
+            session.activation(PRODUCER);
+            session.marker("false");
+            session.expression("EXPR.v1.id", integer("I",
+                    Long.parseLong(each[1])));
+            session.export(producer, "EXPR.v1.id", 1L, each[1]);
+            session.attach(consumer, "vh", "I", each[1], producer);
+            session.target("true", false, true);
+            session.refusedAttach("s1".equals(each[0]) ? ANCHOR : UPSTREAM);
+            session.write();
+        }
+        Composer.Composition refusedFrame = compose(framed, 4);
+        assertEquals("only s0's path: " + refusedFrame.gaps(), "s0",
+                refusedFrame.disjuncts().get(0).path().sessionId);
+        assertEquals(1, refusedFrame.disjuncts().size());
+        assertTrue("s1's is refused for its anchor's refusal",
+                says(refusedFrame.gaps(), GapKind.UNSTATED_VALUE,
+                        "whose own run refused a value it computes on"));
     }
 
     // ------------------------------------------------------------------
@@ -3960,6 +3988,82 @@ public class ComposerTest {
     }
 
     /**
+     * A PATH'S FAMILIES ARE ALL OR NOTHING.  s1 received message m, which
+     * s0 and s2 could also have sent, and message n, which only s3 states
+     * why it sent -- in a world (flip b) no path under s1's (flip a) takes a
+     * delivery from.  So s1's path is refused at n, after m's family was
+     * closed, and s2's path is composed at the ordinal s1 left free: m's
+     * family is named there again, once, and nothing of s1's stays
+     * (hdfs-17899-bug1 r1: 18 names defined twice, and z3 answered the query
+     * with an error).
+     */
+    @Test
+    public void aPathRefusedAtItsFamiliesLeavesNothingInTheQuery()
+            throws Exception {
+        Path iteration = folder.newFolder("refused-families").toPath();
+        Endpoint sent = Endpoint.of(PRODUCER, "PORT.m", at("export#1", 0), 0);
+        Endpoint other = Endpoint.of(UPSTREAM, "PORT.n", at("export#2", 0), 0);
+        for (String id : new String[] {"s0", "s1", "s2", "s3"}) {
+            Session session = new Session(iteration, id, !"s0".equals(id));
+            session.activation(PRODUCER);
+            session.marker("false");
+            session.expression("EXPR.v1.id", integer("I", 10L));
+            session.decision(PRODUCER, "nn#u1", "(or " + MARKER + " (not "
+                    + MARKER + "))");
+            session.export(sent, "EXPR.v1.id", 1L, "10");
+            session.attach(Endpoint.of(ANCHOR, "PORT.m", at("attach#1", 0),
+                    0), "vh1", "I", "10", sent, "corr-m");
+            if ("s1".equals(id) || "s3".equals(id)) {
+                // s1 ran n's sender concretely; s3 states why it sent.
+                boolean why = "s3".equals(id);
+                session.activation(UPSTREAM, "thread#" + UPSTREAM.regionId(),
+                        true, why);
+                if (why) {
+                    session.decision(UPSTREAM, "up#u1", "(or " + MARKER
+                            + " (not " + MARKER + "))");
+                }
+                session.export(other, "EXPR.v1.id", 2L, "10");
+                session.attach(Endpoint.of(ANCHOR, "PORT.n",
+                        at("attach#2", 0), 0), "vh2", "I", "10", other,
+                        "corr-n");
+            }
+            if (!"s3".equals(id)) session.target("true", false, true);
+            session.write();
+        }
+        Map<String, String> none = Collections.emptyMap();
+        obligation(iteration, "s1", none, "a#u1",
+                Collections.<String>emptyList());
+        obligation(iteration, "s3", none, "b#u1",
+                Collections.<String>emptyList());
+
+        Composer.Composition composition = compose(iteration, 4);
+        Set<String> ordinals = new LinkedHashSet<String>();
+        for (Composer.Disjunct disjunct : composition.disjuncts()) {
+            assertFalse("s1 is refused at n", "s1".equals(
+                    disjunct.path().sessionId));
+            ordinals.add(ordinal(disjunct.selector()));
+        }
+        assertEquals("s0 and s2 are paths", 2, ordinals.size());
+        assertTrue("s1 is refused where no run of a compatible world sent n",
+                says(composition.gaps(), GapKind.UNPRODUCIBLE_ANSWER,
+                        "compatible with this path's"));
+        for (String selector : composition.armSelectors()) {
+            assertTrue("every arm is a disjunct's: " + selector,
+                    ordinals.contains(ordinal(selector)));
+        }
+        Set<String> named = new LinkedHashSet<String>();
+        for (String line : composition.body().split("\n")) {
+            int at = line.indexOf(":named ");
+            if (at < 0) continue;
+            assertTrue("named once: " + line, named.add(
+                    line.substring(at).split("[ )]")[1]));
+        }
+        assertTrue("z3 answers the query: " + named, solver().ask(
+                composition.query(composition.valuations().get(0)
+                        .assertions()), null, false).decided());
+    }
+
+    /**
      * One reference, one rule: lowered alone (the flip solver's and the
      * closure planner's entry) it states where it is defined, as it does
      * when a published term names it.  A node two expressions share is one
@@ -4797,6 +4901,7 @@ public class ComposerTest {
         private final List<TargetRow> targets = new ArrayList<TargetRow>();
         private final List<WriteRow> writes = new ArrayList<WriteRow>();
         private final List<ReadRow> reads = new ArrayList<ReadRow>();
+        private final List<GapRow> gaps = new ArrayList<GapRow>();
         private final Map<String, JsonObject> expressions =
                 new LinkedHashMap<String, JsonObject>();
 
@@ -4980,6 +5085,13 @@ public class ComposerTest {
                     observedFatal, reached));
         }
 
+        /** The row a VM-refused attach inside {@code at} files. */
+        void refusedAttach(OccurrenceAddress at) {
+            gaps.add(GapRow.of(id, GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                    at.render(), "the VM refused the attach of handle 7 at "
+                            + "PORT.id (HANDOFF_FOREIGN_HANDLE)"));
+        }
+
         void write() throws IOException {
             SessionDir dir = SessionDir.of(iteration, id).create();
             RowCodec.writeAll(dir.activations(), activations,
@@ -4993,6 +5105,7 @@ public class ComposerTest {
             RowCodec.writeAll(dir.reads(), reads, RowCodec::writeRead);
             RowCodec.writeAll(dir.roots(), roots, RowCodec::writeRootMint);
             RowCodec.writeAll(dir.targets(), targets, RowCodec::writeTarget);
+            RowCodec.writeAll(dir.gaps(), gaps, RowCodec::writeGap);
             RowCodec.writeExpressions(dir.expressions(),
                     ExpressionTable.of(expressions));
             // The fixture STATES the role, as a campaign's own session

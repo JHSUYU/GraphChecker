@@ -703,6 +703,7 @@ public final class Composer {
         List<ReadRow> joined = new ArrayList<ReadRow>();
         List<String> observed = new ArrayList<String>();
         Map<String, String> joins = new LinkedHashMap<String, String>();
+        frameRefusals(session, reached.keySet(), refusals);
 
         // (0a') What phi rests on (constraint independence): conditions and
         //       reads sharing no variable with phi or a root stay out.
@@ -815,12 +816,13 @@ public final class Composer {
         // (6) Families: one selector per (producer occurrence, session) for
         //     every interaction reached, under this path's selector.  If no
         //     single session could make all deliveries the path took (PIPELINE
-        //     §8),
-        //     the path is dropped.
+        //     §8), the path is dropped, and what its families stated is taken
+        //     back with it.
         List<String> familyTerms = new ArrayList<String>();
         List<GapRow> unproducible = new ArrayList<GapRow>();
         if (!composedFamilies.closeFamilies(ordinal, selector, session,
                 interactionIds, bound, familyTerms, unproducible)) {
+            composedFamilies.discard();
             refused(unproducible);
             return null;
         }
@@ -832,6 +834,8 @@ public final class Composer {
         // (8) And the state joins this conjunction ASKS ABOUT.
         terms.addAll(statedJoins(joins, chosen, terms, familyTerms));
 
+        // Nothing refuses the path from here: it is a disjunct.
+        composedFamilies.commit();
         lowering.assertNamed("path_fatal__" + ordinal,
                 "(=> " + selector + " " + VmTermLowering.and(terms) + ")");
         observedReads.put(path.pathId, observed);
@@ -1263,6 +1267,25 @@ public final class Composer {
             }
         }
         return reached;
+    }
+
+    /**
+     * A REFUSAL IS ITS FRAME'S: a value the run refused inside an occurrence
+     * ({@link Corpus#refusedIn}) refuses a path or an arm whose closure
+     * reaches that occurrence, and nothing else.  A refused attach used to
+     * be BLOCKING for the whole campaign, wherever it ran (hdfs-17899-bug1
+     * r1: 55 of them, all in NameNode registration handlers).
+     */
+    void frameRefusals(String session, Set<String> reached,
+                       List<GapRow> refusals) {
+        for (String occurrenceId : reached) {
+            GapRow refused = corpus.refusedIn(session, occurrenceId);
+            if (refused == null) continue;
+            refusals.add(GapRow.of(session, GapKind.UNSTATED_VALUE,
+                    GapClass.DIAGNOSTIC, refused.subject(), "this closure "
+                            + "reaches an occurrence whose own run refused a "
+                            + "value it computes on: " + refused.detail()));
+        }
     }
 
     /**

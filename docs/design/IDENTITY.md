@@ -237,7 +237,8 @@ lane, an IN capture to the latest RECEIVE, rewound to that exchange's first fram
 begin), `END` (a tick's end), `INTERRUPT`. `context` = `<node>|<ctx render>[|<start frames>]`
 (`ScheduleLog#contextOf`, `Identity#handoffs`); `k` counts events per (kind, context, site). A
 `Lost` context, and a context anchored by an unawaited receipt, make no event. `mark` rows state
-where each occurrence opened (the cut of a prefix focusing it).
+where each occurrence opened (the cut of a prefix focusing it); `{mark: WITNESS, at}` states the run
+was cut at its witness.
 
 `runtime/ScheduleLog` records in both passes into `schedule.jsonl`. In a replay it also holds the
 order:
@@ -255,7 +256,13 @@ order:
   slot is due: `runtime/ClockLoops` finds, on the waiting thread's stack, a method in which the
   scope map declares a CLOCK root (by method, so a clock read in a callee that returned before the
   wait is missed). The watchdog lets held waits go when the run idles; a released timed wait still
-  waits out its own deadline. Past the cut a `WAKE` with no slot runs free;
+  waits out its own deadline. Past the cut a `WAKE` with no slot runs free, except in an order whose
+  run was cut at its witness: that run's log states it (a `{mark: WITNESS, at}` row,
+  `ScheduleLog#witnessed`, handed on in the rest by `SchedulePrefix#write`), it made nothing it does
+  not list before the witness, so its order ends there and a `WAKE` with no slot waits at the
+  order's end, not its cut, until every non-`WAKE` slot is settled (`ScheduleLog#line`; CONFIRM's
+  unheld order included). Only a `WAKE` comes unbidden (a timer); any other event the order lacks
+  follows a cause the order holds, and runs free;
 - settling: a closed occurrence's untaken slots are dead; a turn's `END` gives up what the turn did
   not do; a waiter gives up what its own occurrence did not make before its slot; the watchdog
   acts after `causynth.schedule.timeout.ms` (default 15 s) with waiters, no slot settled and no

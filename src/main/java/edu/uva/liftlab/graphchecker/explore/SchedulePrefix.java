@@ -20,7 +20,8 @@ import java.util.Map;
  * past it the flip runs free, but each timeout WAKE in {@link #REST_FILE} still
  * waits for the events it followed ({@code runtime.ScheduleLog}) -- on a slower
  * replay's wall clock every daemon would be due at once. No cut found: whole
- * schedule.
+ * schedule. A source run cut at its witness hands its mark on with the rest
+ * ({@code ScheduleEvent#WITNESS}): its order ends there.
  */
 final class SchedulePrefix {
     /** The file the replay reads, beside its focus row. */
@@ -37,12 +38,16 @@ final class SchedulePrefix {
         final int kept;
         final int of;
         final boolean found;
+        /** The source run was cut at its witness. */
+        final boolean atWitness;
 
-        private Cut(String sessionId, int kept, int of, boolean found) {
+        private Cut(String sessionId, int kept, int of, boolean found,
+                    boolean atWitness) {
             this.sessionId = sessionId;
             this.kept = kept;
             this.of = of;
             this.found = found;
+            this.atWitness = atWitness;
         }
 
         JsonObject toJson() {
@@ -52,6 +57,7 @@ final class SchedulePrefix {
             json.addProperty("rest", of - kept);
             json.addProperty("of", of);
             json.addProperty("cutAtFocus", found);
+            json.addProperty("endsAtWitness", atWitness);
             return json;
         }
     }
@@ -100,8 +106,16 @@ final class SchedulePrefix {
             (index < cut ? rows : rest).add(
                     RowCodec.writeScheduleEvent(events.get(index)));
         }
+        // A run cut at its witness orders nothing after it: the order ends
+        // there, and the replay reads that off its rest.
+        Long witness = marks.get(ScheduleEvent.WITNESS);
+        if (witness != null) {
+            rest.add(RowCodec.writeScheduleMark(ScheduleEvent.WITNESS,
+                    witness));
+        }
         RowCodec.writeJsonl(out.resolve(FILE), rows);
         RowCodec.writeJsonl(out.resolve(REST_FILE), rest);
-        return new Cut(sessionId, cut, events.size(), found);
+        return new Cut(sessionId, cut, events.size(), found,
+                witness != null);
     }
 }

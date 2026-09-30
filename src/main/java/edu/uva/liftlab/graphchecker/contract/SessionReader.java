@@ -27,6 +27,7 @@ public final class SessionReader {
     private final List<ReadRow> reads;
     private final List<RootMintRow> roots;
     private final List<TargetRow> targets;
+    private final List<GapRow> gaps;
     private final List<ObligationResult> obligations;
     private final ExpressionTable expressions;
     private final SessionManifest manifest;
@@ -38,6 +39,7 @@ public final class SessionReader {
                           List<ExportRow> exports, List<AttachRow> attaches,
                           List<WriteRow> writes, List<ReadRow> reads,
                           List<RootMintRow> roots, List<TargetRow> targets,
+                          List<GapRow> gaps,
                           List<ObligationResult> obligations,
                           ExpressionTable expressions,
                           SessionManifest manifest, String incomplete) {
@@ -52,6 +54,7 @@ public final class SessionReader {
         this.reads = Collections.unmodifiableList(reads);
         this.roots = Collections.unmodifiableList(roots);
         this.targets = Collections.unmodifiableList(targets);
+        this.gaps = Collections.unmodifiableList(gaps);
         this.obligations = Collections.unmodifiableList(obligations);
         this.expressions = expressions;
     }
@@ -84,8 +87,7 @@ public final class SessionReader {
                 RowCodec::readRootMint);
         List<TargetRow> targets = partial.rows(dir.targets(),
                 RowCodec::readTarget);
-        // Held by no one; read so an unreadable file still marks the session.
-        partial.rows(dir.gaps(), RowCodec::readGap);
+        List<GapRow> gaps = partial.rows(dir.gaps(), RowCodec::readGap);
         List<ObligationResult> obligations = partial.rows(dir.obligations(),
                 RowCodec::readObligationResult);
         ExpressionTable expressions = partial.read(dir.expressions(),
@@ -93,7 +95,7 @@ public final class SessionReader {
         SessionManifest manifest = partial.read(dir.manifest(),
                 RowCodec::readManifest, null);
         return new SessionReader(dir, activations, decisions, exports,
-                attaches, writes, reads, roots, targets, obligations,
+                attaches, writes, reads, roots, targets, gaps, obligations,
                 expressions, manifest, partial.reason);
     }
 
@@ -114,6 +116,7 @@ public final class SessionReader {
                 Collections.<WriteRow>emptyList(),
                 Collections.<ReadRow>emptyList(), roots,
                 Collections.<TargetRow>emptyList(),
+                Collections.<GapRow>emptyList(),
                 Collections.<ObligationResult>emptyList(),
                 ExpressionTable.empty(), manifest, partial.reason);
     }
@@ -248,6 +251,11 @@ public final class SessionReader {
 
     public List<TargetRow> targets() {
         return targets;
+    }
+
+    /** What the run refused or noted, each on the subject it names. */
+    public List<GapRow> gaps() {
+        return gaps;
     }
 
     /** The replay's verdicts, one per obligation run; the only authority. */

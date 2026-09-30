@@ -163,6 +163,22 @@ session set with no non-empty `activations.jsonl`, or no `targets.jsonl` row who
 is in the target method (from the scope map's `TARGET_SITE` row) fails REPLAY. The workload's exit
 code is not the gate (a target that throws exits nonzero by design).
 
+A replay's run ends before its VM session does (`runtime.JUnitMethodRunner#exit`, for the workload's
+end and the witness stop alike): admission ends (`ConcolicRegionRuntime#endAdmission`: no region
+starts after it), live activations settle, the run totals close the session's rows (a closed
+`SessionPublisher` writes nothing more), and only then the VM session closes. Cluster threads
+outlive the test, and a region started after the close would open a fresh VM session in which
+every handle the old one made is foreign (`HANDOFF_FOREIGN_HANDLE`).
+
+A focused replay ends at its witness: when the focus row's declared occurrence publishes a target row
+that observed the fatal (`ConcolicResultPublisher#concludeAtWitness`), admission ends, its schedule
+states the run cut there (`ScheduleLog#witnessed`: a replay held to it holds a `WAKE` it never made
+to the order's end, IDENTITY.md §8), the publications in flight settle, every activation still live is stranded (`TASK_UNANSWERED`
+`AT_WITNESS`; one live a grace past the workload's end is `TERMINAL_NEVER_REACHED`), and one that
+completes after the witness is not published (`AT_WITNESS`). A stranded or late activation's path
+is withheld and its mints are published, as an abandoned one's are: other activations' rows already
+name its symbols (IMPORT invariant 11).
+
 A write of a reference states the state of the container it stored (`runtime.SharedStateCapture`
 admits the VM's `referentState`/`referentStateRefused` on a WRITE or RMW of a field or an element
 only, and `RowPublication` carries it onto the `WriteRow`); a read of a reference states the
@@ -249,8 +265,12 @@ could observe. Each demanded boundary input grows the closure:
 
 An attach or read no demanded value rests on is a DIAGNOSTIC gap, once per endpoint. A region holds a
 static site when the map's method set of the region contains the site's method or one of its callers;
-with no method set, region-id equality. A static site no session activated is a DIAGNOSTIC gap ("the
-retained set would have to grow"), not a task. Each demanded occurrence becomes a `Task` (id =
+with no method set, region-id equality. "Activated" means an instrumented activation row: an ambient
+row (a port event outside every admitted activation, `RowRuntime#ambientActivation`) names where the
+event ran, not a region that ran the site, so it makes no static candidate
+(`ClosurePlanner#activated`); an ambient occurrence joins the closure only through the rows that name
+it. A static site no session activated is a DIAGNOSTIC gap ("the retained set would have to grow"),
+not a task. Each demanded occurrence becomes a `Task` (id =
 `digest("task|" + occurrence id)`, focused occurrence, state-connected factor, planned from the seed if
 the seed captured it, else the first admitted session that did); its flip sites are its demanded sites
 plus every fault site (`Corpus.faultSites`: a decision whose lowered term reaches a MARKER root). A
@@ -409,7 +429,10 @@ BLOCKING `DECLARATION_MISSING`; no disjunct is BLOCKING `ADMISSION_GAP` naming t
 **One path** (`compose(path, ordinal)`), in its own session's scope:
 
 - P3 closure (`closure`): the occurrences the path's joins reach, each with the seq its prefix runs to,
-  including earlier versions of every reached write's location;
+  including earlier versions of every reached write's location; a refusal is its frame's
+  (`frameRefusals`): an `UNSTATED_VALUE` row the session filed on a reached occurrence (a VM-refused
+  attach, an attach that minted no `v_H`; `Corpus#refusedIn`) refuses the path, and an arm whose
+  closure reaches one is no option;
 - constraint independence (`compose.Independence`): conditions and reads sharing no variable with phi
   (or a root) stay out;
 - the valuation this session ran each non-clock root at (`valuationOf`; `Corpus.rootValue`: the
@@ -442,7 +465,11 @@ Then **message families** (`ComposedFamilies.closeFamilies`): attaches grouped b
 sessions with an attested arm at every leaf of the message, whose world's flip set contains or is
 contained in the path's; one `message_arm__` selector per sender (identical arm bodies share one),
 exactly one, each arm closed like a path in its own session (producer prefix before the delivery, its
-P3 closure, nested families to depth 16). A message no session can send drops the path.
+P3 closure, nested families to depth 16). A message no session can send drops the path. A path's
+families (message and state) are all or nothing: their named assertions, arm choices and families
+are stated as they are made and taken back with a refused path (`ComposedFamilies#discard`,
+`SmtLowering#retract`), so the next path, composed at the ordinal a refused one left free, names
+nothing twice.
 
 **State families** (`stateFamilies`), for joined reads at the anchor only, of a static field or of a heap
 location whose owner is an object rid (`Arms.namedOwner`; a class-name owner gets no alternatives):
@@ -609,7 +636,8 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
   any other root as its value, at the recording's mint occurrence). The focus row focuses the anchor
   with `flip: null`, the anchor as declared target, no inherited flips. The schedule is written
   unheld (`SchedulePrefix.write(..., held=false)`: every event is suffix; only WAKEs wait for what
-  they followed). `expected_edges.jsonl`: `WIRE` per consumer of each selected message arm (producer
+  they followed, and when the selected session was cut at its witness, a WAKE it never made waits
+  for its whole order). `expected_edges.jsonl`: `WIRE` per consumer of each selected message arm (producer
   as that arm's session paired it), `STATE` per read of the anchor's join closure (each reached
   occurrence's reads before its cutoff, the anchor's before its target seq; the writer the model
   chose through a `writer_arm__`, else the observed one), `ORDER`

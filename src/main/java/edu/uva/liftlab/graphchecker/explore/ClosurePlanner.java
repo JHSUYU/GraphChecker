@@ -722,13 +722,21 @@ public final class ClosurePlanner {
         return false;
     }
 
-    /** Whether some session of this corpus ran one occurrence. */
+    /**
+     * Whether some session of this corpus ran one occurrence as an
+     * activation of its region.  An ambient row (a port event outside every
+     * admitted activation, {@code RowRuntime#ambientActivation}) names where
+     * the event ran, not a region that ran the site: counted, every refused
+     * attach made the handler it ran in a static candidate, and each
+     * candidate's doors control producers (hdfs-17967-pathA r1: a closure
+     * truncated at 64, with 40 NameNode registration handlers and 37
+     * DataNode senders left out).  An ambient occurrence still grows the
+     * closure through the rows that name it ({@link #uncaptured}).
+     */
     private static boolean activated(Corpus corpus,
                                      OccurrenceAddress occurrence) {
-        for (SessionReader session : corpus.sessions()) {
-            if (corpus.activation(session.sessionId(), occurrence) != null) {
-                return true;
-            }
+        for (ActivationRow row : corpus.activationsOf(occurrence)) {
+            if (row.instrumented()) return true;
         }
         return false;
     }
