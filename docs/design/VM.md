@@ -38,7 +38,7 @@ Java paths under `src/main/java/edu/uva/liftlab/graphchecker/`.
 - **Regions.** `startConcolicRegion` / `finishConcolicRegion` bracket one activation on one thread;
   each region frame owns its guard, auxiliary conditions and branch events
   (`VM/concolic/threadContext.cpp`). Nothing is recorded in a region until it reads something
-  symbolic (the admission gate); `observeExactPrimitiveField` and every mint open it.
+  symbolic (the admission gate); `observeField` and every mint open it.
 - **Branches.** The weave marks decision sites with `markConcolicBranch(siteId, ...)`; a marked
   branch is an event even when concrete (zero conditions). `getConcolicBranchEvents` returns the
   events since the last read; `getConcolicPathConditionRange` a range of the region's conditions.
@@ -114,22 +114,22 @@ plain objects: its elements' fields propagate, but it has no container state and
 `SFV` keeps a version log per location `(ownerSymRid, slot, kind)`, kind `INSTANCE_FIELD`,
 `STATIC_FIELD` (owner = the class mirror), `ARRAY_ELEMENT`, or `MAP_STATE` (a container's whole
 state, slot `-3`; a view and its map are one location). Version kinds: `INITIAL`, `WRITE`, `RMW`,
-`STATE`, `UNOBSERVED`. A version carries its expression, writer, site, path guard and, for a
-scalar, the concrete word the store left (a wrapper-typed field's word is its box's primitive, or
-the null word).
+`STATE`, `UNOBSERVED`. A version carries its expression, writer, site, path guard and the concrete
+word the store left: a scalar's bits, a reference's referent session id (named on demand; null is
+0), a wrapper-typed field's box primitive or the null word. A container state has no word.
 
 **One critical section per tracked access.** A tracked scalar store is the concrete store, its
 version id and its append under the location's lock (one of 64 stripes); a tracked load is the
 concrete load, the comparison with the newest version and the read record under it
 (`SFV::begin_store_locked`/`end_store_locked`, `plan_read_locked`; `BI` getfield/putfield and array
-paths). Log order is heap order, so a mismatch can only mean a writer no hook saw. Container
-versions carry no word: a container mutation is a Java call no lock can span.
+paths, `unsafeAccess`). Log order is heap order, so a mismatch can only mean a writer no hook saw.
+Container versions carry no word: a container mutation is a Java call no lock can span.
 
 ### 5.1 When a location is tracked
 
 Tracking is by value; nothing is declared in advance. A log starts at the first symbolic store
 (field or array element), a mint, an attach, a symbolic container operation, an admitted guarded
-store (§5.3), or `observeExactPrimitiveField` (§5.4). Once tracked, every store to it is versioned,
+store (§5.3), or `observeField` (§5.4). Once tracked, every store to it is versioned,
 concrete ones included, with the stored operand, not a heap re-read. A mint, an attach and an
 observation read the word they state under the location's lock (`publish_held`,
 `publish_initial_held`).
@@ -140,12 +140,13 @@ A read of a tracked location resolves to the newest retained version and states 
 loaded. When that version stored another word, a write the hooks never saw came between (a muted
 subtree's store, JNI): the read names a retained version that stored exactly the loaded word if
 there is one (ABA: a newer hooked version overwrote it, so the read is not exact), else publishes an
-`UNOBSERVED` version holding the loaded constant, minted under the lock; either way the location is
-marked incomplete (`UNOBSERVED_WRITE`). Every read states `observedExact` (the loaded word equals
-its observed version's stored word and that version is the newest; never for a reference or a
-container read), `writerSetComplete` (the location's writer set as of the read) and, when true,
-`unnamedWriter` (a writer the log never named reached the location: every incompleteness reason
-but `VERSION_BOUND`); a read that returned its version's word shares that version's constant.
+`UNOBSERVED` version holding the loaded constant (a reference: the loaded referent), minted under
+the lock; either way the location is marked incomplete (`UNOBSERVED_WRITE`). Every read states
+`observedExact` (the loaded word equals its observed version's stored word and that version is the
+newest; never for a container read), `writerSetComplete` (the location's writer set as of the read)
+and, when true, `unnamedWriter` (a writer the log never named reached the location: every
+incompleteness reason but `VERSION_BOUND`); a read that returned its version's word shares that
+version's constant, or for a reference its identity node.
 
 ### 5.3 Guarded concrete stores
 
@@ -163,16 +164,33 @@ once per method, not per store.
 
 ### 5.4 Observation
 
-`observeExactPrimitiveField(owner, fieldSignature)` (`VM/concolic/concolicMngr.cpp`) accepts a
-non-static field of type `boolean`, `byte`, `char`, `short`, `int` or `long`, or of the wrappers
-`Boolean`, `Byte`, `Character`, `Short`, `Integer`, `Long` (anything else prints a warning and does
-nothing). Unless the location is tracked, it installs the current value (a wrapper field: its box's
-constant, or null) as a concrete expression and publishes an INITIAL version with it, so the next
-concrete store is a `WRITE` and the next read names a version. SYMBOL-SCOPE.md §5.2 says where it
-is woven. A read of a wrapper field is its value's sort (`J` for a `Long`) and its unboxing reads
-the read.
+`observeField(owner, declaringClass, fieldName, descriptor)` (`VM/concolic/concolicMngr.cpp`)
+accepts a field of type `boolean`, `byte`, `char`, `short`, `int` or `long`, of the wrappers
+`Boolean`, `Byte`, `Character`, `Short`, `Integer`, `Long`, or of any reference type; `owner` is
+the object, or the declaring class's `Class` for a static field (keyed by its mirror, as
+`getstatic` keys it). Unless the location is tracked, it installs the current value (a wrapper
+field: its box's constant, or null; a reference: the referent's identity) as a concrete expression
+and publishes an INITIAL version with it and its word, so the next concrete store is a `WRITE` and
+the next read names a version. No referent is snapshotted there. It answers a status:
+`0`, or `-1` (no context), `-2` (an argument missing), `-3` (no such field of that kind on the
+declaring class), `-12` (`float`/`double`). SYMBOL-SCOPE.md §5.2 says where it is woven. A read of
+a wrapper field is its value's sort (`J` for a `Long`) and its unboxing reads the read.
 
-### 5.5 Bounds and threads
+### 5.5 A container behind a reference
+
+A store of a reference into a tracked cell (putfield/putstatic, aastore, an Unsafe put or CAS:
+`AtomicReference.set`/`compareAndSet`/`getAndSet`/`lazySet`, reflection) states what the referent's
+container state was, when the referent is a modeled container or a view or wrapper of one
+(`ContainerSupport::backing_container`): `referentState {ownerSymRid, slot, locationKind:
+MAP_STATE, fieldVersionId}`, the version of that container's location live at the store. It is
+asked before the carrier's stripe (`SFV::prepare_referent`, `UnsafeAccess::begin`), never under
+it; a container with no log starts one there with a stated snapshot. Otherwise the version states
+`referentStateRefused`: `UNREADABLE_CONTAINER:<class>`, `TRUNCATED`, `RESIZING`, `NO_CONTEXT` (a
+thread outside every region, and no log stands), or `STORE_NOT_PREPARED` (an arraycopy, or a
+location that became tracked after the store asked). A read of a reference cell states the
+identity it returned as its `concreteValue` (`ReturnedValue::REFERENCE`).
+
+### 5.6 Bounds and threads
 
 At most 64 versions per location and 1024 reads (dropping sets `readLogTruncated`). Locations are
 never evicted before session close. A location's incompleteness reasons are published
@@ -227,7 +245,7 @@ cross between nodes concretely, and the handle rides the message envelope (SYMBO
 `runtime/ConcolicVmBroker` looks 23 of them up by reflection, so it loads on a stock JDK, and
 `#requireCurrentCapabilities` refuses a replay plan before its workload starts when any is missing:
 sessions, regions, context and event ids, `symbolize`/`symbolizeField`/`symbolizeExactField`,
-`observeExactPrimitiveField`, `getSymbolicExpression`/`getSymbolicFieldExpression`, path-condition
+`observeField`, `getSymbolicExpression`/`getSymbolicFieldExpression`, path-condition
 pause/resume, branch events and range, `endConcolic`, `exportExpression`/`attachExpression`,
 `getTrackedLocationVersions`, `installGuardedStoreSites`. `markConcolicBranch` and the pause
 natives are called by woven code (`CausynthPipeline.HookCatalog#concolic`). The broker mirrors the
@@ -269,11 +287,11 @@ that does not hold.
 | `Unsafe.get<Primitive>(Object, long)` | hooked (field shadow, bypassing the version log) |
 | `System.arraycopy`, `Arrays.copyOf` | hooked: element values into the destination's state (a stated word per element; past 16384 elements a shadowed destination's state is dropped and named), tracked destination elements versioned in one critical section with the copy (`VM/concolic/heapCopy.cpp`); an object copy that checks each element's store holds no lock across it: it names its tracked destination elements (`ARRAYCOPY_STORE_CHECK`, or `ARRAYCOPY_FAILED` when it will throw) |
 | `Object.clone`, array `clone()` | hooked: the clone gets its own identity and the original's field shadows or state; a tracked field takes its newest version's value when the clone holds what it wrote (its word; a reference's shadow expression), else is concrete |
-| `Unsafe` puts, CAS, `getAndAdd*`/`getAndSet*` (`ConcurrentHashMap` slots, `lazySet`, `AtomicReference`, field updaters, reflective `Field.set`) on a shadowed object | hooked: versioned with the captured operand; uncaptured ones detected (`UNSAFE_WRITE_UNCAPTURED`) |
+| `Unsafe` puts, CAS, `getAndAdd*`/`getAndSet*` (`ConcurrentHashMap` slots, `lazySet`, `AtomicReference`, `AtomicBoolean`, field updaters, reflective `Field.set`) on a shadowed object | hooked: versioned with the captured operand; a captured CAS records `old == expected` (or `!=`) over the value it compared; uncaptured ones detected (`UNSAFE_WRITE_UNCAPTURED`) |
 | `String` and `StringBuilder`, boxing, `HashMap`/`ArrayList`/... operations, atomic RMW | modeled (§4) |
 | `Integer.parseInt`, `Long.parseLong` | detected and pinned (return symbol with its concrete value) |
 | primitive-to-string conversions other than `Integer.toString` | detected (a named operation, not pinned) |
-| a tracked scalar changed by a write the hooks never saw | detected and pinned (`UNOBSERVED`, or the retained version that stored the word) |
+| a tracked scalar or reference changed by a write the hooks never saw | detected and pinned (`UNOBSERVED`, or the retained version that stored the word) |
 | an array element a recorded write no longer describes | detected and pinned (concrete, `UNHOOKED_ELEMENT_WRITE`) |
 | map `putIfAbsent`/`putAll`/`replace*`/`compute*`/`merge`, list `removeIf` on a tracked container | detected (`writerSetComplete = false`); on an untracked one silently lost |
 | stream `write(byte[])`/`readFully`, `ByteArrayOutputStream` | through arraycopy: hooked |
@@ -298,10 +316,9 @@ that does not hold.
   outcomes; `multianewarray` dimensions; branches before a region's admission gate; symbolic
   branches the weave did not mark (they enter only the thread-wide condition, which the engine
   never reads). A version's guard holds only the innermost region's decisions.
-- Re-pairable state is integral and wrapper fields, modeled containers and Unsafe-written
-  locations. A container reached through a replaced reference field carries no state (the state
-  follows the object, not the field). A reference or container read states no word, so it is never
-  exact, and an unhooked write to one is not detected.
+- Re-pairable state is integral, wrapper and reference fields, modeled containers and
+  Unsafe-written locations. A container read states no word, so it is never exact, and an unhooked
+  mutation of a container is not detected.
 - A write from a muted or paused thread is unhooked (detected at the next read of a word it
   changed, not attributed).
 - `symbolize` stops at depth 5; mint failures print to the console only; a null argument to a mint
@@ -315,7 +332,7 @@ that does not hold.
 
 ## 11. Smoke tests
 
-`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 56
+`third_party/OpenJDK-Concolic-Execution-Engine/scripts/causynth_smoke_test.sh` compiles the 57
 `test/causynth/Region*Smoke.java` files and an slf4j probe, and runs each under `-Xint` with
 `JDK_HOME` set to the image; `RegionPathConditionTruncationSmoke` runs again with the byte bound
 unset, 0 and 8192. A test fails by throwing. The script is run by hand; neither `mvn test` nor
@@ -323,5 +340,5 @@ unset, 0 and 8192. A test fails by throwing. The script is run by hand; neither 
 `RegionCloneSmoke`, `RegionUnsafeWriteSmoke`, `RegionSharedBoxSmoke`,
 `RegionStringBuilderMutatorSmoke`, `RegionWrapperFieldSmoke`), and the versioning rules theirs
 (`RegionTrackedRaceSmoke`, `RegionReadExactnessSmoke`, `RegionLoadedValueSmoke`,
-`RegionVersionDefectsSmoke`). No smoke test covers the collections the VM does not model or
-anything across JVMs.
+`RegionVersionDefectsSmoke`, and for a reference carrier `RegionReferenceSwapSmoke`). No smoke test
+covers the collections the VM does not model or anything across JVMs.

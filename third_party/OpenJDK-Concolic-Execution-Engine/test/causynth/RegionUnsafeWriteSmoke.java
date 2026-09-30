@@ -37,7 +37,7 @@ public final class RegionUnsafeWriteSmoke {
 
         // AtomicInteger.lazySet is Unsafe.putOrderedInt.
         AtomicInteger atomic = new AtomicInteger(0);
-        System.observeExactPrimitiveField(atomic,
+        System.observeField(atomic,
                 AtomicInteger.class.getName(), "value", "I");
         atomic.lazySet(in.n);
         sink.i = atomic.get();
@@ -54,7 +54,7 @@ public final class RegionUnsafeWriteSmoke {
 
         // Reflection's Field.setInt is Unsafe.putInt.
         Holder holder = new Holder();
-        System.observeExactPrimitiveField(holder, Holder.class.getName(),
+        System.observeField(holder, Holder.class.getName(),
                 "value", "I");
         Field value = Holder.class.getDeclaredField("value");
         value.setAccessible(true);

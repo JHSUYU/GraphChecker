@@ -224,7 +224,8 @@ Expression *SymMap::finish_method_helper(MethodSymbolizerHandle &handle) {
 
   oop receiver_object = handle.get_param<oop>(0);
   Expression *receiver = parameters[0];
-  bool root_map = ContainerSupport::associative(receiver_object);
+  const char *receiver_shape = ContainerSupport::shape(receiver_object);
+  bool root_map = receiver_shape != NULL && receiver_shape[0] == 'A';
   bool map_operation = root_map && (method == "get"
       || method == "containsKey"
       || method == "size" || method == "isEmpty"

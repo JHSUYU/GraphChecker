@@ -89,15 +89,22 @@ public:
     SharedFieldVersions::ReadPlan plan;
     Expression *path_guard;
     Intent *intent;
-    Access() : active(false), path_guard(NULL), intent(NULL) {}
+    // A reference store's referent's container state, asked before the
+    // stripe (SharedFieldVersions::referent_state).
+    SharedFieldVersions::ReferentState referent;
+    bool referent_prepared;
+    Access()
+        : active(false), path_guard(NULL), intent(NULL),
+          referent_prepared(false) {}
   };
 
   /**
    * Before a concrete Unsafe write of `holder` at `offset` of `type`: the
    * location it names, and its stripe taken when it is or may become
-   * tracked.
+   * tracked.  `stored` is the referent a reference write stores.
    */
-  static void begin(Access *access, oop holder, jlong offset, BasicType type);
+  static void begin(Access *access, oop holder, jlong offset, BasicType type,
+                    oop stored = NULL);
 
   /** After a put of `stored` (a reference's word, if boxed, and itself). */
   static void end_put(Access *access, const SharedFieldVersions::ConcreteBits &stored,

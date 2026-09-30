@@ -15,6 +15,7 @@
 
 class ConstantPoolCacheEntry;
 class Method;
+class fieldDescriptor;
 
 /**
  * Versioned writes to the session's tracked shared locations.
@@ -71,9 +72,20 @@ class Method;
  * never named reached the location (every reason but the version bound),
  * which is what removes alternative writers from a read.
  *
- * Whole-state (container) versions carry no word: a container's mutation is
- * a Java call no lock can span, so its version is published by the model
- * after the call, and its reads are never exact.
+ * A reference cell's word is its referent's session id (named on demand,
+ * 0 for null), so a read of a reference is verified the same way: a
+ * reflective or Unsafe set no hook saw is an UNOBSERVED version holding the
+ * loaded referent's identity.  Whole-state (container) versions carry no
+ * word: a container's mutation is a Java call no lock can span, so its
+ * version is published by the model after the call, and its reads are never
+ * exact.
+ *
+ * A reference store states what the referent's container state was
+ * (`referentState`): the version of the MAP_STATE location of the container
+ * the referent is, or views or wraps, live at the store.  It is taken
+ * before the carrier's stripe (prepare_referent), never under it: the
+ * referent's stripe is released first, and a container with no log starts
+ * one there, with a stated snapshot.
  *
  * ---------------------------------------------------------------------------
  * Retention, and what an incomplete writer set means
@@ -139,12 +151,13 @@ public:
   };
 
   /**
-   * The concrete word one scalar store left, or one scalar read loaded, in
-   * the raw_bits() encoding.  T_ILLEGAL means no word is stated: a reference
-   * (an address the collector moves) and a whole container state have none.
-   * A box of an integral wrapper stored in a wrapper-typed field states its
-   * primitive (boxed_word), and null states the null word (T_OBJECT, 0): the
-   * field holds a value or nothing, and the two are different words.
+   * The concrete word one store left, or one read loaded, in the raw_bits()
+   * encoding for a scalar.  A reference's word is T_OBJECT and its
+   * referent's session id, not its address (which the collector moves); null
+   * is 0.  A box of an integral wrapper stored in a wrapper-typed field
+   * states its primitive (boxed_word), and null the null word: the field
+   * holds a value or nothing, and the two are different words.  T_ILLEGAL
+   * means no word is stated: a whole container state has none.
    */
   struct ConcreteBits {
     BasicType type;
@@ -153,7 +166,8 @@ public:
     ConcreteBits(BasicType word_type, jlong word_bits)
         : type(word_type), bits(word_bits) {}
     bool stated() const { return type != T_ILLEGAL; }
-    bool is_null() const { return type == T_OBJECT; }
+    bool is_reference() const { return type == T_OBJECT; }
+    bool is_null() const { return type == T_OBJECT && bits == 0; }
     bool contradicts(const ConcreteBits &other) const {
       return stated() && other.stated()
           && (bits != other.bits || type != other.type);
@@ -211,6 +225,20 @@ public:
     }
   };
 
+  /**
+   * What a reference store's referent was, when it is a modeled container
+   * (or a view or wrapper of one): its MAP_STATE location's owner and the
+   * version live when the store ran, or why that cannot be stated.  Neither
+   * for any other referent.
+   */
+  struct ReferentState {
+    sym_rid_t owner;
+    jlong version_id;
+    std::string refused;
+    ReferentState() : owner(NULL_SYM_RID), version_id(0) {}
+    bool present() const { return version_id > 0 || !refused.empty(); }
+  };
+
   /** Who wrote or read: the calling thread's region, and where it stood. */
   struct Attribution {
     jlong context_id;
@@ -242,6 +270,8 @@ public:
     int initial_snapshot_entries;
     bool initial_snapshot_truncated;
     std::string initial_snapshot_unsupported_class;
+    // A reference store's referent's container state (see ReferentState).
+    ReferentState referent;
     Version()
         : version_id(0), version_kind(VERSION_WRITE), value(NULL),
           stored_constant(NULL), path_guard(NULL),
@@ -266,15 +296,22 @@ public:
     int version_kind;
     std::string operation;
     Attribution writer;
+    // What the stored referent's container state was, taken before the
+    // lock (prepare_referent); `referent_prepared` says it was asked.
+    ReferentState referent;
+    bool referent_prepared;
     // Filled under the lock by begin_store_locked: whether the store is
-    // versioned, and, when it starts the log, the value it replaced, which
-    // is published first as the INITIAL.
+    // versioned, whether its cell holds a reference (whose word is its
+    // referent's id), and, when it starts the log, the value it replaced,
+    // which is published first as the INITIAL.
     bool versioned;
+    bool reference_cell;
     Expression *base_value;
     ConcreteBits base;
     Store()
         : value(NULL), path_guard(NULL), symbolic(false), starts_log(false),
-          version_kind(VERSION_WRITE), versioned(false), base_value(NULL) {}
+          version_kind(VERSION_WRITE), referent_prepared(false),
+          versioned(false), reference_cell(false), base_value(NULL) {}
   };
 
   /**
@@ -290,6 +327,10 @@ public:
     Cell() : holder(NULL), type(T_ILLEGAL), boxed(false) {}
     Cell(oop cell_holder, BasicType cell_type, bool cell_boxed = false)
         : holder(cell_holder), type(cell_type), boxed(cell_boxed) {}
+    // Holds a reference whose word is its referent's id: not a wrapper.
+    bool reference() const {
+      return !boxed && (type == T_OBJECT || type == T_ARRAY);
+    }
   };
 
   /**
@@ -351,6 +392,19 @@ public:
                             int version_kind = VERSION_WRITE);
 
   /**
+   * For a store of `referent` into a reference cell at `location`, outside
+   * every lock: when the store will be versioned (the location is tracked,
+   * or `starts_log`) and the referent is a modeled container (or views or
+   * wraps one), its state version live now, starting its log first when it
+   * has none.  True when it asked.  Only a store that asked states it; one
+   * whose location became tracked after it asked states a refusal.
+   */
+  static bool referent_state(const Location &location, bool starts_log,
+                             oop referent, ReferentState *out);
+  /** referent_state for a prepared store. */
+  static void prepare_referent(Store *store, oop referent);
+
+  /**
    * Under the location's stripe, before the concrete store: whether the
    * store is versioned at all (tracked, or starting the log), and the value
    * a starting log publishes as its INITIAL, read from `cell`.
@@ -360,7 +414,8 @@ public:
   /**
    * Under the stripe, after the concrete store: appends the version.  A
    * concrete store's value is the constant of `stored`, else (a reference)
-   * the identity of `stored_reference`.
+   * the identity of `stored_reference`; a reference cell's word is its
+   * referent's id whatever `stored` says.
    */
   static jlong end_store_locked(Store *store, const ConcreteBits &stored,
                                 oop stored_reference);
@@ -418,11 +473,12 @@ public:
   /**
    * Decides and records one read of a tracked location, under its stripe,
    * right after the concrete load.  `loaded` is the word the load took
-   * (unstated for a reference or a container query).  False when the
-   * location is not tracked.
+   * (unstated for a container query), `loaded_reference` the referent a
+   * reference load took.  False when the location is not tracked.
    */
   static bool plan_read_locked(const Location &location,
-                               const ConcreteBits &loaded, ReadPlan *plan);
+                               const ConcreteBits &loaded,
+                               oop loaded_reference, ReadPlan *plan);
 
   /** prepare_read + lock + plan_read_locked + unlock, for a container. */
   static bool plan_read(const Location &location, const ConcreteBits &loaded,
@@ -450,12 +506,14 @@ public:
 
   /**
    * What a scalar read or a call returned, as its node states it: the
-   * constant of a stated `word`, else null or a String's content (capped at
-   * MAX_RETURNED_STRING_BYTES, past which it says only that it was cut) for
-   * `reference`, else nothing.
+   * constant of a stated scalar `word`, else null or a String's content
+   * (capped at MAX_RETURNED_STRING_BYTES, past which it says only that it
+   * was cut) for `reference`, else, for a reference word, the referent's
+   * identity (`identity` when the caller has it), else nothing.
    */
   static ReturnedValue returned_value(const ConcreteBits &word,
-                                      oop reference);
+                                      oop reference,
+                                      Expression *identity = NULL);
 
   /**
    * The newest version's value of a tracked `location` when `cell` (another
@@ -490,10 +548,18 @@ public:
   static Expression *primitive_expression(BasicType type, jlong bits);
   /** A referent's identity (or its value, for a box or a String). */
   static Expression *reference_expression(oop value);
+  /** A referent's identity node alone, never a value it carries. */
+  static Expression *identity_expression(oop value);
+  /** The value a word stands for: a scalar's constant, else `reference`'s
+   *  expression (reference_expression). */
+  static Expression *word_value(const ConcreteBits &word, oop reference);
+  /** A reference cell's word: `referent`'s id, naming it if it has none, 0
+   *  for null; a wrapper-typed (`boxed`) cell's is its box's. */
+  static ConcreteBits reference_word(oop referent, bool boxed = false);
 
-  /** The word a field holds right now, as `type`; unstated for a reference. */
+  /** The word a primitive field holds right now, as `type`. */
   static ConcreteBits field_bits(oop owner, int field_offset, BasicType type);
-  /** The word an array element holds right now; unstated for a reference. */
+  /** The word a primitive array element holds right now. */
   static ConcreteBits element_bits(arrayOop array, int index);
   /** The word a cell holds right now. */
   static ConcreteBits cell_word(const Location &location, const Cell &cell);
@@ -515,6 +581,20 @@ public:
   static BasicType wrapper_value_type(Symbol *field_signature);
   /** The same, for the field a getfield/putfield cache entry names. */
   static BasicType wrapper_value_type(ConstantPoolCacheEntry *entry);
+  /** Whether the field at `offset` of `holder` (a static field's mirror
+   *  included) is wrapper-typed; false for an array. */
+  static bool wrapper_field_at(oop holder, jlong offset);
+
+  /**
+   * Resolves a field a Java caller named -- an instance field of `owner`,
+   * or a static one when `owner` is the declaring class's Class -- into its
+   * location (owner left NULL_SYM_RID for the caller), its descriptor and
+   * the object holding it (the mirror, for a static).
+   */
+  static bool resolve_field(oop owner, const char *declaring_class,
+                            const char *field_name, const char *descriptor,
+                            Location *location, fieldDescriptor *field,
+                            oop *holder);
 
   static const char *location_kind_name(int kind);
   static const char *version_kind_name(int kind);

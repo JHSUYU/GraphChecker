@@ -29,9 +29,9 @@ public final class RegionTrackedRaceSmoke {
         final AtomicInteger atomic = new AtomicInteger();
         require(System.startConcolicRegion("REGION.race", "TASK.race") == 0L,
                 "region start rejected");
-        System.observeExactPrimitiveField(cell, Cell.class.getName(),
+        System.observeField(cell, Cell.class.getName(),
                 "value", "I");
-        System.observeExactPrimitiveField(atomic,
+        System.observeField(atomic,
                 AtomicInteger.class.getName(), "value", "I");
 
         Thread writer = region("REGION.race.writer", new Runnable() {

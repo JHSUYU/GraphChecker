@@ -750,13 +750,21 @@ public final class System {
             String descriptor, String prefix);
 
     /**
-     * Attaches the currently observed int or long value to one exact field.
-     * This creates a concrete expression leaf for a selected state mutation;
-     * it does not add a symbolic input.  It also starts the field's version
-     * log with that value, so the store it precedes is versioned even when
-     * the stored value is concrete.
+     * Starts one exact field's version log with the value it holds now, so
+     * the store it precedes is versioned even when the stored value is
+     * concrete, and a read names the version it saw.  It adds no symbolic
+     * input.  The field is an integral primitive, an integral wrapper, or a
+     * reference (whose value is the referent's identity); {@code owner} is
+     * the object holding an instance field, or the declaring class's
+     * {@code Class} for a static one.  The declaring class is its binary
+     * name (as returned by {@link Class#getName()}).
+     *
+     * @return 0 when the log stands (started here or before); -1 without a
+     *         concolic context on this thread; -2 for a missing argument;
+     *         -3 when {@code declaringClass} declares no such field of that
+     *         kind; -12 for a float or double field
      */
-    public static native void observeExactPrimitiveField(
+    public static native int observeField(
             Object owner, String declaringClass, String fieldName,
             String descriptor);
 

@@ -194,6 +194,12 @@ jint Unsafe_invocation_key_to_method_slot(jint key) {
   UnsafeAccess::Access concolic_access;                                        \
   UnsafeAccess::begin(&concolic_access, JNIHandles::resolve(obj), (offset),    \
                       (type));
+// A reference write names the referent it stores before the stripe is taken:
+// its container state is asked there (UnsafeAccess::begin).
+#define CONCOLIC_UNSAFE_BEGIN_OOP(obj, offset, x)                              \
+  UnsafeAccess::Access concolic_access;                                        \
+  UnsafeAccess::begin(&concolic_access, JNIHandles::resolve(obj), (offset),    \
+                      T_OBJECT, (x));
 #define CONCOLIC_UNSAFE_PUT(x)                                                 \
   UnsafeAccess::end_put(&concolic_access, UnsafeAccess::word(x), (oop) NULL);
 #define CONCOLIC_UNSAFE_PUT_OOP(x)                                             \
@@ -201,6 +207,7 @@ jint Unsafe_invocation_key_to_method_slot(jint key) {
                         SharedFieldVersions::boxed_word(x), (x));
 #else
 #define CONCOLIC_UNSAFE_BEGIN(obj, offset, type)
+#define CONCOLIC_UNSAFE_BEGIN_OOP(obj, offset, x)
 #define CONCOLIC_UNSAFE_PUT(x)
 #define CONCOLIC_UNSAFE_PUT_OOP(x)
 #endif
@@ -296,7 +303,7 @@ UNSAFE_ENTRY(void, Unsafe_SetObject(JNIEnv *env, jobject unsafe, jobject obj, jl
   UnsafeWrapper("Unsafe_SetObject");
   oop x = JNIHandles::resolve(x_h);
   oop p = JNIHandles::resolve(obj);
-  CONCOLIC_UNSAFE_BEGIN(obj, offset, T_OBJECT)
+  CONCOLIC_UNSAFE_BEGIN_OOP(obj, offset, x)
   if (UseCompressedOops) {
     oop_store((narrowOop*)index_oop_from_field_offset_long(p, offset), x);
   } else {
@@ -328,7 +335,7 @@ UNSAFE_ENTRY(void, Unsafe_SetObjectVolatile(JNIEnv *env, jobject unsafe, jobject
   oop x = JNIHandles::resolve(x_h);
   oop p = JNIHandles::resolve(obj);
   void* addr = index_oop_from_field_offset_long(p, offset);
-  CONCOLIC_UNSAFE_BEGIN(obj, offset, T_OBJECT)
+  CONCOLIC_UNSAFE_BEGIN_OOP(obj, offset, x)
   OrderAccess::release();
   if (UseCompressedOops) {
     oop_store((narrowOop*)addr, x);
@@ -492,7 +499,7 @@ UNSAFE_ENTRY(void, Unsafe_SetOrderedObject(JNIEnv *env, jobject unsafe, jobject 
   oop x = JNIHandles::resolve(x_h);
   oop p = JNIHandles::resolve(obj);
   void* addr = index_oop_from_field_offset_long(p, offset);
-  CONCOLIC_UNSAFE_BEGIN(obj, offset, T_OBJECT)
+  CONCOLIC_UNSAFE_BEGIN_OOP(obj, offset, x)
   OrderAccess::release();
   if (UseCompressedOops) {
     oop_store((narrowOop*)addr, x);
@@ -1246,7 +1253,7 @@ UNSAFE_ENTRY(jboolean, Unsafe_CompareAndSwapObject(JNIEnv *env, jobject unsafe, 
   oop e = JNIHandles::resolve(e_h);
   oop p = JNIHandles::resolve(obj);
   HeapWord* addr = (HeapWord *)index_oop_from_field_offset_long(p, offset);
-  CONCOLIC_UNSAFE_BEGIN(obj, offset, T_OBJECT)
+  CONCOLIC_UNSAFE_BEGIN_OOP(obj, offset, x)
   oop res = oopDesc::atomic_compare_exchange_oop(x, addr, e, true);
   jboolean success  = (res == e);
   if (success)

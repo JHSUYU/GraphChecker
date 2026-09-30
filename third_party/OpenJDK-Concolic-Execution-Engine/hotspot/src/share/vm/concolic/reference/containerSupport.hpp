@@ -14,9 +14,37 @@ class MethodSymbolizerHandle;
 class SymArr;
 
 namespace ContainerSupport {
+/**
+ * What this engine models of one container object, decided by the
+ * receiver's concrete class (never by the method holder: an application
+ * subclass of HashMap reaches HashMap.put and may override
+ * removeEldestEntry).  Semantics come from the interface the call belongs
+ * to; the capability says the class honors it and how its heap is walked.
+ */
+enum Capability {
+  CAPABILITY_NONE = 0,
+  // Arrays, AbstractList subclasses, ArrayDeque: positional.
+  CAPABILITY_INDEXED,
+  // HashMap, LinkedHashMap in insertion order.
+  CAPABILITY_HASH_MAP,
+  // ConcurrentHashMap and Hashtable: null-free (present <=> READ != null).
+  CAPABILITY_CONCURRENT_MAP,
+  CAPABILITY_HASHTABLE,
+  // HashSet, LinkedHashSet: a set with its own state.
+  CAPABILITY_HASH_SET
+};
+Capability capability(oop value);
+// The shape a capability's state has: "INDEXED", "ASSOCIATIVE", or NULL.
 const char *shape(oop value);
-bool indexed(oop value);
-bool associative(oop value);
+// The modeled container `value` is, or views, iterates or wraps -- through
+// the backing fields of the JDK's views (`this$0`, `map`), iterators and
+// Collections wrappers (`m`, `c`, `s`) -- or NULL.
+oop backing_container(oop value);
+// Whether `value`'s class is a modeled container, view, iterator or
+// wrapper, by class name alone: no field is read and no lock taken, so it
+// may be asked under a stripe.
+bool names_container(oop value);
+
 BasicType result_type(oop result, BasicType declared);
 std::string java_type(oop result, BasicType declared);
 Expression *concrete_value(oop value);
@@ -128,7 +156,8 @@ int snapshot_entry_count(Expression *state);
  */
 bool read_concrete_members(oop container, std::vector<oop> *keys,
                            std::vector<oop> *values,
-                           const char **unsupported_class);
+                           const char **unsupported_class,
+                           bool *over_bound);
 
 /**
  * Installs a SNAPSHOT_BASE chain stating what `container` holds right now,
@@ -162,13 +191,26 @@ void snapshot_for_receiver(oop container,
 
 /**
  * Starts `container`'s log with the contents it holds right now, from a
- * model's invoke hook.
+ * model's invoke hook or a reference store of it.
  *
- * The callee body has not run yet, so the receiver is still the base -- which
- * is what makes a write-first container statable at all.  A no-op once the
- * container is tracked, and for a container with no modelled shape.
+ * The callee body has not run yet (the store has not happened), so the
+ * receiver is still the base -- which is what makes a write-first container
+ * statable at all.  A no-op once the container is tracked, and for a
+ * container with no modelled shape.  Returns its location, and in
+ * `*snapshot` what a log started here stated.
  */
-void state_base_before_operation(oop container);
+SharedFieldVersions::Location state_base_before_operation(
+    oop container, SharedFieldVersions::InitialSnapshot *snapshot = NULL);
+
+/**
+ * What a reference store of `referent` states about the container it is,
+ * views or wraps: that container's location and the version live now,
+ * starting its log with a stated snapshot when it has none; or why not
+ * (`UNREADABLE_CONTAINER:<class>`, `TRUNCATED`, `RESIZING`, `NO_CONTEXT`).
+ * Nothing for a referent that is no modeled container.  Called before the
+ * carrier's stripe is taken.
+ */
+void referent_state(oop referent, SharedFieldVersions::ReferentState *out);
 
 // Whether `state` stands on a base this recorder stated, however many
 // recorded mutations sit on top of it.  A chain that bottoms out in the bare
@@ -196,18 +238,10 @@ bool undo_indexed_history(const std::vector<ContainerExpression *> &history,
                           int member_count,
                           std::vector<int> *base_members);
 
-// Whether this container's whole state may be selected as one carrier.
-//
-// Two conditions, and both are about not lying about the writer set.  An
-// array is refused because its elements already have their own
-// LOC_ARRAY_ELEMENT locations, and a class no model intercepts is refused
-// because its mutations would run concretely and publish no version at all -
-// a selected location whose writer set looks complete while it is not.
-bool whole_state_selectable(oop container);
-
 // Where this container's whole state lives, or an invalid location when it
-// has no shadow.  A view answers its owner's location: one logical container
-// is one location.  Allocates nothing.
+// has no shadow.  A view or wrapper answers its backing container's
+// location: one logical container is one location.  Allocates nothing, and
+// needs no thread context (a store outside every region asks it too).
 SharedFieldVersions::Location state_location(oop container);
 
 // Publishes `new_state` as the immutable state this mutation produced.

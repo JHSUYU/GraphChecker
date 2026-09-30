@@ -261,9 +261,10 @@ public:
 };
 
 /**
- * What a read or a call returned, when it is a value rather than an
- * identity: a primitive's constant, null, or a String's content.  Any other
- * object is an identity no formula can pin, and stays unstated.
+ * What a read or a call returned: a primitive's constant, null, a String's
+ * content, or -- for a read of a reference cell, whose word is its
+ * referent's id -- the referent's identity node, which pins the read to the
+ * object it returned.  Anything else stays unstated.
  *
  * A node whose own formula may not decide its value states it, so that the
  * composer can pin the node to what the run saw: a read whose observed write
@@ -274,7 +275,11 @@ struct ReturnedValue {
   // TRUNCATED_STRING: a String longer than the VM states, spelled as a
   // `TruncatedValue` object with its UTF-8 length; a consumer reads it as
   // unstated, never as a prefix.
-  enum Kind { UNSTATED, CONSTANT, NULL_REFERENCE, STRING, TRUNCATED_STRING };
+  // REFERENCE: `constant` is the identity node, spelled as a version's
+  // reference value is (`M_L...'_<rid>`, `AL_<rid>-0`).
+  enum Kind {
+    UNSTATED, CONSTANT, NULL_REFERENCE, STRING, TRUNCATED_STRING, REFERENCE
+  };
   Kind kind;
   Expression *constant;
   std::string content;

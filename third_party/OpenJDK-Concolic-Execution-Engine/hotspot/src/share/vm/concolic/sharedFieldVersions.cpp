@@ -12,6 +12,7 @@
 #include "concolic/exp/consumerBoundaryExpression.hpp"
 #include "concolic/exp/symbolExpression.hpp"
 #include "concolic/globalSymbolicSession.hpp"
+#include "concolic/sessionSymbolicHeap.hpp"
 #include "concolic/reference/containerSupport.hpp"
 #include "concolic/reference/symbolicArray.hpp"
 #include "concolic/reference/symbolicInstance.hpp"
@@ -215,8 +216,28 @@ void SharedFieldVersions::prepare_store(Store *store,
   store->version_kind = version_kind;
 }
 
+bool SharedFieldVersions::referent_state(const Location &location,
+                                         bool starts_log, oop referent,
+                                         ReferentState *out) {
+  *out = ReferentState();
+  // Only a store that will be versioned asks: asking starts a container's
+  // log, which a store nobody keeps must not do.
+  if (referent == NULL || !location.is_valid()
+      || (!starts_log && !is_tracked(location))) {
+    return false;
+  }
+  ContainerSupport::referent_state(referent, out);
+  return true;
+}
+
+void SharedFieldVersions::prepare_referent(Store *store, oop referent) {
+  store->referent_prepared = referent_state(
+      store->location, store->starts_log, referent, &store->referent);
+}
+
 bool SharedFieldVersions::begin_store_locked(Store *store, const Cell &cell) {
   store->versioned = false;
+  store->reference_cell = cell.reference();
   store->base_value = NULL;
   store->base = ConcreteBits();
   if (!store->location.is_valid()) return false;
@@ -238,9 +259,13 @@ bool SharedFieldVersions::begin_store_locked(Store *store, const Cell &cell) {
 }
 
 jlong SharedFieldVersions::end_store_locked(Store *store,
-                                            const ConcreteBits &stored,
+                                            const ConcreteBits &given,
                                             oop stored_reference) {
   if (!store->versioned) return 0;
+  // A reference cell's word is its referent's id, whatever word the caller
+  // could state (an Unsafe put knows the oop, not the field's type).
+  const ConcreteBits stored = store->reference_cell
+      ? reference_word(stored_reference) : given;
   Slot *slot = find_slot(store->location);
   if (slot == NULL) {
     slot = find_or_create_slot(store->location);
@@ -250,7 +275,7 @@ jlong SharedFieldVersions::end_store_locked(Store *store,
       base.version_kind = VERSION_INITIAL;
       base.value = store->base_value;
       base.stored = store->base;
-      if (base.stored.stated() && base.value != NULL) {
+      if (base.stored.stated() && !base.stored.is_reference()) {
         base.stored_constant = base.value;
       }
       append_locked(slot, &base);
@@ -261,16 +286,26 @@ jlong SharedFieldVersions::end_store_locked(Store *store,
   version.stored = stored;
   if (store->value != NULL) {
     version.value = store->value;
-  } else if (stored.stated()) {
-    version.value = primitive_expression(stored.type, stored.bits);
-    version.stored_constant = version.value;
   } else {
-    version.value = reference_expression(stored_reference);
+    version.value = word_value(stored, stored_reference);
+    if (stored.stated() && !stored.is_reference()) {
+      version.stored_constant = version.value;
+    }
   }
   if (version.value == NULL) {
     // A referent no session names: the write happened and says nothing.
     incomplete_locked(slot, "UNNAMED_REFERENT");
     return 0;
+  }
+  if (store->reference_cell && stored_reference != NULL) {
+    if (store->referent_prepared) {
+      version.referent = store->referent;
+    } else if (ContainerSupport::names_container(stored_reference)) {
+      // A container stored by a path that asks nothing before its lock (an
+      // arraycopy), or into a location that became tracked after the store
+      // asked: its state is not stated, and says why.
+      version.referent.refused = "STORE_NOT_PREPARED";
+    }
   }
   return append_locked(slot, &version);
 }
@@ -354,7 +389,9 @@ jlong SharedFieldVersions::publish_initial_held(const Location &location,
     version.writer = writer;
     version.stored = cell_word(location, cell);
     version.value = cell_value(location, cell, version.stored);
-    if (version.stored.stated()) version.stored_constant = version.value;
+    if (version.stored.stated() && !version.stored.is_reference()) {
+      version.stored_constant = version.value;
+    }
     Slot *slot = version.value == NULL ? NULL : find_or_create_slot(location);
     if (slot != NULL) {
       id = append_locked(slot, &version);
@@ -393,6 +430,7 @@ void SharedFieldVersions::prepare_read(ReadPlan *plan) {
 
 bool SharedFieldVersions::plan_read_locked(const Location &location,
                                            const ConcreteBits &loaded,
+                                           oop loaded_reference,
                                            ReadPlan *plan) {
   if (!location.is_valid()) return false;
   Slot *slot = find_slot(location);
@@ -418,9 +456,11 @@ bool SharedFieldVersions::plan_read_locked(const Location &location,
     if (!retained) {
       Version unobserved;
       unobserved.version_kind = VERSION_UNOBSERVED;
-      unobserved.value = primitive_expression(loaded.type, loaded.bits);
+      unobserved.value = word_value(loaded, loaded_reference);
       unobserved.stored = loaded;
-      unobserved.stored_constant = unobserved.value;
+      if (!loaded.is_reference()) {
+        unobserved.stored_constant = unobserved.value;
+      }
       append_locked(slot, &unobserved);
       observed = slot->versions.size() - 1;
     }
@@ -429,9 +469,11 @@ bool SharedFieldVersions::plan_read_locked(const Location &location,
   Version &version = slot->versions[observed];
   plan->observed_exact = !retained && version.stored.equals(loaded);
   if (plan->observed_exact && version.stored_constant == NULL) {
-    // Built once per version, for every read that returns its word.
-    version.stored_constant =
-        primitive_expression(version.stored.type, version.stored.bits);
+    // Built once per version, for every read that returns its word: a
+    // scalar's constant, a reference's identity.
+    version.stored_constant = version.stored.is_reference()
+        ? identity_expression(loaded_reference)
+        : primitive_expression(version.stored.type, version.stored.bits);
   }
   plan->observed = version;
   plan->writer_set_complete = slot->writer_set_complete;
@@ -457,7 +499,7 @@ bool SharedFieldVersions::plan_read(const Location &location,
   }
   prepare_read(plan);
   lock(location);
-  bool planned = plan_read_locked(location, loaded, plan);
+  bool planned = plan_read_locked(location, loaded, NULL, plan);
   unlock(location);
   if (planned) {
     // Reading tracked state is what makes this thread's branches relevant:
@@ -541,22 +583,26 @@ Expression *SharedFieldVersions::scalar_read(const ReadPlan &plan,
                                              oop reference) {
   ReturnedValue returned;
   if (plan.observed_exact && plan.observed.stored_constant != NULL
-      && !plan.observed.stored.is_null()) {
+      && !plan.observed.stored.is_reference()) {
     // The word the observed version stored: its constant, shared by every
     // read that returned it.
     returned.kind = ReturnedValue::CONSTANT;
     returned.constant = plan.observed.stored_constant;
   } else {
-    returned = returned_value(loaded, reference);
+    // A reference an exact read returned is its version's referent, whose
+    // identity node the version keeps.
+    returned = returned_value(loaded, reference,
+        plan.observed_exact ? plan.observed.stored_constant : NULL);
   }
   return build_read_from(plan, location, type_name, plan.observed.value,
                          returned);
 }
 
 ReturnedValue SharedFieldVersions::returned_value(const ConcreteBits &word,
-                                                  oop reference) {
+                                                  oop reference,
+                                                  Expression *identity) {
   ReturnedValue returned;
-  if (word.stated() && !word.is_null()) {
+  if (word.stated() && !word.is_reference()) {
     returned.kind = ReturnedValue::CONSTANT;
     returned.constant = primitive_expression(word.type, word.bits);
   } else if (reference == NULL) {
@@ -574,6 +620,14 @@ ReturnedValue SharedFieldVersions::returned_value(const ConcreteBits &word,
       returned.kind = ReturnedValue::STRING;
       returned.content = OopUtils::java_string_to_c(reference);
     }
+  } else if (word.is_reference()
+             && java_lang_boxing_object::basic_type(reference) == T_ILLEGAL) {
+    // What a reference cell held: its referent, pinned by identity.  A box
+    // in a cell that is not wrapper-typed keeps saying nothing, as before:
+    // its value is the wrapper cell's word, not an identity.
+    returned.kind = ReturnedValue::REFERENCE;
+    returned.constant = identity != NULL
+        ? identity : identity_expression(reference);
   }
   return returned;
 }
@@ -607,6 +661,34 @@ Expression *SharedFieldVersions::primitive_expression(BasicType type,
     default:
       return NULL;
   }
+}
+
+Expression *SharedFieldVersions::identity_expression(oop value) {
+  if (value == NULL) return SymbolExpression::get(Sym_NULL);
+  SessionSymbolicHeap *heap = GlobalSymbolicSession::heap();
+  if (heap == NULL) return NULL;
+  // The spelling an owner identity has; named first so it states an id.
+  const sym_rid_t named = heap->name_reference(value);
+  if (named == NULL_SYM_RID) return new PlaceHolderSymbolExp(value);
+  return value->is_array()
+      ? static_cast<Expression *>(new ArraySymbolExp(named, 0, T_OBJECT))
+      : static_cast<Expression *>(new InstanceSymbolExp(value));
+}
+
+Expression *SharedFieldVersions::word_value(const ConcreteBits &word,
+                                            oop reference) {
+  return word.stated() && !word.is_reference()
+      ? primitive_expression(word.type, word.bits)
+      : reference_expression(reference);
+}
+
+SharedFieldVersions::ConcreteBits SharedFieldVersions::reference_word(
+    oop referent, bool boxed) {
+  if (boxed) return boxed_word(referent);
+  if (referent == NULL) return ConcreteBits(T_OBJECT, 0);
+  SessionSymbolicHeap *heap = GlobalSymbolicSession::heap();
+  if (heap == NULL) return ConcreteBits();
+  return ConcreteBits(T_OBJECT, (jlong) heap->name_reference(referent));
 }
 
 Expression *SharedFieldVersions::reference_expression(oop value) {
@@ -653,6 +735,18 @@ BasicType SharedFieldVersions::wrapper_value_type(
   if (holder == NULL || !holder->oop_is_instance()) return T_ILLEGAL;
   return wrapper_value_type(
       InstanceKlass::cast(holder)->field_signature(entry->field_index()));
+}
+
+bool SharedFieldVersions::wrapper_field_at(oop holder, jlong offset) {
+  if (holder == NULL || holder->is_array()) return false;
+  const bool mirror = holder->klass() == SystemDictionary::Class_klass();
+  Klass *klass = mirror ? java_lang_Class::as_Klass(holder) : holder->klass();
+  if (klass == NULL || !klass->oop_is_instance()) return false;
+  fieldDescriptor field;
+  // A lookup by offset: it walks the field streams and takes no lock.
+  return InstanceKlass::cast(klass)->find_field_from_offset(
+             (int) offset, mirror, &field)
+      && wrapper_value_type(field.signature()) != T_ILLEGAL;
 }
 
 Expression *SharedFieldVersions::field_value(oop owner, int field_offset,
@@ -744,15 +838,12 @@ oop cell_referent(const SharedFieldVersions::Location &location,
 SharedFieldVersions::ConcreteBits SharedFieldVersions::cell_word(
     const Location &location, const Cell &cell) {
   if (cell.holder == NULL) return ConcreteBits();
-  if (location.kind == LOC_ARRAY_ELEMENT) {
-    return cell.holder->is_typeArray()
-        ? element_bits(arrayOop(cell.holder), location.slot)
-        : (cell.boxed ? boxed_word(cell_referent(location, cell))
-                      : ConcreteBits());
+  if (location.kind == LOC_ARRAY_ELEMENT && cell.holder->is_typeArray()) {
+    return element_bits(arrayOop(cell.holder), location.slot);
   }
-  if (cell.type == T_OBJECT || cell.type == T_ARRAY) {
-    return cell.boxed ? boxed_word(cell_referent(location, cell))
-                      : ConcreteBits();
+  if (location.kind == LOC_ARRAY_ELEMENT
+      || cell.type == T_OBJECT || cell.type == T_ARRAY) {
+    return reference_word(cell_referent(location, cell), cell.boxed);
   }
   return field_bits(cell.holder, location.slot, cell.type);
 }
@@ -760,7 +851,9 @@ SharedFieldVersions::ConcreteBits SharedFieldVersions::cell_word(
 Expression *SharedFieldVersions::cell_value(const Location &location,
                                             const Cell &cell,
                                             const ConcreteBits &word) {
-  if (word.stated()) return primitive_expression(word.type, word.bits);
+  if (word.stated() && !word.is_reference()) {
+    return primitive_expression(word.type, word.bits);
+  }
   if (cell.holder == NULL) return NULL;
   return reference_expression(cell_referent(location, cell));
 }
@@ -1070,6 +1163,24 @@ bool SharedFieldVersions::write_versions_envelope(
       }
       writer.EndObject();
     }
+    // What a reference store's referent's container state was: its
+    // location and the version live at the store, or why not.
+    if (version.referent.version_id > 0) {
+      writer.Key("referentState");
+      writer.StartObject();
+      writer.Key("ownerSymRid");
+      writer.Int64((jlong) version.referent.owner);
+      writer.Key("slot");
+      writer.Int(SLOT_WHOLE_STATE);
+      writer.Key("locationKind");
+      writer.String(location_kind_name(LOC_MAP_STATE));
+      writer.Key("fieldVersionId");
+      writer.Int64(version.referent.version_id);
+      writer.EndObject();
+    } else if (!version.referent.refused.empty()) {
+      writer.Key("referentStateRefused");
+      writer.String(version.referent.refused.c_str());
+    }
     writer.Key("expression");
     if (version.value == NULL) {
       writer.Null();
@@ -1268,17 +1379,17 @@ std::string SharedFieldVersions::describe(const Location &location) {
 // The Java-facing evidence API.
 // ---------------------------------------------------------------------------
 
-namespace {
-
 /**
- * Resolves the location a Java caller named into an addressable slot.  A
- * static field is addressed as `getstatic` addresses it: the declaring
+ * A static field is addressed as `getstatic` addresses it: the declaring
  * class's mirror and the mirror-relative offset.
  */
-bool resolve_field_location(oop owner_oop, const char *declaring_class,
-                            const char *field_name, const char *descriptor,
-                            SharedFieldVersions::Location *location,
-                            fieldDescriptor *field, oop *carrier_owner) {
+bool SharedFieldVersions::resolve_field(oop owner_oop,
+                                        const char *declaring_class,
+                                        const char *field_name,
+                                        const char *descriptor,
+                                        Location *location,
+                                        fieldDescriptor *field,
+                                        oop *carrier_owner) {
   if (owner_oop == NULL) return false;
 
   const std::string holder_name(declaring_class);
@@ -1322,8 +1433,6 @@ bool resolve_field_location(oop owner_oop, const char *declaring_class,
   return true;
 }
 
-} // anonymous namespace
-
 std::string ConcolicMngr::getTrackedLocationVersions(jlong after_event_id,
                                                      jint max_bytes) {
   return SharedFieldVersions::tracked_locations(after_event_id, max_bytes);
@@ -1349,9 +1458,10 @@ std::string ConcolicMngr::getSharedFieldVersions(
     ResourceMark rm;
     fieldDescriptor field;
     oop carrier_owner = NULL;
-    if (resolve_field_location(owner(), declaring_class, field_name,
-                               descriptor, &location, &field,
-                               &carrier_owner)) {
+    if (SharedFieldVersions::resolve_field(owner(), declaring_class,
+                                           field_name, descriptor,
+                                           &location, &field,
+                                           &carrier_owner)) {
       SymInstance *shadow = ctx->find_sym_inst(carrier_owner);
       location.owner = shadow == NULL ? NULL_SYM_RID : shadow->get_sym_rid();
     }

@@ -2,7 +2,7 @@
  * Contract smoke for an observed concrete store of a plain integral field.
  *
  * <p>A woven write site of a tracked field (SYMBOL-SCOPE F2) calls {@code
- * observeExactPrimitiveField} just before its store.  The value it stores is
+ * observeField} just before its store.  The value it stores is
  * concrete, and a concrete store is versioned only where a log exists, so the
  * observation is what starts the log: INITIAL, the value from before the
  * window, then the store as a WRITE.  A later read resolves over the log and
@@ -28,12 +28,12 @@ public final class RegionObservedConcreteWriteSmoke {
                 "TASK.observed-write") == 0L, "region start rejected");
 
         Block block = new Block();
-        System.observeExactPrimitiveField(block, Block.class.getName(),
+        System.observeField(block, Block.class.getName(),
                 "generationStamp", "J");
         block.generationStamp = 2L;
         block.numBytes = 8L;
         // A read site observes too; a log that stands is left alone.
-        System.observeExactPrimitiveField(block, Block.class.getName(),
+        System.observeField(block, Block.class.getName(),
                 "generationStamp", "J");
         Sink sink = new Sink();
         sink.value = block.generationStamp;
@@ -54,7 +54,7 @@ public final class RegionObservedConcreteWriteSmoke {
                 "\"expressionAuthority\":\"VM_GUARDED_READ_FROM_V1\""), read);
         require(read.contains("\"versionKind\":\"WRITE\""), read);
 
-        System.observeExactPrimitiveField(block, Block.class.getName(),
+        System.observeField(block, Block.class.getName(),
                 "deleted", "Z");
         block.deleted = true;
         sink.flag = block.deleted;

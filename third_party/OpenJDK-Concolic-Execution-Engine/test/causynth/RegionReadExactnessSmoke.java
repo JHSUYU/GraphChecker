@@ -9,8 +9,9 @@
  * an incomplete location.  unnamedWriter is what removes alternative writers:
  * a writer the log never named reached the location.  The version bound is
  * not one -- every retained version is still a real writer -- so a hot field
- * past it keeps its alternatives.  A reference loads no comparable word, and
- * is never exact.</p>
+ * past it keeps its alternatives.  A reference's word is its referent's
+ * session id, so a reference read verifies itself the same way, and states
+ * what it returned.</p>
  */
 public final class RegionReadExactnessSmoke {
     private static final class Input {
@@ -31,7 +32,7 @@ public final class RegionReadExactnessSmoke {
         require(System.startConcolicRegion("REGION.exactness",
                 "TASK.exactness") == 0L, "region start rejected");
         Holder holder = new Holder();
-        System.observeExactPrimitiveField(holder, Holder.class.getName(),
+        System.observeField(holder, Holder.class.getName(),
                 "value", "I");
         Sink sink = new Sink();
 
@@ -61,7 +62,7 @@ public final class RegionReadExactnessSmoke {
                 "the bound is not named, or names an unnamed writer: "
                         + log);
 
-        // A reference states no word.
+        // A reference's word is its referent's id.
         Input input = new Input();
         System.symbolizeExactField(input, Input.class.getName(), "name",
                 "Ljava/lang/String;", "EXACT.NAME");
@@ -70,8 +71,10 @@ public final class RegionReadExactnessSmoke {
         String reference = field(sink, "name", "Ljava/lang/String;",
                 sink.name);
         require(reference.contains("\"_type\":\"ReadFromExpression\"")
-                        && reference.contains("\"observedExact\":false"),
-                "a reference read claims a word: " + reference);
+                        && reference.contains("\"observedExact\":true")
+                        && reference.contains("\"concreteValue\":\"abc\""),
+                "a reference read does not verify its referent: "
+                        + reference);
 
         System.endConcolic();
         System.out.println("RegionReadExactnessSmoke OK");
