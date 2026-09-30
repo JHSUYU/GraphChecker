@@ -3,10 +3,7 @@
 #
 # One recording per row of <jobs-file> (cover.py's prescreen-jobs.tsv:
 # "<batch><TAB><workload><TAB><bound-seconds><TAB><check> ...").  The row
-# becomes a batch of the experiment: a row "B<n><TAB><workload><TAB><check>
-# ..." of its batches.tsv, and its target spec targets/B<n>.yaml, each
-# check's target line named by the check (a batch already there with the
-# same workload and checks is the row's).  The batch's `record`
+# becomes a batch case B<n> of the experiment (batch.sh).  The batch's `record`
 # (run_engine.sh) runs on the lifts (fanout.sh), charged the case's engine
 # heap, at most <slots-per-host> (default 4) at a time on each, its workload
 # bounded by the row's seconds.  <key> is this checkout's build key of the
@@ -34,26 +31,15 @@ root=${GC_OUT}/prescreen/${key}
   exit 2
 }
 echo "pre-screen of build ${key}: ${root}" >&2
-batches=${experiment}/batches.tsv
 run=${root}/runs-$(sha256sum <"${jobs_file}" | cut -c1-12)
 mkdir -p "${run}"
-touch "${batches}"
 jobs=${run}/jobs.txt
 : > "${jobs}"
 need=""
 while IFS=$'\t' read -r dir workload bound checks; do
   [[ -n "${workload}" ]] || continue
-  batch=$(awk -F'\t' -v w="${workload}" -v c="${checks}" \
-    '$2 == w && $3 == c {print $1; exit}' "${batches}")
-  if [[ -z "${batch}" ]]; then
-    batch=B$(awk -F'\t' '{n = substr($1, 2) + 0; if (n > max) max = n}
-      END {print max + 1}' "${batches}")
-    printf '%s\t%s\t%s\n' "${batch}" "${workload}" "${checks}" >>"${batches}"
-    for check in ${checks}; do
-      awk -v c="${check}" '$1 == "exception_target:" {$2 = c; print}' \
-        "${experiment}/targets/${check}.yaml"
-    done >"${experiment}/targets/${batch}.yaml"
-  fi
+  # shellcheck disable=SC2086 # the checks are words
+  batch=$(bash "${here}/batch.sh" "${experiment}" "${workload}" ${checks})
   if [[ -z "${need}" ]]; then
     need=$(CAUSYNTH_CLASSPATH_OVERRIDE=unread bash \
       "${checkout}/experiments/lib/run.sh" "${experiment}" "${batch}" config \

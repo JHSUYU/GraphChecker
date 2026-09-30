@@ -8,7 +8,7 @@ those with a slice (<static-dir>/<check>/score.json), those the slice keeps,
 the selection (at most three per class) and its calibration tail
 (selected.jsonl), the pre-screen's recordings and the pairs they activated
 (prescreen-jobs.tsv, <prescreen-dir>/<batch>/runtime/record-summary.json),
-the campaign cases (cases.txt) and their outcomes (triage.tsv).  The
+the batch cases (cases.txt) and their checks' outcomes (triage.tsv).  The
 outcome of the kept checks' cases stands beside the calibration checks':
 a calibration case that reaches COMPOSE with a witness is one the static
 selection would have dropped.  findings.tsv's mechanisms close it."""
@@ -74,12 +74,13 @@ def main():
             ("pre-screen recordings (finished)",
              "%d (%d)" % (len(recordings), recorded)),
             ("(check, test) pairs activated", activated),
-            ("campaign cases", len(cases))):
+            ("batch cases (one recording each)", len(cases)),
+            ("checks run in them", len(triage))):
         print("| %s | %s |" % (label, count))
     by = collections.defaultdict(collections.Counter)
     for row in triage:
-        # A case id is "<experiment>-<check>.<workload>" (cover.py).
-        check = row["case"][len(manifest["experiment"]) + 1:].split(".", 1)[0]
+        # A batch case's row is "<experiment>-B<n>/<check>" (triage.py).
+        check = row["case"].rsplit("/", 1)[-1]
         by["calibration" if check in calibration else "kept"][row["class"]] += 1
     print("\n| outcome | kept | calibration |\n| --- | --- | --- |")
     for name in CLASSES:

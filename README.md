@@ -147,8 +147,13 @@ for d in /bigtemp/vnr3ne/gc-out/accept-rb1-*; do tail -1 $d/summary.tsv | cut -f
    and WP5.B's build key, nightly and snapshot locks, and WP5.D phase 1 (REPRODUCE plants fault
    markers natively) are on main): WP5.B's `regress.sh` (the day's engine-fix regression list
    that places the `regress-pass-*` tag the nightly freezes; tagged by hand until then), WP5.D
-   phase 2 (clock and config plants), WP3 (one shared recording and seed replay per test for all
-   its checks). The first nightly slices every declared check under the new build key.
+   phase 2 (clock and config plants), and WP3's shared seed replay: a batch shares its checks'
+   slices, recording and aggregation (on main), but each check still plans, weaves and replays its
+   own seed. Sharing the seed replay needs WP3.1 (one Soot scene, every target's scope map over the
+   merged regions: a region of one check nested in another's changes which activation an event is
+   filed under) and the union plan with a list of target branches per task in the runtime (M1/M2),
+   behind the spec's §3.5 gate. The first nightly slices every declared check under the new build
+   key.
 9. **R3 leftovers** (`/bigtemp/vnr3ne/specs/R3-REFCONT-proposal.md`): WP3b/c (TreeMap,
    ConcurrentSkipList*, LinkedList, CopyOnWrite*, queues in the VM), WP7 (`cone.py` follows writer
    families), D3 (STATE arms from other sessions); the VM does not state a container query's
@@ -457,11 +462,14 @@ A head's "waiting for memory" line goes to stderr (its stdout is often an artifa
 
 An ad-hoc check is a guarded `throw` that a system's existing cluster test reaches and passes.
 A case is one check on one workload (`<check>.<workload>`), or a batch of checks on one workload
-(`B<n>`, a row of `batches.tsv` with its target spec `targets/B<n>.yaml`). The experiments are
-`experiments/hadoop/adhoc` and `experiments/solr/solr-adhoc`; each holds `checks.tsv`,
-`batches.tsv`, `occurrences.tsv`, `targets/` and `tree` (the one tree it runs). A check's case
-starts from the classes its experiment's communication mappings name (`system.sh`'s
-`system_mapping_scope`) and its own class; SEED grows the scope from there.
+(`B<n>`, a row of `batches.tsv` with its target spec `targets/B<n>.yaml`, `batch.sh`). The
+experiments are `experiments/hadoop/adhoc` and `experiments/solr/solr-adhoc`; each holds
+`checks.tsv`, `batches.tsv`, `occurrences.tsv`, `targets/` and `tree` (the one tree it runs). A
+check's slice starts from the classes its experiment's communication mappings name (`system.sh`'s
+`system_mapping_scope`) and its own class, and grows the scope from there. A sweep runs batches:
+given `causynth_static_root` (`sweep.sh`'s `STATIC_ROOT`), a batch campaign takes each check's
+slice from the build, records its workload once for all its checks, and runs one campaign per
+check from PLAN on, all at once, in `out/<case>/targets/<check>/` (PIPELINE §2b).
 
 `tools/adhoc/nightly.sh <system>/<experiment> [date]` runs the whole chain below once per night
 (one frozen, comparable sweep, never stopped for an engine fix) into
@@ -517,11 +525,14 @@ are per tree (`nightly.sh` keeps them in `$GC_OUT/coverage/<experiment>-<tree co
     check's ACTIVATED or refusal; a batch the build recorded already is kept). ~35 % of
     check/test pairs are not in the recording window and are dropped here instead of dying at
     SEED.
-11. `cover.py <sweep-dir> <experiment> cases $GC_OUT/prescreen/<key>`: `cases.txt`.
-12. `sweep.sh <snapshot> <round> <sweep-dir>/cases.txt [heads-per-host]`: one campaign per case
-    over all ten lifts, `PRUNE=1`, 5400 s per case; restartable.
-13. `triage.py <round> [gc-out]`: outcome class per case (CONFIRMED, REFUTED, NO_WITNESS, STOPPED,
-    DEAD, RUNNING, PENDING); `gc-out` defaults to `gc-env.sh`'s `GC_OUT`.
+11. `cover.py <sweep-dir> <experiment> cases $GC_OUT/prescreen/<key>`: `cases.txt`, one batch
+    case per workload with the checks it activated (at most four).
+12. `STATIC_ROOT=$GC_OUT/static/<key> sweep.sh <snapshot> <round> <sweep-dir>/cases.txt
+    [heads-per-host]`: one campaign per batch over all ten lifts, `PRUNE=1`, 5400 s per case;
+    restartable.
+13. `triage.py <round> [gc-out]`: outcome class per case, and per check of a batch case
+    (`<case>/<check>`): CONFIRMED, REFUTED, NO_WITNESS, STOPPED, DEAD, RUNNING, PENDING; `gc-out`
+    defaults to `gc-env.sh`'s `GC_OUT`.
 14. `findings.py <sweep-dir> [--ledger $GC_OUT/findings/ledger.jsonl] [--static $GC_OUT/static/<key>]`:
     one row per mechanism among the confirmed witnesses (`findings.tsv`), weighted by kind,
     mediation and (1 + the rate at which REPRODUCE reproduced it natively at its anchor); the
@@ -539,6 +550,7 @@ are per tree (`nightly.sh` keeps them in `$GC_OUT/coverage/<experiment>-<tree co
 | `out/<case>/schedule/iteration-0000/` | `execution_task_plan.jsonl`, `concolic_region_plan.jsonl`, `recorded_schedule.jsonl`, `sessions/<id>/`, `obligations-<NNNN>/` (per wave: one worker directory per obligation), `obligation_results.jsonl` |
 | `…/sessions/<id>/` | one replay's rows: `activations`, `decisions`, `reads`, `writes`, `exports`, `attaches`, `roots`, `targets`, `gaps`, `schedule` (`.jsonl`), `expressions.jsonl`, `manifest.json` |
 | `out/<case>/schedule/final/` | `result.json`, `claim.json`, `gaps.json`, `candidate.smt2`, `candidate_composition_manifest.json`, `confirm.json`, `reproduce.json`, `run-manifest.json` |
+| `out/<batch>/targets/<check>/` | a batch case's check: its frozen slice, its region plan (`runtime/`), `campaign.log`, and its campaign root `schedule/` laid out as above; the batch's one recording and `runtime/record-summary.json` are in `out/<batch>/` |
 
 A flip query can be re-solved by hand with `z3 -smt2 obligation_query.smt2`.
 

@@ -20,16 +20,19 @@ at least 300 s).  prescreen.sh records them.
 
 cases: reads the runtime/record-summary.json of each row of
 <sweep-dir>/prescreen-jobs.tsv under <prescreen-dir> (prescreen.sh's), and
-writes <sweep-dir>/cases.txt, sweep.sh's cases: the case ids
-"<experiment>-<check>.<workload>" of the pairs whose workload passed and
-whose recording ACTIVATED the check: every such check on its fastest
-recording, preferring a workload not yet on four checks, then a second one
-where a workload under four is left.  Every pair it leaves out is counted by
-why on stderr."""
+writes <sweep-dir>/cases.txt, sweep.sh's cases: one batch case
+"<experiment>-B<n>" per workload (batch.sh), the checks it runs being the
+pairs whose workload passed and whose recording ACTIVATED the check: every
+such check on its fastest recording, preferring a workload not yet on four
+checks, then a second one where a workload under four is left.  A batch is
+one campaign: one recording for its checks, and one campaign per check from
+PLAN on (run_engine.sh, causynth_static_root).  Every pair it leaves out is
+counted by why on stderr."""
 import collections
 import hashlib
 import json
 import os
+import subprocess
 import sys
 
 from coverage_runs import case_workload, usable_workloads
@@ -111,14 +114,22 @@ def cases(sweep, experiment, prescreen):
             if workload is not None:
                 used[workload] += 1
                 taken[check].append(workload)
+    groups = collections.defaultdict(list)  # workload -> its checks
+    for check in sorted(taken):
+        for workload in taken[check]:
+            groups[workload].append(check)
     name = os.path.basename(os.path.abspath(experiment))
-    chosen = ["%s-%s.%s" % (name, check, workload)
-              for check in sorted(taken) for workload in taken[check]]
+    batch = os.path.join(os.path.dirname(os.path.abspath(__file__)), "batch.sh")
+    chosen = ["%s-%s" % (name, subprocess.run(
+        ["bash", batch, experiment, workload] + groups[workload], check=True,
+        capture_output=True, text=True).stdout.strip())
+        for workload in sorted(groups)]
     with open(os.path.join(sweep, "cases.txt"), "w") as out:
         for case in chosen:
             out.write(case + "\n")
-    print("%d cases for %d activated checks; pairs left out: %s"
-          % (len(chosen), len(pairs), dict(why)), file=sys.stderr)
+    print("%d batch cases, %d (check, test) pairs, for %d activated checks; "
+          "pairs left out: %s" % (len(chosen), sum(map(len, groups.values())),
+                                  len(pairs), dict(why)), file=sys.stderr)
 
 
 def main():

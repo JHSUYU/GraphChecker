@@ -233,6 +233,11 @@ ACCEPT_KEEP_GLOBS=(
   'schedule/iteration-*/obligations-*/*/stdout.log'
   'schedule/iteration-*/obligations-*/*/stderr.log'
 )
+# An ad-hoc batch case (run_engine.sh, causynth_static_root) keeps the same
+# of each of its targets' campaigns, targets/<name>/, their logs, and what
+# its one recording said of each target.
+ACCEPT_KEEP_GLOBS+=("${ACCEPT_KEEP_GLOBS[@]/#/targets/*/}"
+  'targets/*/campaign.log' 'runtime/record-summary.json')
 
 acc_prune_case() {
   local dir=$1 keep before after f rel

@@ -978,6 +978,41 @@ COMPOSE SOLVE DECIDE CONFIRM REPRODUCE EMIT " ]] \
   || fail "a full campaign is not the one iteration's stages, each once: \
 $(tr '\n' ' ' <"${stop_after_dir}/labels-full.tsv")"
 
+# BATCH-1: a batch campaign (causynth_static_root) runs one campaign per
+# target its recording activated, all at once, each logging to its own
+# targets/<name>/campaign.log; a target whose campaign reached EMIT (exit 0,
+# 2 or 3) is its own verdict, and one that ended before EMIT fails the batch
+# once every other has finished.
+batch_out="${test_tmp}/batch"
+for batch_exit in 3 1; do
+  rm -rf -- "${batch_out}"
+  mkdir -p "${batch_out}/runtime" "${batch_out}/targets/a" \
+    "${batch_out}/targets/b" "${batch_out}/targets/c"
+  jq -n '{exit: 0, wallSeconds: 1, timedOut: false,
+    targets: {a: {state: "ACTIVATED"}, b: {state: "ACTIVATED"},
+              c: {state: "NOT_IN_WINDOW", detail: "no activation"}}}' \
+    >"${batch_out}/runtime/record-summary.json"
+  status=0
+  (
+    causynth_output_dir="${batch_out}"
+    campaign_stage_metrics="${batch_out}/metrics.tsv"
+    campaign_batch_seed() { :; }
+    campaign_batch_target() {
+      echo "campaign of $1"
+      [[ "$1" == a ]] && exit 2
+      exit "${batch_exit}"
+    }
+    campaign_batch
+  ) >"${batch_out}/batch.log" 2>&1 || status=$?
+  [[ "${status}" -eq $(( batch_exit == 1 )) ]] \
+    || fail "a batch whose target exited ${batch_exit} exited ${status}: \
+$(cat "${batch_out}/batch.log")"
+  [[ "$(cat "${batch_out}/targets/a/campaign.log")" == "campaign of a" \
+      && "$(cat "${batch_out}/targets/b/campaign.log")" == "campaign of b" \
+      && ! -e "${batch_out}/targets/c/campaign.log" ]] \
+    || fail "a batch ran other campaigns than its activated targets'"
+done
+
 # IMPORT-GATE: the row contract stops the campaign at IMPORT, or records.
 #
 # The gate's own rules are checked in ContractTest; what is checked here is

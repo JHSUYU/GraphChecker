@@ -2,7 +2,8 @@
 """findings.py <sweep-dir> [--ledger FILE] [--static DIR]
 
 One row per mechanism among a sweep's confirmed witnesses: every
-<sweep-dir>/accept-*/out/<case>/schedule/final/result.json whose claim is
+<sweep-dir>/accept-*/out/<case>/schedule/final/result.json (a batch case's:
+out/<case>/targets/<check>/schedule/final/result.json) whose claim is
 SAT_CANDIDATE and whose confirmation is true.  Two witnesses are one
 mechanism when they share a signature:
 
@@ -206,8 +207,11 @@ def main():
             score = json.load(open(path))
             scores[score["target"]] = score["roots"]
     witnesses = collections.defaultdict(list)
+    # A batch case's checks each have their own campaign, targets/<check>/.
     for final in sorted(glob.glob(os.path.join(
-            args.sweep, "accept-*", "out", "*", "schedule", "final"))):
+            args.sweep, "accept-*", "out", "*", "schedule", "final"))
+            + glob.glob(os.path.join(args.sweep, "accept-*", "out", "*",
+                                     "targets", "*", "schedule", "final"))):
         if not os.path.exists(os.path.join(final, "result.json")):
             continue
         case = os.path.relpath(os.path.dirname(os.path.dirname(final)), args.sweep)

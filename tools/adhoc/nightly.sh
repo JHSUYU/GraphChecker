@@ -151,7 +151,8 @@ python3 "${tools}/cover.py" "${night}" "${experiment}" cases \
 
 # 3. Run.
 sweep() {
-  GC_OUT=${night} VM_IMAGE=${vm} bash "${tools}/sweep.sh" "${snapshot}" \
+  GC_OUT=${night} VM_IMAGE=${vm} STATIC_ROOT=${GC_OUT}/static/${key} \
+    bash "${tools}/sweep.sh" "${snapshot}" \
     "${round}" "${night}/cases.txt" "${NIGHTLY_HEADS:-2}" \
     >>"${night}/sweep.log" 2>&1
 }

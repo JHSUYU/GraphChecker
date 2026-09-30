@@ -12,7 +12,7 @@ through `campaign_fail`, which prints `stage`, `component`, `artifact`, `reason`
 | FREEZE_TOOL | `campaign_freeze_graphchecker_jar` | `frozen-inputs/GraphChecker.jar` | the jar changed while copied |
 | SETUP (optional) | `campaign_setup` | whatever `campaign_setup_command` does | the command fails |
 | FREEZE | `campaign_freeze` | the provenance (published by EMIT) | an input cannot be digested |
-| SEED | `campaign_seed`; `GraphCheckerMain`, `plan.ScopeGrowth`, `plan.LineageScan`, `runtime.CausynthTraceRecorder` | static artifacts, the recording, `seed-skeletons/` | the workload exits nonzero; an artifact is missing or stale |
+| SEED | `campaign_seed`; `GraphCheckerMain`, `plan.ScopeGrowth`, `plan.LineageScan`, `runtime.CausynthTraceRecorder` (a batch: `campaign_batch_seed`, §2b) | static artifacts, the recording, `seed-skeletons/` | the workload exits nonzero; an artifact is missing or stale |
 | PLAN | `campaign_plan`; `plan.ConcolicScheduler` | `iteration-0000/execution_task_plan.jsonl`, `runtime_workflow_schedule_index.json` | more tasks than `schedule_max_jobs`; the index does not commit the frozen plan; no target |
 | INSTRUMENT | `campaign_instrument`; `GraphCheckerMain`, `causynth.VerifyWovenClasses` | `iteration-0000/instrumented-classes/` | no class woven; a woven class does not verify |
 | REPLAY | `campaign_session_replay`; the adapter (`runtime.*` in the workload JVM) | `iteration-0000/sessions/<seed>/` | killed on its bound (`seed_replay_time_factor`); no activation; no target row of the target method |
@@ -82,6 +82,7 @@ marked * below.
 | `compose_max_valuations`* (16) | the valuations COMPOSE enumerates |
 | `concolic_worker_count`* (8), `campaign_worker_hosts`, `obligation_memory_mb`*, `engine_memory_mb` | slots per host, the hosts, one obligation's memory at the host gate, the head JVMs' heap |
 | `campaign_stop_after` | empty, or `IMPORT` |
+| `causynth_static_root`, `record_timeout_s`* (300), `reproduce_runs`* (10) | the build's static slices a batch campaign or a pre-screen reads (§2b); the wall clock of a pre-screen's recording and of each native reproduction run; how many of those (§10b) |
 
 Defaults in parentheses; `solver_timeout_ms`, `schedule_max_jobs` and `obligation_memory_mb` have
 none.
@@ -134,6 +135,38 @@ none.
    (the runtime region plan) and `runtime/region_skeletons.jsonl`; the recording's
    `runtime/schedule.jsonl` sits beside them.
 3. Both skeleton views are copied to `<campaign root>/seed-skeletons/`.
+
+### 2b. A batch campaign: one recording for several targets
+
+A campaign given `causynth_static_root` (an ad-hoc sweep's batch case, `tools/adhoc/cover.py
+cases`; ADHOC-INFRA WP3) runs no static pass of its own. Its spec names k ≥ 1 targets, each sliced
+by the build already (`<static root>/<name>/`, `tools/adhoc/slice.sh`). After FREEZE,
+`campaign_batch`:
+
+1. SEED (`campaign_batch_seed` → `campaign_record_batch`, the same code as the pre-screen's `record`):
+   each target's slice is frozen into `targets/<name>/` (candidate graph, scope map, frontier,
+   communication gaps, its own skeletons as `own_region_skeletons.jsonl.gz`, its spec line as
+   `target.yaml`); ONE recording is woven with every target's skeletons merged by region and every
+   target's grown scope united (`campaign_union_static`), its workload run as SEED's (a nonzero exit
+   fails SEED), and each target aggregated on its own slice into `targets/<name>/runtime/`, asked of
+   its own skeletons so that no other target's exception context is taken for its own.
+   `runtime/record-summary.json` states each target's state (`ACTIVATED` or the refusal). Each
+   target directory links the batch's merged skeletons, grown scope, lineage classes, recording
+   weave and recorded schedule, so every weave and replay of every target stands on the recording's
+   frames.
+2. Every `ACTIVATED` target runs its own iteration, all at once, each in a subshell
+   (`campaign_batch_target`) logging to `targets/<name>/campaign.log`: its `causynth_output_dir` is
+   `targets/<name>/` (so it, and every peer of its waves, derives its slice, scope map and region plan
+   there), its campaign root `targets/<name>/schedule/`, its spec its one line, its region plan's
+   aggregation slice the one REPRODUCE reuses (`campaign_target_slice`); PLAN .. EMIT are the
+   ordinary stages (`campaign_iteration`), with `first` resolved per target. Each target's replays
+   run only its own tasks, over the batch's weave.
+3. The batch fails when SEED does, when the recording activated no target, or when a target's
+   campaign ended before EMIT (EMIT's exits 2 and 3 are verdicts); each target's claim is its own
+   `targets/<name>/schedule/final/result.json`.
+
+What is shared is the static pass (the build's), the recording weave, the recording and its
+aggregation; each target still plans, weaves (INSTRUMENT) and replays its seed on its own.
 
 ## 3. PLAN
 
