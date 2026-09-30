@@ -486,9 +486,18 @@ came later), and each later one whose writer is HB-concurrent with the reader (`
 object, version), exactly one where the owner is that object. An answer holds only where the owner
 is its object, so what its lowering requires is its case's precondition, never the path's. An
 object whose write states no state (`referentStateRefused`, none, or no version lowers) is no case,
-named DIAGNOSTIC `REFERENT_STATE_UNSTATED:<reason>:<object>@<session>`. `READ_OR_DEFAULT`
-(`getOrDefault`) is a read whose absent key answers the default; `PUT_ALL` is refused by name
-(`ContainerRelation:ASSOCIATIVE:PUT_ALL`).
+named DIAGNOSTIC `REFERENT_STATE_UNSTATED:<reason>:<object>@<session>`. A movable owner that is no
+reference read (a map's own read, `outer.get(k).get(k2)`) names no candidates and refuses the path
+(`UNSTATED_VALUE:OwnerCandidates:<location>`). `ENTRY` is a view to walk through; as a value no
+`Value` spells it, and it is refused by name.
+
+**New map operations** (`ContainerSmtCodec`). `READ_OR_DEFAULT` (`getOrDefault`) is a read whose
+absent key answers the default. `PUT_ALL` (`putAll(m)`) puts, in the order m's chain put them, each
+key m's chain names above its exact empty base, where m holds it (`assoc_put_if`, the guard inside
+each component as `assoc_remove_if`'s); a source whose chain bounds no keys is refused by name
+(`ContainerRelation:ASSOCIATIVE:PUT_ALL:source-keys-unstated`), and a view over the result counts
+the source's keys. The presence and match conditions of `putIfAbsent`, `replace` and `remove(k, v)`
+are comparisons of a `READ` with null or the argument, lowered as any comparison.
 
 **Construction guards** (`Composer#constructionGuards`, R3-REFCONT §1.6, D5). A write that stored a
 container states its `referentState`; its referent rests on every decision its occurrence took

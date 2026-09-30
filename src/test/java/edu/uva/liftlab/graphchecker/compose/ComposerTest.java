@@ -3734,6 +3734,10 @@ public class ComposerTest {
         JsonObject emptied = relation("INDEXED", "SNAPSHOT_BASE",
                 relation("INDEXED", "STATE", symbol(
                         "M_L'java/util/ArrayList'_3", "java/util/ArrayList")));
+        // putAll(m) into an empty map, then a get of what m put.
+        JsonObject empty = relation("ASSOCIATIVE", "SNAPSHOT_BASE", null);
+        JsonObject all = relation("ASSOCIATIVE", "PUT_ALL", empty,
+                relation("ASSOCIATIVE", "PUT", empty, integer("J", 5L), n));
         List<String> texts = new ArrayList<String>();
         for (JsonObject expression : Arrays.asList(
                 vmString("substring", s, n), vmString("charAt", s, n),
@@ -3742,7 +3746,9 @@ public class ComposerTest {
                 binary("==", relation("INDEXED", "READ", "I",
                         relation("INDEXED", "INSERT", emptied,
                                 integer("I", 0L), n), integer("I", 0L)),
-                        n))) {
+                        n),
+                binary("==", relation("ASSOCIATIVE", "READ", "I", all,
+                        integer("J", 5L)), n))) {
             VmTermLowering.Term term =
                     lowering.dispatch(expression, null, "test");
             texts.add(term.text);

@@ -626,6 +626,9 @@ public final class ContainerSmtCodec {
                     : new Term("(assoc_remove " + receiver.text + " "
                     + key.text + ")", Sort.ASSOCIATIVE);
         }
+        if ("PUT_ALL".equals(operation) && arguments.size() == 1) {
+            return putAll(receiver, arguments.get(0), host);
+        }
         if ("REMOVE_IF".equals(operation) && arguments.size() == 1) {
             // Drops the key when the guard holds; read/has short-circuit
             // this via the mutation walk, this handles a nested receiver.
@@ -637,6 +640,35 @@ public final class ContainerSmtCodec {
                     Sort.ASSOCIATIVE);
         }
         return unmodeled("ASSOCIATIVE", operation, arguments, host);
+    }
+
+    /**
+     * {@code putAll(m)}: each key m's chain names, in the order it put
+     * them, put where m holds it ({@code assoc_put_if}, its guard inside
+     * each component as {@code assoc_remove_if}'s).  The keys are the puts
+     * above m's exact empty base; a source whose chain ends anywhere else,
+     * or runs past {@link #VIEW_CHAIN_LIMIT}, bounds nothing and is refused
+     * by name.
+     */
+    private static Term putAll(Term receiver, JsonElement source, Host host) {
+        List<JsonElement> keys = associativeViewKeys(host.chain(source),
+                host);
+        Term from = associativeState(source, host);
+        if (keys == null || from == null) {
+            host.unsupported("ContainerRelation:ASSOCIATIVE:PUT_ALL:"
+                    + "source-keys-unstated");
+            return null;
+        }
+        Term state = receiver;
+        for (JsonElement each : keys) {
+            Term key = host.box(each);
+            if (key == null) return null;
+            state = shared(new Term("(assoc_put_if " + state.text + " "
+                    + key.text + " (assoc_read " + from.text + " " + key.text
+                    + ") (assoc_has " + from.text + " " + key.text + "))",
+                    Sort.ASSOCIATIVE), host);
+        }
+        return state;
     }
 
     /**
@@ -855,7 +887,7 @@ public final class ContainerSmtCodec {
             JsonElement stateIr, Term state, Host host,
             Set<JsonElement> views) {
         if (stateIr != null && views.contains(stateIr)) return true;
-        List<JsonElement> put = associativeViewKeys(stateIr);
+        List<JsonElement> put = associativeViewKeys(stateIr, host);
         if (put == null) {
             host.unsupported(ASSOC_VIEW_SIZE_UNSTATED + ":"
                     + associativeStateSubject(stateIr));
@@ -901,12 +933,13 @@ public final class ContainerSmtCodec {
     }
 
     /**
-     * The keys a view's state was put with above an exact empty base, or
-     * null when the chain ends anywhere else and so bounds nothing -- or
-     * runs past {@link #VIEW_CHAIN_LIMIT}.
+     * The keys a view's state was put with above an exact empty base, in
+     * the order put ({@code PUT_ALL}: its source's, at its place), or null
+     * when the chain ends anywhere else and so bounds nothing -- or runs
+     * past {@link #VIEW_CHAIN_LIMIT}.
      */
     private static List<JsonElement> associativeViewKeys(
-            JsonElement state) {
+            JsonElement state, Host host) {
         List<JsonElement> keys = new ArrayList<JsonElement>();
         JsonElement chain = state;
         for (int depth = 0; depth < VIEW_CHAIN_LIMIT; depth++) {
@@ -918,6 +951,13 @@ public final class ContainerSmtCodec {
             }
             if ("PUT".equals(mutation.operation)) {
                 keys.add(mutation.arguments.get(0));
+            } else if ("PUT_ALL".equals(mutation.operation)) {
+                List<JsonElement> added = associativeViewKeys(
+                        host.chain(mutation.arguments.get(0)), host);
+                if (added == null) return null;
+                for (int index = added.size() - 1; index >= 0; index--) {
+                    keys.add(added.get(index));
+                }
             }
             chain = mutation.receiver;
         }
@@ -966,6 +1006,7 @@ public final class ContainerSmtCodec {
         int arity = emptiesState(operation) ? 0
                 : "REMOVE".equals(operation) ? 1
                 : "REMOVE_IF".equals(operation) ? 1
+                : "PUT_ALL".equals(operation) ? 1
                 : "PUT".equals(operation) ? 2 : -1;
         if (arity < 0 || arguments.size() != arity) return null;
         // REMOVE_IF without a guard is malformed: refused, never dropped.
@@ -1238,6 +1279,10 @@ public final class ContainerSmtCodec {
          * object.
          */
         Term query(JsonObject relation, Term answer);
+
+        /** The chain of mutations a container state stands for: a read's
+         *  joined version, else the node itself. */
+        JsonElement chain(JsonElement state);
 
         void require(String predicate);
 

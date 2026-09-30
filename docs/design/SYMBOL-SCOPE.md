@@ -429,14 +429,13 @@ DIAGNOSTIC `UNSTATED_VALUE`. An accepted attach that mints no `v_H` is DIAGNOSTI
   read through a field, a parameter, `java.time`, or an interface whose implementation is outside
   the scope is not recognized; configuration values and pre-window state are roots only where a
   tree hook says so.
-- The VM versions integral instance fields and the atomics' integral `value` from an observed
-  access; wrapper fields pass the static rule but the VM starts no log for them. `REFERENCE`
-  cells (reference fields and `AtomicReference.value`) are named by the map and observed at every
-  access, but the observer refuses them (a named gap, §5.2) until R3-REFCONT WP2, and a static one
-  is not observed at all; a container reached through a replaced reference is re-paired only once
-  COMPOSE selects its referent's state (WP5). Not tracked: `float`/`double` fields, static values,
-  `String` fields, array elements, and containers the VM does not model (`ConcurrentHashMap`,
-  `TreeMap` and the queues are classified by interface here, modeled by WP3).
+- The VM versions integral instance fields, wrapper fields, `REFERENCE` cells (reference fields
+  and `AtomicReference.value`) and the atomics' integral `value` from an observed access (§5.2); a
+  static cell is not observed (the weave passes no class owner). A container reached through a
+  replaced reference is the referent's state its store stated (`referentState`), which COMPOSE
+  asks per candidate (PIPELINE §8). Not tracked: `float`/`double` fields, static values, `String`
+  fields, array elements, and containers the VM does not model (`TreeMap`, `TreeSet` and the
+  queues are classified by interface here, modeled by R3-REFCONT WP3b/c).
 - A non-application call's receiver is dropped from the slice (§2.2) unless the call is a
   container query or an atomic's accessor, so state behind any other library object never
   enters `S`.

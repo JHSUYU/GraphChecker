@@ -1949,7 +1949,7 @@ public final class SmtLowering {
      *  a query through one asks the state beneath. */
     private static final Set<String> VIEWS = new LinkedHashSet<String>(
             Arrays.asList("ITERATOR", "KEY_VIEW", "VALUE_VIEW", "ENTRY_VIEW",
-                    "NEXT"));
+                    "NEXT", "ENTRY"));
 
     /**
      * THE MOVE of a container query (R3-REFCONT §1.1), a query's answer as
@@ -1973,8 +1973,10 @@ public final class SmtLowering {
                 : null;
         if (self == null) {
             refuse(UNSTATED + ":OwnerCandidates:" + key, "a STATE family "
-                    + "may re-point this owner, and neither its write nor "
-                    + "its row names the object the run's read returned");
+                    + "may re-point this owner, and it is no reference "
+                    + "whose write or row names the object the run's read "
+                    + "returned (a container's own read names none), so "
+                    + "which objects it may be is not stated");
             return own;
         }
         Map<String, Term> answers = new LinkedHashMap<String, Term>();
@@ -2297,6 +2299,22 @@ public final class SmtLowering {
             public ContainerSmtCodec.Term query(
                     JsonObject relation, ContainerSmtCodec.Term answer) {
                 return SmtLowering.this.query(relation, answer, origin);
+            }
+
+            @Override
+            public JsonElement chain(JsonElement state) {
+                JsonElement found = state;
+                while (VmExpressionIr.consumerBoundary(found)) {
+                    found = found.getAsJsonObject().get(
+                            VmExpressionIr.EXPRESSION);
+                }
+                if (!VmRows.GUARDED_READ_TYPE.equals(
+                        VmExpressionIr.typeOf(found))) {
+                    return found;
+                }
+                JsonObject read = found.getAsJsonObject();
+                return join.writeExpression(locationKey(JsonFields.object(
+                        read, "location")), observedVersion(read));
             }
 
             @Override
