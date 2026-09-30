@@ -410,18 +410,8 @@ share a variable with the guard (`compose.Independence.ofGuard`), plus the input
 ran, their handoff sites and producers, and those members' write counts at the locations the guard
 reads — never delivered values. Never the session. An arm is
 settled when some session recorded it under the same dependence, or an earlier wave answered it
-`ADMITTED`, `UNSAT` or `NOT_ADMITTED` (`SAT_MODEL_READY` is no answer), or an earlier wave answered
-its **question** under another id. The question (`ObligationFactory#question`) is a digest of the
-flip (task, path, site, ordinal, flipped outcome), the query as its solver is asked it (or the
-refusal that leaves none) and the world its replay would plant (the path's world: roots, clock
-skews, answers, inherited flips); an id drifts as sessions land (the factor, and so the input
-shape, grows) while the question does not as long as the query reads the same (SOLR-18413 r5:
-185 questions asked 717 times, 118 of the 166 re-asked byte-identical, 162 answered as before).
-The planner and the solver build the query the same way, over fresh session lowerings
-(`Corpus#isolated`: a lowering names refused constructs by a running count and states its facts
-in arrival order), so the planner's question is the one the solver asks; the solver writes the
-question it asked to the worker's `question.txt`. The ledger is rebuilt every wave from the corpus,
-`obligation_results.jsonl` and the workers' questions (`ObligationDir#questions`).
+`ADMITTED`, `UNSAT` or `NOT_ADMITTED` (`SAT_MODEL_READY` is no answer). The ledger is rebuilt every
+wave from the corpus and `obligation_results.jsonl`.
 
 ### 7.4 Candidates: `ObligationFactory.candidates`
 
@@ -430,12 +420,7 @@ candidate is a decision with a term (`FlipQuery.flippable`) at one of the task's
 decisions first. Bounds (`ExploreMain` options, defaults in `ObligationFactory`/`ClosurePlanner`):
 `--max-tasks` 64, `--max-paths-per-region` 32 paths per task, `--max-flips-per-path` 32,
 `--max-world-depth` 3 (flips a cut path's world may already hold). Every bound that drops work files
-a DIAGNOSTIC gap; settled candidates are filed as DIAGNOSTIC gaps too. A candidate the ledger does not
-settle by id is asked its question: one an earlier wave answered, or one another candidate of the
-task asks this wave, is settled by it (a DIAGNOSTIC gap naming the obligation that asked it). The
-wave writes `questions.tsv` (`<obligationId> TAB <question>` per proposed obligation) and states
-`answeredQuestions` (distinct questions answered so far) in `explore_manifest.json`. A case stopped
-at its witness seeks no flip at all.
+a DIAGNOSTIC gap; settled candidates are filed as DIAGNOSTIC gaps too.
 
 ### 7.5 One obligation: `explore.ObligationSolverMain`
 
@@ -600,10 +585,8 @@ exposure) fails EXPLORE.
 `campaign_explore`: plan wave N; if `obligations.jsonl` is empty and no region is exposed, stop (the
 fixed point). Otherwise stop with a DIAGNOSTIC `ADMISSION_GAP` row in `campaign_gaps.jsonl` when
 `N ≥ region_path_max_waves` (`REGION_PATH_WAVE_BUDGET_REACHED`) or when the signature over the
-wave's questions (`questions.tsv`), the count of distinct questions answered (`answeredQuestions`)
-and the exposures equals the previous wave's (`REGION_PATH_CLOSURE_NO_PROGRESS`: the wave before
-asked the same and learned no answer it did not have; ids drift and every re-ask adds a verdict
-row, so neither stops a loop). Else dispatch the obligations (if any), GROW (if a region is
+proposed ids, the verdict histogram and the exposures equals the previous wave's
+(`REGION_PATH_CLOSURE_NO_PROGRESS`). Else dispatch the obligations (if any), GROW (if a region is
 exposed), then gate the wave: the IMPORT
 gate over the whole session roster (linked under `import-gates/obligations-NNNN/`) whenever the wave
 added a session; one BLOCKING violation fails the campaign at IMPORT.

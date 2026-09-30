@@ -1346,11 +1346,10 @@ done
 mkdir -p "${bound_dir}/work"
 workload_work_dir="${bound_dir}/work"
 custom_jdk_home=""
-# Ten seconds, not one: the adapter is a LOGIN shell, and the lifts' login
-# profile runs a quota check on NFS, which right after `mvn package` took
-# over five seconds, so a shorter bound sometimes fired before the payload
-# wrote its pid.
-campaign_adapter_timeout_s=10
+# Five seconds, not one: the adapter is a LOGIN shell, and the lifts' login
+# profile runs a quota check on NFS that alone takes up to a second, so a
+# one-second bound sometimes fired before the payload wrote its pid.
+campaign_adapter_timeout_s=5
 run_capturing_status campaign_run_adapter "replay(test)" \
   "sleep 120 & echo \$! >'${bound_dir}/grandchild.pid'; wait" \
   >"${bound_dir}/adapter.log" 2>&1
@@ -2429,12 +2428,9 @@ explore_loop_planner() {
     esac
   done
   : >"${out}/obligations.jsonl"
-  : >"${out}/questions.tsv"
-  printf '{"answeredQuestions":%s}\n' "${wave}" >"${out}/explore_manifest.json"
   printf '{"kind":"FRONTIER","open":0}\n' >"${out}/growth.jsonl"
   case "${wave}" in
-    0) printf '{"obligationId":"OB.a"}\n' >"${out}/obligations.jsonl"
-       printf 'OB.a\tQ.a\n' >"${out}/questions.tsv" ;;
+    0) printf '{"obligationId":"OB.a"}\n' >"${out}/obligations.jsonl" ;;
     1) printf '%s\n' \
         '{"kind":"EXPOSED_REGION","regionId":"REGION.g","node":"nn0","occurrence":"REGION.g#1","sessionId":"SESSION.a","obligationId":"OB.a"}' \
         >>"${out}/growth.jsonl" ;;
@@ -2519,55 +2515,6 @@ jq -e 'select(.subject == "REGION_PATH_WAVE_BUDGET_REACHED")
 $(cat "${bound_loop}/campaign_gaps.jsonl")"
 grep -q 'region_path_max_waves=1' "${bound_loop}/explore.log" \
   || fail "the wave bound is not stated in the campaign log"
-# EXPLORE-4: NO PROGRESS, by question.  Each wave asks the one question Q
-# under an id of its own (an id drifts as sessions land); wave 1 answers no
-# question wave 0 had not (the planner's answeredQuestions stays 1), so
-# wave 2 is the fixed point the ids alone never showed (SOLR-18413 r5: 185
-# questions asked 717 times).
-drift_loop="${test_tmp}/explore-drift/iteration-0000"
-mkdir -p "${drift_loop}/sessions" "${drift_loop}/seed-replay"
-: >"${drift_loop}/seed-replay/execution_task_plan.jsonl"
-region_path_max_waves=12
-(
-  run_java_main() {
-    local wave="" out=""
-    while [[ $# -gt 0 ]]; do
-      case "$1" in
-        --wave) wave=$2; shift 2 ;;
-        --output-dir) out=$2; shift 2 ;;
-        *) shift ;;
-      esac
-    done
-    printf '{"obligationId":"OB.%s"}\n' "${wave}" >"${out}/obligations.jsonl"
-    printf 'OB.%s\tQ\n' "${wave}" >"${out}/questions.tsv"
-    printf '{"answeredQuestions":%s}\n' "$(( wave > 0 ? 1 : 0 ))" \
-      >"${out}/explore_manifest.json"
-    printf '{"kind":"FRONTIER","open":0}\n' >"${out}/growth.jsonl"
-  }
-  campaign_dispatch_wave() {
-    local wave_dir=$1
-    shift 5
-    local job
-    for job in "$@"; do
-      jq -n -c --arg id "${job}" '{schemaVersion: 1,
-        kind: "OBLIGATION_RESULT", obligationId: $id,
-        verdict: "NOT_ADMITTED", sessionId: "", detail: ""}' \
-        >"${wave_dir}/${job}/obligation_result.jsonl"
-    done
-  }
-  campaign_import_wave_gate() { :; }
-  campaign_explore "${drift_loop}" iteration-0000
-) >"${drift_loop}/explore.log" 2>&1 \
-  || fail "EXPLORE-4: the drifting loop did not finish: \
-$(cat "${drift_loop}/explore.log")"
-[[ -d "${drift_loop}/obligations-0002" && ! -e "${drift_loop}/obligations-0003" ]] \
-  || fail "EXPLORE-4: the loop did not stop at the wave that asked what the \
-wave before asked: $(ls "${drift_loop}")"
-jq -e 'select(.subject == "REGION_PATH_CLOSURE_NO_PROGRESS")
-  | .detail | test("asks the same 1 question")' \
-  "${drift_loop}/campaign_gaps.jsonl" >/dev/null \
-  || fail "EXPLORE-4: the stop is not stated by question: \
-$(cat "${drift_loop}/campaign_gaps.jsonl" 2>&1)"
 # And a planner that states no growth file is a planner that did not run
 # to completion: refused by name, never read as "nothing exposed".
 nogrowth_loop="${test_tmp}/explore-nogrowth/iteration-0000"
