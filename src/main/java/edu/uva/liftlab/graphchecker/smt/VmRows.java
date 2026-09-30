@@ -21,21 +21,40 @@ public final class VmRows {
     public static final String OBSERVED_VERSION = "observedVersion";
     /** Whether the VM saw every writer of the location a read observed. */
     public static final String WRITER_SET_COMPLETE = "writerSetComplete";
+    /** Whether the word a read loaded is the word its version stored. */
+    public static final String OBSERVED_EXACT = "observedExact";
 
     /**
-     * Whether a read's observed version is the value it read.  Not when the
-     * VM says the location's writer set is incomplete: a mutation it does not
-     * model reached the location, so the version is one candidate among
-     * writers nobody stated (SOLR-18406: a list read at its CLEAR version,
-     * refilled since by an unmodeled call, was iterated for three names).
-     * Such a read states no version: a scalar is pinned to what it
-     * returned, a container state is refused.
+     * Whether a read's observed version is the value it read: the VM
+     * verified this read (the word it loaded is the word its observed
+     * version stored), or the location's writer set is whole.  An
+     * incomplete set without that verification leaves the version one
+     * candidate among writers nobody stated (SOLR-18406: a list read at its
+     * CLEAR version, refilled since by an unmodeled call, was iterated for
+     * three names); such a read states no version, a scalar is pinned to
+     * what it returned and a container state is refused.  One lost version
+     * used to leave every later read of its location unjoined, though each
+     * returned exactly what it named (unobs/: 1316 reads after one
+     * UNOBSERVED).  Incompleteness still gates alternative writers
+     * ({@link #writerSetComplete}).
      */
     public static boolean joinable(JsonObject read) {
-        JsonElement complete = read == null ? null
-                : read.get(WRITER_SET_COMPLETE);
-        return complete == null || !complete.isJsonPrimitive()
-                || complete.getAsBoolean();
+        return writerSetComplete(read) || flag(read, OBSERVED_EXACT, false);
+    }
+
+    /**
+     * Whether a read's location had its whole writer set when it read: the
+     * condition for pairing the read with any writer but the one it observed.
+     */
+    public static boolean writerSetComplete(JsonObject read) {
+        return flag(read, WRITER_SET_COMPLETE, true);
+    }
+
+    private static boolean flag(JsonObject read, String member,
+                                boolean absent) {
+        JsonElement value = read == null ? null : read.get(member);
+        return value == null || !value.isJsonPrimitive() ? absent
+                : value.getAsBoolean();
     }
     /** What a joined read returned, stamped onto the joined value. */
     public static final String RECORDED_READING = "inSessionRecordedReading";

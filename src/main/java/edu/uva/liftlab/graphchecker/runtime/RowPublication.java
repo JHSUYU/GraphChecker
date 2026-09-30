@@ -261,7 +261,7 @@ final class RowPublication {
             return;
         }
         publishRead(node, identity, locationKey, location, observed, event,
-                symbol, value);
+                symbol, value, VmRows.writerSetComplete(node));
     }
 
     /**
@@ -314,7 +314,7 @@ final class RowPublication {
                     observed >= 0L ? "v" + observed : "e" + event);
         }
         publishRead(node, identity, locationKey, location, observed, event,
-                projected, stated);
+                projected, stated, VmRows.writerSetComplete(read));
     }
 
     /**
@@ -324,7 +324,7 @@ final class RowPublication {
     private static void publishRead(JsonObject node, String identity,
                                     String locationKey, LocationId location,
                                     long observed, long event, String symbol,
-                                    String value) {
+                                    String value, boolean complete) {
         if (!RowRuntime.claimEvent("read", identity)) return;
         OccurrenceAddress performer = LoggedEventSites.performer(
                 node, locationKey, event, false);
@@ -335,7 +335,7 @@ final class RowPublication {
                 optionalString(node, "_java_type"), value,
                 LoggedEventSites.siteIndex(node, locationKey, event, site,
                         false),
-                ReadRow.UNKNOWN_VERSION);
+                ReadRow.UNKNOWN_VERSION, complete);
     }
 
     /**

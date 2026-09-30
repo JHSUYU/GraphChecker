@@ -23,10 +23,12 @@ public final class ReadRow extends Value {
     private final String javaType;
     private final String concreteValue;
     private final long mintVersion;
+    private final boolean writerSetComplete;
 
     private ReadRow(String sessionId, long seq, Endpoint endpoint,
                     LocationId location, long observedVersion, String symbol,
-                    String javaType, String concreteValue, long mintVersion) {
+                    String javaType, String concreteValue, long mintVersion,
+                    boolean writerSetComplete) {
         this.sessionId = sessionId;
         this.seq = seq;
         this.endpoint = endpoint;
@@ -36,6 +38,7 @@ public final class ReadRow extends Value {
         this.javaType = javaType;
         this.concreteValue = concreteValue;
         this.mintVersion = mintVersion;
+        this.writerSetComplete = writerSetComplete;
     }
 
     public static ReadRow of(String sessionId, long seq, Endpoint endpoint,
@@ -51,13 +54,35 @@ public final class ReadRow extends Value {
                              LocationId location, long observedVersion,
                              String symbol, String javaType,
                              String concreteValue, long mintVersion) {
+        return of(sessionId, seq, endpoint, location, observedVersion, symbol,
+                javaType, concreteValue, mintVersion, true);
+    }
+
+    /** The same row, stating whether its location's writer set was whole. */
+    public static ReadRow of(String sessionId, long seq, Endpoint endpoint,
+                             LocationId location, long observedVersion,
+                             String symbol, String javaType,
+                             String concreteValue, long mintVersion,
+                             boolean writerSetComplete) {
         return new ReadRow(Fields.text(sessionId, "sessionId"),
                 Fields.nonNegative(seq, "seq"),
                 Fields.required(endpoint, "endpoint"),
                 Fields.required(location, "location"), observedVersion,
                 Fields.text(symbol, "symbol"),
                 Fields.text(javaType, "javaType"),
-                Fields.optional(concreteValue), mintVersion);
+                Fields.optional(concreteValue), mintVersion,
+                writerSetComplete);
+    }
+
+    /**
+     * Whether the VM saw every writer of this read's location when it read
+     * (the VM's {@code writerSetComplete}).  A read may state its version
+     * without it -- its observation is exact ({@code observedExact}) -- but
+     * then its version is the only writer anyone may pair it with: an
+     * alternative writer is one of a set known to be partial.
+     */
+    public boolean writerSetComplete() {
+        return writerSetComplete;
     }
 
     /**
@@ -122,6 +147,12 @@ public final class ReadRow extends Value {
                     : null;
         }
         if (!value.isJsonObject()) return null;
+        // A String past the VM's bound states only its length: unstated,
+        // never a prefix to pin to.
+        if (VmExpressionIr.TRUNCATED_VALUE_TYPE.equals(
+                VmExpressionIr.typeOf(value))) {
+            return null;
+        }
         JsonElement constant = value.getAsJsonObject().get("_exp");
         return constant == null || !constant.isJsonPrimitive() ? null
                 : VmExpressionIr.constantPayload(constant.getAsString());
@@ -137,7 +168,8 @@ public final class ReadRow extends Value {
     @Override
     Object[] parts() {
         return new Object[] {sessionId, seq, endpoint, location,
-                observedVersion, symbol, javaType, concreteValue, mintVersion};
+                observedVersion, symbol, javaType, concreteValue, mintVersion,
+                writerSetComplete};
     }
 
     @Override

@@ -343,9 +343,16 @@ public final class Arms {
      * @param session        the reader's own session: eligibility is its
      *                       happens-before and no other run's
      * @param location       the join key of L
+     * @param alternatives   whether L's writer set was whole when it was
+     *                       read ({@code ReadRow#writerSetComplete}): a read
+     *                       that joined its version by its own verification
+     *                       at an incomplete location keeps the observed
+     *                       writer only, since the writers the log states are
+     *                       not all the writers there were
      */
     public List<Arm> stateArms(Endpoint readerEndpoint, String session,
-                               String location, long observedVersion) {
+                               String location, long observedVersion,
+                               boolean alternatives) {
         OccurrenceAddress reader = readerEndpoint.occurrence();
         // One arm per writer occurrence: the observed write, else the
         // block's last write of L.
@@ -363,7 +370,10 @@ public final class Arms {
         for (WriteRow write : armOf.values()) {
             OccurrenceAddress writer = write.endpoint().occurrence();
             boolean observed = write.version() == observedVersion;
-            if (!observed && !concurrent(reader, writer, session)) continue;
+            if (!observed && (!alternatives
+                    || !concurrent(reader, writer, session))) {
+                continue;
+            }
             Arm arm = arm(Interaction.of(InteractionKind.STATE,
                             write.endpoint(), readerEndpoint).id(),
                     "", session, writer, write.expressionRef(),

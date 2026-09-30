@@ -870,7 +870,7 @@ final class FlipQuery {
         private List<Arms.Arm> eligible(ReadRow row) {
             List<Arms.Arm> eligible = corpus.arms().stateArms(row.endpoint(),
                     row.sessionId(), SmtLowering.locationKey(row.location()),
-                    row.observedVersion());
+                    row.observedVersion(), row.writerSetComplete());
             fileRefusals();
             return eligible;
         }

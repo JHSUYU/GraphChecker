@@ -82,6 +82,7 @@ public class ContractTest {
                 {new com.google.gson.JsonPrimitive("Y_I_2 \"q\""),
                         "\"Y_I_2 \\\"q\\\"\"", "Y_I_2 \"q\""},
                 {com.google.gson.JsonNull.INSTANCE, "N", null},
+                {truncated(), null, null},
                 {null, null, null}};
         for (Object[] each : cases) {
             JsonObject node = new JsonObject();
@@ -92,6 +93,14 @@ public class ContractTest {
             assertEquals(String.valueOf(each[0]), each[1], spelled);
             assertEquals(each[2], ReadRow.stringContent(spelled));
         }
+    }
+
+    /** A String the VM cut past its bound: its length, and no content. */
+    private static JsonObject truncated() {
+        JsonObject value = new JsonObject();
+        value.addProperty("_type", "TruncatedValue");
+        value.addProperty("length", 5000);
+        return value;
     }
 
     @Test
@@ -448,6 +457,14 @@ public class ContractTest {
                 reline(RowCodec.writeRead(placeholder))));
         assertFalse("a stated mint version is not the unknown one",
                 placeholder.equals(read));
+        // So is an incomplete writer set: the read joins, alternatives not.
+        ReadRow partial = ReadRow.of("s-17897-1", 14L, read.endpoint(),
+                keys, 7L, "state_allKeys_7", BLOCK_KEY, null,
+                ReadRow.UNKNOWN_VERSION, false);
+        assertEquals(partial, RowCodec.readRead(
+                reline(RowCodec.writeRead(partial))));
+        assertFalse(partial.equals(read));
+        assertFalse(RowCodec.writeRead(read).has("writerSetComplete"));
         assertEquals(minted, RowCodec.readRootMint(
                 reline(RowCodec.writeRootMint(minted))));
         assertEquals(target, RowCodec.readTarget(

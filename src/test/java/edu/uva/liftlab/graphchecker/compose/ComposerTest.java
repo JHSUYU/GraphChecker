@@ -1910,6 +1910,18 @@ public class ComposerTest {
                 new edu.uva.liftlab.graphchecker.smt.Arms(
                         Corpus.read(iteration, null))
                         .concurrent(reader, concurrent, "s0"));
+        // A read that joined its version at a location whose writer set was
+        // not whole keeps the observed writer only.
+        Endpoint readAt = Endpoint.of(reader, "Reader#get#5:READ",
+                at("r#1", 0), 0);
+        edu.uva.liftlab.graphchecker.smt.Arms arms =
+                new edu.uva.liftlab.graphchecker.smt.Arms(
+                        Corpus.read(iteration, null));
+        String keysKey = SmtLowering.locationKey(keys);
+        assertEquals("a whole writer set offers the concurrent writer", 2,
+                arms.stateArms(readAt, "s0", keysKey, 1L, true).size());
+        assertEquals("a partial one only the writer the read observed", 1,
+                arms.stateArms(readAt, "s0", keysKey, 1L, false).size());
         // IDENTITY-V3 sec 5: alternatives need an owner that names the
         // storage.  The class-owned copy of the same state gets the
         // delivery its own run gave it, and says so.
@@ -3520,8 +3532,14 @@ public class ComposerTest {
         JsonObject whole = read("INSTANCE", 7L, 3L, 5L, "I");
         JsonObject partial = read("INSTANCE", 7L, 3L, 5L, "I");
         partial.addProperty(VmRows.WRITER_SET_COMPLETE, false);
+        // Unless the VM verified the read itself: it loaded the word the
+        // version stored.
+        JsonObject exact = read("INSTANCE", 7L, 3L, 5L, "I");
+        exact.addProperty(VmRows.WRITER_SET_COMPLETE, false);
+        exact.addProperty(VmRows.OBSERVED_EXACT, true);
         seed.expression("EXPR.00000000000001e4", whole);
         seed.expression("EXPR.00000000000001e5", partial);
+        seed.expression("EXPR.00000000000001e6", exact);
         seed.write();
         SmtLowering lowering = Corpus.read(iteration, null).lowering("s0");
         SmtLowering.Lowered quotient = lowering.lower("EXPR.v1.quotient");
@@ -3546,6 +3564,8 @@ public class ComposerTest {
         assertFalse("one whose writer set is incomplete is not joined to the"
                 + " version it names", lowering.lower("EXPR.00000000000001e5")
                 .text().contains("41"));
+        assertEquals("an exact one is, whatever the writer set", "41",
+                lowering.lower("EXPR.00000000000001e6").text());
     }
 
     /** The ordinal one selector was made under. */
