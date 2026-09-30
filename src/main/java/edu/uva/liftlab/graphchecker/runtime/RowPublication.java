@@ -112,7 +112,7 @@ final class RowPublication {
                 continue;
             }
             // Site, arm and predicate as written; nothing applies one to the
-            // other (CONTRACT-SPEC §2).
+            // other (CONTRACT-SPEC §2.2).
             JsonObject written = object(mapping, "siteCondition");
             RowRuntime.decision(occurrence, seq, siteId, ordinal,
                     optionalBool(mapping, "outcome", false),
@@ -137,7 +137,7 @@ final class RowPublication {
      * One row per write version, and one per read node
      * ({@code ReadFromExpression}) the published expressions contain.
      *
-     * <p>Site from the VM log (REPORT-VM21), index from the frame journal.
+     * <p>Site from the VM log, index from the frame journal (IDENTITY §4).
      * A row belongs to the activation that PERFORMED the event
      * ({@link LoggedEventSites#performer}), not to the one that found it.</p>
      */
@@ -265,8 +265,8 @@ final class RowPublication {
     }
 
     /**
-     * A read the log does not cover: the object and what its field held
-     * (REPORT15).  The value may nest another read, which supplies version
+     * A read the log does not cover: the object and what its field held.
+     * The value may nest another read, which supplies version
      * and location.  The row states the version or the literal, never
      * neither, and spells the location as the write log does so they join.
      */
@@ -499,8 +499,8 @@ final class RowPublication {
         }
         // seq == 0 means "no VM clock" (a CONCRETE decision stands after the
         // last VM event, ActiveRegion#recordConcreteDecision).  The composer
-        // cuts the prefix before target.seq() (P1), so at 0 pi_p would be
-        // empty and too weak; state a BLOCKING gap instead.
+        // cuts the prefix before target.seq() (PIPELINE §8), so at 0 pi_p
+        // would be empty and too weak; state a BLOCKING gap instead.
         if (at <= 0L && reached) {
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.BLOCKING, anchor,
                     "this run reached the anchor on a decision the VM gave"

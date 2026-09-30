@@ -243,7 +243,7 @@ final class SharedStateCapture {
             // Its kind: a scalar's INITIAL is no write (scalarInitial).
             copyIfPresent(version, entry, "versionKind");
             // Site and activation: the two halves of the WriteRow's
-            // endpoint identity (IDENTITY-V3 sec 1); dropping them merges
+            // endpoint identity (IDENTITY §4); dropping them merges
             // distinct writes into one endpoint.
             copyIfPresent(version, entry, "site");
             copyIfPresent(version, entry, "regionEnterEventId");

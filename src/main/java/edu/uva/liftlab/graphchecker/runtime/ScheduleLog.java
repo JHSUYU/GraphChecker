@@ -456,7 +456,7 @@ public final class ScheduleLog {
     /**
      * The event this hook makes, or null.  A {@code Lost} context makes none:
      * all Lost threads share it, so its k would be a cross-thread counter
-     * (G8) and would stall the replay.
+     * (IDENTITY §8) and would stall the replay.
      */
     private static Pending pending(ScheduleEvent.Kind kind, String site,
                                    String endpoint, Stance at) {

@@ -19,7 +19,8 @@ import static edu.uva.liftlab.graphchecker.runtime.PathConditionWindow.vmEventCo
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 
 /**
- * R3: one decision of one instrumented site, as a published row.
+ * One decision of one instrumented site, as a published row (CONTRACT-SPEC
+ * §2.2).
  *
  * <p>Reserve the VM event ({@link #prepare}), capture the decision against
  * the open path-condition window, state it to the replay-prefix matcher,
@@ -253,7 +254,7 @@ final class BranchObservation {
                 ? conditionIndex + 1 : rawPathConditionSize;
         // A row with no term of its own states the arm the jump took; a row
         // that publishes a term states whether THAT term held, and the term
-        // is added below (CONTRACT v2.3 sec 1.3).
+        // is added below (CONTRACT-SPEC §2.2).
         JsonObject mapping = decisionRow(method, unitIndex, occurrence,
                 vmEventId, observedOutcome, mappingBaseline, mappingLimit);
         if (conditionIndex >= 0) {
@@ -264,7 +265,7 @@ final class BranchObservation {
             mapping.add("witness", BranchWitness.immutablePredicate(
                     semanticCondition).toImmutableJsonView());
             // The term is the predicate under which the JUMP is taken,
-            // fixed across replays and arms (CONTRACT v2.3 sec 1.3: a
+            // fixed across replays and arms (CONTRACT-SPEC §2.2: a
             // consumer forms `outcome ? term : (not term)`).  The VM
             // states the SATISFIED form, which moves the arm into the
             // term and hides a flip; so the fallen-through arm's term is

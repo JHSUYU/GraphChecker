@@ -237,7 +237,7 @@ public final class SessionPublisher {
     }
 
     /**
-     * A session that cannot write says so once and stops (rule 5: silence
+     * A session that cannot write says so once and stops (silence
      * would read as "the site did not run").
      */
     private void fail(IOException unwritable) {

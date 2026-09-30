@@ -64,7 +64,7 @@ final class ConcolicTaskPlan {
     /**
      * Tasks with a candidate running now, and tasks whose candidate
      * published: every compatible root invocation is a candidate, one at a
-     * time, until one is the addressed occurrence (README {@code OCC-1}).
+     * time, until one is the addressed occurrence.
      */
     final boolean[] candidateLive;
     final boolean[] occurrenceClaimed;
@@ -675,7 +675,7 @@ final class ConcolicTaskPlan {
         /**
          * The class a receiver-scoped root hook stands on, or {@code ""}.
          * A declared scope deciding which invocations are candidates, not a
-         * matching rule: an occurrence IS its address (IDENTITY-V3 SS1).
+         * matching rule: an occurrence IS its address (IDENTITY §1).
          */
         private final String receiverRuntimeClass;
 
@@ -1043,7 +1043,7 @@ final class ConcolicTaskPlan {
 
         /**
          * Counts one activation against the loop-body occurrence budget; not
-         * an identity (IDENTITY-V3: an occurrence IS its execution index).
+         * an identity (IDENTITY §1: an occurrence IS its address).
          */
         synchronized void claimActivation() {
             publishedActivations++;

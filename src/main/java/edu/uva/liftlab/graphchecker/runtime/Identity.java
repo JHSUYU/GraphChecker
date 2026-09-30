@@ -24,7 +24,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * The execution index of the running thread: one stack, O(1) per event
- * (IDENTITY-IMPL §B).
+ * (IDENTITY §3).
  *
  * <p>Every instrumented call site pushes a frame carrying its iteration in
  * the enclosing level; an occurrence is indexed from its scope root and an
@@ -59,7 +59,7 @@ public final class Identity {
      * One thread's index levels: the thread root and one level per frame.
      *
      * <p>A count belongs to the level it was taken in and dies with it
-     * (IDENTITY-V3 §1, PEPID): the k of an event is the k-th event at its
+     * (IDENTITY §3): the k of an event is the k-th event at its
      * site in the enclosing level under the current root hop ({@link
      * State#nextSiteEvent}).  Never a per-thread counter: that is a
      * run-length ordinal, which a polling loop elsewhere shifts.</p>
@@ -147,7 +147,7 @@ public final class Identity {
 
         /**
          * Opens the frame of the start this thread's work runs under
-         * (IDENTITY-V3 §1, scope transfer): two siblings started from one
+         * (IDENTITY §3, start frames): two siblings started from one
          * site in one loop differ by this frame alone.  Its level has no
          * token, so no frame exit closes it.
          */
@@ -184,7 +184,7 @@ public final class Identity {
          * The depth an endpoint's site index is measured from: the
          * innermost region's, else the scope root's.  Never the thread
          * base: that leaks pool-handler and queue ordinals into message
-         * ids (IDENTITY-V3 §1).
+         * ids (IDENTITY §4).
          */
         private int regionBase() {
             return regions.isEmpty() ? scopeBase
@@ -278,8 +278,8 @@ public final class Identity {
          * outermost hop first.
          *
          * <p>Counts live for the level's lifetime within one root hop, so
-         * the thread base level restarts k at each new root (IDENTITY-V3
-         * §1).  One map per hop, not one cleared map: a hop opened inside
+         * the thread base level restarts k at each new root (IDENTITY
+         * §3).  One map per hop, not one cleared map: a hop opened inside
          * this level (a daemon tick inside a request) must hand the
          * enclosing hop's counts back untouched.  Trap: keying by scope
          * token instead restarts counts at every request sent.</p>
@@ -446,7 +446,7 @@ public final class Identity {
      *
      * <p>The iteration is the k-th start at this site in the level making
      * it ({@link State#nextSiteEvent}), so siblings from one loop differ by
-     * it alone (IDENTITY-V3 §1) -- never a thread id or session ordinal.
+     * it alone (IDENTITY §3) -- never a thread id or session ordinal.
      * Starts the index cannot separate share an endpoint id and are refused
      * at the mint, never renumbered here.</p>
      */
@@ -527,7 +527,7 @@ public final class Identity {
      * <p>THE frame rule: every application-scope method opens a level at
      * entry and closes it at every exit, in both passes ({@code
      * CausynthPipeline.instrumentApplicationScope}), so an event's calling
-     * context is the application methods it is inside (IDENTITY-V3 §1).
+     * context is the application methods it is inside (IDENTITY §3).
      * The iteration is the k-th entry of this site in the enclosing level
      * ({@link State#nextSiteEvent}); callers outside the weave count in the
      * thread base level.</p>
@@ -830,7 +830,7 @@ public final class Identity {
     }
 
     /**
-     * THE one computation of an occurrence address (IDENTITY-IMPL §A).
+     * THE one computation of an occurrence address (IDENTITY §1).
      * Recording and replay both call it over the same stack, so their
      * addresses match by construction; offline passes read what the
      * recording stated, never re-derive it.  {@code null} when no node can
@@ -899,7 +899,7 @@ public final class Identity {
     }
 
     /**
-     * Whether the innermost region entry was FOLDED (F1): it is a call
+     * Whether the innermost region entry was FOLDED (IDENTITY §1): it is a call
      * inside the running occurrence, so neither pass records an activation
      * for it.  Asked at the entry, where the marker is innermost.
      */
@@ -912,7 +912,7 @@ public final class Identity {
 
     /**
      * The occurrence an event on this thread belongs to: the innermost open
-     * region's, else the degraded role occurrence (INTERACTION-ID R-I1).
+     * region's, else the degraded role occurrence (IDENTITY §1).
      */
     public static OccurrenceAddress currentOccurrence(String nodeKey) {
         Region running = state().activeRegion();
@@ -921,7 +921,7 @@ public final class Identity {
     }
 
     /**
-     * THE endpoint of one event in {@code occurrence} (IDENTITY-IMPL §A):
+     * THE endpoint of one event in {@code occurrence} (IDENTITY §4):
      * (occurrence, site, site-local index, attempt), one computation for
      * both passes so the contexts downstream of a message match.  The site
      * is stabilised once ({@link JvmNames#stable}) and the index is taken
@@ -937,7 +937,7 @@ public final class Identity {
 
     /**
      * The site-local index of the event minting an endpoint here, with the
-     * event itself as the innermost frame (IDENTITY-V3 §1).  Without that
+     * event itself as the innermost frame (IDENTITY §4).  Without that
      * frame two events of one occurrence at one site share an endpoint id.
      * Its k is the enclosing level's ({@link State#nextSiteEvent}).
      */
@@ -973,7 +973,7 @@ public final class Identity {
 
     /**
      * Files the producer endpoint of one whole message, for the anchor its
-     * receiver states (IDENTITY-IMPL §C): {@code minted} when the message
+     * receiver states (IDENTITY §4): {@code minted} when the message
      * was given its endpoint elsewhere (a response, at its request's
      * receipt), else the one sent here now.  Returns the endpoint, not its
      * digest, so rows and refusals spell out what the anchor digests.
