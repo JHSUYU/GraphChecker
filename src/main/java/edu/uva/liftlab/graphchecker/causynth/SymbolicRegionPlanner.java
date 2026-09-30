@@ -200,10 +200,11 @@ final class SymbolicRegionPlanner {
     }
 
     /**
-     * README section 3: declares every capture of every port on the regions
+     * SYMBOL-SCOPE §6: declares every capture of every port on the regions
      * holding it -- a producer's region gets an OUT, a consumer's an IN.
-     * Composition substitutes the producer expression directly; both ends are
-     * still declared so an absent or ambiguous handoff fails closed.  A value
+     * Composition binds the consumer's v_H to the producer's expression
+     * through a message family (PIPELINE §8); both ends are declared so an
+     * absent or ambiguous handoff fails closed.  A value
      * held across a synchronous call stays in one region and has no port.
      */
     private static void declareCommunicationPorts(StaticProgram program) {

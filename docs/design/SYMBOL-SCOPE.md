@@ -61,14 +61,37 @@ The worklist (`runWorklist`, `processMethod`) walks definitions backwards:
 - **Constant stores**: a store of a constant carries no data, so the guards of the calls into the
   storing method are demanded too, up to three calls up, dispatch included
   (`expandStoreCallerGuards`, `STORE_CALLER_DEPTH`).
+- **Field reads**: a demanded `x = b.f` demands `f` (`field_read`, then the field jump) and `b`,
+  the object it reads from (`local_def_use`: the base is a use of the read), as an accessor's
+  receiver (`accessor_receiver`) and a dispatched call's (`dispatch_receiver`) are. A reference
+  read only to reach a projection (SOLR-18406's `latestCommit`, whose generation the throw
+  compares) is therefore a cell a branch decides through (§5.1).
 - **Library calls**: the result of a non-application call depends on its arguments only; its
   receiver is dropped (`localValueUses`). Exceptions: `String`, `StringBuilder`,
   `StringBuffer` and every wrapper's unboxing accessor (`smt/JavaPrimitiveBoxing#unboxing`,
-  `Boolean.booleanValue` included) keep the receiver (`isValueLikeLibraryInvoke`), and a
-  VM-modeled container operation depends on receiver and arguments
-  (`processSemanticContainerOperation`, the classes in `smt/JavaContainerTypes`: `List`,
-  `ArrayList`, `AbstractList`, `Queue`, `Deque`, `ArrayDeque`, `Map`, `HashMap`, `LinkedHashMap`,
-  `Set`, `HashSet`, `LinkedHashSet`).
+  `Boolean.booleanValue` included) keep the receiver (`isValueLikeLibraryInvoke`); a JDK
+  atomic's `get()` is an accessor of its `value` (`AtomicBoolean.get()` is `value != 0`), read
+  off a table rather than its body (`plan/SharedFieldFlow#atomicRead`,
+  `StructuralFieldAccessorProof#atomicField`); and a container query depends on receiver and
+  arguments (`processSemanticContainerOperation`, `container_receiver`, `container_argument`).
+- **Containers, by interface** (`smt/JavaContainerTypes`): a call's contract is its receiver
+  type's interface's -- `Map` (`ConcurrentMap`, `SortedMap`, `NavigableMap` alike), `Set`
+  (`NavigableSet`), `List`, `Queue`, `Deque`, `Iterator`, `Map.Entry` -- read off the Soot
+  hierarchy of a library class, else a fixed list of JDK classes (`ConcurrentHashMap`, `TreeMap`,
+  `ConcurrentSkipListMap`, `LinkedList`, the concurrent queues, ...). A call is named by its name
+  and parameters, never its return type, which an implementation narrows. A *query* (`get`,
+  `getOrDefault`, `containsKey`, `computeIfAbsent`, `floorKey`, a view, `poll`, ...) depends on its
+  receiver; a *mutation* (`put`, `merge`, `putIfAbsent`, a view's `removeIf`, `push`, ...)
+  demands its arguments into its receiver (`container_mutation_argument`) and, through a field
+  alias, is a `field_mutation` of that field. An application class's calls run the body the slice
+  follows: it states no contract. Whether the VM models a class is decided at run time, never here.
+- **Publication** (`publishMutation`): a mutation of the container a local `L` holds shapes the
+  referent every later store of `L` (or of a copy of it, before `L` is redefined) publishes into
+  a field `F`, and, one call up, the referent a method returns into each field its callers store
+  the result into. Each such `F` gets a `container_publication` edge `L -> F` at the mutation
+  (`publishedFrom: L`): the map's write site of `F` there (§5.1). SOLR-18406's
+  `updateKnownCommitPoints` puts each commit whose `!wrapper.isDeleted()` holds into a fresh map,
+  then stores the map into `knownCommits`.
 - **Arrays**: element cells stay in the slice; an index never turns symbolic
   (`processArrayAccesses`). Literals are ignored.
 
@@ -83,8 +106,24 @@ causynth output directory:
 | `candidate_dataflow_edges.jsonl.gz` | the slice's edges (`kind`, `fromCell`, `toCell`, `method`, `unitIndex`, `invoke`, ...) |
 | `region_skeletons.jsonl.gz` | the regions built around execution-context entries (`causynth/SymbolicRegionPlanner`), with their ports and retained loops |
 | `communication_gaps.jsonl.gz` | ports or loops the planner could not place |
-| `static_scope_map.jsonl` | §3; built before any weaving, so site ids are original unit indices |
+| `static_scope_map.jsonl` | §3; built before any hook is woven, over the door-woven bodies (§4.2), so site ids are the unit indices every pass and every replay decides at |
 | `scope_frontier.jsonl` | §2.4 |
+
+These files are a function of the scope's classes, the same bytes on every host and run
+(`tools/regress/offline-ab.sh` gates on it):
+
+- Soot runs on one thread over the classes by name (`GraphCheckerMain#orderClassesByName`), not
+  in the order the filesystem lists the process dirs.
+- A lambda class is named by its content (`GraphCheckerMain`'s `LambdaClassNames`), not by Soot's
+  run-wide counter.
+- Soot's `jb.sils`, which gives each use of a constant-defined local its own copy, takes the uses
+  in body order (`SharedInitializationSplitter`), not in identity-hash order.
+- A body's locals are numbered by type and first definition (`jb.lns` `sort-locals`).
+- Hierarchy answers (dispatch targets, subclasses) are taken by signature or name.
+- The worklist runs to a fixed point: a caller whose actual a callee's demand reached, or a method
+  whose field effects or constant stores grew, is processed again (`markDirty`).
+- Edges are numbered `DF.<n>` and written in content order (method, unit, kind, ends), not in the
+  order the worklist found them.
 
 ### 2.4 Scope growth
 
@@ -126,8 +165,8 @@ method as the VM spells it, the join with recorded endpoints), `cell`, `carrier`
 | `TARGET_SITE` | the annotated throw | `chain`: the guards of its guards within the method, each on its arm toward the throw (`Guards#chainOf`) |
 | `ROOT_SITE` | a call site whose `<callee>.return` defines a local of its method | `local` |
 | `DECLARED_SITE` | a value entering from outside the slice's text: an `ACCESSOR_RETURN` (a structural accessor; cell = the field) or a `CALL_RETURN` (a clock, a fault marker) | `declaredKind`, `edgeId`, `dependencyCell`, `javaType` (primitive only), `implementationMethod`, `inputKind` (`CLOCK`, `FAULT`, `READ`, or absent), `clockNanos` |
-| `READ_SITE` | a read of a tracked cell (§5.1) | |
-| `WRITE_SITE` | a store or container mutation into a field `S` names | `declaredCallee`, `callers` |
+| `READ_SITE` | a read of a tracked cell (§5.1) | `trackedKind` (`VALUE`, `REFERENCE`), `static` (a static field) |
+| `WRITE_SITE` | a store or container mutation into a field `S` names | `declaredCallee`, `callers`, `publishedFrom` (the local a publication mutates, §2.2) |
 | `EXPORT_SITE` | the producer capture of a port (OUT side only) | `portId` |
 
 **Guards** (`causynth/SiteControlDependence`): site `t` is control-dependent on branch `b` when
@@ -142,7 +181,8 @@ are post-dominance.
 
 Readers: `ConcolicScheduler` (admission, observed sites), `runtime/GuardedStoreSites` (§5.3),
 `explore/ClosurePlanner` (static producers of a port, `#exportsOf`; static candidate writers of a
-demanded read, §5.5), `RuntimeSelectedRegionFinalizer` (root admission, §4.4).
+demanded read, §5.5), `RuntimeSelectedRegionFinalizer` (root admission, §4.4). For COMPOSE the map
+states each reference store's construction guards (`#constructionGuards`, §5.6).
 
 ## 4. Roots (F1)
 
@@ -225,23 +265,33 @@ window (by site and count before it), so a replay draws what the recording drew.
 
 A `READ_SITE` is a `field_read` or `accessor_field_return` of a cell that
 
-- is versionable: a non-static field holding an integral value, `boolean`, `byte`, `char`,
-  `short`, `int`, `long`, or its wrapper (`Boolean`, `Byte`, `Character`, `Short`, `Integer`,
-  `Long`)
-  (`causynth/CausynthStaticFacts#versionableField`, `smt/JavaPrimitiveSmtSemantics#domainOfJavaType`).
-  A box is immutable and a store puts a new one, so a wrapper field's value (or null) is all a
-  reader observes; it is read at the `getfield` of the field, the box's own `value` being a
-  projection of that read;
+- is tracked (`causynth/CausynthStaticFacts#trackedKind`), with its `trackedKind`:
+  - `VALUE`: a non-static field holding an integral value, `boolean`, `byte`, `char`, `short`,
+    `int`, `long`, or its wrapper (`Boolean`, `Byte`, `Character`, `Short`, `Integer`, `Long`)
+    (`smt/JavaPrimitiveSmtSemantics#domainOfJavaType`). A box is immutable and a store puts a new
+    one, so a wrapper field's value (or null) is all a reader observes; it is read at the
+    `getfield` of the field, the box's own `value` being a projection of that read. An atomic's
+    `value` is one (`AtomicInteger`, `AtomicLong`, `AtomicBoolean`'s `int`);
+  - `REFERENCE`: a field a store re-points holding any other object, an array included, except a
+    `String` or a float wrapper: a reader queries or projects the referent the field held when it
+    read (SOLR-18406's `knownCommits`, a map each commit replaces, and `latestCommit`). A static
+    one too (`static: true`: its location is its class's). A final field is none, nor a private
+    one only its own class's constructors store (`#storedOnlyAtConstruction`: Lucene's
+    `IndexFileDeleter.refCounts`, a lambda's captured value): its only writer is its
+    constructor, so there is nothing to re-pair;
 - decides a branch: the read's value reaches a branch operand within eight flows
   (`StaticScopeMap#decidingCells`, `DECIDING_FLOWS`), never through a field and never across a
   `wire_handoff` edge; a read that only feeds data stays untracked;
 - is stored in `S`: some `WRITE_SITE` names the cell (`keepTrackedReads`).
 
 `WRITE_SITE` kinds: `field_write`, `field_mutation`, `container_mutation_argument`,
-`container_call_mutation_effect`, `container_array_store_value`. A numeric read-modify-write on an
-`AtomicInteger` or `AtomicLong` (`getAndIncrement`, `getAndDecrement`, `getAndAdd`,
-`incrementAndGet`, `decrementAndGet`, `addAndGet`) is a write of its `value` field
-(`plan/SharedFieldFlow#atomicValueField`).
+`container_call_mutation_effect`, `container_array_store_value`, `container_publication`. A write
+of a JDK atomic -- `AtomicInteger`, `AtomicLong`, `AtomicBoolean`, `AtomicReference`: `set`,
+`lazySet`, `getAndSet`, `compareAndSet`, `weakCompareAndSet`, `updateAndGet`, `getAndUpdate`,
+`accumulateAndGet`, `getAndAccumulate` and the numeric read-modify-writes -- is a write of its
+`value` field (`plan/SharedFieldFlow#atomicValueField`), one table with its reads (§2.2). A
+`container_publication` row is a write site of the published field whose guards shaped its
+referent: carrier and cell are the field, `declaredCallee` the mutator, `publishedFrom` the local.
 
 ### 5.2 Observation
 
@@ -249,24 +299,32 @@ A `READ_SITE` is a `field_read` or `accessor_field_return` of a cell that
 sites. The concolic weave puts `ConcolicRegionRuntime.observeTrackedSite(siteId, cell, receiver)`
 before each (`CausynthPipeline#instrumentConcolicObservedSites`): before the `putfield`, before the
 atomic's RMW call, before the `getfield`. Inside an active region it calls the VM's
-`observeExactPrimitiveField`, which starts the location's log with an INITIAL version holding the
-current value unless a log stands (VM.md §5). A concrete store after it is then a version, and a
-read states the version it saw, INITIAL when no store of the window came first. An access before
-its object's constructor call, and a read site that is no `getfield` of its cell, are left
-unobserved; a VM failure is an `UNSTATED_VALUE` DIAGNOSTIC row. The VM observes only primitive
-integral fields: for a wrapper-typed field it prints a warning and starts no log, so such a field
-is versioned only once a symbolic value is stored into it.
+`observeField(owner, declaringClass, name, descriptor)` (`runtime/ConcolicVmBroker#observeField`),
+which starts the location's log with an INITIAL version holding the current value -- an integral's
+or a wrapper's word, a reference's identity -- unless a log stands (VM.md §5). A concrete store
+after it is then a version, and a read states the version it saw, INITIAL when no store of the
+window came first. An access before its object's constructor call, and a read site that is no
+`getfield` of its cell, are left unobserved; a status the VM refuses with (`UNSUPPORTED_TARGET`
+for a `float` or `double` field) is an `UNSTATED_VALUE` DIAGNOSTIC row naming it.
+
+Each observed row states its cell's `trackedKind`; a `REFERENCE` cell's access is observed like a
+value's. Not observed: a `publishedFrom` write site, whose receiver is the local's container, not
+the carrier's holder (its log starts at its first model event); and a static cell, whose location
+is its class's mirror: the map names it (`static: true`) and the weave passes no class owner yet.
 
 An occurrence of a region that reads a tracked cell records its branches from region entry
 (`SymbolicInputSelection#readsTrackedState`, `StaticScopeMap#trackedRegions`).
 
 ### 5.3 Guarded stores
 
-`runtime/GuardedStoreSites#install` hands the VM one line per method holding a guarded
-`WRITE_SITE` (`methodKey`, then its guard site ids, tab-separated), from the map named by
+`runtime/GuardedStoreSites#install` hands the VM one line per guarded `WRITE_SITE` store
+(`methodKey`, the store as the VM names it -- `CALL <name>` from `declaredCallee`, else `FIELD
+a/b/C.f` from `cell` -- then its guard site ids, tab-separated), from the map named by
 `CAUSYNTH_STATIC_SCOPE_MAP`; a missing or refused table fails the session by name
-(`GUARDED_STORE_SITES_*`). The VM uses it to version a concrete container mutation made under a
-guard of a listed method that decided symbolically (VM.md §5.3).
+(`GUARDED_STORE_SITES_*`). The VM uses it to version a concrete store at a listed site made after
+one of that site's guards decided symbolically (VM.md §5.3). A `publishedFrom` write site's guards
+join its store's line: SOLR-18406's `updateKnownCommitPoints` lists the `isDeleted()` branch its
+`map.put` runs under (`CALL put`).
 
 ### 5.4 READ placeholders
 
@@ -283,6 +341,16 @@ and the map for the static write sites of the read's carrier (`#carriersAt`, `#w
 reader's node only. A recorded site's type matches a map row's by sort, or by the value it holds:
 a wrapper location agrees with a row of its primitive (a stored box states its value) and with a
 reference row (a stored null) (`StaticScopeMap#sameType`).
+
+### 5.6 Construction guards
+
+A referent built in a writer before its publication rests on every decision that shaped it,
+including one that skipped a mutation, which leaves no node in its state (R3-REFCONT §1.6).
+`StaticScopeMap#constructionGuards(recordedSite, carrier)` states them for COMPOSE: the guards,
+each on the arm that reaches it, of every `publishedFrom` write site of that carrier in the method
+of a recorded store of it (per method, as `#sitesAt`: bci and unit index do not compare).
+SOLR-18406: the store of `knownCommits` in `updateKnownCommitPoints` rests on the `isDeleted()`
+branch of its loop's `map.put`.
 
 ## 6. Wire ports (F3)
 
@@ -351,9 +419,11 @@ occurrence, k-th attach, element path), at most 64 leaves per attach. The export
 row are paired by the VM handle, else by correlation and port (`runtime/Interactions#pairing`). A
 refused export or attach files a gap on the occurrence it ran in, with the port and the VM status
 (`WireExport#refused`): an attach no admitted activation runs is a DIAGNOSTIC `ADMISSION_GAP`
-beside that activation, stated unselected; one inside an admitted activation is BLOCKING
+beside that activation, stated unselected; one inside an admitted activation is DIAGNOSTIC
 `UNSTATED_VALUE`, since its rows compute on the arrived value as a constant; a refused export is
 DIAGNOSTIC `UNSTATED_VALUE`. An accepted attach that mints no `v_H` is DIAGNOSTIC `UNSTATED_VALUE`.
+A refusal is its frame's: COMPOSE refuses the paths and arms whose closure reaches an occurrence its
+session filed an `UNSTATED_VALUE` row on, and nothing else (`compose/Composer#frameRefusals`).
 
 ## 7. Current limits
 
@@ -361,15 +431,16 @@ DIAGNOSTIC `UNSTATED_VALUE`. An accepted attach that mints no `v_H` is DIAGNOSTI
   read through a field, a parameter, `java.time`, or an interface whose implementation is outside
   the scope is not recognized; configuration values and pre-window state are roots only where a
   tree hook says so.
-- Tracked state is integral instance fields and the `AtomicInteger`/`AtomicLong` value through
-  numeric RMW; wrapper fields pass the static rule but the VM starts no log for them. Not
-  tracked from a concrete store: static, `float`/`double`, wrapper, `String` and
-  reference fields (and a container reached through a replaced reference), array elements,
-  `AtomicBoolean`, `AtomicReference`, atomic `set`/`lazySet`/`compareAndSet`/`getAndSet`, and
-  containers the VM does not model.
-- A non-application call's receiver is dropped from the slice (§2.2), so state behind an unmodeled
-  library object (a `ConcurrentHashMap`, a `TreeMap`, an `AtomicBoolean`) never enters `S` and gets
-  no write site, tracked read or frontier row that could grow it.
+- The VM versions integral instance fields, wrapper fields, `REFERENCE` cells (reference fields
+  and `AtomicReference.value`) and the atomics' integral `value` from an observed access (§5.2); a
+  static cell is not observed (the weave passes no class owner). A container reached through a
+  replaced reference is the referent's state its store stated (`referentState`), which COMPOSE
+  asks per candidate (PIPELINE §8). Not tracked: `float`/`double` fields, static values, `String`
+  fields, array elements, and containers the VM does not model (`TreeMap`, `TreeSet` and the
+  queues are classified by interface here, modeled by R3-REFCONT WP3b/c).
+- A non-application call's receiver is dropped from the slice (§2.2) unless the call is a
+  container query or an atomic's accessor, so state behind any other library object never
+  enters `S`.
 - Control dependence ignores exception edges and follows a call up only for constant stores,
   field-effect calls and write-site guards (three calls up); it never crosses a thread start, an
   executor submission or the wire.

@@ -3,10 +3,10 @@ package edu.uva.liftlab.graphchecker.contract;
 import java.util.Locale;
 
 /**
- * CONTRACT-SPEC 1: the scope kind a lineage hop ran under, as the workload
+ * CONTRACT-SPEC §1: the scope kind a lineage hop ran under, as the workload
  * declares it (no deployment vocabulary in engine code).  Only the engine's
  * own kinds are constants.  Never a thread id or name: those are timing
- * facts (IDENTITY-V3 §1).
+ * facts (IDENTITY §1).
  */
 public final class Role extends Value {
     /** A hop this run could not attribute; the address says so. */

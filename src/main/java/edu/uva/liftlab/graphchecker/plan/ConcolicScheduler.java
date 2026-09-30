@@ -1242,7 +1242,7 @@ public final class ConcolicScheduler {
             return admittedPorts(ports);
         }
 
-        /** The same rule for an exposed occurrence (DESIGN4 section 3.3b): one
+        /** The same rule for an exposed occurrence (PIPELINE §7.8): one
          *  static port per CALL_RETURN declared site its text holds; no
          *  accessor returns. */
         JsonArray declaredSitePorts(RegionInstancePlan plan,

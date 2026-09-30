@@ -2,6 +2,8 @@
 
 #include "concolic/reference/symbolicString.hpp"
 #include "concolic/concolicMngr.hpp"
+#include "concolic/globalSymbolicSession.hpp"
+#include "concolic/sessionSymbolicHeap.hpp"
 #include "concolic/utils.hpp"
 #include "oops/objArrayOop.hpp"
 #include <concolic/exp/methodExpression.hpp>
@@ -300,7 +302,7 @@ void SymString::symbolize_split_elements(MethodSymbolizerHandle &handle,
 Expression *SymString::get_exp_of(oop obj) {
   if (obj == NULL) return SymbolExpression::get(Sym_NULL);
 
-  SymInstance *sym_inst = ConcolicMngr::ctx->find_sym_inst(obj);
+  SymInstance *sym_inst = GlobalSymbolicSession::heap()->find_sym_inst(obj);
   return sym_inst == NULL
       ? static_cast<Expression *>(new ConStringSymbolExp(obj))
       : sym_inst->get_ref_exp();

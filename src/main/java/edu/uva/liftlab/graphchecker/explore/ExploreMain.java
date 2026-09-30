@@ -39,7 +39,7 @@ import java.util.Set;
  *   --results &lt;file&gt;           earlier waves' ObligationResults; an
  *                              answered query is never proposed again
  *   --static-scope-map &lt;file&gt;  the epoch's write/export sites and guards
- *                              (CLOSURE-V2 SS4)
+ *                              (SYMBOL-SCOPE §3)
  *   --root-domains &lt;file&gt;      what the CASE says each root may be
  *   --wave &lt;n&gt;                 which wave this is
  *   --topology-epoch &lt;id&gt;      the epoch these sessions belong to
@@ -79,17 +79,17 @@ public final class ExploreMain {
         if (declaredAnchor.isEmpty()) {
             throw new IllegalArgumentException("the closure has no root: "
                     + "pass --target-occurrence. A case declares ONE anchor "
-                    + "(HANDOVER SS1.6) and the closure is that anchor's");
+                    + "(PIPELINE §7.1) and the closure is that anchor's");
         }
         // Fail-closed: without the map the closure is the rows' alone, which
-        // can miss the writer region the failure depends on (CLOSURE-V2 SS2).
+        // can miss the writer region the failure depends on (PIPELINE §7.2).
         Path scopeMap = options.path("static-scope-map");
         if (scopeMap == null) {
             throw new IllegalArgumentException("the closure has no static "
                     + "map: pass --static-scope-map. PLAN publishes "
                     + StaticScopeMap.FILE + " per epoch, and the closure "
                     + "needs it to name the writers a replay has not run "
-                    + "(CLOSURE-V2 SS2)");
+                    + "(PIPELINE §7.2)");
         }
         JsonObject manifest = plan(iteration, declaredAnchor,
                 options.path("root-domains"), options.path("results"),
@@ -113,7 +113,7 @@ public final class ExploreMain {
      * Plans one wave.
      *
      * @param declaredAnchor the case's v1 declaration,
-     *                       the closure's only root (HANDOVER SS1.5); resolved
+     *                       the closure's only root (PIPELINE §7.1); resolved
      *                       against the seed here, so nothing downstream sees a
      *                       selector
      * @param stopAtFatal    the case asks about its declared occurrence only:
@@ -175,7 +175,7 @@ public final class ExploreMain {
         }
         Set<String> closure = closureOf(tasks);
         // Reconcile the skeleton; a same-world replacement is BLOCKING but
-        // never empties the wave (DESIGN4 SS3.3c).
+        // never empties the wave (PIPELINE §7.1).
         SlotTable slots = SlotTable.read(iteration);
         SlotTable.Reconciliation skeleton = slots.reconcile(corpus, closure,
                 wave);
@@ -207,8 +207,8 @@ public final class ExploreMain {
         Frontier.Wave open = frontier.open(wave, candidates);
 
         Files.createDirectories(out);
-        // G_k and growth (DESIGN4 SS3); empty growth.jsonl + obligations.jsonl
-        // is the driver's fixed point.
+        // G_k and growth (PIPELINE §7.1); empty growth.jsonl +
+        // obligations.jsonl is the driver's fixed point (§7.9).
         WaveGraph.of(corpus).write(out, wave);
         // An address is grown once: a planned occurrence no replay ran again
         // since depends on timing the replays do not reproduce (hdfs-17897
@@ -321,13 +321,13 @@ public final class ExploreMain {
     }
 
     /**
-     * Resolves the declared anchor via {@link SelectorResolution} (IDENTITY-V3
-     * SS2) and refuses the wave, BLOCKING, when it does not resolve -- naming
+     * Resolves the declared anchor via {@link SelectorResolution} (IDENTITY
+     * §9) and refuses the wave, BLOCKING, when it does not resolve -- naming
      * what the seed ran that region as, since the cause is usually a spelling
      * mismatch. A full address resolves by parsing alone, so it is also checked
      * against the seed's activations: no replay can focus an occurrence no run
-     * recorded (CONTRACT-SPEC SS3). The closure is the ANCHOR's only (HANDOVER
-     * SS1.5); plan rows are not roots.
+     * recorded (PIPELINE §7.1). The closure is the ANCHOR's only; plan rows
+     * are not roots.
      */
     private static List<OccurrenceAddress> resolve(Corpus corpus,
                                                    String declaredAnchor,

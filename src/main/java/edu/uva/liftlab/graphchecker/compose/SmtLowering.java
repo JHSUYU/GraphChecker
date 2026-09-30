@@ -7,13 +7,19 @@ import com.google.gson.JsonObject;
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Reason;
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Sort;
 import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Term;
+import edu.uva.liftlab.graphchecker.contract.AttachRow;
+import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.ExpressionTable;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.LocationKind;
+import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
+import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
+import edu.uva.liftlab.graphchecker.smt.ExpressionWalk;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.FloatingKind;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.IntegralWidth;
@@ -25,15 +31,19 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BiPredicate;
 import java.util.function.Supplier;
+import java.util.regex.Pattern;
 
 import static edu.uva.liftlab.graphchecker.compose.VmTermLowering.and;
 import static edu.uva.liftlab.graphchecker.compose.VmTermLowering.expressionJavaType;
@@ -88,6 +98,12 @@ public final class SmtLowering {
         /** The write expression at this location and version, or null. */
         JsonElement writeExpression(String locationKey, long version);
 
+        /** This session's writes of one location, in the order it wrote. */
+        List<WriteRow> writes(String locationKey);
+
+        /** This session's reads of one location, in the order it read. */
+        List<ReadRow> reads(String locationKey);
+
         /**
          * The symbols this session's placeholder rows state for the version
          * a mint created.  No {@code WriteRow} states that version, so rows
@@ -109,6 +125,28 @@ public final class SmtLowering {
          * minted value on that write's readers.</p>
          */
         Set<String> readSymbols(String locationKey, long version);
+
+        /**
+         * Whether a witness may move this recorded symbol's value: a root or
+         * a clock cell this session minted or read, or a value it received
+         * (a handoff's v_H, which a MESSAGE family binds).
+         */
+        boolean moves(String symbol);
+
+        /**
+         * Whether a STATE family may re-pair the reads of this location with
+         * another writer ({@link #repairing}); none may in a join no
+         * composition opened.
+         */
+        boolean repaired(String locationKey);
+
+        /**
+         * Whether a writer occurrence of this session may have run before a
+         * reader in another schedule of it: HB-concurrent
+         * ({@code Arms#concurrent}); never in a join no composition opened.
+         */
+        boolean concurrent(OccurrenceAddress reader,
+                           OccurrenceAddress writer);
     }
 
     /** The join of no session: it states nothing. */
@@ -116,6 +154,16 @@ public final class SmtLowering {
         @Override
         public JsonElement writeExpression(String locationKey, long version) {
             return null;
+        }
+
+        @Override
+        public List<WriteRow> writes(String locationKey) {
+            return Collections.<WriteRow>emptyList();
+        }
+
+        @Override
+        public List<ReadRow> reads(String locationKey) {
+            return Collections.<ReadRow>emptyList();
         }
 
         @Override
@@ -127,7 +175,78 @@ public final class SmtLowering {
         public Set<String> readSymbols(String locationKey, long version) {
             return Collections.<String>emptySet();
         }
+
+        @Override
+        public boolean moves(String symbol) {
+            return false;
+        }
+
+        @Override
+        public boolean repaired(String locationKey) {
+            return false;
+        }
+
+        @Override
+        public boolean concurrent(OccurrenceAddress reader,
+                                  OccurrenceAddress writer) {
+            return false;
+        }
     };
+
+    /**
+     * The same join, where a STATE family may re-pair the reads of these
+     * locations (the anchor's, {@code Composer}), and where this session's
+     * occurrences are ordered as {@code concurrent} says.
+     */
+    public static SessionJoin repairing(final SessionJoin join,
+                                        final Set<String> locations,
+                                        final BiPredicate<OccurrenceAddress,
+                                                OccurrenceAddress> concurrent) {
+        return new SessionJoin() {
+            @Override
+            public JsonElement writeExpression(String locationKey,
+                                               long version) {
+                return join.writeExpression(locationKey, version);
+            }
+
+            @Override
+            public List<WriteRow> writes(String locationKey) {
+                return join.writes(locationKey);
+            }
+
+            @Override
+            public List<ReadRow> reads(String locationKey) {
+                return join.reads(locationKey);
+            }
+
+            @Override
+            public Set<String> mintedReadSymbols(long version) {
+                return join.mintedReadSymbols(version);
+            }
+
+            @Override
+            public Set<String> readSymbols(String locationKey, long version) {
+                return join.readSymbols(locationKey, version);
+            }
+
+            @Override
+            public boolean moves(String symbol) {
+                return join.moves(symbol);
+            }
+
+            @Override
+            public boolean repaired(String locationKey) {
+                return locations.contains(locationKey)
+                        || join.repaired(locationKey);
+            }
+
+            @Override
+            public boolean concurrent(OccurrenceAddress reader,
+                                      OccurrenceAddress writer) {
+                return concurrent.test(reader, writer);
+            }
+        };
+    }
 
     /**
      * The one symbol the mint at this version gave the read: {@code ""} when
@@ -150,9 +269,6 @@ public final class SmtLowering {
      */
     private final Map<String, Declared> declarations =
             new LinkedHashMap<String, Declared>();
-    /** What this corpus states at two sorts: name -> "<held> and <new>". */
-    private final Map<String, String> sortConflicts =
-            new LinkedHashMap<String, String>();
     /**
      * Everything this lowering states, as {@link Stated}: FACTS about a name
      * (non-null identity, integral domain, cell shape) and LABELED questions
@@ -178,16 +294,28 @@ public final class SmtLowering {
             new LinkedHashMap<String, SharedTerm>();
     private final Map<String, String> unsupportedDetail =
             new LinkedHashMap<String, String>();
-    private final Set<String> cuts = new LinkedHashSet<String>();
-    /** Undeclared symbols lowered to the value their node states. */
-    private final Map<String, String> pinnedLeaves =
-            new LinkedHashMap<String, String>();
     /**
      * The reads {@code Composer#pin} bound to what their row states, as
      * {@code session|symbol}: a guarded read of their version that does not
      * join lowers to its symbol (PIN, {@link #guardedReadTerm}).
      */
     private final Set<String> pins = new LinkedHashSet<String>();
+    /**
+     * The reads a STATE family may bind to another writer's value, as
+     * {@code session|symbol} ({@link #movable}): what is asked through one
+     * is asked of the object it is ({@link #perCandidate}).
+     */
+    private final Set<String> movable = new LinkedHashSet<String>();
+    /** {@code session|location|class} -> {@link #candidates}. */
+    private final Map<String, Map<Long, Candidate>> candidates =
+            new HashMap<String, Map<Long, Candidate>>();
+    /**
+     * {@code session|read symbol|version of the store} -> what the nested
+     * selectors of the object that store delivers may choose
+     * ({@link #storeChoice}).
+     */
+    private final Map<String, Set<String>> storeChoices =
+            new HashMap<String, Set<String>>();
     private final Set<String> integralDomains = new LinkedHashSet<String>();
     private boolean usesJavaIntString;
 
@@ -201,10 +329,8 @@ public final class SmtLowering {
     /** The session's expression table, for {@link #lower(String)}. */
     private final ExpressionTable table;
 
-    /** Side conditions the conjunction now open raised, or null. */
-    private Set<String> openSideConditions;
-    /** What the conjunction now open refused: its frame of {@link #raising}. */
-    private Set<String> openRefusals;
+    /** What the conjunction now open raised: its frame of {@link #raising}. */
+    private Raised open;
     private String scope = "";
     private SessionJoin join = NO_JOIN;
     /** The expression table of the session whose conjunction is open. */
@@ -218,22 +344,35 @@ public final class SmtLowering {
      * was lowered again (a Solr cluster state rebuilt per notification:
      * millions of terms), and a refused leaf minted a fresh name at each
      * visit, so no subterm above it deduplicated.  One conjunction has one
-     * memo ({@link #begin}): a hit's side conditions are already in it.  An
-     * entry holds while the declarations it read stand; a name newly stated
-     * clears the memo ({@link #put}).
+     * memo ({@link #begin}).  An entry holds while the declarations it read
+     * stand; a name newly stated clears the memo ({@link #put}).
      */
     private Map<MemoKey, Attempt<?>> memo = new HashMap<MemoKey, Attempt<?>>();
     /**
-     * THE REFUSAL FRAMES, innermost last (null while one raised nothing).  A
-     * refusal is raised into the innermost only; what a frame collected
-     * reaches the one enclosing it only when {@link #commit}ted.  The open
-     * conjunction is the outermost ({@link #begin}); a memoized lowering is
-     * committed on every hit; an {@link #attempt} is committed or dropped by
-     * its caller.  No other route puts a refusal on a path: a path-level list
-     * filled at once kept a join's refusals after its pin bound the read, and
-     * missed a memo hit's (SOLR-18406 s46).
+     * The nodes a {@link #moves} walk of this conjunction found resting on
+     * nothing that moves, so no later walk of it goes through them again.
      */
-    private final List<Set<String>> raising = new ArrayList<Set<String>>();
+    private Set<JsonElement> still = identities();
+    /**
+     * THE FRAMES, innermost last (null while one raised nothing): what each
+     * lowering in progress raised ({@link Raised}).  Anything is raised into
+     * the innermost only, and reaches the one enclosing it only when
+     * {@link #commit}ted.  The open conjunction is a frame ({@link #begin});
+     * a memoized lowering is committed on every hit; an attempt (a join,
+     * {@link #bind}) is committed or dropped, and dropped it raised NOTHING --
+     * no refusal, no side condition, no gap.  No other route puts anything
+     * on a path: a path-level list filled at once kept a join's refusals
+     * after its pin bound the read and missed a memo hit's (SOLR-18406 s46),
+     * and a dropped writer's recorded readings and container requires still
+     * bound the path.
+     */
+    private final List<Raised> raising = new ArrayList<Raised>();
+    /**
+     * What reached no frame: this lowering's own.  A side condition here is
+     * a FACT ({@link #assertPlain}, as when no conjunction is open), a
+     * diagnostic the corpus's gap; a refusal refuses nothing.
+     */
+    private final Raised root = new Raised();
 
     /** The lowering of one CORPUS: its rows declare every symbol. */
     public SmtLowering(Map<String, Sort> declaredSymbols) {
@@ -296,21 +435,37 @@ public final class SmtLowering {
      */
     public static SessionJoin joinOf(final SessionReader session) {
         final Map<String, String> writes = new LinkedHashMap<String, String>();
+        final Map<String, List<WriteRow>> byLocation =
+                new LinkedHashMap<String, List<WriteRow>>();
         for (WriteRow write : session.writes()) {
-            writes.put(locationKey(write.location()) + "#" + write.version(),
-                    write.expressionRef());
+            String key = locationKey(write.location());
+            writes.put(key + "#" + write.version(), write.expressionRef());
+            byLocation.computeIfAbsent(key, held -> new ArrayList<WriteRow>())
+                    .add(write);
         }
-        // A row counts when it states a symbol (its JOIN or PIN binds it):
-        // by mint version, else by the location and version it observed.
+        final Map<String, List<ReadRow>> readsOf =
+                new LinkedHashMap<String, List<ReadRow>>();
+        // A row's symbol counts when it states one (its JOIN or PIN binds
+        // it): by mint version, else by the location and version it saw.
         final Map<Long, Set<String>> minted =
                 new LinkedHashMap<Long, Set<String>>();
         final Map<String, Set<String>> observed =
                 new LinkedHashMap<String, Set<String>>();
+        // What a witness may move: the roots and clock cells this session
+        // minted or read, and the values it received.
+        final Set<String> moving = new LinkedHashSet<String>();
+        for (RootMintRow root : session.roots()) moving.add(root.symbol());
+        for (AttachRow attach : session.attaches()) {
+            moving.add(attach.symbol());
+        }
+        for (DecisionRow decision : session.decisions()) {
+            moving.addAll(decision.clockReadings().keySet());
+        }
         for (ReadRow read : session.reads()) {
-            if (read == null || read.symbol() == null
-                    || read.symbol().isEmpty()) {
-                continue;
-            }
+            if (read == null) continue;
+            readsOf.computeIfAbsent(locationKey(read.location()),
+                    held -> new ArrayList<ReadRow>()).add(read);
+            if (read.symbol() == null || read.symbol().isEmpty()) continue;
             if (read.mintVersion() >= 0L) {
                 add(minted, read.mintVersion(), read.symbol());
             } else if (read.observedVersion() >= 0L) {
@@ -328,6 +483,20 @@ public final class SmtLowering {
             }
 
             @Override
+            public List<WriteRow> writes(String locationKey) {
+                List<WriteRow> held = byLocation.get(locationKey);
+                return held == null ? Collections.<WriteRow>emptyList()
+                        : held;
+            }
+
+            @Override
+            public List<ReadRow> reads(String locationKey) {
+                List<ReadRow> held = readsOf.get(locationKey);
+                return held == null ? Collections.<ReadRow>emptyList()
+                        : held;
+            }
+
+            @Override
             public Set<String> mintedReadSymbols(long version) {
                 Set<String> symbols =
                         minted.get(Long.valueOf(version));
@@ -341,6 +510,22 @@ public final class SmtLowering {
                         observed.get(locationKey + "#" + version);
                 return symbols == null
                         ? Collections.<String>emptySet() : symbols;
+            }
+
+            @Override
+            public boolean moves(String symbol) {
+                return moving.contains(symbol);
+            }
+
+            @Override
+            public boolean repaired(String locationKey) {
+                return false;
+            }
+
+            @Override
+            public boolean concurrent(OccurrenceAddress reader,
+                                      OccurrenceAddress writer) {
+                return false;
             }
         };
     }
@@ -358,8 +543,28 @@ public final class SmtLowering {
         if (value == null) {
             return Lowered.refused("ABSENT_EXPRESSION:" + expressionRef);
         }
-        return new Lowered(value.text, value.sort.smt, lowered.lowered()
-                ? "" : lowered.refusals.iterator().next());
+        return new Lowered(value.text, value.sort.smt, lowered);
+    }
+
+    /**
+     * One published term (a decision's or phi) as {@link #statedTerm}
+     * lowers it, with what it reaches ({@link Lowered#reach}): the
+     * closure's question about a term.
+     */
+    public Lowered lowerTerm(String term, String origin) {
+        Attempt<String> lowered = attempting(() -> statedTerm(term, origin));
+        String text = commit(lowered);
+        return text.isEmpty() ? Lowered.refused("UNSTATED_TERM:" + origin)
+                : new Lowered(text, "", lowered);
+    }
+
+    /**
+     * One expression of the open conjunction's session, by {@link
+     * #reference}: its definedness is a side condition of that conjunction,
+     * answered by {@link #end} with the rest.  Null when the table lacks it.
+     */
+    public Term term(String expressionRef, String origin) {
+        return reference(expressionRef, origin);
     }
 
     /**
@@ -428,39 +633,86 @@ public final class SmtLowering {
         JsonObject expression = reference == null ? null
                 : expressions.expression(reference);
         if (expression == null) return null;
-        Term value = dispatch(expression, null, origin);
+        Term value = dispatch(expression, whole(expression, null), origin);
         sideCondition(value.precondition);
         return value;
     }
 
     /**
-     * One lowered expression: its text, its sort, its symbols, and why it
-     * is refused.  A refused construct inside it is a fresh name, so the
+     * The sort a WHOLE value is asked at -- one a write stored, a read
+     * joins or a row publishes: an object the VM named is the reference it
+     * is, whatever its class; any other value the sort its reader expects.
+     * An operator asks for its own operands, and a named container there
+     * is its state, as its class's sort says.
+     */
+    static Sort whole(JsonElement value, Sort expected) {
+        return named(value) && (expected == null
+                || !expected.containerState()) ? Sort.REF : expected;
+    }
+
+    /**
+     * One lowered expression: its text, its sort, what it reaches, and why
+     * it is refused.  A refused construct inside it is a fresh name, so the
      * text still names what the rest reaches (the closure's question); only
-     * an unrefused one may stand in a query ({@link #ok}).
+     * an unrefused one may stand in a query ({@link #ok}).  A read bound by
+     * its mint or its pin after its join refused is a constant in the text;
+     * what that join did lower is still what the rest reaches
+     * ({@link #reach}), and a query standing on that constant is refused as
+     * the join would have refused it.
      */
     public static final class Lowered {
         private final String text;
         private final String sort;
         private final String refusal;
+        /** The texts of the joins a mint or a pin stood in for. */
+        private final List<String> dropped;
 
-        private Lowered(String text, String sort, String refusal) {
+        private Lowered(String text, String sort, Attempt<?> lowered) {
             this.text = text;
             this.sort = sort;
-            this.refusal = refusal;
+            this.refusal = lowered.lowered() ? ""
+                    : lowered.refusals().iterator().next();
+            this.dropped = lowered.raised == null
+                    ? Collections.<String>emptyList()
+                    : new ArrayList<String>(lowered.raised.dropped);
+        }
+
+        private Lowered(String reason) {
+            this.text = "";
+            this.sort = "";
+            this.refusal = reason;
+            this.dropped = Collections.<String>emptyList();
         }
 
         private static Lowered refused(String reason) {
-            return new Lowered("", "", reason);
+            return new Lowered(reason);
         }
 
+        /**
+         * Whether it may stand in a query: nothing refused, and no mint or
+         * pin standing in for a join that refused (a flip over that
+         * constant is one its join would have dropped).
+         */
         public boolean ok() {
-            return refusal.isEmpty() && !text.isEmpty();
+            return refusal.isEmpty() && !text.isEmpty() && dropped.isEmpty();
         }
 
         /** The lowered text, a refused construct as its fresh name. */
         public String text() {
             return text;
+        }
+
+        /**
+         * What the rest reaches through it: its text, and the text of each
+         * join a mint or a pin stood in for, whose parts that lowered (the
+         * writer's reads, the container states they observed) are still
+         * what the value rests on ({@code ClosurePlanner}).
+         */
+        public List<String> reach() {
+            List<String> reach = new ArrayList<String>();
+            reach.add(text);
+            reach.addAll(dropped);
+            return reach;
         }
 
         /**
@@ -473,7 +725,9 @@ public final class SmtLowering {
 
         @Override
         public String toString() {
-            return ok() ? text : "refused:" + refusal;
+            return ok() ? text : "refused:" + (refusal.isEmpty()
+                    ? "joins dropped for a mint or a pin: " + dropped
+                    : refusal);
         }
     }
 
@@ -492,50 +746,123 @@ public final class SmtLowering {
         // NESTED, not replaced: an arm is lowered in its producer's scope
         // mid-path; overwriting the path's frame would leave the rest of the
         // path with no join, no table and no refusal sink.
-        frames.push(new Frame(openSideConditions, openRefusals, scope, join,
-                openTable, memo));
-        this.openSideConditions = new LinkedHashSet<String>();
-        this.openRefusals = new LinkedHashSet<String>();
-        raising.add(openRefusals);
+        frames.push(new Frame(open, scope, join, openTable, memo, still));
+        this.open = new Raised();
+        raising.add(open);
         this.scope = sessionId;
         this.join = sessionJoin;
         this.openTable = expressions;
         this.memo = new HashMap<MemoKey, Attempt<?>>();
+        this.still = identities();
     }
 
-    /** Closes it, answering the side conditions its lowering raised. */
+    private static Set<JsonElement> identities() {
+        return Collections.newSetFromMap(
+                new IdentityHashMap<JsonElement, Boolean>());
+    }
+
+    /**
+     * Closes it, answering the side conditions its lowering raised.  Its
+     * refusals are the caller's to read before ({@link #openRefusals}); its
+     * gaps reach the frame enclosing it, whatever the caller does with the
+     * conjunction.
+     */
     public List<String> end() {
-        List<String> conditions = new ArrayList<String>(openSideConditions);
+        Raised closed = open;
         raising.remove(raising.size() - 1);
         Frame previous = frames.pop();
-        openSideConditions = previous.conditions;
-        openRefusals = previous.refusals;
+        open = previous.open;
         scope = previous.scope;
         join = previous.join;
         openTable = previous.table;
         memo = previous.memo;
-        return conditions;
+        still = previous.still;
+        top().gaps(closed);
+        return new ArrayList<String>(closed.conditions);
     }
 
     /** One enclosing conjunction, kept while a nested one is open. */
     private static final class Frame {
-        private final Set<String> conditions;
-        private final Set<String> refusals;
+        private final Raised open;
         private final String scope;
         private final SessionJoin join;
         private final ExpressionTable table;
         private final Map<MemoKey, Attempt<?>> memo;
+        private final Set<JsonElement> still;
 
-        private Frame(Set<String> conditions, Set<String> refusals,
-                      String scope, SessionJoin join, ExpressionTable table,
-                      Map<MemoKey, Attempt<?>> memo) {
-            this.conditions = conditions;
-            this.refusals = refusals;
+        private Frame(Raised open, String scope, SessionJoin join,
+                      ExpressionTable table, Map<MemoKey, Attempt<?>> memo,
+                      Set<JsonElement> still) {
+            this.open = open;
             this.scope = scope;
             this.join = join;
             this.table = table;
             this.memo = memo;
+            this.still = still;
         }
+    }
+
+    /**
+     * What one frame raised: REFUSALS (the value does not stand), SIDE
+     * CONDITIONS (what its lowering requires of it: definedness, recorded
+     * readings, container requires) and GAPS (cuts, sort conflicts, pinned
+     * returns, unanswered candidates).  Held until committed to the frame enclosing it.
+     */
+    private final class Raised {
+        private final Set<String> refusals = new LinkedHashSet<String>();
+        private final Set<String> conditions = new LinkedHashSet<String>();
+        /** The texts of joins a mint or a pin stood in for ({@link
+         *  Lowered#reach}). */
+        private final Set<String> dropped = new LinkedHashSet<String>();
+        private final Set<String> cuts = new LinkedHashSet<String>();
+        /** name -> "<held> and <new>". */
+        private final Map<String, String> sortConflicts =
+                new LinkedHashMap<String, String>();
+        /** method-return symbol -> the value its node states. */
+        private final Map<String, String> pinnedReturns =
+                new LinkedHashMap<String, String>();
+        /** A candidate object with no answer -> why ({@link #fieldOf}). */
+        private final Map<String, String> candidateUnanswered =
+                new LinkedHashMap<String, String>();
+
+        private void refusal(String subject) {
+            if (this != root) refusals.add(subject);
+        }
+
+        private void condition(String predicate) {
+            if (this == root) {
+                assertPlain(predicate);
+            } else {
+                conditions.add(predicate);
+            }
+        }
+
+        /** Everything another frame raised, as this frame's own. */
+        private void all(Raised other) {
+            for (String subject : other.refusals) refusal(subject);
+            if (this != root) dropped.addAll(other.dropped);
+            for (String predicate : other.conditions) condition(predicate);
+            gaps(other);
+        }
+
+        private void gaps(Raised other) {
+            cuts.addAll(other.cuts);
+            sortConflicts.putAll(other.sortConflicts);
+            pinnedReturns.putAll(other.pinnedReturns);
+            candidateUnanswered.putAll(other.candidateUnanswered);
+        }
+    }
+
+    /** The innermost frame, made on the first thing raised into it. */
+    private Raised top() {
+        int top = raising.size() - 1;
+        if (top < 0) return root;
+        Raised held = raising.get(top);
+        if (held == null) {
+            held = new Raised();
+            raising.set(top, held);
+        }
+        return held;
     }
 
     /** A node by identity (the decoder shares it), and the sort asked. */
@@ -563,17 +890,18 @@ public final class SmtLowering {
     }
 
     /**
-     * One lowering and what it refused, held in a frame of its own until
-     * {@link #commit}ted to the frame enclosing it; dropped, it refuses
+     * One lowering and what it raised, held in a frame of its own until
+     * {@link #commit}ted to the frame enclosing it; dropped, it raised
      * nothing.
      */
-    public static final class Attempt<T> {
+    private static final class Attempt<T> {
         private final T value;
-        private final Set<String> refusals;
+        /** Null when it raised nothing. */
+        private final Raised raised;
 
-        private Attempt(T value, Set<String> refusals) {
+        private Attempt(T value, Raised raised) {
             this.value = value;
-            this.refusals = refusals;
+            this.raised = raised;
         }
 
         /** What it lowered to: a refused construct as its fresh name. */
@@ -583,43 +911,38 @@ public final class SmtLowering {
 
         /** Whether it lowered with no refusal. */
         public boolean lowered() {
-            return refusals.isEmpty();
+            return raised == null || raised.refusals.isEmpty();
+        }
+
+        /** What it refused, each cause once. */
+        private Set<String> refusals() {
+            return raised == null ? Collections.<String>emptySet()
+                    : raised.refusals;
         }
     }
 
-    /** One lowering run in a refusal frame of its own ({@link #raising}). */
+    /** One lowering run in a frame of its own ({@link #raising}). */
     private <T> Attempt<T> attempting(Supplier<T> lowering) {
         raising.add(null);
         T value;
-        Set<String> refused;
+        Raised raised;
         try {
             value = lowering.get();
         } finally {
-            refused = raising.remove(raising.size() - 1);
+            raised = raising.remove(raising.size() - 1);
         }
-        return new Attempt<T>(value, refused == null
-                ? Collections.<String>emptySet() : refused);
+        return new Attempt<T>(value, raised);
     }
 
-    /**
-     * One expression lowered as an attempt: a read's JOIN, whose refusals
-     * are the path's only if neither its mint nor its pin binds the read
-     * ({@code Composer#stateJoins}).
-     */
-    public Attempt<Term> attempt(JsonElement expression, Sort expected,
-                                 String origin) {
-        return attempting(() -> dispatch(expression, expected, origin));
-    }
-
-    /** Keeps what an attempt refused, raised where it is committed. */
-    public <T> T commit(Attempt<T> attempt) {
-        for (String subject : attempt.refusals) raise(subject);
+    /** Keeps what an attempt raised, raised where it is committed. */
+    private <T> T commit(Attempt<T> attempt) {
+        if (attempt.raised != null) top().all(attempt.raised);
         return attempt.value;
     }
 
     /**
      * One node lowered once per conjunction ({@link #memo}), committed on
-     * every hit: each lowering reaching it rests on what it refused.
+     * every hit: each lowering reaching it rests on what it raised.
      */
     @SuppressWarnings("unchecked")
     private <T> T memoized(JsonElement node, Object expected,
@@ -634,22 +957,10 @@ public final class SmtLowering {
         return (T) commit(held);
     }
 
-    /** Raises one refusal into the innermost frame. */
-    private void raise(String subject) {
-        int top = raising.size() - 1;
-        if (top < 0) return;
-        Set<String> held = raising.get(top);
-        if (held == null) {
-            held = new LinkedHashSet<String>();
-            raising.set(top, held);
-        }
-        held.add(subject);
-    }
-
     /** What the conjunction now open refused, each cause once. */
     public List<String> openRefusals() {
-        return openRefusals == null ? Collections.<String>emptyList()
-                : new ArrayList<String>(openRefusals);
+        return open == null ? Collections.<String>emptyList()
+                : new ArrayList<String>(open.refusals);
     }
 
     // ------------------------------------------------------------------
@@ -778,7 +1089,11 @@ public final class SmtLowering {
             return Term.of("true", Sort.BOOL);
         }
         String javaType = primitiveString(expression, "_java_type");
-        Sort sort = leafSort(javaType, expected);
+        // An object the VM named, asked as a reference, is its identity
+        // whatever its class ({@link #whole}).
+        Sort sort = expected == Sort.REF
+                && VmRows.referencedObjectRid(raw) > 0L
+                ? Sort.REF : leafSort(javaType, expected);
         if (sort == null) sort = Sort.REF;
         Declared held = declarations.get(raw);
         if (held != null && held.stated) {
@@ -789,6 +1104,9 @@ public final class SmtLowering {
             return Term.of(raw, held.sort,
                     JavaPrimitiveSmtSemantics.widthOfJavaType(javaType),
                     "", "", "true");
+        }
+        if (expression.has(CALL) || METHOD_RETURN.matcher(raw).matches()) {
+            return methodReturn(expression, raw, javaType, sort);
         }
         if (sort == Sort.REF || sort == Sort.MAP
                 || sort == Sort.ARRAY_VALUE) {
@@ -801,19 +1119,145 @@ public final class SmtLowering {
                     JavaPrimitiveSmtSemantics.widthOfJavaType(javaType),
                     "", "", "true");
         }
-        // Undeclared, and its node states what it returned (a call's
-        // result the VM minted: Long.parseLong in SolrParams.getLong): that
-        // value, named once, since what it was computed from is dropped.
-        String returned = ReadRow.returned(expression);
-        Term pinned = statedValue(returned, javaType);
-        if (pinned != null) {
-            pinnedLeaves.put(raw, returned);
-            return pinned;
-        }
         return cut("UndeclaredFreeSymbol:" + raw,
                 "no root mint, clock reading, attach or read row of this "
                         + "corpus states this symbol", sort, javaType);
     }
+
+    /** A MethodReturnSymbolExp's name (methodSymbolizer.cpp). */
+    private static final Pattern METHOD_RETURN =
+            Pattern.compile("M_[A-Z]_return[0-9]+");
+    /**
+     * The member a method-return node states its CALL in (VM f14):
+     * {@code holder} and {@code name} of the callee, its {@code descriptor},
+     * and its argument expressions as {@code arguments}.
+     */
+    private static final String CALL = "call";
+
+    /**
+     * The result of a library call the VM does not model (a
+     * MethodReturnSymbolExp, {@code M_<t>_return<n>}): no row declares it,
+     * and what it is rests on the call its node states ({@link #CALL}).  A
+     * callee this lowering knows is its RELATION over the lowered arguments
+     * ({@link #knownCall}), whatever they rest on.  Any other is PINNED to
+     * the value the node states it returned, by an assertion named for an
+     * unsat core to show the reliance, and only where nothing its arguments
+     * rest on can move ({@link #moves}): a root moved through the call would
+     * stand as a constant.  A node stating no call (a VM before f14) is
+     * refused, since what its value was computed from is not known.  The
+     * pinned name is this session's, so two runs' results of one symbol are
+     * two values.
+     */
+    private Term methodReturn(JsonObject expression, String raw,
+                              String javaType, Sort sort) {
+        JsonElement stated = expression.get(CALL);
+        if (stated == null || !stated.isJsonObject()) {
+            return cut("MethodReturnCallUnstated:" + raw, "the VM states no "
+                    + "call for this method-return symbol (a VM before "
+                    + "f14), so what its value was computed from is not "
+                    + "known", sort, javaType);
+        }
+        JsonObject call = stated.getAsJsonObject();
+        Term related = knownCall(call, raw);
+        if (related != null) return related;
+        if (moves(call)) {
+            return cut("MethodReturnOverMovingArgument:" + raw, "an "
+                    + "argument of the call that returned this value rests "
+                    + "on what a witness can move (a root, a clock, a "
+                    + "handoff or a read a family re-pairs), and the call is "
+                    + "no relation this lowering knows, so no pin may stand "
+                    + "for its result", sort, javaType);
+        }
+        String returned = ReadRow.returned(expression);
+        Term value = statedValue(returned, javaType);
+        if (value == null) {
+            return cut("UndeclaredFreeSymbol:" + raw, "the call that "
+                    + "returned this symbol is no relation this lowering "
+                    + "knows, and its node states no value it returned",
+                    sort, javaType);
+        }
+        String name = symbols.mint("returned__", scope + SEPARATOR + raw, 10);
+        if (!declared(name)) {
+            declare(name, value.sort);
+            String pin = "(= " + name + " " + value.text + ")";
+            // A flip query reads the lowering's facts, a composition its
+            // named assertions.
+            if (symbolsDeclareThemselves) {
+                assertPlain(pin);
+            } else {
+                assertNamed("pinned_" + name, pin);
+            }
+        }
+        top().pinnedReturns.put(raw, returned);
+        return value.sort == Sort.STRING ? Term.nonNullString(name, "true")
+                : Term.of(name, value.sort, value.integralWidth);
+    }
+
+    /**
+     * The relation of a call this lowering knows, over its lowered
+     * arguments, or null when it knows none.  {@code Integer.parseInt} and
+     * {@code Long.parseLong} of a String (radix 10) are its decimal reading
+     * with Java's sign and range, defined as the JVM that returned it: an
+     * optional sign and one or more digits within the type's range.  A
+     * digit outside ASCII, which Java reads too, is outside what z3's
+     * {@code str.to_int} states, so such a string has no value here.
+     * {@code String.valueOf} and {@code Integer}/{@code Long.toString} of an
+     * integral are the inverse, its decimal rendering.  A known callee whose
+     * arguments this lowering cannot state is refused by name.
+     */
+    private Term knownCall(JsonObject call, String raw) {
+        String callee = optionalString(call, "holder") + " "
+                + optionalString(call, "name");
+        JsonArray arguments = array(call, "arguments");
+        String origin = "call:" + raw;
+        if (RENDERINGS.contains(callee) && arguments.size() == 1) {
+            return javaToString(arguments, origin);
+        }
+        boolean integer = "java/lang/Integer parseInt".equals(callee);
+        if (!integer && !"java/lang/Long parseLong".equals(callee)) {
+            return null;
+        }
+        Sort sort = Sort.INT;
+        if (arguments.size() == 2 && !"10".equals(constantPayload(
+                primitiveString(arguments.get(1).isJsonObject()
+                        ? arguments.get(1).getAsJsonObject()
+                        : new JsonObject(), "_exp")))) {
+            return refuse(Reason.MODEL_SEMANTICS_MISSING, origin,
+                    callee + ":RADIX_NOT_10", sort);
+        }
+        if (arguments.size() != 1 && arguments.size() != 2) {
+            return refuse(Reason.MODEL_SEMANTICS_MISSING, origin,
+                    callee + ":ARITY", sort);
+        }
+        Term text = dispatch(arguments.get(0), null, origin + ":string");
+        if (text.sort != Sort.STRING
+                || nullnessUnknown(Collections.singletonList(text))) {
+            return refuse(Reason.MODEL_SEMANTICS_MISSING, origin,
+                    callee + ":STRING_UNSTATED", sort);
+        }
+        String string = text.text;
+        String digits = "(str.to_int (ite (or (str.prefixof \"-\" " + string
+                + ") (str.prefixof \"+\" " + string + ")) (str.substr "
+                + string + " 1 (- (str.len " + string + ") 1)) " + string
+                + "))";
+        String value = "(ite (str.prefixof \"-\" " + string + ") (- "
+                + digits + ") " + digits + ")";
+        JavaPrimitiveSmtSemantics.IntegralDomain domain =
+                JavaPrimitiveSmtSemantics.domainOfJavaType(integer ? "I" : "J");
+        return definedResult(value, sort, integer ? IntegralWidth.JAVA_INT
+                        : IntegralWidth.JAVA_LONG,
+                and(Arrays.asList(stringDefinedness(
+                        Collections.singletonList(text),
+                        Collections.<Term>emptyList()),
+                        "(<= 0 " + digits + ")",
+                        VmTermLowering.integralRange(domain.lower, value,
+                                domain.upper))));
+    }
+
+    /** The callees that render an integral as its decimal String. */
+    private static final Set<String> RENDERINGS = new LinkedHashSet<String>(
+            Arrays.asList("java/lang/String valueOf",
+                    "java/lang/Integer toString", "java/lang/Long toString"));
 
     /**
      * Java null at the expected sort: {@code nullRef}, or the null cell for
@@ -850,18 +1294,166 @@ public final class SmtLowering {
     }
 
     /**
-     * A read, by THE ONE BINDING RULE ({@code Composer#stateJoins} too):
-     * JOIN, if the write it observed lowers with no refusal; else MINT, the
-     * placeholder of its version (a mint is not a write); else PIN, the
-     * symbol {@code Composer#pin} bound to what its row states, or the value
-     * this node states it returned; else REFUSE.  Never enumerate retained
-     * versions for the solver to pick from.  A join that refused is dropped
-     * when a later rule binds the read, and kept when none does.
+     * How one read is bound, by level: a guarded read node
+     * ({@link #guardedReadTerm}) or a read row ({@code Composer#stateJoins}).
+     * The rule and its order are {@link #bind}'s alone.
+     */
+    interface Binder<T> {
+        /** The joined value: the write, or the read's own projection. */
+        Term join(JsonElement value);
+
+        /** JOIN: the value lowered with no refusal. */
+        T joined(Term value);
+
+        /** MINT: the placeholder that created the version. */
+        T minted(String symbol);
+
+        /** PIN: what the recording states the read returned, else null. */
+        T pinned();
+
+        /**
+         * REFUSE, by name.  {@code joined} is the refused join's value (its
+         * refused constructs fresh names), already committed, or null.
+         */
+        T refused(Term joined, String subject, String detail);
+    }
+
+    /**
+     * THE ONE BINDING RULE, for a read of one location at one version, at
+     * every level that binds one: JOIN, the write it observed (or the
+     * read's own projection of it), if that lowers with no refusal; else
+     * MINT, the placeholder that created the version (a mint is not a
+     * write); else PIN, what the recording states it returned; else
+     * REFUSE.  Never enumerate retained versions for the solver to pick
+     * from.
      *
-     * <p>The node's own {@code observedVersion} expression is the projection
-     * this read performed (e.g. {@code SIZE(state)}); it is used only once a
-     * write row has stated the version.  Consulted without one, it binds the
-     * read to a value no row stands behind.</p>
+     * <p>A join that refused gives way to the mint or the pin ONLY IF
+     * nothing it rests on can move ({@link #moves}): pinned, a value the
+     * refused write computed from a root, a clock or a handoff would stand
+     * as a constant while the witness moves them (C1 review H1: a pin of
+     * {@code parseInt(valueOf(R))} made a moved-root witness out of a path
+     * that used to be refused).  Otherwise the join is committed and the
+     * read refused.  Dropped, the join raised nothing.</p>
+     *
+     * <p>{@code projected} is the node's own {@code observedVersion}
+     * expression, the projection the read performed (e.g.
+     * {@code SIZE(state)}): used only once a write row has stated the
+     * version.  Consulted without one, it binds the read to a value no row
+     * stands behind.</p>
+     */
+    <T> T bind(String key, long version, JsonElement projected,
+               Binder<T> binder) {
+        Attempt<Term> joined = null;
+        if (!key.isEmpty() && version >= 0L) {
+            JsonElement written = join.writeExpression(key, version);
+            if (written != null && !written.isJsonNull()) {
+                JsonElement value = projected != null
+                        && !projected.isJsonNull() ? projected : written;
+                joined = attempting(() -> binder.join(value));
+                if (joined.lowered()) return binder.joined(commit(joined));
+                if (join.repaired(key) || moves(value) || moves(written)) {
+                    return binder.refused(commit(joined),
+                            "JoinOverMovingValue:" + key + "@" + version,
+                            "the write of this version did not lower, and "
+                                    + "what it rests on can move (a root, a "
+                                    + "clock, a handoff or a read a family "
+                                    + "re-pairs), so no mint or pin may "
+                                    + "stand for it");
+                }
+            }
+            String minted = mintedReadSymbol(join, version);
+            if (minted == null) {
+                return binder.refused(joined == null ? null
+                                : commit(joined), "MintVersion:" + key + "@"
+                                + version + ":" + join.mintedReadSymbols(
+                                version),
+                        "two placeholder rows of this session state mint "
+                                + "version " + version + " under different "
+                                + "symbols: " + join.mintedReadSymbols(
+                                version) + ", so what the read it made "
+                                + "returned has no answer");
+            }
+            if (!minted.isEmpty()) {
+                if (joined != null) top().dropped.add(joined.value().text);
+                return binder.minted(minted);
+            }
+        }
+        T pinned = binder.pinned();
+        if (pinned != null) {
+            if (joined != null) top().dropped.add(joined.value().text);
+            return pinned;
+        }
+        return binder.refused(joined == null ? null : commit(joined),
+                "Read:" + key + "@" + version, (joined == null
+                        ? "no write of this location at this version in "
+                        + "this session"
+                        : "the write of this version did not lower (its "
+                        + "refusal is stated beside this)")
+                        + ", and the recording states no value the read "
+                        + "returned");
+    }
+
+    /**
+     * Whether anything this expression rests on can move in a witness
+     * (criterion 1 of {@link #bind}): a leaf naming a symbol the open join
+     * says {@link SessionJoin#moves}, or a read of a location a family
+     * {@link SessionJoin#repaired re-pairs}, of a version a moving mint
+     * made, or of a write that rests on one.  Each node once per
+     * conjunction; the nodes of a walk that found nothing are not walked
+     * again ({@link #still}).
+     */
+    private boolean moves(JsonElement expression) {
+        if (expression == null || expression.isJsonNull()) return false;
+        ExpressionTable expressions = openTable == null ? table : openTable;
+        Set<JsonElement> walked = Collections.newSetFromMap(
+                new IdentityHashMap<JsonElement, Boolean>());
+        List<JsonElement> pending = new ArrayList<JsonElement>();
+        pending.add(expression);
+        while (!pending.isEmpty()) {
+            JsonElement node = pending.remove(pending.size() - 1);
+            if (node == null || node.isJsonNull()) continue;
+            if (node.isJsonPrimitive()) {
+                String text = node.getAsString();
+                if (text.startsWith(REFERENCE)) {
+                    pending.add(expressions.expression(text));
+                }
+                continue;
+            }
+            if (still.contains(node) || !walked.add(node)) continue;
+            if (node.isJsonArray()) {
+                for (JsonElement child : node.getAsJsonArray()) {
+                    pending.add(child);
+                }
+                continue;
+            }
+            JsonObject object = node.getAsJsonObject();
+            String type = primitiveString(object, "_type");
+            if (VmExpressionIr.SYMBOL_TYPE.equals(type)
+                    && join.moves(primitiveString(object, "_exp"))) {
+                return true;
+            }
+            if (VmRows.GUARDED_READ_TYPE.equals(type)) {
+                String key = locationKey(JsonFields.object(object,
+                        "location"));
+                long version = observedVersion(object);
+                if (join.repaired(key)) return true;
+                for (String minted : join.mintedReadSymbols(version)) {
+                    if (join.moves(minted)) return true;
+                }
+                pending.add(join.writeExpression(key, version));
+            }
+            pending.addAll(object.asMap().values());
+        }
+        still.addAll(walked);
+        return false;
+    }
+
+    /**
+     * A read node, by {@link #bind}.  Joined, it is the symbol its row
+     * joined, so a STATE family that binds the symbol moves it; else the
+     * value, never a pinned symbol (the projection that lowered is what the
+     * read returned).  Refused, the MINT; then the symbol its row was
+     * pinned to; then the value the node states it returned.
      */
     private Term guardedReadTerm(JsonObject expression, Sort expected,
                                  String origin) {
@@ -869,59 +1461,56 @@ public final class SmtLowering {
         String key = locationKey(location);
         long version = observedVersion(expression);
         String javaType = primitiveString(expression, "_java_type");
-        Attempt<Term> joined = null;
-        if (!key.isEmpty() && version >= 0L) {
-            JsonElement written = join.writeExpression(key, version);
-            if (written != null && !written.isJsonNull()) {
-                JsonElement projected = observedVersionExpression(expression);
-                JsonElement value = projected != null
-                        && !projected.isJsonNull() ? projected : written;
-                joined = attempting(() -> observing(element(dispatch(value,
-                        expected, origin + ":join"), expression, location,
-                        key, version, expected), key, version));
-                if (joined.lowered()) {
-                    String read = rowSymbol(key, version,
-                            joined.value().sort);
-                    return read == null ? joined.value()
-                            : symbolTerm(symbolNode(read, javaType), expected);
+        return bind(key, version, observedVersionExpression(expression),
+                new Binder<Term>() {
+            @Override
+            public Term join(JsonElement value) {
+                return observing(element(dispatch(value, whole(value,
+                        expected), origin + ":join"), expression, location,
+                        key, version, expected), key, version);
+            }
+
+            @Override
+            public Term joined(Term value) {
+                String read = rowSymbol(key, version, value.sort);
+                return read == null ? value
+                        : symbolTerm(symbolNode(read, javaType), expected);
+            }
+
+            @Override
+            public Term minted(String symbol) {
+                return symbolTerm(symbolNode(symbol, javaType), expected);
+            }
+
+            @Override
+            public Term pinned() {
+                String pinned = pinnedSymbol(key, version);
+                return pinned != null
+                        ? symbolTerm(symbolNode(pinned, javaType), expected)
+                        : statedValue(ReadRow.returned(expression), javaType);
+            }
+
+            @Override
+            public Term refused(Term joined, String subject, String detail) {
+                if (joined == null) {
+                    return unstated(subject, detail, expected, javaType);
                 }
+                refuse(UNSTATED + ":" + subject, detail);
+                return joined;
             }
-            String minted = mintedReadSymbol(join, version);
-            if (minted == null) {
-                if (joined != null) commit(joined);
-                return unstated("MintVersion:" + key + "@" + version + ":"
-                                + join.mintedReadSymbols(version),
-                        "two placeholder rows of this session state this "
-                                + "mint version under different symbols, so "
-                                + "what the read it made returned has no "
-                                + "answer", expected, javaType);
-            }
-            if (!minted.isEmpty()) {
-                return symbolTerm(symbolNode(minted, javaType), expected);
-            }
-            String pinned = pinnedSymbol(key, version);
-            if (pinned != null) {
-                return symbolTerm(symbolNode(pinned, javaType), expected);
-            }
-        }
-        Term pinned = statedValue(ReadRow.returned(expression), javaType);
-        if (pinned != null) return pinned;
-        if (joined != null) return commit(joined);
-        return unstated("Read:" + key + "@" + version,
-                "no write of this location at this version in this session, "
-                        + "and the recording states no value it returned",
-                expected, javaType);
+        });
     }
 
     /**
-     * The one symbol this session's rows give a scalar read of this version,
-     * once its state join declared it at the joined value's sort.  The read
-     * is that symbol, not the written value inlined: the join the
-     * conjunction then asks about binds it to the same value, and at the
-     * anchor a STATE family binds it to the writer it chooses instead --
-     * inlined, no family could move it (commit-gs.TestFileAppend2-
-     * testSimpleAppend v71: two families, phi on constants).  A container
-     * read keeps its projection.
+     * The one symbol this session's rows JOINED a scalar read of this
+     * version to, at the joined value's sort.  The read is that symbol, not
+     * the written value inlined: the join the conjunction then asks about
+     * binds it to the same value, and at the anchor a STATE family binds it
+     * to the writer it chooses instead -- inlined, no family could move it
+     * (commit-gs.TestFileAppend2-testSimpleAppend v71: two families, phi on
+     * constants).  Never a PINNED symbol: a projection that lowered is what
+     * the read returned, and the pin a constant beside it (C1 review H2).
+     * A container read keeps its projection.
      */
     private String rowSymbol(String key, long version, Sort sort) {
         if (sort.containerState()) return null;
@@ -929,7 +1518,8 @@ public final class SmtLowering {
         if (named.size() != 1) return null;
         String read = named.iterator().next();
         Declared held = declarations.get(read);
-        return held != null && held.stated && held.sort == sort ? read : null;
+        return held != null && held.stated && held.sort == sort
+                && !pins.contains(scope + SEPARATOR + read) ? read : null;
     }
 
     /** The one symbol of a read of this version {@link #pin}ned here. */
@@ -947,7 +1537,22 @@ public final class SmtLowering {
      */
     public void pin(String symbol, Sort sort) {
         declareStated(symbol, sort);
-        pins.add(scope + SEPARATOR + symbol);
+        if (pins.add(scope + SEPARATOR + symbol)) {
+            // A read of its version lowers to it from now on
+            // ({@link #pinnedSymbol}), and a memoized one did not.
+            memo = new HashMap<MemoKey, Attempt<?>>();
+        }
+    }
+
+    /**
+     * Declares one read a STATE family may bind to another writer's value
+     * ({@code ComposedFamilies#stateFamilies}): a field projected through
+     * it is then the field of the object it is ({@link #projection}).
+     */
+    public void movable(String symbol) {
+        if (movable.add(scope + SEPARATOR + symbol)) {
+            memo = new HashMap<MemoKey, Attempt<?>>();
+        }
     }
 
     /**
@@ -990,7 +1595,7 @@ public final class SmtLowering {
         if (string != null) return Term.nonNullString(quote(string), "true");
         if (VmExpressionIr.SYMBOLIC_NULL.equals(text)
                 || VmRows.referencedObjectRid(text) > 0L) {
-            return symbolTerm(symbolNode(text, javaType), null);
+            return symbolTerm(symbolNode(text, javaType), Sort.REF);
         }
         Sort sort = JavaSmtSorts.sortOfJava(javaType);
         String literal = sort == Sort.BOOL
@@ -1071,6 +1676,551 @@ public final class SmtLowering {
     }
 
     // ------------------------------------------------------------------
+    // What is asked through an owner a family may re-point.
+    // ------------------------------------------------------------------
+
+    /** A candidate object with no answer ({@link #fieldOf}). */
+    private static final String CANDIDATE_UNANSWERED = "CANDIDATE_UNANSWERED";
+
+    /**
+     * THE MOVE of a field projection ({@link ContainerSmtCodec#field}).  Its
+     * pair states the run's own object and what that object's field held.
+     * Through an owner read a STATE family may re-point ({@link #movable}),
+     * the owner may be another writer's object, and {@code owner.f} is the
+     * field of the object it is ({@link #perCandidate}): the run's cell for
+     * the run's object, each other candidate's as its rows state it
+     * ({@link #fieldOf}).  The run's cell under every arm read one object's
+     * field under another's pairing (SOLR-18406: latestCommit's four
+     * writers, phi on cell 1182#24 whichever one z3 chose).  Through any
+     * other owner the projection is the run's cell, and rests on neither the
+     * owner's read chain nor its refusals.
+     */
+    private ContainerSmtCodec.Term projection(JsonObject access,
+                                              ContainerSmtCodec.Term cell,
+                                              String origin) {
+        ReadRow read = movableOwner(access);
+        if (read == null) return cell;
+        String key = locationKey(read.location());
+        Term asked = symbolTerm(symbolNode(read.symbol(), "L"), Sort.REF);
+        String ownerClass = optionalString(access, "ownerClass");
+        JsonObject own = asked.sort == Sort.REF
+                ? ownObject(access, ownerClass) : null;
+        if (own == null) {
+            refuse(UNSTATED + ":OwnerCandidates:" + key, "a STATE family "
+                    + "may re-point this owner, and neither its sort nor "
+                    + "the projection's pair names an object, so no case of "
+                    + "it is the run's own");
+            return cell;
+        }
+        Sort sort = VmTermLowering.sortOfContainer(cell.sort);
+        Map<String, Term> answers = new LinkedHashMap<String, Term>();
+        answers.put(symbolTerm(own, Sort.REF).text,
+                Term.vm(cell.text, sort, cell.integralWidth));
+        long run = VmRows.referencedObjectRid(primitiveString(own, "_exp"));
+        String slot = Long.toString(optionalLongInteger(access,
+                "fieldOffset", -1L));
+        for (Map.Entry<Long, Candidate> each
+                : candidates(key, ownerClass).entrySet()) {
+            if (each.getKey() == run) continue;
+            Term field = fieldOf(each.getKey(), slot, each.getValue(), sort,
+                    key, origin);
+            if (field != null) {
+                answers.put(symbolTerm(each.getValue().spelling, Sort.REF)
+                        .text, field);
+            }
+        }
+        return new ContainerSmtCodec.Term(perCandidate(asked.text, answers),
+                cell.sort, cell.integralWidth);
+    }
+
+    /** The member a node names the reference it was reached through by. */
+    private static final String OWNER = "owner";
+
+    /**
+     * The row of the read a node's {@code owner} is, when a STATE family may
+     * re-point it ({@link #movable}), else null: then what is asked through
+     * it is asked of the run's own object.
+     */
+    private ReadRow movableOwner(JsonObject node) {
+        JsonElement found = node.get(OWNER);
+        while (VmExpressionIr.consumerBoundary(found)) {
+            found = found.getAsJsonObject().get(VmExpressionIr.EXPRESSION);
+        }
+        if (!VmRows.GUARDED_READ_TYPE.equals(VmExpressionIr.typeOf(found))) {
+            return null;
+        }
+        JsonObject read = found.getAsJsonObject();
+        String key = locationKey(JsonFields.object(read, "location"));
+        Set<String> named = join.readSymbols(key,
+                VmRows.recordedVersion(read));
+        String symbol = named.size() == 1 ? named.iterator().next() : "";
+        if (!movable.contains(scope + SEPARATOR + symbol)) return null;
+        for (ReadRow row : join.reads(key)) {
+            if (symbol.equals(row.symbol())) return row;
+        }
+        return null;
+    }
+
+    /**
+     * THE ANSWER PER CANDIDATE IDENTITY, the one rule for what is asked
+     * through an owner a family may re-point (a field here, a container
+     * query in R3-REFCONT §1.1): {@code (ite (= owner id_1) a_1 ... a_n)},
+     * the first case the run's own object, defined only where the owner is
+     * one of the candidates and that case's answer is defined.  An object
+     * with no answer is no case, so a pairing that delivers it holds by no
+     * free value: fail closed.  Identities of one session are distinct
+     * ({@link #assertIdentitiesDistinct}), so the order decides nothing.
+     */
+    private String perCandidate(String owner, Map<String, Term> answers) {
+        List<Map.Entry<String, Term>> cases =
+                new ArrayList<Map.Entry<String, Term>>(answers.entrySet());
+        List<String> defined = new ArrayList<String>();
+        String value = "";
+        for (int index = cases.size() - 1; index >= 0; index--) {
+            String is = "(= " + owner + " " + cases.get(index).getKey() + ")";
+            Term answer = cases.get(index).getValue();
+            value = value.isEmpty() ? answer.text
+                    : "(ite " + is + " " + answer.text + " " + value + ")";
+            defined.add(0, and(Arrays.asList(is, answer.precondition)));
+        }
+        sideCondition(VmTermLowering.or(defined));
+        return value;
+    }
+
+    /**
+     * The run's own object at one projection, as the VM spells an object:
+     * the owner of the cell {@code concreteValue} read, else
+     * {@code concreteOwner} when it names an object; null when the pair
+     * names neither (a reference expression is not an identity).
+     */
+    private static JsonObject ownObject(JsonObject access,
+                                        String ownerClass) {
+        JsonElement value = access.get("concreteValue");
+        while (VmExpressionIr.consumerBoundary(value)) {
+            value = value.getAsJsonObject().get(VmExpressionIr.EXPRESSION);
+        }
+        if (VmRows.GUARDED_READ_TYPE.equals(VmExpressionIr.typeOf(value))) {
+            JsonObject cell = JsonFields.object(value.getAsJsonObject(),
+                    "location");
+            long rid = optionalLongInteger(cell, "ownerSymRid", -1L);
+            if (rid > 0L && optionalLongInteger(cell, "slot", -1L)
+                    == optionalLongInteger(access, "fieldOffset", -2L)) {
+                return symbolNode("M_L'" + ownerClass + "'_" + rid,
+                        ownerClass);
+            }
+        }
+        JsonElement owner = access.get("concreteOwner");
+        return VmExpressionIr.SYMBOL_TYPE.equals(VmExpressionIr.typeOf(owner))
+                && VmRows.referencedObjectRid(primitiveString(
+                owner.getAsJsonObject(), "_exp")) > 0L
+                ? owner.getAsJsonObject() : null;
+    }
+
+    /**
+     * One object a re-pointable owner may be: its identity as the VM spells
+     * it, the seq of the first write of the owner's location that reaches
+     * it, and the writes that stored this very object, none when only a
+     * read inside a write reaches it ({@link #candidates}).
+     */
+    private static final class Candidate {
+        private final JsonObject spelling;
+        private final long firstStored;
+        private final List<WriteRow> stores;
+
+        private Candidate(JsonObject spelling, long firstStored,
+                          List<WriteRow> stores) {
+            this.spelling = spelling;
+            this.firstStored = firstStored;
+            this.stores = stores;
+        }
+    }
+
+    /**
+     * C(r) of a read of one location (R3-REFCONT §1.3): the objects this
+     * session's writes of the location reach, of one class or ({@code
+     * null}) any, by rid, with the first write reaching each.  A write
+     * reaches what its expression names and, through each read in it, what
+     * the write that read observed names: a superset of what it stored, so
+     * no first store is later than the true one.  Walked in seq order over
+     * one walked set, a node is credited to the first write reaching it.
+     */
+    private Map<Long, Candidate> candidates(String key, String ownerClass) {
+        return candidates.computeIfAbsent(scope + SEPARATOR + key
+                + SEPARATOR + ownerClass, unused -> {
+            String spelled = ownerClass == null ? "M_L'"
+                    : "M_L'" + ownerClass + "'_";
+            Map<Long, JsonObject> spellings =
+                    new LinkedHashMap<Long, JsonObject>();
+            Map<Long, Long> first = new HashMap<Long, Long>();
+            Map<Long, List<WriteRow>> stored =
+                    new HashMap<Long, List<WriteRow>>();
+            Set<JsonElement> walked = ExpressionWalk.identitySet();
+            List<WriteRow> stores = new ArrayList<WriteRow>(join.writes(key));
+            stores.sort(Comparator.comparingLong(WriteRow::seq));
+            for (WriteRow store : stores) {
+                JsonElement value = join.writeExpression(key,
+                        store.version());
+                if (named(value)) {
+                    stored.computeIfAbsent(VmRows.referencedObjectRid(
+                            primitiveString(value.getAsJsonObject(),
+                                    "_exp")), rid -> new ArrayList<WriteRow>())
+                            .add(store);
+                }
+                Deque<JsonElement> roots = new ArrayDeque<JsonElement>();
+                roots.add(value);
+                while (!roots.isEmpty()) {
+                    for (ExpressionWalk walk = ExpressionWalk.of(roots.pop(),
+                            walked); walk.hasNext(); ) {
+                        JsonObject node = walk.next();
+                        String raw = primitiveString(node, "_exp");
+                        if (named(node) && raw.startsWith(spelled)) {
+                            long rid = VmRows.referencedObjectRid(raw);
+                            spellings.putIfAbsent(rid, node);
+                            first.putIfAbsent(rid, store.seq());
+                        } else if (VmRows.GUARDED_READ_TYPE.equals(
+                                optionalString(node, "_type"))
+                                && observedVersionExpression(node) == null) {
+                            JsonElement written = join.writeExpression(
+                                    locationKey(JsonFields.object(node,
+                                            "location")),
+                                    observedVersion(node));
+                            if (written != null) roots.add(written);
+                        }
+                    }
+                }
+            }
+            Map<Long, Candidate> found = new LinkedHashMap<Long, Candidate>();
+            for (Map.Entry<Long, JsonObject> each : spellings.entrySet()) {
+                found.put(each.getKey(), new Candidate(each.getValue(),
+                        first.get(each.getKey()), stored.getOrDefault(
+                        each.getKey(), Collections.<WriteRow>emptyList())));
+            }
+            return found;
+        });
+    }
+
+    /** Whether a node is an object the VM named ({@code M_L'<class>'_<rid>}). */
+    static boolean named(JsonElement node) {
+        return VmExpressionIr.SYMBOL_TYPE.equals(VmExpressionIr.typeOf(node))
+                && VmRows.referencedObjectRid(primitiveString(
+                node.getAsJsonObject(), "_exp")) > 0L;
+    }
+
+    /**
+     * One candidate's field as its rows state it, a value the object held
+     * whenever the owner could be it: the one write of that cell in this
+     * session, made before the owner's location first stored the object;
+     * or, never written, the one value every read of it states at one
+     * version.  Any other cell has no one value an arm delivering the
+     * object reads: null, and named ({@link #candidateUnanswered}).
+     */
+    private Term fieldOf(long rid, String slot, Candidate candidate,
+                         Sort sort, String owner, String origin) {
+        String cell = locationKey(LocationId.of(LocationKind.INSTANCE,
+                Long.toString(rid), slot));
+        List<WriteRow> writes = join.writes(cell);
+        Term field = null;
+        String why;
+        if (writes.isEmpty()) {
+            field = unwritten(cell);
+            why = "no write of it and no one value its reads state";
+        } else if (writes.size() > 1) {
+            why = writes.size() + " writes of it";
+        } else if (writes.get(0).seq() >= candidate.firstStored) {
+            why = "its one write only after " + owner + " stored the object";
+        } else {
+            Attempt<Term> written = attempting(() -> dispatch(
+                    join.writeExpression(cell, writes.get(0).version()), sort,
+                    origin + ":" + cell));
+            if (written.lowered()) field = commit(written);
+            why = "its one write, which does not lower to the " + sort
+                    + " the projection reads";
+        }
+        if (field != null && field.sort == sort) return field;
+        top().candidateUnanswered.put(CANDIDATE_UNANSWERED + ":" + cell + "@"
+                + scope, "a STATE family may re-point " + owner + " to this "
+                + "object, and this session states " + why + ", so no "
+                + "pairing that delivers it is composed");
+        return null;
+    }
+
+    /**
+     * The one value every read of a cell no write of this session touched
+     * states, all at one version, or null ({@link #statedValue}).
+     */
+    private Term unwritten(String cell) {
+        Term stated = null;
+        Set<Long> versions = new LinkedHashSet<Long>();
+        for (ReadRow read : join.reads(cell)) {
+            Term value = statedValue(read.concreteValue(), read.javaType());
+            if (value == null
+                    || stated != null && !stated.text.equals(value.text)) {
+                return null;
+            }
+            stated = value;
+            versions.add(read.observedVersion());
+        }
+        return versions.size() == 1 ? stated : null;
+    }
+
+    /** A candidate whose container state no row states ({@link #answerOf}). */
+    private static final String REFERENT_STATE_UNSTATED =
+            "REFERENT_STATE_UNSTATED";
+    /** The relations that walk their receiver's state without changing it:
+     *  a query through one asks the state beneath. */
+    private static final Set<String> VIEWS = new LinkedHashSet<String>(
+            Arrays.asList("ITERATOR", "KEY_VIEW", "VALUE_VIEW", "ENTRY_VIEW",
+                    "NEXT", "ENTRY"));
+
+    /**
+     * THE MOVE of a container query (R3-REFCONT §1.1), a query's answer as
+     * {@link #projection} is a field's.  The relation answers over the
+     * state of the object its owner read returned.  Through an owner a STATE
+     * family may re-point ({@link #movable}) it is asked of the object the
+     * owner is ({@link #perCandidate}): the run's answer for the run's
+     * object, and for each other object a store of the owner's location
+     * stored, the same relation over that object's state as the reader
+     * could have seen it ({@link #answerOf}).  Through any other owner the
+     * answer is the run's.
+     */
+    private ContainerSmtCodec.Term query(JsonObject relation,
+                                         ContainerSmtCodec.Term own,
+                                         String origin) {
+        ReadRow read = movableOwner(relation);
+        if (read == null) return own;
+        String key = locationKey(read.location());
+        Term asked = symbolTerm(symbolNode(read.symbol(), "L"), Sort.REF);
+        JsonObject self = asked.sort == Sort.REF ? identityRead(key, read)
+                : null;
+        if (self == null) {
+            refuse(UNSTATED + ":OwnerCandidates:" + key, "a STATE family "
+                    + "may re-point this owner, and it is no reference "
+                    + "whose write or row names the object the run's read "
+                    + "returned (a container's own read names none), so "
+                    + "which objects it may be is not stated");
+            return own;
+        }
+        Map<String, Term> answers = new LinkedHashMap<String, Term>();
+        answers.put(symbolTerm(self, Sort.REF).text, Term.vm(own.text,
+                VmTermLowering.sortOfContainer(own.sort),
+                own.integralWidth));
+        long run = VmRows.referencedObjectRid(primitiveString(self, "_exp"));
+        for (Map.Entry<Long, Candidate> each
+                : candidates(key, null).entrySet()) {
+            Candidate candidate = each.getValue();
+            if (each.getKey() == run || candidate.stores.isEmpty()) continue;
+            Term answer = answerOf(relation, candidate, read, key, origin);
+            if (answer != null) {
+                answers.put(symbolTerm(candidate.spelling, Sort.REF).text,
+                        answer);
+            }
+        }
+        return new ContainerSmtCodec.Term(perCandidate(asked.text, answers),
+                own.sort, own.integralWidth);
+    }
+
+    /**
+     * The object a reference read returned: the identity the write it
+     * observed stored, else the one its row states; null when neither
+     * names an object.
+     */
+    private JsonObject identityRead(String key, ReadRow read) {
+        JsonElement written = join.writeExpression(key,
+                read.observedVersion());
+        if (named(written)) return written.getAsJsonObject();
+        return VmRows.referencedObjectRid(read.concreteValue()) > 0L
+                ? symbolNode(read.concreteValue(), read.javaType()) : null;
+    }
+
+    /**
+     * One other object's answer: the relation over each state of it the
+     * reader could have seen through any store of it ({@link #statesOf}),
+     * chosen among them by nested selectors when there are several, and
+     * each store's arm held to the states the reader could have seen
+     * through that store ({@link #storeChoice}).  An answer holds only where
+     * the owner is this object, so what its lowering requires is its own
+     * precondition, never the path's; a state that does not lower is no
+     * option.  A store that states no container state is no case, so the
+     * pairings delivering the object through it are refused, and named.
+     */
+    private Term answerOf(JsonObject relation, Candidate candidate,
+                          ReadRow read, String owner, String origin) {
+        String object = primitiveString(candidate.spelling, "_exp");
+        Map<Long, Term> options = new LinkedHashMap<Long, Term>();
+        Map<WriteRow, List<Long>> seen =
+                new LinkedHashMap<WriteRow, List<Long>>();
+        for (WriteRow store : candidate.stores) {
+            List<Long> versions = new ArrayList<Long>();
+            seen.put(store, versions);
+            String reason = store.referentStateRefused() != null
+                    ? store.referentStateRefused()
+                    : store.referentState() == null ? "NONE"
+                    : join.writeExpression(locationKey(store.referentState()
+                    .location()), store.referentState().version()) == null
+                    ? "UNPUBLISHED" : "";
+            if (reason.isEmpty()) {
+                String state = locationKey(store.referentState().location());
+                for (WriteRow version
+                        : statesOf(store.referentState(), read)) {
+                    if (!options.containsKey(version.version())) {
+                        JsonElement chain = join.writeExpression(state,
+                                version.version());
+                        if (chain == null || !chain.isJsonObject()) continue;
+                        Attempt<ContainerSmtCodec.Term> asked = attempting(
+                                () -> ContainerSmtCodec.term(asOf(relation,
+                                        chain.getAsJsonObject()),
+                                        host(origin)));
+                        if (!asked.lowered() || asked.value() == null) {
+                            continue;
+                        }
+                        options.put(version.version(), conditioned(asked));
+                    }
+                    versions.add(version.version());
+                }
+                if (versions.isEmpty()) reason = "UNLOWERED";
+            }
+            if (!reason.isEmpty()) {
+                top().candidateUnanswered.put(REFERENT_STATE_UNSTATED + ":"
+                        + reason + ":" + object + "@" + scope, "a STATE "
+                        + "family may re-point " + owner + " to this object"
+                        + " through a store at version " + store.version()
+                        + ", and no state of it answers the query ("
+                        + reason + "), so no pairing that delivers it "
+                        + "through that store is composed");
+            }
+        }
+        if (options.isEmpty()) return null;
+        // A nested selector per version, one per (read, object, version) so
+        // every query through this read sees the object at one version.
+        Map<Long, String> selectors = new LinkedHashMap<Long, String>();
+        if (options.size() > 1) {
+            for (Long version : options.keySet()) {
+                String selector = symbols.mint("nest__", scope + SEPARATOR
+                        + read.symbol() + SEPARATOR + object + SEPARATOR
+                        + version, 12);
+                declare(selector, Sort.BOOL);
+                selectors.put(version, selector);
+            }
+        }
+        for (Map.Entry<WriteRow, List<Long>> store : seen.entrySet()) {
+            List<String> allowed = new ArrayList<String>();
+            for (Long version : store.getValue()) {
+                allowed.add(selectors.getOrDefault(version, "true"));
+            }
+            storeChoices.computeIfAbsent(scope + SEPARATOR + read.symbol()
+                    + SEPARATOR + store.getKey().version(),
+                    unused -> new LinkedHashSet<String>())
+                    .add(VmTermLowering.or(allowed));
+        }
+        List<Long> versions = new ArrayList<Long>(options.keySet());
+        Term last = options.get(versions.get(versions.size() - 1));
+        if (selectors.isEmpty()) return last;
+        String value = last.text;
+        List<String> defined = new ArrayList<String>();
+        for (int index = versions.size() - 1; index >= 0; index--) {
+            Term answer = options.get(versions.get(index));
+            String selector = selectors.get(versions.get(index));
+            if (index < versions.size() - 1) {
+                value = "(ite " + selector + " " + answer.text + " " + value
+                        + ")";
+            }
+            defined.add(0, and(Arrays.asList(selector, answer.precondition)));
+        }
+        return Term.vm(value, last.sort, last.integralWidth)
+                .withPrecondition(and(Arrays.asList(Arms.exactlyOne(
+                        new ArrayList<String>(selectors.values())),
+                        VmTermLowering.or(defined))));
+    }
+
+    /**
+     * What a STATE family's arm delivering one store to a read holds the
+     * nested selectors of the stored object to: the states the reader could
+     * have seen through that store, ({@code false}) none, or {@code ""}
+     * when no query through the read asked another object's state.
+     */
+    public String storeChoice(String symbol, WriteRow store) {
+        Set<String> chosen = storeChoices.get(scope + SEPARATOR + symbol
+                + SEPARATOR + store.version());
+        return chosen == null ? ""
+                : and(new ArrayList<String>(chosen));
+    }
+
+    /**
+     * The versions of a stored container a reader could have seen
+     * (R3-REFCONT §1.4): of those from the one the store saw on, the one
+     * live at the read in this session's order (the store's own when every
+     * one came later), and each later one whose writer may have run before
+     * the reader in another schedule; none written after the read on its
+     * own thread or request.
+     */
+    private List<WriteRow> statesOf(WriteRow.Referent state, ReadRow read) {
+        List<WriteRow> versions = new ArrayList<WriteRow>();
+        for (WriteRow version : join.writes(locationKey(state.location()))) {
+            if (version.version() >= state.version()) versions.add(version);
+        }
+        versions.sort(Comparator.comparingLong(WriteRow::seq));
+        if (versions.isEmpty()
+                || versions.get(0).version() != state.version()) {
+            return Collections.<WriteRow>emptyList();
+        }
+        int live = 0;
+        while (live + 1 < versions.size()
+                && versions.get(live + 1).seq() < read.seq()) {
+            live++;
+        }
+        List<WriteRow> seen = new ArrayList<WriteRow>();
+        seen.add(versions.get(live));
+        for (WriteRow later : versions.subList(live + 1, versions.size())) {
+            if (join.concurrent(read.endpoint().occurrence(),
+                    later.endpoint().occurrence())) {
+                seen.add(later);
+            }
+        }
+        return seen;
+    }
+
+    /**
+     * The relation asked of another state: its receiver, beneath the views
+     * and iterators that walk it, is that state's chain, as the run's own
+     * receiver is its object's; no copy names the owner, so none of them is
+     * asked again.
+     */
+    private static JsonObject asOf(JsonObject relation, JsonObject state) {
+        JsonObject asked = JsonFields.shallowCopy(relation);
+        asked.remove(OWNER);
+        JsonElement receiver = relation.get("receiver");
+        asked.add("receiver", ContainerSmtCodec.handles(receiver)
+                && VIEWS.contains(optionalString(receiver.getAsJsonObject(),
+                "operation")) ? asOf(receiver.getAsJsonObject(), state)
+                : state);
+        return asked;
+    }
+
+    /**
+     * An attempt's value, what its lowering required conjoined as its own
+     * precondition instead of the open frame's; its gaps are kept.
+     */
+    private Term conditioned(Attempt<ContainerSmtCodec.Term> asked) {
+        List<String> required = new ArrayList<String>();
+        if (asked.raised != null) {
+            required.addAll(asked.raised.conditions);
+            top().gaps(asked.raised);
+        }
+        ContainerSmtCodec.Term value = asked.value();
+        return Term.vm(value.text, VmTermLowering.sortOfContainer(value.sort),
+                value.integralWidth).withPrecondition(and(required));
+    }
+
+    /**
+     * Each candidate object with no answer ({@link #fieldOf},
+     * {@link #answerOf}), with why: the pairings delivering it are refused,
+     * not composed.
+     */
+    public Map<String, String> candidateUnanswered() {
+        return Collections.unmodifiableMap(root.candidateUnanswered);
+    }
+
+    // ------------------------------------------------------------------
     // Identities.
     // ------------------------------------------------------------------
 
@@ -1120,9 +2270,12 @@ public final class SmtLowering {
                     JsonElement identity, ContainerSmtCodec.Sort shape) {
                 Sort stateSort = shape == ContainerSmtCodec.Sort.INDEXED
                         ? Sort.ARRAY_VALUE : Sort.MAP;
-                Term reference = dispatch(identity, Sort.REF,
-                        origin + ":container-state");
-                if (reference.sort != Sort.REF) {
+                // An object the VM named is its own state's root; any other
+                // receiver is the reference it lowers to, whose state
+                // assoc_state_of names.
+                Term reference = named(identity) ? null : dispatch(identity,
+                        Sort.REF, origin + ":container-state");
+                if (reference == null || reference.sort != Sort.REF) {
                     if (identity != null && identity.isJsonObject()) {
                         String raw = primitiveString(
                                 identity.getAsJsonObject(), "_exp");
@@ -1200,6 +2353,34 @@ public final class SmtLowering {
                 return name(ContainerStateModel.unboxValue(value, javaType,
                         VmTermLowering.unboxedCellSort(
                                 JavaSmtSorts.sortOfJava(javaType)), this));
+            }
+
+            @Override
+            public ContainerSmtCodec.Term projection(
+                    JsonObject access, ContainerSmtCodec.Term cell) {
+                return SmtLowering.this.projection(access, cell, origin);
+            }
+
+            @Override
+            public ContainerSmtCodec.Term query(
+                    JsonObject relation, ContainerSmtCodec.Term answer) {
+                return SmtLowering.this.query(relation, answer, origin);
+            }
+
+            @Override
+            public JsonElement chain(JsonElement state) {
+                JsonElement found = state;
+                while (VmExpressionIr.consumerBoundary(found)) {
+                    found = found.getAsJsonObject().get(
+                            VmExpressionIr.EXPRESSION);
+                }
+                if (!VmRows.GUARDED_READ_TYPE.equals(
+                        VmExpressionIr.typeOf(found))) {
+                    return found;
+                }
+                JsonObject read = found.getAsJsonObject();
+                return join.writeExpression(locationKey(JsonFields.object(
+                        read, "location")), observedVersion(read));
             }
 
             @Override
@@ -1330,7 +2511,7 @@ public final class SmtLowering {
         }
         if (held != null && held.sort != sort) {
             String detail = held.sort + " and " + sort;
-            sortConflicts.put(name, detail);
+            top().sortConflicts.put(name, detail);
             refuse(SORT_CONFLICT + ":" + name, "this corpus states one "
                     + "solver name at two sorts, " + detail + ": the "
                     + "first stands and nothing is composed over it");
@@ -1344,7 +2525,7 @@ public final class SmtLowering {
 
     /** Names this corpus would give two sorts, and the two sorts. */
     public Map<String, String> sortConflicts() {
-        return Collections.unmodifiableMap(sortConflicts);
+        return Collections.unmodifiableMap(root.sortConflicts);
     }
 
     /** Truncated minted names that would stand for two identities. */
@@ -1399,15 +2580,11 @@ public final class SmtLowering {
                 || "true".equals(predicate)) {
             return;
         }
-        if (openSideConditions != null) {
-            openSideConditions.add(predicate);
-        } else {
-            assertPlain(predicate);
-        }
+        top().condition(predicate);
     }
 
     private void refuse(String subject, String detail) {
-        raise(subject);
+        top().refusal(subject);
         if (detail != null && !detail.isEmpty()) {
             unsupportedDetail.put(subject, detail);
         }
@@ -1416,7 +2593,7 @@ public final class SmtLowering {
     /** A refused LEAF of this Java type ({@link #leaf}). */
     private Term cut(String subject, String detail, Sort expected,
                      String javaType) {
-        cuts.add(subject);
+        top().cuts.add(subject);
         refuse(CUT + ":" + subject, detail);
         return leaf(expected, javaType);
     }
@@ -1490,6 +2667,13 @@ public final class SmtLowering {
         assertions.add(new Stated(formula, name));
     }
 
+    /** Takes back the named assertions of a refused path. */
+    public void retract(List<String> names) {
+        if (names.isEmpty()) return;
+        Set<String> taken = new LinkedHashSet<String>(names);
+        assertions.removeIf(held -> taken.contains(held.label));
+    }
+
     public void assertPlain(String formula) {
         if (formula == null || formula.isEmpty()
                 || "true".equals(formula)) {
@@ -1503,7 +2687,7 @@ public final class SmtLowering {
     /**
      * The unlabeled FACTS about the names these texts reach (e.g. an
      * {@code identity__} is non-null).  A query emitting a name without its
-     * facts frees a boundary CLOSURE-V2 SS3 forbids freeing.
+     * facts frees a boundary variable, which is never free (PIPELINE §7.5).
      * {@link #body} emits them itself; other callers ask here.  A fact is
      * returned only if EVERY name in it is reached: half a relation is a
      * different fact.
@@ -1538,7 +2722,7 @@ public final class SmtLowering {
      */
     public Map<String, String> cuts() {
         Map<String, String> named = new LinkedHashMap<String, String>();
-        for (String cut : cuts) {
+        for (String cut : root.cuts) {
             named.put(cut,
                     unsupportedDetail.getOrDefault(CUT + ":" + cut, ""));
         }
@@ -1546,11 +2730,11 @@ public final class SmtLowering {
     }
 
     /**
-     * Each undeclared symbol lowered to the value its node states, with
-     * that value: a dependency the formula no longer carries, named once.
+     * Each method-return symbol pinned to the value its node states, with
+     * that value: a dependency the formula carries only as the named pin.
      */
-    public Map<String, String> pinnedLeaves() {
-        return Collections.unmodifiableMap(pinnedLeaves);
+    public Map<String, String> pinnedReturns() {
+        return Collections.unmodifiableMap(root.pinnedReturns);
     }
 
     /**
@@ -1644,7 +2828,7 @@ public final class SmtLowering {
      * <p>Two outputs: {@code into} is what the term SAYS (recorded names);
      * {@code states} is what it RESTS ON, the read rows behind named
      * container subterms ({@link SharedTerm#states}, the v_C rule of
-     * CLOSURE-V2).  The closure planner may pass one set for both; the flip
+     * PIPELINE §7.5).  The closure planner may pass one set for both; the flip
      * query must not, or it declares a container variable the query never
      * names.</p>
      */
@@ -1677,7 +2861,7 @@ public final class SmtLowering {
             if (SmtNames.BUILTIN.contains(name) || !seen.add(name)) continue;
             SharedTerm shared = sharedByName.get(name);
             if (shared != null) {
-                // v_C (CLOSURE-V2): a term reaching the dag rests on the
+                // v_C (PIPELINE §7.5): a term reaching the dag rests on the
                 // state it stands for, which its body does not name.
                 if (states != null) states.addAll(shared.states);
                 names.push(SmtNames.names(shared.body).iterator());
@@ -1803,19 +2987,7 @@ public final class SmtLowering {
     }
 
     private static long observedVersion(JsonObject node) {
-        if (!VmRows.joinable(node)) return -1L;
-        JsonElement observed = node.get(
-                VmRows.OBSERVED_VERSION);
-        if (observed == null || observed.isJsonNull()) return -1L;
-        if (observed.isJsonObject()) {
-            return optionalLongInteger(observed.getAsJsonObject(),
-                    "fieldVersionId", -1L);
-        }
-        try {
-            return observed.getAsLong();
-        } catch (RuntimeException notANumber) {
-            return -1L;
-        }
+        return VmRows.joinable(node) ? VmRows.recordedVersion(node) : -1L;
     }
 
     /** What separates the parts of a minted name's identity. */
@@ -1935,9 +3107,18 @@ public final class SmtLowering {
         if (leftExpression == null || leftExpression.isJsonNull()) {
             return unary(expression, operator, origin);
         }
-        Term left = dispatch(leftExpression, null, origin + ":left");
-        Term right = dispatch(expression.get("_right"), left.sort,
-                origin + ":right");
+        // One operand is asked at the other's sort; a named object is the
+        // one asked, on either side (an identity beside a reference).
+        JsonElement rightExpression = expression.get("_right");
+        Term left;
+        Term right;
+        if (named(leftExpression) && !named(rightExpression)) {
+            right = dispatch(rightExpression, null, origin + ":right");
+            left = dispatch(leftExpression, right.sort, origin + ":left");
+        } else {
+            left = dispatch(leftExpression, null, origin + ":left");
+            right = dispatch(rightExpression, left.sort, origin + ":right");
+        }
         // A JVM reference comparison against the integer 0 is a null test.
         if (left.sort != right.sort && right.isZero()
                 && left.sort == Sort.REF) {

@@ -9,7 +9,7 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * CONTRACT-SPEC 2: the file layout of one replay session,
+ * CONTRACT-SPEC §2.1: the file layout of one replay session,
  * {@code <iteration>/sessions/<sessionId>/}, one JSONL file per row kind.
  */
 public final class SessionDir extends Value {

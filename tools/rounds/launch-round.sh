@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # launch-round.sh <snapshot> <round> [workers-per-host]
 #
-# Starts the nine campaigns of one round from one snapshot worktree, each
+# Starts the eleven acceptance campaigns of one round (nine HDFS, two Solr)
+# from one snapshot worktree, each
 # detached on its head host, every one with its obligations spread over
 # every host in LIFTS:
 #
@@ -9,10 +10,10 @@
 #   CASES="hdfs-17960 hdfs-11741" tools/rounds/launch-round.sh /u/vnr3ne/gc-run/p25 v22b
 #
 # A campaign's HEAD runs its seed recording, its planner and its composer;
-# the heads are spread so no host carries two heavy ones: 11741 (whose corpus
-# is the largest by far) alone on its head, two cases on each of the others.
-# lift11 -- the owner's interactive machine -- is neither a head nor a worker
-# (it reached load 110 as one).  Its OBLIGATIONS run on every host in LIFTS,
+# the heads are spread so no host carries two heavy ones: 11741 and each Solr
+# case alone on its head, two cases on each of the others.  lift11 -- the
+# owner's interactive machine -- is no head, only a worker.  Its OBLIGATIONS
+# run on every host in LIFTS,
 # with workers-per-host slots per host (default 4), and each start waits until
 # that host has the case's obligation_memory_mb to spare beyond what every
 # campaign's recent starts there will still claim (run_engine.sh,
@@ -25,7 +26,7 @@
 # Outputs: $GC_OUT/accept-<round>-<case without hdfs->/, launcher logs
 # $GC_OUT/launch-<round>-<case without hdfs->.log.  One campaign is stopped
 # with tools/rounds/stop-run.sh <round>-<case without hdfs->: a campaign is
-# many process groups on five lifts, so no one group id stops it.  A round's
+# many process groups on every lift, so no one group id stops it.  A round's
 # directories are written once: a name already used is refused.
 set -euo pipefail
 
@@ -33,7 +34,7 @@ snapshot=${1:?usage: launch-round.sh <snapshot> <round> [workers-per-host]}
 round=${2:?usage: launch-round.sh <snapshot> <round> [workers-per-host]}
 workers=${3:-4}
 out=${GC_OUT:-/u/vnr3ne/gc-out}
-LIFTS="lift06 lift07 lift08 lift09 lift10 lift12 lift13 lift14 lift15"
+LIFTS="lift06 lift07 lift08 lift09 lift10 lift11 lift12 lift13 lift14 lift15"
 
 # head host, then the cases it heads.
 placement=(
@@ -42,11 +43,13 @@ placement=(
   "lift08 hdfs-17899-bug1 hdfs-17899-bug2"
   "lift09 hdfs-17899-bug3 hdfs-17897"
   "lift10 hdfs-17967-pathA hdfs-17967-pathB"
+  "lift12 solr-18413"
+  "lift13 solr-18406"
 )
 # Experiments run only when CASES names them.
 experiments=(
-  "lift12 hdfs-token-key"
-  "lift13 hdfs-17897-nowire"
+  "lift14 hdfs-token-key"
+  "lift15 hdfs-17897-nowire"
 )
 [[ -z "${CASES:-}" ]] || placement+=("${experiments[@]}")
 
@@ -68,9 +71,9 @@ for row in "${placement[@]}"; do
     launches+=("${head} ${case_id} ${suffix}")
   done
 done
-# A named case no row places (an experiments/hadoop/adhoc case) takes the
-# hosts in turn; accept.sh refuses an id no case directory declares.
-read -r -a heads <<<"${LIFTS}"
+# A named case no row places (an ad-hoc case) takes the hosts but lift11 in
+# turn; accept.sh refuses an id no case directory declares.
+read -r -a heads <<<"${LIFTS/lift11 /}"
 turn=0
 for case_id in ${CASES:-}; do
   [[ " ${launches[*]:-} " == *" ${case_id} "* ]] && continue

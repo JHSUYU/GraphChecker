@@ -57,6 +57,8 @@ public final class SessionPublisher {
      */
     private final Set<String> stated = new HashSet<String>();
     private boolean failed;
+    /** Closed: the run ended ({@link #close}), so nothing is written. */
+    private boolean closed;
 
     private SessionPublisher(SessionDir layout) {
         this.layout = layout;
@@ -197,7 +199,7 @@ public final class SessionPublisher {
 
     private void append(Path file, List<JsonObject> rows) {
         synchronized (LOCK) {
-            if (failed) return;
+            if (failed || closed) return;
             try {
                 BufferedWriter writer = writer(file);
                 if (writer == null) return;
@@ -237,7 +239,7 @@ public final class SessionPublisher {
     }
 
     /**
-     * A session that cannot write says so once and stops (rule 5: silence
+     * A session that cannot write says so once and stops (silence
      * would read as "the site did not run").
      */
     private void fail(IOException unwritable) {
@@ -246,9 +248,16 @@ public final class SessionPublisher {
                 + layout.dir() + ": " + unwritable);
     }
 
-    /** Closes every open file of this session. */
+    /**
+     * Closes every open file of this session, for good: the run has ended
+     * ({@code JUnitMethodRunner#exit}), and a row a cluster thread files
+     * after its verdict is about no run (hdfs-17899-bug1 r1: attaches after
+     * the close, into a VM session opened anew, filed 55 BLOCKING refusals
+     * of handles the old session had made).
+     */
     public void close() {
         synchronized (LOCK) {
+            closed = true;
             for (BufferedWriter writer : writers.values()) {
                 try {
                     writer.flush();

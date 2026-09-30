@@ -1,7 +1,7 @@
 package edu.uva.liftlab.graphchecker.contract;
 
 /**
- * CONTRACT-SPEC 2: the anchor, as the runtime published it.  {@code phiTerm}
+ * CONTRACT-SPEC §2.2: the anchor, as the runtime published it.  {@code phiTerm}
  * is in the FATAL polarity and the composer never re-derives it: two places
  * deciding polarity end up asserting the healthy arm.
  */

@@ -377,7 +377,8 @@ public final class RowRuntime {
     public static void write(OccurrenceAddress occurrence, long seq,
                              String site, LocationId location, long version,
                              JsonObject expression, String javaType,
-                             String siteIndex) {
+                             String siteIndex, WriteRow.Referent referent,
+                             String referentRefused) {
         SessionPublisher session = publisher;
         if (session == null || occurrence == null || location == null
                 || ownCode(site)) {
@@ -389,20 +390,35 @@ public final class RowRuntime {
         if (type.isEmpty()) return;
         distinct(at, "write#" + location + "#" + version);
         session.write(WriteRow.of(sessionId(), sequence(seq), at, location,
-                version, expressionRef(expression), type));
+                version, expressionRef(expression), type, referent,
+                referentRefused));
         Confirmation.wrote(location, version, at);
     }
 
     /**
      * One read, at the site index the event itself stood on, plus its
      * placeholder mint's version ({@link ReadRow#UNKNOWN_VERSION} for none,
-     * CONTRACT v2.4).
+     * CONTRACT-SPEC §2.2).
      */
     public static void read(OccurrenceAddress occurrence, long seq,
                             String site, LocationId location,
                             long observedVersion, String symbol,
                             String javaType, String concreteValue,
                             String siteIndex, long mintVersion) {
+        read(occurrence, seq, site, location, observedVersion, symbol,
+                javaType, concreteValue, siteIndex, mintVersion, false);
+    }
+
+    /**
+     * The same, stating whether a writer the log never named had reached
+     * the location when it read ({@link ReadRow#unnamedWriter}).
+     */
+    public static void read(OccurrenceAddress occurrence, long seq,
+                            String site, LocationId location,
+                            long observedVersion, String symbol,
+                            String javaType, String concreteValue,
+                            String siteIndex, long mintVersion,
+                            boolean unnamedWriter) {
         SessionPublisher session = publisher;
         if (session == null || occurrence == null || location == null
                 || ownCode(site)) {
@@ -416,7 +432,8 @@ public final class RowRuntime {
         session.read(ReadRow.of(sessionId(), sequence(seq), at, location,
                 observedVersion, Text.safe(symbol), type,
                 Text.safe(concreteValue).isEmpty() ? null
-                        : Text.safe(concreteValue), mintVersion));
+                        : Text.safe(concreteValue), mintVersion,
+                unnamedWriter));
         Confirmation.read(at, location, observedVersion, mintVersion);
     }
 
@@ -426,7 +443,7 @@ public final class RowRuntime {
      *
      * <p>They are stated, not separated by a counter: an ordinal moves when
      * a branch flip inserts an earlier event, and two replays would then
-     * disagree which event is which (IDENTITY-V3 sec 1).</p>
+     * disagree which event is which (IDENTITY §3).</p>
      */
     private static void distinct(Endpoint at, String event) {
         if (at == null) return;
@@ -589,7 +606,7 @@ public final class RowRuntime {
 
     /**
      * Files the frame of one work start (thread start, executor submit,
-     * fork) for the started work to claim (IDENTITY-V3 SS1).  The start
+     * fork) for the started work to claim (IDENTITY §3).  The start
      * happens either way; a frame that cannot be filed is a stated gap.
      */
     public static void startWork(String startSiteId, Object carrier) {
@@ -810,9 +827,9 @@ public final class RowRuntime {
      * One event, one occurrence: the first publisher wins.
      *
      * <p>VM logs are read out per activation over overlapping ranges, so one
-     * event is reachable from every enclosing activation; the first to
-     * publish is the innermost, which performed it (INTERACTION-ID
-     * R-I7.1).</p>
+     * event is reachable from every enclosing activation.  The first read-out
+     * publishes it, addressed to the occurrence that performed it (IDENTITY
+     * §4); a later one publishes nothing.</p>
      */
     public static boolean claimEvent(String kind, String identity) {
         return CLAIMED_EVENTS.put(Text.safe(kind) + "\n"

@@ -40,25 +40,18 @@ public final class RegionSharedReadFromSmoke {
             holder.shared = input.value + 1;
         }
 
-        long secondReceipt = System.armSharedPrimitiveFieldRead(holder,
-                Holder.class.getName(), "shared", "I", 23L);
-        require(secondReceipt > 0L, "multi-writer read was not armed");
-        require(System.armSharedPrimitiveFieldRead(holder,
-                Holder.class.getName(), "shared", "I", 24L) == -6L,
-                "duplicate pending read was admitted");
-        require(holder.unselected == 0,
-                "unrelated getfield consumed the selected read receipt");
+        require(holder.unselected == 0, "an unselected field moved");
         Sink second = new Sink();
         second.value = holder.shared;
-        require(second.value == 23, "multi-writer concrete override lost: "
+        require(second.value == 4, "the guarded store did not run: "
                 + second.value);
-        require(System.confirmSharedPrimitiveFieldRead(secondReceipt) > 0L,
-                "multi-writer read did not consume its receipt");
         String multiple = expression(second);
         require(multiple.contains(
                 "\"expressionAuthority\":\"VM_GUARDED_READ_FROM_V1\""),
                 multiple);
         require(multiple.contains("\"writerSetComplete\":true"), multiple);
+        // The word the read loaded is the word its observed version stored.
+        require(multiple.contains("\"observedExact\":true"), multiple);
         // The value the read carries is the writer it observed, computed from
         // READ.NEXT.  The mint it did not read is not in the read at all.
         require(multiple.contains("READ.NEXT"), multiple);

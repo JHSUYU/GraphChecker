@@ -55,11 +55,6 @@ public:
   // Boolean constant (rather than an integer 0/1) and to preserve Java
   // boolean &, | and ^ when the bytecode is shared with integer operations.
   virtual bool is_boolean_expression() { return false; }
-  // True for a container state some recorded operation produced, as opposed
-  // to the bare STATE root ThreadContext creates on first contact with a
-  // container.  It tells a container whose contents the recording already
-  // decides from one the recording has only named.
-  virtual bool is_recorded_container_mutation() { return false; }
   // Container algebra is the one place a shadow value has to be read back
   // structurally rather than only serialized, and HotSpot is built without
   // RTTI, so the downcast is declared here instead of guessed at.
@@ -74,6 +69,12 @@ public:
   // Declared here, and not answered by RTTI, because HotSpot is built
   // without it.
   virtual bool is_guarded_reference_read() { return false; }
+
+  // Whether this value is a view, iterator or entry a container relation
+  // derived from its container (ENTRY_VIEW, KEY_VIEW, VALUE_VIEW, ITERATOR,
+  // NEXT, ENTRY), with `*owner` the owner that relation carries: what a call
+  // on it inherits.  Answered through a read or a boundary around it.
+  virtual bool derived_container_value(Expression **owner) { return false; }
 
   // The exact jint this node denotes, written to `value`, or false when it
   // denotes anything else.  Undoing a recorded INSERT to recover the content
@@ -266,9 +267,10 @@ public:
 };
 
 /**
- * What a read or a call returned, when it is a value rather than an
- * identity: a primitive's constant, null, or a String's content.  Any other
- * object is an identity no formula can pin, and stays unstated.
+ * What a read or a call returned: a primitive's constant, null, a String's
+ * content, or -- for a read of a reference cell, whose word is its
+ * referent's id -- the referent's identity node, which pins the read to the
+ * object it returned.  Anything else stays unstated.
  *
  * A node whose own formula may not decide its value states it, so that the
  * composer can pin the node to what the run saw: a read whose observed write
@@ -276,11 +278,19 @@ public:
  * model (MethodReturnSymbolExp).  Both spell it one way, as `concreteValue`.
  */
 struct ReturnedValue {
-  enum Kind { UNSTATED, CONSTANT, NULL_REFERENCE, STRING };
+  // TRUNCATED_STRING: a String longer than the VM states, spelled as a
+  // `TruncatedValue` object with its UTF-8 length; a consumer reads it as
+  // unstated, never as a prefix.
+  // REFERENCE: `constant` is the identity node, spelled as a version's
+  // reference value is (`M_L...'_<rid>`, `AL_<rid>-0`).
+  enum Kind {
+    UNSTATED, CONSTANT, NULL_REFERENCE, STRING, TRUNCATED_STRING, REFERENCE
+  };
   Kind kind;
   Expression *constant;
   std::string content;
-  ReturnedValue() : kind(UNSTATED), constant(NULL) {}
+  int length;
+  ReturnedValue() : kind(UNSTATED), constant(NULL), length(0) {}
 
   // Writes the `concreteValue` member of the node being serialized.
   void serialize(rapidjson::Writer<rapidjson::StringBuffer> &writer) const;

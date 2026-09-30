@@ -34,7 +34,7 @@ import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.javaTyp
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 
 /**
- * Root minting (R1 §1.2, R5): where a root's value comes from, at every
+ * Root minting (SYMBOL-SCOPE §4): where a root's value comes from, at every
  * cell a plan can declare.
  *
  * <p>Six mint shapes (root argument, helper argument or local, exact
@@ -392,7 +392,7 @@ final class RootMint {
         // No owner on this entry is not a gap.
         if (owner == null) return false;
         // A region running concretely contributes literals, never a free
-        // root (README §9 rule 1); asked first, as it owns no mint to refuse.
+        // root; asked first, as it owns no mint to refuse.
         if (!ActiveRegion.mintsUnderSymbolicOccurrence(active, safe(sourceId),
                 safe(fieldSignature))) {
             return false;

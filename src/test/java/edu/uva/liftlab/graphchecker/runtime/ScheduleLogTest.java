@@ -164,8 +164,8 @@ public class ScheduleLogTest {
     /**
      * Threads started inside one scope count their events apart: the start
      * frame is part of an event's context, so the k-th send of each thread
-     * is its own whatever the other one did in between (G8).  A thread no
-     * woven start handed work to keeps the scope's context unchanged.
+     * is its own whatever the other one did in between (IDENTITY §8).  A
+     * thread no woven start handed work to keeps the scope's context unchanged.
      */
     @Test
     public void threadsStartedInOneScopeCountTheirOwnEvents() throws Exception {
@@ -1219,6 +1219,34 @@ public class ScheduleLogTest {
     }
 
     /**
+     * AN ORDER CUT AT ITS WITNESS ENDS THERE: its run made nothing it does
+     * not list before the witness, so a WAKE it never made -- a daemon's
+     * first turn -- waits until the order has drained, even in the unheld
+     * order CONFIRM writes (hdfs-17967-pathC r1b: the target DataNode's
+     * first BP_SERVICE_ACTOR turn ran free before the anchor and refreshed
+     * the keys the witness had failed on).  Any other event it lacks runs
+     * free, as past any cut.
+     */
+    @Test(timeout = 20000L)
+    public void anOrderCutAtItsWitnessHoldsAWakeItNeverMadeToItsEnd()
+            throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "30000");
+        ScheduleLog.enforceForTests(Collections.<ScheduleEvent>emptyList(),
+                prefix("a", "anchor"), true);
+        Thread daemon = observer(ScheduleEvent.Kind.WAKE, "tick.first");
+        Thread.sleep(300L);
+        assertTrue("the daemon's first turn waits for the witness's order",
+                daemon.isAlive());
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "unnamed");
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "a");
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "anchor");
+        daemon.join(5000L);
+        assertFalse(daemon.isAlive());
+        assertEquals(Arrays.asList("unnamed", "a", "anchor", "tick.first"),
+                sites());
+    }
+
+    /**
      * A stall gives up only what came before the earliest waiting timeout,
      * past the prefix or inside it: a later timeout still waits for what it
      * followed.
@@ -1446,25 +1474,233 @@ public class ScheduleLogTest {
                 .contains(" 1 passed by their own occurrence"));
     }
 
+    /**
+     * A computing workload thread defers a stall, whichever context it last
+     * stood in: which thread owes x cannot be seen between two of its events
+     * (one that made w, one that made nothing yet, one whose last event was a
+     * poll past its recorded count).  The engine's own threads never do: x
+     * is given up after a timeout while one computes.
+     */
     @Test
-    public void aComputingRunIsNoStall() throws Exception {
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "300");
-        ScheduleLog.enforceForTests(Arrays.asList(
-                event(ScheduleEvent.Kind.SEND, "x"),
-                event(ScheduleEvent.Kind.WAKE, "tick.d")));
-        Thread daemon = observer(ScheduleEvent.Kind.WAKE, "tick.d");
-        // The thread that makes x computes for well past the timeout.
-        long until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(1800L);
+    public void aComputingWorkloadThreadDefersAStallAnEngineThreadDoesNot()
+            throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "700");
+        final String w = "w";
+        final String p = "tick.poll";
+        // row: what the worker made before it computes, the order's first
+        // event, the worker's name, the sites written, whether x was given up.
+        Object[][] rows = {
+            {"made w", Arrays.asList(ScheduleEvent.Kind.SEND), w, "worker",
+                    Arrays.asList(w, "x", "tick.d"), false},
+            {"made nothing", Collections.emptyList(), w, "worker",
+                    Arrays.asList(w, "x", "tick.d"), false},
+            {"polled once past its recorded count",
+                    Arrays.asList(ScheduleEvent.Kind.WAKE,
+                            ScheduleEvent.Kind.WAKE), p, "worker",
+                    Arrays.asList(p, p, "x", "tick.d"), false},
+            {"is the engine's", Collections.emptyList(), w,
+                    "causynth-test-publication",
+                    Arrays.asList(w, "tick.d", "x"), true},
+        };
+        for (Object[] row : rows) {
+            restart();
+            final String name = "a thread that " + row[0] + " computes";
+            @SuppressWarnings("unchecked")
+            final List<ScheduleEvent.Kind> before =
+                    (List<ScheduleEvent.Kind>) row[1];
+            final String first = (String) row[2];
+            ScheduleLog.enforceForTests(Arrays.asList(
+                    event(first.equals(w) ? ScheduleEvent.Kind.SEND
+                            : ScheduleEvent.Kind.WAKE, first),
+                    event(ScheduleEvent.Kind.SEND, "x"),
+                    event(ScheduleEvent.Kind.WAKE, "tick.d")));
+            if (before.isEmpty()) {
+                ScheduleLog.observe(ScheduleEvent.Kind.SEND, w);
+            }
+            Thread worker = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    for (ScheduleEvent.Kind kind : before) {
+                        ScheduleLog.observe(kind, first);
+                    }
+                    spin(3500L);
+                    ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+                }
+            }, (String) row[3]);
+            worker.start();
+            Thread daemon = observer(ScheduleEvent.Kind.WAKE, "tick.d");
+            worker.join(10000L);
+            daemon.join(10000L);
+            assertFalse(name, worker.isAlive() || daemon.isAlive());
+            assertEquals(name, row[4], sites());
+            assertTrue(name + ": " + ScheduleLog.progress(),
+                    ScheduleLog.progress().contains(
+                            (Boolean) row[5] ? " 1 given up" : " 0 given up"));
+        }
+    }
+
+    /**
+     * A loop polling past its recorded count, its context's next slot due,
+     * does not spin: its first poll past the count goes (its last recorded
+     * WAKE's slot moved the order), and every later one waits for the order
+     * to move again -- another context's event -- or for the watchdog to let
+     * it go when the run idles.  A loop that reads a CLOCK root waits for
+     * time only the clock brings, and is never held so.
+     */
+    @Test(timeout = 30000L)
+    public void aPollPastItsRecordedCountWaitsForTheOrderToMove()
+            throws Exception {
+        final String loop = "<L: boolean poll()>#u5";
+        final String clock = ScheduleLogTest.class.getName() + "#pollLoop";
+        // A clock loop's method, as the scope map declares its CLOCK root.
+        JsonObject root = new JsonObject();
+        root.addProperty("kind", "STATIC_SCOPE_SITE");
+        root.addProperty("role", "DECLARED_SITE");
+        root.addProperty("inputKind", "CLOCK");
+        root.addProperty("vmSite", "org.a.RoutingRule#isExpired()Z");
+        assertEquals("org.a.RoutingRule#isExpired",
+                ClockLoops.clockMethod(root));
+        root.addProperty("inputKind", "FAULT");
+        assertEquals("", ClockLoops.clockMethod(root));
+        // row: released by, timeout, the loop reads a clock, the sites.
+        Object[][] rows = {
+            {"another context's event", "30000", false,
+                    Arrays.asList(loop, loop, "tick.d", loop, "y")},
+            {"the run idling", "300", false,
+                    Arrays.asList(loop, loop, loop, "y")},
+            {"nothing: its loop reads a CLOCK root", "30000", true,
+                    Arrays.asList(loop, loop, loop, "y")},
+        };
+        for (Object[] row : rows) {
+            restart();
+            String name = "released by " + row[0];
+            System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, (String) row[1]);
+            boolean reads = (Boolean) row[2];
+            ClockLoops.useForTests(reads ? Collections.singleton(clock)
+                    : Collections.<String>emptySet());
+            ScheduleLog.enforceForTests(Arrays.asList(
+                    event(ScheduleEvent.Kind.WAKE, loop),
+                    event(ScheduleEvent.Kind.WAKE, "tick.d"),
+                    event(ScheduleEvent.Kind.SEND, "y")));
+            long before = System.nanoTime();
+            Thread poller = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    pollLoop(loop, 3);
+                }
+            });
+            poller.start();
+            if (name.contains("event")) {
+                Thread.sleep(500L);
+                assertTrue(name + ": the third poll waits", poller.isAlive());
+                ScheduleLog.observe(ScheduleEvent.Kind.WAKE, "tick.d");
+            }
+            poller.join(10000L);
+            long took = TimeUnit.NANOSECONDS.toMillis(
+                    System.nanoTime() - before);
+            assertFalse(name, poller.isAlive());
+            assertEquals(name, row[3], sites());
+            String progress = ScheduleLog.progress();
+            assertTrue(name + ": " + progress, progress.contains(
+                    name.contains("idling") ? "1 of them let go"
+                            : "0 of them let go"));
+            if (reads) {
+                assertTrue(name + ", at its own pace: " + took, took < 2000L);
+            } else {
+                assertTrue(name + ", held: " + took, took >= 300L);
+            }
+        }
+    }
+
+    /**
+     * {@code polls} sleeps of 50 ms at {@code site}, then the loop's exit:
+     * a send of y.
+     */
+    private static void pollLoop(String site, int polls) {
+        try {
+            for (int poll = 0; poll < polls; poll++) {
+                TimedWaits.sleep(50L, site);
+            }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return;
+        }
+        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "y");
+    }
+
+    /**
+     * An event that never comes costs a timeout, then a grace after the
+     * waits held without a slot are let go -- not {@link
+     * ScheduleLog#CEILING} timeouts twice over while an engine thread
+     * computes.  A wait held at the cut is let go once; a poll held past its
+     * recorded count at its context's due slot -- the stalled one -- waits
+     * for no slot's event, so it does not hide that slot from the give-up
+     * y waits for, however long it keeps polling.
+     */
+    @Test(timeout = 60000L)
+    public void aNeverComingEventCostsATimeoutAndAGrace() throws Exception {
+        final String loop = "<L: boolean poll()>#u5";
+        for (final boolean polls : new boolean[] {false, true}) {
+            restart();
+            String row = polls ? "a poll past its count" : "a wait at the cut";
+            System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "1000");
+            ClockLoops.useForTests(Collections.<String>emptySet());
+            List<ScheduleEvent> order = new ArrayList<ScheduleEvent>();
+            if (polls) order.add(event(ScheduleEvent.Kind.WAKE, loop));
+            order.addAll(prefix("never", "y"));
+            ScheduleLog.enforceForTests(order);
+            final boolean[] stop = new boolean[1];
+            Thread busy = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    while (!stop[0]) spin(50L);
+                }
+            }, "causynth-test-publication");
+            busy.start();
+            long before = System.nanoTime();
+            Thread held = polls ? new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        while (!stop[0]) TimedWaits.sleep(50L, loop);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+            }) : observer(ScheduleEvent.Kind.WAKE, "tick.idle");
+            if (polls) held.start();
+            Thread y = observer(ScheduleEvent.Kind.SEND, "y");
+            y.join(20000L);
+            long took = TimeUnit.NANOSECONDS.toMillis(
+                    System.nanoTime() - before);
+            boolean waited = y.isAlive();
+            stop[0] = true;
+            busy.join();
+            held.join(5000L);
+            y.join(5000L);
+            assertFalse(row + ": y went while the loop still polled", waited);
+            assertFalse(row, y.isAlive() || held.isAlive());
+            assertTrue(row + ", a timeout, then the let-go's grace: " + took,
+                    took >= 1000L + ScheduleLog.LET_GO_GRACE_MS);
+            assertTrue(row + ", well inside the ceiling: " + took,
+                    took < ScheduleLog.CEILING * 1000L - 500L);
+            List<String> sites = sites();
+            assertEquals(row + ": " + sites, polls ? loop : "tick.idle",
+                    sites.get(0));
+            assertTrue(row + ": " + sites, sites.contains("y"));
+            String progress = ScheduleLog.progress();
+            assertTrue(row + ": " + progress, progress.contains(" 1 given up"));
+            assertTrue(row + ": " + progress, progress.contains(
+                    polls ? " of them let go" : "1 of them let go"));
+        }
+    }
+
+    /** Burns this thread's CPU for {@code millis}. */
+    private static void spin(long millis) {
+        long until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(millis);
         long sink = 0L;
         while (System.nanoTime() < until) sink += System.nanoTime() % 7L;
         assertTrue(sink >= 0L);
-        assertTrue("the daemon still waits: computing is progress",
-                daemon.isAlive());
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
-        daemon.join(5000L);
-        assertFalse(daemon.isAlive());
-        assertEquals(Arrays.asList("x", "tick.d"), sites());
-        assertTrue(ScheduleLog.progress(), ScheduleLog.progress().contains(" 0 given up"));
     }
 
     @Test

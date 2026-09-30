@@ -10,7 +10,7 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * CONTRACT-SPEC 2: the role one session states it ran as ({@code
+ * CONTRACT-SPEC §2.1: the role one session states it ran as ({@code
  * manifest.json}, written when the session opens) -- the only answer to
  * "which session is the recording".  Never inferred from activations: a
  * FOCUSED replay that activated nothing is still FOCUSED.

@@ -7,6 +7,7 @@ import edu.uva.liftlab.graphchecker.contract.GapKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
+import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.smt.ExpressionWalk;
 import edu.uva.liftlab.graphchecker.smt.VmRows;
 import java.util.ArrayDeque;
@@ -112,7 +113,7 @@ final class RowPublication {
                 continue;
             }
             // Site, arm and predicate as written; nothing applies one to the
-            // other (CONTRACT-SPEC §2).
+            // other (CONTRACT-SPEC §2.2).
             JsonObject written = object(mapping, "siteCondition");
             RowRuntime.decision(occurrence, seq, siteId, ordinal,
                     optionalBool(mapping, "outcome", false),
@@ -137,7 +138,7 @@ final class RowPublication {
      * One row per write version, and one per read node
      * ({@code ReadFromExpression}) the published expressions contain.
      *
-     * <p>Site from the VM log (REPORT-VM21), index from the frame journal.
+     * <p>Site from the VM log, index from the frame journal (IDENTITY §4).
      * A row belongs to the activation that PERFORMED the event
      * ({@link LoggedEventSites#performer}), not to the one that found it.</p>
      */
@@ -165,15 +166,7 @@ final class RowPublication {
                 if (!element.isJsonObject()) continue;
                 JsonObject version = element.getAsJsonObject();
                 long id = optionalLongInteger(version, "fieldVersionId", -1L);
-                // A store outside every region has no performer to row, and
-                // a scalar's INITIAL no store at all.
-                if (id < 0L
-                        || mints.containsKey(locationKey + "#" + id)
-                        || SharedStateCapture.unattributed(version)
-                        || SharedStateCapture.scalarInitial(version,
-                        location)) {
-                    continue;
-                }
+                if (!rowed(version, location, locationKey, mints)) continue;
                 if (!RowRuntime.claimEvent("write", locationKey + "#" + id)) {
                     continue;
                 }
@@ -186,9 +179,16 @@ final class RowPublication {
                 if (performer != null) {
                     String site = LoggedEventSites.site(version, locationKey,
                             id, true);
+                    String unrowed = unrowedReferent(
+                            active.sharedStateRefusals,
+                            active.sharedStateRecords, version, mints);
                     RowRuntime.write(performer, id, site, location, id,
                             written, "", LoggedEventSites.siteIndex(version,
-                                    locationKey, id, site, true));
+                                    locationKey, id, site, true),
+                            unrowed.isEmpty() ? referent(version) : null,
+                            unrowed.isEmpty() ? optionalString(version,
+                                    SharedStateCapture.REFERENT_STATE_REFUSED)
+                                    : unrowed);
                 }
                 collect(expression, published, seen);
             }
@@ -196,6 +196,63 @@ final class RowPublication {
         for (JsonObject mapping : active.branchMappings) {
             collect(mapping.get("witness"), published, seen);
         }
+    }
+
+    /**
+     * Whether a logged version is a write row: a store outside every region
+     * has no performer to row, and a scalar's INITIAL no store at all; a
+     * declared input is a mint.
+     */
+    private static boolean rowed(JsonObject version, LocationId location,
+                                 String locationKey,
+                                 Map<String, String> mints) {
+        long id = optionalLongInteger(version, "fieldVersionId", -1L);
+        return id >= 0L && !mints.containsKey(locationKey + "#" + id)
+                && !SharedStateCapture.unattributed(version)
+                && !SharedStateCapture.scalarInitial(version, location);
+    }
+
+    /**
+     * Why the container state a reference version names is no row, or
+     * {@code ""}: a referent's version must be a write of its session
+     * (IMPORT invariant 12).  Its log is in this read-out whenever the
+     * version came after the activation began; the read-out refused that
+     * log (a base the VM could not walk, a truncated envelope), or the log
+     * holds the version as no row.  A log the read-out did not select was
+     * published by an earlier activation's.
+     */
+    static String unrowedReferent(Map<String, String> refusals,
+                                  Map<String, JsonObject> records,
+                                  JsonObject version,
+                                  Map<String, String> mints) {
+        String key = SharedStateCapture.locationKeyOf(object(version,
+                SharedStateCapture.REFERENT_STATE));
+        if (key.isEmpty()) return "";
+        String refused = refusals.get(key);
+        if (refused != null) return refused;
+        JsonObject record = records.get(key);
+        if (record == null) return "";
+        long named = optionalLongInteger(object(version,
+                SharedStateCapture.REFERENT_STATE), "fieldVersionId", -1L);
+        for (JsonElement logged : array(object(record, "envelope"),
+                "versions")) {
+            if (logged.isJsonObject() && optionalLongInteger(
+                    logged.getAsJsonObject(), "fieldVersionId", -2L) == named) {
+                return rowed(logged.getAsJsonObject(), locationId(key), key,
+                        mints) ? "" : "VERSION_NOT_ROWED";
+            }
+        }
+        return "VERSION_NOT_RETAINED";
+    }
+
+    /** The container state a reference version states it stored, or
+     *  null ({@link SharedStateCapture#REFERENT_STATE}). */
+    private static WriteRow.Referent referent(JsonObject version) {
+        JsonObject state = object(version, SharedStateCapture.REFERENT_STATE);
+        LocationId location = locationId(
+                SharedStateCapture.locationKeyOf(state));
+        return location == null ? null : WriteRow.Referent.of(location,
+                optionalLongInteger(state, "fieldVersionId", -1L));
     }
 
     /**
@@ -261,12 +318,12 @@ final class RowPublication {
             return;
         }
         publishRead(node, identity, locationKey, location, observed, event,
-                symbol, value);
+                symbol, value, VmRows.unnamedWriter(node));
     }
 
     /**
-     * A read the log does not cover: the object and what its field held
-     * (REPORT15).  The value may nest another read, which supplies version
+     * A read the log does not cover: the object and what its field held.
+     * The value may nest another read, which supplies version
      * and location.  The row states the version or the literal, never
      * neither, and spells the location as the write log does so they join.
      */
@@ -291,7 +348,7 @@ final class RowPublication {
         }
         // The row's location is the nested read's, so its version is too,
         // joinability included: the projection's own observedVersion states
-        // no writerSetComplete, and once VM f11 found a location incomplete
+        // no unnamedWriter, and once VM f11 found a location incomplete
         // the two spelled one read event as two rows (SOLR-18406 s48).
         long observed = versionOf(read);
         long event = eventOf(node);
@@ -314,7 +371,7 @@ final class RowPublication {
                     observed >= 0L ? "v" + observed : "e" + event);
         }
         publishRead(node, identity, locationKey, location, observed, event,
-                projected, stated);
+                projected, stated, VmRows.unnamedWriter(read));
     }
 
     /**
@@ -324,7 +381,7 @@ final class RowPublication {
     private static void publishRead(JsonObject node, String identity,
                                     String locationKey, LocationId location,
                                     long observed, long event, String symbol,
-                                    String value) {
+                                    String value, boolean unnamedWriter) {
         if (!RowRuntime.claimEvent("read", identity)) return;
         OccurrenceAddress performer = LoggedEventSites.performer(
                 node, locationKey, event, false);
@@ -335,7 +392,7 @@ final class RowPublication {
                 optionalString(node, "_java_type"), value,
                 LoggedEventSites.siteIndex(node, locationKey, event, site,
                         false),
-                ReadRow.UNKNOWN_VERSION);
+                ReadRow.UNKNOWN_VERSION, unnamedWriter);
     }
 
     /**
@@ -362,14 +419,7 @@ final class RowPublication {
 
     /** The version a node observed, or {@code -1}. */
     static long versionOf(JsonObject node) {
-        if (!VmRows.joinable(node)) return -1L;
-        JsonElement stated = node == null ? null : node.get("observedVersion");
-        if (stated == null) return -1L;
-        if (stated.isJsonObject()) {
-            return optionalLongInteger(stated.getAsJsonObject(),
-                    "fieldVersionId", -1L);
-        }
-        return stated.isJsonPrimitive() ? stated.getAsLong() : -1L;
+        return VmRows.joinable(node) ? VmRows.recordedVersion(node) : -1L;
     }
 
     /** The VM event a node names, or {@code -1}. */
@@ -499,8 +549,8 @@ final class RowPublication {
         }
         // seq == 0 means "no VM clock" (a CONCRETE decision stands after the
         // last VM event, ActiveRegion#recordConcreteDecision).  The composer
-        // cuts the prefix before target.seq() (P1), so at 0 pi_p would be
-        // empty and too weak; state a BLOCKING gap instead.
+        // cuts the prefix before target.seq() (PIPELINE §8), so at 0 pi_p
+        // would be empty and too weak; state a BLOCKING gap instead.
         if (at <= 0L && reached) {
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.BLOCKING, anchor,
                     "this run reached the anchor on a decision the VM gave"

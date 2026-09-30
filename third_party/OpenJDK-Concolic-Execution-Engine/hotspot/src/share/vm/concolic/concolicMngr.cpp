@@ -335,11 +335,6 @@ jlong ConcolicMngr::attach(JavaThread *thread) {
 void ConcolicMngr::detach() {
   if (ctx == NULL) return;
 
-  // The replay-read records are keyed by this context id and live in a
-  // session-scoped store, so they have to be retired with the context rather
-  // than left for close_session() to sweep.
-  SharedFieldVersions::forget_context(ctx->get_context_id());
-
   // Only this thread's execution state.  Object shadows, container states and
   // published expressions belong to the session and survive for the other
   // members.
@@ -430,7 +425,6 @@ void ConcolicMngr::cleanupAbandonedContext(JavaThread *thread) {
     return;
   }
   ctx->abort_symbolic_execution("OWNER_JAVA_THREAD_EXIT");
-  SharedFieldVersions::forget_context(ctx->get_context_id());
   // This is a safe owner-thread boundary: no concolic Java frame remains and
   // uncaught-exception callbacks have already completed.  The thread is about
   // to be destroyed, so drop every region it still owns at once and release
@@ -809,16 +803,6 @@ jlong ConcolicMngr::endConcolic() {
     return 1;
   }
 
-  // An armed replay read is an override of the read the arming code was about
-  // to perform.  A region boundary proves that read did not happen, so the
-  // arm is abandoned here rather than left for an unrelated later read of the
-  // same field to consume.  Only what THIS region armed is abandoned: regions
-  // nest on one thread context, so purging the whole context here would drop
-  // the enclosing region's still-pending arms.  Consumed receipts survive:
-  // the caller confirms them as part of closing this region.
-  SharedFieldVersions::discard_armed_reads(ctx->get_context_id(),
-                                           ctx->region_enter_event());
-
   // Closing an inner region restores the enclosing frame.  The full indexed
   // path remains thread-owned, while the inner frame's local branch/auxiliary
   // wrappers and event list are released by pop_region().
@@ -892,58 +876,64 @@ void ConcolicMngr::symbolizeExactField(
   }
 }
 
-void ConcolicMngr::observeExactPrimitiveField(
-    Handle owner, const char *declaring_class, const char *field_name,
-    const char *descriptor) {
-  if (!can_explicitly_symbolize() || owner.is_null()
-      || declaring_class == NULL || declaring_class[0] == '\0'
-      || field_name == NULL || field_name[0] == '\0'
-      || descriptor == NULL || descriptor[0] == '\0') {
-    tty->print_cr(
-        "Warning: observeExactPrimitiveField called without an eligible field");
-    return;
+jint ConcolicMngr::observeField(Handle owner, const char *declaring_class,
+                               const char *field_name,
+                               const char *descriptor) {
+  if (!can_explicitly_symbolize()) {
+    return ExpressionBroker::HANDOFF_NO_ACTIVE_REGION;
+  }
+  if (owner.is_null() || declaring_class == NULL
+      || declaring_class[0] == '\0' || field_name == NULL
+      || field_name[0] == '\0' || descriptor == NULL
+      || descriptor[0] == '\0') {
+    return ExpressionBroker::HANDOFF_MISSING_METADATA;
   }
 
   ResourceMark rm;
   fieldDescriptor field;
-  Klass *declaring = OopUtils::get_local_fd_by_name(
-      owner(), std::string(declaring_class), std::string(field_name),
-      std::string(descriptor), field);
-  BasicType type = declaring == NULL ? T_ILLEGAL : field.field_type();
-  // The integral types: what a store publishes and a read arms
-  // (armSharedPrimitiveFieldRead) alike.  A flag -- a commit point's
-  // `deleted` -- is shared state as much as a counter is.
-  if (declaring == NULL || field.is_static()
-      || !(type == T_BOOLEAN || type == T_BYTE || type == T_CHAR
-           || type == T_SHORT || type == T_INT || type == T_LONG)) {
-    tty->print_cr(
-        "Warning: observeExactPrimitiveField supports only exact integral fields");
-    return;
+  oop holder = NULL;
+  SharedFieldVersions::Location location;
+  if (!SharedFieldVersions::resolve_field(owner(), declaring_class,
+                                          field_name, descriptor, &location,
+                                          &field, &holder)) {
+    return ExpressionBroker::HANDOFF_FIELD_NOT_FOUND;
   }
+  // An integral field; one of an integral wrapper type, which holds a value
+  // the same way (a box is immutable and a store puts a new one), its word
+  // the box's primitive or null (SharedFieldVersions::boxed_word) -- a
+  // commit point's `deleted`, SOLR-18413's RoutingRule.expireAt; or a
+  // reference, whose value is its referent's identity and whose word is the
+  // referent's id -- SOLR-18406's knownCommits, re-pointed at a fresh map by
+  // every commit.  A float or double has no exact word here.
+  const BasicType type = field.field_type();
+  if (type == T_FLOAT || type == T_DOUBLE) {
+    return ExpressionBroker::HANDOFF_UNSUPPORTED_TARGET;
+  }
+  const bool boxed = type == T_OBJECT
+      && SharedFieldVersions::wrapper_value_type(field.signature())
+             != T_ILLEGAL;
 
-  SymInstance *instance = ctx->get_or_alloc_sym_inst(owner());
-  if (instance == NULL) return;
-  SharedFieldVersions::Location location(instance->get_sym_rid(),
-                                         field.offset(),
-                                         SharedFieldVersions::LOC_INSTANCE_FIELD);
-  // A log that stands is the location's: its shadow is the value a symbolic
-  // or versioned store left there, which a read's observation must not
-  // replace with the concrete one.
-  if (SharedFieldVersions::is_tracked(location)) return;
-  const SharedFieldVersions::ConcreteBits held =
-      SharedFieldVersions::field_bits(owner(), field.offset(), type);
-  Expression *observed =
-      SharedFieldVersions::primitive_expression(held.type, held.bits);
-  instance->set_sym_exp(field.offset(), observed);
-  // The observation starts the field's log.  A concrete store is versioned
-  // only where a log exists, and the woven site calls here just before its
-  // access: without a base a store would leave no version and a reader in
-  // another occurrence would join no writer, and a read of a location no
-  // store of the window reached would state no version at all.  The base is
-  // the value from before the window, which a read of it is pinned to.
-  SharedFieldVersions::publish_initial(location, observed, held,
-                                       SharedFieldVersions::InitialSnapshot());
-  ctx->set_pc_admitted(true);
+  // A static field is keyed by its class's mirror, as getstatic keys it.
+  SymInstance *instance = ctx->get_or_alloc_sym_inst(holder);
+  if (instance == NULL) return ExpressionBroker::HANDOFF_UNSUPPORTED_TARGET;
+  location.owner = instance->get_sym_rid();
+  // The observation starts the field's log, with the value it holds read
+  // under the location's stripe, so no store falls between the word and the
+  // log's start.  A concrete store is versioned only where a log exists, and
+  // the woven site calls here just before its access: without a base a store
+  // would leave no version and a reader in another occurrence would join no
+  // writer.  A log that stands is the location's: its shadow is the value a
+  // symbolic or versioned store left there, which an observation must not
+  // replace with the concrete one.  No referent is snapshotted: a reader's
+  // own query starts the log of the container it reads through.
+  Expression *observed = NULL;
+  SharedFieldVersions::publish_initial_held(
+      location, SharedFieldVersions::Cell(holder, type, boxed), &observed);
+  if (observed != NULL) {
+    instance->set_sym_exp(field.offset(), observed);
+    ctx->set_pc_admitted(true);
+  }
+  return ExpressionBroker::HANDOFF_OK;
 }
 
 #else

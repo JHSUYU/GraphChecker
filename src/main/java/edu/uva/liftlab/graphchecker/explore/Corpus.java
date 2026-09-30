@@ -8,6 +8,8 @@ import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExpressionTable;
 import edu.uva.liftlab.graphchecker.contract.ExportRow;
+import edu.uva.liftlab.graphchecker.contract.GapKind;
+import edu.uva.liftlab.graphchecker.contract.GapRow;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.ObligationDir;
@@ -248,6 +250,9 @@ public final class Corpus implements Arms.Rows {
     /** Producer endpoint id of a RECV -> the occurrence that took it in. */
     private final Map<String, String> receiverByEndpoint =
             new LinkedHashMap<String, String>();
+    /** session|occurrence -> the first value its run refused there. */
+    private final Map<String, GapRow> refusedIn =
+            new HashMap<String, GapRow>();
 
     private final Arms arms;
 
@@ -484,7 +489,7 @@ public final class Corpus implements Arms.Rows {
 
     /** The occurrence that TOOK IN the message served under {@code
      *  producerEndpointId} (its RECV runs under that anchor), or null: the
-     *  receiving door whose fault point decides delivery (DESIGN4 SS1.2). */
+     *  receiving door whose fault point decides delivery (IDENTITY §7.3). */
     public OccurrenceAddress receiverOf(String producerEndpointId) {
         String receiver = receiverByEndpoint.get(producerEndpointId);
         return receiver == null ? null : occurrenceById.get(receiver);
@@ -605,6 +610,12 @@ public final class Corpus implements Arms.Rows {
         for (TargetRow row : session.targets()) {
             remember(session.sessionId(), row.occurrence());
             targetsOn.add(row.occurrence().id(), row.sessionId(), row);
+        }
+        for (GapRow row : session.gaps()) {
+            String occurrenceId = occurrenceNamed(row);
+            if (occurrenceId.isEmpty()) continue;
+            refusedIn.putIfAbsent(session.sessionId() + "|" + occurrenceId,
+                    row);
         }
         for (ReadRow row : session.reads()) {
             remember(session.sessionId(), row.endpoint().occurrence());
@@ -779,6 +790,35 @@ public final class Corpus implements Arms.Rows {
         return activationOf(sessionId, occurrence.id());
     }
 
+    /**
+     * The value one session's run refused inside one occurrence, or null: an
+     * UNSTATED_VALUE row it filed on that occurrence (an attach the VM
+     * refused, whose rows compute on the arrival as a constant; an attach
+     * that minted no boundary variable).  A REFUSAL IS ITS FRAME'S: what
+     * rests on that occurrence is refused, and nothing else
+     * ({@code Composer#frameRefusals}).
+     */
+    public GapRow refusedIn(String sessionId, String occurrenceId) {
+        return refusedIn.get(sessionId + "|" + occurrenceId);
+    }
+
+    /** The occurrence an UNSTATED_VALUE row is filed on, or "". */
+    private static String occurrenceNamed(GapRow row) {
+        if (row.kind() != GapKind.UNSTATED_VALUE) return "";
+        try {
+            return OccurrenceAddress.parse(row.subject()).id();
+        } catch (IllegalArgumentException noOccurrence) {
+            // A port, a location, a root: not a frame.
+            return "";
+        }
+    }
+
+    /** Every session's activation rows of one occurrence, in read order. */
+    public List<ActivationRow> activationsOf(OccurrenceAddress occurrence) {
+        return activations.getOrDefault(occurrence.id(),
+                Collections.<ActivationRow>emptyList());
+    }
+
     public List<DecisionRow> decisionsOf(String sessionId,
                                          OccurrenceAddress occurrence) {
         return decisions.getOrDefault(sessionId + "|" + occurrence.id(),
@@ -820,17 +860,23 @@ public final class Corpus implements Arms.Rows {
         return writesOn.all(occurrence.id());
     }
 
+    /** Every write ONE session made at this occurrence, in recorded order. */
+    public List<WriteRow> writesOn(String sessionId,
+                                   OccurrenceAddress occurrence) {
+        return writesOn.of(occurrence.id(), sessionId);
+    }
+
     /** Every export any session published at one occurrence. */
     public List<ExportRow> exportsOn(OccurrenceAddress occurrence) {
         return exportsOn.getOrDefault(occurrence.id(),
                 Collections.<ExportRow>emptyList());
     }
 
-    // ---- The causal graph (SS3.1) ----
+    // ---- The causal graph (GreyGraph §3.1) ----
 
     /**
      * The writes one read could have taken its value from: the observed one and
-     * every HB-concurrent writer (R-I7.1, {@code smt.Arms}) -- the same
+     * every HB-concurrent writer (IDENTITY §4, {@code smt.Arms}) -- the same
      * alternatives the composition offers. ONE implementation, used by the
      * closure ({@link ClosurePlanner#writers}).
      *
@@ -851,7 +897,7 @@ public final class Corpus implements Arms.Rows {
     }
 
     /** Whether a decision is a FAULT decision: its lowered term REACHES a
-     *  MARKER root the same session minted (DESIGN4 SS1.4). */
+     *  MARKER root the same session minted (PIPELINE §7.2). */
     public boolean fault(String sessionId, DecisionRow decision) {
         SmtLowering lowering = lowering(sessionId);
         if (lowering == null || !Arms.predicate(decision.term())) return false;
@@ -935,8 +981,8 @@ public final class Corpus implements Arms.Rows {
     /** The shared state one published expression rests on: for each read node
      *  ({@code location} + {@code readEventId}), the latest write at or before
      *  the read. ONE implementation, shared by the composer ({@code
-     *  ComposedFamilies.expressionWrites}) and the closure (E2). Locations the
-     *  session never wrote are skipped (no version to guess). */
+     *  ComposedFamilies.expressionWrites}) and the closure (PIPELINE §7.2).
+     *  Locations the session never wrote are skipped (no version to guess). */
     public List<StateRead> expressionStateReads(String sessionId,
                                                 String expressionRef) {
         List<StateRead> found = new ArrayList<StateRead>();

@@ -27,6 +27,7 @@ public final class SessionReader {
     private final List<ReadRow> reads;
     private final List<RootMintRow> roots;
     private final List<TargetRow> targets;
+    private final List<GapRow> gaps;
     private final List<ObligationResult> obligations;
     private final ExpressionTable expressions;
     private final SessionManifest manifest;
@@ -38,6 +39,7 @@ public final class SessionReader {
                           List<ExportRow> exports, List<AttachRow> attaches,
                           List<WriteRow> writes, List<ReadRow> reads,
                           List<RootMintRow> roots, List<TargetRow> targets,
+                          List<GapRow> gaps,
                           List<ObligationResult> obligations,
                           ExpressionTable expressions,
                           SessionManifest manifest, String incomplete) {
@@ -52,6 +54,7 @@ public final class SessionReader {
         this.reads = Collections.unmodifiableList(reads);
         this.roots = Collections.unmodifiableList(roots);
         this.targets = Collections.unmodifiableList(targets);
+        this.gaps = Collections.unmodifiableList(gaps);
         this.obligations = Collections.unmodifiableList(obligations);
         this.expressions = expressions;
     }
@@ -68,32 +71,40 @@ public final class SessionReader {
      * SESSION_INCOMPLETE.
      */
     public static SessionReader read(SessionDir dir) throws IOException {
-        Partial partial = new Partial();
+        return read(dir, new RowPool());
+    }
+
+    /** One session, its values shared with every session read with the
+     *  same pool ({@link RowPool}). */
+    private static SessionReader read(SessionDir dir, RowPool pool)
+            throws IOException {
+        Partial partial = new Partial(pool);
         List<ActivationRow> activations = partial.rows(dir.activations(),
-                RowCodec::readActivation);
+                json -> RowCodec.readActivation(json, pool));
         List<DecisionRow> decisions = partial.rows(dir.decisions(),
-                RowCodec::readDecision);
+                json -> RowCodec.readDecision(json, pool));
         List<ExportRow> exports = partial.rows(dir.exports(),
-                RowCodec::readExport);
+                json -> RowCodec.readExport(json, pool));
         List<AttachRow> attaches = partial.rows(dir.attaches(),
-                RowCodec::readAttach);
+                json -> RowCodec.readAttach(json, pool));
         List<WriteRow> writes = partial.rows(dir.writes(),
-                RowCodec::readWrite);
-        List<ReadRow> reads = partial.rows(dir.reads(), RowCodec::readRead);
+                json -> RowCodec.readWrite(json, pool));
+        List<ReadRow> reads = partial.rows(dir.reads(),
+                json -> RowCodec.readRead(json, pool));
         List<RootMintRow> roots = partial.rows(dir.roots(),
-                RowCodec::readRootMint);
+                json -> RowCodec.readRootMint(json, pool));
         List<TargetRow> targets = partial.rows(dir.targets(),
-                RowCodec::readTarget);
-        // Held by no one; read so an unreadable file still marks the session.
-        partial.rows(dir.gaps(), RowCodec::readGap);
+                json -> RowCodec.readTarget(json, pool));
+        List<GapRow> gaps = partial.rows(dir.gaps(), RowCodec::readGap);
         List<ObligationResult> obligations = partial.rows(dir.obligations(),
                 RowCodec::readObligationResult);
         ExpressionTable expressions = partial.read(dir.expressions(),
-                RowCodec::readExpressions, ExpressionTable.empty());
+                file -> SessionExpressionLog.read(file, pool),
+                ExpressionTable.empty());
         SessionManifest manifest = partial.read(dir.manifest(),
                 RowCodec::readManifest, null);
         return new SessionReader(dir, activations, decisions, exports,
-                attaches, writes, reads, roots, targets, obligations,
+                attaches, writes, reads, roots, targets, gaps, obligations,
                 expressions, manifest, partial.reason);
     }
 
@@ -102,9 +113,10 @@ public final class SessionReader {
      * needs of every session before it reads any one of them whole.
      */
     public static SessionReader readHeader(SessionDir dir) throws IOException {
-        Partial partial = new Partial();
+        RowPool pool = new RowPool();
+        Partial partial = new Partial(pool);
         List<RootMintRow> roots = partial.rows(dir.roots(),
-                RowCodec::readRootMint);
+                json -> RowCodec.readRootMint(json, pool));
         SessionManifest manifest = partial.read(dir.manifest(),
                 RowCodec::readManifest, null);
         return new SessionReader(dir, Collections.<ActivationRow>emptyList(),
@@ -114,17 +126,23 @@ public final class SessionReader {
                 Collections.<WriteRow>emptyList(),
                 Collections.<ReadRow>emptyList(), roots,
                 Collections.<TargetRow>emptyList(),
+                Collections.<GapRow>emptyList(),
                 Collections.<ObligationResult>emptyList(),
                 ExpressionTable.empty(), manifest, partial.reason);
     }
 
     /** One session's read, and the first file of it that would not read. */
     private static final class Partial {
+        private final RowPool pool;
         private String reason = "";
+
+        private Partial(RowPool pool) {
+            this.pool = pool;
+        }
 
         private <T> List<T> rows(Path file, Function<JsonObject, T> reader)
                 throws IOException {
-            return read(file, path -> RowCodec.readAll(path, reader),
+            return read(file, path -> RowCodec.readAll(path, pool, reader),
                     Collections.<T>emptyList());
         }
 
@@ -204,12 +222,14 @@ public final class SessionReader {
         });
     }
 
-    /** Every session of one iteration, in the layout's own order. */
+    /** Every session of one iteration, in the layout's own order, sharing
+     *  one pool: the sessions of a corpus spell the same call sites. */
     public static List<SessionReader> readAll(Path iteration)
             throws IOException {
+        RowPool pool = new RowPool();
         List<SessionReader> sessions = new ArrayList<SessionReader>();
         for (SessionDir dir : SessionDir.sessionsIn(iteration)) {
-            sessions.add(read(dir));
+            sessions.add(read(dir, pool));
         }
         return sessions;
     }
@@ -248,6 +268,11 @@ public final class SessionReader {
 
     public List<TargetRow> targets() {
         return targets;
+    }
+
+    /** What the run refused or noted, each on the subject it names. */
+    public List<GapRow> gaps() {
+        return gaps;
     }
 
     /** The replay's verdicts, one per obligation run; the only authority. */

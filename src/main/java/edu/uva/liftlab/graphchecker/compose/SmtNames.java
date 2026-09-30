@@ -132,7 +132,7 @@ public final class SmtNames {
                     "indexed_contains", "indexed_size", "indexed_elements",
                     "assoc_has", "assoc_read", "assoc_key_at",
                     "assoc_value_at", "assoc_put", "assoc_remove",
-                    "assoc_remove_if",
+                    "assoc_remove_if", "assoc_put_if",
                     "assoc_size", "assoc_present", "assoc_values",
                     "assoc_order", "assoc_position", "VByte", "VChar",
                     "VShort", "VInt", "VLong", "VFloat", "VDouble", "VBool",
@@ -146,7 +146,7 @@ public final class SmtNames {
                     // path (solr-adhoc q13-22 dropped 36 conjuncts on
                     // str.substr and str.indexof).
                     "str.++", "str.len", "str.contains", "str.prefixof",
-                    "str.suffixof", "str.from_int", "str.substr",
+                    "str.suffixof", "str.from_int", "str.to_int", "str.substr",
                     "str.indexof", "str.at", "str.from_code", "str.to_code",
                     "fp.add", "fp.sub", "fp.mul", "fp.div", "fp.neg",
                     "fp.eq", "fp.lt", "fp.leq", "fp.gt", "fp.geq",

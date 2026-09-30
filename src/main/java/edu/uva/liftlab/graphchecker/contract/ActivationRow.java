@@ -1,11 +1,10 @@
 package edu.uva.liftlab.graphchecker.contract;
 
 /**
- * CONTRACT-SPEC 2: one activation a replay session entered, with its address.
+ * CONTRACT-SPEC §2.2: one activation a replay session entered, with its address.
  * {@code focused}: ran symbolically as the task's region (others run
  * concretely).  {@code instrumented=false}: entry hook only, so "no decisions"
- * is a hole, not evidence (INTERACTION-ID sec 8).  {@code threadKey}: same key
- * means program order (sec 7.1).
+ * is a hole, not evidence.  {@code threadKey}: same key means program order.
  *
  * <p>No thread-start edge: happens-before is {@code threadKey} plus the
  * {@link CausalContext.Anchor}; anything else is concurrent.  Re-add the edge

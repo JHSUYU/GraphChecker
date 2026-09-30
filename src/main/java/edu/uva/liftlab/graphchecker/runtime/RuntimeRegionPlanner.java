@@ -108,7 +108,7 @@ public final class RuntimeRegionPlanner {
                     continue;
                 }
                 for (MethodEvent root : trace.methods(skeleton.rootMethod)) {
-                    // F1: a FOLDED entry is a call inside its thread's
+                    // IDENTITY §1: a FOLDED entry is a call inside its thread's
                     // occurrence, not an activation; its owner is stated below.
                     if (root.regionFolded) {
                         foldedRoots.put(root.callId, skeleton);
@@ -426,7 +426,8 @@ public final class RuntimeRegionPlanner {
             Map<Long, Long> foldOwners) {
         Set<Long> subtree = trace.subtree(root.callId);
         Set<String> allowed = new LinkedHashSet<>(skeleton.methods);
-        // F1, forwards: calls of regions FOLDED here join this call set, or
+        // The fold rule, forwards: calls of regions FOLDED here join this
+        // call set, or
         // they would belong to no occurrence.
         Set<Long> foldedCalls = new LinkedHashSet<>();
         List<StaticProgram.RegionRow> foldedHere = new ArrayList<>();
@@ -888,7 +889,7 @@ public final class RuntimeRegionPlanner {
                 }
             }
         }
-        // README LOOP-1: a bound equal to the default is still declared.
+        // A bound equal to the default is still declared.
         return LoopBoundPolicy.cfgBackedges(
                 LoopBoundPolicy.declaredDefault(), declared);
     }
@@ -954,7 +955,7 @@ public final class RuntimeRegionPlanner {
             observedMethods.retainAll(allowedMethods);
             List<Map<String, Object>> branches = branches(
                     region.branchPolicies, trace.runtime(calls));
-            // README TARGET-1: the finalizer decided which occurrences
+            // The finalizer decided which occurrences
             // observed the throw's deciding guard (the EXCEPTION region may
             // fold elsewhere).
             boolean target = Boolean.TRUE.equals(MapFields.booleanValue(
@@ -972,7 +973,7 @@ public final class RuntimeRegionPlanner {
             // Minted by the finalizer; an unretained activation has none.
             String occurrenceId = stringValue(seed.get("occurrenceId"));
             if (occurrenceId.isEmpty()) continue;
-            // One coarse occurrence is one row (README REGION-1); a shared
+            // One coarse occurrence is one row (IDENTITY §5); a shared
             // address is already a BLOCKING OCCURRENCE_ADDRESS_SHARED gap.
             if (planByOccurrence.containsKey(occurrenceId)) continue;
             // Minted once by planSkeletonGraph; read, never re-spelled.
@@ -1012,7 +1013,7 @@ public final class RuntimeRegionPlanner {
             // The semantic source fields are published by putTraceContext.
             plan.put("occurrenceId", occurrenceId);
             plan.put("regionId", region.regionId);
-            // README "Loops": a service-loop root is one occurrence per
+            // IDENTITY §1: a service-loop root is one occurrence per
             // iteration.
             if (!region.rootAuthority.isEmpty()) {
                 plan.put(LoopBoundPolicy.ROOT_AUTHORITY, region.rootAuthority);
@@ -1040,7 +1041,8 @@ public final class RuntimeRegionPlanner {
                 plan.put("enclosingActivationIds",
                         new ArrayList<>(enclosingActivationIds));
             }
-            // Regions folded into this occurrence (F1): where they ran.
+            // Regions folded into this occurrence (IDENTITY §1): where they
+            // ran.
             List<String> folded = strings(seed.get(
                     RuntimeSelectedRegionFinalizer.FOLDED_REGION_IDS));
             if (!folded.isEmpty()) {
@@ -1371,7 +1373,7 @@ public final class RuntimeRegionPlanner {
         return captures;
     }
 
-    /** One activation's declared cut ports (README §3 {@code Req_in},
+    /** One activation's declared cut ports ({@code Req_in},
      * {@code Resp_in}, {@code Live_in}); an occurrence's stamped copy wins. */
     public static List<Map<String, Object>> symbolize(
             List<Map<String, Object>> ports, String occurrenceId) {
@@ -1805,11 +1807,11 @@ public final class RuntimeRegionPlanner {
         final boolean receiverAttributed;
         final String requestKey;
         final String requestApi;
-        /** The RECORDING's occurrence address (IDENTITY-IMPL B) on a region
-         * entry, else {@code ""}; never re-derived (REPORT-M2 §5). */
+        /** The RECORDING's occurrence address (IDENTITY §1) on a region
+         * entry, else {@code ""}; never re-derived. */
         final String occurrenceAddress;
-        /** FOLDED into its thread's occurrence (F1); not the same as an
-         * empty {@link #occurrenceAddress}, which is a refused hole. */
+        /** FOLDED into its thread's occurrence (IDENTITY §1); not the same as
+         * an empty {@link #occurrenceAddress}, which is a refused hole. */
         final boolean regionFolded;
         MethodEvent(long seq, String test, String threadName,
                     long tid, String method, int objectId, String receiverType,

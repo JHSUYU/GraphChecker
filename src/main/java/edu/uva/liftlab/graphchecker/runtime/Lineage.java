@@ -11,7 +11,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * The control lineage of the running activation: the chain of scope frames
- * it entered under, each one a {@code (role, api, k)} hop (IDENTITY-V2 §1).
+ * it entered under, each one a {@code (role, api, k)} hop (IDENTITY §2).
  *
  * <p>Roles are scope KINDS, never thread names.  A hop nothing can
  * attribute is still pushed, marked lost: the row states it.</p>
@@ -49,7 +49,7 @@ public final class Lineage {
     private static final class Frame {
         private final long token;
         private final Role role;
-        /** The api k was counted under, or "" (IDENTITY-V3 §1). */
+        /** The api k was counted under, or "" (IDENTITY §2). */
         private final String api;
         /** The window index of this hop, which only a ROOT hop carries. */
         private final int k;
@@ -96,7 +96,7 @@ public final class Lineage {
      * <p>{@code k} counts only ROOT hops of one (node, role, api) inside the
      * window: that is the only k an address reads ({@link #rootWindowIndex},
      * {@link edu.uva.liftlab.graphchecker.contract.CausalContext.Root}).
-     * Nested hops count nothing (IDENTITY-V3 §4: the anchor replaced the
+     * Nested hops count nothing (IDENTITY §2: the anchor replaced the
      * lineage list).  An unnameable node still gets its hop, marked lost; a
      * guessed node is a wrong causal chain.</p>
      */
@@ -291,7 +291,7 @@ public final class Lineage {
      *
      * <p>The lifetime of an execution-index level's counters ({@code
      * Identity.Level}); without it the thread base level counts for the whole
-     * thread, a run-length ordinal IDENTITY-V3 §1 forbids.  Tokens are
+     * thread, a run-length ordinal IDENTITY §3 forbids.  Tokens are
      * thread-local and never published: replays compare the k they produce.
      * Carried frames are shared by reference ({@link #capture}), so pool work
      * counts under the root that created it.</p>

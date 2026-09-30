@@ -7,13 +7,12 @@
 #include "concolic/methodSymbolizerHandle.hpp"
 #include "concolic/methodSymbolizer.hpp"
 
+/**
+ * The Set contract over the hash sets, which have a state of their own, and
+ * a ConcurrentHashMap's KeySetView (newKeySet, keySet(v)), which is its
+ * map's: a member is a key the map holds, mapped to the view's value.
+ */
 class SymSet {
-public:
-  inline static bool target(const std::string &class_name) {
-//    return false;
-    return target_class_names.find(class_name) != target_class_names.end();
-  }
-
 private:
   static std::set<std::string> target_class_names;
   static std::set<std::string> init_target_class_names();

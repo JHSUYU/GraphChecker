@@ -47,23 +47,35 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.strings;
  *   --claim &lt;file&gt;      final/claim.json
  *   --manifest &lt;file&gt;   final/candidate_composition_manifest.json
  *   --output &lt;dir&gt;      the worker directory the replay is run from
+ *
+ *   once the replay has published, the decision ({@link #decide}), printed
+ *   as final/confirm.json:
+ *   --claim &lt;file&gt; --output &lt;dir&gt; --sessions &lt;dir&gt;
  * </pre>
  *
- * <p>THE RULE (DESIGN4 §5). SAT says the model satisfies our formula; CONFIRM
- * says the program agrees: re-run the world the selected path's own session ran
- * (its planted roots, clock skews, answers) with no flip forced, hold that
- * session's schedule (prefix to the anchor, timeouts after), and require (a)
- * every edge the model chose is taken and (b) the fatal at the anchor. The
- * model's instants are the published witness, not what the run is held to
- * (solvers sit on boundaries). Written, in shapes the replay already reads:</p>
+ * <p>THE RULE (PIPELINE §10). SAT says the model satisfies our formula;
+ * CONFIRM says the program agrees: re-run the world the selected path's own
+ * session ran (its planted roots, clock skews, answers) overlaid with the
+ * model's moved roots ({@link #plantModel}), with no flip forced, and require
+ * (a) every edge the model chose is taken and (b) the fatal at the anchor.
+ * The schedule is written UNHELD ({@link SchedulePrefix#write} with {@code
+ * held} false): every event is the rest, only a WAKE still waits for what it
+ * followed; the model's order is held by the {@code ORDER} rows of
+ * {@code expected_edges.jsonl} ({@code runtime.Confirmation}). The model's
+ * instants are the published witness, not what the run is held to (solvers
+ * sit on boundaries). Written, in shapes the replay already reads:</p>
  * <ul>
  *   <li>{@code focused_task.jsonl}: a focus row with {@code flip: null} on
  *       the anchor, the selected session's obligation world, no inherited
  *       flips;</li>
- *   <li>{@code schedule_prefix.jsonl} / {@code schedule_suffix.jsonl};</li>
- *   <li>{@code expected_edges.jsonl}: {@code WIRE} per selected message
- *       arm, {@code STATE} per model-chosen writer, {@code MARKER} per planted
- *       marker, {@code ANCHOR}.</li>
+ *   <li>{@code schedule_prefix.jsonl} (empty) / {@code
+ *       schedule_suffix.jsonl} (the whole schedule);</li>
+ *   <li>{@code expected_edges.jsonl}: {@code WIRE} per consumer of each
+ *       selected message arm, {@code STATE} per read of the anchor's join
+ *       closure (the writer the model chose, else the observed one), {@code
+ *       ORDER} per held join (the writer's activation before the reader's;
+ *       every other writer of the location before the writer or after the
+ *       reader), {@code MARKER} per planted marker, {@code ANCHOR}.</li>
  * </ul>
  *
  * <p>The path and arms come from the claim's valuation ({@code selectedPathId},
@@ -71,8 +83,10 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.strings;
  * unrunnable confirmation is refused by name (exit 1), which the driver reads
  * as "unconfirmed, because ...".</p>
  *
- * <p>Once the replay has published, {@code --claim --output --sessions
- * <dir>} prints the decision ({@link #decide}): final/confirm.json.</p>
+ * <p>The decision ({@code --sessions}): confirmed iff the replay was ADMITTED,
+ * its session published a readable gaps file with no {@code
+ * CONFIRM_MISMATCH}, and a target row at the claim's own anchor occurrence id
+ * reached it and observed the fatal.</p>
  */
 public final class ConfirmMain {
     /** The one obligation id a confirmation carries. */

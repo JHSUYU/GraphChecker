@@ -322,6 +322,40 @@ void ShadowStack::pop(ZeroFrame *callee_frame) {
   delete s_frame;
 }
 
+void ShadowStack::push_callback(ZeroFrame *callee_frame,
+                                const std::vector<int> &anchors,
+                                const exp_list_t &seeds) {
+  ShadowFrame *s_frame = new ShadowFrame(callee_frame, true);
+  s_frame->copy();
+  for (size_t index = 0; index < anchors.size() && index < seeds.size();
+       ++index) {
+    if (seeds[index] != NULL) {
+      s_frame->get_local_tbl().set_slot(anchors[index], seeds[index]);
+    }
+  }
+  _s_frames.push_back(s_frame);
+}
+
+Expression *ShadowStack::pop_callback(ZeroFrame *callee_frame,
+                                      BasicType result_type) {
+  ShadowFrame *s_frame = _s_frames.back();
+  s_frame->check(callee_frame);
+  ConcolicMngr::ctx->cancel_pending_branch_for_frame(callee_frame);
+  _s_frames.pop_back();
+  Expression *result = NULL;
+  if (result_type != T_VOID) {
+    // Where pop() finds a returning frame's result.
+    interpreterState istate =
+        callee_frame->as_interpreter_frame()->interpreter_state();
+    const int result_slots = type2size[result_type];
+    intptr_t *callee_result = istate->stack() + result_slots;
+    const int offset = istate->stack_base() - callee_result - 1;
+    result = s_frame->get_opr_stack().get_slot(offset + result_slots - 1);
+  }
+  delete s_frame;
+  return result;
+}
+
 jlong ShadowStack::register_reflection_call(Method *target, int entry_words,
                                             ShadowTable &carrier) {
   guarantee(target != NULL, "reflection target must be present");

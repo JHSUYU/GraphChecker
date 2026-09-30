@@ -6,6 +6,7 @@ import edu.uva.liftlab.graphchecker.compose.VmTermLowering.Term;
 
 import edu.uva.liftlab.graphchecker.contract.Arm;
 import edu.uva.liftlab.graphchecker.contract.AttachRow;
+import edu.uva.liftlab.graphchecker.contract.DecisionRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.Family;
 import edu.uva.liftlab.graphchecker.contract.GapClass;
@@ -35,7 +36,8 @@ import static edu.uva.liftlab.graphchecker.compose.VmTermLowering.smtLiteral;
  * The families of one composition: a slot's alternative deliveries in SMT
  * ({@code Arms} decides what an arm IS).  WIRE families via {@link
  * #closeFamilies}, STATE families via {@link #stateFamilies}.  It holds the
- * composition's own collections, not copies, and reaches {@link Composer}
+ * composition's own collections, not copies, into which one path's families
+ * go whole or not at all ({@link #discard}), and reaches {@link Composer}
  * for gaps, the epoch's slot table and the path routines an arm is closed
  * by (closure, stated reads, state joins, prefixes).
  */
@@ -188,11 +190,72 @@ final class ComposedFamilies {
         return Collections.unmodifiableMap(armChoices);
     }
 
+    /*
+     * ONE PATH'S FAMILIES ARE ALL OR NOTHING.  What closeFamilies and
+     * stateFamilies state for a path -- named assertions, arm choices,
+     * families -- goes into the composition as it is made, so an accepted
+     * path's assertions keep their place among the facts its lowering
+     * states, and is logged here until the path is a disjunct (commit); a
+     * refused path's is taken back (discard).  Kept, a path refused at its
+     * second message left the first message's family under a selector no
+     * partition names, and the next path, composed at the same ordinal,
+     * asserted that name again: z3 answers such a query with an error
+     * (hdfs-17899-bug1 r1: 18 names defined twice, 52 dangling selectors).
+     * An ordinal burnt per attempted path instead would still leave the
+     * refused path's assertions and arms in the query and the manifest.
+     */
+    private final List<String> pathAssertions = new ArrayList<String>();
+    private final List<String> pathChoices = new ArrayList<String>();
+    /** Slot -> its family before this path, null when it had none. */
+    private final Map<String, Family> familiesBefore =
+            new LinkedHashMap<String, Family>();
+
+    /** The path is a disjunct: what its families stated stands. */
+    void commit() {
+        pathAssertions.clear();
+        pathChoices.clear();
+        familiesBefore.clear();
+    }
+
+    /** The path is refused: nothing its families stated stays. */
+    void discard() {
+        lowering.retract(pathAssertions);
+        armChoices.keySet().removeAll(pathChoices);
+        for (Map.Entry<String, Family> before : familiesBefore.entrySet()) {
+            if (before.getValue() == null) {
+                families.remove(before.getKey());
+            } else {
+                families.put(before.getKey(), before.getValue());
+            }
+        }
+        commit();
+    }
+
+    /** One named assertion of the path being composed. */
+    private void assertFamily(String name, String formula) {
+        lowering.assertNamed(name, formula);
+        pathAssertions.add(name);
+    }
+
+    /** One arm selector of the path being composed, and what it stands for. */
+    private void choose(String selector, ArmChoice choice) {
+        armChoices.put(selector, choice);
+        pathChoices.add(selector);
+    }
+
+    /** One slot's family as the path being composed states it. */
+    private void family(String slotId, Family family) {
+        if (!familiesBefore.containsKey(slotId)) {
+            familiesBefore.put(slotId, families.get(slotId));
+        }
+        families.put(slotId, family);
+    }
+
     /**
-     * Rule 3: ONE SELECTOR PER (MESSAGE, SESSION), exactly one eligible
+     * ONE SELECTOR PER (MESSAGE, SESSION), exactly one eligible
      * session per message.  The unit is the MESSAGE (correlation id), not
      * the producer occurrence: per-leaf choices let a witness mix halves of
-     * two runs' responses.  Wire arrivals are bound HERE only (CLOSURE-V2);
+     * two runs' responses.  Wire arrivals are bound HERE only (PIPELINE §8);
      * a message no session could send is refused by name.
      *
      * @return whether every message this path binds has an eligible
@@ -212,7 +275,8 @@ final class ComposedFamilies {
     /**
      * The message groups of one set of attaches, under one guard: the path
      * selector for its own attaches, or a family guard for the attaches a
-     * delivery was itself handed (R3b iv) -- the same rule at every depth.
+     * delivery was itself handed (item (iv) below) -- the same rule at every
+     * depth.
      * A message closed at an outer level is not closed again.
      */
     private boolean closeMessages(int ordinal, String guard, String owner,
@@ -293,8 +357,8 @@ final class ComposedFamilies {
     }
 
     /**
-     * R3c': the sessions that could have SENT this message -- those with an
-     * attested arm at EVERY interaction it covers.  A per-leaf check would
+     * The sessions that could have SENT this message (PIPELINE §8) -- those
+     * with an attested arm at EVERY interaction it covers.  A per-leaf check would
      * accept a run that sent only part of the response.
      *
      * @return the eligible sessions, or null (refused by name) when none is
@@ -380,14 +444,14 @@ final class ComposedFamilies {
             stated.addAll(nested);
             String same = selectorOf.get(body);
             if (same != null) {
-                armChoices.put(same, armChoices.get(same).alsoBy(session));
+                choose(same, armChoices.get(same).alsoBy(session));
                 continue;
             }
             selectorOf.put(body, selector);
             representatives.add(session);
             selectors.add(selector);
             cases.add("(=> " + selector + " " + body + ")");
-            armChoices.put(selector, ArmChoice.of(name, group,
+            choose(selector, ArmChoice.of(name, group,
                     endpointIds(leaves), session, held));
         }
         if (selectors.isEmpty()) {
@@ -414,18 +478,18 @@ final class ComposedFamilies {
                     }
                 }
             }
-            families.put(slot.getKey(), Family.of(slot.getKey(), rows));
+            family(slot.getKey(), Family.of(slot.getKey(), rows));
         }
         cases.add(0, Arms.exactlyOne(selectors));
         String formula = VmTermLowering.and(cases);
         stated.add(formula);
-        lowering.assertNamed(name, "(=> " + guard + " " + formula + ")");
+        assertFamily(name, "(=> " + guard + " " + formula + ")");
         return true;
     }
 
     /**
      * The eligible sessions whose WORLD is compatible with this path's
-     * (DESIGN4 3.4): one flip set contains the other.  Each is one arm, so
+     * (PIPELINE §8): one flip set contains the other.  Each is one arm, so
      * the value read is an {@code ite} over the deliveries its world admits,
      * and a producer flip becomes an alternative inside the path.  The own
      * session is the case where the two worlds are equal.
@@ -513,8 +577,8 @@ final class ComposedFamilies {
     }
 
     /**
-     * R3b: AN ARM IS CLOSED LIKE A PATH, under {@code sel_{P,S}} in S's
-     * scope: (i) P's decisions before the LAST delivery this path takes;
+     * AN ARM IS CLOSED LIKE A PATH (PIPELINE §8), under {@code sel_{P,S}}
+     * in S's scope: (i) P's decisions before the LAST delivery this path takes;
      * (ii) P's closure at that cutoff plus the versions the delivered
      * expressions read ({@link #expressionWrites}); (iii) the prefixes and
      * the joins this arm's text reaches, by the path's own routines; (iv)
@@ -539,7 +603,7 @@ final class ComposedFamilies {
         Map<String, String> guards = new LinkedHashMap<String, String>();
         for (Out out : outs) {
             Term delivered = lower(session, out.arm.expressionRef(),
-                    "arm:" + out.arm.slotId());
+                    "arm:" + out.arm.slotId(), conjuncts);
             if (delivered == null) {
                 stated = false;
                 break;
@@ -548,6 +612,12 @@ final class ComposedFamilies {
                 if (symbol == null || symbol.isEmpty()) continue;
                 lowering.declareStated(symbol, delivered.sort);
                 conjuncts.add("(= " + symbol + " " + delivered.text + ")");
+                // The states of the stored object the reader could have
+                // seen through this very store.
+                if (out.arm.write() != null) {
+                    conjuncts.add(lowering.storeChoice(symbol,
+                            out.arm.write()));
+                }
             }
             guards.putAll(out.arm.guard());
         }
@@ -590,11 +660,24 @@ final class ComposedFamilies {
                     }
                 }
             }
-            // What the delivered values rest on (Independence).
+            composer.frameRefusals(session, reached.keySet(), local);
+            // What the delivered values, the decisions a delivered referent
+            // was built under, and the handoffs a nested family binds rest
+            // on (Independence).
             List<String> delivered = new ArrayList<String>();
-            for (Out out : outs) delivered.add(out.arm.expressionRef());
+            for (Out out : outs) {
+                delivered.add(out.arm.expressionRef());
+                for (DecisionRow built : composer.constructionGuards(session,
+                        out.arm.write())) {
+                    delivered.add(Arms.conjunct(built));
+                }
+            }
+            Set<String> bound = new LinkedHashSet<String>();
+            for (AttachRow attach : nestedAttaches(session, outs)) {
+                bound.add(attach.symbol());
+            }
             Independence relevant = composer.independence(session,
-                    delivered, reached,
+                    delivered, bound, reached,
                     composer.reachedConditions(session, reached));
             Set<String> answered = new LinkedHashSet<String>();
             composer.statedReads(session, reached.keySet(), relevant, rows,
@@ -645,7 +728,8 @@ final class ComposedFamilies {
     }
 
     /**
-     * The attaches one delivery was itself handed (R3b iv): the handoff
+     * The attaches one delivery was itself handed (item (iv) of an arm's
+     * closure, above): the handoff
      * variables {@link Arms.Arm#nested} names, resolved in the delivering
      * session.
      */
@@ -667,7 +751,8 @@ final class ComposedFamilies {
      * names the read, but the closure needs the write the producer had in
      * hand (latest version at or before the read).  Resolved only by
      * {@link Corpus#expressionStateReads}, the edge exploration grows by
-     * too (E2), so arms and waves agree on what a delivery is made of.
+     * too (PIPELINE §7.2), so arms and waves agree on what a delivery is made
+     * of.
      */
     private List<WriteRow> expressionWrites(String session, List<Out> outs) {
         List<WriteRow> writes = new ArrayList<WriteRow>();
@@ -710,7 +795,7 @@ final class ComposedFamilies {
     }
 
     /**
-     * Files every arm {@link Arms} refused since the last drain (R4 item 3)
+     * Files every arm {@link Arms} refused since the last drain
      * as this composition's gap, once.
      */
     private void fileRefusals() {
@@ -793,7 +878,8 @@ final class ComposedFamilies {
     }
 
     /**
-     * THE STATE FAMILIES: rule 3 with the WRITER as P.  A writer
+     * THE STATE FAMILIES: one selector per writer, as a message family has
+     * one per sender (PIPELINE §8), with the WRITER as P.  A writer
      * occurrence's writes move as a BLOCK, so one selector per writer binds
      * every joined read of every location it writes, its body stated once;
      * then exactly-one PER LOCATION over its writers (none for a single
@@ -859,9 +945,12 @@ final class ComposedFamilies {
             List<String> symbols = new ArrayList<String>();
             for (ReadRow read : reads) symbols.add(read.symbol());
             List<Arms.Arm> found = new ArrayList<Arms.Arm>();
+            // Every writer named: no read met a writer the log never named.
+            boolean named = true;
+            for (ReadRow read : reads) named &= !read.unnamedWriter();
             for (Arms.Arm arm : arms.stateArms(reads.get(0).endpoint(),
                     session, entry.getKey(),
-                    reads.get(0).observedVersion())) {
+                    reads.get(0).observedVersion(), named)) {
                 if (replacing.contains(arm.sessionId())) continue;
                 if (arm.producer() == null) continue;
                 // The OBSERVED writer is stated even if unattested.
@@ -873,7 +962,7 @@ final class ComposedFamilies {
                 // Recorded even without a case split: the unattested-arm
                 // gate reads this set.
                 reached.add(arm.slotId());
-                families.put(arm.slotId(), Family.of(arm.slotId(),
+                family(arm.slotId(), Family.of(arm.slotId(),
                         Collections.singletonList(row(arm))));
                 found.add(arm);
             }
@@ -934,9 +1023,9 @@ final class ComposedFamilies {
                     + ArtifactIO.digest(writer.getKey() + "|" + session, 12);
             String formula = "(=> " + name + " " + body + ")";
             stated.add(formula);
-            lowering.assertNamed(assertion,
+            assertFamily(assertion,
                     "(=> " + selector + " " + formula + ")");
-            armChoices.put(name, ArmChoice.of(assertion,
+            choose(name, ArmChoice.of(assertion,
                     writer.getKey(), Collections.<String>emptyList(),
                     session, armsOf(writer.getValue())));
         }
@@ -972,9 +1061,9 @@ final class ComposedFamilies {
                 String formula = "(=> " + name + " "
                         + VmTermLowering.and(observedPin) + ")";
                 stated.add(formula);
-                lowering.assertNamed(assertion,
+                assertFamily(assertion,
                         "(=> " + selector + " " + formula + ")");
-                armChoices.put(name, ArmChoice.of(assertion,
+                choose(name, ArmChoice.of(assertion,
                         "observed:" + location.getKey(),
                         Collections.<String>emptyList(), session,
                         Collections.<Arms.Arm>emptyList()));
@@ -1001,7 +1090,7 @@ final class ComposedFamilies {
             }
             String formula = Arms.exactlyOne(selectors);
             stated.add(formula);
-            lowering.assertNamed("state_family__" + ordinal + "__"
+            assertFamily("state_family__" + ordinal + "__"
                             + ArtifactIO.digest(location.getKey(), 12),
                     "(=> " + selector + " " + formula + ")");
         }
@@ -1018,8 +1107,14 @@ final class ComposedFamilies {
     /**
      * One row's expression, lowered in its OWN session's scope: its
      * identities and reads belong to that execution, not the consumer's.
+     * What that lowering requires of the value -- its definedness, the
+     * recorded readings and container requires beneath it -- goes into
+     * {@code conditions}, to be conjoined wherever the value is; without
+     * them the value is free of what the run established about it.  Null
+     * {@code conditions}: only the value's sort is asked.
      */
-    Term lower(String session, String expressionRef, String origin) {
+    Term lower(String session, String expressionRef, String origin,
+               List<String> conditions) {
         SessionReader reader = corpus.session(session);
         if (reader == null) return null;
         JsonObject expression = reader.expressions()
@@ -1033,10 +1128,10 @@ final class ComposedFamilies {
         }
         lowering.begin(session, corpus.join(session),
                 reader.expressions());
-        Term value = lowering.dispatch(expression, null, origin);
+        Term value = lowering.term(expressionRef, origin);
         List<String> refused = new ArrayList<String>(
                 lowering.openRefusals());
-        lowering.end();
+        List<String> required = lowering.end();
         if (!refused.isEmpty()) {
             for (String refusal : refused) {
                 composer.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, refusal,
@@ -1045,6 +1140,7 @@ final class ComposedFamilies {
             }
             return null;
         }
+        if (conditions != null) conditions.addAll(required);
         return value;
     }
 }

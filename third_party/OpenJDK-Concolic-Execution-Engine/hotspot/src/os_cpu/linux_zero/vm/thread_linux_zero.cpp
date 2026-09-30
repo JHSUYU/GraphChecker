@@ -43,6 +43,13 @@ void JavaThread::push_zero_frame(ZeroFrame *zframe) {
 //      tty->print_cr("intercepted executeQuery from push zero frame, ConcolicMngr::can_do_concolic():%d", ConcolicMngr::can_do_concolic());
 //    }
 //  }
+  // A callback a muted model call makes runs with propagation, in a frame
+  // of its own (MethodSymbolizer::enter_callback).
+  if (ConcolicMngr::has_symbolized_method()
+      && ConcolicMngr::ctx->get_method_symbolizer().enter_callback(
+             *(ZeroFrame **)zframe, _top_zero_frame)) {
+    return;
+  }
   if (ConcolicMngr::can_do_concolic()) {
     ConcolicMngr::ctx->get_method_symbolizer().invoke_method(
         *(ZeroFrame **)zframe, _top_zero_frame);
@@ -63,10 +70,11 @@ void JavaThread::pop_zero_frame() {
   zero_stack()->set_sp((intptr_t *)_top_zero_frame + 1);
   _top_zero_frame = *(ZeroFrame **)_top_zero_frame;
 #ifdef ENABLE_CONCOLIC
-  if (ConcolicMngr::can_maintain_shadow_stack()) {
-//    if (temp_frame && temp_frame->is_interpreter_frame()) {
-//      tty->print_cr("Poping method: %s", temp_frame->as_interpreter_frame()->interpreter_state()->method()->name_and_sig_as_C_string());
-//    }
+  // A callback's frame hands its result to the muted call that made it,
+  // not to a shadow caller (MethodSymbolizer::exit_callback).
+  if (ConcolicMngr::can_maintain_shadow_stack()
+      && !ConcolicMngr::ctx->get_method_symbolizer().exit_callback(
+             temp_frame)) {
     ConcolicMngr::ctx->get_shadow_stack().pop(temp_frame);
   }
   if (ConcolicMngr::has_symbolized_method()) {

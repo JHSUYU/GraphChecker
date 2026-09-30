@@ -21,7 +21,8 @@ import static edu.uva.liftlab.graphchecker.runtime.ConcolicVmBroker.engine;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 
 /**
- * R5 bounds: what a replay may run, and the terminal it takes after.
+ * Loop bounds (PIPELINE §2): what a replay may run, and the terminal it
+ * takes after.
  *
  * <p>The unroll bound of an instrumented backedge ({@link #checkBackedge})
  * and the resource ceiling of a fixed-count loop ({@link #checkReplayBody}),
@@ -198,8 +199,9 @@ final class LoopAccounting {
      * {@code groupKey} with an occurrence of its own.
      *
      * <p>Asked by {@code ConcolicRegionRuntime#enterRegionFrame} instead of
-     * F1 at a loop body.  F1 gates region ENTRIES; a body is an ITERATION of
-     * an entry that already ran, and F1 there would ask about whatever region
+     * the fold rule (IDENTITY §1) at a loop body.  The fold gates region
+     * ENTRIES; a body is an ITERATION of an entry that already ran, and the
+     * fold there would ask about whatever region
      * folds innermost, refusing every body.  False when the loop root's own
      * entry folded: its bodies would re-activate the occurrence it folded
      * into.</p>

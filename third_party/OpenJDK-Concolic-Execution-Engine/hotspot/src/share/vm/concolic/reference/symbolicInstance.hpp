@@ -89,6 +89,22 @@ public:
     return _written_fields.find(field_offset) != _written_fields.end();
   }
 
+  // Gives `clone` -- the shadow of an Object.clone of this object -- the
+  // field shadows this one holds: a shallow copy copies every field's value,
+  // so it copies what each value is.  Its identity stays its own.
+  virtual void copy_fields_to(SymInstance *clone) const {
+    std::set<int> written;
+    {
+      FieldLock guard(this);
+      written = _written_fields;
+    }
+    for (std::set<int>::const_iterator it = written.begin();
+         it != written.end(); ++it) {
+      clone->mark_field_written(*it);
+    }
+    if (_demand_symbolic_fields) clone->enable_demand_symbolic_fields();
+  }
+
   virtual Expression *get(int field_offset) { return NULL; }
   virtual Expression *create_ref_exp(oop obj) {
     return new InstanceSymbolExp(obj);

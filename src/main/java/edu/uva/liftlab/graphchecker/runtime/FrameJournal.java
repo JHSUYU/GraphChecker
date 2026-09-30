@@ -11,7 +11,7 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * One activation's frame stack, sampled on the VM's own event clock, so a
  * logged event read out after the activation still gets the frames it ran
- * on (IDENTITY-IMPL §B).
+ * on (IDENTITY §4).
  *
  * <ol>
  *   <li>Version ids and read event ids share one monotone session counter

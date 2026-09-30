@@ -32,8 +32,8 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
 /**
- * Grows the analysis scope toward the slice's frontier (SYMBOL-SCOPE §2), over
- * the classes of the lineage roots:
+ * Grows the analysis scope toward the slice's frontier (SYMBOL-SCOPE §2.4),
+ * over the classes of the lineage roots:
  * <ul>
  *   <li>a {@link ScopeFrontier#CALLEE} of a type of the roots (the platform's
  *       types are the VM's to model): the class whose body it runs -- for an

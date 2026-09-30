@@ -33,19 +33,20 @@ import java.util.Set;
  * symbol and value.
  *
  * <ul>
- *   <li><b>Selection (R-I2)</b> — a WIRE slot's arms are the producer
+ *   <li><b>Selection (IDENTITY §4)</b> — a WIRE slot's arms are the producer
  *       endpoint's exports from the runs whose OWN pairing named this
  *       consumer, never every export at the endpoint.</li>
- *   <li><b>Guard (R-GUARD)</b> — the delivering replay's values of the roots
- *       the expression names and of every varied root; never a clock, never
+ *   <li><b>Guard (CONTRACT-SPEC §4)</b> — the delivering replay's values of
+ *       the roots the expression names and of every varied root; never a
+ *       clock, never
  *       the prefix's roots (the prefix is already conjoined).</li>
  *   <li><b>Prefix</b> — the producer's decisions with {@code seq} below the
  *       export's.</li>
- *   <li><b>Attestation (R-I5)</b> — see {@link #attested}; no witness may
- *       move a root inside an unattested arm.</li>
+ *   <li><b>Attestation (IDENTITY §4)</b> — see {@link #attested}; no
+ *       witness may move a root inside an unattested arm.</li>
  *   <li><b>Nested handoffs</b> — slots an expression mentions are closed
  *       transitively.</li>
- *   <li><b>STATE eligibility (R-I7.1)</b> — see {@link #stateArms}.</li>
+ *   <li><b>STATE eligibility (IDENTITY §4)</b> — see {@link #stateArms}.</li>
  * </ul>
  */
 public final class Arms {
@@ -128,12 +129,13 @@ public final class Arms {
         private final Set<String> guardRoots;
         private final boolean attested;
         private final Set<String> nested;
+        private final WriteRow write;
 
         Arm(String slotId, String symbol, String sessionId,
             OccurrenceAddress producer, long deliveredAt,
             String producerPathId, String expressionRef, List<String> pi,
             Map<String, String> guard, Set<String> guardRoots,
-            boolean attested, Set<String> nested) {
+            boolean attested, Set<String> nested, WriteRow write) {
             this.slotId = slotId;
             this.symbol = symbol;
             this.sessionId = sessionId;
@@ -146,6 +148,7 @@ public final class Arms {
             this.guardRoots = Collections.unmodifiableSet(guardRoots);
             this.attested = attested;
             this.nested = Collections.unmodifiableSet(nested);
+            this.write = write;
         }
 
         /** The slot (interaction id) this arm fills. */
@@ -165,8 +168,8 @@ public final class Arms {
 
         /**
          * The producer occurrence (wire: the interaction's producer; state:
-         * the writer).  Rule 3 binds all of one occurrence's outs on one
-         * selector, so the arm must name it.
+         * the writer).  One selector binds all of one occurrence's outs
+         * (PIPELINE §8), so the arm must name it.
          */
         public OccurrenceAddress producer() {
             return producer;
@@ -199,7 +202,8 @@ public final class Arms {
             return guard;
         }
 
-        /** The root IDS behind that guard, for the manifest and R-I5. */
+        /** The root IDS behind that guard, for the manifest and the
+         *  attestation rule. */
         public Set<String> guardRoots() {
             return guardRoots;
         }
@@ -211,6 +215,11 @@ public final class Arms {
         /** Handoff variables this delivery itself was handed. */
         public Set<String> nested() {
             return nested;
+        }
+
+        /** The write a STATE arm delivers; null for a wire arm. */
+        public WriteRow write() {
+            return write;
         }
 
         @Override
@@ -229,7 +238,7 @@ public final class Arms {
     }
 
     /**
-     * The arms refused since the last drain, and clears them (R4 item 3):
+     * The arms refused since the last drain, and clears them:
      * those whose expression names a root the delivering session states no
      * mint row for.  Drained, not read, so a caller's gap list never counts
      * one twice.
@@ -245,23 +254,23 @@ public final class Arms {
     // ------------------------------------------------------------------
 
     /**
-     * Every arm of ONE wire slot, not closed over {@link Arm#nested}: under
-     * rule 3 nested arms belong under the selector of the delivery that names
-     * them, which only the caller ({@code ComposedFamilies}) knows.
+     * Every arm of ONE wire slot, not closed over {@link Arm#nested}:
+     * nested arms belong under the selector of the delivery that names them
+     * (PIPELINE §8), which only the caller ({@code ComposedFamilies}) knows.
      *
      * @param symbol the consumer's own variable for this slot
      */
     public List<Arm> armsAt(Interaction slot, String symbol) {
         List<Arm> arms = new ArrayList<Arm>();
         for (AttachRow paired : rows.attachesOf(slot)) {
-            // R-I2 selection: only a run whose OWN pairing named this
-            // consumer; R-GUARD and R-I5 are the arm's own.
+            // Selection (IDENTITY §4): only a run whose OWN pairing named
+            // this consumer; the guard and the attestation are the arm's own.
             String session = paired.sessionId();
             for (ExportRow export : rows.exportsOf(slot.producer())) {
                 if (!export.sessionId().equals(session)) continue;
                 Arm arm = arm(slot.id(), symbol, session,
                         slot.producer().occurrence(), export.expressionRef(),
-                        export.seq());
+                        export.seq(), null);
                 if (arm != null) arms.add(arm);
             }
         }
@@ -303,7 +312,7 @@ public final class Arms {
     }
 
     // ------------------------------------------------------------------
-    // STATE slots (R-I7.1).
+    // STATE slots (IDENTITY §4).
     // ------------------------------------------------------------------
 
     /**
@@ -330,7 +339,7 @@ public final class Arms {
     }
 
     /**
-     * The writer occurrences a read could have seen, as arms (R-I7.1): the
+     * The writer occurrences a read could have seen, as arms (IDENTITY §4): the
      * observed writer plus every ATTESTED writer occurrence HB-concurrent with
      * the reader.  Locks are not constraints.  A writer's writes move as a
      * BLOCK, so there is one arm per writer at its last write of L, and the
@@ -343,9 +352,15 @@ public final class Arms {
      * @param session        the reader's own session: eligibility is its
      *                       happens-before and no other run's
      * @param location       the join key of L
+     * @param alternatives   false when a writer the log never named had
+     *                       reached L when it was read
+     *                       ({@code ReadRow#unnamedWriter}): the read keeps
+     *                       the observed writer only, since the writers the
+     *                       log states are not all the writers there were
      */
     public List<Arm> stateArms(Endpoint readerEndpoint, String session,
-                               String location, long observedVersion) {
+                               String location, long observedVersion,
+                               boolean alternatives) {
         OccurrenceAddress reader = readerEndpoint.occurrence();
         // One arm per writer occurrence: the observed write, else the
         // block's last write of L.
@@ -363,11 +378,14 @@ public final class Arms {
         for (WriteRow write : armOf.values()) {
             OccurrenceAddress writer = write.endpoint().occurrence();
             boolean observed = write.version() == observedVersion;
-            if (!observed && !concurrent(reader, writer, session)) continue;
+            if (!observed && (!alternatives
+                    || !concurrent(reader, writer, session))) {
+                continue;
+            }
             Arm arm = arm(Interaction.of(InteractionKind.STATE,
                             write.endpoint(), readerEndpoint).id(),
                     "", session, writer, write.expressionRef(),
-                    write.seq());
+                    write.seq(), write);
             if (arm == null) continue;
             // An alternative must be attested; the observed writer is stated
             // whatever it is, because it is what the run did.
@@ -435,7 +453,7 @@ public final class Arms {
         // One thread is one order, whether or not it is one occurrence.
         if (left.id().equals(right.id())
                 || sameThread(session, left, right)) {
-            // Seq 0 is UNNUMBERED (M-R3), not "first": both must be numbered.
+            // Seq 0 is UNNUMBERED, not "first": both must be numbered.
             return aSeq > 0L && bSeq > 0L && aSeq < bSeq;
         }
         if (!chainKnown(session, left) || !chainKnown(session, right)) {
@@ -487,7 +505,7 @@ public final class Arms {
 
     private Arm arm(String slotId, String symbol, String session,
                     OccurrenceAddress producer, String expressionRef,
-                    long deliveredAt) {
+                    long deliveredAt, WriteRow write) {
         JsonObject expression = rows.expression(session, expressionRef);
         if (expression == null) return null;
         List<DecisionRow> decisions = rows.decisionsOf(session, producer);
@@ -504,7 +522,7 @@ public final class Arms {
                 : rows.roots().entrySet()) {
             RootMintRow row = rows.root(entry.getKey(), session);
             if (row == null) {
-                // R4: refuse, never emit unguarded -- an empty guard would
+                // Refuse, never emit unguarded -- an empty guard would
                 // admit the arm under every valuation of this root.
                 if (names(symbols, entry.getValue())) {
                     refusals.add(slotId + "|" + session + "|"
@@ -536,7 +554,8 @@ public final class Arms {
         }
         return new Arm(slotId, symbol, session, producer, deliveredAt,
                 attested ? rows.pathIdOf(session, producer) : "",
-                expressionRef, pi, guard, guardRoots, attested, nested);
+                expressionRef, pi, guard, guardRoots, attested, nested,
+                write);
     }
 
     /**
@@ -624,7 +643,7 @@ public final class Arms {
 
     /**
      * The polarity rule for an already-rewritten term; the one place it is
-     * applied (P2f').
+     * applied (CONTRACT-SPEC §5).
      */
     public static String conjunct(String term, boolean outcome) {
         return outcome ? term : "(not " + term + ")";

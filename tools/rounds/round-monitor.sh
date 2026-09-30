@@ -4,11 +4,10 @@
 # GC_OUT (default /u/vnr3ne/gc-out) holds accept-<round>-<case>/ per campaign.
 shopt -s nullglob
 declare -A seen=()
-# launcher logs are written beside the outputs (see launch-round.sh)
-scratch=${ROUNDS_LOG_DIR:-/u/vnr3ne/gc-out}
+out=${GC_OUT:-/u/vnr3ne/gc-out}
 while :; do
   for pat in "$@"; do
-    for d in ${GC_OUT:-/u/vnr3ne/gc-out}/accept-$pat; do
+    for d in ${out}/accept-$pat; do
       [[ -d "$d" ]] || continue
       c=${d##*/accept-}
       if (( $(wc -l < "$d/summary.tsv" 2>/dev/null || echo 0) >= 2 )); then
@@ -22,10 +21,11 @@ while :; do
       fi
     done
   done
-  for f in $scratch/launch-v*.log; do
+  # launcher logs are written beside the outputs (see launch-round.sh)
+  for pat in "$@"; do for f in ${out}/launch-$pat.log; do
     while IFS= read -r line; do
       k="L:$f:$line"; [[ -n "${seen[$k]:-}" ]] && continue; seen[$k]=1; echo "$line"
     done < "$f"
-  done
+  done; done
   sleep 30
 done

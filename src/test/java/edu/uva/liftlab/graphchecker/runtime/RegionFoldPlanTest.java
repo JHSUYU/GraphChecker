@@ -8,6 +8,7 @@ import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.NodeId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.Role;
+import edu.uva.liftlab.graphchecker.plan.SharedFieldFlow;
 import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 import org.junit.Rule;
 import org.junit.Test;
@@ -33,7 +34,7 @@ import static org.junit.Assert.assertTrue;
 /**
  * What the plan says about a region entry the run FOLDED.
  *
- * <p>F1 (paper SS3.1.2, {@code Identity#fold}): a region entered
+ * <p>The fold rule (IDENTITY §1, {@code Identity#fold}): a region entered
  * synchronously inside an occurrence already running opens NONE of its own.
  * The recording states that on the entry ({@code regionFolded}, no occurrence
  * address) and this plan states its consequence: no activation for the folded
@@ -361,7 +362,7 @@ public class RegionFoldPlanTest {
                 Collections.singletonList(thrown),
                 Collections.singletonList(region),
                 Collections.<String, Long>emptyMap(), method -> false,
-                cell -> true),
+                cell -> SharedFieldFlow.TrackedKind.VALUE, cell -> false),
                 site -> Collections.singletonList(new StaticScopeMap.Guard(
                         GUARD_SITE, Boolean.TRUE)))) {
             text.append(row).append('\n');

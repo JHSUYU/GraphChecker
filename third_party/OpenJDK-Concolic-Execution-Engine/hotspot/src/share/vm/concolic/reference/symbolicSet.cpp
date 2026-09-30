@@ -13,6 +13,7 @@ std::set<std::string> SymSet::init_target_class_names() {
   set.insert("java/util/Set");
   set.insert("java/util/HashSet");
   set.insert("java/util/LinkedHashSet");
+  set.insert("java/util/concurrent/ConcurrentHashMap$KeySetView");
   return set;
 }
 
@@ -46,8 +47,10 @@ bool SymSet::invoke_method_helper(MethodSymbolizerHandle &handle) {
     if (recording) {
       handle.general_prepare_param();
       // Before the body runs: state what the container already holds, while
-      // the receiver is still untouched by this operation.
-      ContainerSupport::state_base_before_operation(handle.get_param<oop>(0));
+      // the receiver is still untouched by this operation.  A KeySetView is
+      // its map (canonicalize), so the base is the map's.
+      ContainerSupport::state_base_before_operation(
+          ContainerSupport::canonicalize(handle.get_param<oop>(0)));
     }
     return recording;
   }
@@ -79,7 +82,14 @@ Expression *SymSet::finish_method_helper(MethodSymbolizerHandle &handle) {
     key.push_back(arguments[0]);
     Expression *present = new ContainerExpression(
         "ASSOCIATIVE", "CONTAINS", state, key, T_BOOLEAN);
-    arguments.push_back(new ConExpression((jboolean)true));
+    // A hash set's member maps to true; a KeySetView's to its map value.
+    oop mapped = ContainerSupport::capability(receiver_object)
+        == ContainerSupport::CAPABILITY_HASH_SET ? (oop) NULL
+        : OopUtils::obj_field_by_name(receiver_object, "value",
+                                      "Ljava/lang/Object;");
+    arguments.push_back(mapped == NULL
+        ? static_cast<Expression *>(new ConExpression((jboolean)true))
+        : ContainerSupport::concrete_value(mapped));
     Expression *next = new ContainerExpression(
         "ASSOCIATIVE", "PUT", state, arguments);
     ConcolicMngr::ctx->set_container_state(receiver_object, next);
@@ -111,11 +121,24 @@ Expression *SymSet::finish_method_helper(MethodSymbolizerHandle &handle) {
       : method == "isEmpty" ? "IS_EMPTY"
       : method == "iterator" ? "KEY_VIEW" : NULL;
   if (operation == NULL) return NULL;
-  Expression *result = new ContainerExpression(
-      "ASSOCIATIVE", operation, state, arguments,
-      handle.get_result_type());
-  if (method != "iterator") {
-    ContainerSupport::constrain_result(handle, result);
+  // A KeySetView's query is its map's, bound to the map's version as every
+  // map query is.
+  Expression *result = NULL;
+  if (method != "iterator" && ContainerSupport::capability(receiver_object)
+                                  != ContainerSupport::CAPABILITY_HASH_SET) {
+    result = ContainerSupport::query_state(
+        receiver_object, "ASSOCIATIVE", operation, arguments,
+        handle.get_result_type(),
+        std::string(1, type2char(handle.get_result_type())),
+        ContainerSupport::receiver_owner(parameters[0])).expression;
+  }
+  if (result == NULL) {
+    result = new ContainerExpression(
+        "ASSOCIATIVE", operation, state, arguments,
+        handle.get_result_type());
+    if (method != "iterator") {
+      ContainerSupport::constrain_result(handle, result);
+    }
   }
   if (handle.get_result_type() == T_OBJECT) {
     ContainerSupport::attach_result(

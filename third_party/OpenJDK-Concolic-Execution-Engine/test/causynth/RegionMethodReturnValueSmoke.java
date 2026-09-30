@@ -67,6 +67,22 @@ public final class RegionMethodReturnValueSmoke {
         require(value.contains("\"_type\":\"ConstExpr\"")
                         && value.contains("\"_exp\":\"" + constant + "\""),
                 "the return symbol states " + value + ", not " + constant);
+        // The call it is the result of: callee, descriptor, and the argument
+        // expressions as table references, the first reaching the String.
+        String[] callee = method.split(" ");
+        int at = valueAt(symbol, "call");
+        require(at >= 0, "the return symbol states no call: " + symbol);
+        String invoked = jsonObjectAt(symbol, at);
+        require(invoked.contains("\"holder\":\"" + callee[0] + "\"")
+                        && invoked.contains("\"name\":\"" + callee[1] + "\"")
+                        && invoked.contains("\"descriptor\":\"(Ljava/lang/String;")
+                        && invoked.contains("\"arguments\":[{\"_type\":"
+                                + "\"VmExpressionReference\""),
+                "the return symbol's call is not " + method + ": " + invoked);
+        int argument = invoked.indexOf("\"arguments\":[") + 13;
+        require(reaches(summary, jsonObjectAt(invoked, argument), marker,
+                        new java.util.HashSet<String>()),
+                "the call's argument does not reach " + marker + ": " + invoked);
         return symbol + " -> " + value;
     }
 

@@ -5,11 +5,13 @@ import java.util.Map;
 import java.util.UUID;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.nonNull;
+import static edu.uva.liftlab.graphchecker.smt.JsonFields.requireText;
 
 /** Static catalog of the values messages carry, their typed ports and the
  *  gaps discovery could not resolve.  A port is one carried value -- a
- *  message field, or a declared row -- with every capture that writes it and
- *  every capture that reads it; direction and transport are no part of it
+ *  message field, a declared row, or one key of a codec's key space -- with
+ *  every capture that writes it and every capture that reads it; direction
+ *  and transport are no part of it
  *  (the recording binds each capture to its exchange).  {@link
  *  #EXCHANGE_SITE_KEY} is the static identity of a port, never a runtime
  *  exchange. */
@@ -48,6 +50,25 @@ public final class CommunicationCatalogContract {
     public static final String PORT_DEFINITION_UNIT_INDEX =
             "definitionUnitIndex";
 
+    /**
+     * A codec port: one key of one key space, {@code {portId, space, key,
+     * presence, producers: [{callSiteId, definitionMethod, callee, role,
+     * keyArg, valueArg}], consumers: [{callSiteId, definitionMethod,
+     * callee}]}}; its id is {@link #codecPortId}.  {@code presence}: a
+     * consumer tests the key's presence only, so the producers' guards are
+     * demanded and not their values.
+     */
+    public static final String CODEC_PORT = "CODEC_PORT";
+    public static final String PORT_SPACE = "space";
+    public static final String PORT_KEY = "key";
+    public static final String PORT_PRESENCE = "presence";
+    public static final String PORT_CALLEE = "callee";
+    /** How a producer site states the key and the value: its KEY row's
+     *  role, or its setter's. */
+    public static final String PORT_ROLE = "role";
+    public static final String PORT_KEY_ARGUMENT = "keyArg";
+    public static final String PORT_VALUE_ARGUMENT = "valueArg";
+
     // Discovery never guesses: what it cannot resolve becomes a gap row.
 
     /** The row's class, BLOCKING or DIAGNOSTIC, as a GapRow states it. */
@@ -71,6 +92,24 @@ public final class CommunicationCatalogContract {
     /** {@code <exchangeSiteKey>.wire.<name>}. */
     public static String portId(String exchangeSiteKey, String name) {
         return nonNull(exchangeSiteKey) + WIRE + nonNull(name);
+    }
+
+    /**
+     * The port of one key of one codec key space (in {@code kv} a string
+     * key, in {@code pb} {@code <MessageSimpleName>.<field>}, in a LEAF
+     * codec's space the codec's name), named {@code <space>:<key>}; SEED and
+     * the runtime both compute it here.  A space names no {@code :}, so the
+     * name reads back one way.
+     */
+    public static String codecPortId(String space, String key) {
+        String named = requireText(space, "space");
+        if (named.indexOf(':') >= 0) {
+            throw new IllegalArgumentException("a key space names no ':'; got "
+                    + space);
+        }
+        String stated = requireText(key, "key");
+        return portId(exchangeSiteKey("codec\n" + named + "\n" + stated),
+                named + ":" + stated);
     }
 
     private static final String WIRE = ".wire.";

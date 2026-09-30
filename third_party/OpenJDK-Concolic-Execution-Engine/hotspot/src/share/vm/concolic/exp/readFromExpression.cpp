@@ -12,7 +12,7 @@ ReadFromExpression::ReadFromExpression(
     Expression *observed_value, const std::string &java_type,
     jlong read_event_id, sym_rid_t owner, int slot,
     const char *location_kind, bool writer_set_complete,
-    const ReturnedValue &returned,
+    bool unnamed_writer, bool observed_exact, const ReturnedValue &returned,
     const std::string &site_class, const std::string &site_method,
     const std::string &site_descriptor, int site_bci)
     : _observed_version_id(observed_version_id),
@@ -20,7 +20,9 @@ ReadFromExpression::ReadFromExpression(
       _observed_value(observed_value), _java_type(java_type),
       _location_kind(location_kind == NULL ? "" : location_kind),
       _read_event_id(read_event_id), _owner(owner), _slot(slot),
-      _writer_set_complete(writer_set_complete), _returned(returned),
+      _writer_set_complete(writer_set_complete),
+      _unnamed_writer(unnamed_writer),
+      _observed_exact(observed_exact), _returned(returned),
       _site_class(site_class), _site_method(site_method),
       _site_descriptor(site_descriptor), _site_bci(site_bci) {
   guarantee(_observed_version_id > 0,
@@ -71,6 +73,14 @@ void ReadFromExpression::serialize_internal(
   writer.EndObject();
   writer.Key("writerSetComplete");
   writer.Bool(_writer_set_complete);
+  // Stated only when true: a writer the log never named reached the
+  // location, which removes the read's alternative writers.
+  if (_unnamed_writer) {
+    writer.Key("unnamedWriter");
+    writer.Bool(true);
+  }
+  writer.Key("observedExact");
+  writer.Bool(_observed_exact);
   _returned.serialize(writer);
 
   // Where the read stood.  A consumer that has to tell two reads of one

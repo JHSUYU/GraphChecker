@@ -25,7 +25,7 @@ import java.util.TreeSet;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.firstNonBlank;
 
 /**
- * README section 5's per-loop {@code K_L}, declared (never measured: the
+ * The per-loop {@code K_L} (PIPELINE §2), declared (never measured: the
  * planner has no trip counts) in a JSONL file named by {@code
  * -D}{@value #SOURCE_PROPERTY} or {@code $}{@value #SOURCE_ENVIRONMENT}:
  *

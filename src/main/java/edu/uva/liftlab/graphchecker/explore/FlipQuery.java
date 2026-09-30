@@ -38,16 +38,20 @@ import java.util.Set;
  *       domain (a marker over both values), else PINNED to the recorded read,
  *       as the composition pins it;</li>
  *   <li>a CLOCK is per path, never equal across paths, with domain {@code
- *       [that execution's reading, Long.MAX_VALUE]} (runs last longer; clocks
- *       never go back);</li>
+ *       [that execution's reading, reading + 30 days]} in the clock's own
+ *       ticks ({@link JavaPrimitiveSmtSemantics#clockSkewCeiling}; no
+ *       reading: {@code [0, Long.MAX_VALUE]}); clocks never go back
+ *       (PIPELINE §7.5);</li>
  *   <li>a CONTROL handoff (attached at the flipped occurrence, where a
  *       replay can be answered) is bound by its family {@code OR_q (pi_q AND
  *       guard_q AND v_H = e_q)}, closed to a fixed point over forwarded
  *       handoffs; no arm = free and {@code unproducible}. EVERY OTHER handoff
  *       is PINNED to its recorded arrival;</li>
- *   <li>a STATE read joins the version it observed, else is pinned to its
- *       recorded value, else the obligation is refused ({@code
- *       UNSTATED_VALUE}).</li>
+ *   <li>a STATE read offers its eligible writers ({@link Arms#stateArms}) as
+ *       exactly-one Bool selectors ({@code wchoice_*}), each binding it to
+ *       what that writer delivered; with no writer (or none that lowers) it
+ *       is pinned to the row's {@code concreteValue}, else the obligation is
+ *       refused ({@code UNSTATED_VALUE}) (PIPELINE §7.5).</li>
  * </ul>
  *
  * <p>Nothing else is free: an undeclared name refuses the obligation on the
@@ -118,7 +122,7 @@ final class FlipQuery {
      *  term (a branch with a symbol IS a flip target; producibility is the
      *  solver's verdict, {@link Builder#unbound}).
      *  A CONCRETE branch has no term to negate. Where candidates may sit is the
-     *  closure's question (CLOSURE-V2 SS3, {@link
+     *  closure's question (PIPELINE §7.4, {@link
      *  ObligationFactory#candidates}). */
     static boolean flippable(DecisionRow decision) {
         return Arms.predicate(decision.term());
@@ -135,6 +139,23 @@ final class FlipQuery {
         String lowered = lowering.statedTerm(term, "flip:" + sessionId);
         // A refusal ("") keeps the raw term; the unknown-symbol rule names it.
         return lowered.isEmpty() ? term : lowered;
+    }
+
+    /** What one published term reaches, lowered by the ONE lowering: its
+     *  text, and every join a mint or a pin stood in for
+     *  ({@link SmtLowering.Lowered#reach}), so the closure keeps the writers
+     *  behind a read whose join refused. */
+    static List<String> reach(Corpus corpus, String sessionId, String term) {
+        if (term == null || term.isEmpty()) {
+            return Collections.<String>emptyList();
+        }
+        SmtLowering lowering = corpus.lowering(sessionId);
+        if (lowering == null) return Collections.singletonList(term);
+        List<String> reach = lowering.lowerTerm(term, "flip:" + sessionId)
+                .reach();
+        // A refusal ("") keeps the raw term, as statedTerm does.
+        if (reach.get(0).isEmpty()) reach.set(0, term);
+        return reach;
     }
 
     static Built build(Corpus corpus, Task task, Corpus.RecordedPath path,
@@ -870,13 +891,13 @@ final class FlipQuery {
         private List<Arms.Arm> eligible(ReadRow row) {
             List<Arms.Arm> eligible = corpus.arms().stateArms(row.endpoint(),
                     row.sessionId(), SmtLowering.locationKey(row.location()),
-                    row.observedVersion());
+                    row.observedVersion(), !row.unnamedWriter());
             fileRefusals();
             return eligible;
         }
 
-        /** Files every arm {@link Arms} refused since the last drain (R4 item
-         *  3): an arm naming a root its session minted no row for is refused,
+        /** Files every arm {@link Arms} refused since the last drain: an
+         *  arm naming a root its session minted no row for is refused,
          *  filed as COMPOSE does ({@code ComposedFamilies#fileRefusals}). */
         private void fileRefusals() {
             for (String refusal : corpus.arms().drainRefusals()) {
@@ -891,7 +912,7 @@ final class FlipQuery {
             }
         }
 
-        /** One read joined to the writes it could have seen (R-I7.1); the
+        /** One read joined to the writes it could have seen (IDENTITY §4); the
          *  caller chose the variable's sort. */
         private void bind(ReadRow row, String variable) {
             if (!explained.add(variable)) return;
@@ -904,9 +925,9 @@ final class FlipQuery {
                 stated(row, variable);
                 return;
             }
-            // R-I7.1: a writer occurrence's writes move as a BLOCK relative to
-            // this reader, so all its reads of this location share one selector
-            // per writer.
+            // IDENTITY §4: a writer occurrence's writes move as a BLOCK
+            // relative to this reader, so all its reads of this location share
+            // one selector per writer.
             String choiceKey = row.endpoint().occurrence().id() + "|"
                     + SmtLowering.locationKey(row.location());
             List<Choice> choices = choicesByReader.get(choiceKey);
@@ -1003,9 +1024,9 @@ final class FlipQuery {
                 rename.put(token, variable(sessionId, token));
                 bound.add(sessionId + "|" + token);
             }
-            // THE v_C RULE (CLOSURE-V2): container state behind a name is one
-            // READ variable, bound by the read rule; enqueued, not renamed into
-            // the text.
+            // THE v_C RULE (PIPELINE §7.5): container state behind a name is
+            // one READ variable, bound by the read rule; enqueued, not renamed
+            // into the text.
             for (String symbol : states) {
                 if (corpus.symbolKind(sessionId, symbol)
                         != Corpus.SymbolKind.READ) {

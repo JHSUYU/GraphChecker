@@ -10,6 +10,7 @@ import org.junit.Test;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayDeque;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Deque;
 
@@ -17,6 +18,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 /**
  * Characterization of the branch-observation machinery a region runs for one
@@ -63,11 +65,12 @@ public class BranchDecisionRecordingTest {
      * the binary one.
      *
      * <p>The site id in that row is also what the VM is told a guarded
-     * store depends on: the guarded-store table names the store's method
-     * with the internal owner the VM asks with and carries each guard branch
-     * site verbatim as its own tab-separated field, exactly as this row
-     * spells it -- commas and all, since a site id's parameter list has
-     * them (VM25).</p>
+     * store depends on: the guarded-store table names each store site by
+     * its method, with the internal owner the VM asks with, and by what it
+     * stores (the field, or a container mutation's call), and carries each
+     * guard branch site verbatim as its own tab-separated field, exactly as
+     * this row spells it -- commas and all, since a site id's parameter list
+     * has them.  Two store sites of one method are two rows.</p>
      */
     @Test
     public void aBinaryDecisionPublishesOneRowAndTheReach() throws Exception {
@@ -83,22 +86,28 @@ public class BranchDecisionRecordingTest {
                     publishes(decision[1]));
             releaseRegions();
         }
-        GuardedStoreSites table = GuardedStoreSites.of(
-                Collections.singletonList(writeSite("a.B#run(I)V",
-                        DECLARED, COMMAS)));
-        assertEquals("the store's method is internal, each guard a field",
-                "a/B#run(I)V\t" + DECLARED + "\t" + COMMAS + "\n",
+        GuardedStoreSites table = GuardedStoreSites.of(Arrays.asList(
+                writeSite("a.B#run(I)V", "", DECLARED, COMMAS),
+                writeSite("a.B#run(I)V", "<java.util.Map: java.lang.Object"
+                        + " put(java.lang.Object,java.lang.Object)>",
+                        DECLARED)));
+        assertEquals("the store's method is internal, its store named as the"
+                + " VM names it, each guard a field",
+                "a/B#run(I)V\tFIELD a/B.f\t" + DECLARED + "\t" + COMMAS
+                        + "\na/B#run(I)V\tCALL put\t" + DECLARED + "\n",
                 table.text());
-        assertEquals("the VM keeps every method the table guards", 1,
-                table.methods());
+        assertEquals("the VM keeps every site the table guards", 2,
+                table.sites());
     }
 
     /** A guard whose method takes two parameters, so its id has a comma. */
     private static final String COMMAS =
             "<a.B: void run(int,long)>#u9";
 
-    /** One {@code WRITE_SITE} row of a static scope map, with its guards. */
-    private static JsonObject writeSite(String vmSite, String... guards) {
+    /** One {@code WRITE_SITE} row of a static scope map, with its guards:
+     *  a store of {@code a.B.f}, by the callee when one is named. */
+    private static JsonObject writeSite(String vmSite, String callee,
+                                        String... guards) {
         StringBuilder stated = new StringBuilder();
         for (String guard : guards) {
             if (stated.length() > 0) stated.append(',');
@@ -107,7 +116,8 @@ public class BranchDecisionRecordingTest {
         return JsonParser.parseString(("{'kind':'STATIC_SCOPE_SITE','role':"
                 + "'WRITE_SITE','regionId':'REGION.1','siteId':'" + METHOD
                 + "#u7','vmSite':'" + vmSite + "','cell':'<a.B: int f>',"
-                + "'carrier':'<a.B: int f>','portId':'','declaredCallee':'',"
+                + "'carrier':'<a.B: int f>','portId':'','declaredCallee':'"
+                + callee + "',"
                 + "'guards':[" + stated + "]}").replace('\'', '"'))
                 .getAsJsonObject();
     }
@@ -192,7 +202,7 @@ public class BranchDecisionRecordingTest {
     }
 
     /**
-     * F1: a folded entry starts no activation.
+     * IDENTITY §1: a folded entry starts no activation.
      *
      * <p>The entry hook at one Java entry runs before the plan row's hook,
      * so by the time admission is asked the fold is already standing: this
@@ -255,6 +265,29 @@ public class BranchDecisionRecordingTest {
             ConcolicRegionRuntime.exitRegionFrame("sel", METHOD);
             installedPlan(null);
             Identity.resetForTests();
+            RowRuntime.resetForTests();
+        }
+    }
+
+    /**
+     * A replay on a VM missing a native this side binds (a stock JDK has
+     * none) fails before its workload, naming what is missing: a cell the
+     * VM cannot observe is never a silent gap.
+     */
+    @Test
+    public void aVmWithoutTheCurrentNativesRefusesTheReplay()
+            throws Exception {
+        installPlan();
+        broker().set(null, null);
+        try {
+            ConcolicRegionRuntime.openWorkloadSession();
+            fail("a stock JDK opened a concolic session");
+        } catch (IllegalStateException refused) {
+            assertTrue(refused.getMessage(),
+                    refused.getMessage().contains("observeField"));
+        } finally {
+            installedPlan(null);
+            broker().set(null, null);
             RowRuntime.resetForTests();
         }
     }

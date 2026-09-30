@@ -19,8 +19,8 @@ import edu.uva.liftlab.graphchecker.plan.CommunicationHandoffSpec;
 import java.lang.reflect.Field;
 
 /**
- * R4's near half: a value crossing one declared communication port, and the
- * endpoint row that says it crossed.
+ * The wire's near half (SYMBOL-SCOPE §6.3): a value crossing one declared
+ * communication port, and the endpoint row that says it crossed.
  *
  * <p>Out: export the carrier leaf's expression, stage the handle on the
  * outbound message, and state the producer endpoint whether or not a region
@@ -104,7 +104,7 @@ final class WireExport {
             resumeObservation();
         }
         if (site == null) {
-            // Rule 5, as for an attach.
+            // Named, as for an attach.
             RowRuntime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
                     Text.safe(portId),
                     "a wire export ran for a port no task of this campaign "
@@ -165,7 +165,7 @@ final class WireExport {
     /**
      * States one export as an endpoint a delivery can be paired to -- every
      * export, with a degraded producer occurrence when no region is live
-     * (still keyable, R-I1).
+     * (still keyable, IDENTITY §4).
      */
     private static void publishExportRow(CommunicationHandoffSpec site,
                                          Object carrier, String field,
@@ -245,7 +245,7 @@ final class WireExport {
             resumeObservation();
         }
         if (site == null) {
-            // Rule 5: an undeclared attach is named, not silent.
+            // An undeclared attach is named, not silent.
             RowRuntime.gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
                     Text.safe(portId),
                     "a wire attach ran for a port no task of this campaign "
@@ -279,12 +279,16 @@ final class WireExport {
                                     + " nothing computed from it is a version"
                                     + " until the closure admits this one");
                 } else {
+                    // The refusal is this occurrence's: COMPOSE refuses what
+                    // rests on it (Composer#frameRefusals), not the campaign.
                     refused(site.portId(), "attach of handle " + handle,
                             attached, GapKind.UNSTATED_VALUE,
-                            GapClass.BLOCKING, "the admitted activation here"
+                            GapClass.DIAGNOSTIC, "the admitted activation here"
                                     + " computes on the arrived value as a"
                                     + " constant, and no attach row says a"
-                                    + " producer sent it");
+                                    + " producer sent it, so no path or arm"
+                                    + " whose closure reaches this occurrence"
+                                    + " is composed");
                 }
             } finally {
                 resumeObservation();
@@ -366,7 +370,7 @@ final class WireExport {
     /**
      * The occurrence a port event runs in: the admitted activation's, else
      * the one running here, stated as an unselected activation (still
-     * keyable, R-I1).
+     * keyable, IDENTITY §4).
      */
     private static OccurrenceAddress occurrenceHere(String portId) {
         ActiveRegion active = ConcolicRegionRuntime.activeRegion();

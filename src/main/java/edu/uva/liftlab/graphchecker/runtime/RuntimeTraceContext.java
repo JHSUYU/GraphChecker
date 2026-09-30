@@ -603,7 +603,7 @@ final class RuntimeTraceContext {
         // The index begins at the inbound scope; the handler frames above
         // it are scheduling (Identity.Hop.ANCHOR).
         scope.scopeBaseBefore = Identity.scopeStart(Identity.Hop.ANCHOR);
-        // The producer endpoint IS the causal context (IDENTITY-V3).
+        // The producer endpoint IS the causal context (IDENTITY §2).
         String sender = Interactions.sender(state.flow.exchangeTransport,
                 state.flow.exchangeCorrelationId, state.flow.exchangeHalf);
         // Api is the last segment (ComposeMain.apiOf).

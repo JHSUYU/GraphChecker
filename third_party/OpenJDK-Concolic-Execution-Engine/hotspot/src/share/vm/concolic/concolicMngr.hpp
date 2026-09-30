@@ -251,10 +251,6 @@ public:
   static std::string getTrackedLocationVersions(jlong after_event_id,
                                                 jint max_bytes);
 
-  static jlong armSharedPrimitiveFieldRead(
-      Handle owner, const char *declaring_class, const char *field_name,
-      const char *descriptor, jlong value_bits);
-  static jlong confirmSharedPrimitiveFieldRead(jlong token);
   /**
    * Selects one supported associative container's *whole state* as a carrier.
    *
@@ -332,7 +328,9 @@ public:
   static void symbolizeExactField(
       Handle owner, const char *declaring_class, const char *field_name,
       const char *descriptor, const char *prefix);
-  static void observeExactPrimitiveField(
+  // Starts one field's version log (System.observeField); answers an
+  // ExpressionBroker::HandoffStatus, 0 when the log stands.
+  static jint observeField(
       Handle owner, const char *declaring_class, const char *field_name,
       const char *descriptor);
   inline static bool has_symbolized_method() {

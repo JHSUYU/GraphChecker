@@ -230,7 +230,9 @@ public class SymbolicRootPolicyTest {
         }
         StringBuilder text = new StringBuilder();
         for (JsonObject row : StaticScopeMap.rows(StaticScopeMap.sites(edges,
-                regions, clocks, unwoven, cell -> true), null)) {
+                regions, clocks, unwoven,
+                cell -> SharedFieldFlow.TrackedKind.VALUE, cell -> false),
+                null)) {
             text.append(row.toString()).append('\n');
         }
         Path file = folder.newFolder().toPath().resolve(StaticScopeMap.FILE);

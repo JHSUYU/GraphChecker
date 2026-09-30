@@ -5,6 +5,7 @@ import edu.uva.liftlab.graphchecker.annotation.Debug;
 import edu.uva.liftlab.graphchecker.smt.JavaContainerTypes;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveBoxing;
 import edu.uva.liftlab.graphchecker.plan.DependencyRole;
+import edu.uva.liftlab.graphchecker.plan.SharedFieldFlow;
 import edu.uva.liftlab.graphchecker.plan.SiteId;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -17,8 +18,10 @@ import soot.SootMethod;
 import soot.Unit;
 import soot.Value;
 import soot.jimple.AssignStmt;
+import soot.jimple.CastExpr;
 import soot.jimple.Constant;
 import soot.jimple.DefinitionStmt;
+import soot.jimple.FieldRef;
 import soot.jimple.IdentityStmt;
 import soot.jimple.IntConstant;
 import soot.jimple.InvokeExpr;
@@ -35,6 +38,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -96,20 +100,13 @@ final class SeedBackwardStaticAnalyzer {
             "descendingKeySet");
     private static final Set<String> BACKED_ITERATORS = names(
             "iterator", "listIterator", "descendingIterator");
-    /** Container calls that write their receiver. */
+    /** Calls, by name, that write their receiver whatever its class: an
+     *  application container's as much as a JDK one's (whose contract,
+     *  JavaContainerTypes, names the rest). */
     private static final Set<String> CONTAINER_MUTATORS = names(
             "put", "putAll", "remove", "clear", "add", "addAll", "set",
             "replace", "compute", "computeIfAbsent", "computeIfPresent",
             "merge", "offer", "poll");
-    /** Atomic read-modify-writes: mutate the receiver, no field store. */
-    private static final Set<String> ATOMIC_NUMERIC_MUTATIONS = names(
-            "getAndIncrement", "getAndDecrement", "getAndAdd",
-            "incrementAndGet", "decrementAndGet", "addAndGet", "getAndSet",
-            "compareAndSet", "weakCompareAndSet", "lazySet");
-    private static final Set<String> MAP_CONTRACT_OWNERS = names(
-            "java.util.Map", "java.util.SortedMap", "java.util.NavigableMap",
-            "java.util.concurrent.ConcurrentMap",
-            "java.util.concurrent.ConcurrentNavigableMap");
     private static final Set<String> COLLECTION_CONTRACT_OWNERS = names(
             "java.util.Collection", "java.util.List", "java.util.Set",
             "java.util.SortedSet", "java.util.NavigableSet",
@@ -188,10 +185,9 @@ final class SeedBackwardStaticAnalyzer {
             new LinkedHashMap<>();
     /** {@link #rpcMessages}, computed at the first demanded getter. */
     private Set<String> rpcMessages;
-    /** README section 5's declared per-loop {@code K_L}. */
+    /** The declared per-loop {@code K_L} (PIPELINE §2). */
     private final DeclaredLoopBodyBounds loopBodyBounds;
     private boolean globalStaticIndexBuilt;
-    private int edgeCounter;
 
     SeedBackwardStaticAnalyzer(CausynthTargetContext target) {
         this.target = target;
@@ -267,7 +263,15 @@ final class SeedBackwardStaticAnalyzer {
         }
         planCommunicationCatalog(result);
 
-        result.edges.addAll(emittedEdgeRows.values());
+        // Numbered in content order, not in the order the worklist found
+        // them: the ids and the rows' order are the slice's, not the run's.
+        List<EdgeIdentity> found = new ArrayList<>(emittedEdgeRows.keySet());
+        Collections.sort(found);
+        for (EdgeIdentity key : found) {
+            Map<String, Object> edge = emittedEdgeRows.get(key);
+            edge.put("id", "DF." + result.edges.size());
+            result.edges.add(edge);
+        }
         result.traceMethods.addAll(selectedMethods);
         Collections.sort(result.traceMethods);
         for (String method : result.traceMethods) {
@@ -281,7 +285,7 @@ final class SeedBackwardStaticAnalyzer {
         return result;
     }
 
-    /** README Step 1 items 1-3, over the selected methods. */
+    /** The selected methods' port and loop catalog (SYMBOL-SCOPE §2.3). */
     private void planCommunicationCatalog(StaticProgram result) {
         List<String> selected = new ArrayList<>(selectedMethods);
         Collections.sort(selected);
@@ -1014,7 +1018,7 @@ final class SeedBackwardStaticAnalyzer {
         if (fact.unit instanceof AssignStmt
                 && ((AssignStmt) fact.unit).getRightOp() instanceof Constant) {
             constantStoresByMethod.computeIfAbsent(method,
-                    ignored -> new LinkedHashSet<>()).add(fieldNode);
+                    DirtyMarkingSet::new).add(fieldNode);
         }
         if (sources.isEmpty()) {
             sources = Collections.singletonList(factNode(fact));
@@ -1054,8 +1058,7 @@ final class SeedBackwardStaticAnalyzer {
                 Set<String> writerRelevant = relevant(writer.method);
                 writerRelevant.add(writer.field);
                 relevantFieldEffectsByMethod
-                        .computeIfAbsent(writer.method,
-                                ignored -> new LinkedHashSet<>())
+                        .computeIfAbsent(writer.method, DirtyMarkingSet::new)
                         .add(writer.field);
                 selectedMethods.add(writer.method);
                 processFieldWrite(writer.method, writerFact, writerRelevant,
@@ -1109,6 +1112,7 @@ final class SeedBackwardStaticAnalyzer {
                         callsite.method, callsiteFact);
                 relevant(callsite.method).add(actual);
                 selectedMethods.add(callsite.method);
+                markDirty(callsite.method);
             });
         }
     }
@@ -1181,8 +1185,11 @@ final class SeedBackwardStaticAnalyzer {
                 for (String target : declared) {
                     forEachCallsite(methodCallersByCallee, target,
                             (callsite, callsiteFact) -> {
+                        // Once per callee and call, and again whenever the
+                        // stored set has grown.
                         if (!expandOnce("STORE_CALLER_GUARDS", method,
-                                callsite.method, callsiteFact.unitIndex)) {
+                                stored.size(), callee, callsite.method,
+                                callsiteFact.unitIndex)) {
                             return;
                         }
                         loadMethod(concreteMethod(callsite.method));
@@ -1610,16 +1617,27 @@ final class SeedBackwardStaticAnalyzer {
                 : BACKED_ITERATORS.contains(invoked.name);
     }
 
+    /** Whether a call writes its receiver: a container mutation, by name
+     *  or by its JDK contract, or a write of a JDK atomic's value. */
     private boolean isFieldMutator(Fact fact) {
         MethodSig sig = parseMethodSig(fact.invoke);
-        if (sig == null) {
-            return false;
-        }
-        return CONTAINER_MUTATORS.contains(sig.name)
-                || ("java.util.concurrent.atomic.AtomicInteger".equals(
-                        sig.owner)
-                || "java.util.concurrent.atomic.AtomicLong".equals(sig.owner))
-                && ATOMIC_NUMERIC_MUTATIONS.contains(sig.name);
+        return sig != null && (CONTAINER_MUTATORS.contains(sig.name)
+                || JavaContainerTypes.mutation(sig.raw,
+                this::libraryHierarchy)
+                || SharedFieldFlow.atomicWrite(sig.raw));
+    }
+
+    /**
+     * A library class's supertypes, itself included: they decide which
+     * container contract a call on it states (JavaContainerTypes, by
+     * interface).  None for an application class, whose calls run the body
+     * the slice follows.
+     */
+    private Collection<String> libraryHierarchy(String className) {
+        SootClass type = isApplicationClassName(className) ? null
+                : sceneClass(className);
+        return type == null ? Collections.<String>emptySet()
+                : hierarchyNames(type);
     }
 
     private boolean isCanonicalField(String value) {
@@ -1675,8 +1693,8 @@ final class SeedBackwardStaticAnalyzer {
                 actuals, callerRelevant);
         boolean dynamicDispatch = !resolveDispatchTargets(callee)
                 .isEmpty();
-        boolean modeledContainerResult =
-                JavaContainerTypes.symbolicResultOperation(callee.raw);
+        boolean containerQuery = JavaContainerTypes.query(
+                callee.raw, this::libraryHierarchy);
         boolean expandableCallee = isExpandableMethod(callee.raw);
         SootMethod calleeMethod = expandableCallee
                 ? concreteMethod(callee.raw) : null;
@@ -1691,7 +1709,7 @@ final class SeedBackwardStaticAnalyzer {
             propagateCallArguments("call_argument",
                     callerMethod, fact, callee, actuals,
                     callerRelevant, calleeRelevant, expandableCallee);
-            if (!modeledContainerResult) {
+            if (!containerQuery) {
                 propagateCallReturns("call_return",
                         callerMethod, fact, callee.raw, defs,
                         callerRelevant, calleeRelevant,
@@ -1779,16 +1797,17 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     /**
-     * A VM-modeled container result depends on its receiver and arguments
-     * (library receivers are otherwise excluded).  Value semantics belong to
+     * A container query's result depends on its receiver and arguments
+     * (library receivers are otherwise excluded), by the contract of the
+     * receiver's interface (JavaContainerTypes).  Value semantics belong to
      * the VM's {@code ContainerRelation}.
      */
     private void processSemanticContainerOperation(
             String callerMethod, Fact fact, MethodSig callee,
             List<String> defs, Set<String> callerRelevant) {
         if (defs.isEmpty()
-                || !(JavaContainerTypes.symbolicResultOperation(callee.raw)
-                || isSemanticContainerView(callee))) {
+                || !(JavaContainerTypes.query(callee.raw,
+                this::libraryHierarchy) || containerArray(callee))) {
             return;
         }
         List<String> relevantDefs = new ArrayList<>();
@@ -1826,12 +1845,15 @@ final class SeedBackwardStaticAnalyzer {
 
     /**
      * Mutation counterpart of {@link #processSemanticContainerOperation}: a
-     * relevant modeled receiver demands its mutators' arguments.
+     * relevant container receiver demands its mutators' arguments, and the
+     * fields it is later published into name the mutation a write of theirs
+     * ({@link #publishMutation}).
      */
     private void processSemanticContainerMutation(
             String callerMethod, Fact fact, MethodSig callee,
             Set<String> callerRelevant) {
-        if (!JavaContainerTypes.modeledContainerMutator(callee.raw)) {
+        if (!JavaContainerTypes.mutation(callee.raw,
+                this::libraryHierarchy)) {
             return;
         }
         String receiver = invokeBaseLocal(fact.unitText);
@@ -1848,6 +1870,95 @@ final class SeedBackwardStaticAnalyzer {
                     callerMethod, fact);
             callerRelevant.add(argument);
         }
+        publishMutation(callerMethod, fact, receiver);
+    }
+
+    /**
+     * P2(b) (R3-REFCONT): a mutation of the container a local holds shapes
+     * the referent every later store of that local -- or of a copy of it,
+     * before it is redefined -- publishes into a field, and, one call up,
+     * the referent the method returns into each field its callers store
+     * the result into.  One {@code container_publication} edge per field,
+     * from the local ({@code publishedFrom}) to the field at the mutation:
+     * the scope map's write site of that field with the mutation's guards.
+     * solr-18406: {@code updateKnownCommitPoints} puts each commit whose
+     * {@code !wrapper.isDeleted()} holds into a fresh map, then stores the
+     * map into {@code knownCommits}.  A mutation of a field's container
+     * through an alias is {@link #fieldsAliasedByLocal}'s.
+     */
+    private void publishMutation(String method, Fact mutation, String local) {
+        if (!expandOnce("PUBLICATION", method, mutation.unitIndex)) return;
+        Set<String> fields = new LinkedHashSet<>();
+        if (storedFrom(factsByMethod.get(method), mutation.unitIndex, local,
+                fields)) {
+            buildGlobalStaticIndex();
+            List<String> declared = new ArrayList<>();
+            declared.add(method);
+            declared.addAll(resolveDispatchSources(method));
+            for (String callee : declared) {
+                forEachCallsite(methodCallersByCallee, callee,
+                        (callsite, call) -> {
+                    if (call.unit instanceof AssignStmt
+                            && ((AssignStmt) call.unit).getLeftOp()
+                            instanceof Local) {
+                        storedFrom(factsByMethod.get(callsite.method),
+                                call.unitIndex, ((Local) ((AssignStmt)
+                                        call.unit).getLeftOp()).getName(),
+                                fields);
+                    }
+                });
+            }
+        }
+        for (String field : fields) {
+            Map<String, Object> edge = addEdge("container_publication",
+                    canonical(method, local), field, method, mutation);
+            if (edge != null) edge.put("publishedFrom", local);
+        }
+    }
+
+    /**
+     * Adds to {@code fields} each field a fact after {@code index} stores
+     * {@code local}, or a copy of it, into, up to its redefinition.
+     *
+     * @return whether the method returns it
+     */
+    private static boolean storedFrom(List<Fact> facts, int index,
+                                      String local, Set<String> fields) {
+        Set<String> aliases = new LinkedHashSet<>();
+        aliases.add(local);
+        boolean returned = false;
+        for (int at = index + 1; facts != null && at < facts.size()
+                && !aliases.isEmpty(); at++) {
+            Unit unit = facts.get(at).unit;
+            if (unit instanceof ReturnStmt) {
+                returned |= alias(((ReturnStmt) unit).getOp(), aliases);
+                continue;
+            }
+            if (!(unit instanceof AssignStmt)) continue;
+            Value target = ((AssignStmt) unit).getLeftOp();
+            boolean copy = alias(((AssignStmt) unit).getRightOp(), aliases);
+            if (target instanceof FieldRef) {
+                if (copy) {
+                    fields.add(CausynthStaticFacts.declaredFieldSignature(
+                            ((FieldRef) target).getFieldRef()));
+                }
+            } else if (target instanceof Local) {
+                if (copy) {
+                    aliases.add(((Local) target).getName());
+                } else {
+                    aliases.remove(((Local) target).getName());
+                }
+            }
+        }
+        return returned;
+    }
+
+    /** Whether {@code value}, through a cast, is one of the locals. */
+    private static boolean alias(Value value, Set<String> locals) {
+        Value operand = value instanceof CastExpr
+                ? ((CastExpr) value).getOp() : value;
+        return operand instanceof Local
+                && locals.contains(((Local) operand).getName());
     }
 
     /** Bridges an application helper that mutates a container argument. */
@@ -1898,7 +2009,8 @@ final class SeedBackwardStaticAnalyzer {
 
             Map<Integer, String> result = new LinkedHashMap<>();
             for (Fact fact : facts) {
-                if (!JavaContainerTypes.modeledContainerMutator(fact.invoke)) {
+                if (!JavaContainerTypes.mutation(fact.invoke,
+                        this::libraryHierarchy)) {
                     continue;
                 }
                 String receiver = invokeBaseLocal(fact.unitText);
@@ -1914,18 +2026,9 @@ final class SeedBackwardStaticAnalyzer {
         });
     }
 
-    private boolean isSemanticContainerView(MethodSig method) {
-        if (method == null) return false;
-        if (MAP_CONTRACT_OWNERS.contains(method.owner)
-                && method.params.isEmpty()) {
-            if ("values".equals(method.name)
-                    && "java.util.Collection".equals(method.returnType)
-                    || ("keySet".equals(method.name)
-                    || "entrySet".equals(method.name))
-                    && "java.util.Set".equals(method.returnType)) {
-                return true;
-            }
-        }
+    /** A collection's {@code toArray}: an array of its elements, so it
+     *  depends on the collection's state as a query's result does. */
+    private static boolean containerArray(MethodSig method) {
         return COLLECTION_CONTRACT_OWNERS.contains(method.owner)
                 && "toArray".equals(method.name)
                 && method.returnType.endsWith("[]")
@@ -1980,12 +2083,6 @@ final class SeedBackwardStaticAnalyzer {
         if (ignoreNode(receiverNode)) {
             return;
         }
-        String fieldType = declaredField.getType().toString();
-        if (fieldType.isEmpty()
-                || !erasedTypeName(fieldType).equals(
-                erasedTypeName(callee.returnType))) {
-            return;
-        }
         boolean defExactHit = exactIntersects(callerRelevant, defs);
         if (!defExactHit) {
             return;
@@ -2007,12 +2104,12 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     private void annotateAccessorDeclaredFieldEdge(
-            Map<String, Object> edge, SootField field, SootMethod accessor) {
+            Map<String, Object> edge, SootField field, String accessor) {
         if (edge == null) {
             return;
         }
         edge.put("declaredFieldSignature", field.getSignature());
-        edge.put("accessorImplementationMethod", accessor.getSignature());
+        edge.put("accessorImplementationMethod", accessor);
     }
 
     /** Attaches the resolved declaration to one direct field read. */
@@ -2080,8 +2177,12 @@ final class SeedBackwardStaticAnalyzer {
         if (structuralFieldAccessors.containsKey(callee.raw)) {
             return structuralFieldAccessors.get(callee.raw);
         }
-        StructuralFieldAccessor resolved = inspectStructuralFieldAccessor(
-                callee, uniqueAnalyzableImplementation(callee));
+        SootField atomic = StructuralFieldAccessorProof.atomicField(
+                callee.raw);
+        StructuralFieldAccessor resolved = atomic != null
+                ? new StructuralFieldAccessor(callee.raw, atomic)
+                : inspectStructuralFieldAccessor(callee,
+                        uniqueAnalyzableImplementation(callee));
         structuralFieldAccessors.put(callee.raw, resolved);
         return resolved;
     }
@@ -2100,7 +2201,7 @@ final class SeedBackwardStaticAnalyzer {
                 erasedTypeName(callee.returnType))) {
             return null;
         }
-        return new StructuralFieldAccessor(method, field);
+        return new StructuralFieldAccessor(method.getSignature(), field);
     }
 
     private void processDispatchInvoke(String callerMethod, Fact fact,
@@ -2197,16 +2298,20 @@ final class SeedBackwardStaticAnalyzer {
         return matches;
     }
 
-    /** The concrete targets of {@code declared} below {@code owner}; none
-     *  when the hierarchy cannot be resolved (a phantom supertype). */
-    private static Set<SootMethod> abstractDispatch(SootClass owner,
-                                                    SootMethod declared) {
+    /** The concrete targets of {@code declared} below {@code owner}, by
+     *  signature (the hierarchy answers a hash set of methods, in identity
+     *  order); none when it cannot resolve them (a phantom supertype). */
+    private static List<SootMethod> abstractDispatch(SootClass owner,
+                                                     SootMethod declared) {
+        List<SootMethod> targets;
         try {
-            return Scene.v().getOrMakeFastHierarchy()
-                    .resolveAbstractDispatch(owner, declared);
+            targets = new ArrayList<>(Scene.v().getOrMakeFastHierarchy()
+                    .resolveAbstractDispatch(owner, declared));
         } catch (RuntimeException unresolved) {
-            return Collections.emptySet();
+            return Collections.emptyList();
         }
+        targets.sort(Comparator.comparing(SootMethod::getSignature));
+        return targets;
     }
 
     /** A loaded, non-phantom class by name, application or library. */
@@ -2359,6 +2464,7 @@ final class SeedBackwardStaticAnalyzer {
                     callsiteFact);
             callerRelevant.add(actual);
             selectedMethods.add(callsite.method);
+            markDirty(callsite.method);
             expanded = true;
         }
         return expanded;
@@ -2378,6 +2484,7 @@ final class SeedBackwardStaticAnalyzer {
                     targetThis, callsite.method, callsiteFact);
             relevant(callsite.method).add(callsite.receiver);
             selectedMethods.add(callsite.method);
+            markDirty(callsite.method);
             return true;
         }
         return false;
@@ -2419,7 +2526,8 @@ final class SeedBackwardStaticAnalyzer {
     }
 
     /** {@code declaring} and each of its subclasses that inherits its
-     *  {@code subSignature} (declares none of its own). */
+     *  {@code subSignature} (declares none of its own), breadth first, each
+     *  level's subclasses by name (the hierarchy answers a hash set). */
     private static List<SootClass> inheritingSubtypes(SootClass declaring,
                                                       String subSignature) {
         List<SootClass> runners = new ArrayList<>();
@@ -2432,8 +2540,10 @@ final class SeedBackwardStaticAnalyzer {
                 continue;
             }
             runners.add(type);
-            work.addAll(Scene.v().getOrMakeFastHierarchy()
-                    .getSubclassesOf(type));
+            List<SootClass> subclasses = new ArrayList<>(Scene.v()
+                    .getOrMakeFastHierarchy().getSubclassesOf(type));
+            subclasses.sort(Comparator.comparing(SootClass::getName));
+            work.addAll(subclasses);
         }
         return runners;
     }
@@ -2490,6 +2600,15 @@ final class SeedBackwardStaticAnalyzer {
         return expandedDemands.add(key.toString());
     }
 
+    /**
+     * Processes a selected method again.  Any demand that grows is followed
+     * by this for every method whose pass reads it: a caller when a callee's
+     * demand reaches its actual (its own pass emits the call's {@code
+     * call_argument} and dispatch rows from the callee's demand, even when
+     * the actual was already relevant), a method whose field effects or
+     * constant stores grew.  Otherwise the rows would depend on the order
+     * the worklist met the methods.
+     */
     private void markDirty(String method) {
         if (method != null && selectedMethods.contains(method)) {
             dirtyMethods.add(method);
@@ -2808,7 +2927,6 @@ final class SeedBackwardStaticAnalyzer {
         EdgeIdentity key = edgeKey(kind, fromText, toText, method, fact);
         Map<String, Object> edge = emittedEdgeRows.get(key);
         if (edge == null) {
-            String edgeId = "DF." + edgeCounter++;
             String edgeTransferKind = StaticDataflowEdgeSchema.transferKind(
                     kind,
                     fact == null ? "" : fact.unitText,
@@ -2819,7 +2937,8 @@ final class SeedBackwardStaticAnalyzer {
                     method, fact, edgeTransferKind);
             edge = object(
                     "schemaVersion", StaticDataflowEdgeSchema.VERSION,
-                    "id", edgeId,
+                    // Numbered by analyze() once the slice is complete.
+                    "id", "",
                     "kind", kind,
                     "transferKind", edgeTransferKind,
                     "fromCell", fromText,
@@ -2934,19 +3053,23 @@ final class SeedBackwardStaticAnalyzer {
         }
     }
 
+    /** A call that is one read of one field: the method that answers it
+     *  (its body's proof, or a JDK atomic's table entry), and the field. */
     private static final class StructuralFieldAccessor {
-        private final SootMethod implementation;
+        private final String implementation;
         private final SootField field;
 
-        private StructuralFieldAccessor(SootMethod implementation,
+        private StructuralFieldAccessor(String implementation,
                                         SootField field) {
             this.implementation = implementation;
             this.field = field;
         }
     }
 
-    /** One emitted edge's identity: kind, ends, method and unit. */
-    private static final class EdgeIdentity {
+    /** One emitted edge's identity: kind, ends, method and unit; ordered by
+     *  method, unit, kind and ends. */
+    private static final class EdgeIdentity
+            implements Comparable<EdgeIdentity> {
         private final String kind;
         private final String from;
         private final String to;
@@ -2970,6 +3093,18 @@ final class SeedBackwardStaticAnalyzer {
             value = 31 * value + method.hashCode();
             value = 31 * value + (concreteSite ? 1 : 0);
             hash = 31 * value + unitIndex;
+        }
+
+        @Override
+        public int compareTo(EdgeIdentity other) {
+            int order = method.compareTo(other.method);
+            if (order == 0) order = Integer.compare(unitIndex, other.unitIndex);
+            if (order == 0) {
+                order = Boolean.compare(concreteSite, other.concreteSite);
+            }
+            if (order == 0) order = kind.compareTo(other.kind);
+            if (order == 0) order = from.compareTo(other.from);
+            return order == 0 ? to.compareTo(other.to) : order;
         }
 
         @Override

@@ -287,11 +287,11 @@ public final class ObligationFactory {
     /**
      * The flips one task offers, recording every already-settled candidate.
      *
-     * <p>CLOSURE-V2 SS3: only decisions at sites the closure demanded for this
+     * <p>PIPELINE §7.4: only decisions at sites the closure demanded for this
      * member (target guards for the anchor, own guards for a writer/producer).
      * Cut only from ADMITTED sessions' paths: a child inherits the parent's
-     * world (R5, R6), and a NOT_ADMITTED replay ran no world. Such sessions
-     * still attest arms ({@link Frontier}).</p>
+     * world (PIPELINE §7.5), and a NOT_ADMITTED replay ran no world. Such
+     * sessions still attest arms ({@link Frontier}).</p>
      *
      * @param flipSites site ids this task's demand names; null = none
      * @param owed      the one ledger of owed arms ({@link Frontier})
@@ -326,7 +326,7 @@ public final class ObligationFactory {
             paths++;
             int flips = 0;
             int unflipped = 0;
-            // Fault flips first (DESIGN4 SS1.4): cheap, and they grow the
+            // Fault flips first (PIPELINE §7.4): cheap, and they grow the
             // graph.
             for (int index : faultFirst(corpus, path)) {
                 if (flips >= bounds.maxFlipsPerPath) {
@@ -446,7 +446,7 @@ public final class ObligationFactory {
                 + "arm the seed lacks. Either the flipped decision's recorded "
                 + "polarity disagrees with the root value the same session "
                 + "minted -- DecisionRow.outcome must say whether the "
-                + "published term HELD (CONTRACT-SPEC SS2) -- or the query "
+                + "published term HELD (CONTRACT-SPEC §2.2) -- or the query "
                 + "binds a root the flip does not depend on";
     }
 
@@ -591,7 +591,7 @@ public final class ObligationFactory {
             }
         }
         // A model equal to the recording's valuation asks for the seed replay
-        // (HANDOVER SS1.5: exploration collects arms the seed lacks): refused.
+        // (PIPELINE §7: exploration collects arms the seed lacks): refused.
         // DIAGNOSTIC under EXPLORATION, never BLOCKING in the recording's
         // ledger. Asked of the model's own skews/roots/answers, before
         // inheriting the parent's world (merged values would fake a
