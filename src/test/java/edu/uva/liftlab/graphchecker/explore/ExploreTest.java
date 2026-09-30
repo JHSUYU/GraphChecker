@@ -1737,6 +1737,61 @@ public class ExploreTest {
 
     // ---- (5) the closure holds the writer of every version read -------
 
+    /**
+     * A read of a reference rests on the container its store delivered: the
+     * closure demands the writer of each state of it the read could have
+     * seen through that store ({@code Corpus#referentStates}, the rule
+     * COMPOSE answers a query by) -- here a mutation after the store, live
+     * at the read, by an occurrence no row of the anchor joins -- and a
+     * store that states no container demands none.
+     */
+    @Test
+    public void aReferenceReadDemandsTheStateItsStoreDelivered()
+            throws Exception {
+        OccurrenceAddress builder = occurrence("hdfs-case/dn0",
+                "REGION.build", CausalContext.of(Role.of("BUILDER"), "", 1),
+                "o.a.h.Builder#run#2");
+        OccurrenceAddress cleaner = occurrence("hdfs-case/dn0",
+                "REGION.clean", CausalContext.of(Role.of("CLEANER"), "", 1),
+                "o.a.h.Cleaner#run#2");
+        LocationId reference = LocationId.of(LocationKind.INSTANCE, "8",
+                "16");
+        LocationId map = LocationId.of(LocationKind.MAP, "20", "-3");
+        for (boolean referent : new boolean[]{true, false}) {
+            Path iteration = tree.newFolder("referent-" + referent).toPath();
+            Session seed = new Session(iteration, "s-seed");
+            for (OccurrenceAddress at : Arrays.asList(TARGET, WRITER,
+                    builder, cleaner)) {
+                seed.activation(at, false);
+            }
+            seed.symbolic("e.put", "M_PUT");
+            seed.symbolic("e.map", "M_MAP");
+            seed.symbolic("e.removed", "M_REMOVED");
+            seed.write(at(builder, "Map#put#1:WRITE", "Builder#build#1"),
+                    map, 1L, "e.put");
+            seed.writes.add(WriteRow.of("s-seed", ++seed.seq, at(WRITER,
+                    "Policy#update#2:WRITE", "Policy#update#2"), reference,
+                    2L, "e.map", "L", referent ? WriteRow.Referent.of(map,
+                            1L) : null, null));
+            seed.write(at(cleaner, "Map#remove#3:WRITE", "Cleaner#clean#3"),
+                    map, 3L, "e.removed");
+            seed.read(at(TARGET, "Handler#get#4:READ", "Handler#get#4"),
+                    reference, 2L, "M_KC", "0");
+            seed.target(TARGET, "Handler#get#5", "(= M_KC 0)");
+            seed.flush();
+
+            ClosurePlanner.Plan plan = ClosurePlanner.plan(
+                    Corpus.read(iteration, null), TARGET,
+                    ClosurePlanner.DEFAULT_MAX_TASKS, StaticScopeMap.empty());
+            List<String> focused = new ArrayList<String>();
+            for (Task task : plan.tasks) focused.add(task.focused().render());
+            assertTrue("the store's writer: " + focused,
+                    focused.contains(WRITER.render()));
+            assertEquals("the state the read saw through the store: "
+                    + focused, referent, focused.contains(cleaner.render()));
+        }
+    }
+
     @Test
     public void closureHoldsTheWriterOfAReadVersionAndTheWireProducer()
             throws Exception {
@@ -1869,15 +1924,15 @@ public class ExploreTest {
         spread.flush();
         StaticScopeMap spreadMap = StaticScopeMap.read(scopeMap(perNode,
                 targetSite("REGION.target", "BlockTokenSecretManager#u120"),
-                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
+                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
                         "BlockTokenSecretManager#u12",
                         "BlockTokenSecretManager#addKeys",
                         "<example.Keys: int value>",
-                        "<example.Manager: example.Keys allKeys>", ""),
-                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.refresh",
+                        "<example.Manager: example.Keys allKeys>", "")),
+                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.refresh",
                         "KeyManager#u4", "KeyManager#refresh",
                         "<example.Keys: int value>",
-                        "<example.Manager: example.Keys allKeys>", ""),
+                        "<example.Manager: example.Keys allKeys>", "")),
                 scopeSite(StaticScopeMap.EXPORT_SITE, "REGION.rotate",
                         "PBHelper#convert#9", "PBHelper#convert", "", "",
                         "XCH.resp.block-key-id")));
@@ -2578,18 +2633,18 @@ public class ExploreTest {
         StaticScopeMap ofAllKeys = StaticScopeMap.read(scopeMap(inlined,
                 targetSite("REGION.target", "BlockTokenSecretManager#u120",
                         "BlockTokenSecretManager#u8"),
-                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
+                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.addkeys",
                         "BlockTokenSecretManager#u27",
                         "BlockTokenSecretManager#addKeys",
                         "<example.Manager: java.util.Map allKeys>",
                         "<example.Manager: java.util.Map allKeys>", "",
-                        "BlockTokenSecretManager#u21"),
-                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.expiry",
+                        "BlockTokenSecretManager#u21")),
+                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.expiry",
                         "BlockTokenSecretManager#u16",
                         "BlockTokenSecretManager#removeExpiredKeys",
                         "<example.Manager: java.util.Map allKeys>",
                         "<example.Manager: java.util.Map allKeys>", "",
-                        "BlockTokenSecretManager#u15")));
+                        "BlockTokenSecretManager#u15"))));
         Corpus vC = Corpus.read(inlined, null);
         SmtLowering lowering = vC.lowering("s-seed");
         String mapGuard = lowering.statedTerm("EXPR.0000000000000005",
@@ -3448,15 +3503,15 @@ public class ExploreTest {
         // addressed as REGION.holder.
         String[] rows = {
                 targetSite("REGION.target", "BlockTokenSecretManager#u120"),
-                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.outer",
+                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.outer",
                         "BlockTokenSecretManager#u12",
                         "BlockTokenSecretManager#addKeys",
                         "<example.Keys: int value>",
-                        "<example.Manager: example.Keys allKeys>", ""),
-                scopeSite(StaticScopeMap.WRITE_SITE, "REGION.inner",
+                        "<example.Manager: example.Keys allKeys>", "")),
+                put(scopeSite(StaticScopeMap.WRITE_SITE, "REGION.inner",
                         "KeyManager#u4", "KeyManager#refresh",
                         "<example.Keys: int value>",
-                        "<example.Manager: example.Keys allKeys>", "")};
+                        "<example.Manager: example.Keys allKeys>", ""))};
         Path mapFile = scopeMap(iteration, rows);
 
         // Without the skeletons beside it the map can say nothing about
@@ -3555,6 +3610,17 @@ public class ExploreTest {
         for (String guard : guards) stated.add(guard);
         row.add("guards", stated);
         return row.toString();
+    }
+
+    /** The same WRITE_SITE row, stated as a mutator call on the container
+     *  its carrier holds: a store of that container's state, the MAP
+     *  location the fixture's key map is ({@code StaticScopeMap#stores}). */
+    private static String put(String row) {
+        JsonObject site = com.google.gson.JsonParser.parseString(row)
+                .getAsJsonObject();
+        site.addProperty("declaredCallee", "<java.util.Map: java.lang.Object"
+                + " put(java.lang.Object,java.lang.Object)>");
+        return site.toString();
     }
 
     /** The annotated target and the branches it is control-dependent on. */

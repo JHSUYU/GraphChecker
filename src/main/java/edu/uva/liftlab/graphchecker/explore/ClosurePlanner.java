@@ -346,9 +346,12 @@ public final class ClosurePlanner {
         }
 
         /** {@link StaticScopeMap#carriersAt}. */
-        private Set<String> carriersAt(String recordedSite, String javaType) {
-            return carriers.computeIfAbsent(recordedSite + "|" + javaType,
-                    key -> map.carriersAt(recordedSite, javaType));
+        private Set<String> carriersAt(String recordedSite, String javaType,
+                                       LocationId location) {
+            return carriers.computeIfAbsent(recordedSite + "|" + javaType
+                            + "|" + location.kind(),
+                    key -> map.carriersAt(recordedSite, javaType,
+                            location.kind()));
         }
 
         /** A writer's flip sites: guards of every static write site in the
@@ -454,7 +457,7 @@ public final class ClosurePlanner {
                     sessionId, contributed.substring(split + 1))) {
                 writersOfVersion(walk, sessionId, demand.occurrence,
                         read.locationKey(), read.write().version(),
-                        Collections.<String>emptySet(),
+                        Collections.<String>emptySet(), null,
                         demand.occurrence.render(),
                         read.locationKey() + " (read at event "
                                 + read.readEventId() + ")", into);
@@ -657,7 +660,11 @@ public final class ClosurePlanner {
     /**
      * Who could have written one demanded read: the eligible row writers, and
      * the static write sites of its carrier (joined through a write the
-     * recording did observe; no such write = no carrier, said).
+     * recording did observe; no such write = no carrier, said).  A read of
+     * a reference rests on the container each eligible store delivered, too:
+     * the writers of every state of it the read could have seen through
+     * that store ({@link Corpus#referentStates}), which a query through the
+     * read is answered from (COMPOSE, {@code SmtLowering#query}).
      *
      * <p><b>N1 -- a concrete location lives in ONE process:</b> static
      * candidates only on the reader's node (Writers_W(l) is per concrete
@@ -667,8 +674,9 @@ public final class ClosurePlanner {
         writersOfVersion(walk, row.sessionId(), row.endpoint().occurrence(),
                 SmtLowering.locationKey(row.location()),
                 row.observedVersion(),
-                walk.carriersAt(row.endpoint().site(), row.javaType()),
-                row.endpoint().toString(),
+                walk.carriersAt(row.endpoint().site(), row.javaType(),
+                        row.location()),
+                row, row.endpoint().toString(),
                 String.valueOf(row.location()), into);
     }
 
@@ -679,6 +687,10 @@ public final class ClosurePlanner {
      * @param readCarriers the carriers the read's own site names (a read
      *                     of a version no store of the window wrote: its
      *                     INITIAL)
+     * @param read the read's row, or null for a read only an expression
+     *             states: that read is never re-pointed (COMPOSE re-pairs
+     *             the anchor's rows alone), so a query through it is the
+     *             run's, whose container read the expression states too
      * @param subject what a diagnostic about this read is addressed at
      * @param located how the location reads in that diagnostic
      */
@@ -687,6 +699,7 @@ public final class ClosurePlanner {
                                          String locationKey,
                                          long observedVersion,
                                          Set<String> readCarriers,
+                                         ReadRow read,
                                          String subject, String located,
                                          List<Demand> into) {
         Corpus corpus = walk.corpus;
@@ -695,17 +708,16 @@ public final class ClosurePlanner {
         Set<String> carriers = new LinkedHashSet<String>();
         for (WriteRow write : corpus.writeSitesOf(locationKey)) {
             carriers.addAll(walk.carriersAt(write.endpoint().site(),
-                    write.javaType()));
+                    write.javaType(), write.location()));
         }
         carriers.addAll(readCarriers);
         for (WriteRow write : corpus.eligibleWrites(sessionId, locationKey,
                 observedVersion, reader)) {
-            Demand paired = new Demand(write.endpoint().occurrence(),
-                    CLOSURE_MEMBER, false);
-            paired.contributed.add(write.sessionId() + "|"
-                    + write.expressionRef());
-            paired.flipSites.addAll(walk.guardsAt(write.endpoint().site()));
-            into.add(paired);
+            wrote(walk, write, into);
+            if (read == null) continue;
+            for (WriteRow state : corpus.referentStates(write, read)) {
+                wrote(walk, state, into);
+            }
         }
         if (carriers.isEmpty() && walk.map.stated()) {
             walk.gaps.add(GapRow.of(sessionId, GapKind.DECLARATION_MISSING,
@@ -723,6 +735,18 @@ public final class ClosurePlanner {
                         into, sessionId, "carrier " + carrier, reader.node());
             }
         }
+    }
+
+    /** One recorded write a demanded value may rest on: its writer, flipped
+     *  at the guards of its method's write sites, contributing what it
+     *  wrote. */
+    private static void wrote(Walk walk, WriteRow write, List<Demand> into) {
+        Demand paired = new Demand(write.endpoint().occurrence(),
+                CLOSURE_MEMBER, false);
+        paired.contributed.add(write.sessionId() + "|"
+                + write.expressionRef());
+        paired.flipSites.addAll(walk.guardsAt(write.endpoint().site()));
+        into.add(paired);
     }
 
     /**

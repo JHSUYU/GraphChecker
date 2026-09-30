@@ -341,6 +341,21 @@ public final class Composer {
             return armChoices.get(selector);
         }
 
+        /**
+         * Every nested selector a state arm's stores are chosen among
+         * ({@link ComposedFamilies.ArmChoice#states}), so a claim can say
+         * which state of the delivered object the witness's queries saw.
+         */
+        public List<String> stateSelectors() {
+            Set<String> selectors = new LinkedHashSet<String>();
+            for (ComposedFamilies.ArmChoice arm : armChoices.values()) {
+                for (SmtLowering.StateChoice state : arm.states()) {
+                    selectors.add(state.selector);
+                }
+            }
+            return new ArrayList<String>(selectors);
+        }
+
         /** Every selector, for reading which disjunct a model selected. */
         public List<String> selectors() {
             return Composer.selectors(disjuncts);
@@ -682,6 +697,7 @@ public final class Composer {
         String selector = "path_selector__" + ordinal + "__"
                 + ArtifactIO.digest(path.pathId, 10);
         lowering.declare(selector, Sort.BOOL);
+        lowering.path();
         // (0a) THE CLOSURE (P3): the occurrences of this session the joins
         //      reach, and the seq each prefix runs to.  Row-level, before
         //      any lowering.
@@ -1395,10 +1411,8 @@ public final class Composer {
                 + write.version(), unused -> {
             String site = write.endpoint().site();
             Set<String> sites = new LinkedHashSet<String>();
-            // A write states its referent's runtime class and a carrier its
-            // declared type; names do not decide subtyping, so the carriers
-            // are matched on the reference sort alone.
-            for (String carrier : scope.carriersAt(site, "L")) {
+            for (String carrier : scope.carriersAt(site,
+                    write.javaType(), write.location().kind())) {
                 for (StaticScopeMap.Guard guard
                         : scope.constructionGuards(site, carrier)) {
                     sites.add(guard.siteId());

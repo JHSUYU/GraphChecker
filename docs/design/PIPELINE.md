@@ -261,7 +261,16 @@ could observe. Each demanded boundary input grows the closure:
   version, and writes of the same session by HB-concurrent occurrences — `Arms.concurrent`: not the
   same thread key, neither an anchor-chain ancestor of the other, both chains reaching a Root, neither
   Lost), and every activated occurrence on the reader's node holding a static write site of the
-  location's carrier (`STATIC_CANDIDATE_WRITER`);
+  location's carrier (`STATIC_CANDIDATE_WRITER`; `StaticScopeMap#carriersAt`: a recorded write joins
+  a carrier in its method whose site stores its location's kind, `#stores` — a field store or an
+  atomic's value a field, another mutator call a container's state, a read its field or a container
+  field's state, no site an array element — and whose declared type may hold the row's: the same
+  class, the bare sort, or, with no hierarchy at hand, value sorts that agree; a declared class no
+  sort names holds any reference, and a runtime class no sort names may be a container, never a
+  String or a box);
+  a store of a reference among those writes that states a `referentState` adds the writers of each
+  state of that container the read could have seen through it (`Corpus#referentStates`, COMPOSE's
+  `SmtLowering#statesOf`);
 - state reads a contributed expression makes (no ReadRow names them): the same writer rule, through
   `Corpus.expressionStateReads` (never for the anchor);
 - the two doors of the message a demanded occurrence served (sender and receiver of its causal
@@ -514,23 +523,47 @@ there is the run's cell.
 `Host.query` for a relation stating `owner` whose answer is no state; a state is never selected,
 since an array-valued choice over lambda terms is outside what z3 decides). Through a movable owner
 (`#movableOwner`, the projection's own test) the query is asked of the object the owner is, by
-`perCandidate`: the run's answer for the object the owner read returned (its joined write's
-identity, else the one its row states), and for each other object a write of the owner's location
-stored (`candidates`, any class), the same relation over that object's state (`#answerOf`), its
-receiver beneath views and iterators replaced by the state's chain (`#asOf`). Through each write
-that stored it, that state is the write's `referentState` and the later versions of it the reader
-could have seen (`#statesOf`, R3-REFCONT §1.4): the version live at the read in session order (the
-store's own when every one came later), and each later one whose writer is HB-concurrent with the
-reader (`SessionJoin#concurrent`, `Arms#concurrent`); several are chosen among by nested selectors
-`nest__<digest>`, one per (read, object, version), exactly one where the owner is that object, and
-a family arm delivering one store holds them to the states seen through that store
-(`#storeChoice`, conjoined by `ComposedFamilies#producerBody`). An answer holds only where the
+`perCandidate`, for the object the owner read returned (its joined write's identity, else the one
+its row states) and each other object a write of the owner's location stored (`candidates`, any
+class): the same relation over each state of that object the reader could have seen through a store
+of it (`#answerOf`), its receiver beneath views and iterators replaced by the state's chain
+(`#asOf`). Through one store, those states are its `referentState` and the later versions the reader
+could have seen (`#statesOf`, R3-REFCONT §1.4, the one rule EXPLORE also demands by): the version
+live at the read in session order (the store's own when every one came later), and each later one
+whose writer is HB-concurrent with the reader (`SessionJoin#concurrent`, `Arms#concurrent`). Each
+state is chosen by a nested selector `nest__<digest>`, one per (read, object, version), so every
+query through the read sees the object at one version; a family arm delivering one store holds them
+to the states seen through that store (`#storeChoice`, conjoined by `ComposedFamilies#producerBody`).
+Another object's answer holds exactly one of its selectors (a state a query has no answer at is none
+of its options). The run's own object answers as the run saw it through the store the read observed,
+and through any other store of it (a re-store publishes a later state) the states seen from that
+store's referent on: at most one of those selectors holds, none being the run's answer. A read is
+movable only in the path whose anchor joined it (`SmtLowering#path` clears the set when a path
+begins), so a message arm lowered in another session's scope asks the run's answer there. Every
+selector the path minted holds only under an arm of it that delivers a store its state was seen
+through (`nest_family__<N>__<digest>`, `ComposedFamilies#stateFamilies`), so with the observed
+store's arm, the pins' or no family, the run's object is the run's answer. A state rests on what
+made it: under its selector, the arm conjoins the decisions of the closure its write adds to the
+store producer's (`ComposedFamilies#stateClosure`, `Composer#closure` seeded with that write, the
+writers EXPLORE demands), each before its cutoff, and joins the reads they name; a state whose added
+closure the recording does not state is no option (`(not nest__…)`, its refusals named
+DIAGNOSTIC). An answer holds only where the
 owner is its object, so what its lowering requires is its case's precondition, never the path's. A
-store that states no state (`referentStateRefused`, none, or no version lowers) delivers no case,
+store that states no state (`referentStateRefused`, none, a version no write row states
+(`UNPUBLISHED`), or no version lowers) delivers no case,
 named DIAGNOSTIC `REFERENT_STATE_UNSTATED:<reason>:<object>@<session>`. A movable owner that is no
 reference read (a map's own read, `outer.get(k).get(k2)`) names no candidates and refuses the path
 (`UNSTATED_VALUE:OwnerCandidates:<location>`). `ENTRY` is a view to walk through; as a value no
 `Value` spells it, and it is refused by name.
+
+**What a state arm states for CONFIRM** (`SmtLowering#stateChoices`, `ComposedFamilies.ArmChoice#states`).
+A query's reads are the container reads (MAP location) of the owner's reader whose joined value was
+being lowered when it was asked (`#askedThrough`, the reads `#answering` holds). A writer arm carries,
+for each store it delivers, each state a query through the read may have seen with its selector, the
+write of that version and those reads; the claim keeps the ones the model chose (`ArmChoice#taking`,
+the nested selectors asked beside the arm selectors, `Composition#stateSelectors`) and publishes them
+per read as the selected arm's `referentStates` (`{selector, reader, writer, location, version}`,
+`ComposeMain#referentStates`; a query no read answered is one row with an empty `reader`).
 
 **New map operations** (`ContainerSmtCodec`). `READ_OR_DEFAULT` (`getOrDefault`) is a read whose
 absent key answers the default. `PUT_ALL` (`putAll(m)`) puts, in the order m's chain put them, each
@@ -543,8 +576,8 @@ are comparisons of a `READ` with null or the argument, lowered as any comparison
 **Construction guards** (`Composer#constructionGuards`, R3-REFCONT §1.6, D5). A write that stored a
 container states its `referentState`; its referent rests on every decision its occurrence took
 before it at the guard sites of the mutations its method made on a container it then published
-(`StaticScopeMap#constructionGuards`, the scope map's `publishedFrom` write sites, carriers matched on
-the reference sort alone), those that skipped a mutation included. `Independence` keeps them: a kept
+(`StaticScopeMap#constructionGuards`, the scope map's `publishedFrom` write sites, the carriers the
+store's recorded type may be held by, `StaticScopeMap#carriersAt`), those that skipped a mutation included. `Independence` keeps them: a kept
 read brings the guards of the write it observed, and an arm (`ComposedFamilies#producerBody`) seeds
 the guards of the writes it delivers (`Arms.Arm#write`); the closure then conjoins them in the
 polarity they took, and the reads they name are joined in turn. A decision whose condition is a
@@ -588,8 +621,9 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
 `ClaimPolicy`:
 
 1. No disjunct: `NO_SUPPORTED_WITNESS`.
-2. Every valuation is asked (up to 8 z3 processes at once) for the path selectors, arm selectors and
-   clock cells. Each path is also asked alone with every root free (60 s): unsat →
+2. Every valuation is asked (up to 8 z3 processes at once) for the path selectors, arm selectors,
+   the nested state selectors a state arm's stores are chosen among (§8) and clock cells; a selected
+   state arm keeps the states whose selector the model set. Each path is also asked alone with every root free (60 s): unsat →
    `PATH_SELF_CONTRADICTORY` DIAGNOSTIC; all paths → BLOCKING. An undecided valuation is BLOCKING.
    An ask is a verdict run, then a model run (sat) or a core run (unsat, where a core is wanted),
    each its own z3 process; only the core run tracks the named assertions (`smt.Z3#CORE_TRACKING`),
@@ -649,8 +683,9 @@ valuation, its selected path and session, and the selected arms of that path; th
 must have a target row at the anchor that reached it (else refused, exit 1 → unconfirmed).
 
 - **Realized**: when that target row observed the fatal, every selected arm is the session's own
-  delivery, and the session minted every moved root at the model's value, the session is the
-  confirmation (`realized.json`, no replay).
+  delivery, every write the model chose for a read of the join closure is the one that read saw
+  (`StateClosure#ran`), and the session minted every moved root at the model's value, the session
+  is the confirmation (`realized.json`, no replay).
 - **Otherwise one replay**: the world is the selected session's own focus row (empty for the seed)
   overlaid with the model's moved roots (`plantModel`: a clock as a skew off this session's reading,
   any other root as its value, at the recording's mint occurrence). The focus row focuses the anchor
@@ -659,10 +694,15 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
   they followed, and when the selected session was cut at its witness, a WAKE it never made waits
   for its whole order). `expected_edges.jsonl`: `WIRE` per consumer of each selected message arm (producer
   as that arm's session paired it), `STATE` per read of the anchor's join closure (each reached
-  occurrence's reads before its cutoff, the anchor's before its target seq; the writer the model
-  chose through a `writer_arm__`, else the observed one), `ORDER`
-  rows (the writer's activation exits before the reader's enters; every other writer of the location
-  before the writer or after the reader), `MARKER` per planted marker, `ANCHOR`.
+  occurrence's reads before its cutoff, the anchor's before its target seq; the write the model
+  chose, else the observed one: a `writer_arm__`'s write for a read of its location (among its
+  endpoint's writes, the one the read observed, else the last, as `Arms#stateArms` chose), and for a
+  query through a re-pointable reference the write of the state its arm's `referentStates` name,
+  §8), `ORDER` rows (the writer's activation exits before the reader's enters; every other writer of
+  the location the held write is of before the writer or after the reader), `MARKER` per planted
+  marker, `ANCHOR`. A `referentStates` row with no reader (a query asked outside every container
+  read), at a read that is no read of the closure, or naming a write the session does not state
+  refuses the confirmation by name; one at a read past its cutoff holds nothing the fatal rests on.
 - The replay runs through `campaign_obligation_replay` into `final/confirm/`. At runtime
   `Confirmation` compares WIRE at the attach and STATE at close, and holds each `ORDER` activation's
   entry until the named activations exit (`causynth.confirm.order.timeout.ms`, 300 s; a stall is a

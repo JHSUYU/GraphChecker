@@ -340,7 +340,20 @@ For a demanded read, `explore/ClosurePlanner#writers` asks the session's rows fo
 and the map for the static write sites of the read's carrier (`#carriersAt`, `#writersOf`), on the
 reader's node only. A recorded site's type matches a map row's by sort, or by the value it holds:
 a wrapper location agrees with a row of its primitive (a stored box states its value) and with a
-reference row (a stored null) (`StaticScopeMap#sameType`).
+reference row (a stored null) (`StaticScopeMap#sameType`). A reference row states its object's
+runtime class and the map row the carrier's declared type; with no class hierarchy at hand they
+agree where the cell may hold the class (`#mayHold`): the same class, or value sorts that agree (a
+container's shape by interface, `JavaContainerTypes#shape`; a String; a box's value). A declared
+class no sort names (an application class, an interface, `Object`) holds any reference; a runtime
+class no sort names may be a container, never a String or a box, both final. A `Map` field holding
+a `ConcurrentHashMap` is that field's carrier. The site must also store the recorded location's
+kind (`#stores`): a field store, or an atomic's write of its value, a field; any other mutator call
+the state of the container its carrier holds; a read its field or, of a container field, that
+container's state; and no site of the map an array element, whose write joins no carrier. COMPOSE joins a store to its carriers
+by the same rule (`Composer#constructionGuards`). A read of a reference also rests on the container
+each eligible store of it delivered: the closure demands the writers of every state of it the read
+could have seen through that store (`Corpus#referentStates`), the states COMPOSE answers a query
+through the read from.
 
 ### 5.6 Construction guards
 

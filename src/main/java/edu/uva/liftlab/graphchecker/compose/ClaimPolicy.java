@@ -591,7 +591,8 @@ public final class ClaimPolicy {
                 Collections.<String>emptyList(), false).unsat();
     }
 
-    /** Which arm of each family this model set the selector of. */
+    /** Which arm of each family this model set the selector of, and which
+     *  state of each object a state arm delivers its queries saw. */
     private static Map<String, ComposedFamilies.ArmChoice> armsOf(
             Composer.Composition composition, Z3.Answer answer) {
         Map<String, ComposedFamilies.ArmChoice> taken =
@@ -601,7 +602,9 @@ public final class ClaimPolicy {
             if (!"true".equals(value.getValue())) continue;
             ComposedFamilies.ArmChoice arm =
                     composition.arm(value.getKey());
-            if (arm != null) taken.put(value.getKey(), arm);
+            if (arm != null) {
+                taken.put(value.getKey(), arm.taking(answer.values()));
+            }
         }
         return taken;
     }
@@ -646,15 +649,17 @@ public final class ClaimPolicy {
     }
 
     /**
-     * One valuation asked for every path selector, family arm selector and
-     * clock cell (legalized: {@code Z3.modelQuery} appends names raw), so
-     * the claim can read path, delivery and clocks off the model.
+     * One valuation asked for every path selector, family arm selector,
+     * nested state selector and clock cell (legalized: {@code Z3.modelQuery}
+     * appends names raw), so the claim can read path, delivery, the states
+     * a delivered object was queried at, and clocks off the model.
      */
     private static Outcome outcome(Composer.Composition composition,
                                    Z3 solver, Composer.Valuation valuation,
                                    List<String> pinned, boolean wantCore) {
         List<String> asked = new ArrayList<String>(composition.selectors());
         asked.addAll(composition.armSelectors());
+        asked.addAll(composition.stateSelectors());
         for (String cell : composition.clockCells()) {
             asked.add(SmtNames.legalSymbols(cell));
         }
