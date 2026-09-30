@@ -111,9 +111,14 @@ runtime's region store.
 
 ### 2.4 Reading (`SessionReader`)
 
-`SessionReader.read` reads every file of a session whole. A file the codec refuses leaves that kind
-empty and sets `incomplete()` (IMPORT: `SESSION_INCOMPLETE`, BLOCKING); `readHeader` reads only the
-manifest and the roots. `seed()` = the manifest states SEED. `admitted()` = the seed, or at least one
+`SessionReader.read` reads every file of a session whole, each line into its row as it is parsed.
+A file the codec refuses leaves that kind empty and sets `incomplete()` (IMPORT:
+`SESSION_INCOMPLETE`, BLOCKING); `readHeader` reads only the manifest and the roots. A read shares
+what its rows spell alike (`RowPool`): each string a line parses to, and each occurrence, execution
+index and frame a row is built of, is held once across every session `readAll` reads. Rows spell
+their occurrence and call sites out in full, so held apiece they took most of the heap
+(solr-18413's 2.2 GB corpus: 52M strings, 5.5 GB). A JSON node is never shared: the expression
+walks go by node identity. `seed()` = the manifest states SEED. `admitted()` = the seed, or at least one
 own `obligations.jsonl` row and every one `ADMITTED`; only an admitted session states a topology.
 The schedule is read on demand.
 

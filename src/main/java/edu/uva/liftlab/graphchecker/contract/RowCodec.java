@@ -5,12 +5,16 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.google.gson.JsonSyntaxException;
+import com.google.gson.stream.JsonReader;
+import com.google.gson.stream.JsonToken;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.io.StringReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -65,9 +69,17 @@ public final class RowCodec {
     }
 
     public static OccurrenceAddress readOccurrence(JsonObject json) {
-        return OccurrenceAddress.of(NodeId.parse(string(json, NODE)),
-                string(json, REGION_ID), readContext(object(json, CONTEXT)),
-                readIndex(array(json, INDEX)));
+        return readOccurrence(json, new RowPool());
+    }
+
+    /** An occurrence, held once per pool: a session's rows name a few
+     *  hundred occurrences on tens of thousands of rows. */
+    private static OccurrenceAddress readOccurrence(JsonObject json,
+                                                    RowPool pool) {
+        return pool.shared(OccurrenceAddress.of(
+                NodeId.parse(string(json, NODE)), string(json, REGION_ID),
+                readContext(object(json, CONTEXT)),
+                readIndex(array(json, INDEX), pool)));
     }
 
     /** A causal context as {@code {form, ...}}: one shape per form. */
@@ -126,14 +138,15 @@ public final class RowCodec {
         return frames;
     }
 
-    private static ExecutionIndex readIndex(JsonArray frames) {
+    /** An index and each of its frames, held once per pool. */
+    private static ExecutionIndex readIndex(JsonArray frames, RowPool pool) {
         List<Frame> read = new ArrayList<>();
         for (JsonElement frame : frames) {
             JsonObject json = frame.getAsJsonObject();
-            read.add(Frame.of(string(json, CALL_SITE),
-                    integer(json, ITERATION)));
+            read.add(pool.shared(Frame.of(string(json, CALL_SITE),
+                    integer(json, ITERATION))));
         }
-        return ExecutionIndex.of(read);
+        return pool.shared(ExecutionIndex.of(read));
     }
 
     public static JsonObject writeEndpoint(Endpoint endpoint) {
@@ -146,8 +159,12 @@ public final class RowCodec {
     }
 
     public static Endpoint readEndpoint(JsonObject json) {
-        return Endpoint.of(readOccurrence(object(json, OCCURRENCE)),
-                string(json, "site"), readIndex(array(json, SITE_INDEX)),
+        return readEndpoint(json, new RowPool());
+    }
+
+    private static Endpoint readEndpoint(JsonObject json, RowPool pool) {
+        return Endpoint.of(readOccurrence(object(json, OCCURRENCE), pool),
+                string(json, "site"), readIndex(array(json, SITE_INDEX), pool),
                 integer(json, "attempt"));
     }
 
@@ -181,12 +198,18 @@ public final class RowCodec {
     }
 
     public static ActivationRow readActivation(JsonObject json) {
+        return readActivation(json, new RowPool());
+    }
+
+    /** One row, its parts taken from the pool of the read it is part of;
+     *  so for each kind below. */
+    static ActivationRow readActivation(JsonObject json, RowPool pool) {
         JsonObject producer = optionalObject(json, ANCHOR_PRODUCER);
         return ActivationRow.of(string(json, SESSION_ID),
-                readOccurrence(object(json, OCCURRENCE)),
+                readOccurrence(object(json, OCCURRENCE), pool),
                 string(json, "taskId"), bool(json, "focused"),
                 bool(json, "instrumented"), string(json, "threadKey"),
-                producer == null ? null : readEndpoint(producer));
+                producer == null ? null : readEndpoint(producer, pool));
     }
 
     private static final String ANCHOR_PRODUCER = "anchorProducer";
@@ -207,13 +230,17 @@ public final class RowCodec {
     }
 
     public static DecisionRow readDecision(JsonObject json) {
+        return readDecision(json, new RowPool());
+    }
+
+    static DecisionRow readDecision(JsonObject json, RowPool pool) {
         Map<String, Long> clocks = new LinkedHashMap<>();
         JsonObject readings = object(json, "clockReadings");
         for (Map.Entry<String, JsonElement> reading : readings.entrySet()) {
             clocks.put(reading.getKey(), reading.getValue().getAsLong());
         }
         return DecisionRow.of(string(json, SESSION_ID), number(json, SEQ),
-                readOccurrence(object(json, OCCURRENCE)),
+                readOccurrence(object(json, OCCURRENCE), pool),
                 string(json, "siteId"), integer(json, "ordinal"),
                 bool(json, "outcome"), string(json, "term"), clocks);
     }
@@ -229,8 +256,12 @@ public final class RowCodec {
     }
 
     public static ExportRow readExport(JsonObject json) {
+        return readExport(json, new RowPool());
+    }
+
+    static ExportRow readExport(JsonObject json, RowPool pool) {
         return ExportRow.of(string(json, SESSION_ID), number(json, SEQ),
-                readEndpoint(object(json, ENDPOINT)),
+                readEndpoint(object(json, ENDPOINT), pool),
                 string(json, "expressionRef"), string(json, JAVA_TYPE),
                 number(json, "handle"), string(json, "recordedValue"));
     }
@@ -257,13 +288,17 @@ public final class RowCodec {
     }
 
     public static AttachRow readAttach(JsonObject json) {
+        return readAttach(json, new RowPool());
+    }
+
+    static AttachRow readAttach(JsonObject json, RowPool pool) {
         JsonObject producer = optionalObject(json, "producer");
         return AttachRow.of(string(json, SESSION_ID), number(json, SEQ),
-                readEndpoint(object(json, ENDPOINT)), string(json, "symbol"),
-                string(json, JAVA_TYPE), string(json, "arrival"),
-                bool(json, "answered"),
+                readEndpoint(object(json, ENDPOINT), pool),
+                string(json, "symbol"), string(json, JAVA_TYPE),
+                string(json, "arrival"), bool(json, "answered"),
                 optionalString(json, "answeredValue"),
-                producer == null ? null : readEndpoint(producer),
+                producer == null ? null : readEndpoint(producer, pool),
                 string(json, "correlationId"),
                 optionalString(json, "pairedBy"));
     }
@@ -290,9 +325,13 @@ public final class RowCodec {
     }
 
     public static WriteRow readWrite(JsonObject json) {
+        return readWrite(json, new RowPool());
+    }
+
+    static WriteRow readWrite(JsonObject json, RowPool pool) {
         JsonObject referent = optionalObject(json, REFERENT_STATE);
         return WriteRow.of(string(json, SESSION_ID), number(json, SEQ),
-                readEndpoint(object(json, ENDPOINT)),
+                readEndpoint(object(json, ENDPOINT), pool),
                 readLocation(object(json, LOCATION)), number(json, "version"),
                 string(json, "expressionRef"), string(json, JAVA_TYPE),
                 referent == null ? null : WriteRow.Referent.of(
@@ -326,8 +365,12 @@ public final class RowCodec {
     }
 
     public static ReadRow readRead(JsonObject json) {
+        return readRead(json, new RowPool());
+    }
+
+    static ReadRow readRead(JsonObject json, RowPool pool) {
         return ReadRow.of(string(json, SESSION_ID), number(json, SEQ),
-                readEndpoint(object(json, ENDPOINT)),
+                readEndpoint(object(json, ENDPOINT), pool),
                 readLocation(object(json, LOCATION)),
                 number(json, "observedVersion"), string(json, "symbol"),
                 string(json, JAVA_TYPE),
@@ -359,8 +402,12 @@ public final class RowCodec {
     }
 
     public static RootMintRow readRootMint(JsonObject json) {
+        return readRootMint(json, new RowPool());
+    }
+
+    static RootMintRow readRootMint(JsonObject json, RowPool pool) {
         return RootMintRow.of(string(json, SESSION_ID), number(json, SEQ),
-                readOccurrence(object(json, OCCURRENCE)),
+                readOccurrence(object(json, OCCURRENCE), pool),
                 string(json, "rootId"), string(json, "symbol"),
                 RootKind.valueOf(string(json, "kind")),
                 string(json, "recordedValue"),
@@ -380,8 +427,12 @@ public final class RowCodec {
     }
 
     public static TargetRow readTarget(JsonObject json) {
+        return readTarget(json, new RowPool());
+    }
+
+    static TargetRow readTarget(JsonObject json, RowPool pool) {
         return TargetRow.of(string(json, SESSION_ID), number(json, SEQ),
-                readOccurrence(object(json, OCCURRENCE)),
+                readOccurrence(object(json, OCCURRENCE), pool),
                 string(json, "anchorSiteId"), string(json, "phiTerm"),
                 bool(json, "observedFatal"), bool(json, "reachedAnchor"));
     }
@@ -474,11 +525,18 @@ public final class RowCodec {
     public static <T> List<T> readAll(Path file,
                                       Function<JsonObject, T> reader)
             throws IOException {
-        List<JsonObject> objects = readJsonl(file);
-        List<T> rows = new ArrayList<>(objects.size());
-        for (JsonObject object : objects) {
-            rows.add(reader.apply(object));
-        }
+        return readAll(file, new RowPool(), reader);
+    }
+
+    /**
+     * The same read, its strings from {@code pool}, each line read into its
+     * row as it is parsed: a file's parsed lines are never all held.
+     */
+    static <T> List<T> readAll(Path file, RowPool pool,
+                               Function<JsonObject, T> reader)
+            throws IOException {
+        List<T> rows = new ArrayList<>();
+        eachLine(file, line -> rows.add(reader.apply(fromLine(line, pool))));
         return rows;
     }
 
@@ -494,9 +552,11 @@ public final class RowCodec {
         }
     }
 
+    /** Every line of a JSONL file, their strings shared ({@link RowPool}). */
     public static List<JsonObject> readJsonl(Path file) throws IOException {
+        RowPool pool = new RowPool();
         List<JsonObject> rows = new ArrayList<>();
-        eachLine(file, line -> rows.add(fromLine(line)));
+        eachLine(file, line -> rows.add(fromLine(line, pool)));
         return rows;
     }
 
@@ -533,7 +593,7 @@ public final class RowCodec {
     /** The session's expressions; a missing file is refused, never empty. */
     public static ExpressionTable readExpressions(Path file)
             throws IOException {
-        return SessionExpressionLog.read(file);
+        return SessionExpressionLog.read(file, new RowPool());
     }
 
     /** The role this session states, as one JSON object. */
@@ -572,8 +632,9 @@ public final class RowCodec {
     }
 
     private static JsonObject readObject(Path file) throws IOException {
-        return parse(new String(Files.readAllBytes(file),
-                StandardCharsets.UTF_8), file.toString());
+        return parse(new JsonReader(new StringReader(new String(
+                Files.readAllBytes(file), StandardCharsets.UTF_8))),
+                file.toString());
     }
 
     /** One row as one line: compact, and never containing a newline. */
@@ -582,7 +643,12 @@ public final class RowCodec {
     }
 
     public static JsonObject fromLine(String line) {
-        return parse(line, "row");
+        return parse(new JsonReader(new StringReader(line)), "row");
+    }
+
+    /** One line, each of its strings taken from {@code pool}. */
+    static JsonObject fromLine(String line, RowPool pool) {
+        return parse(pool.reader(line), "row");
     }
 
     // ---- reading fields -------------------------------------------------
@@ -599,11 +665,18 @@ public final class RowCodec {
         return json;
     }
 
-    private static JsonObject parse(String text, String what) {
+    /** One JSON object read as {@link JsonParser#parseString} reads one:
+     *  leniently, and nothing after it. */
+    private static JsonObject parse(JsonReader reader, String what) {
         JsonElement parsed;
         try {
-            parsed = JsonParser.parseString(text);
-        } catch (RuntimeException malformed) {
+            parsed = JsonParser.parseReader(reader);
+            if (!parsed.isJsonNull()
+                    && reader.peek() != JsonToken.END_DOCUMENT) {
+                throw new JsonSyntaxException(
+                        "Did not consume the entire document.");
+            }
+        } catch (IOException | RuntimeException malformed) {
             throw new IllegalArgumentException(
                     "malformed JSON in " + what, malformed);
         }
