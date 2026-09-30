@@ -618,7 +618,7 @@ public final class SmtLowering {
     private Term refuse(Reason reason, String origin, String detail,
                         Sort sort) {
         refuse(reason.composedSubject(origin, detail), "");
-        return free(sort);
+        return free(sort, IntegralWidth.NONE);
     }
 
     /** The result, defined only where every input is. */
@@ -736,11 +736,8 @@ public final class SmtLowering {
             return Term.of("true", Sort.BOOL);
         }
         String javaType = primitiveString(expression, "_java_type");
-        Sort encoded = JavaSmtSorts.sortOfJava(javaType);
-        Sort sort = expected == Sort.MAP || expected == Sort.ARRAY_VALUE
-                ? expected
-                : encoded != Sort.VALUE ? encoded
-                : expected == null ? Sort.REF : expected;
+        Sort sort = leafSort(javaType, expected);
+        if (sort == null) sort = Sort.REF;
         Declared held = declarations.get(raw);
         if (held != null && held.stated) {
             // The stated declaration wins over the node's shape: one
@@ -764,7 +761,7 @@ public final class SmtLowering {
         }
         return cut("UndeclaredFreeSymbol:" + raw,
                 "no root mint, clock reading, attach or read row of this "
-                        + "corpus states this symbol", sort);
+                        + "corpus states this symbol", sort, javaType);
     }
 
     /**
@@ -780,7 +777,7 @@ public final class SmtLowering {
             return unstated("NullComparedToContainerState:" + expected,
                     "a container state is the contents this replay "
                             + "propagated, and nothing states whether the "
-                            + "reference holding it was null", expected);
+                            + "reference holding it was null", expected, "");
         }
         return Term.of("nullRef", Sort.REF);
     }
@@ -792,7 +789,7 @@ public final class SmtLowering {
             refuse("PlaceholderExpression:"
                     + (function.isEmpty() ? "unknown" : function)
                     + "#" + count, "");
-            return free(Sort.INT);
+            return leaf(Sort.INT, primitiveString(expression, "_java_type"));
         }
         String name = symbols.mint("environment__",
                 scope + SEPARATOR + function + "#" + count, 10);
@@ -841,7 +838,8 @@ public final class SmtLowering {
                         "two placeholder rows of this session state this "
                                 + "mint version under different symbols, so "
                                 + "what the read it made returned has no "
-                                + "answer", expected);
+                                + "answer", expected,
+                        primitiveString(expression, "_java_type"));
             }
             if (!minted.isEmpty()) {
                 return symbolTerm(symbolNode(minted,
@@ -861,7 +859,7 @@ public final class SmtLowering {
         return unstated("Read:" + key + "@" + version,
                 "no write of this location at this version in this session, "
                         + "and the recording states no value it returned",
-                expected);
+                expected, primitiveString(expression, "_java_type"));
     }
 
     /**
@@ -972,7 +970,8 @@ public final class SmtLowering {
                         + "@" + version + ":" + value.sort + "!=" + cell,
                 "the write this read joined to states the whole container "
                         + "at that version, and this location does not say "
-                        + "which cell of it the read returned", cell);
+                        + "which cell of it the read returned", cell,
+                javaType);
     }
 
     private Term containerTerm(JsonObject expression, boolean field,
@@ -993,13 +992,12 @@ public final class SmtLowering {
             }
             refuse("ContainerRelation:" + (named.isEmpty() ? "unnamed"
                     : named), "");
-            return free(JavaSmtSorts.sortOfJava(
-                    primitiveString(expression, "_java_type")));
+            return leaf(null, primitiveString(expression, "_java_type"));
         }
         Sort sort = VmTermLowering.sortOfContainer(value.sort);
         if (sort == Sort.UNKNOWN) {
             refuse(origin + ":CONTAINER_STATE_USED_AS_VALUE", "");
-            return free(Sort.VALUE);
+            return free(Sort.VALUE, IntegralWidth.NONE);
         }
         return Term.vm(value.text, sort, value.integralWidth);
     }
@@ -1349,15 +1347,40 @@ public final class SmtLowering {
         }
     }
 
-    private Term cut(String subject, String detail, Sort sort) {
+    /** A refused LEAF of this Java type ({@link #leaf}). */
+    private Term cut(String subject, String detail, Sort expected,
+                     String javaType) {
         cuts.add(subject);
         refuse(CUT + ":" + subject, detail);
-        return free(sort);
+        return leaf(expected, javaType);
     }
 
-    private Term unstated(String subject, String detail, Sort sort) {
+    private Term unstated(String subject, String detail, Sort expected,
+                          String javaType) {
         refuse(UNSTATED + ":" + subject, detail);
-        return free(sort);
+        return leaf(expected, javaType);
+    }
+
+    /**
+     * The sort one leaf lowers at: a container state where the codec asks
+     * for one, else its own Java type's, else the one expected.
+     */
+    private static Sort leafSort(String javaType, Sort expected) {
+        if (expected != null && expected.containerState()) return expected;
+        Sort own = JavaSmtSorts.sortOfJava(javaType);
+        return own != Sort.VALUE ? own : expected;
+    }
+
+    /**
+     * A refused leaf: fresh, at the sort and width its node's Java type
+     * states, as a stated one would be.  At the sort expected alone, a read
+     * refused under a {@code ==} became VALUE and one missing value 57
+     * sort conflicts, and a long cut as an int a malformed {@code lcmp}
+     * (SOLR-18406 s46): one cause, one refusal.
+     */
+    private Term leaf(Sort expected, String javaType) {
+        return free(leafSort(javaType, expected),
+                JavaPrimitiveSmtSemantics.widthOfJavaType(javaType));
     }
 
     /**
@@ -1365,16 +1388,16 @@ public final class SmtLowering {
      * CONSTRUCT, NEVER PER REASON.  A refusal knows nothing about the value,
      * not even equality with another refused one; sharing one variable
      * makes paths spuriously UNSAT (e.g. {@code (>= u 0)} and its negation
-     * over one {@code u}).
+     * over one {@code u}).  An integral of no stated width is an int.
      */
-    private Term free(Sort sort) {
+    private Term free(Sort sort, IntegralWidth width) {
         Sort declared = sort == null || sort == Sort.UNKNOWN
                 ? Sort.VALUE : sort;
         String name = symbols.mint("unsupported__",
                 scope + "#" + declared + "#" + freeConstants++, 10);
         declare(name, declared);
-        return Term.of(name, declared, declared == Sort.INT
-                ? IntegralWidth.JAVA_INT : IntegralWidth.NONE);
+        return Term.of(name, declared, width == IntegralWidth.NONE
+                ? IntegralWidth.JAVA_INT : width);
     }
 
     /** How many refused constructs this lowering has named. */

@@ -110,6 +110,8 @@ public class ComposerTest {
     private static final String PLACEHOLDER =
             "M_I_field_REGION.target.in.count";
     private static final String NO_ROW = "M_I_field_REGION.target.in.absent";
+    private static final String NO_ROW_LONG =
+            "M_J_field_REGION.target.in.absent";
     /**
      * The same, at a VERSION: the VM's mint primitive gives the field a
      * new version whose value IS this symbol, so a read of that version
@@ -1561,6 +1563,17 @@ public class ComposerTest {
                     symbol(NO_ROW, "I"), integer("I", 4L)));
             session.decision(ANCHOR, "anchor#u11", true,
                     "EXPR.00000000000000b4");
+            // A long no row states, compared as the JVM compares longs, and
+            // a boolean read no row values, under ==.  Each is refused ONCE,
+            // as the long and the boolean they are: at an int and a VALUE
+            // cell, the operators over them were refused again (a malformed
+            // lcmp, 57 VALUE!=BOOL sort conflicts on a SOLR-18406 path).
+            session.expression("EXPR.00000000000000b6", binary(">=",
+                    binary("--", symbol(NO_ROW_LONG, "J"),
+                            integer("J", 4L)), integer("I", 0L)));
+            session.expression("EXPR.00000000000000b7", binary("==",
+                    read("INSTANCE_FIELD", 6L, 12L, 5L, "Z"),
+                    integer("Z", 1L)));
             // TWO placeholder rows stating ONE mint version under
             // DIFFERENT symbols.  A mint version is unique by
             // construction, so this is the recording contradicting itself
@@ -1637,7 +1650,8 @@ public class ComposerTest {
             session.target("(and EXPR.00000000000000b2 "
                     + "EXPR.00000000000000b3 EXPR.00000000000000b4 "
                     + "EXPR.00000000000000b5 EXPR.00000000000000fe "
-                    + "EXPR.00000000000000fd)", false, true);
+                    + "EXPR.00000000000000fd EXPR.00000000000000b6 "
+                    + "EXPR.00000000000000b7)", false, true);
             session.write();
         }
 
@@ -1668,6 +1682,17 @@ public class ComposerTest {
                 says(gaps, GapKind.UNSTATED_VALUE, "no root mint, clock "
                         + "reading, attach or read row of this corpus "
                         + "states this symbol"));
+        assertTrue("a long no row states is cut, and a boolean read no row "
+                        + "values is refused",
+                named(gaps, "UndeclaredFreeSymbol:" + NO_ROW_LONG)
+                        && named(gaps, "UNSTATED_VALUE:Read:"
+                        + "INSTANCE/6#12@5"));
+        for (GapRow gap : gaps) {
+            assertFalse("each once, as what it is: no operator over it is "
+                            + "refused again: " + gap.subject(),
+                    gap.subject().contains("MalformedJvmLcmpOperands")
+                            || gap.subject().contains("BinarySortConflict"));
+        }
         assertTrue("a reference projection the VM valued neither way is "
                         + "refused by name, naming the class and offset",
                 named(gaps, "UNSTATED_FIELD_PROJECTION:"
