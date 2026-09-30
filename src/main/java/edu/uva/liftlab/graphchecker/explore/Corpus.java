@@ -896,6 +896,26 @@ public final class Corpus implements Arms.Rows {
         return eligible;
     }
 
+    /**
+     * The states of the container one reference store delivered that a
+     * read of the reference could have seen through it
+     * ({@link SmtLowering#statesOf}: from the store's own referent on, the
+     * one live at the read and every later one an HB-concurrent writer
+     * made): the states a query through the read may be answered from.
+     * ONE implementation, used by the closure ({@link ClosurePlanner}) as
+     * COMPOSE answers from it; none for a store that states no referent.
+     */
+    public List<WriteRow> referentStates(WriteRow store, ReadRow read) {
+        if (store.referentState() == null) {
+            return Collections.<WriteRow>emptyList();
+        }
+        String session = store.sessionId();
+        return SmtLowering.statesOf(writesOf(session, SmtLowering.locationKey(
+                store.referentState().location())), store.referentState(),
+                read, (reader, writer) -> arms.concurrent(reader, writer,
+                        session));
+    }
+
     /** Whether a decision is a FAULT decision: its lowered term REACHES a
      *  MARKER root the same session minted (PIPELINE §7.2). */
     public boolean fault(String sessionId, DecisionRow decision) {

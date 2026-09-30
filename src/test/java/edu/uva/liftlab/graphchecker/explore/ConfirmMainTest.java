@@ -287,6 +287,130 @@ public class ConfirmMainTest {
     }
 
     /**
+     * A query through a re-pointable reference, by variant of what the
+     * model chose: another writer's store for the reference and a state of
+     * the map that store delivered is held as two joins -- the reference
+     * read to the store, the query's read to the write of that state, each
+     * with every other writer of its location outside the two -- and the
+     * session, which read neither, is no realization of it; the observed
+     * store with nothing else is the session itself; a state asked outside
+     * every read, or one no write states, is refused by name.
+     */
+    @Test
+    public void aQueryThroughAReplacedReferenceIsHeldToTheStateTheModelChose()
+            throws Exception {
+        String third = "hdfs/nn0#epoch0/region/REGION.9a0f1e2d/ctx:Root:"
+                + "TICK#2/idx:<a.Cleaner: void clean()>@0";
+        LocationId reference = LocationId.of(LocationKind.INSTANCE, "8",
+                "16");
+        LocationId ran = LocationId.of(LocationKind.MAP, "30", "-3");
+        LocationId other = LocationId.of(LocationKind.MAP, "20", "-3");
+        Endpoint cell = endpoint(ANCHOR, "a.Handler#h()#20:READ");
+        Endpoint query = endpoint(ANCHOR, "a.Handler#h()#21:READ");
+        Endpoint observed = endpoint(MINT, "a.Manager#store()#1:WRITE");
+        Endpoint store = endpoint(PRODUCER, "a.Convert#store()#1:WRITE");
+        Endpoint built = endpoint(PRODUCER, "a.Convert#put()#2:WRITE");
+        Endpoint later = endpoint(third, "a.Cleaner#remove()#3:WRITE");
+        Object[][] variants = {
+                // variant, the store chosen, the state's reader, version
+                {"chosen", store, query.id(), 1L},
+                {"observed", observed, null, 0L},
+                {"outside", store, "", 1L},
+                {"unwritten", store, query.id(), 9L}};
+        Path iteration = iteration();
+        SessionDir sel = SessionDir.of(iteration, "sel");
+        RowCodec.writeAll(sel.roots(), Collections.singletonList(
+                root("sel", "FAULT:IPC", "M_Z_fault.sel",
+                        RootKind.MARKER, "true")),
+                RowCodec::writeRootMint);
+        RowCodec.writeAll(sel.writes(), Arrays.asList(
+                WriteRow.of("sel", 7L, built, other, 1L, "EXPR.b", "L"),
+                WriteRow.of("sel", 8L, store, reference, 5L, "EXPR.s",
+                        "L", WriteRow.Referent.of(other, 1L), null),
+                WriteRow.of("sel", 11L, observed, ran, 4L, "EXPR.r",
+                        "L"),
+                WriteRow.of("sel", 12L, observed, reference, 6L,
+                        "EXPR.o", "L", WriteRow.Referent.of(ran, 4L),
+                        null),
+                WriteRow.of("sel", 35L, later, other, 2L, "EXPR.l",
+                        "L")), RowCodec::writeWrite);
+        RowCodec.writeAll(sel.reads(), Arrays.asList(
+                ReadRow.of("sel", 30L, cell, reference, 6L, "kc", "L",
+                        null),
+                ReadRow.of("sel", 31L, query, ran, 4L, "q", "L", null)),
+                RowCodec::writeRead);
+        for (Object[] variant : variants) {
+            Path claim = claim("FAULT:IPC", "true");
+            JsonObject document = JsonParser.parseString(new String(
+                    Files.readAllBytes(claim), StandardCharsets.UTF_8))
+                    .getAsJsonObject();
+            JsonObject arm = new JsonObject();
+            arm.addProperty("selector", "writer_arm__1__w");
+            JsonArray fills = new JsonArray();
+            fills.add(Interaction.of(InteractionKind.STATE,
+                    (Endpoint) variant[1], cell).id());
+            arm.add("interactionIds", fills);
+            arm.addProperty("sessionId", "sel");
+            JsonArray states = new JsonArray();
+            if (variant[2] != null) {
+                JsonObject state = new JsonObject();
+                state.addProperty("selector", "nest__x");
+                state.addProperty("reader", (String) variant[2]);
+                state.addProperty("writer", built.id());
+                state.addProperty("location", "MAP/20#-3");
+                state.addProperty("version", (Long) variant[3]);
+                states.add(state);
+            }
+            arm.add("referentStates", states);
+            document.getAsJsonArray("valuations").get(1).getAsJsonObject()
+                    .getAsJsonArray("selectedArms").add(arm);
+            Files.write(claim, document.toString()
+                    .getBytes(StandardCharsets.UTF_8));
+            Path out = folder.newFolder("state-" + variant[0]).toPath();
+            String refused = "";
+            try {
+                ConfirmMain.write(iteration, claim, manifest(), out);
+            } catch (ConfirmMain.Refused refusal) {
+                refused = refusal.getMessage();
+            }
+            String name = (String) variant[0];
+            assertEquals(name + ": " + refused, "outside".equals(name),
+                    refused.contains("asked outside every read"));
+            assertEquals(name + ": " + refused, "unwritten".equals(name),
+                    refused.contains("states no write"));
+            assertEquals(name, "observed".equals(name),
+                    Files.exists(out.resolve(ConfirmMain.REALIZED)));
+            if (!"chosen".equals(name)) continue;
+            List<String> held = new ArrayList<String>();
+            List<String> orders = new ArrayList<String>();
+            for (JsonObject edge : RowCodec.readJsonl(
+                    out.resolve(Confirmation.FILE))) {
+                String kind = edge.get("kind").getAsString();
+                if ("STATE".equals(kind)) {
+                    held.add(edge.get("reader").getAsString() + " <- "
+                            + edge.get("writer").getAsString() + " "
+                            + edge.get("location").getAsString() + "@"
+                            + edge.get("version").getAsLong());
+                } else if ("ORDER".equals(kind)) {
+                    orders.add(edge.get("before").getAsString() + " < "
+                            + edge.get("after").getAsString());
+                }
+            }
+            assertEquals("the reference to the store, the query to the"
+                    + " state of the map it delivered", Arrays.asList(
+                    cell.id() + " <- " + store.id() + " INSTANCE/8#16@5",
+                    query.id() + " <- " + built.id() + " MAP/20#-3@1"),
+                    held);
+            assertEquals("each writer before its reader, the run's store"
+                    + " and the later mutation after it", Arrays.asList(
+                    store.activation() + " < " + cell.activation(),
+                    cell.activation() + " < " + observed.activation(),
+                    query.activation() + " < " + later.activation()),
+                    orders);
+        }
+    }
+
+    /**
      * A selected session that already took every edge the model chose, ran
      * the moved root at the model's value and observed the fatal IS the run
      * that confirms the claim: nothing is handed to a replay.

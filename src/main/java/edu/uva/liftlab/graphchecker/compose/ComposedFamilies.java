@@ -85,12 +85,14 @@ final class ComposedFamilies {
         private final List<String> interactionIds;
         private final List<String> expressionRefs;
         private final boolean attested;
+        private final List<SmtLowering.StateChoice> states;
 
         private ArmChoice(String family, String groupId,
                           List<String> attachEndpointIds,
                           List<String> sessionIds, String producerPathId,
                           List<String> interactionIds,
-                          List<String> expressionRefs, boolean attested) {
+                          List<String> expressionRefs, boolean attested,
+                          List<SmtLowering.StateChoice> states) {
             this.family = family;
             this.groupId = groupId;
             this.attachEndpointIds = Collections.unmodifiableList(
@@ -102,6 +104,7 @@ final class ComposedFamilies {
             this.expressionRefs = Collections.unmodifiableList(
                     expressionRefs);
             this.attested = attested;
+            this.states = Collections.unmodifiableList(states);
         }
 
         static ArmChoice of(String family, String groupId,
@@ -121,7 +124,8 @@ final class ComposedFamilies {
             }
             return new ArmChoice(family, groupId, attachEndpointIds,
                     new ArrayList<String>(Collections.singletonList(
-                            session)), path, slots, refs, attested);
+                            session)), path, slots, refs, attested,
+                    Collections.<SmtLowering.StateChoice>emptyList());
         }
 
         /** The same arm, stated by one more run. */
@@ -130,7 +134,28 @@ final class ComposedFamilies {
             sessions.add(session);
             return new ArmChoice(family, groupId, attachEndpointIds,
                     sessions, producerPathId, interactionIds,
-                    expressionRefs, attested);
+                    expressionRefs, attested, states);
+        }
+
+        /** The same arm, with the states of the objects its stores deliver
+         *  a query through the read may see ({@link #states}). */
+        ArmChoice seeing(List<SmtLowering.StateChoice> seen) {
+            return new ArmChoice(family, groupId, attachEndpointIds,
+                    sessionIds, producerPathId, interactionIds,
+                    expressionRefs, attested, seen);
+        }
+
+        /** The same arm, with only the states a model's nested selectors
+         *  chose ({@code true} in {@code model}). */
+        ArmChoice taking(Map<String, String> model) {
+            List<SmtLowering.StateChoice> taken =
+                    new ArrayList<SmtLowering.StateChoice>();
+            for (SmtLowering.StateChoice state : states) {
+                if ("true".equals(model.get(state.selector))) {
+                    taken.add(state);
+                }
+            }
+            return seeing(taken);
         }
 
         /** The named assertion this arm-set is one case of. */
@@ -178,6 +203,16 @@ final class ComposedFamilies {
 
         public boolean attested() {
             return attested;
+        }
+
+        /**
+         * For a state arm, each state of the object a store it delivers
+         * holds that a query through the read may be answered from
+         * ({@link SmtLowering#stateChoices}); once a model is read
+         * ({@link #taking}), the ones it chose.
+         */
+        public List<SmtLowering.StateChoice> states() {
+            return states;
         }
     }
 
@@ -1009,6 +1044,9 @@ final class ComposedFamilies {
         }
         // One selector per writer occurrence, its body stated once.
         Map<String, String> selectorOf = new LinkedHashMap<String, String>();
+        // Nested selector -> the arms delivering a store it is a state of.
+        Map<String, List<String>> delivering =
+                new LinkedHashMap<String, List<String>>();
         for (Map.Entry<String, List<Out>> writer
                 : outsOfWriter.entrySet()) {
             String name = "writer_arm__" + ordinal + "__"
@@ -1025,9 +1063,34 @@ final class ComposedFamilies {
             stated.add(formula);
             assertFamily(assertion,
                     "(=> " + selector + " " + formula + ")");
+            List<SmtLowering.StateChoice> states =
+                    new ArrayList<SmtLowering.StateChoice>();
+            for (Out out : writer.getValue()) {
+                if (out.arm.write() == null) continue;
+                for (String symbol : out.symbols) {
+                    for (SmtLowering.StateChoice state : lowering
+                            .stateChoices(session, symbol, out.arm.write())) {
+                        states.add(state);
+                        add(delivering, state.selector, name);
+                    }
+                }
+            }
             choose(name, ArmChoice.of(assertion,
                     writer.getKey(), Collections.<String>emptyList(),
-                    session, armsOf(writer.getValue())));
+                    session, armsOf(writer.getValue())).seeing(states));
+        }
+        // A nested selector holds only under an arm delivering a store its
+        // state was seen through: under none -- the arm of the store the
+        // read observed, the pins', no family -- the run's own object
+        // answers as the run saw it ({@code SmtLowering#answerOf}).
+        for (String nested : lowering.nestedSelectors(session)) {
+            List<String> by = delivering.get(nested);
+            String formula = "(=> " + nested + " " + VmTermLowering.or(
+                    by == null ? Collections.<String>emptyList() : by) + ")";
+            stated.add(formula);
+            assertFamily("nest_family__" + ordinal + "__"
+                            + ArtifactIO.digest(nested + "|" + session, 12),
+                    "(=> " + selector + " " + formula + ")");
         }
         // And one exactly-one per location, over the writers it has.
         for (Map.Entry<String, List<String>> location

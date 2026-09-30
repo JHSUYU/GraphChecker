@@ -341,6 +341,21 @@ public final class Composer {
             return armChoices.get(selector);
         }
 
+        /**
+         * Every nested selector a state arm's stores are chosen among
+         * ({@link ComposedFamilies.ArmChoice#states}), so a claim can say
+         * which state of the delivered object the witness's queries saw.
+         */
+        public List<String> stateSelectors() {
+            Set<String> selectors = new LinkedHashSet<String>();
+            for (ComposedFamilies.ArmChoice arm : armChoices.values()) {
+                for (SmtLowering.StateChoice state : arm.states()) {
+                    selectors.add(state.selector);
+                }
+            }
+            return new ArrayList<String>(selectors);
+        }
+
         /** Every selector, for reading which disjunct a model selected. */
         public List<String> selectors() {
             return Composer.selectors(disjuncts);

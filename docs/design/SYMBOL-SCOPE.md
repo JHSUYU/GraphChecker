@@ -346,7 +346,10 @@ agree where the cell may hold the class (`#mayHold`): the same class, or value s
 container's shape by interface, `JavaContainerTypes#shape`; a String; a box's value), and a class
 no sort names (an application class, an interface, `Object`) agrees with any reference. A `Map`
 field holding a `ConcurrentHashMap` is that field's carrier. COMPOSE joins a store to its carriers
-by the same rule (`Composer#constructionGuards`).
+by the same rule (`Composer#constructionGuards`). A read of a reference also rests on the container
+each eligible store of it delivered: the closure demands the writers of every state of it the read
+could have seen through that store (`Corpus#referentStates`), the states COMPOSE answers a query
+through the read from.
 
 ### 5.6 Construction guards
 

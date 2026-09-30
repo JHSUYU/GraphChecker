@@ -1737,6 +1737,61 @@ public class ExploreTest {
 
     // ---- (5) the closure holds the writer of every version read -------
 
+    /**
+     * A read of a reference rests on the container its store delivered: the
+     * closure demands the writer of each state of it the read could have
+     * seen through that store ({@code Corpus#referentStates}, the rule
+     * COMPOSE answers a query by) -- here a mutation after the store, live
+     * at the read, by an occurrence no row of the anchor joins -- and a
+     * store that states no container demands none.
+     */
+    @Test
+    public void aReferenceReadDemandsTheStateItsStoreDelivered()
+            throws Exception {
+        OccurrenceAddress builder = occurrence("hdfs-case/dn0",
+                "REGION.build", CausalContext.of(Role.of("BUILDER"), "", 1),
+                "o.a.h.Builder#run#2");
+        OccurrenceAddress cleaner = occurrence("hdfs-case/dn0",
+                "REGION.clean", CausalContext.of(Role.of("CLEANER"), "", 1),
+                "o.a.h.Cleaner#run#2");
+        LocationId reference = LocationId.of(LocationKind.INSTANCE, "8",
+                "16");
+        LocationId map = LocationId.of(LocationKind.MAP, "20", "-3");
+        for (boolean referent : new boolean[]{true, false}) {
+            Path iteration = tree.newFolder("referent-" + referent).toPath();
+            Session seed = new Session(iteration, "s-seed");
+            for (OccurrenceAddress at : Arrays.asList(TARGET, WRITER,
+                    builder, cleaner)) {
+                seed.activation(at, false);
+            }
+            seed.symbolic("e.put", "M_PUT");
+            seed.symbolic("e.map", "M_MAP");
+            seed.symbolic("e.removed", "M_REMOVED");
+            seed.write(at(builder, "Map#put#1:WRITE", "Builder#build#1"),
+                    map, 1L, "e.put");
+            seed.writes.add(WriteRow.of("s-seed", ++seed.seq, at(WRITER,
+                    "Policy#update#2:WRITE", "Policy#update#2"), reference,
+                    2L, "e.map", "L", referent ? WriteRow.Referent.of(map,
+                            1L) : null, null));
+            seed.write(at(cleaner, "Map#remove#3:WRITE", "Cleaner#clean#3"),
+                    map, 3L, "e.removed");
+            seed.read(at(TARGET, "Handler#get#4:READ", "Handler#get#4"),
+                    reference, 2L, "M_KC", "0");
+            seed.target(TARGET, "Handler#get#5", "(= M_KC 0)");
+            seed.flush();
+
+            ClosurePlanner.Plan plan = ClosurePlanner.plan(
+                    Corpus.read(iteration, null), TARGET,
+                    ClosurePlanner.DEFAULT_MAX_TASKS, StaticScopeMap.empty());
+            List<String> focused = new ArrayList<String>();
+            for (Task task : plan.tasks) focused.add(task.focused().render());
+            assertTrue("the store's writer: " + focused,
+                    focused.contains(WRITER.render()));
+            assertEquals("the state the read saw through the store: "
+                    + focused, referent, focused.contains(cleaner.render()));
+        }
+    }
+
     @Test
     public void closureHoldsTheWriterOfAReadVersionAndTheWireProducer()
             throws Exception {
