@@ -208,8 +208,24 @@ public final class Z3 {
     // ------------------------------------------------------------------
 
     /**
+     * How far past its budget a z3 stops itself ({@code -T}, whole seconds).
+     * The driver stops z3 at the budget; z3's own clock matters only once
+     * no driver is left -- its JVM killed on a bound, stopped, or out of
+     * memory -- and an orphan ran on alone for hours (lift06: four
+     * {@code z3 -in -smt2} of 2.4 GB each, 8.5 h after their JVMs died).
+     * Past the budget, so a live driver is always the one that stops z3.
+     */
+    static final long ORPHAN_MARGIN_SECONDS = 10L;
+
+    /** z3's own wall clock for one run of {@code budgetMillis}. */
+    static String hardTimeout(long budgetMillis) {
+        return "-T:" + ((budgetMillis + 999L) / 1000L + ORPHAN_MARGIN_SECONDS);
+    }
+
+    /**
      * One z3 process.  Each pipe direction has its own thread (else large
-     * queries deadlock), and the timeout is enforced here, not by z3.
+     * queries deadlock), and the timeout is enforced here; z3's own
+     * ({@link #hardTimeout}) only outlives a driver that died.
      */
     private String run(String input, long budgetMillis) {
         runs.incrementAndGet();
@@ -217,7 +233,7 @@ public final class Z3 {
         Process process;
         try {
             ProcessBuilder builder = new ProcessBuilder(z3.toString(),
-                    "-in", "-smt2");
+                    hardTimeout(budgetMillis), "-in", "-smt2");
             builder.redirectErrorStream(true);
             process = builder.start();
         } catch (IOException notLaunched) {

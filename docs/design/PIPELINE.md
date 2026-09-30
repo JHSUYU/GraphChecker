@@ -414,7 +414,9 @@ each comparison atom over a clock whose polarity `not`/`and`/`or` resolve (`expl
 an atom it cannot strengthen is a DIAGNOSTIC gap). The objective is the nearest world:
 `minimize Σ|x − recorded(x)|` over bounded Int roots and clocks (`FlipQueryText`).
 
-z3 runs with `solver_timeout_ms`. Timeout (`SOLVER_TIMEOUT` gap), `unknown` or error →
+z3 runs with `solver_timeout_ms`, which its driver (`smt.Z3`) enforces; each z3 also carries its own
+hard timeout ten seconds past that budget (`-T`, `Z3#hardTimeout`), so one whose JVM died stops by
+itself. Timeout (`SOLVER_TIMEOUT` gap), `unknown` or error →
 `NOT_ADMITTED`; unsat → `UNSAT`. On sat (`ObligationFactory.solve`): roots the assertions reach are
 read back by root id, the flipped path's clocks as skews (`model − reading`; one outside a Java long
 refuses), controls as answers keyed by attach endpoint id (`ObligationFactory#answer`: a String
