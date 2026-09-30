@@ -1703,8 +1703,8 @@ public final class Composer {
             lowering.bind(key, version, null, new SmtLowering.Binder<Boolean>() {
                 @Override
                 public Term join(JsonElement value) {
-                    return lowering.dispatch(value, null,
-                            "state-join:" + key + "@" + version);
+                    return lowering.dispatch(value, SmtLowering.whole(value,
+                            null), "state-join:" + key + "@" + version);
                 }
 
                 @Override

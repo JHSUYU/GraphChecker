@@ -425,8 +425,10 @@ BLOCKING `DECLARATION_MISSING`; no disjunct is BLOCKING `ADMISSION_GAP` naming t
   (`UNSTATED_VALUE`); a refused join is dropped for the mint or the pin only when nothing it rests on
   can move (a root, a clock cell, a handoff, an anchor location a STATE family may re-pair), and
   dropped it raises nothing (no refusal, side condition or gap); an object the VM named
-  (`M_L'<class>'_<rid>`) is its identity whatever its class, and only its state is asked of it as a
-  container (`Host#state`: that object's own state root, `container__`);
+  (`M_L'<class>'_<rid>`) is the reference it is, whatever its class, where a whole value is asked
+  (`SmtLowering#whole`: a join, a published expression, a stated value) or a reference is; an
+  operator asks for its own operands, and a named container there is its state, at its class's
+  sort (`Host#state`: that object's own state root, `container__`);
 - `pi_p`: the anchor's decisions strictly before the target row's seq, and each reached occurrence's
   decisions before its cutoff;
 - `phi_p`: the published `phiTerm` (fatal polarity); an empty phi is `true` when the run observed the

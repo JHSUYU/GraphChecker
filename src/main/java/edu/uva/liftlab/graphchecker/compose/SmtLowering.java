@@ -626,9 +626,21 @@ public final class SmtLowering {
         JsonObject expression = reference == null ? null
                 : expressions.expression(reference);
         if (expression == null) return null;
-        Term value = dispatch(expression, null, origin);
+        Term value = dispatch(expression, whole(expression, null), origin);
         sideCondition(value.precondition);
         return value;
+    }
+
+    /**
+     * The sort a WHOLE value is asked at -- one a write stored, a read
+     * joins or a row publishes: an object the VM named is the reference it
+     * is, whatever its class; any other value the sort its reader expects.
+     * An operator asks for its own operands, and a named container there
+     * is its state, as its class's sort says.
+     */
+    static Sort whole(JsonElement value, Sort expected) {
+        return named(value) && (expected == null
+                || !expected.containerState()) ? Sort.REF : expected;
     }
 
     /**
@@ -1070,10 +1082,10 @@ public final class SmtLowering {
             return Term.of("true", Sort.BOOL);
         }
         String javaType = primitiveString(expression, "_java_type");
-        // An object the VM named is an identity whatever its class: only its
-        // state is asked of it as a container ({@link #host}).
-        Sort sort = VmRows.referencedObjectRid(raw) > 0L
-                && (expected == null || !expected.containerState())
+        // An object the VM named, asked as a reference, is its identity
+        // whatever its class ({@link #whole}).
+        Sort sort = expected == Sort.REF
+                && VmRows.referencedObjectRid(raw) > 0L
                 ? Sort.REF : leafSort(javaType, expected);
         if (sort == null) sort = Sort.REF;
         Declared held = declarations.get(raw);
@@ -1446,9 +1458,9 @@ public final class SmtLowering {
                 new Binder<Term>() {
             @Override
             public Term join(JsonElement value) {
-                return observing(element(dispatch(value, expected,
-                        origin + ":join"), expression, location, key,
-                        version, expected), key, version);
+                return observing(element(dispatch(value, whole(value,
+                        expected), origin + ":join"), expression, location,
+                        key, version, expected), key, version);
             }
 
             @Override
@@ -1576,7 +1588,7 @@ public final class SmtLowering {
         if (string != null) return Term.nonNullString(quote(string), "true");
         if (VmExpressionIr.SYMBOLIC_NULL.equals(text)
                 || VmRows.referencedObjectRid(text) > 0L) {
-            return symbolTerm(symbolNode(text, javaType), null);
+            return symbolTerm(symbolNode(text, javaType), Sort.REF);
         }
         Sort sort = JavaSmtSorts.sortOfJava(javaType);
         String literal = sort == Sort.BOOL
@@ -1879,7 +1891,7 @@ public final class SmtLowering {
     }
 
     /** Whether a node is an object the VM named ({@code M_L'<class>'_<rid>}). */
-    private static boolean named(JsonElement node) {
+    static boolean named(JsonElement node) {
         return VmExpressionIr.SYMBOL_TYPE.equals(VmExpressionIr.typeOf(node))
                 && VmRows.referencedObjectRid(primitiveString(
                 node.getAsJsonObject(), "_exp")) > 0L;
