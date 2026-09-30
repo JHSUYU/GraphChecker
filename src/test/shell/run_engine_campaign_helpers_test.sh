@@ -471,7 +471,7 @@ grep -q 'replay session census' "${emit_root}/emit.log" \
 # COMPOSE-1: one campaign, one anchor, one artifact directory.  The composer
 # writes candidate.smt2 and its manifest straight into the epoch's final/;
 # there is no per-occurrence fan-out to key, because which execution of the
-# annotated site the campaign answers about is the case's declaration.
+# declared target site the campaign answers about is the case's declaration.
 emit_fixture
 [[ "$(jq -r '.anchor' "${composition_manifest}")" == "REGION.T#1" ]] \
   || fail "the composition does not name its anchor"
@@ -481,7 +481,7 @@ emit_fixture
   || fail "the composition fanned out over occurrences"
 
 # PLAN-1: the schedule index says which members carry a target-reach goal, so
-# the plan can name every observed occurrence of the annotated site.
+# the plan can name every observed occurrence of the declared target site.
 index_root="${test_tmp}/schedule-index"
 mkdir -p "${index_root}"
 index_file="${index_root}/runtime_workflow_schedule_index.json"

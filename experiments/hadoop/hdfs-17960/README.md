@@ -10,7 +10,7 @@ enabled, restarts the NameNode with ordered deletion disabled, then checkpoints.
 restarted NameNode the second deletion record finds no such snapshot; with ordered deletion
 off and the image not yet loaded, `removeSnapshot` takes its tolerance path and returns
 without removing anything, while the counter is decremented all the same. Counter and
-snapshot list then disagree and `saveNamespace` reaches the annotated snapshot-count check
+snapshot list then disagree and `saveNamespace` reaches the declared snapshot-count check
 in `FSImageFormatPBSnapshot.Saver.serializeSnapshotSection`. The recording takes the healthy
 arm, so the fatal predicate is concrete on the recorded path: the witness has to come from a
 flipped decision, which is what makes this case the worked example for the whole design.

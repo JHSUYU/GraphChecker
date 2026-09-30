@@ -36,7 +36,7 @@ import static org.junit.Assert.assertEquals;
  * KeyProto} whose hierarchy reaches {@code GeneratedMessageV3}, held by the
  * response of a service method {@code getKeys(RpcController, KeysRequest)},
  * its {@code KeyProto$Builder.setKeyId}, two producers calling it, and an
- * annotated throw deciding on two {@code getKeyId()} reads -- beside a third
+ * declared throw deciding on two {@code getKeyId()} reads -- beside a third
  * read nothing demands -- and on the same field of {@code SectionProto}, a
  * message no service carries (an on-disk section) with its own setter call.
  */
@@ -135,7 +135,7 @@ public class WirePortDerivationTest {
         return found;
     }
 
-    /** The scene, and the annotated throw in {@code check}. */
+    /** The scene, and the declared throw in {@code check}. */
     private static CausynthTargetContext target() {
         G.reset();
         Options.v().set_allow_phantom_refs(true);

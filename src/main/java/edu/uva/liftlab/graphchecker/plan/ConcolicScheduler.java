@@ -245,7 +245,7 @@ public final class ConcolicScheduler {
         return result;
     }
 
-    /** The arm of one branch site that reaches the annotated target, from the
+    /** The arm of one branch site that reaches the declared target, from the
      *  TARGET_SITE guards ({@code causynth.SiteControlDependence}). {@code
      *  null}: no arm stated, which the caller refuses (never a default). */
     static Boolean fatalArm(StaticScopeMap map, String guardSiteId) {
@@ -256,7 +256,7 @@ public final class ConcolicScheduler {
             if (found != null && !found.equals(arm)) {
                 throw new IllegalArgumentException(
                         "AMBIGUOUS_FATAL_ARM: " + guardSiteId + " reaches "
-                                + "the annotated target on both arms");
+                                + "the declared target on both arms");
             }
             found = arm;
         }
@@ -487,7 +487,7 @@ public final class ConcolicScheduler {
     }
 
     /** The one candidate of one replayable goal. A target-reach goal also names
-     *  the branch it must decide: the recorded guard of the annotated throw, on
+     *  the branch it must decide: the recorded guard of the declared throw, on
      *  the arm that reaches it. No path search, ranking or election here. */
     private static void appendGoalCandidates(
             Arguments arguments, List<Candidate> result, Goal goal,
@@ -518,7 +518,7 @@ public final class ConcolicScheduler {
 
     /**
      * The recorded branch where the target stands: of the ones the scope map
-     * names as guards of the annotated throw, the first in unit order -- one
+     * names as guards of the declared throw, the first in unit order -- one
      * for a conjunction ({@code a && b} jumps to the throw from its last
      * test only), the first test the recording evaluated of a disjunction
      * ({@code a || b} jumps to it from each; {@link #targetGuards} names
@@ -1500,7 +1500,7 @@ public final class ConcolicScheduler {
         public final String occurrenceId;
         public final String goalId;
         public final int maxJobs;
-        /** The occurrence of the annotated site the case declares, or "". */
+        /** The occurrence of the target site the case declares, or "". */
         public final String targetOccurrence;
 
         private Arguments(Path regionPlan, Path candidateGraph,

@@ -4,7 +4,8 @@
 For every case and stage, the baseline's and the candidate's stage
 directories are compared file by file: every file either side wrote (links
 are inputs and skipped; logs and timings are not outputs), with each side's
-own output root replaced by one token, so a path is never a difference.  A
+own output root, jar and declarations checkout replaced by one token each,
+so a path is never a difference.  A
 stage's `status` counts only by its exit.  A differing file is summarised as
 rows added/removed (jsonl), the top-level keys that differ (json), or its
 size; the rows of both sides are the same with only their order changed is
@@ -390,6 +391,11 @@ def main(argv):
     with open(os.path.join(out, "chains.txt")) as handle:
         chains = handle.read().split()
     stages = [stage for chain in chains for stage in CHAINS[chain]]
+    repos = {}
+    with open(os.path.join(out, "sides.tsv")) as handle:
+        for line in handle:
+            side, _, repo = line.rstrip("\n").split("\t")
+            repos[side] = repo
     report = []
     worst = 0
     for case in cases:
@@ -399,6 +405,7 @@ def main(argv):
             tokens.append((os.path.join(out, side).encode(), b"<SIDE>"))
             tokens.append((os.path.join(out, "jars", side + ".jar").encode(),
                            b"<JAR>"))
+            tokens.append((repos[side].encode(), b"<REPO>"))
         for stage in stages:
             dirs = {side: os.path.join(roots[side], stage) for side in SIDES}
             status = {side: status_of(dirs[side]) for side in SIDES}

@@ -90,7 +90,7 @@ import java.util.function.BiConsumer;
 import java.util.function.Function;
 
 
-/** Annotation-directed static backward data-flow analysis. */
+/** Target-directed static backward data-flow analysis. */
 public final class CausynthPipeline {
     private static final Logger LOG = LoggerFactory.getLogger(CausynthPipeline.class);
     private static final String TRACE_RECORDER_CLASS =

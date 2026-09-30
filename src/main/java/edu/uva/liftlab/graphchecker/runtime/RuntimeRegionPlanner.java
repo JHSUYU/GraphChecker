@@ -860,7 +860,7 @@ public final class RuntimeRegionPlanner {
                 || "TASK_ENTRY".equals(authority)
                 || "MAIN_ENTRY".equals(authority)
                 || "EXPLICIT_FAULT_ENTRY".equals(authority)
-                // The annotated target, when no execution-context entry
+                // The declared target, when no execution-context entry
                 // statically reaches it.
                 || "FAILURE_TARGET_ENTRY".equals(authority);
     }

@@ -63,7 +63,7 @@ import static edu.uva.liftlab.graphchecker.smt.JsonFields.strings;
  *       markers) -- with the static half of the port it would mint ({@link
  *       Declared}). Scope only: {@code ConcolicScheduler
  *       .SymbolicInputSelection} alone decides admission.</li>
- *   <li>{@code TARGET_SITE}: the annotated throw the slice starts at.</li>
+ *   <li>{@code TARGET_SITE}: the declared throw the slice starts at.</li>
  *   <li>{@code ROOT_SITE}: each reached call site defining a {@code
  *       <callee>.return} cell, with the {@code local} it lands in (where
  *       INSTRUMENT binds a {@code LOCAL_DEFINITION}). It names its region by
@@ -146,7 +146,7 @@ public final class StaticScopeMap {
     }
 
     /** One branch a site is control-dependent on, with the arm that reaches it
-     *  (for the annotated throw, the fatal polarity). {@code null} outcome: not
+     *  (for the declared throw, the fatal polarity). {@code null} outcome: not
      *  binary (a switch). */
     public static final class Guard {
         private final String siteId;
@@ -1354,7 +1354,7 @@ public final class StaticScopeMap {
                         + site.declared.dependencyCell));
     }
 
-    /** The annotated target sites this map states. */
+    /** The declared target sites this map states. */
     public List<Site> targetSites() {
         return ofRole(TARGET_SITE, site -> true);
     }

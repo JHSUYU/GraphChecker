@@ -801,7 +801,10 @@ workload and no replay; `ab_compare.py` prints one table and exits 1 when a gati
 2 when one could not be checked. Every stage gates on bytes, the static pass included: it is the
 same on every host and run ([SYMBOL-SCOPE.md §2.3](SYMBOL-SCOPE.md)). A round is read as the
 current engine reads it, so the gate needs a round recorded by a build whose row contract HEAD
-still reads.
+still reads. Both sides run under the gate's own checkout's case declarations, unless
+`AB_BASELINE_REPO` names the baseline's: a change that moves a declaration's format with the jar
+(the target spec) is gated that way, and each side's checkout path is one token in the
+comparison.
 
 ## 13. Reading a run
 

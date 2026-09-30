@@ -30,16 +30,16 @@ on the upstream fix branch `HDFS-17899-followup-invalid-encryption-key`) and alr
 the instrumentation stack. Do not base this case on the upstream follow-up branch: it has
 the fix, so there is no fatal arm to reach.
 
-## The one annotated site, and why it is not any of the three throws
+## The one target site, and why it is not any of the three throws
 
-`@CausynthExceptionTarget` has to sit on a `throw new` **whose backward slice reaches the
-state the mechanism turns on**. For all three paths that is the `allKeys` miss in
-`BlockTokenSecretManager.retrieveDataEncryptionKey`, which is also where HDFS-11741,
-HDFS-17897 and all three HDFS-17899 cases are annotated. It is not convenience.
+The target has to be a `throw new` **whose backward slice reaches the state the mechanism
+turns on**. For all three paths that is the `allKeys` miss in
+`BlockTokenSecretManager.retrieveDataEncryptionKey`, which is also the target of HDFS-11741,
+HDFS-17897 and all three HDFS-17899 cases. It is not convenience.
 
-The three in-frame ends above cannot carry it. A and B are rethrows, and
-`@CausynthExceptionTarget` is `@Target(TYPE_USE)`, so it can only sit on a constructed type.
-C is a real `throw new`, and it was annotated there first — but its only operand is a
+The three in-frame ends above cannot be it. A and B are rethrows, and a target is a
+constructed exception handed straight to `athrow` (`causynth/ExceptionTargetLineResolver`).
+C is a real `throw new`, and it was the target first — but its only operand is a
 `String`, so nothing classifies the key-management methods as writers of tracked state, they
 lose `STATE_WRITER_ENTRY`, and `RuntimeRegionPlanner#validRootAuthority` refuses the whole
 recording by name:

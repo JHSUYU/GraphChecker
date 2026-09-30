@@ -94,7 +94,7 @@ the window, and the consumer presents that key:
    IPC doors are the witness;
 3. the consumer (Balancer, SPS, a source DataNode, the client) then takes the
    master's CURRENT key — over its own in-window RPC where it has one — and
-   presents it in the transfer the annotated check verifies.
+   presents it in the transfer the target check verifies.
 
 The recording succeeds (a `recordingPrecondition` checks the verifier holds
 the presented key); a world whose step-2 delivery failed has the verifier

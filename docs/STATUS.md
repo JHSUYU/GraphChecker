@@ -142,7 +142,8 @@ See Acceptance above. What remains:
 The offline regression gate `tools/regress/offline-ab.sh` (with `ab_compare.py`) compares a
 candidate jar against a baseline on a recorded round, stage by stage, with no replay. It reads a
 round as HEAD reads it, so it needs a round recorded by a build whose rows HEAD still reads (not
-v92–v94, see Acceptance). Every stage gates on bytes: SEED (with its woven classes) and PLAN
+v92–v94, see Acceptance). `AB_BASELINE_REPO` runs the baseline under its own checkout's case
+declarations, for a change whose declarations move with the jar. Every stage gates on bytes: SEED (with its woven classes) and PLAN
 are byte-identical across lifts and runs (`/bigtemp/vnr3ne/analysis/det2/s6/`: hdfs-17897,
 11741, 17899-bug1, 17960 and solr-18413 on five lifts, two with the scope copied in opposite
 orders, three under other JVM identity-hash generators).
@@ -170,7 +171,7 @@ What a system costs today, outside the general engine.
 | tree: daemon ticks | `beginTick`/`endTick` in `KeyManager`, `HeartbeatManager`, `BPServiceActor`, `DataXceiver` | `Overseer`, `OverseerTaskProcessor`, `ReplicationHandler` (with `vacant`) |
 | tree: roots | `CausynthSymbolicSource.symbolize`: 6 hooks in `BlockTokenSecretManager` of every block-key tree, 1 in 17960's `SnapshotManager` | none |
 | tree: cluster and bounds | `CausynthCluster` (automatic mode on `hadoop-hdfs-17967-c` only), `MiniDFSCluster` hooks, timeouts in `CausynthCluster.configure`, `pinBlockKeys` copies in the workloads | `CausynthSolrCluster`, `MiniSolrCloudCluster`, `SolrCloudTestCase`, `CausynthBounds` and its uses; `ClusterState` keeps live nodes in a `TreeSet`; Overseer batching off in automatic mode |
-| tree: targets | none needed: `target.yaml` names the class and line. The trees still carry `@CausynthExceptionTarget` on each target `throw` (one per case; one per ad-hoc check on `hadoop-hdfs-17967-c`), read by no engine code | the same. SOLR-18413 also turned a `getCollection` call in `DistributedZkUpdateProcessor` into `getCollectionOrNull` plus an annotated local throw, and turned `SliceMutator`'s `expireAt` into a `Long.parseLong`/`String.valueOf` round trip so that its `WIRE_FLOW` rows have capture sites. |
+| tree: targets | none needed: `target.yaml` names the class and line. The trees still carry `@CausynthExceptionTarget` on each target `throw` (one per case; one per ad-hoc check on `hadoop-hdfs-17967-c`), read by no engine code | the same. SOLR-18413 also turned a `getCollection` call in `DistributedZkUpdateProcessor` into `getCollectionOrNull` plus a local throw, and turned `SliceMutator`'s `expireAt` into a `Long.parseLong`/`String.valueOf` round trip so that its `WIRE_FLOW` rows have capture sites. |
 | branches | one `gc/<case>` branch per case, each carrying the whole adapter | `gc/solr`, `gc/solr-18406`, `gc/solr-18413`, `gc/solr-adhoc`; the Overseer `consumed` call exists only on the three derived branches |
 
 ## Open defects

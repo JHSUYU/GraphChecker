@@ -322,7 +322,7 @@ public class RegionGraphOccurrenceKeyTest {
                 Arrays.asList(decrement + "#u7", decrement + "#u15"), guards);
         assertEquals("and the arm of each guard that reaches it",
                 Arrays.asList(Boolean.TRUE, Boolean.FALSE), arms);
-        // The port's producer side only, and the annotated target.
+        // The port's producer side only, and the declared target.
         assertEquals("the attach in REGION.delete is no export", 1,
                 map.exportsOf("XCH.a.resp.count").size());
         assertEquals("REGION.save",
@@ -350,7 +350,7 @@ public class RegionGraphOccurrenceKeyTest {
         assertFalse("a local-held container mutation names no shared "
                         + "location, so it scopes no writer",
                 writeSites.containsKey(decrement + "::$r5"));
-        assertFalse("the annotated target is not a write site",
+        assertFalse("the declared target is not a write site",
                 writeSites.containsKey(saver
                         + "#u64#exception:java.lang.IllegalState"));
     }
