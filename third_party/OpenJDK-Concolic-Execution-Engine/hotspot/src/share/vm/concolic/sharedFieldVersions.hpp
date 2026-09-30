@@ -53,21 +53,23 @@ class Method;
  * (a reader that loaded the new word before its version landed, or the old
  * word after it had): unobs/results-s48.txt and review1.
  *
- * So a mismatch can only mean a writer no hook saw (a muted subtree, JNI).
- * The read first accepts a retained version whose stored word equals the
- * loaded one: it returns exactly what that version stored, so joining it
- * states a relation that holds at the recorded valuation, and an unhooked
- * writer that put an older word back is the only way to reach it -- the
- * location is marked incomplete either way, which keeps alternatives and
- * closed claims gated on the join.  Only when no retained version stored the
- * word does the read publish a VERSION_UNOBSERVED version holding the loaded
- * constant, minted under the lock so that it precedes the read on the
+ * So a mismatch can only mean a writer no hook saw (a muted subtree, JNI),
+ * and the location is marked incomplete.  The read names a retained version
+ * that stored exactly the loaded word when there is one, but is NOT exact:
+ * log order is heap order, so a newer hooked version certainly overwrote
+ * that one and an unhooked writer put the word back -- a join to it would be
+ * an edge that did not happen, and the read is pinned to what it returned
+ * instead.  Otherwise it publishes a VERSION_UNOBSERVED version holding the
+ * loaded constant, minted under the lock so that it precedes the read on the
  * session clock and lands before any later store.
  *
  * Every read states whether its observation is exact (`observed_exact`): the
- * word it loaded equals its observed version's stored word.  An exact read
- * joins its version even at an incomplete location; `writer_set_complete`
- * keeps its meaning, the location's writer set, and gates alternatives.
+ * word it loaded equals its observed version's stored word, the version is
+ * the newest, and no unhooked write came between.  An exact read joins its
+ * version even at an incomplete location.  `writer_set_complete` keeps its
+ * meaning, the location's writer set; `unnamed_writer` says a writer the log
+ * never named reached the location (every reason but the version bound),
+ * which is what removes alternative writers from a read.
  *
  * Whole-state (container) versions carry no word: a container's mutation is
  * a Java call no lock can span, so its version is published by the model
@@ -79,9 +81,12 @@ class Method;
  *
  * A location keeps at most MAX_VERSIONS_PER_LOCATION versions; dropping the
  * oldest clears `writer_set_complete` permanently, as does a writer the VM
- * detected but could not version (`mark_writer_set_incomplete`).  The first
- * reason is kept and published (`incompleteReason`).  The read log is
- * bounded too and says so (`readLogTruncated`).
+ * detected but could not version (`mark_writer_set_incomplete`).  Its
+ * reasons are published (`incompleteReasons`).  Only the version bound drops
+ * writers the log once named -- every retained one is still a real, exact
+ * writer -- so only it leaves `unnamed_writer` false: a hot field past 64
+ * stores keeps its alternatives.  The read log is bounded too and says so
+ * (`readLogTruncated`).
  *
  * ---------------------------------------------------------------------------
  * Locks
@@ -296,13 +301,16 @@ public:
     Attribution reader;
     // The version live when the read ran (see the class comment).
     Version observed;
-    // The word the read loaded equals `observed.stored`.
+    // The word the read loaded equals `observed.stored`, and no unhooked
+    // write came between.
     bool observed_exact;
     // The location's writer set, as of this read.
     bool writer_set_complete;
+    // A writer the log never named reached the location, as of this read.
+    bool unnamed_writer;
     ReadPlan()
         : read_event_id(0), observed_exact(false),
-          writer_set_complete(true) {}
+          writer_set_complete(true), unnamed_writer(false) {}
   };
 
   // ---- sessions ------------------------------------------------------------
@@ -557,8 +565,12 @@ public:
     std::vector<ReadRecord> reads;
     bool writer_set_complete;
     bool read_log_complete;
-    std::string incomplete_reason;
-    Slot() : writer_set_complete(true), read_log_complete(true) {}
+    // Every reason, first first; see the retention note above.
+    std::vector<std::string> incomplete_reasons;
+    bool unnamed_writer;
+    Slot()
+        : writer_set_complete(true), read_log_complete(true),
+          unnamed_writer(false) {}
   };
 
   // Bounded on purpose; see the retention note above.

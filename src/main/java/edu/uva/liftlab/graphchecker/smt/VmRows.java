@@ -23,6 +23,8 @@ public final class VmRows {
     public static final String WRITER_SET_COMPLETE = "writerSetComplete";
     /** Whether the word a read loaded is the word its version stored. */
     public static final String OBSERVED_EXACT = "observedExact";
+    /** Whether a writer the VM's log never named reached the location. */
+    public static final String UNNAMED_WRITER = "unnamedWriter";
 
     /**
      * Whether a read's observed version is the value it read: the VM
@@ -35,19 +37,25 @@ public final class VmRows {
      * what it returned and a container state is refused.  One lost version
      * used to leave every later read of its location unjoined, though each
      * returned exactly what it named (unobs/: 1316 reads after one
-     * UNOBSERVED).  Incompleteness still gates alternative writers
-     * ({@link #writerSetComplete}).
+     * UNOBSERVED).  An unnamed writer gates alternative writers
+     * ({@link #unnamedWriter}); the version bound alone does not.
      */
     public static boolean joinable(JsonObject read) {
         return writerSetComplete(read) || flag(read, OBSERVED_EXACT, false);
     }
 
-    /**
-     * Whether a read's location had its whole writer set when it read: the
-     * condition for pairing the read with any writer but the one it observed.
-     */
-    public static boolean writerSetComplete(JsonObject read) {
+    /** Whether a read's location had its whole writer set when it read. */
+    private static boolean writerSetComplete(JsonObject read) {
         return flag(read, WRITER_SET_COMPLETE, true);
+    }
+
+    /**
+     * Whether a writer the VM's log never named had reached a read's
+     * location when it read (every incompleteness but the version bound):
+     * the read is then paired with the writer it observed and no other.
+     */
+    public static boolean unnamedWriter(JsonObject read) {
+        return flag(read, UNNAMED_WRITER, false);
     }
 
     private static boolean flag(JsonObject read, String member,

@@ -2,12 +2,15 @@
  * Every read states whether it is exact: the word it loaded is the word its
  * observed version stored.
  *
- * <p>writerSetComplete says whether the location's writer set is whole, which
- * gates alternative writers and closed claims; it used to decide a read's
- * joinability too, so one lost version left every later read of the location
- * unjoined.  observedExact is the read's own verification: a read that
- * returned exactly its version's word joins it at an incomplete location.  A
- * reference loads no comparable word, and is never exact.</p>
+ * <p>writerSetComplete says whether the location's writer set is whole; it
+ * used to decide a read's joinability too, so one lost version left every
+ * later read of the location unjoined.  observedExact is the read's own
+ * verification: a read that returned exactly its version's word joins it at
+ * an incomplete location.  unnamedWriter is what removes alternative writers:
+ * a writer the log never named reached the location.  The version bound is
+ * not one -- every retained version is still a real writer -- so a hot field
+ * past it keeps its alternatives.  A reference loads no comparable word, and
+ * is never exact.</p>
  */
 public final class RegionReadExactnessSmoke {
     private static final class Input {
@@ -49,10 +52,14 @@ public final class RegionReadExactnessSmoke {
         String log = System.getSharedFieldVersions(holder,
                 Holder.class.getName(), "value", "I");
         require(bounded.contains("\"observedExact\":true")
-                        && bounded.contains("\"writerSetComplete\":false"),
-                "a read past the bound is not exact: " + bounded);
-        require(log.contains("\"incompleteReason\":\"VERSION_BOUND\""),
-                "the bound is not named: " + log);
+                        && bounded.contains("\"writerSetComplete\":false")
+                        && !bounded.contains("\"unnamedWriter\""),
+                "a read past the bound is not exact, or lost its"
+                        + " alternatives: " + bounded);
+        require(log.contains("\"incompleteReasons\":[\"VERSION_BOUND\"]")
+                        && log.contains("\"unnamedWriter\":false"),
+                "the bound is not named, or names an unnamed writer: "
+                        + log);
 
         // A reference states no word.
         Input input = new Input();

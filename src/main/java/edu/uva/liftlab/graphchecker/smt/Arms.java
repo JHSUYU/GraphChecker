@@ -345,12 +345,11 @@ public final class Arms {
      * @param session        the reader's own session: eligibility is its
      *                       happens-before and no other run's
      * @param location       the join key of L
-     * @param alternatives   whether L's writer set was whole when it was
-     *                       read ({@code ReadRow#writerSetComplete}): a read
-     *                       that joined its version by its own verification
-     *                       at an incomplete location keeps the observed
-     *                       writer only, since the writers the log states are
-     *                       not all the writers there were
+     * @param alternatives   false when a writer the log never named had
+     *                       reached L when it was read
+     *                       ({@code ReadRow#unnamedWriter}): the read keeps
+     *                       the observed writer only, since the writers the
+     *                       log states are not all the writers there were
      */
     public List<Arm> stateArms(Endpoint readerEndpoint, String session,
                                String location, long observedVersion,

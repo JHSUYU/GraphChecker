@@ -298,9 +298,9 @@ public final class RowCodec {
         if (row.concreteValue() != null) {
             json.addProperty("concreteValue", row.concreteValue());
         }
-        // Stated only when false, so a whole writer set spells as it did.
-        if (!row.writerSetComplete()) {
-            json.addProperty("writerSetComplete", false);
+        // Stated only when true, so every other read spells as it did.
+        if (row.unnamedWriter()) {
+            json.addProperty("unnamedWriter", true);
         }
         return json;
     }
@@ -314,8 +314,8 @@ public final class RowCodec {
                 optionalString(json, "concreteValue"),
                 json.has("mintVersion") ? number(json, "mintVersion")
                         : ReadRow.UNKNOWN_VERSION,
-                !json.has("writerSetComplete")
-                        || json.get("writerSetComplete").getAsBoolean());
+                json.has("unnamedWriter")
+                        && json.get("unnamedWriter").getAsBoolean());
     }
 
     public static JsonObject writeRootMint(RootMintRow row) {

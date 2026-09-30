@@ -169,9 +169,13 @@ the read.
 ### 5.5 Bounds and threads
 
 At most 64 versions per location and 1024 reads (dropping sets `readLogTruncated`). Locations are
-never evicted before session close. A location's first incompleteness reason is published
-(`incompleteReason`: `VERSION_BOUND`, `UNOBSERVED_WRITE`, `UNSAFE_WRITE_UNCAPTURED`,
-`UNHOOKED_ELEMENT_WRITE`, `ARRAYCOPY_FAILED`, a container model's reason). A thread outside every
+never evicted before session close. A location's incompleteness reasons are published
+(`incompleteReasons`: `VERSION_BOUND`, `UNOBSERVED_WRITE`, `UNSAFE_WRITE_UNCAPTURED`,
+`UNHOOKED_ELEMENT_WRITE`, `UNNAMED_REFERENT`, `ARRAYCOPY_FAILED`, `ARRAYCOPY_STORE_CHECK`,
+`ARRAYCOPY_RACE`, a container model's reason), with `unnamedWriter`: every reason but the version
+bound is a writer the log never named, and removes a read's alternative writers at COMPOSE; the
+bound only drops writers the log once named, so a hot field past 64 stores keeps its
+alternatives. A thread outside every
 region has no `ThreadContext`: its stores (bytecode, Unsafe, arraycopy) to tracked locations are
 versioned without writer, guard or site, a reference by the referent it names.
 
@@ -230,9 +234,10 @@ statuses `OK 0`, `MISSING_METADATA -2`, `NOT_SYMBOLIC -4`, and its own `INVOCATI
 - `getTrackedLocationVersions(afterEventId, maxBytes)` pages the version and read logs by each
   location's highest event: `nextAfterEventId` is one past the last emitted location's, so a
   resume neither repeats nor skips a location (`SFV`). An envelope states `writerSetComplete` and,
-  when false, `incompleteReason`; an INITIAL's `initialSnapshot.stated` is true only for a stated
-  count.
-- A read node states `observedExact`, `writerSetComplete` and `concreteValue` (a String past 4 KB
+  when false, `incompleteReasons` and `unnamedWriter`; an INITIAL's `initialSnapshot.stated` is
+  true only for a stated count.
+- A read node states `observedExact`, `writerSetComplete`, `unnamedWriter` (only when true) and
+  `concreteValue` (a String past 4 KB
   as `{"_type":"TruncatedValue","length":n}`); a method-return symbol states `concreteValue` and
   `call: {holder, name, descriptor, arguments}`.
 - Natives no engine code calls: `getPathCondition`, `trackContainerExpression`,

@@ -404,19 +404,19 @@ public final class RowRuntime {
                             String javaType, String concreteValue,
                             String siteIndex, long mintVersion) {
         read(occurrence, seq, site, location, observedVersion, symbol,
-                javaType, concreteValue, siteIndex, mintVersion, true);
+                javaType, concreteValue, siteIndex, mintVersion, false);
     }
 
     /**
-     * The same, stating whether the location's writer set was whole when
-     * it read ({@link ReadRow#writerSetComplete}).
+     * The same, stating whether a writer the log never named had reached
+     * the location when it read ({@link ReadRow#unnamedWriter}).
      */
     public static void read(OccurrenceAddress occurrence, long seq,
                             String site, LocationId location,
                             long observedVersion, String symbol,
                             String javaType, String concreteValue,
                             String siteIndex, long mintVersion,
-                            boolean writerSetComplete) {
+                            boolean unnamedWriter) {
         SessionPublisher session = publisher;
         if (session == null || occurrence == null || location == null
                 || ownCode(site)) {
@@ -431,7 +431,7 @@ public final class RowRuntime {
                 observedVersion, Text.safe(symbol), type,
                 Text.safe(concreteValue).isEmpty() ? null
                         : Text.safe(concreteValue), mintVersion,
-                writerSetComplete));
+                unnamedWriter));
         Confirmation.read(at, location, observedVersion, mintVersion);
     }
 

@@ -168,9 +168,15 @@ jlong SharedFieldVersions::append_locked(Slot *slot, Version *version) {
 }
 
 void SharedFieldVersions::incomplete_locked(Slot *slot, const char *reason) {
-  if (slot->writer_set_complete) {
-    slot->writer_set_complete = false;
-    slot->incomplete_reason = reason == NULL ? "UNSPECIFIED" : reason;
+  const std::string named(reason == NULL ? "UNSPECIFIED" : reason);
+  slot->writer_set_complete = false;
+  // Only the bound drops writers the log once named.
+  if (named != "VERSION_BOUND") slot->unnamed_writer = true;
+  if (slot->incomplete_reasons.size() < 8
+      && std::find(slot->incomplete_reasons.begin(),
+                   slot->incomplete_reasons.end(), named)
+         == slot->incomplete_reasons.end()) {
+    slot->incomplete_reasons.push_back(named);
   }
 }
 
@@ -400,12 +406,13 @@ bool SharedFieldVersions::plan_read_locked(const Location &location,
   // The last version is the newest, and under the stripe it is what the
   // location held when this load ran -- unless the word says not.
   size_t observed = slot->versions.size() - 1;
+  bool retained = false;
   if (slot->versions[observed].stored.contradicts(loaded)) {
-    // A writer no hook saw came between (see the class comment).  First a
-    // retained version that stored exactly this word: it is what the read
-    // returned.  Else the loaded constant, published as that write.
+    // A writer no hook saw came between (see the class comment).  A retained
+    // version that stored exactly this word is named, not joined: a newer
+    // hooked version overwrote it, so an unhooked writer put the word back.
+    // Else the loaded constant, published as that write.
     incomplete_locked(slot, "UNOBSERVED_WRITE");
-    bool retained = false;
     for (size_t index = observed; index > 0; --index) {
       if (slot->versions[index - 1].stored.equals(loaded)) {
         observed = index - 1;
@@ -425,7 +432,7 @@ bool SharedFieldVersions::plan_read_locked(const Location &location,
   }
 
   Version &version = slot->versions[observed];
-  plan->observed_exact = version.stored.equals(loaded);
+  plan->observed_exact = !retained && version.stored.equals(loaded);
   if (plan->observed_exact && version.stored_constant == NULL) {
     // Built once per version, for every read that returns its word.
     version.stored_constant =
@@ -433,6 +440,7 @@ bool SharedFieldVersions::plan_read_locked(const Location &location,
   }
   plan->observed = version;
   plan->writer_set_complete = slot->writer_set_complete;
+  plan->unnamed_writer = slot->unnamed_writer;
   plan->read_event_id = GlobalSymbolicSession::next_event_id();
 
   ReadRecord record;
@@ -506,9 +514,9 @@ Expression *SharedFieldVersions::build_read_from(
       plan.observed.version_id, version_label(plan.observed), observed_value,
       type_name, plan.read_event_id, location.owner, location.slot,
       location_kind_name(location.kind), plan.writer_set_complete,
-      plan.observed_exact, returned, plan.reader.site.class_name,
-      plan.reader.site.method_name, plan.reader.site.method_descriptor,
-      plan.reader.site.bci);
+      plan.unnamed_writer, plan.observed_exact, returned,
+      plan.reader.site.class_name, plan.reader.site.method_name,
+      plan.reader.site.method_descriptor, plan.reader.site.bci);
   return new ConsumerBoundaryExpression(
       selection, type_name, ConsumerBoundaryExpression::FIELD_READ,
       plan.read_event_id);
@@ -932,10 +940,16 @@ bool SharedFieldVersions::write_versions_envelope(
   writer.Key("writerSetComplete");
   writer.Bool(slot.writer_set_complete);
   if (!slot.writer_set_complete) {
-    // Why: the first writer the log could not name (UNOBSERVED_WRITE, a
-    // detected unmodeled mutation, the version bound).
-    writer.Key("incompleteReason");
-    writer.String(slot.incomplete_reason.c_str());
+    // Why: UNOBSERVED_WRITE, a detected unmodeled mutation, the version
+    // bound; and whether any of them is a writer the log never named.
+    writer.Key("incompleteReasons");
+    writer.StartArray();
+    for (size_t index = 0; index < slot.incomplete_reasons.size(); ++index) {
+      writer.String(slot.incomplete_reasons[index].c_str());
+    }
+    writer.EndArray();
+    writer.Key("unnamedWriter");
+    writer.Bool(slot.unnamed_writer);
   }
   writer.Key("versions");
   writer.StartArray();

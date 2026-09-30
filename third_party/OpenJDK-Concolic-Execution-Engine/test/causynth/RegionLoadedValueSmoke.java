@@ -18,8 +18,9 @@ import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
  * an UNOBSERVED version holding the loaded constant, and the location's
  * writer set is no longer complete; the read itself is exact, since it
  * returned exactly what that version holds.  When such a write puts back a
- * word a retained version stored, the read observes that version instead
- * (ABA) and publishes nothing new.</p>
+ * word a retained version stored, the read names that version and publishes
+ * nothing new (ABA), but is not exact: a newer hooked version overwrote that
+ * one, so joining it would be an edge that did not happen.</p>
  *
  * <p>Every such read states the value it returned when it is one -- a
  * primitive's constant, a String's content, or null -- which is what a
@@ -85,7 +86,9 @@ public final class RegionLoadedValueSmoke {
         sink.value = core.count;
         String unobserved = expression(sink);
 
-        // An unseen store that puts back 2: the version that stored 2.
+        // An unseen store that puts back 2: the read names the version that
+        // stored 2 without claiming it -- the newer UNOBSERVED overwrote it,
+        // and an unhooked writer put the word back.
         System.pauseConcolicPathCondition();
         core.count = 2;
         System.resumeConcolicPathCondition();
@@ -126,18 +129,22 @@ public final class RegionLoadedValueSmoke {
                         + " it returned twice: " + read);
         require(unobserved.contains("\"versionKind\":\"UNOBSERVED\"")
                         && unobserved.contains("\"writerSetComplete\":false")
+                        && unobserved.contains("\"unnamedWriter\":true")
                         && unobserved.contains("\"observedExact\":true")
                         && unobserved.contains("\"Y_I_5\""),
                 "the read names no unobserved write: " + unobserved);
         require(putBack.contains("\"versionKind\":\"WRITE\"")
                         && putBack.contains("\"writerSetComplete\":false")
-                        && putBack.contains("\"observedExact\":true"),
-                "the put-back read names no retained version: " + putBack);
+                        && putBack.contains("\"unnamedWriter\":true")
+                        && putBack.contains("\"observedExact\":false"),
+                "the put-back read names no retained version, or claims it"
+                        + " exact: " + putBack);
         require(count(field, UNOBSERVED) == 1
                         && count(field, UNATTRIBUTED) == 1
                         && field.contains("\"writerSetComplete\":false")
-                        && field.contains(
-                                "\"incompleteReason\":\"UNOBSERVED_WRITE\"")
+                        && field.contains("\"incompleteReasons\":"
+                                + "[\"UNOBSERVED_WRITE\"]")
+                        && field.contains("\"unnamedWriter\":true")
                         && count(field, "\"readerContextId\"") == 3,
                 "the field log is not INITIAL, WRITE, UNOBSERVED: " + field);
         int initial = atomic.indexOf("\"versionKind\":\"INITIAL\"");

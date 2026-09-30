@@ -868,11 +868,12 @@ final class ComposedFamilies {
             List<String> symbols = new ArrayList<String>();
             for (ReadRow read : reads) symbols.add(read.symbol());
             List<Arms.Arm> found = new ArrayList<Arms.Arm>();
-            boolean whole = true;
-            for (ReadRow read : reads) whole &= read.writerSetComplete();
+            // Every writer named: no read met a writer the log never named.
+            boolean named = true;
+            for (ReadRow read : reads) named &= !read.unnamedWriter();
             for (Arms.Arm arm : arms.stateArms(reads.get(0).endpoint(),
                     session, entry.getKey(),
-                    reads.get(0).observedVersion(), whole)) {
+                    reads.get(0).observedVersion(), named)) {
                 if (replacing.contains(arm.sessionId())) continue;
                 if (arm.producer() == null) continue;
                 // The OBSERVED writer is stated even if unattested.

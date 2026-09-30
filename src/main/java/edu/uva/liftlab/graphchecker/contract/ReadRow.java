@@ -23,12 +23,12 @@ public final class ReadRow extends Value {
     private final String javaType;
     private final String concreteValue;
     private final long mintVersion;
-    private final boolean writerSetComplete;
+    private final boolean unnamedWriter;
 
     private ReadRow(String sessionId, long seq, Endpoint endpoint,
                     LocationId location, long observedVersion, String symbol,
                     String javaType, String concreteValue, long mintVersion,
-                    boolean writerSetComplete) {
+                    boolean unnamedWriter) {
         this.sessionId = sessionId;
         this.seq = seq;
         this.endpoint = endpoint;
@@ -38,7 +38,7 @@ public final class ReadRow extends Value {
         this.javaType = javaType;
         this.concreteValue = concreteValue;
         this.mintVersion = mintVersion;
-        this.writerSetComplete = writerSetComplete;
+        this.unnamedWriter = unnamedWriter;
     }
 
     public static ReadRow of(String sessionId, long seq, Endpoint endpoint,
@@ -55,34 +55,36 @@ public final class ReadRow extends Value {
                              String symbol, String javaType,
                              String concreteValue, long mintVersion) {
         return of(sessionId, seq, endpoint, location, observedVersion, symbol,
-                javaType, concreteValue, mintVersion, true);
+                javaType, concreteValue, mintVersion, false);
     }
 
-    /** The same row, stating whether its location's writer set was whole. */
+    /** The same row, stating whether a writer the log never named reached
+     *  its location. */
     public static ReadRow of(String sessionId, long seq, Endpoint endpoint,
                              LocationId location, long observedVersion,
                              String symbol, String javaType,
                              String concreteValue, long mintVersion,
-                             boolean writerSetComplete) {
+                             boolean unnamedWriter) {
         return new ReadRow(Fields.text(sessionId, "sessionId"),
                 Fields.nonNegative(seq, "seq"),
                 Fields.required(endpoint, "endpoint"),
                 Fields.required(location, "location"), observedVersion,
                 Fields.text(symbol, "symbol"),
                 Fields.text(javaType, "javaType"),
-                Fields.optional(concreteValue), mintVersion,
-                writerSetComplete);
+                Fields.optional(concreteValue), mintVersion, unnamedWriter);
     }
 
     /**
-     * Whether the VM saw every writer of this read's location when it read
-     * (the VM's {@code writerSetComplete}).  A read may state its version
-     * without it -- its observation is exact ({@code observedExact}) -- but
-     * then its version is the only writer anyone may pair it with: an
-     * alternative writer is one of a set known to be partial.
+     * Whether a writer the VM's log never named reached this read's location
+     * when it read (the VM's {@code unnamedWriter}: an unhooked write, an
+     * uncaptured Unsafe write, an unmodeled container mutation).  The writers
+     * the log states are then not all the writers there were, so the read is
+     * paired with the one it observed and no other.  The version bound is not
+     * such a writer: every retained version is still a real, exact writer, so
+     * a hot field past it keeps its alternatives.
      */
-    public boolean writerSetComplete() {
-        return writerSetComplete;
+    public boolean unnamedWriter() {
+        return unnamedWriter;
     }
 
     /**
@@ -169,7 +171,7 @@ public final class ReadRow extends Value {
     Object[] parts() {
         return new Object[] {sessionId, seq, endpoint, location,
                 observedVersion, symbol, javaType, concreteValue, mintVersion,
-                writerSetComplete};
+                unnamedWriter};
     }
 
     @Override

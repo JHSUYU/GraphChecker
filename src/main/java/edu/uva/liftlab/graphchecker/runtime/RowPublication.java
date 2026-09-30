@@ -261,7 +261,7 @@ final class RowPublication {
             return;
         }
         publishRead(node, identity, locationKey, location, observed, event,
-                symbol, value, VmRows.writerSetComplete(node));
+                symbol, value, VmRows.unnamedWriter(node));
     }
 
     /**
@@ -291,7 +291,7 @@ final class RowPublication {
         }
         // The row's location is the nested read's, so its version is too,
         // joinability included: the projection's own observedVersion states
-        // no writerSetComplete, and once VM f11 found a location incomplete
+        // no unnamedWriter, and once VM f11 found a location incomplete
         // the two spelled one read event as two rows (SOLR-18406 s48).
         long observed = versionOf(read);
         long event = eventOf(node);
@@ -314,7 +314,7 @@ final class RowPublication {
                     observed >= 0L ? "v" + observed : "e" + event);
         }
         publishRead(node, identity, locationKey, location, observed, event,
-                projected, stated, VmRows.writerSetComplete(read));
+                projected, stated, VmRows.unnamedWriter(read));
     }
 
     /**
@@ -324,7 +324,7 @@ final class RowPublication {
     private static void publishRead(JsonObject node, String identity,
                                     String locationKey, LocationId location,
                                     long observed, long event, String symbol,
-                                    String value, boolean complete) {
+                                    String value, boolean unnamedWriter) {
         if (!RowRuntime.claimEvent("read", identity)) return;
         OccurrenceAddress performer = LoggedEventSites.performer(
                 node, locationKey, event, false);
@@ -335,7 +335,7 @@ final class RowPublication {
                 optionalString(node, "_java_type"), value,
                 LoggedEventSites.siteIndex(node, locationKey, event, site,
                         false),
-                ReadRow.UNKNOWN_VERSION, complete);
+                ReadRow.UNKNOWN_VERSION, unnamedWriter);
     }
 
     /**

@@ -457,14 +457,14 @@ public class ContractTest {
                 reline(RowCodec.writeRead(placeholder))));
         assertFalse("a stated mint version is not the unknown one",
                 placeholder.equals(read));
-        // So is an incomplete writer set: the read joins, alternatives not.
+        // So is an unnamed writer: the read joins, alternatives not.
         ReadRow partial = ReadRow.of("s-17897-1", 14L, read.endpoint(),
                 keys, 7L, "state_allKeys_7", BLOCK_KEY, null,
-                ReadRow.UNKNOWN_VERSION, false);
+                ReadRow.UNKNOWN_VERSION, true);
         assertEquals(partial, RowCodec.readRead(
                 reline(RowCodec.writeRead(partial))));
         assertFalse(partial.equals(read));
-        assertFalse(RowCodec.writeRead(read).has("writerSetComplete"));
+        assertFalse(RowCodec.writeRead(read).has("unnamedWriter"));
         assertEquals(minted, RowCodec.readRootMint(
                 reline(RowCodec.writeRootMint(minted))));
         assertEquals(target, RowCodec.readTarget(
