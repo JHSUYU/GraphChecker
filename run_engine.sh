@@ -4289,9 +4289,9 @@ or its run never opened a recording window (its output is above)"
 # plans are grouped so that each group's union is one plan one replay runs
 # (plan.PlanUnion) -- the targets' plans stand on one recording, so the
 # tasks they share are one task -- and each group is woven, seed-replayed
-# and imported once (campaign_batch_group); then every target its group's
-# seed replay reached runs its own campaign from EXPLORE on
-# (campaign_batch_target), all at once.  Each target logs to
+# and imported once (campaign_batch_group), all groups at once; then every
+# target its group's seed replay reached runs its own campaign from EXPLORE
+# on (campaign_batch_target), all at once.  Each target logs to
 # targets/<name>/campaign.log.  The batch fails when SEED does, when the
 # recording activated no target, or when a target that was planned ends
 # before EMIT (its PLAN, its group's seed, or its own stages); each target's
@@ -4299,8 +4299,8 @@ or its run never opened a recording window (its output is above)"
 campaign_batch() {
   local summary="${causynth_output_dir}/runtime/record-summary.json"
   local groups="${campaign_root}/groups"
-  local name group members index status failed=0
-  local -a names=() planned=() served=() pids=()
+  local name group index status failed=0
+  local -a names=() planned=() members=() served=() pids=()
   campaign_stage SEED campaign_batch_seed
   mapfile -t names < <(jq -r '.targets | to_entries[]
     | select(.value.state == "ACTIVATED") | .key' "${summary}")
@@ -4319,20 +4319,27 @@ campaign_batch() {
   (( ${#planned[@]} > 0 )) || campaign_fail PLAN CAMPAIGN \
     "${causynth_output_dir}/targets" "no target of the batch was planned"
   campaign_stage UNION campaign_batch_union "${groups}" "${planned[@]}"
-  while IFS=$'\t' read -r group members; do
+  mapfile -t members < <(jq -r '.[] | .targets | join(" ")' \
+    "${groups}/groups.json")
+  for group in "${!members[@]}"; do
     # shellcheck disable=SC2086 # the members are words
-    if ( campaign_batch_group "${groups}/group-${group}" ${members} ) \
-        >"${groups}/group-${group}.log" 2>&1; then
+    ( campaign_batch_group "${groups}/group-${group}" ${members[$group]} ) \
+      >"${groups}/group-${group}.log" 2>&1 &
+    pids[group]=$!
+  done
+  for group in "${!members[@]}"; do
+    if wait "${pids[$group]}"; then
       mapfile -t -O "${#served[@]}" served <"${groups}/group-${group}/served"
-      failed=$((failed + $(wc -w <<<"${members}") \
+      failed=$((failed + $(wc -w <<<"${members[$group]}") \
         - $(wc -l <"${groups}/group-${group}/served")))
     else
-      campaign_log "group ${group} (${members}) ended before EXPLORE: \
-$(campaign_batch_verdict "${groups}/group-${group}" "${groups}/group-${group}.log")"
-      failed=$((failed + $(wc -w <<<"${members}")))
+      campaign_log "group ${group} (${members[$group]}) ended before \
+EXPLORE: $(campaign_batch_verdict "${groups}/group-${group}" \
+        "${groups}/group-${group}.log")"
+      failed=$((failed + $(wc -w <<<"${members[$group]}")))
     fi
-  done < <(jq -r '.[] | [.group, (.targets | join(" "))] | @tsv' \
-    "${groups}/groups.json")
+  done
+  pids=()
   if [[ "${campaign_stop_after}" == "IMPORT" ]]; then
     campaign_log "stopping after IMPORT: campaign_stop_after=IMPORT"
     return 0

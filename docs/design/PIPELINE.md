@@ -175,7 +175,8 @@ by the build already (`<static root>/<name>/`, `tools/adhoc/slice.sh`). After FR
    target branches, which the runtime does not have, so such targets replay apart. A group's union
    plan is every task once, every task observing every site any target observes, under the union's
    own replay group: `groups/group-<n>/execution_task_plan.jsonl`, `groups/groups.json`.
-4. Per group (`campaign_batch_group`, logging to `groups/group-<n>.log`): INSTRUMENT, REPLAY and
+4. Per group, all groups at once (`campaign_batch_group`, logging to `groups/group-<n>.log`; each
+   engine JVM and replay charged to the head's host as any head's): INSTRUMENT, REPLAY and
    IMPORT once, in `groups/group-<n>/`, under the union of its targets' scope maps (the replay's
    guarded stores, and its target coverage: any target). A target the seed replay published no
    target row of fails as a solo REPLAY does, in its own log (`campaign_target_reached`).

@@ -979,8 +979,9 @@ COMPOSE SOLVE DECIDE CONFIRM REPRODUCE EMIT " ]] \
 $(tr '\n' ' ' <"${stop_after_dir}/labels-full.tsv")"
 
 # BATCH-1: a batch campaign (causynth_static_root) plans every target its
-# recording activated, seed-replays each group of plans once, and runs the
-# campaign of every target its group's seed reached, all at once, each
+# recording activated, seed-replays each group of plans once, all groups at
+# once, and runs the campaign of every target its group's seed reached, all
+# at once, each
 # logging to its own targets/<name>/campaign.log.  A target whose campaign
 # reached EMIT (exit 0, 2 or 3) is its own verdict; one its group's seed did
 # not reach, or whose campaign ended before EMIT, fails the batch once every
@@ -1004,13 +1005,16 @@ for batch_case in "3 a b" "1 a b" "0 a"; do
     campaign_batch_plan() { echo "plan of $1"; }
     campaign_batch_union() {
       mkdir -p "$1"
-      jq -n '[{group: 0, targets: ["a", "b"]}]' >"$1/groups.json"
+      jq -n '[{group: 0, targets: ["a"]}, {group: 1, targets: ["b"]}]' \
+        >"$1/groups.json"
     }
     campaign_batch_group() {
       local dir=$1 name
+      shift
       mkdir -p "${dir}"
-      for name in ${batch_served}; do
-        printf '%s\t%s\n' "${name}" "${dir}"
+      for name in "$@"; do
+        [[ " ${batch_served} " != *" ${name} "* ]] \
+          || printf '%s\t%s\n' "${name}" "${dir}"
       done >"${dir}/served"
     }
     campaign_batch_target() {
@@ -1026,6 +1030,8 @@ $(cat "${batch_out}/batch.log")"
   [[ "$(cat "${batch_out}/targets/a/campaign.log")" == \
       $'plan of a\ncampaign of a on group-0' \
       && "$(head -n 1 "${batch_out}/targets/b/campaign.log")" == "plan of b" \
+      && ( "${batch_served}" == a || "$(tail -n 1 \
+        "${batch_out}/targets/b/campaign.log")" == "campaign of b on group-1" ) \
       && ! -e "${batch_out}/targets/c/campaign.log" ]] \
     || fail "a batch (${batch_case}) ran other campaigns than its targets'"
 done
