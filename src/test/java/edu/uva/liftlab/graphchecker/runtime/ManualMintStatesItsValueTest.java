@@ -961,14 +961,14 @@ public class ManualMintStatesItsValueTest {
                         SymbolizeAction.class,
                         String.class, List.class, String.class,
                         com.google.gson.JsonElement.class, boolean.class,
-                        boolean.class, String.class);
+                        boolean.class, String.class, long.class);
         record.setAccessible(true);
         record.invoke(active,
                 new SymbolizeAction(encoded),
                 "PORT.now", Collections.emptyList(),
                 "<org.apache.hadoop.security.token.delegation.DelegationKey:"
                         + " long expiryDate>", expression, true, false,
-                recordedValue);
+                recordedValue, 0L);
 
         List<JsonObject> published = symbolizedRows(active);
         assertEquals(1, published.size());

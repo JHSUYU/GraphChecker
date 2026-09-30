@@ -57,25 +57,12 @@ final class RootMint {
     private static final Set<String> CLOCK_READINGS =
             ConcurrentHashMap.newKeySet();
 
-    /**
-     * The skew of the latest plant on each clock of a node, as
-     * "node|ticks": a planted reading sets that clock, which runs on from
-     * there, so a later reading nothing asks a skew of is the host's plus
-     * that one.  Read off the host alone, the next reading fell back behind
-     * the plant -- no clock runs so, and COMPOSE's clock order refutes the
-     * path (SOLR-18406 wave 0: a commit's delete() of G read the hour it was
-     * skewed by, its delete() of the older commit a moment later the host's
-     * clock).  Skews and mint rows stay relative to the host's reading.
-     */
-    private static final Map<String, Long> CLOCK_AHEAD =
-            new ConcurrentHashMap<String, Long>();
-
     private RootMint() {
     }
 
     static void resetForTests() {
         CLOCK_READINGS.clear();
-        CLOCK_AHEAD.clear();
+        NodeClocks.reset();
     }
 
     /** Called once per Java argument right after region entry. */
@@ -310,7 +297,7 @@ final class RootMint {
                 active.recordManualSymbolization(action, action.symbol,
                         action.fieldPath, leafFieldSignature,
                         minted.expression, true, false,
-                        minted.recordedValue);
+                        minted.recordedValue, 0L);
             } catch (Throwable throwable) {
                 // Stated, never swallowed: a failed mint and an undeclared
                 // cell otherwise read identically from the corpus.
@@ -603,7 +590,7 @@ final class RootMint {
             if (minted == null) return;
             active.recordManualSymbolization(action, symbol, exactFieldPath,
                     leafFieldSignature, minted.expression, true, false,
-                    minted.recordedValue);
+                    minted.recordedValue, 0L);
         } catch (Throwable throwable) {
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC, symbol,
                     "this declared field input was not minted, so the region"
@@ -703,33 +690,40 @@ final class RootMint {
                 ? Collections.<String>emptyList() : path;
         String fieldSignature = path == null ? ""
                 : action.exactLeafFieldSignature(path);
-        // A clock reads its node's clock: the host's reading moved by the
-        // skew of the latest plant on it (CLOCK_AHEAD).
-        String clock = action.clockNanos > 0L ? (active.d3Address == null
-                ? "" : active.d3Address.node().render()) + "|"
-                + action.clockNanos : "";
-        Object read = clock.isEmpty() ? concrete : ahead(clock, concrete);
         JsonElement carried;
         try {
             carried = primitiveBoxExpression(api, concrete);
         } catch (ConcolicRegionRuntime.PropagatedExpressionImportFailure unreadable) {
-            return read;
+            return concrete;
         } catch (Throwable unsymbolized) {
             carried = null;
         }
+        // A value carrying an expression was computed from a reading, which
+        // ran at its clock already: kept whole, never moved again.
         if (retainPropagatedInput(active, action, concrete, carried,
                 action.symbol, exactPath, fieldSignature)) {
-            return read;
+            return concrete;
         }
+        // No node owns it, so it is on no node's clock: the host's reading,
+        // named MINT_UNATTRIBUTED.
         if (mintUnattributed(active, action.symbol,
                 "declared primitive input at "
                         + firstNonBlank(fieldSignature, action.cell))) {
-            return read;
+            return concrete;
         }
+        // A clock reads its node's clock (NodeClocks): the host's reading
+        // moved by the jump before it.
+        Long host = action.declaresWallClockRead() ? readingOf(concrete)
+                : null;
+        String node = host == null ? "" : active.rootOwner(action.symbol)
+                .d3Address.node().render();
+        Object ran = host == null ? concrete : atInstant(action, concrete,
+                host + NodeClocks.skew(node, action.clockNanos,
+                        action.eventSeq, host));
         // The box minted here IS what the region reads back, so the plant
         // goes into it (#focusedRootValue).
         String assigned = focusedRootValue(active, action.symbol, concrete);
-        Object planted = read;
+        Object planted = ran;
         if (!assigned.isEmpty()) {
             Object modeled = ModelValues.coerce("", assigned,
                     concrete == null ? null : concrete.getClass());
@@ -745,13 +739,12 @@ final class RootMint {
             }
         }
         // A clock site read again in the occurrence that read it (a loop's
-        // bodies share one address) is a later instant of the same root:
-        // the node's clock, which runs on from the plant its first reading
-        // made, and concrete.  One symbol for both would state two values
-        // for one source (IMPORT invariant 8).
-        if (!clock.isEmpty() && !CLOCK_READINGS.add(active.rootOwner(
+        // bodies share one address) is a later instant of the same root at
+        // the same place: its node's clock, concrete.  One symbol for both
+        // would state two values for one source (IMPORT invariant 8).
+        if (action.clockNanos > 0L && !CLOCK_READINGS.add(active.rootOwner(
                 action.symbol).address() + "|" + action.symbol)) {
-            return read;
+            return ran;
         }
         Object fresh = freshPrimitiveBox(planted);
         try {
@@ -759,36 +752,51 @@ final class RootMint {
                     action.symbol, active.activation.occurrenceId, true)));
             active.pathRecordingStarted = true;
             JsonElement expression = primitiveBoxExpression(api, fresh);
+            // What the region ran the root at: the box's value.  A clock
+            // also states how far its node's clock ran off the host there,
+            // the reading a skew is relative to (RootMintRow#hostReading).
+            long skew = host == null ? 0L
+                    : readingOf(planted).longValue() - host.longValue();
             active.recordManualSymbolization(action, action.symbol,
                     exactPath, fieldSignature, expression, true, false,
-                    // What the region ran the root at: the box's value.
-                    // A CLOCK states the host's reading, never its plant: a
-                    // child obligation's skew is computed against it
-                    // (FlipQuery#clockReading, ObligationFactory).
-                    ConcolicRegionRuntime.recordedScalar(
-                            clock.isEmpty() ? planted : concrete));
+                    ConcolicRegionRuntime.recordedScalar(planted), skew);
             if (!assigned.isEmpty()) {
                 FocusedReplay.planted(action.symbol);
-                if (!clock.isEmpty()) {
-                    CLOCK_AHEAD.put(clock, readingOf(planted)
-                            - readingOf(concrete));
+                if (host != null && !NodeClocks.jump(node, action.clockNanos,
+                        action.eventSeq, host, skew)) {
+                    RowRuntime.gap(GapKind.DECLARATION_MISSING,
+                            GapClass.DIAGNOSTIC, action.symbol,
+                            "the recording states no event for this clock "
+                                    + "reading, so it has no place on its "
+                                    + "node's clock: the plant moves this "
+                                    + "reading alone");
                 }
             }
             return fresh;
         } catch (Throwable throwable) {
-            return read;
+            return ran;
         }
     }
 
-    /** One host reading of a clock, as its node's clock runs. */
-    private static Object ahead(String clock, Object concrete) {
-        Long ahead = CLOCK_AHEAD.get(clock);
-        Long reading = readingOf(concrete);
-        if (ahead == null || reading == null) return concrete;
-        Object moved = ModelValues.coerce("", Long.toString(
-                reading.longValue() + ahead.longValue()), concrete.getClass());
-        return moved == null || moved == ModelValues.UnsupportedReplayValue
-                .INSTANCE ? concrete : moved;
+    /**
+     * One clock reading at an instant of its node's clock, boxed as the
+     * host's was; the host's own box where they agree, and refused by name
+     * (the host's) where the mint's type cannot hold the instant.
+     */
+    private static Object atInstant(SymbolizeAction action, Object host,
+                                    long instant) {
+        if (instant == readingOf(host).longValue()) return host;
+        Object moved = ModelValues.coerce("", Long.toString(instant),
+                host.getClass());
+        if (moved == null
+                || moved == ModelValues.UnsupportedReplayValue.INSTANCE) {
+            RowRuntime.gap(GapKind.UNPRODUCIBLE_ANSWER, GapClass.BLOCKING,
+                    action.symbol, "this clock reading runs on at instant "
+                            + instant + ", which the type the mint reads "
+                            + "cannot hold, so it reads the host's");
+            return host;
+        }
+        return moved;
     }
 
     /** Exact expression stored in a Java primitive wrapper's value field. */
@@ -851,7 +859,7 @@ final class RootMint {
                     : ConcolicRegionRuntime.engineExpression(api.expression(value));
             active.recordManualSymbolization(action, action.symbol,
                     Collections.<String>emptyList(), "", expression,
-                    true, false, "");
+                    true, false, "", 0L);
         } catch (Throwable throwable) {
             RowRuntime.gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
                     firstNonBlank(action.symbol, action.actionDigest),
@@ -872,7 +880,7 @@ final class RootMint {
         active.pathRecordingStarted = true;
         active.recordManualSymbolization(action, requestedSymbol, fieldPath,
                 fieldSignature, expression, false, true,
-                ConcolicRegionRuntime.recordedScalar(value));
+                ConcolicRegionRuntime.recordedScalar(value), 0L);
         return true;
     }
 

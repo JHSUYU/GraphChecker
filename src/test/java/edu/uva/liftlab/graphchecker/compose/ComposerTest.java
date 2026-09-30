@@ -1425,6 +1425,73 @@ public class ComposerTest {
         }
     }
 
+    /**
+     * A NODE'S CLOCK IS ONE ORDER, THE RECORDING'S.  Its cells are listed in
+     * the recording's seq order whatever order the corpus holds them in (the
+     * claim pins them back in it, and a replay runs a plant on in it); a
+     * link the recording's own readings run against gives way by that much;
+     * a cell the seed never read is placed at the seed's reading of a cell
+     * its session also read, plus the time its host read between the two;
+     * one no session can place is BLOCKING.
+     */
+    @Test
+    public void aNodesClockIsOneOrderOnTheRecordingsTimeline()
+            throws Exception {
+        Path iteration = folder.newFolder("clock-order").toPath();
+        Session seed = new Session(iteration, "s0", false);
+        seed.roots.add(clockCell("s0", 30L, "ROOT.LATE", "clk_late", "990"));
+        seed.roots.add(clockCell("s0", 10L, "ROOT.EARLY", "clk_early",
+                "1000"));
+        seed.decision(ANCHOR, "anchor#u1", "(> (+ clk_late clk_early) 0)",
+                "ROOT.LATE", 990L);
+        seed.target("true", false, true);
+        seed.write();
+        Session grown = new Session(iteration, "s1", true);
+        grown.roots.add(clockCell("s1", 10L, "ROOT.EARLY", "clk_early",
+                "5000"));
+        grown.roots.add(clockCell("s1", 20L, "ROOT.GROWN", "clk_grown",
+                "5004"));
+        grown.decision(ANCHOR, "anchor#u1", "(> (+ clk_grown clk_early) 0)",
+                "ROOT.GROWN", 5004L);
+        grown.target("true", false, true);
+        grown.write();
+
+        Composer.Composition composition = compose(iteration, 4);
+        assertEquals("the recording's seq order, not the corpus's",
+                Arrays.asList("clk_early", "clk_grown", "clk_late"),
+                composition.clockCells());
+        assertEquals("the grown cell: the seed's 1000 plus the 4 its "
+                        + "session read after clk_early", Long.valueOf(1004L),
+                composition.clockReadings().get("clk_grown"));
+        assertEquals("clk_grown", composition.clockBefore().get("clk_late"));
+        assertTrue(composition.body(), composition.body().contains(
+                "(<= clk_early clk_grown)"));
+        assertTrue("the recording read clk_late 14 before clk_grown, so the "
+                        + "order gives way by 14: " + composition.body(),
+                composition.body().contains("(<= (- clk_grown clk_late) 14)"));
+        assertFalse(composition.gaps().toString(),
+                blocking(composition.gaps()));
+
+        Session lone = new Session(iteration, "s2", true);
+        lone.roots.add(clockCell("s2", 40L, "ROOT.LONE", "clk_lone", "7000"));
+        lone.decision(ANCHOR, "anchor#u1", "(> clk_lone 0)", "ROOT.LONE",
+                7000L);
+        lone.target("true", false, true);
+        lone.write();
+        Composer.Composition unplaced = compose(iteration, 4);
+        assertTrue("a cell no session can place on the recording's timeline "
+                        + "is refused by name: " + unplaced.gaps(),
+                blocking(unplaced.gaps(), "ROOT.LONE"));
+        assertFalse(unplaced.clockCells().contains("clk_lone"));
+    }
+
+    private static RootMintRow clockCell(String session, long seq,
+                                         String rootId, String symbol,
+                                         String reading) {
+        return RootMintRow.of(session, seq, ANCHOR, rootId, symbol,
+                RootKind.CLOCK, reading, null, null, true, 1_000_000L);
+    }
+
     // ------------------------------------------------------------------
     // 8. A mechanism the recording does not decide is not a finding.
     // ------------------------------------------------------------------

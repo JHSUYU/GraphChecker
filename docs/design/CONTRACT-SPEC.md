@@ -85,7 +85,7 @@ or zero. Every row but a `ScheduleEvent` carries `sessionId`; every row but an `
 | `AttachRow` | `seq, endpoint, symbol, javaType, arrival, answered, answeredValue?, producer?, correlationId, pairedBy?, codec?, keyPath?, hole?` | a value taken off the wire: `symbol` = the handoff variable `v_H` minted at the port; `producer` absent = unpaired; `pairedBy` = `HANDLE`, `CORRELATION_PORT` or `ENVELOPE` (absent = unstated); `answered` = an obligation's answer replaced the arrival. A codec's attach states the hole it minted; its `correlationId` is the message's key and it is paired by `ENVELOPE`: the producer endpoint the message carried. A String hole's `arrival` and `answeredValue` are spelled as a read row spells a String, its JSON string literal |
 | `WriteRow` | `seq, endpoint, location, version, expressionRef, javaType, referentState?, referentStateRefused?` | a write and the version of the location it produced; versions join reads within one session. A write of a reference to a modeled container (or a view or wrapper of one) states `referentState` = `{location, version}`: the canonical container's `MAP` location and its version live at the store (invariant 12), else `referentStateRefused` = the VM's reason (`UNREADABLE_CONTAINER:<class>`, `TRUNCATED`, `RESIZING`, `NO_CONTEXT`); neither for null or a plain object |
 | `ReadRow` | `seq, endpoint, location, observedVersion, symbol, javaType, mintVersion?, concreteValue?, unnamedWriter?` | a read: `observedVersion` = the version seen, `-1` when unknown (never 0) -- known when the location's writer set was whole or the VM verified the read (`observedExact`, `VmRows#joinable`); `mintVersion` = a placeholder's own store version (a placeholder's site contains `#PLACEHOLDER#`); `concreteValue` = what the read returned as `ReadRow.returned` spells it (a scalar's payload, a String as its JSON string literal, Java null as `N`, an object as its identity's name `M_L'<class>'_<rid>`; for an exact read the VM left unstated, its version's leaf of those kinds; absent for a String the VM cut); `unnamedWriter` = `true` only when a writer the VM's log never named had reached the location (any incompleteness but the version bound), which leaves the read no alternative writer (`Arms#stateArms`) |
-| `RootMintRow` | `seq, occurrence, rootId, symbol, kind, recordedValue, domainMin?, domainMax?, declared, clockNanos?` | a root minted here. `kind` `MARKER` (a boolean: fault marker or boolean configured source), `INTEGRAL`, `CLOCK`; `symbol` is the root's one solver name; `recordedValue` is the value the region ran the root at — a fresh-box mint states the box it handed the region, the plant where one was applied (`runtime.RootMint.materializePrimitiveValue`) — except a CLOCK, which states the instant it read (its counterfactual is the focus row's skew); a clock site read again inside the occurrence is a later instant of the same root and stays concrete, so a clock root is the site's first reading in the occurrence. `domainMin/Max` absolute or absent (both absent = pinned); `clockNanos` = a CLOCK's tick in ns (1 for `nanoTime`, 1,000,000 for `currentTimeMillis`), present exactly for CLOCK |
+| `RootMintRow` | `seq, occurrence, rootId, symbol, kind, recordedValue, domainMin?, domainMax?, declared, clockNanos?, clockSkew?` | a root minted here. `kind` `MARKER` (a boolean: fault marker or boolean configured source), `INTEGRAL`, `CLOCK`; `symbol` is the root's one solver name; `recordedValue` is the value the region ran the root at — a fresh-box mint states the box it handed the region, the plant where one was applied (`runtime.RootMint.materializePrimitiveValue`); for a CLOCK the instant its node's clock read there, and `clockSkew` how far that clock ran off the host's reading (a plant, or the jump it ran on from, `runtime.NodeClocks`; absent = 0, the host's own instant, always so in the seed): the host's reading, `hostReading` = `recordedValue − clockSkew`, is what a clock's counterfactual (the focus row's skew) is off. A CLOCK row's `seq` is the event the recording read it at, the same in every session. A clock site read again inside the occurrence is a later instant of the same root and stays concrete, so a clock root is the site's first reading in the occurrence. `domainMin/Max` absolute or absent (both absent = pinned); `clockNanos` = a CLOCK's tick in ns (1 for `nanoTime`, 1,000,000 for `currentTimeMillis`), present exactly for CLOCK |
 | `TargetRow` | `seq, occurrence, anchorSiteId, phiTerm, observedFatal, reachedAnchor` | the declared target site, published whether or not the run reached it (unreached: `seq` 0). `phiTerm` is in the FATAL polarity and nobody re-derives it; empty when the anchor decided concretely. How the runtime forms it: [PIPELINE.md §5](PIPELINE.md) |
 | `GapRow` | `kind, cls, subject, detail` | a refusal or diagnostic naming its subject; `sessionId` is the session, or `exploration` / `composition` for a stage's own rows |
 | `ObligationResult` | `schemaVersion 1, kind OBLIGATION_RESULT, obligationId, verdict, detail` | §3 |
@@ -93,8 +93,8 @@ or zero. Every row but a `ScheduleEvent` carries `sessionId`; every row but an `
 
 A focused replay's valuation is not read off `recordedValue` alone: EXPLORE and COMPOSE take the
 focus row's `rootAssignments` where the replay planted a root (`explore.Corpus.rootValue`), and
-invariant 6 judges a clock at its reading plus the focus row's `clockDeltas`
-(`RowInvariants.executed`).
+invariant 6 judges a clock the focus row skews at its host reading plus that skew, and any other at
+its `recordedValue` (`RowInvariants.executed`).
 
 ### 2.3 Expressions
 
@@ -180,7 +180,7 @@ field=<f> <subject>`.
 | 3 | every `EXPR.`-like token in `term`, `phiTerm`, `expressionRef`, an attach's `symbol` and `arrival` is `EXPR.` + 16 hex and is in the session's table | `UNSTATED_VALUE`, BLOCKING |
 | 4 | one row per event: no two reads or writes at one (seq, location), decisions at one (seq, site, ordinal), targets at one (occurrence, seq when reached else 0, anchor site) — BLOCKING; events of one kind at different seqs sharing one endpoint id — DIAGNOSTIC `LINEAGE_LOST` (the site index does not tell them apart) | `UNSTATED_VALUE` |
 | 5 | a minted symbol `M_<sort>_<name>` has one sort per name across roots, attaches and reads, and a read's or a hole attach's symbol sort is its `javaType`'s; a hole's `javaType` (export or attach) is a primitive or `Ljava/lang/String;` | `UNSTATED_VALUE`, BLOCKING |
-| 6 | a decision term that evaluates at the valuation the session ran under (declared roots and literals through `==, !=, <, <=, >, >=, +, -, *, &, \|, ^`, boundary and read-from nodes) agrees with `outcome`; the valuation is the mints' `recordedValue` for the seed and the focus row's ask for a focused session (a CLOCK = reading + skew); a FOCUSED session with no focus row is BLOCKING | `UNSTATED_VALUE`, BLOCKING |
+| 6 | a decision term that evaluates at the valuation the session ran under (declared roots and literals through `==, !=, <, <=, >, >=, +, -, *, &, \|, ^`, boundary and read-from nodes) agrees with `outcome`; the valuation is the mints' `recordedValue` for the seed and the focus row's ask for a focused session (a skewed CLOCK = host reading + skew); a FOCUSED session with no focus row is BLOCKING | `UNSTATED_VALUE`, BLOCKING |
 | 7 | an observed version no `WriteRow` and no `mintVersion` of the session states — DIAGNOSTIC; a placeholder read without `mintVersion`, or a `WriteRow` at a placeholder's minted version (a fabricated write) — BLOCKING | `UNSTATED_VALUE` |
 | 8 | a `RootMintRow` only for a declared root (`DECLARATION_MISSING`); a MARKER reads `true`/`false`, an INTEGRAL or CLOCK a plain decimal; one row per (occurrence, root id) (`UNSTATED_VALUE`) | BLOCKING |
 | 9 | a reached anchor states a `phiTerm` (BLOCKING when it observed the fatal, else DIAGNOSTIC: a concrete branch); an observed fatal's `phiTerm` does not evaluate false at the session's valuation (BLOCKING) | `UNSTATED_VALUE` |
@@ -215,7 +215,7 @@ field=<f> <subject>`.
   inheritedFlips: [{focusedOccurrenceId, siteId, ordinal, outcome, obligationId}], rootAssignments,
   clockDeltas: {rootId: skew}, answers, rootMints: {rootId: rendered mint occurrence}, unproducible,
   schedulePrefix?: {sessionId, events, rest, of, cutAtFocus}}`. A clock's counterfactual is a skew
-  the replay adds to its own reading; a root is planted only at a focused mint, so each assigned
+  the replay adds to its own host reading, a jump its node's clock runs on from; a root is planted only at a focused mint, so each assigned
   root's mint occurrence is focused.
 - CONFIRM's worker adds `expected_edges.jsonl` (`runtime.Confirmation.FILE`): `WIRE {consumer,
   producer, selector, messageKey?, value?}` (a codec hole's: `messageKey` the store version its
@@ -305,7 +305,8 @@ field=<f> <subject>`.
 - A per-session fact — arrivals, clock readings, the valuation — stays inside that path's
   conjunction, never a global assertion.
 - A root without a domain is pinned in COMPOSE and in flip queries; a declared MARKER is free over
-  both values; a CLOCK's window is `[reading, reading + 30 days]` in its own ticks
+  both values; a CLOCK's window is `[reading, reading + 30 days]` in its own ticks (a flip query's
+  reading is the session's host reading, COMPOSE's the cell's on the recording's timeline)
   (`smt.JavaPrimitiveSmtSemantics.clockDomain`/`clockSkewCeiling`), in COMPOSE replaced by the
   case's bounds when `root-domains.jsonl` declares them.
 

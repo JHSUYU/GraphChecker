@@ -465,7 +465,7 @@ public final class RowRuntime {
                                 String rootId, String symbol, RootKind kind,
                                 String recordedValue, String domainMin,
                                 String domainMax, boolean declared,
-                                long clockNanos) {
+                                long clockNanos, long clockSkew) {
         if (kind == RootKind.CLOCK) {
             // The cell the mint already filed, restated so a CLOCK row
             // nothing filed at the mint still resolves.
@@ -480,7 +480,7 @@ public final class RowRuntime {
                 Text.safe(recordedValue),
                 Text.safe(domainMin).isEmpty() ? null : Text.safe(domainMin),
                 Text.safe(domainMax).isEmpty() ? null : Text.safe(domainMax),
-                declared, clockNanos));
+                declared, clockNanos, clockSkew));
         // The mint is IN the session -- a different fact from the plant,
         // which survives an occurrence whose rows are discarded.
         FocusedReplay.mintPublished(rootId);

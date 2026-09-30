@@ -41,9 +41,10 @@ import static edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.integra
  *       cell to its recorded reading makes the query unsat.  The witness is
  *       asked with every clock running on wherever it can
  *       ({@link #leastClocks}), so {@link Claim#movedRoots}
- *       ({@link #movedRoots}) names only the jumps it needs.  A moved marker is asked first ({@link #mechanism}); where
- *       the clock pins refute the recorded valuation, a moved root must
- *       reach the fatal arm under those same pins.</li>
+ *       ({@link #movedRoots}) names only the jumps it needs.  A moved
+ *       marker is asked first ({@link #mechanism}); where the clock pins
+ *       refute the recorded valuation, a moved root must reach the fatal
+ *       arm under those same pins.</li>
  *   <li><b>MESSAGE_PAIRING_FLIPPED</b> -- an explored session's fatal path
  *       is sat at the recorded roots through attested arms while the seed's
  *       own disjunct is not.</li>
@@ -213,7 +214,7 @@ public final class ClaimPolicy {
         // is read by the alarm, loop 1, branch 2 and #mechanism.  Unsat while
         // the free valuation is sat means a clock or a pairing reaches the
         // fatal arm; asking the clocks alone tells which (CLOCK_SKEW).
-        List<String> cells = clockCellsRead(composition);
+        List<String> cells = composition.clockCells();
         List<String> asHappened = new ArrayList<String>(pins(composition,
                 cells));
         asHappened.addAll(composition.recordedPairings());
@@ -558,8 +559,12 @@ public final class ClaimPolicy {
      * clock cell where the model's clock jumped ({@link #jump}; no valuation
      * pins a clock, so the model is the only statement of it), at the
      * model's instant.  A cell that runs on from the cell before it is one
-     * {@link #leastClocks} pinned as unneeded.  NO_SUPPORTED_WITNESS claims
-     * carry an empty map instead.
+     * {@link #leastClocks} pinned as unneeded.  A jump BACK is a jump too: a
+     * cell the witness needs short of where its clock ran on to (it must
+     * stay below a bound an earlier jump would carry it past) is one a
+     * replay has to plant, or it runs on ahead; it is named at its model
+     * instant, which can be its own reading (the clock set back to the
+     * host's).  NO_SUPPORTED_WITNESS claims carry an empty map instead.
      */
     private static Map<String, String> movedRoots(
             Composer.Composition composition, Outcome outcome) {
@@ -674,22 +679,15 @@ public final class ClaimPolicy {
                 selectedOf(composition, answer), armsOf(composition, answer));
     }
 
-    /** The clock cells whose reading some session states, in order. */
-    private static List<String> clockCellsRead(
-            Composer.Composition composition) {
-        List<String> cells = new ArrayList<String>();
-        for (String cell : composition.clockCells()) {
-            if (composition.clockReadings().get(cell) != null) cells.add(cell);
-        }
-        return cells;
-    }
-
     /**
      * The witness under every clock pin it can keep: every cell running on
      * from the cell before it ({@link #runsOn}) first; otherwise pin back one
-     * at a time in recording order, keeping each pin that stays sat.  The
-     * free cells are then a minimal set of the jumps the witness needs (z3's
-     * unsat core is not: it names every pin).
+     * at a time in the recording's seq order ({@code Composer#clocks}),
+     * keeping each pin that stays sat.  The free cells are then a minimal set
+     * of the jumps the witness needs (z3's unsat core is not: it names every
+     * pin), each as late as the witness allows: a later cell the fatal reads
+     * is pinned to run on only after the cells before it, so the jump lands
+     * on it, not on an earlier cell that would carry it along.
      */
     private static Outcome leastClocks(Composer.Composition composition,
                                        Z3 solver, Outcome outcome,
@@ -716,17 +714,19 @@ public final class ClaimPolicy {
     /**
      * The witness with each clock jump it makes ({@link #jump}) made
      * {@link ClockMargin#margin} (a minute in its ticks) further the same
-     * way, where the formula still reaches the fatal arm there; else the
-     * witness as it was.  The model is the cheapest world (a token's expiry
-     * passed by one millisecond), and the confirming replay reads every
-     * clock fresh, so an instant at the boundary falls back on the recorded
-     * arm: exploration's margin rule (adhoc token-expired.proxy missed by
-     * 70 ms).
+     * way, where the formula still reaches the fatal arm there.  The model is
+     * the cheapest world (a token's expiry passed by one millisecond), and
+     * the confirming replay reads every clock fresh, so an instant at the
+     * boundary falls back on the recorded arm: exploration's margin rule
+     * (adhoc token-expired.proxy missed by 70 ms).  Every margin at once
+     * first; else each jump's in seq order, kept where the witness stays: a
+     * jump back that sits on its cell's floor has no room, and costs the
+     * other jumps none of theirs.
      */
     private static Outcome withMargin(Composer.Composition composition,
                                       Z3 solver, Outcome witness) {
-        List<String> room = new ArrayList<String>(witness.pinned());
         Map<String, String> model = witness.answer().values();
+        List<String> margins = new ArrayList<String>();
         for (String cell : composition.clockCells()) {
             Long jumped = jump(composition, model, cell);
             if (jumped == null || jumped == 0L) continue;
@@ -734,16 +734,33 @@ public final class ClaimPolicy {
             boolean later = jumped > 0L;
             long margin = ClockMargin.margin(
                     composition.clockNanos().get(cell));
-            room.add("(assert (! (" + (later ? ">=" : "<=") + " " + cell
+            margins.add("(assert (! (" + (later ? ">=" : "<=") + " " + cell
                     + " " + integralLiteral(Long.toString(later
                     ? at + margin : at - margin))
                     + ") :named clock_margin__" + ArtifactIO.digest(cell, 10)
                     + "))");
         }
-        if (room.size() == witness.pinned().size()) return witness;
-        Outcome asked = outcome(composition, solver, witness.valuation(),
+        if (margins.isEmpty()) return witness;
+        List<String> room = new ArrayList<String>(witness.pinned());
+        room.addAll(margins);
+        Outcome all = outcome(composition, solver, witness.valuation(),
                 room, false);
-        return asked.witness() ? asked : witness;
+        if (all.witness() || margins.size() == 1) {
+            return all.witness() ? all : witness;
+        }
+        List<String> kept = new ArrayList<String>(witness.pinned());
+        Outcome roomy = witness;
+        for (String margin : margins) {
+            kept.add(margin);
+            Outcome asked = outcome(composition, solver, witness.valuation(),
+                    kept, false);
+            if (asked.witness()) {
+                roomy = asked;
+            } else {
+                kept.remove(kept.size() - 1);
+            }
+        }
+        return roomy;
     }
 
     /**
@@ -751,11 +768,11 @@ public final class ClaimPolicy {
      * ({@link Composer.Composition#clockBefore}), as named pins: a cell keeps
      * that cell's skew off its reading, and a cell with none before it its
      * reading.  A clock that jumped at one cell runs on from there, as a
-     * replay runs it ({@code RootMint#CLOCK_AHEAD}), so the cells after a
-     * jump are no more the witness's moves than the cells before it
-     * (SOLR-18406: delete()'s clock jumped past G's reservation, and the
-     * commit's next two readings were moved with it, the second one outside
-     * the witness path's cone).
+     * replay runs it ({@code runtime.NodeClocks}, by the same seq order), so
+     * the cells after a jump are no more the witness's moves than the cells
+     * before it (SOLR-18406: delete()'s clock jumped past G's reservation,
+     * and the commit's next two readings were moved with it, the second one
+     * outside the witness path's cone).
      */
     private static List<String> runsOn(Composer.Composition composition,
                                        List<String> cells) {

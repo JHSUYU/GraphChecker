@@ -237,8 +237,8 @@ public final class ConfirmMain {
         Map<String, String> answers =
                 ExploreCodec.map(object(world, "answers"));
         plantModel(decided, session,
-                SessionReader.read(iteration, seedSessionId), assignments,
-                clockDeltas, mints);
+                SessionReader.read(iteration, seedSessionId), manifest,
+                assignments, clockDeltas, mints);
         List<JsonObject> markers = markerEdges(manifest, assignments);
         Map<String, SessionReader> armSessions =
                 new LinkedHashMap<String, SessionReader>();
@@ -303,23 +303,26 @@ public final class ConfirmMain {
      * runs the session again, not the claim.
      *
      * <p>A clock's skew is off the reading the composition anchored its cell
-     * to: the recording's, where the recording read the cell
-     * ({@code Composer#clocks}; a cell only replays read has no reading
-     * there, and its skew is off this session's).  The model's instants are
-     * on that timeline;
-     * the selected session is a later replay whose host read its own
-     * (SOLR-18406 a37f2: 1168 s later), and a skew off that reading planted
-     * delete()'s clock short of the reservation the model had it pass.</p>
+     * to (the manifest's {@code roots}, {@code Composer#clocks}): the
+     * model's instants are on that timeline, the recording's.  The selected
+     * session is a later replay whose host read its own (SOLR-18406 a37f2:
+     * 1168 s later), and a skew off that reading planted delete()'s clock
+     * short of the reservation the model had it pass.  A moved clock the
+     * composition anchors nowhere is refused by name.</p>
      */
     static void plantModel(JsonObject decided, SessionReader session,
-                           SessionReader recording,
+                           SessionReader recording, JsonObject manifest,
                            Map<String, String> assignments,
                            Map<String, String> clockDeltas,
                            Map<String, String> mints) {
         JsonObject moved = object(decided, "movedRoots");
         Map<String, String> anchored = new LinkedHashMap<String, String>();
-        for (RootMintRow row : recording.roots()) {
-            anchored.put(row.symbol(), row.recordedValue());
+        for (JsonElement element : array(manifest, "roots")) {
+            JsonObject root = element.getAsJsonObject();
+            if ("CLOCK".equals(optionalString(root, "kind"))) {
+                anchored.put(optionalString(root, "rootId"),
+                        optionalString(root, "recordedValue"));
+            }
         }
         for (RootMintRow row : session.roots()) {
             JsonElement value = moved.has(row.symbol())
@@ -328,9 +331,13 @@ public final class ConfirmMain {
             String model = value.getAsString().trim();
             if (row.kind() == RootKind.CLOCK) {
                 String skew = ObligationFactory.skew(model,
-                        anchored.getOrDefault(row.symbol(),
-                                row.recordedValue()));
-                if (skew.isEmpty()) continue;
+                        anchored.get(row.rootId()));
+                if (skew.isEmpty()) {
+                    throw new Refused("the model moves clock cell "
+                            + row.symbol() + " to " + model + " and the "
+                            + "composition anchors no reading of it, so no "
+                            + "skew states that instant");
+                }
                 clockDeltas.put(row.rootId(), skew);
             } else {
                 assignments.put(row.rootId(), model);

@@ -7,6 +7,9 @@ package edu.uva.liftlab.graphchecker.contract;
  * export from being read as carried by it.
  */
 public final class RootMintRow extends Value {
+    /** The member a CLOCK row states its skew in; absent when 0. */
+    public static final String CLOCK_SKEW = "clockSkew";
+
     private final String sessionId;
     private final long seq;
     private final OccurrenceAddress occurrence;
@@ -18,12 +21,13 @@ public final class RootMintRow extends Value {
     private final String domainMax;
     private final boolean declared;
     private final long clockNanos;
+    private final long clockSkew;
 
     private RootMintRow(String sessionId, long seq,
                         OccurrenceAddress occurrence, String rootId,
                         String symbol, RootKind kind, String recordedValue,
                         String domainMin, String domainMax, boolean declared,
-                        long clockNanos) {
+                        long clockNanos, long clockSkew) {
         this.sessionId = sessionId;
         this.seq = seq;
         this.occurrence = occurrence;
@@ -35,6 +39,7 @@ public final class RootMintRow extends Value {
         this.domainMax = domainMax;
         this.declared = declared;
         this.clockNanos = clockNanos;
+        this.clockSkew = clockSkew;
     }
 
     public static RootMintRow of(String sessionId, long seq,
@@ -43,11 +48,30 @@ public final class RootMintRow extends Value {
                                  String recordedValue, String domainMin,
                                  String domainMax, boolean declared,
                                  long clockNanos) {
+        return of(sessionId, seq, occurrence, rootId, symbol, kind,
+                recordedValue, domainMin, domainMax, declared, clockNanos,
+                0L);
+    }
+
+    public static RootMintRow of(String sessionId, long seq,
+                                 OccurrenceAddress occurrence, String rootId,
+                                 String symbol, RootKind kind,
+                                 String recordedValue, String domainMin,
+                                 String domainMax, boolean declared,
+                                 long clockNanos, long clockSkew) {
         RootKind stated = Fields.required(kind, "kind");
         if ((stated == RootKind.CLOCK) != (clockNanos > 0L)) {
             throw new IllegalArgumentException("clockNanos: a CLOCK root "
                     + "states its tick and no other root does: " + stated
                     + " " + clockNanos);
+        }
+        if (clockSkew != 0L && (stated != RootKind.CLOCK
+                || !Fields.required(recordedValue, "recordedValue").trim()
+                .matches("-?[0-9]+"))) {
+            throw new IllegalArgumentException("clockSkew: only a CLOCK "
+                    + "root that states an instant runs off the host's "
+                    + "reading: " + stated + " " + recordedValue + " "
+                    + clockSkew);
         }
         return new RootMintRow(Fields.text(sessionId, "sessionId"),
                 Fields.nonNegative(seq, "seq"),
@@ -56,7 +80,7 @@ public final class RootMintRow extends Value {
                 stated,
                 Fields.required(recordedValue, "recordedValue"),
                 Fields.optional(domainMin), Fields.optional(domainMax),
-                declared, clockNanos);
+                declared, clockNanos, clockSkew);
     }
 
     public String sessionId() {
@@ -84,6 +108,11 @@ public final class RootMintRow extends Value {
         return kind;
     }
 
+    /**
+     * The value the region ran the root at; for a CLOCK the instant its
+     * node's clock read there, which is {@link #hostReading} moved by
+     * {@link #clockSkew}.
+     */
     public String recordedValue() {
         return recordedValue;
     }
@@ -113,6 +142,28 @@ public final class RootMintRow extends Value {
         return clockNanos;
     }
 
+    /**
+     * How far a CLOCK's node clock ran off the host's reading at this cell
+     * (a replay's plant, or the jump before it the clock ran on from,
+     * {@code runtime.NodeClocks}); 0 for the host's own instant and for any
+     * other root.
+     */
+    public long clockSkew() {
+        return clockSkew;
+    }
+
+    /**
+     * What the host's clock read at this cell: {@link #recordedValue} less
+     * {@link #clockSkew}.  A clock's counterfactual is a skew off it (the
+     * focus row's {@code clockDeltas}); the seed plants nothing, so there
+     * it is the recorded value.
+     */
+    public String hostReading() {
+        if (clockSkew == 0L) return recordedValue;
+        return new java.math.BigInteger(recordedValue.trim())
+                .subtract(java.math.BigInteger.valueOf(clockSkew)).toString();
+    }
+
     /** Whether the root may move at all: an undeclared or undomained root. */
     public boolean pinned() {
         return domainMin == null && domainMax == null;
@@ -121,7 +172,8 @@ public final class RootMintRow extends Value {
     @Override
     Object[] parts() {
         return new Object[] {sessionId, seq, occurrence, rootId, symbol, kind,
-                recordedValue, domainMin, domainMax, declared, clockNanos};
+                recordedValue, domainMin, domainMax, declared, clockNanos,
+                clockSkew};
     }
 
     @Override

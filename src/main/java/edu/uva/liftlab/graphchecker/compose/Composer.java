@@ -270,12 +270,15 @@ public final class Composer {
             return gaps;
         }
 
-        /** Every clock cell the formula declares. */
+        /** Every clock cell the formula declares, in the recording's seq
+         *  order, each with a reading ({@link #clockReadings}). */
         public List<String> clockCells() {
             return clockCells;
         }
 
-        /** Clock cell -> one instant some session read it at. */
+        /** Clock cell -> its instant on the recording's timeline: the
+         *  seed's reading, or where a session that read it places it
+         *  ({@code Composer#clocks}). */
         public Map<String, Long> clockReadings() {
             return clockReadings;
         }
@@ -2084,33 +2087,39 @@ public final class Composer {
     }
 
     /**
-     * Every declared CLOCK cell the formula names: its domain, its recorded
-     * reading, and its place in its node's order.
+     * Every declared CLOCK cell the formula names: its domain, its reading
+     * on the recording's timeline, and its place in its node's order.
      *
-     * <p>A cell is one per (root, occurrence); its reading is the SEED's.
-     * Domain ({@link JavaPrimitiveSmtSemantics#clockDomain}): floor = the
-     * reading, ceiling = reading + window, unless {@code root-domains.jsonl}
-     * declares bounds (the only way to ask for a backward move).  A cell
-     * the seed did not read is domained but has no reading.  EVERY cell is
-     * domained, or it is left free.</p>
+     * <p>A cell is one per (root, occurrence), and its reading is the
+     * SEED's.  A cell the seed never read (a region woven after it) is
+     * placed by a session that read it: at the seed's reading of the
+     * nearest cell (by seq) of the same clock that session also read, plus
+     * the time that session's host read between the two
+     * ({@link #placed}).  A cell no session can place has no instant any
+     * claim could judge it moved from: BLOCKING.  Domain ({@link
+     * JavaPrimitiveSmtSemantics#clockDomain}): floor = the reading, ceiling
+     * = reading + window, unless {@code root-domains.jsonl} declares bounds
+     * (the only way to ask for a backward move).</p>
      *
-     * <p>ONE ORDER PER CLOCK OF A NODE: a seed cell is no earlier than the
-     * last cell before it (by seq) that read the same clock.  A node reads
-     * more than one -- the wall clock and a monotonic one (hdfs-11741's
-     * Balancer: {@code Time.now()} for its keys, {@code monotonicNow()}
-     * for its SASL user) -- and ordering those against each other made
-     * every path false.  One run is far shorter than a clock window, so
-     * two readings of one clock share a tick and lie within one window;
-     * any other two are two clocks.  {@code earlierOf} maps each ordered cell
-     * to that cell, which the claim runs its clock on from
-     * ({@code ClaimPolicy#runsOn}).</p>
+     * <p>ONE ORDER PER CLOCK OF A NODE: a cell is no earlier than the last
+     * cell before it by seq -- the event the recording read it at, the order
+     * a replay runs a planted clock on in ({@code runtime.NodeClocks}) --
+     * that read the same clock ({@link JavaPrimitiveSmtSemantics#oneClock}:
+     * a node's wall clock and a monotonic one are two, and ordering those
+     * against each other made every path false).  Where the recording's own
+     * readings of the two run the other way (two threads between reading
+     * and logging), the order gives way by that much, so the recording
+     * always satisfies it.  {@code earlierOf} maps each ordered cell to that
+     * cell, which the claim runs its clock on from ({@code
+     * ClaimPolicy#runsOn}); {@code cells} are in seq order, the order the
+     * claim pins them back in.</p>
      */
     private void clocks(List<String> cells, Map<String, Long> readings,
                         Map<String, Long> ticks,
                         Map<String, String> earlierOf) {
         String seed = seed();
-        Map<NodeId, List<RootMintRow>> byNode =
-                new LinkedHashMap<NodeId, List<RootMintRow>>();
+        List<RootMintRow> clocks = new ArrayList<RootMintRow>();
+        List<RootMintRow> read = new ArrayList<RootMintRow>();
         for (Map.Entry<String, List<RootMintRow>> entry
                 : corpus.roots().entrySet()) {
             RootMintRow row = seedRow(entry.getValue());
@@ -2118,20 +2127,38 @@ public final class Composer {
                     || !lowering.declared(row.symbol())) {
                 continue;
             }
-            long reading;
-            try {
-                reading = Long.parseLong(row.recordedValue().trim());
-            } catch (NumberFormatException notAnInstant) {
-                gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
-                        row.rootId(), "the mint of this clock cell states "
-                                + "no instant (" + row.recordedValue()
-                                + "), so it has no domain and no reading");
-                continue;
+            Long reading = instant(row);
+            if (reading == null) continue;
+            clocks.add(row);
+            if (row.sessionId().equals(seed)) {
+                readings.put(row.symbol(), reading);
+                read.add(row);
             }
+        }
+        List<RootMintRow> placedCells = new ArrayList<RootMintRow>();
+        for (RootMintRow row : clocks) {
+            if (!readings.containsKey(row.symbol())) {
+                Long reading = placed(corpus.roots().get(row.rootId()),
+                        read, readings);
+                if (reading == null) {
+                    gap(GapKind.DECLARATION_MISSING, GapClass.BLOCKING,
+                            row.rootId(), "this clock cell reaches the "
+                                    + "composition, the recording never "
+                                    + "read it, and no session that read it "
+                                    + "read a cell of the same clock the "
+                                    + "recording read, so it has no instant "
+                                    + "on the recording's timeline: no claim "
+                                    + "can say whether a witness moved it");
+                    continue;
+                }
+                readings.put(row.symbol(), reading);
+            }
+            long reading = readings.get(row.symbol());
             String instant = Long.toString(reading);
-            cells.add(row.symbol());
+            placedCells.add(row);
             ticks.put(row.symbol(), row.clockNanos());
-            RootDomain domain = domainOf(row);
+            RootDomain domain = RootDomain.resolved(row, instant,
+                    declaredDomains);
             String floor = domain.min() == null ? instant
                     : integralLiteral(domain.min());
             String ceiling = domain.max() == null
@@ -2139,47 +2166,112 @@ public final class Composer {
                             row.clockNanos())
                     : integralLiteral(domain.max());
             roots.put(row.rootId(), RootDomain.of(row.rootId(),
-                    RootKind.CLOCK, row.recordedValue(), floor, ceiling));
+                    RootKind.CLOCK, instant, floor, ceiling));
             lowering.assertNamed("clock_domain__"
                             + ArtifactIO.digest(row.symbol(), 10),
                     JavaPrimitiveSmtSemantics.clockDomain(row.symbol(),
                             floor, ceiling));
-            if (!row.sessionId().equals(seed)) {
-                gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
-                        row.rootId(), "this cell reaches the composition "
-                                + "and the recording states no reading of "
-                                + "it, so no claim can say whether a "
-                                + "witness moved it away from what the run "
-                                + "read");
-                continue;
-            }
-            readings.put(row.symbol(), reading);
+        }
+        Map<NodeId, List<RootMintRow>> byNode =
+                new LinkedHashMap<NodeId, List<RootMintRow>>();
+        for (RootMintRow row : placedCells) {
             byNode.computeIfAbsent(row.occurrence().node(),
                     node -> new ArrayList<RootMintRow>()).add(row);
         }
+        placedCells.sort(Comparator.comparingLong(RootMintRow::seq)
+                .thenComparing(RootMintRow::symbol));
+        for (RootMintRow row : placedCells) cells.add(row.symbol());
         for (List<RootMintRow> mints : byNode.values()) {
             mints.sort(Comparator.comparingLong(RootMintRow::seq));
             for (int index = 1; index < mints.size(); index++) {
                 String later = mints.get(index).symbol();
                 long reading = readings.get(later);
                 long tick = ticks.get(later);
-                long window = JavaPrimitiveSmtSemantics.clockTicks(
-                        JavaPrimitiveSmtSemantics.CLOCK_SKEW_WINDOW_NANOS,
-                        tick);
                 for (int before = index - 1; before >= 0; before--) {
                     String earlier = mints.get(before).symbol();
-                    if (ticks.get(earlier) != tick
-                            || Math.abs(readings.get(earlier) - reading)
-                            > window) {
+                    long earlierReading = readings.get(earlier);
+                    if (!JavaPrimitiveSmtSemantics.oneClock(tick, reading,
+                            ticks.get(earlier), earlierReading)) {
                         continue;
                     }
+                    long inversion = earlierReading - reading;
                     lowering.assertNamed("clock_order__" + ArtifactIO.digest(
                                     earlier + "|" + later, 10),
-                            "(<= " + earlier + " " + later + ")");
+                            inversion <= 0L
+                                    ? "(<= " + earlier + " " + later + ")"
+                                    : "(<= (- " + earlier + " " + later
+                                    + ") " + integralLiteral(
+                                            Long.toString(inversion)) + ")");
                     earlierOf.put(later, earlier);
                     break;
                 }
             }
+        }
+    }
+
+    /**
+     * A clock row's host reading, or null (named) when it states no
+     * instant.
+     */
+    private Long instant(RootMintRow row) {
+        Long reading = number(row.hostReading());
+        if (reading == null) {
+            gap(GapKind.DECLARATION_MISSING, GapClass.DIAGNOSTIC,
+                    row.rootId(), "the mint of this clock cell states no "
+                            + "instant (" + row.recordedValue() + "), so it "
+                            + "has no domain and no reading");
+        }
+        return reading;
+    }
+
+    /**
+     * Where a cell the recording never read sits on its timeline: for the
+     * first session (of {@code rows}) that also read a cell the recording
+     * read on the same clock of the same node, the recording's reading of
+     * the nearest such cell (by seq, the earlier on a tie) plus the time
+     * that session's host read from it to this cell.  Null when no session
+     * read one.
+     */
+    private Long placed(List<RootMintRow> rows, List<RootMintRow> read,
+                        Map<String, Long> readings) {
+        for (RootMintRow cell : rows) {
+            Long host = number(cell.hostReading());
+            if (cell.kind() != RootKind.CLOCK || host == null) continue;
+            RootMintRow nearest = null;
+            long from = 0L;
+            for (RootMintRow anchor : read) {
+                RootMintRow same = corpus.rootOf(cell.sessionId(),
+                        anchor.rootId());
+                Long sameHost = same == null ? null
+                        : number(same.hostReading());
+                if (sameHost == null || !anchor.occurrence().node().equals(
+                        cell.occurrence().node())
+                        || !JavaPrimitiveSmtSemantics.oneClock(
+                        cell.clockNanos(), host, same.clockNanos(),
+                        sameHost)) {
+                    continue;
+                }
+                long distance = Math.abs(anchor.seq() - cell.seq());
+                long best = nearest == null ? Long.MAX_VALUE
+                        : Math.abs(nearest.seq() - cell.seq());
+                if (distance < best || (distance == best
+                        && anchor.seq() < nearest.seq())) {
+                    nearest = anchor;
+                    from = sameHost;
+                }
+            }
+            if (nearest != null) {
+                return readings.get(nearest.symbol()) + (host - from);
+            }
+        }
+        return null;
+    }
+
+    private static Long number(String text) {
+        try {
+            return Long.valueOf(text.trim());
+        } catch (NumberFormatException notAnInstant) {
+            return null;
         }
     }
 

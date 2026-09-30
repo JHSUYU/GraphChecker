@@ -27,7 +27,7 @@ tools and later fixes on top; no full round has run on HEAD itself.
 | hdfs-17960 | `r8` | PASS | MARKER_FLIPPED, `HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED=false`, confirmed |
 | hdfs-17967-pathA, B, C | `r7` | PASS | MARKER_FLIPPED, IPC request door |
 | hdfs-11741 | `r8` | FAIL | CLOCK_SKEW (NameNode and DataNode clocks, `polarityDecides`) but 22 BLOCKING gaps: 18 EXPLORE `TOPOLOGY_DIVERGENCE` (`SlotTable#contradictsOrder` orders by the anchor chain), 3 PLAN `OCCURRENCE_ADDRESS_SHARED` (a pool task inherits no frames), 1 COMPOSE `UNSTATED_VALUE` (an export stating no expression). Fixed off main (README §0.3). |
-| solr-18406 | `r7` | FAIL | its one anchor path is UNSAT with every root free. Fixed off main: a run of that branch (`accept-a37f4-solr-18406`) PASSES with CLOCK_SKEW, confirmed. |
+| solr-18406 | `a37f4` | PASS | CLOCK_SKEW, one jump of the commit's `delete()` clock (+3652 s), confirmed; `a37f4` ran this code before its merge and the one-clock rules below (`r7` on main before it: its one anchor path UNSAT with every root free). No round on HEAD. |
 | solr-18413 | `r9` | FAIL | the `isExpired#u6` flip is SAT and its replay observes the fatal ("Could not find collection") and is ADMITTED, but IMPORT invariant 9 stops the campaign: that replay's target row states no `phiTerm`, since the fatal condition is concrete there. |
 
 So HDFS stands at 8 of 9 on main. The ad-hoc checks have found no new bug; the only confirmed
@@ -43,6 +43,7 @@ assumption.
 | Control dependence across methods, threads and the wire | partial | `SeedBackwardStaticAnalyzer` (callers of field writers, constant stores up to 3 calls up) | Nothing across a thread start, an executor submit or a message. |
 | Library-typed state (the receiver of a non-application call) | not done | `SeedBackwardStaticAnalyzer#localValueUses`, `#isValueLikeLibraryInvoke` | `x = lib.m(k)` depends on `k` only, except modeled containers, String/StringBuilder, unboxing and structural accessors. State behind a `ConcurrentMap`, `NavigableMap`, `AtomicBoolean` or cache never enters the slice. |
 | CLOCK roots by category | done | `gc/causynth/RootCatalog#clockTicks`, `#wrapsAClock` | Only the JVM clocks and zero-argument int/long wrappers under constant arithmetic, found on `call_return` edges. Not `java.time`, a clock read through a field, or a delegate outside the scope. |
+| A node's clock: planted, composed and claimed as one | done | one clock = one node, one tick, readings within one window (`gc/smt/JavaPrimitiveSmtSemantics#oneClock`); a replay's plant is a jump its node's clock runs on from, in the recording's order (`gc/runtime/NodeClocks`, `RootMint#materializePrimitiveValue`), and a clock's mint row states the instant the run used and its `clockSkew` (`RootMintRow#hostReading`); COMPOSE orders each clock's cells by the recording's seq, places a cell the seed never read by its session's elapsed time, and relaxes a link the recording read the other way round (`gc/compose/Composer#clocks`); the claim names only the jumps, pinned back in seq order (`ClaimPolicy#leastClocks`, `#runsOn`, `#jump`, `#withMargin`); CONFIRM skews a moved cell off the composition's reading (`gc/explore/ConfirmMain#plantModel`) | Only declared CLOCK sites move; an undeclared read of the host clock stays at the host. A flip query's cells are unordered, so an obligation may plant a later cell behind an earlier one (a jump back). A reading the replay runs before the jump that precedes it in the recording's order was planted reads the host (or an earlier jump). CONFIRM plants the selected session's own clock skews beside the claim's jumps, so one at a cell the model runs on overrides it. |
 | FAULT roots at transport doors | done, declared per system | `gc/causynth/DoorWeave#apply` (runs before analysis); `gc/plan/StaticScopeMap#declaredFault` | Doors come from `DOOR` rows. A marker counts as declared only if its transport has a row. Only the first call of the named callee is woven. |
 | READ placeholder roots | partial | `StaticScopeMap#markReads` | Only an accessor with an unwoven (JDK) body, a primitive return, and a location another region stores: in practice `AtomicInteger`/`AtomicLong.get`. |
 | Configuration roots | not done | `gc/causynth/StaticSymbolicSourceDiscovery`; `gc/runtime/RootMint#configuredSource` | Only a hand-written tree hook `CausynthSymbolicSource.symbolize` mints one, and only on a primitive instance field. There are six such hooks in every block-key tree and one in 17960. |
@@ -108,10 +109,10 @@ assumption.
 
 See Acceptance above. What remains (the branches are in README §0.3):
 
-- hdfs-11741: the 22 blockers are fixed off main; its three NameNode clocks that move only through
-  the `clock_order` constraint may still fail the cone gate.
-- SOLR-18406: reference-carried container state and the `ConcurrentHashMap` model are on main
-  (R3); the clock planting fixes that make it pass are off main.
+- hdfs-11741: the 22 blockers are fixed off main. A claim names only a clock's jumps (a cell that
+  runs on from the cell before it is no move), so the three NameNode clocks that moved only through
+  the `clock_order` constraint are no longer named; no round has checked the cone on HEAD.
+- SOLR-18406: passes on this code (`a37f4`); no round on HEAD.
 - SOLR-18413: the `isExpired` flip is SAT with MigrateCmd's clock skewed forward, and its replay
   reproduces the fatal; a fatal condition that is concrete in a replay must state its phi (IMPORT
   invariant 9). The store door files what a write carried after the schedule's SEND lets the queue's

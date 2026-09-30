@@ -450,6 +450,9 @@ public final class RowCodec {
         if (row.clockNanos() > 0L) {
             json.addProperty("clockNanos", row.clockNanos());
         }
+        if (row.clockSkew() != 0L) {
+            json.addProperty(RootMintRow.CLOCK_SKEW, row.clockSkew());
+        }
         return json;
     }
 
@@ -465,7 +468,9 @@ public final class RowCodec {
                 string(json, "recordedValue"),
                 optionalString(json, "domainMin"),
                 optionalString(json, "domainMax"), bool(json, "declared"),
-                json.has("clockNanos") ? number(json, "clockNanos") : 0L);
+                json.has("clockNanos") ? number(json, "clockNanos") : 0L,
+                json.has(RootMintRow.CLOCK_SKEW)
+                        ? number(json, RootMintRow.CLOCK_SKEW) : 0L);
     }
 
     public static JsonObject writeTarget(TargetRow row) {

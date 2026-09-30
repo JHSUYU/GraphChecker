@@ -236,7 +236,7 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
                 new SymbolizeAction(counterAction()), "PORT.count",
                 Collections.<String>emptyList(),
                 "<java.util.concurrent.atomic.AtomicInteger: int value>",
-                symbolExpression(COUNTER_SYMBOL, "I"), true, false, "2");
+                symbolExpression(COUNTER_SYMBOL, "I"), true, false, "2", 0L);
         JsonObject record = record(COUNTER_CELL,
                 version(COUNTER_MINT, symbolExpression(COUNTER_SYMBOL, "I")));
         array(record, "versions").add(version(COUNTER_WRITE,
@@ -396,7 +396,7 @@ public class DeclaredMintOwesItsPlaceholderReadTest {
                 new SymbolizeAction(clockAction()), "PORT.now",
                 Collections.<String>emptyList(),
                 "<org.apache.hadoop.util.Timer: long now()>.return",
-                symbolExpression(CLOCK_SYMBOL, "J"), true, false, INSTANT);
+                symbolExpression(CLOCK_SYMBOL, "J"), true, false, INSTANT, 0L);
     }
 
     /** {@code RowPublication#writes}, the one publisher of WriteRows. */

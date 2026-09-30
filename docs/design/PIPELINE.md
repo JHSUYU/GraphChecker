@@ -349,9 +349,11 @@ its flipped decision (`Arms.conjunct`/`Arms.pathCondition` apply the recorded po
 lowered by the one lowering, `compose.SmtLowering`). Each symbol it names gets one rule:
 
 - ROOT: a declared MARKER is a free Bool; a CLOCK is one variable per (root, session) with domain
-  `[reading, reading + 30 days]` in its own ticks (`JavaPrimitiveSmtSemantics.clockDomain`/
-  `clockSkewCeiling`; no reading: `[0, Long.MAX]`; declared clock bounds are not read here); any other
-  root takes its domain from `root-domains.jsonl` (or the mint's), else is pinned to its recorded value.
+  `[host reading, host reading + 30 days]` in its own ticks (`RootMintRow#hostReading`: the mint's
+  instant less the skew its node's clock ran at there; `JavaPrimitiveSmtSemantics.clockDomain`/
+  `clockSkewCeiling`; no reading: `[0, Long.MAX]`; declared clock bounds are not read here), and its
+  nearest world is the instant the session ran it at; any other root takes its domain from
+  `root-domains.jsonl` (or the mint's), else is pinned to its recorded value.
 - HANDOFF: an attach of the focused occurrence (a *control*) is bound per slot by
   `OR(pi_q ∧ guard_q ∧ v_H = e_q)` over `Arms.wireArms` (nested slots closed); a paired control whose
   every arm is dropped refuses the query (`UNPRODUCIBLE_ANSWER`); an unpaired one is free and listed
@@ -387,8 +389,8 @@ an atom it cannot strengthen is a DIAGNOSTIC gap). The objective is the nearest 
 
 z3 runs with `solver_timeout_ms`. Timeout (`SOLVER_TIMEOUT` gap), `unknown` or error →
 `NOT_ADMITTED`; unsat → `UNSAT`. On sat (`ObligationFactory.solve`): roots the assertions reach are
-read back by root id, the flipped path's clocks as skews (`model − reading`; one outside a Java long
-refuses), controls as answers keyed by attach endpoint id (`ObligationFactory#answer`: a String
+read back by root id, the flipped path's clocks as skews (`model − host reading`; one outside a Java
+long refuses), controls as answers keyed by attach endpoint id (`ObligationFactory#answer`: a String
 control -- a codec's STR hole -- as its JSON string literal, which the replay plants verbatim; one
 whose model value is no string literal refuses, `NOT_ADMITTED`). Every recorded value a query pins
 (an arrival, a read's `concreteValue`, a root) is a literal of the sort its variable is declared at
@@ -407,10 +409,16 @@ mark of the flip occurrence, the focused occurrence or a factor member goes to
 `campaign_obligation_replay` links the seed plan into the worker directory and runs the adapter under
 `replay_timeout_s`. The replay runs the whole workload; the focused set (focused occurrence, factor,
 each assigned root's mint occurrence, inherited flips' occurrences) runs symbolically
-(`runtime.FocusedReplay`). A clock skew is planted at its mint and sets that node's clock (same
-tick), which runs on from there: a later clock mint on the node that no skew is asked of reads the
-host's clock plus the latest plant's skew, so no replay runs a clock back behind a plant; skews and
-mint rows stay relative to the host's reading (`runtime.RootMint`). The replay owns the verdict: `RowRuntime.closeSession` writes the session's
+(`runtime.FocusedReplay`). A clock skew is planted at its mint (the host's reading plus the skew)
+and is a jump of that node's clock (`runtime.NodeClocks`): a declared clock reading no skew is asked
+of reads the host plus the skew of the jump on its clock latest at or before it in the RECORDING's
+order (its place is the event the recording read it at, `SymbolizeAction#eventSeq`, the seq its mint
+row states), never this replay's order, so two threads that plant either way round run one clock.
+One clock is one node, one tick and readings within one window (`JavaPrimitiveSmtSemantics#oneClock`,
+COMPOSE's rule: a node's wall clock and monotonic clock are two). A value carrying an expression is
+computed from a reading and is never moved again; an unattributed mint is on no node's clock and
+reads the host (`MINT_UNATTRIBUTED`). A clock's mint row states the instant the run used and, as
+`clockSkew`, how far its clock ran off the host there; skews stay relative to the host's reading. The replay owns the verdict: `RowRuntime.closeSession` writes the session's
 `obligations.jsonl` and rewrites the worker's `obligation_result.jsonl`. `ADMITTED` = the flipped
 decision took the other arm, the focused prefix was not abandoned, the session published a mint row
 for every assigned root and clock skew, and every inherited flip held; anything else is
@@ -671,9 +679,16 @@ read names no object, `Composer#containerOwners`).
 **Roots and clocks.** `domains`: a declared MARKER is free; a root the sessions recorded differently is
 stated per path; a domain from `root-domains.jsonl` (absolute or `±k` from the recording) or the mint
 is a window; otherwise the root is pinned. `clocks`: every clock cell the formula names gets a
-domain, floor = the seed's reading, ceiling = reading + 30 days (in its ticks), unless the case
-declares bounds; on one node, each seed cell is no earlier than the nearest earlier cell (by seq) of
-the same tick whose reading lies within one window (`clock_order__`).
+reading on the recording's timeline -- the seed's, or, for a cell the seed never read (a region
+woven after it), the seed's reading of the nearest cell (by seq) of the same clock that a session
+reading it also read, plus the time that session's host read between the two; a cell no session can
+place is BLOCKING (`DECLARATION_MISSING`) -- and a domain, floor = the reading, ceiling = reading +
+30 days (in its ticks), unless the case declares bounds. On one node, each cell is no earlier than
+the nearest earlier cell by seq (the recording's event, the order a replay runs a plant on in) of the
+same clock (`JavaPrimitiveSmtSemantics#oneClock`: same tick, readings within one window)
+(`clock_order__`); where the recording read the two the other way round, the link gives way by that
+much (`(<= (- earlier later) d)`), so the recording always satisfies it. The cells are listed in seq
+order (`Composition#clockCells`), each with its reading and the cell before it (`clockBefore`).
 
 **Valuations** (`valuations`): ordinal 0 = every declared root at its recorded value; then single
 moves sorted by distance, then pairs of moves, cut at
@@ -712,8 +727,10 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    its own observed reads and received arrivals). `recordingDecides`: ordinal 0 is sat free and unsat
    as it happened. `clockDriven`: it is also unsat with the clocks alone pinned; then the witness keeps
    every clock running on wherever it can (`leastClocks`: a cell's skew off its reading equals that
-   of the cell before it on its node's clock, `clock_runs_on__`; a first cell stays at its reading),
-   so the cells left free are the clock's jumps. A sat ordinal 0 on a path that did not observe the fatal,
+   of the cell before it on its node's clock, `clock_runs_on__`; a first cell stays at its reading;
+   pinned back one cell at a time in seq order, so a jump lands as late as the witness allows, on the
+   cell the fatal reads rather than an earlier one that carries it along), so the cells left free are
+   the clock's jumps. A sat ordinal 0 on a path that did not observe the fatal,
    when the recording does not decide, is BLOCKING `FORMULA_SAT_AT_RECORDED_VALUATION`.
    `polarityDecides` = ordinal 0 unsat with a `valuation__` pin in its core.
 4. The claim, first match:
@@ -734,10 +751,12 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    `MARKER_FLIPPED` (any declared root kind); `clockDriven` → `CLOCK_SKEW`; the seed's path at ordinal 0
    with the flips refuted → `RECORDED_FAILURE_EXPLAINED`.
 6. In the moved-root rule without `recordingDecides` and in the no-root-moved rule, the witness is
-   re-asked with each clock jump a margin (one minute in its ticks) further the same way, kept if
-   still sat (`withMargin`). `movedRoots` = the valuation's moved roots (by root id) plus every clock
-   cell (by cell symbol) where the model's clock jumped (its skew differs from the cell's before it),
-   at the model's instant.
+   re-asked with each clock jump a margin (one minute in its ticks) further the same way (`withMargin`:
+   all at once, else each in seq order, kept where still sat). `movedRoots` = the valuation's moved
+   roots (by root id) plus every clock cell (by cell symbol) where the model's clock jumped (its skew
+   differs from the cell's before it), at the model's instant. A jump back is a jump: a cell the
+   witness needs short of where its clock ran on to must be planted, or a replay runs it on ahead; it
+   is named at its model instant, which can be its own reading.
 7. A z3 error on any ask adds a BLOCKING gap and turns the claim into `NO_SUPPORTED_WITNESS`
    (`smt.Z3` drops z3's `WARNING:` lines before reading an answer).
 
@@ -771,8 +790,8 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
   is the confirmation (`realized.json`, no replay).
 - **Otherwise one replay**: the world is the selected session's own focus row (empty for the seed)
   overlaid with the model's moved roots (`plantModel`: a clock as a skew off the reading the
-  composition anchored its cell to, the recording's, else this session's; any other root as its
-  value; at the recording's mint occurrence). The focus row focuses the anchor
+  composition anchored its cell to, the manifest's `roots` -- a moved clock it anchors nowhere is
+  refused; any other root as its value; at the recording's mint occurrence). The focus row focuses the anchor
   with `flip: null`, the anchor as declared target, no inherited flips. The schedule is written
   unheld (`SchedulePrefix.write(..., held=false)`: every event is suffix; only WAKEs wait for what
   they followed, and when the selected session was cut at its witness, a WAKE it never made waits

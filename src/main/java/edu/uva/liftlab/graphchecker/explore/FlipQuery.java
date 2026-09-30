@@ -595,16 +595,19 @@ final class FlipQuery {
                     clockVariables.put(variable, row.rootId());
                 }
                 // {@link JavaPrimitiveSmtSemantics#clockDomain}: floor = this
-                // execution's reading ({@link #clockReading}), ceiling =
-                // reading + window ({@link
+                // execution's host reading (a skew is off it, and never
+                // below), ceiling = floor + window ({@link
                 // JavaPrimitiveSmtSemantics#clockSkewCeiling}), so no model
-                // flips by long overflow.
-                String reading = clockReading(minted, row.rootId());
+                // flips by long overflow.  The nearest world is the instant
+                // the execution ran the cell at, where its node's clock may
+                // have run on off the host (RootMintRow#clockSkew).
+                String floor = instant(minted.hostReading());
                 rootFacts.add(JavaPrimitiveSmtSemantics.clockDomain(variable,
-                        reading.isEmpty() ? "0" : reading,
-                        JavaPrimitiveSmtSemantics.clockSkewCeiling(reading,
+                        floor.isEmpty() ? "0" : floor,
+                        JavaPrimitiveSmtSemantics.clockSkewCeiling(floor,
                                 row.clockNanos())));
-                if (!reading.isEmpty()) nearest.put(variable, reading);
+                String ran = instant(minted.recordedValue());
+                if (!ran.isEmpty()) nearest.put(variable, ran);
                 return;
             }
             rootVariables.put(variable, row.rootId());
@@ -645,10 +648,9 @@ final class FlipQuery {
             }
         }
 
-        /** The instant this cell's execution read, or ""; floor and ceiling
-         *  both derive from it. */
-        private String clockReading(RootMintRow minted, String rootId) {
-            String reading = corpus.rootValue(minted.sessionId(), rootId);
+        /** A clock row's instant as a decimal, or "" when it states none a
+         *  Java long can hold. */
+        private static String instant(String reading) {
             if (reading == null || reading.trim().isEmpty()) return "";
             try {
                 java.math.BigInteger instant =

@@ -221,6 +221,20 @@ public class ConfirmMainTest {
                 "MAP/30#-3");
     }
 
+    /** The composition manifest, anchoring one more clock cell. */
+    private Path manifestAnchoring(String rootId, String reading)
+            throws Exception {
+        Path file = manifest();
+        JsonObject manifest = ExploreCodec.readObject(file);
+        JsonObject root = new JsonObject();
+        root.addProperty("rootId", rootId);
+        root.addProperty("kind", "CLOCK");
+        root.addProperty("recordedValue", reading);
+        manifest.getAsJsonArray("roots").add(root);
+        Files.write(file, manifest.toString().getBytes(StandardCharsets.UTF_8));
+        return file;
+    }
+
     /** The composition manifest, its selected path resting on these. */
     private Path manifest(String... restsOn) throws Exception {
         Path file = Files.createTempFile(folder.getRoot().toPath(),
@@ -555,7 +569,9 @@ public class ConfirmMainTest {
                 !roots.has("OTHER"));
         assertTrue("a clock is a skew, never a value",
                 !roots.has("CLOCK.a"));
-        assertEquals("the skew that session ran with", "43000", row.getAsJsonObject("clockDeltas").get("CLOCK.a")
+        assertEquals("the model's 45000 off the composition's reading 1000"
+                + " (the session's world ran 43000)", "44000",
+                row.getAsJsonObject("clockDeltas").get("CLOCK.a")
                         .getAsString());
         JsonObject mints = row.getAsJsonObject("rootMints");
         assertEquals(3, mints.size());
@@ -611,24 +627,33 @@ public class ConfirmMainTest {
                     .getAsString()));
         }
 
-        // A model that moved the clock elsewhere (DECIDE leaves clocks free)
-        // is the world handed over, as the skew off that session's reading.
-        Path moved = folder.newFolder("moved").toPath();
-        ConfirmMain.write(iteration, claim("M_J_clock.sel", "50000"),
-                manifest(), moved);
-        assertEquals("the model's instant, 50000, less the 2000 read",
-                "48000", RowCodec.readJsonl(moved.resolve(
-                        "focused_task.jsonl")).get(0).getAsJsonObject(
-                        "clockDeltas").get("CLOCK.a").getAsString());
-        // A cell the recording read too is anchored at the recording's
-        // reading: the model's instants are on its timeline, and the
-        // selected replay's host read 1000 later.
-        Path anchored = folder.newFolder("anchored").toPath();
-        ConfirmMain.write(iteration, claim("M_J_clock.b", "50000"),
-                manifest(), anchored);
-        assertEquals("the model's instant less the recording's 1000",
-                "49000", RowCodec.readJsonl(anchored.resolve(
-                        "focused_task.jsonl")).get(0).getAsJsonObject(
-                        "clockDeltas").get("CLOCK.b").getAsString());
+        // A model that moved a clock elsewhere (DECIDE leaves clocks free) is
+        // the world handed over, as the skew off the reading the composition
+        // anchored the cell to -- the model's instants are on that timeline,
+        // and the selected replay's host read 1000 later -- whichever
+        // session's symbol names the cell; a cell it anchors nowhere is
+        // refused by name.
+        String[][] clocks = {
+                {"M_J_clock.sel", "CLOCK.a", "49000"},
+                {"M_J_clock.b", "CLOCK.b", "49000"},
+                {"M_J_clock.b", "CLOCK.b", null},
+        };
+        for (int index = 0; index < clocks.length; index++) {
+            String[] clock = clocks[index];
+            Path moved = folder.newFolder("moved-" + index).toPath();
+            Path composed = clock[2] == null ? manifest() : manifestAnchoring(
+                    clock[1], "1000");
+            try {
+                ConfirmMain.write(iteration, claim(clock[0], "50000"),
+                        composed, moved);
+                assertEquals(clock[0], clock[2], RowCodec.readJsonl(
+                        moved.resolve("focused_task.jsonl")).get(0)
+                        .getAsJsonObject("clockDeltas").get(clock[1])
+                        .getAsString());
+            } catch (ConfirmMain.Refused refused) {
+                assertEquals(clock[0] + ": " + refused.getMessage(), null,
+                        clock[2]);
+            }
+        }
     }
 }

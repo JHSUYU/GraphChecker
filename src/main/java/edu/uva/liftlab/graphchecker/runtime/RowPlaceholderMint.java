@@ -9,6 +9,7 @@ import edu.uva.liftlab.graphchecker.contract.LocationId;
 import edu.uva.liftlab.graphchecker.contract.OccurrenceAddress;
 import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.RootKind;
+import edu.uva.liftlab.graphchecker.contract.RootMintRow;
 import edu.uva.liftlab.graphchecker.plan.InputActionCatalog;
 import edu.uva.liftlab.graphchecker.smt.ExpressionWalk;
 import java.util.ArrayList;
@@ -132,7 +133,8 @@ final class RowPlaceholderMint {
                     optionalString(row, "domainMin"),
                     optionalString(row, "domainMax"), true,
                     optionalLongInteger(row,
-                            InputActionCatalog.DECLARED_WALL_CLOCK, 0L));
+                            InputActionCatalog.DECLARED_WALL_CLOCK, 0L),
+                    optionalLongInteger(row, RootMintRow.CLOCK_SKEW, 0L));
         }
         if (!whole) return;
         // Every declared region input this activation never symbolized:
