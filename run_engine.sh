@@ -167,6 +167,14 @@ workflow_config_keys=(
   # rather than required: an absent bound is exactly the unbounded wait this
   # exists to end.
   "replay_timeout_s CAUSYNTH_REPLAY_TIMEOUT_S krp 2400"
+  # The wall clock the SEED replay may take, as a multiple of how long the
+  # recording's workload ran (SEED times it), and never less than one
+  # focused replay's replay_timeout_s.  Unbounded, a seed replay that
+  # stopped progressing held its case to the case budget and died unnamed
+  # (11 of h4's 111 cases, 7 of q5's 154, at 5400 s); a replay past this
+  # fails the campaign at REPLAY naming it.  The seed replays the 09-29
+  # sweeps finished took up to 38x their recording, one of 78 took 63x.
+  "seed_replay_time_factor CAUSYNTH_SEED_REPLAY_TIME_FACTOR krp 40"
   # How many root valuations the composer enumerates around the recorded one.
   # The composer runs z3 per valuation while it composes, so this bounds the
   # solving a campaign does, not a separate stage's budget.
@@ -481,9 +489,10 @@ validate_config() {
   # name -- a truncated schedule, an unbounded solve -- so a run without them
   # does not start.
   local key
-  for key in solver_timeout_ms replay_timeout_s schedule_max_jobs \
-      concolic_worker_count region_path_max_waves compose_max_valuations \
-      causynth_loop_default_bound obligation_memory_mb; do
+  for key in solver_timeout_ms replay_timeout_s seed_replay_time_factor \
+      schedule_max_jobs concolic_worker_count region_path_max_waves \
+      compose_max_valuations causynth_loop_default_bound \
+      obligation_memory_mb; do
     require_positive_integer "${key}"
   done
   # The one stage a campaign may be asked to stop after.  Refused here rather
@@ -766,8 +775,9 @@ do_workload() {
   # file).  Which regions the run exercised is read off this trace by the
   # aggregation below, which writes them to ${trace_dir}/region_skeletons.jsonl.
   CAUSYNTH_TRACE_MODE=region-state do_analyze
-  local status=0
+  local status=0 started=${SECONDS}
   run_configured_workload || status=$?
+  campaign_recorded_workload_s=$(( SECONDS - started ))
   (( status == 0 )) || campaign_fail SEED WORKLOAD "${trace_dir}" \
     "the recorded workload exited ${status}: the test failed, or its run" \
     "never opened a recording window (its output is above)"
@@ -809,6 +819,9 @@ campaign_root=""
 campaign_final=""
 campaign_stage_metrics=""
 campaign_provenance=""
+# How long the recording's workload ran, in seconds (do_workload): the seed
+# replay's bound is seed_replay_time_factor times it.
+campaign_recorded_workload_s=""
 # This iteration's task-set membership, decoded once by PLAN from the frozen
 # schedule index (README "Minimal cross-stage contract": one owner per check).
 # IMPORT, EXPLORE, the iteration manifest and COMPOSE read these rows; they do
@@ -1161,10 +1174,14 @@ require_command_available() {
 
 # How long this adapter run may take, in seconds, or empty for unbounded.
 #
-# One variable, read in one place (campaign_run_adapter), set by the one
-# caller that has a bound to impose: campaign_obligation_worker, around the
-# focused replay.  SETUP and the SEED replay leave it empty.
+# One variable, read in one place (campaign_run_adapter), set by the two
+# callers that have a bound to impose, around a replay:
+# campaign_obligation_worker (replay_timeout_s) and campaign_session_replay
+# (seed_replay_time_factor).  SETUP leaves it empty.
 campaign_adapter_timeout_s=""
+# The rule that bound came from, as its caller spells it: what a replay
+# killed on the bound says it exceeded.
+campaign_adapter_timeout_rule=""
 
 # What an adapter that outlived its bound exits with.  124 is `timeout`'s own
 # code for "the command timed out"; 137 is the command killed by SIGKILL,
@@ -2040,8 +2057,7 @@ ${campaign_local_scratch_root}/$(basename "${worker}")}" \
     local lived=$(( SECONDS - started ))
     if [[ "${status}" -eq "${campaign_adapter_timeout_status}" ]] \
         || (( lived >= campaign_adapter_timeout_s )); then
-      campaign_replay_killed="exceeded \
-replay_timeout_s=${campaign_adapter_timeout_s}"
+      campaign_replay_killed="exceeded ${campaign_adapter_timeout_rule}"
     else
       campaign_replay_killed="was killed (exit ${status}) after ${lived}s, \
 inside its ${campaign_adapter_timeout_s}s bound: by its memory \
@@ -2132,7 +2148,16 @@ campaign_session_replay() {
   # beside its focus row (runtime.ScheduleLog#PREFIX_FILE).
   local recorded_schedule="${iteration_dir}/recorded_schedule.jsonl"
   [[ -s "${recorded_schedule}" ]] || recorded_schedule=""
+  # Under a wall clock derived from the recording (seed_replay_time_factor):
+  # the seed is the iteration's only source of observed cases, so a replay
+  # past it is a campaign failure at REPLAY, named, not a recorded verdict.
+  local bound=$(( seed_replay_time_factor * campaign_recorded_workload_s ))
+  (( bound >= replay_timeout_s )) || bound=${replay_timeout_s}
   campaign_schedule_prefix="${recorded_schedule}" \
+    campaign_adapter_timeout_s="${bound}" \
+    campaign_adapter_timeout_rule="${bound}s, seed_replay_time_factor=\
+${seed_replay_time_factor} x the recording's ${campaign_recorded_workload_s}s \
+workload and at least replay_timeout_s=${replay_timeout_s}" \
     campaign_replay worker "${plan}" "${ids}" \
     "${iteration_dir}/instrumented-classes" "${results}" "${seed}/focused"
 }
@@ -2437,6 +2462,7 @@ campaign_obligation_replay() {
   # the wave's death.
   campaign_sessions_dir="${sessions}" \
     campaign_adapter_timeout_s="${replay_timeout_s}" \
+    campaign_adapter_timeout_rule="replay_timeout_s=${replay_timeout_s}" \
     campaign_replay worker "${plan}" "${replay_tasks}" "${classes}" \
       "${results}" "${worker}" tolerated
   if [[ -n "${campaign_replay_killed}" ]]; then

@@ -706,7 +706,9 @@ done
 # corpus in, which decides whether a campaign's planner finishes at all.
 # 47: `region_path_stop_at_fatal` joined it: whether a case stops exploring
 # at its declared occurrence's first witness.
-[[ "$(print_normalized_config | wc -l)" -eq 47 ]] \
+# 48: `seed_replay_time_factor` joined it when the seed replay got a wall
+# clock: how long the seed may replay decides whether a slow one is a case.
+[[ "$(print_normalized_config | wc -l)" -eq 48 ]] \
   || fail "config prints a different number of keys than it used to: \
 $(print_normalized_config | wc -l)"
 # CONFIG-4: the discovery artifacts are derived from causynth_output_dir and
@@ -1264,13 +1266,48 @@ code (${status})"
 if grep -q 'adapter bound' "${bound_dir}/adapter-unbounded.log"; then
   fail "an unbounded adapter logs a bound it does not have"
 fi
-# One setter: the declaration and campaign_obligation_worker.  The SEED
-# replay goes through campaign_session_replay, which sets no bound -- the
-# seed is the iteration's only source of observed cases and a truncated one
-# is a campaign failure, not a recorded verdict.
-[[ "$(grep -c 'campaign_adapter_timeout_s=' "${repo}/run_engine.sh")" -eq 2 ]] \
-  || fail "the replay bound has more than one setter: \
+# Two setters beside the declaration: campaign_obligation_worker and
+# campaign_session_replay (SEED-BOUND below), each with the rule it states.
+[[ "$(grep -c 'campaign_adapter_timeout_s=' "${repo}/run_engine.sh")" -eq 3 ]] \
+  || fail "the replay bound has a setter beyond the two replays: \
 $(grep -n 'campaign_adapter_timeout_s=' "${repo}/run_engine.sh")"
+
+# SEED-BOUND: the seed replay runs under seed_replay_time_factor times the
+# recorded workload's wall time, never under one obligation's
+# replay_timeout_s, and names that rule -- what campaign_replay fails the
+# campaign with at REPLAY when the replay outlives it.  Unbounded, 11 of
+# h4's cases spent their whole 5400 s budget in a seed replay and died
+# unnamed.
+known_config_key seed_replay_time_factor \
+  || fail "seed_replay_time_factor is not loadable from a workflow file"
+[[ "${seed_replay_time_factor}" == 40 ]] \
+  || fail "seed_replay_time_factor does not default to 40"
+seed_bound() (
+  replay_timeout_s=$1 seed_replay_time_factor=$2
+  campaign_recorded_workload_s=$3
+  campaign_task_ids() { echo TASK.SEED; }
+  campaign_replay() {
+    printf '%s|%s\n' "${campaign_adapter_timeout_s}" \
+      "${campaign_adapter_timeout_rule}"
+  }
+  campaign_session_replay "${bound_dir}/seed-iteration"
+)
+[[ "$(seed_bound 2400 40 100)" == "4000|4000s, seed_replay_time_factor=40 x \
+the recording's 100s workload and at least replay_timeout_s=2400" ]] \
+  || fail "the seed replay is not bound by the recording: $(seed_bound 2400 40 100)"
+[[ "$(seed_bound 2400 40 10)" == 2400\|* ]] \
+  || fail "a short recording bounds the seed replay under replay_timeout_s: \
+$(seed_bound 2400 40 10)"
+seed_factor_validate() (
+  stop_after_config ""
+  seed_replay_time_factor=$1
+  validate_config
+)
+run_capturing_status seed_factor_validate 0 >/dev/null \
+  2>"${bound_dir}/validate.err"
+[[ "${status}" -ne 0 ]] && grep -q 'seed_replay_time_factor must be' \
+  "${bound_dir}/validate.err" \
+  || fail "validate accepted seed_replay_time_factor=0"
 
 # REPLAY-BOUND-3: what one obligation whose replay never returns records.
 # The same terminal NOT_ADMITTED row the worker writes for a solver that
