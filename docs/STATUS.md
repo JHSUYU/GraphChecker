@@ -20,7 +20,7 @@ rounds, for two reasons:
 - `gc/contract/RootMintRow` now requires `clockNanos` on every CLOCK root ("a CLOCK root states
   its tick and no other root does"), and the old rows lack it.
 - The old sessions hold `expressions.json`, but HEAD reads `expressions.jsonl`
-  (`gc/contract/SessionDir`). A missing expression file reads as an empty table
+  (`gc/contract/SessionDir`), and a session without it is refused `SESSION_INCOMPLETE`
   (`gc/contract/SessionExpressionLog#read`).
 
 When those corpora are composed offline with the HEAD jar, all nine come out
@@ -86,11 +86,11 @@ token-expiry checks, which were judged to be HDFS's clock-sync assumption, not b
 | --- | --- | --- | --- |
 | Causal context across Hadoop IPC and SASL | done (tree adapter) | the Hadoop shim `src/shim/java/org/apache/hadoop/ipc/CausynthMessagePropagation`; `gc/runtime/MessageDoors#outbound`, `#inbound` | Carried in new `.proto` header fields and in hand-edited `Client`, `Server` and SASL classes in every tree. |
 | Causal context across HTTP and ZooKeeper (Solr) | done (tree adapter) | `MessageDoors` store doors `#stored`, `#fetched`, `#notified`, `#consumed`; Solr tree `CausynthHttp`, `SolrZkClient` | A read of a stored version outside a watcher callback gets nothing. The Overseer queue and polling reads carry no anchor. |
-| Anchor lookup | same JVM only | `gc/runtime/RuntimeTraceContext`; `gc/runtime/Interactions` | The header carries no producer endpoint. The anchor is looked up by correlation in a JVM-global table capped at 8192 entries, which evicts silently. |
+| Anchor lookup | same JVM only | `gc/runtime/RuntimeTraceContext`; `gc/runtime/Interactions` | The header carries no producer endpoint. The anchor is looked up by correlation in a JVM-global table capped at 8192 entries; a receipt it no longer answers files `LINEAGE_LOST` with the eviction count. |
 | Declared ports (`WIRE_FLOW` rows) | done, hand-written | `gc/causynth/WireFlowCatalog` | Written per case: block-key-id, block-key-expiry-date, namenode-data-encryption-key-id, data-encryption-key-id (HDFS); two routing-rule rows (SOLR-18413). |
 | Ports derived by rule | partial (protobuf scalars) | `SeedBackwardStaticAnalyzer#deriveWirePort`, `#protobufMessage` | Only a primitive or String getter of a protobuf message whose `Builder.setF` call is in scope. No repeated, enum, bytes or nested fields. No frame. A declared row wins over the derived port. No run shows a derived port carrying a value end to end. Derivation also treats on-disk protobuf (fsimage) as a wire. |
 | String-carried values (the SASL user name, JSON in ZooKeeper) | not done | — | They need hand rows plus tree rewrites (`Integer.toString` in `SaslDataTransferClient`; SOLR-18413's `SliceMutator`). |
-| Receiver-side symbol `v_H` | primitive leaves only | `gc/runtime/HandoffMint#addPrimitiveLeaves`; `gc/runtime/WireExport` | String and boxed leaves are substituted with the producer's expression, with no family. A VM export or attach refusal and an undeclared export leave no row and no gap. |
+| Receiver-side symbol `v_H` | primitive leaves only | `gc/runtime/HandoffMint#addPrimitiveLeaves`; `gc/runtime/WireExport` | String and boxed leaves are substituted with the producer's expression, with no family. A VM export or attach refusal is a gap naming the occurrence, port and status (`WireExport#refused`): an attach outside every admitted activation a DIAGNOSTIC `ADMISSION_GAP` beside that activation, stated unselected; one inside an admitted activation BLOCKING `UNSTATED_VALUE`. The closure does not yet read the `ADMISSION_GAP`. |
 | Outbound staging | per thread | `gc/runtime/SymbolicMessageEnvelope` | Staged values ride the thread's next outbound message, so a message built without passing a door can lend its leaves to the wrong message. Capped at 64 entries. |
 | Composer merges both sides (MESSAGE families) | done | `gc/compose/ComposedFamilies`; `gc/smt/Arms` | Only arms of the same interaction slot, from sessions of compatible worlds. An unpaired attach refuses its path. |
 | DataTransfer ops, HDFS HTTP, `Http2SolrClient` forwarding, javabin/JSON bodies | not done | — | No anchor and no values. DataTransfer ops are daemon-tick roots. |
@@ -216,11 +216,8 @@ Fallbacks and dead code:
     no method set.
 21. `gc/plan/SelectorResolution#resolve` returns a degraded `unresolved` address instead of
     refusing.
-22. `gc/runtime/ScheduleLog#loadOrderLocked`: an unreadable prefix lets the replay run free,
-    reported on stderr only. `#timeoutMillis` silently takes the default for a malformed value.
-23. `gc/runtime/WireExport`: an undeclared export and a VM refusal on export or attach leave no
-    row and no gap.
-24. VM dead code:
+22. `gc/runtime/ScheduleLog#timeoutMillis` silently takes the default for a malformed value.
+23. VM dead code:
     - the armed replay reads (`armSharedPrimitiveFieldRead`) are still consumed in the
       `getfield` path with no engine caller;
     - the guarded-store clause of `SharedFieldVersions::publish_value` starts no log;
@@ -228,16 +225,14 @@ Fallbacks and dead code:
       `getSharedFieldVersions`, `getSharedElementVersions`, `getSharedMapVersions`,
       `getConcolicRegionSummary`;
     - nothing runs `causynth_smoke_test.sh`.
-25. `gc/compose/SmtLowering`: the `PlaceholderExpression` dispatch has no producer.
-26. `gc/contract/SessionExpressionLog#read` answers an empty table for a missing file, instead
-    of the session read naming the file. Downstream this surfaces as `UNSTATED_VALUE` refusals.
+24. `gc/compose/SmtLowering`: the `PlaceholderExpression` dispatch has no producer.
 
 Harness and declarations:
 
-27. `experiments/solr/solr-adhoc/case.sh` names `TestCausynthMigrateRuleTarget` as its
+25. `experiments/solr/solr-adhoc/case.sh` names `TestCausynthMigrateRuleTarget` as its
     `classpath_test`, a class the ad-hoc tree no longer has.
-28. `experiments/hbase/token-key-roll-concolic/workflow.properties` uses a key `run_engine.sh`
+26. `experiments/hbase/token-key-roll-concolic/workflow.properties` uses a key `run_engine.sh`
     refuses, so that case cannot run.
-29. `src/test/resources/external-callers.txt` lists APIs no tree calls, and omits
+27. `src/test/resources/external-callers.txt` lists APIs no tree calls, and omits
     `MessageDoors`, which the Solr trees call.
-30. `tools/rounds/launch-round.sh` leaves `lift11` out, while the sweep tools use all ten lifts.
+28. `tools/rounds/launch-round.sh` leaves `lift11` out, while the sweep tools use all ten lifts.

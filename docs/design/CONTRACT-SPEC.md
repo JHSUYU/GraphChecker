@@ -102,9 +102,11 @@ SESSION_EXPRESSION_LOG, schemaVersion: 1}`; then `{node: n, expression: {...}}` 
 first, each child expression inside replaced by `{_type: SessionExpressionNode, node: m}` for a
 node an earlier line defined; and `{ref: EXPR.…, node: n}` lines naming a node. Each node is
 written once per session. Reading (`SessionExpressionLog.read`) rebuilds the shared DAG into an
-`ExpressionTable` (ref → expression) and refuses a wrong header, a node named before it is defined,
-or a node defined twice. Rows cite only this spelling (invariant 3); the `EXPR.v1.<sha256>` anchors
-of `SharedExpressionTable`/`VmExpressionTable` live inside the runtime's region store.
+`ExpressionTable` (ref → expression) and refuses a missing file or one with no header (never
+published: an empty table would hide it behind `UNSTATED_VALUE`), a wrong header, a node named
+before it is defined, or a node defined twice. Rows cite only this spelling (invariant 3); the
+`EXPR.v1.<sha256>` anchors of `SharedExpressionTable`/`VmExpressionTable` live inside the
+runtime's region store.
 
 ### 2.4 Reading (`SessionReader`)
 

@@ -175,7 +175,8 @@ pause/resume, branch events and range, `endConcolic`, `exportExpression`/`attach
 `getTrackedLocationVersions`, `installGuardedStoreSites`. `markConcolicBranch` and the pause
 natives are called by woven code (`CausynthPipeline.HookCatalog#concolic`). The broker mirrors the
 statuses `OK 0`, `MISSING_METADATA -2`, `NOT_SYMBOLIC -4`, and its own `INVOCATION_FAILED -1001`,
-`MALFORMED_RESULT -1002`.
+`MALFORMED_RESULT -1002`, and names every status in the gap a refused export or attach files
+(`ConcolicVmBroker#statusName`).
 
 - Expressions are published as a DAG envelope (`VM/concolic/exp/expression.cpp`, iterative
   serializer); the engine keeps them in each session's `expressions.jsonl` (CONTRACT-SPEC.md).

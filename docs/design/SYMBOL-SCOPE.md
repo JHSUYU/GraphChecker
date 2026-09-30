@@ -333,7 +333,12 @@ stages the handle on the thread's outbound envelope (`runtime/SymbolicMessageEnv
 carries (IDENTITY.md §7). The IN capture takes the element by (frame, port, ordinal), attaches it,
 and `runtime/HandoffMint` mints a fresh `v_H` per primitive leaf, named by (port, consumer
 occurrence, k-th attach, element path), at most 64 leaves per attach. The export row and the attach
-row are paired by the VM handle, else by correlation and port (`runtime/Interactions#pairing`).
+row are paired by the VM handle, else by correlation and port (`runtime/Interactions#pairing`). A
+refused export or attach files a gap on the occurrence it ran in, with the port and the VM status
+(`WireExport#refused`): an attach no admitted activation runs is a DIAGNOSTIC `ADMISSION_GAP`
+beside that activation, stated unselected; one inside an admitted activation is BLOCKING
+`UNSTATED_VALUE`, since its rows compute on the arrived value as a constant; a refused export is
+DIAGNOSTIC `UNSTATED_VALUE`. An accepted attach that mints no `v_H` is DIAGNOSTIC `UNSTATED_VALUE`.
 
 ## 7. Current limits
 

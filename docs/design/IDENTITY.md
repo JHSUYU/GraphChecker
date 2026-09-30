@@ -283,8 +283,9 @@ their run-minted counters); randomness is seeded by endpoint (SYMBOL-SCOPE.md §
 
 - The anchor is found through JVM-global tables (`Interactions`, `MessageDoors` stored versions);
   the header carries no endpoint, so a context crosses only between nodes of one JVM.
-- `Interactions` evicts past 8192 entries without a row; a receipt whose sender was evicted or
-  never filed gets no anchor, and its work takes a `Root` or `Lost` context instead.
+- `Interactions` evicts past 8192 entries; a receipt whose sender was evicted or never filed gets
+  no anchor, and its work takes a `Root` or `Lost` context instead, named by a `LINEAGE_LOST` gap
+  on the receiving occurrence with the eviction count (`RuntimeTraceContext#unanchored`).
 - A different number of calls at one site on the index path moves the index; root `k` counts
   arrival order across threads of one (node, role, api); a pre-window turn is `Lost` and outside
   the schedule.
