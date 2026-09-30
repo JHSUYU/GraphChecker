@@ -555,6 +555,15 @@ public final class Composer {
                             ? "the propagation did not carry this value"
                             : cut.getValue());
         }
+        for (Map.Entry<String, String> pinned
+                : lowering.pinnedLeaves().entrySet()) {
+            gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                    "UndeclaredSymbolPinned:" + pinned.getKey(), "no row of "
+                            + "this corpus declares this symbol and its node "
+                            + "states it returned " + pinned.getValue()
+                            + ": it is that value, and what it was computed "
+                            + "from is not in the formula");
+        }
 
         // Valuations before the body: the body declares what pins reach.
         List<Valuation> valuations = valuations();

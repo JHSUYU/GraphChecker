@@ -179,6 +179,9 @@ public final class SmtLowering {
     private final Map<String, String> unsupportedDetail =
             new LinkedHashMap<String, String>();
     private final Set<String> cuts = new LinkedHashSet<String>();
+    /** Undeclared symbols lowered to the value their node states. */
+    private final Map<String, String> pinnedLeaves =
+            new LinkedHashMap<String, String>();
     /**
      * The reads {@code Composer#pin} bound to what their row states, as
      * {@code session|symbol}: a guarded read of their version that does not
@@ -797,6 +800,15 @@ public final class SmtLowering {
             return Term.of(raw, sort,
                     JavaPrimitiveSmtSemantics.widthOfJavaType(javaType),
                     "", "", "true");
+        }
+        // Undeclared, and its node states what it returned (a call's
+        // result the VM minted: Long.parseLong in SolrParams.getLong): that
+        // value, named once, since what it was computed from is dropped.
+        String returned = ReadRow.returned(expression);
+        Term pinned = statedValue(returned, javaType);
+        if (pinned != null) {
+            pinnedLeaves.put(raw, returned);
+            return pinned;
         }
         return cut("UndeclaredFreeSymbol:" + raw,
                 "no root mint, clock reading, attach or read row of this "
@@ -1531,6 +1543,14 @@ public final class SmtLowering {
                     unsupportedDetail.getOrDefault(CUT + ":" + cut, ""));
         }
         return named;
+    }
+
+    /**
+     * Each undeclared symbol lowered to the value its node states, with
+     * that value: a dependency the formula no longer carries, named once.
+     */
+    public Map<String, String> pinnedLeaves() {
+        return Collections.unmodifiableMap(pinnedLeaves);
     }
 
     /**

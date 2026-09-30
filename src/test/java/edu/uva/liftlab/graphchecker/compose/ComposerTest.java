@@ -112,6 +112,8 @@ public class ComposerTest {
     private static final String NO_ROW = "M_I_field_REGION.target.in.absent";
     private static final String NO_ROW_LONG =
             "M_J_field_REGION.target.in.absent";
+    /** A call's result the VM minted a symbol for, which no row declares. */
+    private static final String RETURNED = "M_J_return9";
     /**
      * The same, at a VERSION: the VM's mint primitive gives the field a
      * new version whose value IS this symbol, so a read of that version
@@ -1574,6 +1576,13 @@ public class ComposerTest {
             session.expression("EXPR.00000000000000b7", binary("==",
                     read("INSTANCE_FIELD", 6L, 12L, 5L, "Z"),
                     integer("Z", 1L)));
+            // And a call's result the VM minted and no row declares, whose
+            // node states what it returned: that value, and not a cut.
+            JsonObject returned = symbol(RETURNED, "J");
+            returned.add("concreteValue", integer("J", 2L));
+            session.expression("EXPR.00000000000000b8", binary("<",
+                    binary("--", returned, integer("J", 3L)),
+                    integer("I", 0L)));
             // TWO placeholder rows stating ONE mint version under
             // DIFFERENT symbols.  A mint version is unique by
             // construction, so this is the recording contradicting itself
@@ -1651,7 +1660,8 @@ public class ComposerTest {
                     + "EXPR.00000000000000b3 EXPR.00000000000000b4 "
                     + "EXPR.00000000000000b5 EXPR.00000000000000fe "
                     + "EXPR.00000000000000fd EXPR.00000000000000b6 "
-                    + "EXPR.00000000000000b7)", false, true);
+                    + "EXPR.00000000000000b7 EXPR.00000000000000b8)", false,
+                    true);
             session.write();
         }
 
@@ -1693,6 +1703,11 @@ public class ComposerTest {
                     gap.subject().contains("MalformedJvmLcmpOperands")
                             || gap.subject().contains("BinarySortConflict"));
         }
+        assertTrue("an undeclared symbol whose node states what it returned "
+                        + "is that value, named once as a dropped dependency",
+                named(gaps, "UndeclaredSymbolPinned:" + RETURNED));
+        assertFalse("and is not cut",
+                named(gaps, "UndeclaredFreeSymbol:" + RETURNED));
         assertTrue("a reference projection the VM valued neither way is "
                         + "refused by name, naming the class and offset",
                 named(gaps, "UNSTATED_FIELD_PROJECTION:"
