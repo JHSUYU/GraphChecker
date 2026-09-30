@@ -2792,9 +2792,12 @@ $(hostname -s 2>/dev/null) "
 #                                                 per start still ramping
 #   ${campaign_host_gate_root}/<host>/available  "<epoch> <mb>": MemAvailable,
 #                                                 read at most every poll
+#   ${campaign_host_gate_root}/<host>/total      "<mb>": MemTotal, read once
 #
 # A start of <mb> may go when MemAvailable, less what every start still in
-# its ramp will grow into, leaves <mb> plus the host's reserve.  A JVM takes
+# its ramp will grow into, leaves <mb> plus the host's reserve: the share of
+# MemTotal above CAUSYNTH_HOST_MAX_USED_PCT (tools/lib/gc-env.sh), so no
+# start leaves a host more than that full.  A JVM takes
 # tens of seconds to reach its size and MemAvailable says nothing about
 # memory a JVM has not touched yet, so a start is charged in full for its own
 # ramp; after it, what it holds is in MemAvailable.  A start whose command
@@ -2814,9 +2817,14 @@ campaign_host_ramp_s=60
 # charged to its own host (do_campaign); an obligation's work is inside the
 # obligation's charge.
 campaign_head_charging=0
-# What every host keeps free whatever the campaigns ask: the page cache the
-# JVMs read their jars and corpora through, and the owner's own sessions.
-campaign_host_reserve_mb=3072
+# The most of a host's memory a start may leave in use, in percent: what
+# stays free is the page cache the JVMs read their jars and corpora through,
+# the owner's own sessions, and the room JVMs past their ramp still grow into.
+campaign_host_max_used_pct=${CAUSYNTH_HOST_MAX_USED_PCT}
+[[ "${campaign_host_max_used_pct}" =~ ^[0-9]+$ ]] \
+  && (( campaign_host_max_used_pct > 0 && campaign_host_max_used_pct <= 100 )) \
+  || die "CAUSYNTH_HOST_MAX_USED_PCT must be a percentage in 1..100: \
+${campaign_host_max_used_pct}"
 # How often a waiting slot asks again, and how old a MemAvailable reading
 # may be before it is read again.
 campaign_host_poll_s=5
@@ -2848,6 +2856,34 @@ campaign_host_available_mb() {
     campaign_ssh "${campaign_ssh_options[@]}" -o ConnectTimeout=20 -- \
       "${host}" "${read_it}"
   fi
+}
+
+# MemTotal of one host, in MB, read like campaign_host_available_mb.
+campaign_host_total_mb() {
+  local host=$1
+  local read_it="awk '/^MemTotal:/ {print int(\$2 / 1024)}' /proc/meminfo"
+  if campaign_host_is_local "${host}"; then
+    bash -c "${read_it}"
+  else
+    campaign_ssh "${campaign_ssh_options[@]}" -o ConnectTimeout=20 -- \
+      "${host}" "${read_it}"
+  fi
+}
+
+# The host's MemTotal, from the ledger once it has been read: it never moves.
+campaign_host_memory_total() {
+  local host=$1 dir=$2 mb fresh
+  if read -r mb 2>/dev/null <"${dir}/total" && [[ "${mb}" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "${mb}"
+    return 0
+  fi
+  mb=$(campaign_host_total_mb "${host}" | grep -E '^[0-9]+$' | tail -n 1) \
+    || return 1
+  [[ "${mb}" =~ ^[0-9]+$ ]] || return 1
+  fresh=$(mktemp "${dir}/total.XXXXXX") || return 1
+  printf '%s\n' "${mb}" >"${fresh}"
+  mv -f -- "${fresh}" "${dir}/total"
+  printf '%s\n' "${mb}"
 }
 
 # The host's MemAvailable, from the ledger when it is fresh enough.
@@ -2892,14 +2928,16 @@ campaign_host_wait_reason=""
 campaign_host_charge_id=""
 campaign_host_try_start() {
   local host=$1 need=${2:-${obligation_memory_mb}}
-  local ramp=${3:-${campaign_host_ramp_s}} key dir now available
-  local charged=0 at mb row_ramp id kept=""
+  local ramp=${3:-${campaign_host_ramp_s}} key dir now available total
+  local reserve charged=0 at mb row_ramp id kept=""
   key=$(campaign_host_key "${host}")
   dir="${campaign_host_gate_root}/${key}"
   mkdir -p "${dir}"
   now=$(date +%s)
+  total=$(campaign_host_memory_total "${host}" "${dir}") || return 2
   available=$(campaign_host_memory_reading "${host}" "${dir}" "${now}") \
     || return 2
+  reserve=$(( total * (100 - campaign_host_max_used_pct) / 100 ))
   campaign_host_lock "${dir}" "${now}" || return 3
   if [[ -f "${dir}/starts" ]]; then
     while read -r at mb row_ramp id; do
@@ -2910,12 +2948,13 @@ campaign_host_try_start() {
       kept+="${at} ${mb} ${row_ramp} ${id}"$'\n'
     done <"${dir}/starts"
   fi
-  if (( available - charged < need + campaign_host_reserve_mb )); then
+  if (( available - charged < need + reserve )); then
     printf '%s' "${kept}" >"${dir}/starts"
     rmdir "${dir}/lock"
     campaign_host_wait_reason="${key} has ${available} MB available and \
 ${charged} MB charged to starts still in their ramp; one needs ${need} MB \
-beyond a ${campaign_host_reserve_mb} MB reserve"
+and ${reserve} MB stay free (at most ${campaign_host_max_used_pct}% of \
+${total} MB in use)"
     return 1
   fi
   campaign_host_charge_id="$(hostname -s).${BASHPID}.${now}.${RANDOM}"

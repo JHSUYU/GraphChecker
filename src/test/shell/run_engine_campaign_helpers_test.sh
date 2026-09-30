@@ -1838,6 +1838,7 @@ campaign_worker_hosts="lift12 lift13"
 campaign_local_host_names=" localhost this-machine "
 obligation_memory_mb=1
 campaign_host_available_mb() { echo 30000; }
+campaign_host_total_mb() { echo 30000; }
 campaign_dispatch_wave "${twohost_dir}/wave" "${twohost_dir}/obligations.jsonl" \
   "${twohost_dir}/classes" "${twohost_dir}/sessions" \
   "${twohost_dir}/seed.jsonl" A B C D \
@@ -1883,6 +1884,7 @@ room_wave="${twohost_dir}/wave-room"
 for pool_job in E F G; do mkdir -p "${room_wave}/${pool_job}"; done
 campaign_host_poll_s=0
 campaign_host_available_mb() { [[ "$1" == lift13 ]] && echo 0 || echo 30000; }
+campaign_host_total_mb() { echo 30000; }
 campaign_dispatch_wave "${room_wave}" "${twohost_dir}/obligations.jsonl" \
   "${twohost_dir}/classes" "${twohost_dir}/sessions" \
   "${twohost_dir}/seed.jsonl" E F G \
@@ -2629,7 +2631,8 @@ hostname() { echo gate-head; }
 memory_available=20000
 campaign_host_available_mb() { echo "${memory_available}"; }
 obligation_memory_mb=6000
-campaign_host_reserve_mb=3000
+campaign_host_total_mb() { echo 10000; }
+campaign_host_max_used_pct=70
 campaign_host_ramp_s=60
 campaign_host_poll_s=0
 campaign_host_try_start lift14 \
@@ -2682,7 +2685,7 @@ mkdir "${memory_dir}/queue/000000"
 run_capturing_status campaign_await_host_memory lift13 "${memory_dir}/queue" 1
 [[ "${status}" -eq 1 ]] \
   || fail "a slot kept waiting for room after the wave was all claimed"
-unset -f hostname campaign_host_available_mb campaign_log
+unset -f hostname campaign_host_available_mb campaign_host_total_mb campaign_log
 reset_config
 
 # MEMORY-3: a start states its need and its own ramp, and counts while that
@@ -2692,7 +2695,8 @@ campaign_host_gate_root="${memory_dir}/ramps"
 campaign_local_host_names=" localhost gate-head "
 hostname() { echo gate-head; }
 campaign_host_available_mb() { echo 20000; }
-campaign_host_reserve_mb=3000
+campaign_host_total_mb() { echo 10000; }
+campaign_host_max_used_pct=70
 campaign_host_poll_s=0
 mkdir -p "${campaign_host_gate_root}/lift14"
 memory_now=$(date +%s)
@@ -2740,7 +2744,7 @@ eval "${real_try_start}"
 campaign_head_charging=0
 campaign_head_charged 999999 120 true \
   || fail "a start outside a head waited for the ledger"
-unset -f hostname campaign_host_available_mb
+unset -f hostname campaign_host_available_mb campaign_host_total_mb
 reset_config
 
 # HOSTS-7: a wave rotates the slot list, so the one-obligation waves of a
