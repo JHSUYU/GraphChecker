@@ -125,18 +125,16 @@ public class GraphCheckerMain {
         Options.v().set_keep_line_number(true);
         Options.v().set_whole_program(true);
         // Identity must not depend on the host or the run.  Soot runs on one
-        // thread, over the classes by name (orderClassesByName): its body
-        // phases break ties in identity-hash order (jb.sils hands the uses
-        // of a local it splits to its copies so), and HotSpot draws an
-        // identity hash from the thread that first asks for it, so one
-        // thread doing the same work in the same order sees the same hashes
-        // in every run.  Each lambda class is named by what it is
-        // (LambdaClassNames, installed once the classes are loaded), and a
-        // body's locals are numbered by type and first definition, not in
-        // the order the phases left them (Balancer.runOneIteration's z6..z8
-        // and FileChecksumHelper.checksumBlock's z1, z2 swapped between
-        // runs).
+        // thread, over the classes by name (orderClassesByName); each lambda
+        // class is named by what it is (LambdaClassNames, installed once the
+        // classes are loaded); jb.sils, which handed a split local's uses to
+        // its copies in identity-hash order, takes them in body order
+        // (SharedInitializationSplitter); and a body's locals are numbered
+        // by type and first definition, not in the order the phases left
+        // them (Balancer.runOneIteration's z6..z8 and
+        // FileChecksumHelper.checksumBlock's z1, z2 swapped between runs).
         Options.v().set_num_threads(1);
+        SharedInitializationSplitter.install();
         PhaseOptions.v().setPhaseOption("jb.lns", "sort-locals:true");
         boolean concolicInstrumentation = ConcolicInstrumentationSelections
                 .instrumentationRequested();

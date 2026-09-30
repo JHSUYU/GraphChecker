@@ -93,6 +93,8 @@ These files are a function of the scope's classes, the same bytes on every host 
   in the order the filesystem lists the process dirs.
 - A lambda class is named by its content (`GraphCheckerMain`'s `LambdaClassNames`), not by Soot's
   run-wide counter.
+- Soot's `jb.sils`, which gives each use of a constant-defined local its own copy, takes the uses
+  in body order (`SharedInitializationSplitter`), not in identity-hash order.
 - A body's locals are numbered by type and first definition (`jb.lns` `sort-locals`).
 - Hierarchy answers (dispatch targets, subclasses) are taken by signature or name.
 - The worklist runs to a fixed point: a caller whose actual a callee's demand reached, or a method
