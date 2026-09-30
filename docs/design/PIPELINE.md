@@ -265,7 +265,9 @@ row (a port event outside every admitted activation, `RowRuntime#ambientActivati
 event ran, not a region that ran the site, so it makes no static candidate
 (`ClosurePlanner#activated`); an ambient occurrence joins the closure only through the rows that name
 it. A static site no session activated is a DIAGNOSTIC gap ("the retained set would have to grow"),
-not a task. Each demanded occurrence becomes a `Task` (id =
+not a task. One anchor's walk offers the static candidates of one (reason, site, guard set, node)
+once, whichever read or attach asks for them: asked again they are the same demands, and folding
+them changes nothing (`ClosurePlanner#candidates`); the walk says each gap once. Each demanded occurrence becomes a `Task` (id =
 `digest("task|" + occurrence id)`, focused occurrence, state-connected factor, planned from the seed if
 the seed captured it, else the first admitted session that did); its flip sites are its demanded sites
 plus every fault site (`Corpus.faultSites`: a decision whose lowered term reaches a MARKER root). A

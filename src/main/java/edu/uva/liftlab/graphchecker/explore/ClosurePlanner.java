@@ -25,8 +25,11 @@ import edu.uva.liftlab.graphchecker.plan.StaticScopeMap;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -110,7 +113,7 @@ public final class ClosurePlanner {
 
     public static Plan plan(Corpus corpus, OccurrenceAddress anchor,
                             int maxTasks, StaticScopeMap scope) {
-        List<GapRow> gaps = new ArrayList<GapRow>();
+        Walk walk = new Walk(corpus, scope);
         Map<String, Demand> demands = new LinkedHashMap<String, Demand>();
         Deque<String> pending = new ArrayDeque<String>();
         Demand start = new Demand(anchor, CLOSURE_MEMBER, true);
@@ -130,12 +133,10 @@ public final class ClosurePlanner {
         demands.put(anchor.id(), start);
         pending.add(anchor.id());
         Set<String> truncated = new LinkedHashSet<String>();
-        Set<String> unread = new LinkedHashSet<String>();
         while (!pending.isEmpty()) {
             Demand demand = demands.get(pending.remove());
             demand.dirty = false;
-            for (Demand next : successors(corpus, scope, demand, gaps,
-                    unread)) {
+            for (Demand next : successors(walk, demand)) {
                 Demand held = demands.get(next.occurrence.id());
                 if (held != null) {
                     if (held.absorb(next) && !held.dirty) {
@@ -163,7 +164,8 @@ public final class ClosurePlanner {
         for (Demand demand : demands.values()) {
             String seed = seedSession(corpus, demand.occurrence);
             if (seed.isEmpty()) {
-                uncaptured(corpus, demand.occurrence, exposed, waiting, gaps);
+                uncaptured(corpus, demand.occurrence, exposed, waiting,
+                        walk.gaps);
                 continue;
             }
             String taskId = taskId(demand.occurrence);
@@ -176,8 +178,8 @@ public final class ClosurePlanner {
             sites.addAll(corpus.faultSites(demand.occurrence));
             flips.put(taskId, sites);
         }
-        return new Plan(tasks, gaps, why, flips, exposed, waiting,
-                truncated);
+        return new Plan(tasks, new ArrayList<GapRow>(walk.gaps), why, flips,
+                exposed, waiting, truncated);
     }
 
     /**
@@ -208,7 +210,7 @@ public final class ClosurePlanner {
                                    OccurrenceAddress occurrence,
                                    Map<OccurrenceAddress, String> exposed,
                                    Set<OccurrenceAddress> waiting,
-                                   List<GapRow> gaps) {
+                                   Set<GapRow> gaps) {
         if (occurrence.role()) {
             if (occurrence.lineageLost()) {
                 gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
@@ -314,10 +316,31 @@ public final class ClosurePlanner {
         }
     }
 
+    /**
+     * One anchor's walk over the corpus: the gaps it says (the same gap said
+     * twice is one gap, as {@link ExploreMain} publishes them), the unread
+     * deliveries it said ({@link #unread}), and the static candidates it
+     * offered ({@link #candidates}).
+     */
+    private static final class Walk {
+        private final Corpus corpus;
+        private final StaticScopeMap map;
+        private final Set<GapRow> gaps = new LinkedHashSet<GapRow>();
+        /** what|endpoint id of each delivery said unread. */
+        private final Set<String> unread = new LinkedHashSet<String>();
+        /** (reason, site, guards, node) -> whether some occurrence ran it. */
+        private final Map<List<Object>, Boolean> offered =
+                new HashMap<List<Object>, Boolean>();
+
+        private Walk(Corpus corpus, StaticScopeMap map) {
+            this.corpus = corpus;
+            this.map = map;
+        }
+    }
+
     /** Everything one demand reaches, by rows and by the static map. */
-    private static List<Demand> successors(Corpus corpus, StaticScopeMap map,
-                                           Demand demand, List<GapRow> gaps,
-                                           Set<String> unread) {
+    private static List<Demand> successors(Walk walk, Demand demand) {
+        Corpus corpus = walk.corpus;
         List<OccurrenceAddress> group = new ArrayList<OccurrenceAddress>();
         group.add(demand.occurrence);
         group.addAll(stateConnected(corpus, demand.occurrence));
@@ -334,22 +357,22 @@ public final class ClosurePlanner {
             }
             for (AttachRow attach : corpus.attachesOn(member)) {
                 if (!demanded.contains(attach.symbol())) {
-                    unread(gaps, unread, attach.sessionId(),
-                            attach.endpoint(), "handoff");
+                    unread(walk, attach.sessionId(), attach.endpoint(),
+                            "handoff");
                     continue;
                 }
-                producers(corpus, map, attach, next, gaps);
+                producers(walk, attach, next);
             }
             for (ReadRow row : corpus.readsOn(member)) {
                 if (!demanded.contains(row.symbol())) {
-                    unread(gaps, unread, row.sessionId(), row.endpoint(),
+                    unread(walk, row.sessionId(), row.endpoint(),
                             "state read");
                     continue;
                 }
-                writers(corpus, map, row, next, gaps);
+                writers(walk, row, next);
             }
         }
-        statedReads(corpus, map, demand, next, gaps);
+        statedReads(walk, demand, next);
         controlProducer(corpus, demand, next);
         // A demand's causes come before its co-readers: when the task bound
         // truncates the closure, it is a co-reader that waits (SOLR-18406:
@@ -388,22 +411,21 @@ public final class ClosurePlanner {
      * ComposedFamilies.expressionWrites}. Never the anchor (it contributes no
      * delivery).</p>
      */
-    private static void statedReads(Corpus corpus, StaticScopeMap map,
-                                    Demand demand, List<Demand> into,
-                                    List<GapRow> gaps) {
+    private static void statedReads(Walk walk, Demand demand,
+                                    List<Demand> into) {
         if (demand.anchor) return;
         for (String contributed : demand.contributed) {
             int split = contributed.indexOf('|');
             if (split < 0) continue;
             String sessionId = contributed.substring(0, split);
-            for (Corpus.StateRead read : corpus.expressionStateReads(
+            for (Corpus.StateRead read : walk.corpus.expressionStateReads(
                     sessionId, contributed.substring(split + 1))) {
-                writersOfVersion(corpus, map, sessionId, demand.occurrence,
+                writersOfVersion(walk, sessionId, demand.occurrence,
                         read.locationKey(), read.write().version(),
                         Collections.<String>emptySet(),
                         demand.occurrence.render(),
                         read.locationKey() + " (read at event "
-                                + read.readEventId() + ")", into, gaps);
+                                + read.readEventId() + ")", into);
             }
         }
     }
@@ -517,17 +539,16 @@ public final class ClosurePlanner {
         return named.addAll(reached);
     }
 
-    /** A delivery this anchor's paths never read: recorded, not planned. */
     /**
+     * A delivery this anchor's paths never read: recorded, not planned.
      * Once per endpoint, not per session or per pass: a demand is walked
      * again every time it grows, and every replay repeats the seed's rows --
      * hdfs-11741 v69's planner ran out of heap rendering these.
      */
-    private static void unread(List<GapRow> gaps, Set<String> reported,
-                               String sessionId, Endpoint endpoint,
-                               String what) {
-        if (!reported.add(what + "|" + endpoint.id())) return;
-        gaps.add(GapRow.of(sessionId, GapKind.ADMISSION_GAP,
+    private static void unread(Walk walk, String sessionId,
+                               Endpoint endpoint, String what) {
+        if (!walk.unread.add(what + "|" + endpoint.id())) return;
+        walk.gaps.add(GapRow.of(sessionId, GapKind.ADMISSION_GAP,
                 GapClass.DIAGNOSTIC, endpoint.toString(),
                 "no demanded value of this occurrence rests on this " + what
                         + ", so its producer is not a task"));
@@ -542,25 +563,25 @@ public final class ClosurePlanner {
      * on the paired producer's node. An unpaired attach restricts nothing (and
      * is reported LINEAGE_LOST).</p>
      */
-    private static void producers(Corpus corpus, StaticScopeMap map,
-                                  AttachRow attach, List<Demand> into,
-                                  List<GapRow> gaps) {
+    private static void producers(Walk walk, AttachRow attach,
+                                  List<Demand> into) {
         String portId = attach.endpoint().site();
-        List<StaticScopeMap.Site> exports = map.exportsOf(portId);
+        List<StaticScopeMap.Site> exports = walk.map.exportsOf(portId);
         Set<String> guards = new LinkedHashSet<String>();
         for (StaticScopeMap.Site site : exports) {
             guards.addAll(site.guards);
         }
         if (attach.producer() == null) {
-            gaps.add(GapRow.of(attach.sessionId(), GapKind.LINEAGE_LOST,
+            walk.gaps.add(GapRow.of(attach.sessionId(), GapKind.LINEAGE_LOST,
                     GapClass.DIAGNOSTIC, attach.endpoint().toString(),
                     "attach is unpaired: no producer endpoint to close over"));
         } else {
-            crossCheck(attach, gaps);
+            crossCheck(attach, walk.gaps);
             Demand paired = new Demand(attach.producer().occurrence(),
                     CLOSURE_MEMBER, false);
             paired.flipSites.addAll(guards);
-            for (ExportRow export : corpus.exportsOf(attach.producer())) {
+            for (ExportRow export : walk.corpus.exportsOf(
+                    attach.producer())) {
                 paired.contributed.add(export.sessionId() + "|"
                         + export.expressionRef());
             }
@@ -570,8 +591,8 @@ public final class ClosurePlanner {
         NodeId sender = attach.producer() == null ? null
                 : attach.producer().occurrence().node();
         for (StaticScopeMap.Site site : exports) {
-            candidates(corpus, map, site, STATIC_CANDIDATE_PRODUCER, guards,
-                    into, gaps, attach.sessionId(), "port " + portId, sender);
+            candidates(walk, site, STATIC_CANDIDATE_PRODUCER, guards, into,
+                    attach.sessionId(), "port " + portId, sender);
         }
     }
 
@@ -584,16 +605,13 @@ public final class ClosurePlanner {
      * candidates only on the reader's node (Writers_W(l) is per concrete
      * object, SYMBOL-SCOPE §5.5).</p>
      */
-    private static void writers(Corpus corpus, StaticScopeMap map,
-                                ReadRow row, List<Demand> into,
-                                List<GapRow> gaps) {
-        writersOfVersion(corpus, map, row.sessionId(),
-                row.endpoint().occurrence(),
+    private static void writers(Walk walk, ReadRow row, List<Demand> into) {
+        writersOfVersion(walk, row.sessionId(), row.endpoint().occurrence(),
                 SmtLowering.locationKey(row.location()),
                 row.observedVersion(),
-                map.carriersAt(row.endpoint().site(), row.javaType()),
+                walk.map.carriersAt(row.endpoint().site(), row.javaType()),
                 row.endpoint().toString(),
-                String.valueOf(row.location()), into, gaps);
+                String.valueOf(row.location()), into);
     }
 
     /**
@@ -606,15 +624,15 @@ public final class ClosurePlanner {
      * @param subject what a diagnostic about this read is addressed at
      * @param located how the location reads in that diagnostic
      */
-    private static void writersOfVersion(Corpus corpus, StaticScopeMap map,
-                                         String sessionId,
+    private static void writersOfVersion(Walk walk, String sessionId,
                                          OccurrenceAddress reader,
                                          String locationKey,
                                          long observedVersion,
                                          Set<String> readCarriers,
                                          String subject, String located,
-                                         List<Demand> into,
-                                         List<GapRow> gaps) {
+                                         List<Demand> into) {
+        Corpus corpus = walk.corpus;
+        StaticScopeMap map = walk.map;
         Set<String> carriers = carriersOf(corpus, map, locationKey);
         carriers.addAll(readCarriers);
         for (WriteRow write : corpus.eligibleWrites(sessionId, locationKey,
@@ -627,7 +645,7 @@ public final class ClosurePlanner {
             into.add(paired);
         }
         if (carriers.isEmpty() && map.stated()) {
-            gaps.add(GapRow.of(sessionId, GapKind.DECLARATION_MISSING,
+            walk.gaps.add(GapRow.of(sessionId, GapKind.DECLARATION_MISSING,
                     GapClass.DIAGNOSTIC, subject,
                     "no recorded write of " + located + " matches a "
                             + "write site of the static map, so this "
@@ -638,9 +656,8 @@ public final class ClosurePlanner {
         // N1: the heap this read observed is the reader JVM's.
         for (String carrier : carriers) {
             for (StaticScopeMap.Site site : map.writersOf(carrier)) {
-                candidates(corpus, map, site, STATIC_CANDIDATE_WRITER,
-                        new LinkedHashSet<String>(site.guards), into, gaps,
-                        sessionId, "carrier " + carrier, reader.node());
+                candidates(walk, site, STATIC_CANDIDATE_WRITER, site.guards,
+                        into, sessionId, "carrier " + carrier, reader.node());
             }
         }
     }
@@ -668,29 +685,44 @@ public final class ClosurePlanner {
         return guards;
     }
 
-    /** Every activated occurrence of the region holding one static site, on
-     *  {@code node} (N1/N2; null = any). None: named (PIPELINE §7.2),
-     *  scoped to that node, and no task. */
-    private static void candidates(Corpus corpus, StaticScopeMap map,
-                                   StaticScopeMap.Site site,
-                                   String why, Set<String> guards,
-                                   List<Demand> into, List<GapRow> gaps,
-                                   String sessionId, String what,
-                                   NodeId node) {
-        boolean ran = false;
-        for (OccurrenceAddress occurrence : corpus.occurrences()) {
-            if (!holds(map, occurrence.regionId(), site)
-                    || (node != null && !node.equals(occurrence.node()))
-                    || !activated(corpus, occurrence)) {
-                continue;
+    /**
+     * Every activated occurrence of the region holding one static site, on
+     * {@code node} (N1/N2; null = any). None: named (PIPELINE §7.2), scoped
+     * to that node, and no task.
+     *
+     * <p>ONCE PER WALK: the candidates of one site, reason, guard set and
+     * node are the same demands whichever read or attach asks for them, and
+     * a demand offered again changes nothing it is folded into ({@link
+     * Demand#absorb}), so only the first ask offers them; the gap names the
+     * asking session, so every ask says it.  SOLR-18413 r2: the anchor's 282
+     * demanded reads (fields of Slice, SolrInputDocument, IndexSchema, ...)
+     * asked for 329,393 writer candidates of 107 occurrences, every walk of
+     * the anchor, and the wave-1 planner ran out of an 8 GB heap.</p>
+     */
+    private static void candidates(Walk walk, StaticScopeMap.Site site,
+                                   String why, Collection<String> guards,
+                                   List<Demand> into, String sessionId,
+                                   String what, NodeId node) {
+        List<Object> key = Arrays.<Object>asList(why, site, guards, node);
+        Boolean offered = walk.offered.get(key);
+        if (offered == null) {
+            boolean ran = false;
+            for (OccurrenceAddress occurrence : walk.corpus.occurrences()) {
+                if (!holds(walk.map, occurrence.regionId(), site)
+                        || (node != null && !node.equals(occurrence.node()))
+                        || !activated(walk.corpus, occurrence)) {
+                    continue;
+                }
+                ran = true;
+                Demand candidate = new Demand(occurrence, why, false);
+                candidate.flipSites.addAll(guards);
+                into.add(candidate);
             }
-            ran = true;
-            Demand candidate = new Demand(occurrence, why, false);
-            candidate.flipSites.addAll(guards);
-            into.add(candidate);
+            offered = ran;
+            walk.offered.put(key, offered);
         }
-        if (ran) return;
-        gaps.add(GapRow.of(sessionId, GapKind.ADMISSION_GAP,
+        if (offered) return;
+        walk.gaps.add(GapRow.of(sessionId, GapKind.ADMISSION_GAP,
                 GapClass.DIAGNOSTIC, site.regionId,
                 "a static " + (STATIC_CANDIDATE_WRITER.equals(why)
                         ? "write" : "export") + " site of " + what + " is in "
@@ -744,7 +776,7 @@ public final class ClosurePlanner {
     /** Cross-checks the recorded pairing against the consumer's Anchor context
      *  (identity v3 states it twice). The row is authoritative; a mismatch is
      *  the runtime's defect, reported. Root/Lost contexts raise nothing. */
-    private static void crossCheck(AttachRow attach, List<GapRow> gaps) {
+    private static void crossCheck(AttachRow attach, Set<GapRow> gaps) {
         CausalContext context = attach.endpoint().occurrence().context();
         if (!(context instanceof CausalContext.Anchor)) return;
         String anchored = ((CausalContext.Anchor) context)
