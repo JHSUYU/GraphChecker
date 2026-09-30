@@ -523,17 +523,19 @@ final class SharedStateCapture {
         if (versionsMember == null || !versionsMember.isJsonArray()) {
             return "envelope carries no version array";
         }
+        if (!booleanMember(envelope, "serializationTruncated")) {
+            return "envelope omits version serialization completeness";
+        }
+        // Before the count: an envelope cut before its first version is
+        // truncated, not empty.
+        if (optionalBool(envelope, "serializationTruncated", false)) {
+            return VM_EXPRESSION_SERIALIZATION_TRUNCATED
+                    + ": version envelope";
+        }
         JsonArray versions = array(envelope, "versions");
         if (versions.size() == 0) {
             // Selection publishes an INITIAL, so empty means no selection.
             return "selected location published no version";
-        }
-        if (!booleanMember(envelope, "serializationTruncated")) {
-            return "envelope omits version serialization completeness";
-        }
-        if (optionalBool(envelope, "serializationTruncated", false)) {
-            return VM_EXPRESSION_SERIALIZATION_TRUNCATED
-                    + ": version envelope";
         }
         // A selected map's whole state (#locationKeyOf's spelling).
         boolean mapState = locationKey(envelope).startsWith(
