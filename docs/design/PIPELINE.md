@@ -738,8 +738,9 @@ must have a target row at the anchor that reached it (else refused, exit 1 → u
   every moved root at the model's value, the session
   is the confirmation (`realized.json`, no replay).
 - **Otherwise one replay**: the world is the selected session's own focus row (empty for the seed)
-  overlaid with the model's moved roots (`plantModel`: a clock as a skew off this session's reading,
-  any other root as its value, at the recording's mint occurrence). The focus row focuses the anchor
+  overlaid with the model's moved roots (`plantModel`: a clock as a skew off the reading the
+  composition anchored its cell to, the recording's, else this session's; any other root as its
+  value; at the recording's mint occurrence). The focus row focuses the anchor
   with `flip: null`, the anchor as declared target, no inherited flips. The schedule is written
   unheld (`SchedulePrefix.write(..., held=false)`: every event is suffix; only WAKEs wait for what
   they followed, and when the selected session was cut at its witness, a WAKE it never made waits

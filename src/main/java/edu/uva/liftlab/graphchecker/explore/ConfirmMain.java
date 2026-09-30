@@ -297,9 +297,18 @@ public final class ConfirmMain {
      * The MODEL's world over the session's: a root the model moved off the
      * value this session ran -- a clock DECIDE left free at the recorded
      * valuation, which no replay moved -- is planted as an exploration
-     * plants it (ObligationFactory): a clock as the skew off this session's
-     * reading, any other root as the value, at the occurrence the recording
-     * mints it.  Otherwise the replay runs the session again, not the claim.
+     * plants it (ObligationFactory): a clock as a skew, any other root as the
+     * value, at the occurrence the recording mints it.  Otherwise the replay
+     * runs the session again, not the claim.
+     *
+     * <p>A clock's skew is off the reading the composition anchored its cell
+     * to: the recording's, where the recording read the cell
+     * ({@code Composer#clocks}; a cell only replays read has no reading
+     * there, and its skew is off this session's).  The model's instants are
+     * on that timeline;
+     * the selected session is a later replay whose host read its own
+     * (SOLR-18406 a37f2: 1168 s later), and a skew off that reading planted
+     * delete()'s clock short of the reservation the model had it pass.</p>
      */
     static void plantModel(JsonObject decided, SessionReader session,
                            SessionReader recording,
@@ -307,6 +316,10 @@ public final class ConfirmMain {
                            Map<String, String> clockDeltas,
                            Map<String, String> mints) {
         JsonObject moved = object(decided, "movedRoots");
+        Map<String, String> anchored = new LinkedHashMap<String, String>();
+        for (RootMintRow row : recording.roots()) {
+            anchored.put(row.symbol(), row.recordedValue());
+        }
         for (RootMintRow row : session.roots()) {
             JsonElement value = moved.has(row.symbol())
                     ? moved.get(row.symbol()) : moved.get(row.rootId());
@@ -314,7 +327,8 @@ public final class ConfirmMain {
             String model = value.getAsString().trim();
             if (row.kind() == RootKind.CLOCK) {
                 String skew = ObligationFactory.skew(model,
-                        row.recordedValue());
+                        anchored.getOrDefault(row.symbol(),
+                                row.recordedValue()));
                 if (skew.isEmpty()) continue;
                 clockDeltas.put(row.rootId(), skew);
             } else {

@@ -90,6 +90,8 @@ public class ConfirmMainTest {
                         "119978"),
                 root("seed", "CLOCK.a", "M_J_clock.seed", RootKind.CLOCK,
                         "1000"),
+                root("seed", "CLOCK.b", "M_J_clock.b", RootKind.CLOCK,
+                        "1000"),
                 root("seed", "FAULT:IPC", "M_Z_fault", RootKind.MARKER,
                         "false"),
                 root("seed", "OTHER", "M_I_other", RootKind.INTEGRAL, "7")),
@@ -100,6 +102,8 @@ public class ConfirmMainTest {
                 root("sel", "HDFS.SERIAL", "M_I_serial.sel",
                         RootKind.INTEGRAL, "119978"),
                 root("sel", "CLOCK.a", "M_J_clock.sel", RootKind.CLOCK,
+                        "2000"),
+                root("sel", "CLOCK.b", "M_J_clock.b", RootKind.CLOCK,
                         "2000")), RowCodec::writeRootMint);
         RowCodec.writeAll(sel.targets(), Collections.singletonList(
                 TargetRow.of("sel", 40L, anchor, "<a.Handler: void handle()>"
@@ -556,5 +560,15 @@ public class ConfirmMainTest {
                 "48000", RowCodec.readJsonl(moved.resolve(
                         "focused_task.jsonl")).get(0).getAsJsonObject(
                         "clockDeltas").get("CLOCK.a").getAsString());
+        // A cell the recording read too is anchored at the recording's
+        // reading: the model's instants are on its timeline, and the
+        // selected replay's host read 1000 later.
+        Path anchored = folder.newFolder("anchored").toPath();
+        ConfirmMain.write(iteration, claim("M_J_clock.b", "50000"),
+                manifest(), anchored);
+        assertEquals("the model's instant less the recording's 1000",
+                "49000", RowCodec.readJsonl(anchored.resolve(
+                        "focused_task.jsonl")).get(0).getAsJsonObject(
+                        "clockDeltas").get("CLOCK.b").getAsString());
     }
 }
