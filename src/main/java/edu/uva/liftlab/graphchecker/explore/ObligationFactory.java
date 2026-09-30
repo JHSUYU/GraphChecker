@@ -1,6 +1,9 @@
 package edu.uva.liftlab.graphchecker.explore;
 
+import com.google.gson.JsonPrimitive;
+
 import edu.uva.liftlab.graphchecker.compose.Independence;
+import edu.uva.liftlab.graphchecker.compose.VmTermLowering;
 import edu.uva.liftlab.graphchecker.smt.Arms;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
@@ -585,7 +588,17 @@ public final class ObligationFactory {
         List<String> unproducible = new ArrayList<String>();
         for (FlipQuery.Control control : built.controls) {
             String value = answer.values().get(control.variable);
-            if (value != null) answers.put(control.attachEndpointId, value);
+            if (value != null) {
+                String answered = answer(control.sort, value);
+                if (answered == null) {
+                    return refused(candidate, Verdict.NOT_ADMITTED, "the "
+                            + "model's value " + value + " of the String "
+                            + "handoff " + control.attachEndpointId + " is "
+                            + "no string literal, so no replay can be "
+                            + "answered with it", query, gaps);
+                }
+                answers.put(control.attachEndpointId, answered);
+            }
             if (control.unproducible) {
                 unproducible.add(control.attachEndpointId);
             }
@@ -652,6 +665,19 @@ public final class ObligationFactory {
                         + " answered handoff(s), planted at " + mints.size()
                         + " mint(s)"),
                 query, clockDeltas, mints, inherited.flips, gaps);
+    }
+
+    /**
+     * A model's value of one control as a replay is answered with it: a
+     * String's (a codec's STR hole, WIRE-CODEC §6.4) as its JSON string
+     * literal, which the replay plants verbatim, the way a read row spells
+     * a String; any other sort's as the model prints it.  Null when a
+     * String's value is no string literal.
+     */
+    static String answer(String sort, String value) {
+        if (!VmTermLowering.Sort.STRING.smt.equals(sort)) return value;
+        String text = Z3.javaString(value);
+        return text == null ? null : new JsonPrimitive(text).toString();
     }
 
     /** {@code base} with {@code over} laid on top: {@code over} wins. */

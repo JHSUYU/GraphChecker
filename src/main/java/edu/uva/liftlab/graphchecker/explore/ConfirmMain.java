@@ -33,6 +33,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.array;
 import static edu.uva.liftlab.graphchecker.smt.JsonFields.object;
@@ -520,8 +521,20 @@ public final class ConfirmMain {
         return markers;
     }
 
+    /**
+     * A store's message key, {@code <transport> <path>@<version>}
+     * (CONTRACT-SPEC §2.2): every run that reads that version spells it
+     * alike.  An exchange's correlation id is its own run's, so a replay's
+     * never equals the model's arm's, and only its consumer and producer
+     * are compared.
+     */
+    private static final Pattern STORE_KEY =
+            Pattern.compile("\\S+ \\S.*@[0-9]+");
+
     /** One WIRE edge per consumer of each selected message arm, paired as that
-     *  arm's session recorded. */
+     *  arm's session recorded; a codec hole's with its message's store
+     *  version and the text the model's valuation of it decodes to
+     *  ({@code holeTexts}, COMPOSE's). */
     private static List<JsonObject> wireEdges(
             List<JsonObject> arms, Map<String, SessionReader> armSessions) {
         List<JsonObject> edges = new ArrayList<JsonObject>();
@@ -548,6 +561,18 @@ public final class ConfirmMain {
                 edge.addProperty("consumer", consumerId);
                 edge.addProperty("producer", paired.producer().id());
                 edge.addProperty("selector", selector);
+                if (paired.hole() != null) {
+                    // A codec's hole (WIRE-CODEC §6.5): the version of the
+                    // store its message was, and what it must decode to.
+                    if (STORE_KEY.matcher(paired.correlationId()).matches()) {
+                        edge.addProperty("messageKey",
+                                paired.correlationId());
+                    }
+                    JsonObject texts = object(arm, "holeTexts");
+                    if (texts.has(consumerId)) {
+                        edge.add("value", texts.get(consumerId));
+                    }
+                }
                 edges.add(edge);
             }
         }

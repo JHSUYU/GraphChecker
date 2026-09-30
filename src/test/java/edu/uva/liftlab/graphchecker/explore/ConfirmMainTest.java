@@ -12,6 +12,7 @@ import edu.uva.liftlab.graphchecker.contract.AttachRow;
 import edu.uva.liftlab.graphchecker.contract.Endpoint;
 import edu.uva.liftlab.graphchecker.contract.ExecutionIndex;
 import edu.uva.liftlab.graphchecker.contract.ExpressionTable;
+import edu.uva.liftlab.graphchecker.contract.Hole;
 import edu.uva.liftlab.graphchecker.contract.Interaction;
 import edu.uva.liftlab.graphchecker.contract.InteractionKind;
 import edu.uva.liftlab.graphchecker.contract.LocationId;
@@ -463,6 +464,65 @@ public class ConfirmMainTest {
                         + "a replay has to make",
                 !Files.exists(other.resolve(ConfirmMain.REALIZED))
                         && Files.exists(other.resolve("focused_task.jsonl")));
+    }
+
+    /**
+     * WIRE-CODEC §6.5: a codec hole's WIRE edge states the store version its
+     * message was, so a reader of another version is a mismatch, and the
+     * text the model's valuation of it decodes to, where COMPOSE stated one
+     * ({@code holeTexts}: a value resting on no clock).  An exchange's
+     * correlation id is its own run's, so its hole is held to its producer
+     * alone.
+     */
+    @Test
+    public void aHoleEdgeStatesItsStoreVersionAndTheModelsText()
+            throws Exception {
+        Path iteration = iteration();
+        Endpoint exchange = endpoint(ANCHOR, "pb:BlockKeyProto.keyId");
+        String state = "SOLR_ZK /collections/c/state.json@5";
+        RowCodec.writeAll(SessionDir.of(iteration, "sel").attaches(),
+                Arrays.asList(AttachRow.of("sel", 20L, consumer,
+                        "M_J_field_HOFF.1", "J", "2000", false, null, producer,
+                        state, AttachRow.ENVELOPE, Hole.of("SOLR_JSON",
+                                Arrays.asList("c", "expireAt"), 0)),
+                        AttachRow.of("sel", 21L, exchange, "M_I_field_HOFF.2",
+                                "I", "7", false, null, producer,
+                                "hadoop-ipc-0a0b-25", AttachRow.ENVELOPE,
+                                Hole.of("PROTOBUF", Arrays.asList("keys",
+                                        "currentKey", "keyId"), 0))),
+                RowCodec::writeAttach);
+        Path claim = claim("M_J_clock.sel");
+        JsonObject written = new JsonParser().parse(new String(
+                Files.readAllBytes(claim), StandardCharsets.UTF_8))
+                .getAsJsonObject();
+        JsonObject arm = written.getAsJsonArray("valuations").get(1)
+                .getAsJsonObject().getAsJsonArray("selectedArms").get(0)
+                .getAsJsonObject();
+        arm.getAsJsonArray("attachEndpointIds").add(exchange.id());
+        JsonObject texts = new JsonObject();
+        texts.addProperty(consumer.id(), "2000");
+        arm.add("holeTexts", texts);
+        Files.write(claim, written.toString().getBytes(
+                StandardCharsets.UTF_8));
+        Path out = folder.newFolder("hole-worker").toPath();
+
+        ConfirmMain.write(iteration, claim, manifest(), out);
+
+        Map<String, JsonObject> wire = new LinkedHashMap<String, JsonObject>();
+        for (JsonObject edge : RowCodec.readJsonl(
+                out.resolve(Confirmation.FILE))) {
+            if ("WIRE".equals(edge.get("kind").getAsString())) {
+                wire.put(edge.get("consumer").getAsString(), edge);
+            }
+        }
+        assertEquals(2, wire.size());
+        JsonObject stored = wire.get(consumer.id());
+        assertEquals(state, stored.get("messageKey").getAsString());
+        assertEquals("2000", stored.get("value").getAsString());
+        JsonObject exchanged = wire.get(exchange.id());
+        assertEquals(producer.id(), exchanged.get("producer").getAsString());
+        assertTrue(exchanged.toString(), !exchanged.has("messageKey")
+                && !exchanged.has("value"));
     }
 
     @Test
