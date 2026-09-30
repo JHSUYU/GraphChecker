@@ -243,8 +243,16 @@ field=<f> <subject>`.
   writes; any other name must be declared, let-bound or in the preamble.
 - A read binds, in order: to the expression of the write it observed if that lowers with no
   refusal, else to its version's mint, else to the value its row states, else it is refused
-  `UNSTATED_VALUE` (`compose.Composer.stateJoins`). A flip query offers eligible writers as choices
-  first ([PIPELINE.md §7.5](PIPELINE.md)).
+  `UNSTATED_VALUE` (`compose.SmtLowering.bind`, the one rule of a read row in
+  `compose.Composer.stateJoins` and of a guarded read node). A join that refused yields to the mint
+  or the value only if nothing it rests on can move -- a root or clock cell, a handoff, a read a
+  STATE family may re-pair, through every read's own write; otherwise the read is refused. A flip
+  query offers eligible writers as choices first ([PIPELINE.md §7.5](PIPELINE.md)).
+- A method-return symbol (`M_<t>_return<n>`) is the call its node states (VM f14 member `call`:
+  `_name` `"<holder> <method>"`, `_param_list`): `Integer.parseInt`/`Long.parseLong` of a String and
+  `String.valueOf`/`Integer`/`Long.toString` of an integral are relations; any other callee is pinned
+  to the node's `concreteValue` by a named assertion, only if nothing its arguments rest on can move.
+  A node stating no call is refused.
 - A per-session fact — arrivals, clock readings, the valuation — stays inside that path's
   conjunction, never a global assertion.
 - A root without a domain is pinned in COMPOSE and in flip queries; a declared MARKER is free over

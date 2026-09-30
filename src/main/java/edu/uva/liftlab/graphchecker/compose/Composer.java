@@ -560,13 +560,14 @@ public final class Composer {
                             : cut.getValue());
         }
         for (Map.Entry<String, String> pinned
-                : lowering.pinnedLeaves().entrySet()) {
+                : lowering.pinnedReturns().entrySet()) {
             gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
-                    "UndeclaredSymbolPinned:" + pinned.getKey(), "no row of "
-                            + "this corpus declares this symbol and its node "
-                            + "states it returned " + pinned.getValue()
-                            + ": it is that value, and what it was computed "
-                            + "from is not in the formula");
+                    "MethodReturnPinned:" + pinned.getKey(), "the call that "
+                            + "returned this symbol is no relation the "
+                            + "lowering knows and nothing its arguments rest "
+                            + "on moves: it is pinned to " + pinned.getValue()
+                            + " by a named assertion, and what it was "
+                            + "computed from is not in the formula");
         }
         for (Map.Entry<String, String> unanswered
                 : lowering.candidateUnanswered().entrySet()) {

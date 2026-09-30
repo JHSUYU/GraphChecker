@@ -412,9 +412,12 @@ BLOCKING `DECLARATION_MISSING`; no disjunct is BLOCKING `ADMISSION_GAP` naming t
   this session's value, or bounded by its declared window around it; a declared root this session
   never minted refuses the path only when the path's terms name it;
 - anchor handoffs: an obligation's answer if any, else bound only by the message family;
-- the read rule (`statedReads`, `stateJoins`): JOIN to the observed version's write expression if it
-  lowers with no refusal, else the MINT of that version (a placeholder), else PIN to the value the row
-  states, else REFUSE (`UNSTATED_VALUE`); a refused join is dropped when the mint or the pin binds;
+- the read rule (`statedReads`, `stateJoins`, through `SmtLowering.bind`, the guarded read's rule
+  too): JOIN to the observed version's write expression if it lowers with no refusal, else the MINT
+  of that version (a placeholder), else PIN to the value the row states, else REFUSE
+  (`UNSTATED_VALUE`); a refused join is dropped for the mint or the pin only when nothing it rests on
+  can move (a root, a clock cell, a handoff, an anchor location a STATE family may re-pair), and
+  dropped it raises nothing (no refusal, side condition or gap);
 - `pi_p`: the anchor's decisions strictly before the target row's seq, and each reached occurrence's
   decisions before its cutoff;
 - `phi_p`: the published `phiTerm` (fatal polarity); an empty phi is `true` when the run observed the

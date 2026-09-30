@@ -1577,7 +1577,8 @@ public class ComposerTest {
                     read("INSTANCE_FIELD", 6L, 12L, 5L, "Z"),
                     integer("Z", 1L)));
             // And a call's result the VM minted and no row declares, whose
-            // node states what it returned: that value, and not a cut.
+            // node states what it returned but not the call (a VM before
+            // f14): what it was computed from is unknown, so it is refused.
             JsonObject returned = symbol(RETURNED, "J");
             returned.add("concreteValue", integer("J", 2L));
             session.expression("EXPR.00000000000000b8", binary("<",
@@ -1703,11 +1704,10 @@ public class ComposerTest {
                     gap.subject().contains("MalformedJvmLcmpOperands")
                             || gap.subject().contains("BinarySortConflict"));
         }
-        assertTrue("an undeclared symbol whose node states what it returned "
-                        + "is that value, named once as a dropped dependency",
-                named(gaps, "UndeclaredSymbolPinned:" + RETURNED));
-        assertFalse("and is not cut",
-                named(gaps, "UndeclaredFreeSymbol:" + RETURNED));
+        assertTrue("a method-return symbol whose node states no call is "
+                        + "refused by name, whatever value it states",
+                named(gaps, "MethodReturnCallUnstated:" + RETURNED)
+                        && !named(gaps, "MethodReturnPinned:" + RETURNED));
         assertTrue("a reference projection the VM valued neither way is "
                         + "refused by name, naming the class and offset",
                 named(gaps, "UNSTATED_FIELD_PROJECTION:"
@@ -3908,6 +3908,100 @@ public class ComposerTest {
                     assertTrue(name + ": refused by name",
                             named(gaps, "JoinOverMovingValue:" + key
                                     + "@2"));
+            }
+        }
+    }
+
+    /**
+     * A method-return symbol (the VM's result of a call it does not model)
+     * is its CALL, which the node states (VM f14).  One case per row:
+     * <ul>
+     *   <li>parse: {@code Long.parseLong} of a String is its decimal
+     *       reading, a relation and no pin;</li>
+     *   <li>round-trip: {@code parseInt(valueOf(R))}, R a declared root, is
+     *       R itself, so phi {@code x != R} holds under no valuation: no
+     *       moved-root witness (the pin C1 made gave one);</li>
+     *   <li>pinned: a callee the lowering does not know, over nothing that
+     *       moves, is pinned by a NAMED assertion an unsat core shows;</li>
+     *   <li>moving: the same over R refuses: a pin would carry a moved R
+     *       through the call as a constant;</li>
+     *   <li>no-call: a node stating no call (a VM before f14) refuses.</li>
+     * </ul>
+     */
+    @Test
+    public void aMethodReturnIsItsCall() throws Exception {
+        for (String name : new String[]{"parse", "round-trip", "pinned",
+                "moving", "no-call"}) {
+            Path iteration = folder.newFolder("return-" + name).toPath();
+            Session session = new Session(iteration, "s0", false);
+            session.serial("3", "0", "8");
+            boolean integer = "round-trip".equals(name);
+            JsonObject returned = symbol(integer ? "M_I_return4" : RETURNED,
+                    integer ? "I" : "J");
+            returned.add("concreteValue", integer ? integer("I", 3L)
+                    : integer("J", 2L));
+            if (!"no-call".equals(name)) {
+                JsonObject call = new JsonObject();
+                call.addProperty("_name", "parse".equals(name)
+                        ? "java/lang/Long parseLong" : integer
+                        ? "java/lang/Integer parseInt"
+                        : "org/apache/solr/Params getLong");
+                JsonArray arguments = new JsonArray();
+                arguments.add("parse".equals(name) || "pinned".equals(name)
+                        ? vmLeaf("ConStringSymbolExp", "Y_L'String'_2",
+                        "java/lang/String")
+                        : "moving".equals(name) ? symbol(SERIAL, "I")
+                        : vmString("toString", symbol(SERIAL, "I")));
+                call.add("_param_list", arguments);
+                returned.add("call", call);
+            }
+            session.expression("EXPR.00000000000000c1", integer
+                    ? binary("!=", returned, symbol(SERIAL, "I"))
+                    : binary("<", binary("--", returned,
+                    integer("J", 3L)), integer("I", 0L)));
+            session.target("EXPR.00000000000000c1", false, true);
+            session.write();
+
+            Composer.Composition composition = compose(iteration, 4);
+            List<GapRow> gaps = composition.gaps();
+            String body = composition.body();
+            boolean composed = !"moving".equals(name)
+                    && !"no-call".equals(name);
+            assertEquals(name + ": composed", composed ? 1 : 0,
+                    composition.disjuncts().size());
+            if ("parse".equals(name) || integer) {
+                assertTrue(name + ": the call is its relation: " + body,
+                        body.contains("str.to_int")
+                                && !named(gaps, "MethodReturnPinned:"
+                                + RETURNED));
+            }
+            if (integer) {
+                ClaimPolicy.Decision decision = ClaimPolicy.decide(
+                        composition, solver());
+                for (ClaimPolicy.Outcome outcome : decision.outcomes()) {
+                    assertTrue(name + ": phi holds under no valuation: "
+                                    + outcome,
+                            outcome.answer().unsat());
+                }
+                assertEquals(name + ": so no witness moves the root past "
+                                + "it", ClaimKind.NO_SUPPORTED_WITNESS,
+                        decision.claim().kind());
+            }
+            if ("pinned".equals(name)) {
+                assertTrue(name + ": pinned by a named assertion: " + body,
+                        body.contains(":named pinned_returned__")
+                                && named(gaps, "MethodReturnPinned:"
+                                + RETURNED));
+            }
+            if ("moving".equals(name)) {
+                assertTrue(name + ": refused by name",
+                        named(gaps, "MethodReturnOverMovingArgument:"
+                                + RETURNED));
+            }
+            if ("no-call".equals(name)) {
+                assertTrue(name + ": refused by name",
+                        named(gaps, "MethodReturnCallUnstated:"
+                                + RETURNED));
             }
         }
     }

@@ -40,6 +40,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Supplier;
+import java.util.regex.Pattern;
 
 import static edu.uva.liftlab.graphchecker.compose.VmTermLowering.and;
 import static edu.uva.liftlab.graphchecker.compose.VmTermLowering.expressionJavaType;
@@ -718,8 +719,8 @@ public final class SmtLowering {
         /** name -> "<held> and <new>". */
         private final Map<String, String> sortConflicts =
                 new LinkedHashMap<String, String>();
-        /** symbol -> the value its node states it returned. */
-        private final Map<String, String> pinnedLeaves =
+        /** method-return symbol -> the value its node states. */
+        private final Map<String, String> pinnedReturns =
                 new LinkedHashMap<String, String>();
 
         private void refusal(String subject) {
@@ -744,7 +745,7 @@ public final class SmtLowering {
         private void gaps(Raised other) {
             cuts.addAll(other.cuts);
             sortConflicts.putAll(other.sortConflicts);
-            pinnedLeaves.putAll(other.pinnedLeaves);
+            pinnedReturns.putAll(other.pinnedReturns);
         }
     }
 
@@ -1006,6 +1007,9 @@ public final class SmtLowering {
                     JavaPrimitiveSmtSemantics.widthOfJavaType(javaType),
                     "", "", "true");
         }
+        if (expression.has(CALL) || METHOD_RETURN.matcher(raw).matches()) {
+            return methodReturn(expression, raw, javaType, sort);
+        }
         if (sort == Sort.REF || sort == Sort.MAP
                 || sort == Sort.ARRAY_VALUE) {
             return Term.of(opaque(raw, sort), sort);
@@ -1017,19 +1021,145 @@ public final class SmtLowering {
                     JavaPrimitiveSmtSemantics.widthOfJavaType(javaType),
                     "", "", "true");
         }
-        // Undeclared, and its node states what it returned (a call's
-        // result the VM minted: Long.parseLong in SolrParams.getLong): that
-        // value, named once, since what it was computed from is dropped.
-        String returned = ReadRow.returned(expression);
-        Term pinned = statedValue(returned, javaType);
-        if (pinned != null) {
-            top().pinnedLeaves.put(raw, returned);
-            return pinned;
-        }
         return cut("UndeclaredFreeSymbol:" + raw,
                 "no root mint, clock reading, attach or read row of this "
                         + "corpus states this symbol", sort, javaType);
     }
+
+    /** A MethodReturnSymbolExp's name (methodSymbolizer.cpp). */
+    private static final Pattern METHOD_RETURN =
+            Pattern.compile("M_[A-Z]_return[0-9]+");
+    /**
+     * The member a method-return node states its CALL in (VM f14): the
+     * callee's {@code "<holder> <method>"} as {@code _name} and its
+     * argument expressions as {@code _param_list}, a MethodExpression's own
+     * spelling without its result.
+     */
+    private static final String CALL = "call";
+
+    /**
+     * The result of a library call the VM does not model (a
+     * MethodReturnSymbolExp, {@code M_<t>_return<n>}): no row declares it,
+     * and what it is rests on the call its node states ({@link #CALL}).  A
+     * callee this lowering knows is its RELATION over the lowered arguments
+     * ({@link #knownCall}), whatever they rest on.  Any other is PINNED to
+     * the value the node states it returned, by an assertion named for an
+     * unsat core to show the reliance, and only where nothing its arguments
+     * rest on can move ({@link #moves}): a root moved through the call would
+     * stand as a constant.  A node stating no call (a VM before f14) is
+     * refused, since what its value was computed from is not known.  The
+     * pinned name is this session's, so two runs' results of one symbol are
+     * two values.
+     */
+    private Term methodReturn(JsonObject expression, String raw,
+                              String javaType, Sort sort) {
+        JsonElement stated = expression.get(CALL);
+        if (stated == null || !stated.isJsonObject()) {
+            return cut("MethodReturnCallUnstated:" + raw, "the VM states no "
+                    + "call for this method-return symbol (a VM before "
+                    + "f14), so what its value was computed from is not "
+                    + "known", sort, javaType);
+        }
+        JsonObject call = stated.getAsJsonObject();
+        Term related = knownCall(call, raw);
+        if (related != null) return related;
+        if (moves(call)) {
+            return cut("MethodReturnOverMovingArgument:" + raw, "an "
+                    + "argument of the call that returned this value rests "
+                    + "on what a witness can move (a root, a clock, a "
+                    + "handoff or a read a family re-pairs), and the call is "
+                    + "no relation this lowering knows, so no pin may stand "
+                    + "for its result", sort, javaType);
+        }
+        String returned = ReadRow.returned(expression);
+        Term value = statedValue(returned, javaType);
+        if (value == null) {
+            return cut("UndeclaredFreeSymbol:" + raw, "the call that "
+                    + "returned this symbol is no relation this lowering "
+                    + "knows, and its node states no value it returned",
+                    sort, javaType);
+        }
+        String name = symbols.mint("returned__", scope + SEPARATOR + raw, 10);
+        if (!declared(name)) {
+            declare(name, value.sort);
+            String pin = "(= " + name + " " + value.text + ")";
+            // A flip query reads the lowering's facts, a composition its
+            // named assertions.
+            if (symbolsDeclareThemselves) {
+                assertPlain(pin);
+            } else {
+                assertNamed("pinned_" + name, pin);
+            }
+        }
+        top().pinnedReturns.put(raw, returned);
+        return value.sort == Sort.STRING ? Term.nonNullString(name, "true")
+                : Term.of(name, value.sort, value.integralWidth);
+    }
+
+    /**
+     * The relation of a call this lowering knows, over its lowered
+     * arguments, or null when it knows none.  {@code Integer.parseInt} and
+     * {@code Long.parseLong} of a String (radix 10) are its decimal reading
+     * with Java's sign and range, defined as the JVM that returned it: an
+     * optional sign and one or more digits within the type's range.  A
+     * digit outside ASCII, which Java reads too, is outside what z3's
+     * {@code str.to_int} states, so such a string has no value here.
+     * {@code String.valueOf} and {@code Integer}/{@code Long.toString} of an
+     * integral are the inverse, its decimal rendering.  A known callee whose
+     * arguments this lowering cannot state is refused by name.
+     */
+    private Term knownCall(JsonObject call, String raw) {
+        String callee = optionalString(call, "_name");
+        JsonArray arguments = array(call, "_param_list");
+        String origin = "call:" + raw;
+        if (RENDERINGS.contains(callee) && arguments.size() == 1) {
+            return javaToString(arguments, origin);
+        }
+        boolean integer = "java/lang/Integer parseInt".equals(callee);
+        if (!integer && !"java/lang/Long parseLong".equals(callee)) {
+            return null;
+        }
+        Sort sort = Sort.INT;
+        if (arguments.size() == 2 && !"10".equals(constantPayload(
+                primitiveString(arguments.get(1).isJsonObject()
+                        ? arguments.get(1).getAsJsonObject()
+                        : new JsonObject(), "_exp")))) {
+            return refuse(Reason.MODEL_SEMANTICS_MISSING, origin,
+                    callee + ":RADIX_NOT_10", sort);
+        }
+        if (arguments.size() != 1 && arguments.size() != 2) {
+            return refuse(Reason.MODEL_SEMANTICS_MISSING, origin,
+                    callee + ":ARITY", sort);
+        }
+        Term text = dispatch(arguments.get(0), null, origin + ":string");
+        if (text.sort != Sort.STRING
+                || nullnessUnknown(Collections.singletonList(text))) {
+            return refuse(Reason.MODEL_SEMANTICS_MISSING, origin,
+                    callee + ":STRING_UNSTATED", sort);
+        }
+        String string = text.text;
+        String digits = "(str.to_int (ite (or (str.prefixof \"-\" " + string
+                + ") (str.prefixof \"+\" " + string + ")) (str.substr "
+                + string + " 1 (- (str.len " + string + ") 1)) " + string
+                + "))";
+        String value = "(ite (str.prefixof \"-\" " + string + ") (- "
+                + digits + ") " + digits + ")";
+        JavaPrimitiveSmtSemantics.IntegralDomain domain =
+                JavaPrimitiveSmtSemantics.domainOfJavaType(integer ? "I" : "J");
+        return definedResult(value, sort, integer ? IntegralWidth.JAVA_INT
+                        : IntegralWidth.JAVA_LONG,
+                and(Arrays.asList(stringDefinedness(
+                        Collections.singletonList(text),
+                        Collections.<Term>emptyList()),
+                        "(<= 0 " + digits + ")",
+                        VmTermLowering.integralRange(domain.lower, value,
+                                domain.upper))));
+    }
+
+    /** The callees that render an integral as its decimal String. */
+    private static final Set<String> RENDERINGS = new LinkedHashSet<String>(
+            Arrays.asList("java/lang/String valueOf",
+                    "java/lang/Integer toString", "java/lang/Long toString"));
 
     /**
      * Java null at the expected sort: {@code nullRef}, or the null cell for
@@ -2163,11 +2293,11 @@ public final class SmtLowering {
     }
 
     /**
-     * Each undeclared symbol lowered to the value its node states, with
-     * that value: a dependency the formula no longer carries, named once.
+     * Each method-return symbol pinned to the value its node states, with
+     * that value: a dependency the formula carries only as the named pin.
      */
-    public Map<String, String> pinnedLeaves() {
-        return Collections.unmodifiableMap(root.pinnedLeaves);
+    public Map<String, String> pinnedReturns() {
+        return Collections.unmodifiableMap(root.pinnedReturns);
     }
 
     /**
