@@ -141,7 +141,10 @@ See Acceptance above. What remains:
 The offline regression gate `tools/regress/offline-ab.sh` (with `ab_compare.py`) compares a
 candidate jar against a baseline on a recorded round, stage by stage, with no replay. It reads a
 round as HEAD reads it, so it needs a round recorded by a build whose rows HEAD still reads (not
-v92–v94, see Acceptance). Its static pass is not deterministic and never gates.
+v92–v94, see Acceptance). Every stage gates on bytes: SEED (with its woven classes) and PLAN
+are byte-identical across lifts and runs (`/bigtemp/vnr3ne/analysis/det2/s6/`: hdfs-17897,
+11741, 17899-bug1, 17960 and solr-18413 on five lifts, two with the scope copied in opposite
+orders, three under other JVM identity-hash generators).
 
 ## R6. No per-case code, no dead code, no fallbacks
 
@@ -240,3 +243,9 @@ Harness and declarations:
 25. `tools/rounds/launch-round.sh` leaves `lift11` out, while the sweep tools use all ten lifts.
 26. `tools/analysis/confirmrun.sh` calls `campaign_confirm_decide`, which `run_engine.sh` no
     longer has: the decision is `explore.ConfirmMain --sessions`, which also needs the claim.
+
+Stale artifacts:
+
+27. `gc/runtime/RuntimeRegionPlanner` drops a recorded region entry whose method no candidate
+    skeleton roots, with no gap: a recording joined with static artifacts of another build (a
+    lambda class named otherwise, a shifted unit) loses its activations and folds silently.

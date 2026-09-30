@@ -649,9 +649,10 @@ a pure function of the recording once per jar — the static pass, the trace agg
 EXPLORE wave 0 and its solves, IMPORT, the closing EXPLORE wave, COMPOSE with SOLVE and DECIDE,
 and CONFIRM's planning — over private iterations that link the recorded sessions, with no
 workload and no replay; `ab_compare.py` prints one table and exits 1 when a gating stage differs,
-2 when one could not be checked. The static pass (Soot) is not deterministic: it runs on one
-thread, is compared canonically and never gates. A round is read as the current engine reads it,
-so the gate needs a round recorded by a build whose row contract HEAD still reads.
+2 when one could not be checked. Every stage gates on bytes, the static pass included: it is the
+same on every host and run ([SYMBOL-SCOPE.md §2.3](SYMBOL-SCOPE.md)). A round is read as the
+current engine reads it, so the gate needs a round recorded by a build whose row contract HEAD
+still reads.
 
 ## 13. Reading a run
 
