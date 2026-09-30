@@ -1077,7 +1077,10 @@ void SharedFieldVersions::write_site(
 // One `SHARED_FIELD_VERSIONS` envelope, written into a caller's document and
 // left open: the single-location answer and the whole read-out both close it
 // their own way, so they emit byte-identical envelopes.  Returns true when
-// the envelope was cut short by `budget_bytes` (0 = the default bound).
+// the envelope was cut short by `budget_bytes` (0 = the default bound), which
+// counts this envelope's own bytes: the document it is written into may
+// already hold more than the bound, and every later envelope of it would
+// otherwise be emitted with no version at all.
 bool SharedFieldVersions::write_versions_envelope(
     rapidjson::Writer<rapidjson::StringBuffer> &writer,
     const rapidjson::StringBuffer &buffer,
@@ -1085,8 +1088,8 @@ bool SharedFieldVersions::write_versions_envelope(
     const Location &location, const Slot &slot, bool selected,
     size_t budget_bytes) {
   using namespace rapidjson;
-  const size_t bound = budget_bytes == 0
-      ? MAX_VERSION_ENVELOPE_BYTES : budget_bytes;
+  const size_t bound = envelope_bytes(buffer, expression_artifact)
+      + (budget_bytes == 0 ? MAX_VERSION_ENVELOPE_BYTES : budget_bytes);
   writer.StartObject();
   writer.Key("schemaVersion");
   writer.Int(1);

@@ -783,8 +783,10 @@ public class ContractTest {
                 0, stating(gate(clean(), attributed),
                         GapKind.MINT_UNATTRIBUTED, GapClass.BLOCKING));
         // 12: a reference write's container state is an older write of the
-        // session; the placeholder's minted v8 is none.
-        for (long named : new long[] {7L, 8L}) {
+        // session (v7); a version no row states (the placeholder's minted
+        // v8) is evidence lost, not a malformed row; one not older than the
+        // store (v9) is.
+        for (long named : new long[] {7L, 8L, 9L}) {
             Rows referring = clean();
             referring.writes.add(WriteRow.of("s-gate", 13L,
                     referring.writeAt, LocationId.of(LocationKind.INSTANCE,
@@ -795,8 +797,8 @@ public class ContractTest {
                 assertTrue(names(gate(referring)).toString(),
                         noViolation(gate(referring), 12));
             } else {
-                assertInvariant(12, GapClass.BLOCKING, "field=referentState",
-                        referring);
+                assertInvariant(12, named == 8L ? GapClass.DIAGNOSTIC
+                        : GapClass.BLOCKING, "field=referentState", referring);
             }
         }
     }

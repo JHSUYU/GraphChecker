@@ -166,15 +166,7 @@ final class RowPublication {
                 if (!element.isJsonObject()) continue;
                 JsonObject version = element.getAsJsonObject();
                 long id = optionalLongInteger(version, "fieldVersionId", -1L);
-                // A store outside every region has no performer to row, and
-                // a scalar's INITIAL no store at all.
-                if (id < 0L
-                        || mints.containsKey(locationKey + "#" + id)
-                        || SharedStateCapture.unattributed(version)
-                        || SharedStateCapture.scalarInitial(version,
-                        location)) {
-                    continue;
-                }
+                if (!rowed(version, location, locationKey, mints)) continue;
                 if (!RowRuntime.claimEvent("write", locationKey + "#" + id)) {
                     continue;
                 }
@@ -187,12 +179,16 @@ final class RowPublication {
                 if (performer != null) {
                     String site = LoggedEventSites.site(version, locationKey,
                             id, true);
+                    String unrowed = unrowedReferent(
+                            active.sharedStateRefusals,
+                            active.sharedStateRecords, version, mints);
                     RowRuntime.write(performer, id, site, location, id,
                             written, "", LoggedEventSites.siteIndex(version,
                                     locationKey, id, site, true),
-                            referent(version), optionalString(version,
-                                    SharedStateCapture
-                                            .REFERENT_STATE_REFUSED));
+                            unrowed.isEmpty() ? referent(version) : null,
+                            unrowed.isEmpty() ? optionalString(version,
+                                    SharedStateCapture.REFERENT_STATE_REFUSED)
+                                    : unrowed);
                 }
                 collect(expression, published, seen);
             }
@@ -200,6 +196,53 @@ final class RowPublication {
         for (JsonObject mapping : active.branchMappings) {
             collect(mapping.get("witness"), published, seen);
         }
+    }
+
+    /**
+     * Whether a logged version is a write row: a store outside every region
+     * has no performer to row, and a scalar's INITIAL no store at all; a
+     * declared input is a mint.
+     */
+    private static boolean rowed(JsonObject version, LocationId location,
+                                 String locationKey,
+                                 Map<String, String> mints) {
+        long id = optionalLongInteger(version, "fieldVersionId", -1L);
+        return id >= 0L && !mints.containsKey(locationKey + "#" + id)
+                && !SharedStateCapture.unattributed(version)
+                && !SharedStateCapture.scalarInitial(version, location);
+    }
+
+    /**
+     * Why the container state a reference version names is no row, or
+     * {@code ""}: a referent's version must be a write of its session
+     * (IMPORT invariant 12).  Its log is in this read-out whenever the
+     * version came after the activation began; the read-out refused that
+     * log (a base the VM could not walk, a truncated envelope), or the log
+     * holds the version as no row.  A log the read-out did not select was
+     * published by an earlier activation's.
+     */
+    static String unrowedReferent(Map<String, String> refusals,
+                                  Map<String, JsonObject> records,
+                                  JsonObject version,
+                                  Map<String, String> mints) {
+        String key = SharedStateCapture.locationKeyOf(object(version,
+                SharedStateCapture.REFERENT_STATE));
+        if (key.isEmpty()) return "";
+        String refused = refusals.get(key);
+        if (refused != null) return refused;
+        JsonObject record = records.get(key);
+        if (record == null) return "";
+        long named = optionalLongInteger(object(version,
+                SharedStateCapture.REFERENT_STATE), "fieldVersionId", -1L);
+        for (JsonElement logged : array(object(record, "envelope"),
+                "versions")) {
+            if (logged.isJsonObject() && optionalLongInteger(
+                    logged.getAsJsonObject(), "fieldVersionId", -2L) == named) {
+                return rowed(logged.getAsJsonObject(), locationId(key), key,
+                        mints) ? "" : "VERSION_NOT_ROWED";
+            }
+        }
+        return "VERSION_NOT_RETAINED";
     }
 
     /** The container state a reference version states it stored, or

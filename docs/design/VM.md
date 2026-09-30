@@ -311,7 +311,8 @@ statuses `OK 0`, `MISSING_METADATA -2`, `NOT_SYMBOLIC -4`, and its own `INVOCATI
   serializer); the engine keeps them in each session's `expressions.jsonl` (CONTRACT-SPEC.md).
 - `getTrackedLocationVersions(afterEventId, maxBytes)` pages the version and read logs by each
   location's highest event: `nextAfterEventId` is one past the last emitted location's, so a
-  resume neither repeats nor skips a location (`SFV`). An envelope states `writerSetComplete` and,
+  resume neither repeats nor skips a location (`SFV`). Each envelope is bounded by its own bytes
+  (32 MB, `serializationTruncated` when cut), never by the page's. An envelope states `writerSetComplete` and,
   when false, `incompleteReasons` and `unnamedWriter`; an INITIAL's `initialSnapshot.stated` is
   true only for a stated count.
 - A read node states `observedExact`, `writerSetComplete`, `unnamedWriter` (only when true) and

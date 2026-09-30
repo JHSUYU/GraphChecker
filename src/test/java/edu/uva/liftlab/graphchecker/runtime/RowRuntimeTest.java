@@ -37,6 +37,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.EnumMap;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
@@ -1064,6 +1065,47 @@ public class RowRuntimeTest {
                     new java.util.HashSet<Object>());
             assertEquals(Arrays.toString(each) + ": " + said, each[4],
                     !said.contains("referent"));
+        }
+    }
+
+    /**
+     * A referent's version is a write row, or the write says why not: the
+     * read-out refused its log, or the log holds it as no row (stored
+     * outside every region) or no longer; a log the read-out did not select
+     * is an earlier activation's to publish.
+     */
+    @Test
+    public void aReferentWhoseStateIsNoRowIsRefusedByName() {
+        String key = "MAP_STATE/1234#-3";
+        JsonObject version = new JsonObject();
+        version.add("referentState", referent(49L));
+        for (Object[] each : new Object[][]{
+                {"refused", "CONTAINER_BASE_UNSTATED: no walker"},
+                {"rowed", ""}, {"outside", "VERSION_NOT_ROWED"},
+                {"evicted", "VERSION_NOT_RETAINED"}, {"unselected", ""}}) {
+            Map<String, String> refusals = new HashMap<String, String>();
+            Map<String, JsonObject> records =
+                    new HashMap<String, JsonObject>();
+            if ("refused".equals(each[0])) {
+                refusals.put(key, (String) each[1]);
+            } else if (!"unselected".equals(each[0])) {
+                JsonObject logged = new JsonObject();
+                logged.addProperty("fieldVersionId",
+                        "evicted".equals(each[0]) ? 51L : 49L);
+                logged.addProperty("versionKind", "INITIAL");
+                logged.addProperty("regionEnterEventId",
+                        "outside".equals(each[0]) ? 0L : 40L);
+                JsonArray versions = new JsonArray();
+                versions.add(logged);
+                JsonObject envelope = new JsonObject();
+                envelope.add("versions", versions);
+                JsonObject record = new JsonObject();
+                record.add("envelope", envelope);
+                records.put(key, record);
+            }
+            assertEquals(Arrays.toString(each), each[1],
+                    RowPublication.unrowedReferent(refusals, records, version,
+                            Collections.<String, String>emptyMap()));
         }
     }
 
