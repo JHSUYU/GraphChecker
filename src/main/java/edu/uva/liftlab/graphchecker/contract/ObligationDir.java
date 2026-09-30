@@ -79,7 +79,10 @@ public final class ObligationDir {
 
     /**
      * Every question one iteration's workers settled ({@link #QUESTION}),
-     * with its first answer in wave and name order.
+     * with its first answer in wave and name order that still stands: its
+     * worker still holds the question, and an ADMITTED one's session is
+     * still in the corpus (taken back -- an unfinished worker, a session
+     * GROW moved aside -- it settles nothing).
      */
     public static Map<String, Answer> answered(Path iteration)
             throws IOException {
@@ -96,6 +99,12 @@ public final class ObligationDir {
                 if (question.isEmpty() || rows.isEmpty()) continue;
                 ObligationResult result = rows.get(rows.size() - 1);
                 if (result.verdict() == Verdict.SAT_MODEL_READY) continue;
+                if (result.verdict() == Verdict.ADMITTED
+                        && (result.sessionId().isEmpty()
+                        || !Files.isDirectory(SessionDir.of(iteration,
+                        result.sessionId()).dir()))) {
+                    continue;
+                }
                 answered.putIfAbsent(question, new Answer(
                         worker.getFileName().toString(), result));
             }

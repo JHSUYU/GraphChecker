@@ -17,7 +17,7 @@ through `campaign_fail`, which prints `stage`, `component`, `artifact`, `reason`
 | INSTRUMENT | `campaign_instrument`; `GraphCheckerMain`, `causynth.VerifyWovenClasses` | `iteration-0000/instrumented-classes/` | no class woven; a woven class does not verify |
 | REPLAY | `campaign_session_replay`; the adapter (`runtime.*` in the workload JVM) | `iteration-0000/sessions/<seed>/` | killed on its bound (`seed_replay_time_factor`); no activation; no target row of the target method |
 | IMPORT | `campaign_import_session`; `contract.ImportGateMain` | `session_census.jsonl`, `import_gate.json`, `campaign_gaps.jsonl` | a session file is missing; a BLOCKING row invariant |
-| EXPLORE | `campaign_explore`, `campaign_grow`; `explore.ExploreMain`, `explore.ObligationSolverMain`, `plan.ExposedRegionPlanMain` | `obligations-NNNN/`, `obligation_results.jsonl`, focused sessions | the planner fails; an obligation does not finish; a replay states no verdict; a wave's BLOCKING row invariant (as IMPORT) |
+| EXPLORE | `campaign_explore`, `campaign_grow`; `explore.ExploreMain`, `explore.ObligationSolverMain`, `plan.ExposedRegionPlanMain` | `obligations-NNNN/`, `obligation_results.jsonl`, focused sessions | the planner fails; a slot cannot read its host's memory; a GROW re-run does not finish; a wave's BLOCKING row invariant (as IMPORT) |
 | — | `campaign_publish_iteration_manifest` | `iteration_manifest.json` | — |
 | COMPOSE | `campaign_compose`; `compose.ComposeMain` | `final/candidate.smt2`, `candidate_composition_manifest.json`, `claim.json` | ComposeMain exits nonzero (every refusal is a claim, not an exit) |
 | SOLVE, DECIDE | `campaign_solve`, `campaign_decide` (read the manifest) | log lines | the manifest states no solver verdict or no valuation rows |
@@ -365,9 +365,11 @@ from). The solver builds it and looks it up in the questions this iteration's wo
 and detail name the obligation that settled it; an `ADMITTED` names no session, the session stays
 that obligation's). A question is settled (`question.txt`) by a solver's own verdict or reused one
 (`UNSAT`, a decided `NOT_ADMITTED`), or, for a SAT model (`question.asked`), by its replay's verdict
-once the worker has it; never by a solver timeout or an undecided solver, a replay killed on its
-bound, a replay that ended without a publication (`RowRuntime#closeSession` withdraws the question),
-a solver that died, or a worker that did not finish.
+once the worker has it; never by a reuse (the obligation it reused settles it), a solver timeout or
+an undecided solver (the held re-ask included), a replay killed on its bound, a replay that ended
+without a publication (`RowRuntime#closeSession` withdraws the question), a solver that died, or a
+worker that did not finish. A settled question stands only while its worker holds it and, for an
+`ADMITTED` one, while its session is in the corpus (`ObligationDir#answered`).
 
 ### 7.4 Candidates: `ObligationFactory.candidates`
 
@@ -492,7 +494,9 @@ wave's gate nor the next planner reads one a cached listing kept.
 
 A replay killed on its bound: its session is withdrawn to `<worker>/timed-out-sessions/` and the
 answer is `NOT_ADMITTED` naming the bound. A solver JVM that exits nonzero records `NOT_ADMITTED`
-with its last stderr line. A replay that states no verdict fails EXPLORE.
+with its last stderr line. A replay that states no verdict fails its worker, which is then that
+obligation's `NOT_ADMITTED` and an `OBLIGATION_UNFINISHED` gap (§7.7); in a GROW re-run it fails
+EXPLORE, and in CONFIRM it is a confirmation that did not confirm.
 
 ### 7.7 The work pool
 

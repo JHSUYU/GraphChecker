@@ -3364,14 +3364,19 @@ public class ExploreTest {
                         + asked.substring(0, asked.indexOf(':')) + "\n",
                 new String(Files.readAllBytes(wave0.resolve(
                         ExploreMain.FLIPS_FILE)), StandardCharsets.UTF_8));
-        // Asked by a worker whose replay was killed: nothing settled.
+        // Asked by a worker whose replay was killed: nothing settled.  And
+        // an ADMITTED answer whose session left the corpus stands on
+        // nothing.
         answer(iteration, "OB.killed", ObligationDir.QUESTION_ASKED, asked,
+                Verdict.NOT_ADMITTED, "",
                 "replay exceeded replay_timeout_s=2400");
+        answer(iteration, "OB.admitted", ObligationDir.QUESTION, asked,
+                Verdict.ADMITTED, "S.gone", "flipped");
         Worker again = solve(iteration, wave0, lookup, out, "w1");
         assertTrue(detail(again), detail(again).startsWith("EMPTY_WORLD"));
         // Settled under an id that has since drifted: its answer, no solver.
         answer(iteration, "OB.drifted", ObligationDir.QUESTION, asked,
-                "refused");
+                Verdict.NOT_ADMITTED, "", "refused");
         Worker settled = solve(iteration, wave0, lookup, out, "w2");
         assertEquals(Verdict.NOT_ADMITTED, settled.verdict);
         assertEquals(detail(settled), "question " + asked + " was settled "
@@ -3379,14 +3384,16 @@ public class ExploreTest {
                 + "same flip and query of the same world, focus, factor, "
                 + "seed session, declared occurrence and plan generation: "
                 + "refused", detail(settled));
-        assertTrue("and settles it too", Files.isRegularFile(
-                settled.directory.resolve(ObligationDir.QUESTION)));
+        assertFalse("a reuse settles nothing itself: its source does",
+                Files.exists(settled.directory.resolve(
+                        ObligationDir.QUESTION)));
     }
 
     /** One earlier worker of this iteration: its question file and the
-     *  NOT_ADMITTED answer it wrote. */
+     *  answer it wrote. */
     private static void answer(Path iteration, String obligationId,
                                String questionFile, String question,
+                               Verdict verdict, String sessionId,
                                String detail) throws IOException {
         Path worker = Files.createDirectories(iteration.resolve(
                 "obligations-0000").resolve(obligationId));
@@ -3394,8 +3401,8 @@ public class ExploreTest {
                 (question + "\n").getBytes(StandardCharsets.UTF_8));
         Files.write(worker.resolve(ObligationDir.RESULT),
                 (RowCodec.toLine(RowCodec.writeObligationResult(
-                        ObligationResult.of(obligationId,
-                                Verdict.NOT_ADMITTED, "", detail))) + "\n")
+                        ObligationResult.of(obligationId, verdict,
+                                sessionId, detail))) + "\n")
                         .getBytes(StandardCharsets.UTF_8));
     }
 

@@ -37,7 +37,7 @@ import java.util.List;
  *   --sessions &lt;dir&gt;          the corpus every wave so far has written
  *   --output-dir &lt;dir&gt;        obligation_result.jsonl, obligation.jsonl,
  *                             obligation_query.smt2, focused_task.jsonl,
- *                             question.txt (a verdict of its own that
+ *                             question.txt (a decided verdict of its own
  *                             settles its question) or question.asked (SAT)
  *   --root-domains &lt;file&gt;     what the CASE says each root may be: the same
  *                             declaration the wave was planned under

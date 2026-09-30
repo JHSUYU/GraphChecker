@@ -143,8 +143,9 @@ public final class ObligationFactory {
         public final List<GapRow> gaps;
         /** The question asked ({@link #question}). */
         public final String question;
-        /** Whether this verdict settles it: a solver's own, or one it
-         *  reused; never a timeout or an undecided solver. */
+        /** Whether this verdict settles it: a solver's own decided one;
+         *  never a timeout, an undecided solver, or a reused answer (the
+         *  obligation it reused settles it). */
         public final boolean settles;
 
         private Outcome(Obligation obligation, ObligationResult result,
@@ -729,8 +730,10 @@ public final class ObligationFactory {
                     + earlier.result.detail();
             gaps.add(GapRow.of(ExploreCodec.EXPLORATION,
                     GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC, id, detail));
+            // Settled by that obligation, never by this one: were it taken
+            // back, a reuse of a reuse would stand on nothing.
             return refused(candidate, earlier.result.verdict(), detail, "",
-                    gaps, question);
+                    gaps, question, false);
         }
         if (!built.ok()) {
             return refused(candidate, Verdict.NOT_ADMITTED,
@@ -784,6 +787,8 @@ public final class ObligationFactory {
         // under EXPLORATION, never BLOCKING in the recording's ledger.
         String nothing = plantsNothing(corpus, candidate, built,
                 answer.values(), planted);
+        // An undecided held query leaves the refusal unsettled.
+        boolean decided = true;
         if (!nothing.isEmpty()) {
             String held = heldToRecording(built);
             String holding = "; with every writer choice held to the "
@@ -794,6 +799,7 @@ public final class ObligationFactory {
             } else {
                 Z3.Answer again = solver.ask(held, built.modelSymbols, false);
                 if (!again.decided()) {
+                    decided = false;
                     nothing += holding + "the solver did not decide ("
                             + again.status() + ")";
                 } else if (!again.sat()) {
@@ -819,7 +825,7 @@ public final class ObligationFactory {
                     GapKind.ADMISSION_GAP, GapClass.DIAGNOSTIC, id,
                     nothing));
             return refused(candidate, Verdict.NOT_ADMITTED, nothing, query,
-                    gaps, question);
+                    gaps, question, decided);
         }
         // The world this flip extends ({@link Corpus.World}): the parent's
         // values are the floor, the model overlays them (model wins), and the
