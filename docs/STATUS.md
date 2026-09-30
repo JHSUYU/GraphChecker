@@ -135,7 +135,12 @@ See Acceptance above. What remains:
 
 - HEAD must read a fresh recording: every case needs a new round.
 - 11741's clock must cross the wire into the DataNode's expiry check.
-- SOLR-18406 needs reference-carried container state and a `ConcurrentHashMap` model (R3).
+- SOLR-18406: on the r5 recording (re-derived offline as r5x) wave 0 decides the reservation's
+  clock flips (`IndexCommitWrapper.delete()#u15`): 3 SAT with a skew of about an hour, where they
+  were UNSAT (a long sum boxed `VInt`, read back `VLong`) and then `unknown` (state variables
+  bound over removal lambdas). The seed path alone never reaches the throw (the anchor's
+  `isDeleted()` and the put loop's read one version of the flag), so COMPOSE needs the replay of
+  such a flip. No round has run on HEAD.
 - SOLR-18413 needs a round on HEAD. Its expiry check flips by the Overseer's clock moving forward:
   the leader's state watcher parses the rule's expiry, so the update that checks it is not where the
   handoff attaches, and a flip query now binds such a handoff by its own run's arms

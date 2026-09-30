@@ -2690,14 +2690,6 @@ public class ExploreTest {
                 restsOn);
         assertTrue("it RESTS ON it, which is what the closure demands: "
                 + restsOn, restsOn.contains(mapState));
-        // And what the state the guard rests on IS: the shape its WRITER
-        // delivers, which is what a query must declare the v_C variable at.
-        // The read row states javaType "L" -- the reference whose state was
-        // read -- so a query that took the sort off the row asserted an
-        // AssocState chain over a Ref and z3 answered the obligation
-        // `(error "Sorts Ref and AssocState are incompatible")`.
-        assertEquals("the writer of the state delivers its shape",
-                "AssocState", lowering.lower("e.map").sort());
         // THE FACTS: what the recording states about the names the guard
         // rests on travels with them.  The map read lowered to an opaque
         // identity, and the recording states that identity was not null --

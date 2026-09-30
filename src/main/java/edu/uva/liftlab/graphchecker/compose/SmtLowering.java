@@ -542,8 +542,7 @@ public final class SmtLowering {
     }
 
     /**
-     * One expression of this session, lowered to text and sort, or a named
-     * refusal; {@link #reference} is the rule, so its definedness is a fact
+     * One expression of this session, lowered to text, or a named refusal; {@link #reference} is the rule, so its definedness is a fact
      * of this lowering ({@link #facts}).  Callers ask
      * {@link #declarations()} for the names it reaches.
      */
@@ -554,7 +553,7 @@ public final class SmtLowering {
         if (value == null) {
             return Lowered.refused("ABSENT_EXPRESSION:" + expressionRef);
         }
-        return new Lowered(value.text, value.sort.smt, lowered);
+        return new Lowered(value.text, lowered);
     }
 
     /**
@@ -566,7 +565,7 @@ public final class SmtLowering {
         Attempt<String> lowered = attempting(() -> statedTerm(term, origin));
         String text = commit(lowered);
         return text.isEmpty() ? Lowered.refused("UNSTATED_TERM:" + origin)
-                : new Lowered(text, "", lowered);
+                : new Lowered(text, lowered);
     }
 
     /**
@@ -673,14 +672,12 @@ public final class SmtLowering {
      */
     public static final class Lowered {
         private final String text;
-        private final String sort;
         private final String refusal;
         /** The texts of the joins a mint or a pin stood in for. */
         private final List<String> dropped;
 
-        private Lowered(String text, String sort, Attempt<?> lowered) {
+        private Lowered(String text, Attempt<?> lowered) {
             this.text = text;
-            this.sort = sort;
             this.refusal = lowered.lowered() ? ""
                     : lowered.refusals().iterator().next();
             this.dropped = lowered.raised == null
@@ -690,7 +687,6 @@ public final class SmtLowering {
 
         private Lowered(String reason) {
             this.text = "";
-            this.sort = "";
             this.refusal = reason;
             this.dropped = Collections.<String>emptyList();
         }
@@ -724,14 +720,6 @@ public final class SmtLowering {
             reach.add(text);
             reach.addAll(dropped);
             return reach;
-        }
-
-        /**
-         * The SMT sort a variable bound to this text must be declared at;
-         * not the row's Java type, which can differ for container state.
-         */
-        public String sort() {
-            return sort;
         }
 
         @Override
@@ -3045,9 +3033,9 @@ public final class SmtLowering {
      * <p>Two outputs: {@code into} is what the term SAYS (recorded names);
      * {@code states} is what it RESTS ON, the read rows behind named
      * container subterms ({@link SharedTerm#states}, the v_C rule of
-     * PIPELINE §7.5).  The closure planner may pass one set for both; the flip
-     * query must not, or it declares a container variable the query never
-     * names.</p>
+     * PIPELINE §7.2): the closure's demand, which may pass one set for
+     * both.  A query binds only what its text says
+     * ({@link #reachedSymbols(Iterable)}).</p>
      */
     public Set<String> reachedSymbols(String text, Set<String> into,
                                       Set<String> states) {
@@ -3056,7 +3044,7 @@ public final class SmtLowering {
     }
 
     /** What these texts SAY, together; what they rest on is not asked. */
-    Set<String> reachedSymbols(Iterable<String> texts) {
+    public Set<String> reachedSymbols(Iterable<String> texts) {
         Set<String> into = new LinkedHashSet<String>();
         for (String text : texts) reachedSymbols(text, into, null);
         return into;
@@ -3078,7 +3066,7 @@ public final class SmtLowering {
             if (SmtNames.BUILTIN.contains(name) || !seen.add(name)) continue;
             SharedTerm shared = sharedByName.get(name);
             if (shared != null) {
-                // v_C (PIPELINE §7.5): a term reaching the dag rests on the
+                // v_C (PIPELINE §7.2): a term reaching the dag rests on the
                 // state it stands for, which its body does not name.
                 if (states != null) states.addAll(shared.states);
                 names.push(SmtNames.names(shared.body).iterator());

@@ -361,8 +361,11 @@ lowered by the one lowering, `compose.SmtLowering`). Each symbol it names gets o
   is the Overseer's clock plus the timeout); with no such arm it is pinned to its recorded arrival.
   Another run's arrival never binds it.
 - READ: the eligible writers (`Arms.stateArms`) become one Bool selector each (`wchoice_*`,
-  exactly one); no writer: pinned to the row's `concreteValue`; neither: refused `UNSTATED_VALUE`. A
-  container state behind a guard is one variable at the sort its writers deliver.
+  exactly one); no writer: pinned to the row's `concreteValue`; neither: refused `UNSTATED_VALUE`.
+  Only reads the text names are variables: a container state behind a guard is inlined by its join
+  (the closure demands its writers, §7.2), so the query declares nothing for it — a variable bound
+  to each writer's state would constrain nothing, and its equalities over states built by removals
+  (lambdas) are outside what z3 decides (`unknown`, "incomplete (theory array)").
 
 An undeclared name in the flipped conjunct refuses the query (`DECLARATION_MISSING`); in a prefix
 conjunct it drops the conjunct (DIAGNOSTIC); a malformed lowered term likewise. A name is declared
