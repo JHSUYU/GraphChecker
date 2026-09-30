@@ -538,7 +538,11 @@ key m's chain names above its exact empty base, where m holds it (`assoc_put_if`
 each component as `assoc_remove_if`'s); a source whose chain bounds no keys is refused by name
 (`ContainerRelation:ASSOCIATIVE:PUT_ALL:source-keys-unstated`), and a view over the result counts
 the source's keys. The presence and match conditions of `putIfAbsent`, `replace` and `remove(k, v)`
-are comparisons of a `READ` with null or the argument, lowered as any comparison.
+are comparisons of a `READ` with null or the argument, lowered as any comparison. A String a map
+answers is its cell's `valueString`, null where the cell is the null cell `(VRef nullRef)`
+(`ContainerStateModel#unboxValue`, `ContainerSmtCodec.Term#nullness`). A view's positions are
+stated linearly in its chain's puts: each position below the size names a present key held at that
+position, and each put key present is held at a position below the size.
 
 **Construction guards** (`Composer#constructionGuards`, R3-REFCONT §1.6, D5). A write that stored a
 container states its `referentState`; its referent rests on every decision its occurrence took
