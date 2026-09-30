@@ -14,6 +14,7 @@ import edu.uva.liftlab.graphchecker.contract.ReadRow;
 import edu.uva.liftlab.graphchecker.contract.SessionReader;
 import edu.uva.liftlab.graphchecker.contract.WriteRow;
 import edu.uva.liftlab.graphchecker.smt.ArtifactIO;
+import edu.uva.liftlab.graphchecker.smt.ExpressionWalk;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.FloatingKind;
 import edu.uva.liftlab.graphchecker.smt.JavaPrimitiveSmtSemantics.IntegralWidth;
@@ -25,6 +26,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -88,6 +90,12 @@ public final class SmtLowering {
         /** The write expression at this location and version, or null. */
         JsonElement writeExpression(String locationKey, long version);
 
+        /** This session's writes of one location, in the order it wrote. */
+        List<WriteRow> writes(String locationKey);
+
+        /** This session's reads of one location, in the order it read. */
+        List<ReadRow> reads(String locationKey);
+
         /**
          * The symbols this session's placeholder rows state for the version
          * a mint created.  No {@code WriteRow} states that version, so rows
@@ -116,6 +124,16 @@ public final class SmtLowering {
         @Override
         public JsonElement writeExpression(String locationKey, long version) {
             return null;
+        }
+
+        @Override
+        public List<WriteRow> writes(String locationKey) {
+            return Collections.<WriteRow>emptyList();
+        }
+
+        @Override
+        public List<ReadRow> reads(String locationKey) {
+            return Collections.<ReadRow>emptyList();
         }
 
         @Override
@@ -188,6 +206,18 @@ public final class SmtLowering {
      * join lowers to its symbol (PIN, {@link #guardedReadTerm}).
      */
     private final Set<String> pins = new LinkedHashSet<String>();
+    /**
+     * The reads a STATE family may bind to another writer's value, as
+     * {@code session|symbol} ({@link #movable}): what is asked through one
+     * is asked of the object it is ({@link #perCandidate}).
+     */
+    private final Set<String> movable = new LinkedHashSet<String>();
+    /** {@code session|location|class} -> {@link #candidates}. */
+    private final Map<String, Map<Long, Candidate>> candidates =
+            new HashMap<String, Map<Long, Candidate>>();
+    /** Candidates with no answer, {@code subject -> why} ({@link #fieldOf}). */
+    private final Map<String, String> candidateUnanswered =
+            new LinkedHashMap<String, String>();
     private final Set<String> integralDomains = new LinkedHashSet<String>();
     private boolean usesJavaIntString;
 
@@ -296,21 +326,27 @@ public final class SmtLowering {
      */
     public static SessionJoin joinOf(final SessionReader session) {
         final Map<String, String> writes = new LinkedHashMap<String, String>();
+        final Map<String, List<WriteRow>> byLocation =
+                new LinkedHashMap<String, List<WriteRow>>();
         for (WriteRow write : session.writes()) {
-            writes.put(locationKey(write.location()) + "#" + write.version(),
-                    write.expressionRef());
+            String key = locationKey(write.location());
+            writes.put(key + "#" + write.version(), write.expressionRef());
+            byLocation.computeIfAbsent(key, held -> new ArrayList<WriteRow>())
+                    .add(write);
         }
-        // A row counts when it states a symbol (its JOIN or PIN binds it):
-        // by mint version, else by the location and version it observed.
+        final Map<String, List<ReadRow>> readsOf =
+                new LinkedHashMap<String, List<ReadRow>>();
+        // A row's symbol counts when it states one (its JOIN or PIN binds
+        // it): by mint version, else by the location and version it saw.
         final Map<Long, Set<String>> minted =
                 new LinkedHashMap<Long, Set<String>>();
         final Map<String, Set<String>> observed =
                 new LinkedHashMap<String, Set<String>>();
         for (ReadRow read : session.reads()) {
-            if (read == null || read.symbol() == null
-                    || read.symbol().isEmpty()) {
-                continue;
-            }
+            if (read == null) continue;
+            readsOf.computeIfAbsent(locationKey(read.location()),
+                    held -> new ArrayList<ReadRow>()).add(read);
+            if (read.symbol() == null || read.symbol().isEmpty()) continue;
             if (read.mintVersion() >= 0L) {
                 add(minted, read.mintVersion(), read.symbol());
             } else if (read.observedVersion() >= 0L) {
@@ -325,6 +361,20 @@ public final class SmtLowering {
                 String ref = writes.get(locationKey + "#" + version);
                 return ref == null ? null
                         : session.expressions().expression(ref);
+            }
+
+            @Override
+            public List<WriteRow> writes(String locationKey) {
+                List<WriteRow> held = byLocation.get(locationKey);
+                return held == null ? Collections.<WriteRow>emptyList()
+                        : held;
+            }
+
+            @Override
+            public List<ReadRow> reads(String locationKey) {
+                List<ReadRow> held = readsOf.get(locationKey);
+                return held == null ? Collections.<ReadRow>emptyList()
+                        : held;
             }
 
             @Override
@@ -951,6 +1001,17 @@ public final class SmtLowering {
     }
 
     /**
+     * Declares one read a STATE family may bind to another writer's value
+     * ({@code ComposedFamilies#stateFamilies}): a field projected through
+     * it is then the field of the object it is ({@link #projection}).
+     */
+    public void movable(String symbol) {
+        if (movable.add(scope + SEPARATOR + symbol)) {
+            memo = new HashMap<MemoKey, Attempt<?>>();
+        }
+    }
+
+    /**
      * Records the read rows' symbols on the named container subterm the
      * read produced, where {@link #reachedSymbols} finds them (the inlined
      * body never names the cell).  A subterm two reads produce carries both.
@@ -1068,6 +1129,254 @@ public final class SmtLowering {
             return free(Sort.VALUE, IntegralWidth.NONE);
         }
         return Term.vm(value.text, sort, value.integralWidth);
+    }
+
+    // ------------------------------------------------------------------
+    // What is asked through an owner a family may re-point.
+    // ------------------------------------------------------------------
+
+    /** A candidate object with no answer ({@link #fieldOf}). */
+    private static final String CANDIDATE_UNANSWERED = "CANDIDATE_UNANSWERED";
+
+    /**
+     * THE MOVE of a field projection ({@link ContainerSmtCodec#field}).  Its
+     * pair states the run's own object and what that object's field held.
+     * Through an owner read a STATE family may re-point ({@link #movable}),
+     * the owner may be another writer's object, and {@code owner.f} is the
+     * field of the object it is ({@link #perCandidate}): the run's cell for
+     * the run's object, each other candidate's as its rows state it
+     * ({@link #fieldOf}).  The run's cell under every arm read one object's
+     * field under another's pairing (SOLR-18406: latestCommit's four
+     * writers, phi on cell 1182#24 whichever one z3 chose).  Through any
+     * other owner the projection is the run's cell, and rests on neither the
+     * owner's read chain nor its refusals.
+     */
+    private ContainerSmtCodec.Term projection(JsonObject access,
+                                              ContainerSmtCodec.Term cell,
+                                              String origin) {
+        JsonElement found = access.get("owner");
+        while (VmExpressionIr.consumerBoundary(found)) {
+            found = found.getAsJsonObject().get(VmExpressionIr.EXPRESSION);
+        }
+        if (!VmRows.GUARDED_READ_TYPE.equals(VmExpressionIr.typeOf(found))) {
+            return cell;
+        }
+        JsonObject read = found.getAsJsonObject();
+        String key = locationKey(JsonFields.object(read, "location"));
+        Set<String> named = join.readSymbols(key, recordedVersion(read));
+        String owner = named.size() == 1 ? named.iterator().next() : "";
+        if (!movable.contains(scope + SEPARATOR + owner)) return cell;
+        Term asked = symbolTerm(symbolNode(owner, "L"), Sort.REF);
+        String ownerClass = optionalString(access, "ownerClass");
+        JsonObject own = asked.sort == Sort.REF
+                ? ownObject(access, ownerClass) : null;
+        if (own == null) {
+            refuse(UNSTATED + ":OwnerCandidates:" + key, "a STATE family "
+                    + "may re-point this owner, and neither its sort nor "
+                    + "the projection's pair names an object, so no case of "
+                    + "it is the run's own");
+            return cell;
+        }
+        Sort sort = VmTermLowering.sortOfContainer(cell.sort);
+        Map<String, Term> answers = new LinkedHashMap<String, Term>();
+        answers.put(symbolTerm(own, Sort.REF).text,
+                Term.vm(cell.text, sort, cell.integralWidth));
+        long run = VmRows.referencedObjectRid(primitiveString(own, "_exp"));
+        String slot = Long.toString(optionalLongInteger(access,
+                "fieldOffset", -1L));
+        for (Map.Entry<Long, Candidate> each
+                : candidates(key, ownerClass).entrySet()) {
+            if (each.getKey() == run) continue;
+            Term field = fieldOf(each.getKey(), slot, each.getValue(), sort,
+                    key, origin);
+            if (field != null) {
+                answers.put(symbolTerm(each.getValue().spelling, Sort.REF)
+                        .text, field);
+            }
+        }
+        return new ContainerSmtCodec.Term(perCandidate(asked.text, answers),
+                cell.sort, cell.integralWidth);
+    }
+
+    /**
+     * THE ANSWER PER CANDIDATE IDENTITY, the one rule for what is asked
+     * through an owner a family may re-point (a field here, a container
+     * query in R3-REFCONT §1.1): {@code (ite (= owner id_1) a_1 ... a_n)},
+     * the first case the run's own object, defined only where the owner is
+     * one of the candidates and that case's answer is defined.  An object
+     * with no answer is no case, so a pairing that delivers it holds by no
+     * free value: fail closed.  Identities of one session are distinct
+     * ({@link #assertIdentitiesDistinct}), so the order decides nothing.
+     */
+    private String perCandidate(String owner, Map<String, Term> answers) {
+        List<Map.Entry<String, Term>> cases =
+                new ArrayList<Map.Entry<String, Term>>(answers.entrySet());
+        List<String> defined = new ArrayList<String>();
+        String value = "";
+        for (int index = cases.size() - 1; index >= 0; index--) {
+            String is = "(= " + owner + " " + cases.get(index).getKey() + ")";
+            Term answer = cases.get(index).getValue();
+            value = value.isEmpty() ? answer.text
+                    : "(ite " + is + " " + answer.text + " " + value + ")";
+            defined.add(0, and(Arrays.asList(is, answer.precondition)));
+        }
+        sideCondition(VmTermLowering.or(defined));
+        return value;
+    }
+
+    /**
+     * The run's own object at one projection, as the VM spells an object:
+     * the owner of the cell {@code concreteValue} read, else
+     * {@code concreteOwner} when it names an object; null when the pair
+     * names neither (a reference expression is not an identity).
+     */
+    private static JsonObject ownObject(JsonObject access,
+                                        String ownerClass) {
+        JsonElement value = access.get("concreteValue");
+        while (VmExpressionIr.consumerBoundary(value)) {
+            value = value.getAsJsonObject().get(VmExpressionIr.EXPRESSION);
+        }
+        if (VmRows.GUARDED_READ_TYPE.equals(VmExpressionIr.typeOf(value))) {
+            JsonObject cell = JsonFields.object(value.getAsJsonObject(),
+                    "location");
+            long rid = optionalLongInteger(cell, "ownerSymRid", -1L);
+            if (rid > 0L && optionalLongInteger(cell, "slot", -1L)
+                    == optionalLongInteger(access, "fieldOffset", -2L)) {
+                return symbolNode("M_L'" + ownerClass + "'_" + rid,
+                        ownerClass);
+            }
+        }
+        JsonElement owner = access.get("concreteOwner");
+        return VmExpressionIr.SYMBOL_TYPE.equals(VmExpressionIr.typeOf(owner))
+                && VmRows.referencedObjectRid(primitiveString(
+                owner.getAsJsonObject(), "_exp")) > 0L
+                ? owner.getAsJsonObject() : null;
+    }
+
+    /**
+     * One object a re-pointable owner may be: its identity as the VM spells
+     * it, and the seq of the first write of the owner's location that
+     * reaches it ({@link #candidates}).
+     */
+    private static final class Candidate {
+        private final JsonObject spelling;
+        private final long firstStored;
+
+        private Candidate(JsonObject spelling, long firstStored) {
+            this.spelling = spelling;
+            this.firstStored = firstStored;
+        }
+    }
+
+    /**
+     * C(r) of a read of one location (R3-REFCONT §1.3): the objects of one
+     * class this session's writes of the location reach, by rid, with the
+     * first write reaching each.  A write reaches what its expression names
+     * and, through each read in it, what the write that read observed
+     * names: a superset of what it stored, so no first store is later than
+     * the true one.  Walked in seq order over one walked set, a node is
+     * credited to the first write reaching it.
+     */
+    private Map<Long, Candidate> candidates(String key, String ownerClass) {
+        return candidates.computeIfAbsent(scope + SEPARATOR + key
+                + SEPARATOR + ownerClass, unused -> {
+            String spelled = "M_L'" + ownerClass + "'_";
+            Map<Long, Candidate> found = new LinkedHashMap<Long, Candidate>();
+            Set<JsonElement> walked = ExpressionWalk.identitySet();
+            List<WriteRow> stores = new ArrayList<WriteRow>(join.writes(key));
+            stores.sort(Comparator.comparingLong(WriteRow::seq));
+            for (WriteRow store : stores) {
+                Deque<JsonElement> roots = new ArrayDeque<JsonElement>();
+                roots.add(join.writeExpression(key, store.version()));
+                while (!roots.isEmpty()) {
+                    for (ExpressionWalk walk = ExpressionWalk.of(roots.pop(),
+                            walked); walk.hasNext(); ) {
+                        JsonObject node = walk.next();
+                        String type = optionalString(node, "_type");
+                        String raw = primitiveString(node, "_exp");
+                        long rid = VmRows.referencedObjectRid(raw);
+                        if (VmExpressionIr.SYMBOL_TYPE.equals(type)
+                                && rid > 0L && raw.startsWith(spelled)) {
+                            found.putIfAbsent(rid,
+                                    new Candidate(node, store.seq()));
+                        } else if (VmRows.GUARDED_READ_TYPE.equals(type)
+                                && observedVersionExpression(node) == null) {
+                            JsonElement written = join.writeExpression(
+                                    locationKey(JsonFields.object(node,
+                                            "location")),
+                                    observedVersion(node));
+                            if (written != null) roots.add(written);
+                        }
+                    }
+                }
+            }
+            return found;
+        });
+    }
+
+    /**
+     * One candidate's field as its rows state it, a value the object held
+     * whenever the owner could be it: the one write of that cell in this
+     * session, made before the owner's location first stored the object;
+     * or, never written, the one value every read of it states at one
+     * version.  Any other cell has no one value an arm delivering the
+     * object reads: null, and named ({@link #candidateUnanswered}).
+     */
+    private Term fieldOf(long rid, String slot, Candidate candidate,
+                         Sort sort, String owner, String origin) {
+        String cell = locationKey(LocationId.of(LocationKind.INSTANCE,
+                Long.toString(rid), slot));
+        List<WriteRow> writes = join.writes(cell);
+        Term field = null;
+        String why;
+        if (writes.isEmpty()) {
+            field = unwritten(cell);
+            why = "no write of it and no one value its reads state";
+        } else if (writes.size() > 1) {
+            why = writes.size() + " writes of it";
+        } else if (writes.get(0).seq() >= candidate.firstStored) {
+            why = "its one write only after " + owner + " stored the object";
+        } else {
+            Attempt<Term> written = attempting(() -> dispatch(
+                    join.writeExpression(cell, writes.get(0).version()), sort,
+                    origin + ":" + cell));
+            if (written.lowered()) field = written.value();
+            why = "its one write, which does not lower to the " + sort
+                    + " the projection reads";
+        }
+        if (field != null && field.sort == sort) return field;
+        candidateUnanswered.put(CANDIDATE_UNANSWERED + ":" + cell + "@"
+                + scope, "a STATE family may re-point " + owner + " to this "
+                + "object, and this session states " + why + ", so no "
+                + "pairing that delivers it is composed");
+        return null;
+    }
+
+    /**
+     * The one value every read of a cell no write of this session touched
+     * states, all at one version, or null ({@link #statedValue}).
+     */
+    private Term unwritten(String cell) {
+        Term stated = null;
+        Set<Long> versions = new LinkedHashSet<Long>();
+        for (ReadRow read : join.reads(cell)) {
+            Term value = statedValue(read.concreteValue(), read.javaType());
+            if (value == null
+                    || stated != null && !stated.text.equals(value.text)) {
+                return null;
+            }
+            stated = value;
+            versions.add(read.observedVersion());
+        }
+        return versions.size() == 1 ? stated : null;
+    }
+
+    /**
+     * Each candidate object with no answer ({@link #fieldOf}), with why:
+     * the pairings delivering it are refused, not composed.
+     */
+    public Map<String, String> candidateUnanswered() {
+        return Collections.unmodifiableMap(candidateUnanswered);
     }
 
     // ------------------------------------------------------------------
@@ -1200,6 +1509,12 @@ public final class SmtLowering {
                 return name(ContainerStateModel.unboxValue(value, javaType,
                         VmTermLowering.unboxedCellSort(
                                 JavaSmtSorts.sortOfJava(javaType)), this));
+            }
+
+            @Override
+            public ContainerSmtCodec.Term projection(
+                    JsonObject access, ContainerSmtCodec.Term cell) {
+                return SmtLowering.this.projection(access, cell, origin);
             }
 
             @Override
@@ -1803,7 +2118,11 @@ public final class SmtLowering {
     }
 
     private static long observedVersion(JsonObject node) {
-        if (!VmRows.joinable(node)) return -1L;
+        return VmRows.joinable(node) ? recordedVersion(node) : -1L;
+    }
+
+    /** The version a read node states it observed, joinable or not. */
+    private static long recordedVersion(JsonObject node) {
         JsonElement observed = node.get(
                 VmRows.OBSERVED_VERSION);
         if (observed == null || observed.isJsonNull()) return -1L;

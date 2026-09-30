@@ -566,6 +566,11 @@ public final class Composer {
                             + ": it is that value, and what it was computed "
                             + "from is not in the formula");
         }
+        for (Map.Entry<String, String> unanswered
+                : lowering.candidateUnanswered().entrySet()) {
+            gap(GapKind.UNSTATED_VALUE, GapClass.DIAGNOSTIC,
+                    unanswered.getKey(), unanswered.getValue());
+        }
 
         // Valuations before the body: the body declares what pins reach.
         List<Valuation> valuations = valuations();
@@ -714,6 +719,9 @@ public final class Composer {
         //     asserted here.
         stateJoins(session, reached.keySet(), relevant, rows, refusals,
                 joined, joins, answered);
+        //     A field projected through one a STATE family may re-point is
+        //     the field of the object it is ({@link SmtLowering#movable}).
+        for (ReadRow read : joined) lowering.movable(read.symbol());
 
         // (4) pi_p: decisions STRICTLY BEFORE the target's seq.  The anchor
         //     decision shares the target's seq; including it would

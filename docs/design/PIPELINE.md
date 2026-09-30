@@ -441,6 +441,24 @@ observed arm, else the one writer every read observed) is part of the path's rec
 location where no arm is that pairing (the reads saw two writes, or the write they saw has no arm)
 is a BLOCKING `UNSTATED_VALUE`: the run as it happened is no world of the formula.
 
+**A field through a re-pointable owner** (`SmtLowering#projection`, reached from the codec's
+`Host.projection`). A field projection whose pair (`concreteOwner`/`concreteValue`) is stated
+lowers to the run's cell, except through an owner that is a read `stateJoins` joined at the anchor
+(`SmtLowering#movable`: a state family may bind it to another writer's object). There it is the
+field of the object the owner is, by the one rule for what is asked through such an owner
+(`perCandidate`, R3-REFCONT's "answer per candidate identity"):
+`(ite (= owner id_run) cell_run (ite (= owner id_k) cell_k ...))`, conjoined with "the owner is one
+of these, and that case is defined". The run's object is the owner of the cell `concreteValue`
+read, else `concreteOwner` when it spells an object; a pair naming neither refuses the path
+(`UNSTATED_VALUE:OwnerCandidates:<location>`). The other candidates (`candidates`, C(r)) are the
+objects of the projection's class that this session's writes of the owner's location reach, through
+the reads in them. A candidate's cell (`fieldOf`) is the one write of it in the session, made
+before the location first stored the object, or, never written, the one value every read of it
+states at one version. A candidate with no such cell is no case, so the arms delivering it are
+refused, and it is named DIAGNOSTIC `CANDIDATE_UNANSWERED:<cell>@<session>`. EXPLORE lowers through
+the same rule; its owners are never movable (a joined reference read is inlined), so a projection
+there is the run's cell.
+
 **Roots and clocks.** `domains`: a declared MARKER is free; a root the sessions recorded differently is
 stated per path; a domain from `root-domains.jsonl` (absolute or `±k` from the recording) or the mint
 is a window; otherwise the root is pinned. `clocks`: every clock cell the formula names gets a

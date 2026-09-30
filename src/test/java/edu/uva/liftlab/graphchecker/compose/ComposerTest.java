@@ -1991,6 +1991,132 @@ public class ComposerTest {
     }
 
     @Test
+    public void aFieldThroughAMovedOwnerIsTheFieldOfTheObjectItIs()
+            throws Exception {
+        // SOLR-18406's latestCommit: two writers each build a commit, store
+        // it and a flag as one block; phi reads the generation THROUGH the
+        // reference.  The run read commit 11 (generation 5) and the healthy
+        // flag.  Moved to the other writer, phi reads commit 12's
+        // generation, never 11's: 3 is no witness, 7 is one, whether a write
+        // before the store states it or, never written, a read of it.  A
+        // cell with no one value while 12 was stored -- written twice, or
+        // only after the store -- answers nothing: that pairing is refused
+        // by name.
+        String commit = "org/apache/Commit";
+        LocationId latest = LocationId.of(LocationKind.INSTANCE, "8", "48");
+        LocationId flag = LocationId.of(LocationKind.INSTANCE, "8", "56");
+        LocationId own = LocationId.of(LocationKind.INSTANCE, "11", "24");
+        LocationId other = LocationId.of(LocationKind.INSTANCE, "12", "24");
+        for (Object[] each : new Object[][]{
+                {3L, "written", ClaimKind.NO_SUPPORTED_WITNESS},
+                {7L, "written", ClaimKind.STATE_PAIRING_FLIPPED},
+                {7L, "read", ClaimKind.STATE_PAIRING_FLIPPED},
+                {7L, "twice", ClaimKind.NO_SUPPORTED_WITNESS},
+                {7L, "late", ClaimKind.NO_SUPPORTED_WITNESS}}) {
+            long generation = (Long) each[0];
+            String row = generation + " " + each[1];
+            Path iteration = folder.newFolder("moved-owner-" + generation
+                    + "-" + each[1]).toPath();
+            OccurrenceAddress reader = occurrence("case/leader",
+                    "REGION.fetch", CausalContext.of(Role.of("DATA_XCEIVER"),
+                            "", 1), frame("Stream#write#4", 0));
+            OccurrenceAddress mine = occurrence("case/leader",
+                    "REGION.commit", CausalContext.of(Role.of("IPC_HANDLER"),
+                            "", 1), frame("Policy#onCommit#2", 0));
+            OccurrenceAddress theirs = occurrence("case/leader",
+                    "REGION.init", CausalContext.of(Role.of("HEARTBEAT_TICK"),
+                            "", 1), frame("Policy#onInit#9", 0));
+            Session session = new Session(iteration, "s0", false);
+            session.occurrence = reader;
+            session.activation(reader);
+            session.activation(mine);
+            session.activation(theirs);
+            session.expression("EXPR.v1.theirs",
+                    symbol("M_L'" + commit + "'_12", commit));
+            session.expression("EXPR.v1.mine",
+                    symbol("M_L'" + commit + "'_11", commit));
+            session.expression("EXPR.v1.five", integer("I", 5L));
+            session.expression("EXPR.v1.true", constant("true"));
+            session.expression("EXPR.v1.false", constant("false"));
+            session.expression("EXPR.v1.generation",
+                    integer("I", generation));
+            // The other writer first: it builds commit 12, then stores it.
+            long version = 0L;
+            for (int index = 0; index < ("twice".equals(each[1]) ? 2
+                    : "written".equals(each[1]) ? 1 : 0); index++) {
+                session.write(Endpoint.of(theirs, "Commit#init#3:WRITE",
+                        at("generation#" + index, 0), 0), other, ++version,
+                        "EXPR.v1.generation");
+            }
+            if ("read".equals(each[1])) {
+                session.read(Endpoint.of(theirs, "Commit#get#2:READ",
+                        at("generation#0", 0), 0), other, 99L,
+                        SmtLowering.locationKey(other) + "@v99@s0", "I",
+                        Long.toString(generation));
+            }
+            session.write(Endpoint.of(theirs, "Policy#update#4:WRITE",
+                    at("latest#1", 0), 0), latest, ++version,
+                    "EXPR.v1.theirs");
+            session.write(Endpoint.of(theirs, "Policy#update#5:WRITE",
+                    at("flag#1", 0), 0), flag, ++version, "EXPR.v1.true");
+            if ("late".equals(each[1])) {
+                session.write(Endpoint.of(theirs, "Commit#set#6:WRITE",
+                        at("generation#0", 0), 0), other, ++version,
+                        "EXPR.v1.generation");
+            }
+            // Then the writer whose versions the reader observed.
+            long constructed = ++version;
+            session.write(Endpoint.of(mine, "Commit#init#3:WRITE",
+                    at("generation#9", 0), 0), own, constructed,
+                    "EXPR.v1.five");
+            long stored = ++version;
+            session.write(Endpoint.of(mine, "Policy#update#4:WRITE",
+                    at("latest#2", 0), 0), latest, stored, "EXPR.v1.mine");
+            long flagged = ++version;
+            session.write(Endpoint.of(mine, "Policy#update#5:WRITE",
+                    at("flag#2", 0), 0), flag, flagged, "EXPR.v1.false");
+            session.read(Endpoint.of(reader, "Stream#latest#6:READ",
+                    at("read#1", 0), 0), latest, stored,
+                    SmtLowering.locationKey(latest) + "@v" + stored + "@s0",
+                    "L", null);
+            session.read(Endpoint.of(reader, "Stream#flag#7:READ",
+                    at("read#2", 0), 0), flag, flagged,
+                    SmtLowering.locationKey(flag) + "@v" + flagged + "@s0",
+                    "Z", null);
+            // The VM's pair: concreteValue is the run's cell, 11#24.
+            JsonObject owner = read("INSTANCE_FIELD", 8L, 48L, stored, "L");
+            session.expression("EXPR.00000000000000f1", binary(">",
+                    fieldRead(commit, 24L, "I", owner, read("INSTANCE_FIELD",
+                            11L, 24L, constructed, "I")),
+                    integer("I", 4L)));
+            session.expression("EXPR.00000000000000f2", read("INSTANCE_FIELD",
+                    8L, 56L, flagged, "Z"));
+            session.target("(and EXPR.00000000000000f1 EXPR.00000000000000f2)",
+                    false, true);
+            session.write();
+
+            Composer.Composition composition = Composer.compose(
+                    Corpus.read(iteration, null), reader,
+                    Collections.<String,
+                            edu.uva.liftlab.graphchecker.contract.RootDomain>
+                            emptyMap(), 4);
+            assertTrue(row + ": the other writer is an alternative",
+                    composition.body().contains("state_family__"));
+            ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
+                    solver());
+            assertEquals(row, each[2], decision.claim().kind());
+            boolean named = false;
+            for (GapRow gap : composition.gaps()) {
+                named |= gap.subject().equals("CANDIDATE_UNANSWERED:"
+                        + SmtLowering.locationKey(other) + "@s0");
+            }
+            assertEquals(row + ": a cell with no one value is named",
+                    each[2] == ClaimKind.NO_SUPPORTED_WITNESS
+                            && generation == 7L, named);
+        }
+    }
+
+    @Test
     public void anRpcHandlersChainGoesOnThroughTheSenderItsActivationPlaces()
             throws Exception {
         Path iteration = folder.newFolder("sender").toPath();
@@ -4009,9 +4135,16 @@ public class ComposerTest {
     private static JsonObject fieldRead(String ownerClass, long offset,
                                         JsonObject owner,
                                         JsonObject concreteValue) {
+        return fieldRead(ownerClass, offset, "L", owner, concreteValue);
+    }
+
+    /** The same, of a field of this Java type. */
+    private static JsonObject fieldRead(String ownerClass, long offset,
+                                        String javaType, JsonObject owner,
+                                        JsonObject concreteValue) {
         JsonObject node = new JsonObject();
         node.addProperty("_type", "FieldAccessExpression");
-        node.addProperty("_java_type", "L");
+        node.addProperty("_java_type", javaType);
         node.addProperty("ownerClass", ownerClass);
         node.addProperty("fieldOffset", offset);
         node.add("owner", owner);

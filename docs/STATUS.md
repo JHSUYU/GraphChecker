@@ -109,6 +109,7 @@ token-expiry checks, which were judged to be HDFS's clock-sync assumption, not b
 | Static, float and double fields | not done | `CausynthStaticFacts#versionableField` | — |
 | Guarded concrete stores | containers only | `gc/runtime/GuardedStoreSites#of`; VM `containerSupport` | A guarded concrete store to a scalar field or an array element starts no log. |
 | STATE families at COMPOSE | partial | `gc/compose/Composer`, `ComposedFamilies#stateFamilies`, `Arms#stateArms` (the observed writer's arm is the write its reads saw; a location whose reads no one arm states is a BLOCKING `UNSTATED_VALUE`) | Only for reads at the anchor occurrence, only from writers in the same session, and never for a class-owned location. Location owners are per-run VM ids (`gc/contract/LocationId`), so no state joins across sessions. `cone.py` does not follow writer families. No run has produced a STATE_PAIRING witness. |
+| A field read through a reference a STATE family re-points | partial | `gc/compose/SmtLowering#projection`, `#perCandidate`, `#candidates`, `#fieldOf` | Only when the owner is the anchor read itself; an owner reached through an inlined chain (a symbolic list index) keeps the run's cell. A candidate's field is answered only by one write before the object was stored or, never written, by reads stating one value; a field mutated after publication (R3-REFCONT §1.4) refuses its arms (`CANDIDATE_UNANSWERED`). Only objects of exactly the run object's class. |
 
 ## R4. Large-scale ad-hoc checks on HDFS and Solr
 
