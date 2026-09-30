@@ -229,7 +229,8 @@ field=<f> <subject>`.
   `pi_q ∧ guard_q ∧ v_H = e_q`; `guardRoots` = only the roots `e_q` depends on; `attested` = the
   producer's session has an instrumented activation for it, so it states a path condition.
 - `Family(interactionId, arms)`: the arms one interaction's consumer could have received.
-- `PathEntry(pathId, sessionId, selector, fatalObserved)`: one composed path and its selector.
+- `PathEntry(pathId, sessionId, selector, fatalObserved, restsOn)`: one composed path, its selector,
+  and the tracked locations its fatal predicate rests on (what a confirming run is held to).
 - `RootDomain(rootId, kind, recordedValue, min, max)`: absolute bounds, both null = pinned.
   `RootDomain.declared(file)` is the one reader of `root-domains.jsonl` (rows `{sourceId,
   declaredDomainMin, declaredDomainMax}`, each absolute or `+k`/`-k` from the recorded value; no file

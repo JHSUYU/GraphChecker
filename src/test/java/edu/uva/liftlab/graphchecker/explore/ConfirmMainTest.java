@@ -212,12 +212,19 @@ public class ConfirmMainTest {
     }
 
     private Path manifest() throws Exception {
+        return manifest("INSTANCE/1#40", "INSTANCE/8#16", "MAP/20#-3",
+                "MAP/30#-3");
+    }
+
+    /** The composition manifest, its selected path resting on these. */
+    private Path manifest(String... restsOn) throws Exception {
         Path file = Files.createTempFile(folder.getRoot().toPath(),
                 "manifest", ".json");
         Files.write(file, ("{\"kind\":\"COMPOSITION_MANIFEST\",\"paths\":["
                 + "{\"pathId\":\"p1\",\"sessionId\":\"sel\","
                 + "\"selector\":\"path_selector__1__abc\","
-                + "\"fatalObserved\":true},"
+                + "\"fatalObserved\":true,\"restsOn\":"
+                + new com.google.gson.Gson().toJson(restsOn) + "},"
                 + "{\"pathId\":\"p2\",\"sessionId\":\"other\","
                 + "\"selector\":\"path_selector__2__zzz\","
                 + "\"fatalObserved\":false}],\"roots\":["
@@ -528,6 +535,17 @@ public class ConfirmMainTest {
         assertEquals(anchor.id(),
                 edges.get("ANCHOR").get("occurrence").getAsString());
         assertEquals(40L, edges.get("ANCHOR").get("seq").getAsLong());
+        // A join at a location the fatal does not rest on is no edge: under
+        // the moved root the run may read it elsewhere or not at all.
+        Path unheld = folder.newFolder("unheld").toPath();
+        ConfirmMain.write(iteration, claim("M_J_clock.sel"),
+                manifest("MAP/20#-3"), unheld);
+        for (JsonObject edge : RowCodec.readJsonl(
+                unheld.resolve(Confirmation.FILE))) {
+            assertTrue(edge.toString(), !"STATE".equals(edge.get("kind")
+                    .getAsString()) && !"ORDER".equals(edge.get("kind")
+                    .getAsString()));
+        }
 
         // A model that moved the clock elsewhere (DECIDE leaves clocks free)
         // is the world handed over, as the skew off that session's reading.
