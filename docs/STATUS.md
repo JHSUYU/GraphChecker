@@ -119,6 +119,7 @@ token-expiry checks, which were judged to be HDFS's clock-sync assumption, not b
 | Select and annotate checks | done | `tools/adhoc/select.py`, `annotate.py` | Ranks the guard's text, not what the engine can make symbolic. A check needs a source annotation and a tree rebuild, done by hand. |
 | Fan out over ten lifts under a memory gate | done | `tools/adhoc/sweep.sh`, `fanout.sh`; `run_engine.sh` host ledger `~/gc-out/hosts` | Heads are gated on `MemAvailable` only, outside the ledger. A one-obligation wave always starts on the first listed host (`campaign_worker_slot_hosts`). |
 | Time bounds | partial | case budget 5400 s (`sweep.sh`); obligation replay 2400 s | The seed recording and the seed replay have no wall-clock bound. |
+| Replay schedule stalls | done | `gc/runtime/ScheduleLog#watchdogLocked`, `#computingLocked` | Only the CPU of threads bound to the stalled slots' contexts defers a give-up, so a never-coming event costs a timeout plus a 2 s grace, not eight timeouts twice (s49: 17 stalls of 120 s). A thread computing toward a context's first event is not bound yet and does not count. |
 | Stop at a first fatal | partial | `region_path_stop_at_fatal` (`gc/explore/ExploreMain`) | Only `solr-adhoc` sets it. |
 | One recording per workload for several checks | not done | — | Each check × workload repeats SEED, INSTRUMENT and the seed replay. |
 | Triage | partial | `tools/adhoc/triage.py` | REFUTED can never fire, because EMIT publishes `SAT_UNCONFIRMED`. `UNSAT_CLOSED` is folded into NO_WITNESS. Timeouts and dead cases have no class. |

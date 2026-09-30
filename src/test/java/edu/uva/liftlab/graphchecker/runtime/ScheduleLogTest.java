@@ -1446,25 +1446,88 @@ public class ScheduleLogTest {
                 .contains(" 1 passed by their own occurrence"));
     }
 
+    /**
+     * Computing is progress only on a thread that owes the stalled slot: one
+     * whose last event stood in x's context.  The same computation on a
+     * thread no event bound (a store notification's parse, the result
+     * publication) is no one's progress, and x is given up after a timeout.
+     */
     @Test
-    public void aComputingRunIsNoStall() throws Exception {
-        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "300");
-        ScheduleLog.enforceForTests(Arrays.asList(
-                event(ScheduleEvent.Kind.SEND, "x"),
-                event(ScheduleEvent.Kind.WAKE, "tick.d")));
-        Thread daemon = observer(ScheduleEvent.Kind.WAKE, "tick.d");
-        // The thread that makes x computes for well past the timeout.
-        long until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(1800L);
+    public void onlyTheThreadThatOwesTheStalledSlotComputesForIt()
+            throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "600");
+        for (final boolean owes : new boolean[] {true, false}) {
+            restart();
+            String row = owes ? "the thread that made w computes"
+                    : "a thread no event bound computes";
+            ScheduleLog.enforceForTests(Arrays.asList(
+                    event(ScheduleEvent.Kind.SEND, "w"),
+                    event(ScheduleEvent.Kind.SEND, "x"),
+                    event(ScheduleEvent.Kind.WAKE, "tick.d")));
+            if (!owes) ScheduleLog.observe(ScheduleEvent.Kind.SEND, "w");
+            Thread worker = new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    if (owes) ScheduleLog.observe(ScheduleEvent.Kind.SEND, "w");
+                    spin(3500L);
+                    ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
+                }
+            });
+            worker.start();
+            Thread daemon = observer(ScheduleEvent.Kind.WAKE, "tick.d");
+            worker.join(10000L);
+            daemon.join(10000L);
+            assertFalse(row, worker.isAlive() || daemon.isAlive());
+            assertEquals(row, owes ? Arrays.asList("w", "x", "tick.d")
+                    : Arrays.asList("w", "tick.d", "x"), sites());
+            assertTrue(row + ": " + ScheduleLog.progress(),
+                    ScheduleLog.progress().contains(
+                            owes ? " 0 given up" : " 1 given up"));
+        }
+    }
+
+    /**
+     * An event that never comes costs a timeout, then a grace after the
+     * waits held at the cut are let go -- not {@link ScheduleLog#CEILING}
+     * timeouts twice over while a thread that owes nothing computes.
+     */
+    @Test(timeout = 30000L)
+    public void aNeverComingEventCostsATimeoutAndAGrace() throws Exception {
+        System.setProperty(ScheduleLog.TIMEOUT_PROPERTY, "1000");
+        ScheduleLog.enforceForTests(prefix("never", "y"));
+        final boolean[] stop = new boolean[1];
+        Thread busy = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                while (!stop[0]) spin(50L);
+            }
+        });
+        busy.start();
+        long before = System.nanoTime();
+        Thread held = observer(ScheduleEvent.Kind.WAKE, "tick.idle");
+        Thread y = observer(ScheduleEvent.Kind.SEND, "y");
+        y.join(20000L);
+        long took = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before);
+        stop[0] = true;
+        busy.join();
+        held.join(5000L);
+        assertFalse(y.isAlive() || held.isAlive());
+        assertTrue("a timeout, then the let-go's grace: " + took,
+                took >= 1000L + ScheduleLog.LET_GO_GRACE_MS);
+        assertTrue("well inside the ceiling: " + took,
+                took < ScheduleLog.CEILING * 1000L - 500L);
+        assertEquals(Arrays.asList("tick.idle", "y"), sites());
+        String progress = ScheduleLog.progress();
+        assertTrue(progress, progress.contains(" 1 given up"));
+        assertTrue(progress, progress.contains("1 of them let go"));
+    }
+
+    /** Burns this thread's CPU for {@code millis}. */
+    private static void spin(long millis) {
+        long until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(millis);
         long sink = 0L;
         while (System.nanoTime() < until) sink += System.nanoTime() % 7L;
         assertTrue(sink >= 0L);
-        assertTrue("the daemon still waits: computing is progress",
-                daemon.isAlive());
-        ScheduleLog.observe(ScheduleEvent.Kind.SEND, "x");
-        daemon.join(5000L);
-        assertFalse(daemon.isAlive());
-        assertEquals(Arrays.asList("x", "tick.d"), sites());
-        assertTrue(ScheduleLog.progress(), ScheduleLog.progress().contains(" 0 given up"));
     }
 
     @Test

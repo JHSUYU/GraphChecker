@@ -247,10 +247,16 @@ order:
   before the cut, or a `WAKE` slot anywhere, is held until every earlier slot is settled;
   `INTERRUPT` is never held;
 - settling: a closed occurrence's untaken slots are dead; a turn's `END` gives up what the turn did
-  not do; a waiter gives up what its own occurrence did not make before its slot; the watchdog,
-  after `causynth.schedule.timeout.ms` (default 15 s) with waiters and no computing thread, gives
-  up every open slot before the earliest waiter; a stall of eight timeouts is given up whatever the
-  CPU does; after two give-ups past the cut the rest is released. Each give-up is a
+  not do; a waiter gives up what its own occurrence did not make before its slot; the watchdog
+  acts after `causynth.schedule.timeout.ms` (default 15 s) with waiters, no slot settled, and none
+  of the threads that owe the stalled slots computing, or after eight timeouts whatever they do.
+  A thread owes a slot when its last event stood in the slot's context, or in work that context
+  handed on (`context|…`), and it neither waits nor polls past what the order holds
+  (`ScheduleLog#computingLocked`); the result publication, store-notification work and threads
+  no event bound never count. The watchdog first lets the waits held at the cut go; a grace
+  (`LET_GO_GRACE_MS`, 2 s) later it gives up every open slot before the earliest waiter. A let-go
+  does not restart the stall's clock, so an event that never comes costs a timeout and a grace.
+  After two give-ups past the cut the rest is released. Each let-go and give-up is a
   `SCHEDULE_DIVERGED` DIAGNOSTIC row;
 - an obligation's replay is held to the schedule of the session whose path it flips, cut at its
   target occurrences (`explore/ObligationSolverMain`, `SchedulePrefix#write`), and inherits that

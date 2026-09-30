@@ -49,10 +49,12 @@ import java.util.concurrent.TimeUnit;
  * dead; a turn's END gives up what the turn did not do; a WAITER gives up
  * what its own occurrence, in its own context, did not make before its slot
  * (one thread, in program order, now past them); the WATCHDOG, after
- * a timeout with waiters and no computing, gives up every open slot before
- * the earliest waiter.  A given-up slot is still taken if its event comes
- * late; a dead one is not.  {@link #REST_STALLS} and {@link #CEILING} bound
- * how long the order can hold a run.</p>
+ * a timeout with waiters and none of the threads that owe the slots before
+ * the earliest waiter computing, first lets the waits held without a slot
+ * go, then, a grace later, gives up every open slot before the earliest
+ * waiter.  A given-up slot is still taken if its event comes late; a dead
+ * one is not.  {@link #REST_STALLS} and {@link #CEILING} bound how long the
+ * order can hold a run.</p>
  *
  * <p>One lock for both halves: the written order IS the admitted order.</p>
  */
@@ -79,8 +81,8 @@ public final class ScheduleLog {
     /** An event that waits nowhere: it is written now. */
     private static final int GO = -2;
 
-    /** How long a let-go wait has to make progress before the watchdog
-     *  gives slots up after all. */
+    /** How long the waits a let-go released have to make progress before
+     *  the watchdog acts again: the stall it answered stands meanwhile. */
     static final long LET_GO_GRACE_MS = 2000L;
 
     /** A stall this many timeouts long is given up whatever the CPU does. */
@@ -142,6 +144,15 @@ public final class ScheduleLog {
     private static final ThreadLocal<Boolean> VACANT = new ThreadLocal<Boolean>();
     /** Whether the watchdog let the cut's waits go since a slot was taken. */
     private static boolean letGoSinceProgress;
+    /** When the watchdog last let waits go: its grace runs from here. */
+    private static long letGoAt;
+    /**
+     * Per thread, the context of the last event it made under the order,
+     * and whether that event was a WAKE no slot held: the thread is then a
+     * poll past what the order holds, and its CPU is no one's progress.
+     */
+    private static final Map<Thread, Bound> BOUND =
+            new java.util.WeakHashMap<Thread, Bound>();
     private static int firstOpen;
     /**
      * The first open slot in a later event's way; an open WAKE never is,
@@ -168,6 +179,17 @@ public final class ScheduleLog {
     private static boolean computing;
 
     private ScheduleLog() {
+    }
+
+    /** What a thread's last admitted event says about it ({@link #BOUND}). */
+    private static final class Bound {
+        private final String context;
+        private final boolean polling;
+
+        private Bound(String context, boolean polling) {
+            this.context = context;
+            this.polling = polling;
+        }
     }
 
     // ---- recording -------------------------------------------------------
@@ -358,8 +380,7 @@ public final class ScheduleLog {
                     if (at == GO) {
                         WAITERS.remove(self);
                         if (slot < 0) return Turn.FREE;
-                        takeLocked(slot);
-                        appendLocked(wake.event);
+                        admittedLocked(wake.event, slot);
                         return Turn.ADMITTED;
                     }
                     // Not due: a signal still ends the wait meanwhile.
@@ -538,16 +559,11 @@ public final class ScheduleLog {
                 int slot = slotOf(event);
                 int at = waitsAtLocked(event, slot);
                 if (at == GO) {
-                    if (slot < 0) {
-                        ranFree++;
-                        if (event.kind == ScheduleEvent.Kind.WAKE
-                                && LET_GO.contains(self)) {
-                            VACANT.set(Boolean.TRUE);
-                        }
-                    } else {
-                        takeLocked(slot);
+                    if (slot < 0 && event.kind == ScheduleEvent.Kind.WAKE
+                            && LET_GO.contains(self)) {
+                        VACANT.set(Boolean.TRUE);
                     }
-                    appendLocked(event);
+                    admittedLocked(event, slot);
                     return;
                 }
                 WAITERS.put(self, at);
@@ -558,13 +574,26 @@ public final class ScheduleLog {
             // The workload's interrupt is its own; the event still takes
             // its slot.
             Thread.currentThread().interrupt();
-            int slot = slotOf(event);
-            if (slot >= 0) takeLocked(slot);
-            appendLocked(event);
+            admittedLocked(event, slotOf(event));
         } finally {
             WAITERS.remove(self);
             LET_GO.remove(self);
         }
+    }
+
+    /**
+     * Writes an event the order admitted, into {@code slot} or free (-1),
+     * and binds its thread to its context ({@link #BOUND}).
+     */
+    private static void admittedLocked(Pending event, int slot) {
+        if (slot >= 0) {
+            takeLocked(slot);
+        } else {
+            ranFree++;
+        }
+        appendLocked(event);
+        BOUND.put(Thread.currentThread(), new Bound(event.context,
+                slot < 0 && event.kind == ScheduleEvent.Kind.WAKE));
     }
 
     /**
@@ -794,22 +823,32 @@ public final class ScheduleLog {
         }
     }
 
-    /** The watchdog, run by a waiter: true when it settled something. */
+    /**
+     * The watchdog, run by a waiter: true when it settled something or let
+     * waits go.  A stall is a timeout with no slot settled and none of the
+     * threads that owe the slots before the earliest waiter computing
+     * ({@link #computingLocked}), or {@link #CEILING} timeouts whatever they
+     * do; both are measured from the stall's start, which a let-go does not
+     * move.  Its first answer lets the waits held at the cut go; a grace
+     * later, the slots before the earliest waiter are given up.
+     */
     private static boolean watchdogLocked() {
         if (WAITERS.isEmpty()) return false;
         long now = System.currentTimeMillis();
         long timeout = timeoutMillis();
         long idle = now - lastProgress;
-        if (idle < timeout) return false;
-        if (idle < CEILING * timeout && computingLocked(now)) return false;
-        if (!letGoSinceProgress && WAITERS.containsValue(AT_THE_CUT)) {
-            letGoAtTheCutLocked(idle);
-            return true;
-        }
+        if (idle < timeout || now - letGoAt < LET_GO_GRACE_MS) return false;
         // An AT_THE_CUT waiter bounds a give-up at the cut.
         int earliest = Integer.MAX_VALUE;
         for (int slot : WAITERS.values()) {
             earliest = Math.min(earliest, slot == AT_THE_CUT ? cut : slot);
+        }
+        if (idle < CEILING * timeout && computingLocked(now, earliest)) {
+            return false;
+        }
+        if (!letGoSinceProgress && WAITERS.containsValue(AT_THE_CUT)) {
+            letGoAtTheCutLocked(idle, now);
+            return true;
         }
         boolean atTheCut = WAITERS.containsValue(AT_THE_CUT)
                 && earliest == cut;
@@ -859,9 +898,10 @@ public final class ScheduleLog {
      * run idle, a wait the recording never made -- a pool thread's, a loop
      * one turn longer than recorded -- may be what the order's next event is
      * behind, and giving the order up to the cut settles nothing that holds
-     * it.  Its event runs free.
+     * it.  Its event runs free.  The stall stands: the waits let go have
+     * {@link #LET_GO_GRACE_MS}, not another timeout, to make progress.
      */
-    private static void letGoAtTheCutLocked(long idle) {
+    private static void letGoAtTheCutLocked(long idle, long now) {
         String held = heldAtTheCutLocked();
         int count = 0;
         for (Map.Entry<Thread, Integer> waiter : WAITERS.entrySet()) {
@@ -871,17 +911,13 @@ public final class ScheduleLog {
         }
         letGo += count;
         letGoSinceProgress = true;
-        // The run was idle a whole timeout already: the waits let go have a
-        // grace, not another timeout, to make progress.
-        long now = System.currentTimeMillis();
+        letGoAt = now;
         stateLocked("schedule-let-go#" + firstOpen, count + " wait(s) held at"
                 + " the cut (" + held + ") for " + idle + " ms with the run"
                 + " idle, while " + (firstOpen < order.size()
                         ? order.get(firstOpen).render() : "nothing")
                 + " at slot " + firstOpen + " did not happen: they are let"
                 + " go before any slot is given up");
-        lastProgress = now - Math.max(0L, timeoutMillis() - LET_GO_GRACE_MS);
-        cpuSampledAt = 0L;
         LOCK.notifyAll();
     }
 
@@ -896,25 +932,43 @@ public final class ScheduleLog {
     }
 
     /**
-     * Whether non-waiting threads used at least half a CPU since the last
-     * look: the slow concolic VM computing is progress, not a stall.
+     * Whether the threads that owe the order's next events used at least
+     * half a CPU since the last look: the slow concolic VM computing toward
+     * them is progress, not a stall.  They are the threads whose last event
+     * stood in a context owning an open non-WAKE slot before {@code
+     * earliest}, or in work such a context handed on ({@link #owes}), and
+     * that neither wait nor poll past what the order holds ({@link #BOUND}).
+     * Nothing else counts: the result publication ({@code causynth-*}
+     * threads make no event), a store notification's parse, a thread no
+     * event bound, a loop polling past its recorded count.
      */
-    private static boolean computingLocked(long now) {
+    private static boolean computingLocked(long now, int earliest) {
         if (cpuSampledAt != 0L && now - cpuSampledAt < CPU_SAMPLE_MS) {
             return computing;
         }
+        Set<String> owners = new HashSet<String>();
+        for (int index = firstBlocking;
+             index < Math.min(earliest, state.length); index++) {
+            if (state[index] == OPEN
+                    && order.get(index).kind() != ScheduleEvent.Kind.WAKE) {
+                owners.add(order.get(index).context());
+            }
+        }
         ThreadMXBean threads = ManagementFactory.getThreadMXBean();
-        Set<Long> waiting = new HashSet<Long>();
-        for (Thread thread : WAITERS.keySet()) waiting.add(thread.getId());
         Map<Long, Long> seen = new HashMap<Long, Long>();
         long used = 0L;
-        for (long id : threads.getAllThreadIds()) {
-            long cpu = threads.getThreadCpuTime(id);
+        for (Map.Entry<Thread, Bound> bound : BOUND.entrySet()) {
+            Thread thread = bound.getKey();
+            if (bound.getValue().polling || WAITERS.containsKey(thread)
+                    || !owes(bound.getValue().context, owners)) {
+                continue;
+            }
+            long cpu = threads.getThreadCpuTime(thread.getId());
             if (cpu < 0L) continue;
-            seen.put(id, cpu);
-            if (waiting.contains(id)) continue;
-            Long before = CPU_SEEN.get(id);
-            used += cpu - (before == null ? 0L : before);
+            seen.put(thread.getId(), cpu);
+            // A thread first counted now has no span measured yet.
+            Long before = CPU_SEEN.get(thread.getId());
+            if (before != null) used += cpu - before;
         }
         boolean first = cpuSampledAt == 0L;
         long span = now - cpuSampledAt;
@@ -924,6 +978,19 @@ public final class ScheduleLog {
         computing = first
                 || used * 2L >= TimeUnit.MILLISECONDS.toNanos(span);
         return computing;
+    }
+
+    /**
+     * Whether {@code context} is one of {@code owners}, or work one of them
+     * handed on: its context extended by handoffs ({@link #contextOf}).
+     */
+    private static boolean owes(String context, Set<String> owners) {
+        if (owners.contains(context)) return true;
+        for (int bar = context.indexOf('|'); bar > 0;
+             bar = context.indexOf('|', bar + 1)) {
+            if (owners.contains(context.substring(0, bar))) return true;
+        }
+        return false;
     }
 
     /** One SCHEDULE_DIVERGED statement, on the session and on stderr. */
@@ -1004,6 +1071,8 @@ public final class ScheduleLog {
         HELD_AT_CUT.clear();
         LET_GO.clear();
         letGoSinceProgress = false;
+        letGoAt = 0L;
+        BOUND.clear();
         openHeld = 0;
         for (int index = 0; index < all.size(); index++) {
             ScheduleEvent event = all.get(index);
@@ -1103,6 +1172,8 @@ public final class ScheduleLog {
             HELD_AT_CUT.clear();
             LET_GO.clear();
             letGoSinceProgress = false;
+            letGoAt = 0L;
+            BOUND.clear();
             firstOpen = 0;
             firstBlocking = 0;
             openHeld = 0;
