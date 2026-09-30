@@ -855,6 +855,8 @@ charged as a replay, with `-Dcausynth.plant` (`execute.sh`, `CAUSYNTH_PLANT`): t
 `Debug.makeSymbolicBoolean` answers a row's value when its call site is the row's and a region
 occurrence enclosing it on the thread (`CausynthTraceRecorder#enclosingOccurrences`) has the row's id,
 inside the window, and states each answer as a `PLANT_APPLIED` trace row (`runtime.RecordingPlant`).
+A planted run is not the recording's world, so the workload's checks of that world are off in it as
+in a replay (`CausynthTraceRecorder.replaying()` is true under `causynth.plant`).
 Each run is aggregated for the target as the pre-screen aggregates (`--summary`: `plantsApplied`, and
 per target its `occurrences` and `fatalOccurrences`, those that took the fatal arm).
 `final/reproduce.json`: `{schemaVersion 1, kind: REPRODUCTION, runs, planted, fatal, atAnchor,

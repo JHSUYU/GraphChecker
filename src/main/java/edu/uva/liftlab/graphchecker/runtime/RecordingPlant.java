@@ -48,6 +48,13 @@ public final class RecordingPlant {
     private RecordingPlant() {
     }
 
+    /** Whether this run plants a world: a native reproduction, where the
+     *  workload's checks of the recording's world do not hold
+     *  ({@link CausynthTraceRecorder#replaying}). */
+    static boolean planting() {
+        return !System.getProperty(PROPERTY, "").trim().isEmpty();
+    }
+
     /** The marker {@code name}'s answer at the call running now. */
     static boolean marker(String name) {
         Map<String, Map<String, Boolean>> rows = planted();

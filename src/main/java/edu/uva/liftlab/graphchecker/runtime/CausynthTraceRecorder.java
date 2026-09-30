@@ -98,11 +98,14 @@ public final class CausynthTraceRecorder {
     }
 
     /**
-     * Whether this JVM is a concolic replay rather than the recording or a
-     * native run; workload checks of the recording's world do not hold here.
+     * Whether this JVM runs a world the engine chose -- a concolic replay,
+     * or a native reproduction planting one ({@link RecordingPlant}) --
+     * rather than the recording or a native run; workload checks of the
+     * recording's world do not hold here.
      */
     public static boolean replaying() {
-        return RuntimeTraceMode.configured() == RuntimeTraceMode.REPLAY_CONTEXT;
+        return RuntimeTraceMode.configured() == RuntimeTraceMode.REPLAY_CONTEXT
+                || RecordingPlant.planting();
     }
 
     /**
