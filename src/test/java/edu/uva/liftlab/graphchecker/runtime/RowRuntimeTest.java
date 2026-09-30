@@ -1903,9 +1903,10 @@ public class RowRuntimeTest {
                 Identity.atScope().render());
 
         // A pool thread was created before the work it runs, so it inherits
-        // nothing from the submission: the start filed for the TASK is
-        // claimed on the object the region is entered on, and the next task
-        // replaces that frame instead of nesting under it.
+        // nothing from the submission: the start filed for the TASK -- the
+        // frames it was submitted under, then its own -- is claimed on the
+        // object the region is entered on, and the next task replaces those
+        // levels instead of nesting under them.
         Identity.resetForTests();
         final List<String> ran =
                 Collections.synchronizedList(new ArrayList<String>());
@@ -1928,9 +1929,15 @@ public class RowRuntimeTest {
         Object submitter = new Object();
         RuntimeTraceContext.registerSource(submitter, NN);
         long submitting = RuntimeTraceContext.beginRequest(submitter, "submit");
-        Identity.enterFrame("Pool.submitAll()#u5", null);
-        Identity.startWork("Pool.submitAll()#u9", tasks[0]);
-        Identity.startWork("Pool.submitAll()#u9", tasks[1]);
+        // Each task from one site of a method called once per task, as
+        // hdfs-11741's balancer submits its moves: both starts are the first
+        // at that site, and only the call they were made in tells them apart
+        // (r3: the two move tasks shared one address).
+        for (Object task : tasks) {
+            long submitOne = Identity.enterFrame("Pool.submitOne()#u5", null);
+            Identity.startWork("Pool.submitOne()#u9", task);
+            Identity.exitFrame(submitOne);
+        }
         worker.start();
         try {
             worker.join();
@@ -1938,8 +1945,10 @@ public class RowRuntimeTest {
             Thread.currentThread().interrupt();
         }
         RuntimeTraceContext.endRequest(submitting);
-        assertEquals("Pool.submitAll()#u9@0/Task.run()#u1@0", ran.get(0));
-        assertEquals("Pool.submitAll()#u9@1/Task.run()#u1@0", ran.get(1));
+        assertEquals("Pool.submitOne()#u5@0/Pool.submitOne()#u9@0"
+                + "/Task.run()#u1@0", ran.get(0));
+        assertEquals("Pool.submitOne()#u5@1/Pool.submitOne()#u9@0"
+                + "/Task.run()#u1@0", ran.get(1));
 
         // An activation's push and its pop are paired, recursion included:
         // the frames an occurrence stands on ARE its identity, so a frame

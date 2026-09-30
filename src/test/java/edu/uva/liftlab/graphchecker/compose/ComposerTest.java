@@ -1134,6 +1134,34 @@ public class ComposerTest {
     //    attested arm delivers is refused, never pinned to one.
     // ------------------------------------------------------------------
 
+    /**
+     * A session with two target rows at the anchor is two paths, of one
+     * path id.  The seed's are asked one at a time
+     * (ClaimPolicy#seedDisjunctUnsat): asserted together, two selectors
+     * contradict the partition and read "unsat" whatever the roots, and
+     * named by their path they name one label twice, which z3 refuses.
+     */
+    @Test
+    public void theSeedsPathsAreAskedEachAlone() throws Exception {
+        Z3 solver = solver();
+        for (Object[] row : new Object[][]{
+                {"true", false},    // each path is sat: not unsat
+                {"false", true}}) { // each path is unsat
+            Path iteration = folder.newFolder("seed-" + row[0]).toPath();
+            Session seed = new Session(iteration, "s0", false);
+            seed.target((String) row[0], true, true);
+            seed.target((String) row[0], true, true);
+            seed.write();
+            Composer.Composition composition = compose(iteration, 4);
+            assertEquals("two target rows, two paths", 2,
+                    composition.disjuncts().size());
+            assertEquals("phi " + row[0], row[1],
+                    ClaimPolicy.seedDisjunctUnsat(composition, solver));
+            assertTrue("z3 read every question: " + solver.errors(),
+                    solver.errors().isEmpty());
+        }
+    }
+
     @Test
     public void eachPathCarriesItsOwnSessionsArrival() throws Exception {
         Path iteration = folder.newFolder("arrivals").toPath();
@@ -1172,12 +1200,18 @@ public class ComposerTest {
         }
         Z3 solver = solver();
         for (Composer.Disjunct disjunct : composition.disjuncts()) {
-            List<String> pinned = new ArrayList<String>(
+            // One path's question holds its own guarded commands and none
+            // of the other path's (Composition#pathQuery).
+            String alone = composition.pathQuery(disjunct.selector(),
                     composition.valuations().get(0).assertions());
-            pinned.add("(assert " + disjunct.selector() + ")");
+            for (Composer.Disjunct other : composition.disjuncts()) {
+                assertEquals("guarded by " + other.selector(),
+                        other == disjunct, alone.contains(
+                                "(=> " + other.selector() + " "));
+            }
             assertEquals("each path is satisfiable as the execution that "
                             + "made it: " + disjunct.path().sessionId,
-                    "sat", solver.ask(composition.query(pinned),
+                    "sat", solver.ask(alone,
                             Collections.<String>emptyList(), false).status());
         }
 
@@ -1648,13 +1682,11 @@ public class ComposerTest {
             Session session = new Session(iteration, each, false);
             session.marker("false");
             // An attach the wire delivered to and the recording cannot
-            // pair, and one whose Java type names no scalar.
+            // pair, and one an obligation ANSWERED, which is no literal
+            // either: an answer is what a replay planted, not what a run
+            // delivered, so nothing binds it and it is refused by name.
             session.attach(consumer, "vh", "I", "7", null);
-            // ANSWERED, because that is the only rule left that binds a
-            // handoff read to a literal: the arrival fallback is deleted,
-            // and an attach nothing attests is refused by name before a
-            // sort is ever asked for.
-            session.answered(other, "vh_ref", "Lorg/apache/Foo;", "7", null);
+            session.answered(other, "vh_ref", "I", "7", "8", null);
             // A read of ONE associative cell, joined to a write of the
             // WHOLE map (its state root) at the version it observed.  The
             // location names its key by hash, so which entry the read
@@ -1791,8 +1823,9 @@ public class ComposerTest {
         assertTrue("an unpaired attach is a named row",
                 says(gaps, GapKind.UNSTATED_VALUE,
                         "names no producer endpoint"));
-        assertTrue("a Java type this lowering cannot place is refused",
-                says(gaps, GapKind.UNSTATED_VALUE, "names no scalar"));
+        assertTrue("an answered attach no family binds is refused, not "
+                        + "pinned to its answer",
+                says(gaps, GapKind.UNATTESTED_ARM, "was answered with"));
         assertTrue("and two recordings are not one: the sessions STATE the "
                         + "role they ran as, and two SEEDs is no answer",
                 says(gaps, GapKind.UNSTATED_VALUE, "state role SEED"));
@@ -1924,6 +1957,144 @@ public class ComposerTest {
                     : rest.substring(0, end);
         }
         return "";
+    }
+
+    /**
+     * AN ANSWERED HANDOFF IS BOUND BY ITS FAMILY, NEVER BY ITS ANSWER: the
+     * answer is what an obligation's replay planted at the consumer, and a
+     * path rests only on what a run compatible with it delivered.
+     * <ul>
+     *   <li>delivered: the flip replay's producer delivered the answer, and
+     *       the marker witness stands;</li>
+     *   <li>undelivered (hdfs-17967-pathC rb1): the serial moved, the
+     *       producer, whose export the VM valued as a constant, delivered
+     *       the moved serial, and the consumer was answered with the
+     *       recorded one.  Pinned to the answer, the solver moved the
+     *       serial past a key id no run delivers with it;</li>
+     *   <li>foreign: a path names a handoff variable its session minted no
+     *       attach for, so no family of that run binds it: refused by
+     *       name.</li>
+     * </ul>
+     */
+    @Test
+    public void anAnsweredHandoffIsBoundByItsFamily() throws Exception {
+        Endpoint producer = Endpoint.of(PRODUCER, "PORT.key",
+                at("export#1", 0), 0);
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key",
+                at("attach#1", 0), 0);
+        Path delivered = folder.newFolder("answered-delivered").toPath();
+        session(delivered, "s0", false, "false", producer, consumer,
+                "vh", "false", null, true, false, "EXPR.v1.marker");
+        session(delivered, "s1", true, "true", producer, consumer,
+                "vh", "true", "true", true, true, "EXPR.v1.marker");
+        ClaimPolicy.Decision witness = ClaimPolicy.decide(
+                compose(delivered, 8), solver());
+        assertEquals("delivered", ClaimKind.MARKER_FLIPPED,
+                witness.claim().kind());
+        assertEquals(Collections.singletonMap(MARKER_ROOT, "true"),
+                witness.claim().movedRoots());
+
+        for (String shape : new String[]{"undelivered", "foreign"}) {
+            Path iteration = folder.newFolder("answered-" + shape).toPath();
+            // {session, serial it ran at}: the flip replay moved it.
+            for (String[] each : new String[][]{{"s0", "5"}, {"s1", "6"}}) {
+                boolean flip = "s1".equals(each[0]);
+                Session session = new Session(iteration, each[0], flip);
+                session.activation(PRODUCER, "thread#"
+                        + PRODUCER.regionId(), flip, true);
+                session.serial(each[1], "5", "8");
+                session.expression("EXPR.0000000000000d01", integer("I",
+                        Long.parseLong(each[1])));
+                session.export(producer, "EXPR.0000000000000d01", "I", 1L,
+                        each[1]);
+                if (!flip) {
+                    session.attach(consumer, "vh", "I", each[1], producer);
+                } else if ("undelivered".equals(shape)) {
+                    session.answered(consumer, "vh", "I", each[1], "5",
+                            producer);
+                }
+                // The fatal: the key id the handoff named is not current.
+                session.expression("EXPR.0000000000000d02", binary("!=",
+                        symbol("vh", "I"), symbol(SERIAL, "I")));
+                session.target("EXPR.0000000000000d02", flip, true);
+                session.write();
+            }
+            Composer.Composition composition = compose(iteration, 8);
+            ClaimPolicy.Decision decision = ClaimPolicy.decide(composition,
+                    solver());
+            for (ClaimPolicy.Outcome outcome : decision.outcomes()) {
+                assertFalse(shape + ": no valuation reaches the fatal with "
+                                + "the key id a run delivered: " + outcome,
+                        outcome.answer().sat());
+            }
+            assertEquals(shape, ClaimKind.NO_SUPPORTED_WITNESS,
+                    decision.claim().kind());
+            assertEquals(shape + ": the answered path stays a disjunct, "
+                            + "its read bound by the family",
+                    "undelivered".equals(shape) ? 2 : 1,
+                    composition.disjuncts().size());
+            assertEquals(shape + ": a handoff variable no attach of the "
+                            + "path's session minted is refused by name",
+                    "foreign".equals(shape), says(composition.gaps(),
+                            GapKind.UNSTATED_VALUE, "no attach row of its "
+                                    + "session minted"));
+        }
+    }
+
+    /**
+     * A HANDOFF AN ARM'S CLOSURE READS IS BOUND LIKE ONE ITS DELIVERY NAMES
+     * (hdfs-11741 r8: the balancer's block-key expiry): the producer decided
+     * over a value it was handed before it sent the marker, and the flip
+     * replay's producer was answered 5 where upstream sent 2.  Free inside
+     * the arm, the solver took 5 and moved the marker; bound by its nested
+     * family, no run sent a value that decides that way.
+     */
+    @Test
+    public void aHandoffAnArmsClosureReadsIsBoundByItsFamily()
+            throws Exception {
+        Path iteration = folder.newFolder("arm-handoff").toPath();
+        Endpoint upstream = Endpoint.of(UPSTREAM, "PORT.count",
+                at("export#0", 0), 0);
+        Endpoint handed = Endpoint.of(PRODUCER, "PORT.count",
+                at("attach#0", 0), 0);
+        Endpoint producer = Endpoint.of(PRODUCER, "PORT.key",
+                at("export#1", 0), 0);
+        Endpoint consumer = Endpoint.of(ANCHOR, "PORT.key",
+                at("attach#1", 0), 0);
+        for (String each : new String[]{"s0", "s1"}) {
+            boolean flip = "s1".equals(each);
+            Session session = new Session(iteration, each, flip);
+            session.activation(UPSTREAM, "thread#" + UPSTREAM.regionId(),
+                    flip, true);
+            session.activation(PRODUCER, "thread#" + PRODUCER.regionId(),
+                    flip, true);
+            session.marker(String.valueOf(flip));
+            session.expression("EXPR.0000000000000e01", integer("I", 2L));
+            session.export(upstream, "EXPR.0000000000000e01", "I", 1L, "2");
+            if (flip) {
+                session.answered(handed, "vu", "I", "2", "5", upstream);
+            } else {
+                session.attach(handed, "vu", "I", "2", upstream);
+            }
+            session.expression("EXPR.0000000000000e02", binary("&&",
+                    symbol(MARKER, "Z"), binary(">", symbol("vu", "I"),
+                            integer("I", 3L))));
+            session.decision(PRODUCER, "nn#u1", flip,
+                    "EXPR.0000000000000e02");
+            session.expression("EXPR.0000000000000e03", symbol(MARKER, "Z"));
+            session.export(producer, "EXPR.0000000000000e03", 2L,
+                    String.valueOf(flip));
+            session.attach(consumer, "vh", String.valueOf(flip), producer);
+            session.target("vh", flip, true);
+            session.write();
+        }
+        ClaimPolicy.Decision decision = ClaimPolicy.decide(
+                compose(iteration, 8), solver());
+        for (ClaimPolicy.Outcome outcome : decision.outcomes()) {
+            assertFalse("no run handed the producer a value past 3: "
+                    + outcome, outcome.answer().sat());
+        }
+        assertEquals(ClaimKind.NO_SUPPORTED_WITNESS, decision.claim().kind());
     }
 
     // ------------------------------------------------------------------
@@ -3613,7 +3784,7 @@ public class ComposerTest {
     // ------------------------------------------------------------------
 
     @Test
-    public void aThreadOrdersItsOwnActivationsAndWhatStartedIt()
+    public void aThreadOrdersItsOwnActivationsAndNothingElse()
             throws Exception {
         Path iteration = folder.newFolder("threads").toPath();
         OccurrenceAddress earlier = occurrence("case/dn0", "REGION.earlier",
@@ -3636,26 +3807,19 @@ public class ComposerTest {
         session.activation(started, "thread#task", false);
         session.marker("false");
         session.expression("EXPR.v1.k", constant("false"));
-        Endpoint first = Endpoint.of(earlier, "Actor#put#3:WRITE",
-                at("w#1", 0), 0);
-        Endpoint second = Endpoint.of(later, "Actor#put#4:WRITE",
-                at("w#2", 0), 0);
-        Endpoint third = Endpoint.of(started, "Task#put#5:WRITE",
-                at("w#3", 0), 0);
-        long firstAt = session.write(first, keys, 1L, "EXPR.v1.k");
-        long secondAt = session.write(second, keys, 2L, "EXPR.v1.k");
-        long thirdAt = session.write(third, keys, 3L, "EXPR.v1.k");
+        session.write(Endpoint.of(earlier, "Actor#put#3:WRITE",
+                at("w#1", 0), 0), keys, 1L, "EXPR.v1.k");
+        session.write(Endpoint.of(later, "Actor#put#4:WRITE",
+                at("w#2", 0), 0), keys, 2L, "EXPR.v1.k");
+        session.write(Endpoint.of(started, "Task#put#5:WRITE",
+                at("w#3", 0), 0), keys, 3L, "EXPR.v1.k");
         session.target("true", false, true);
         session.write();
 
         edu.uva.liftlab.graphchecker.smt.Arms rule =
                 new edu.uva.liftlab.graphchecker.smt.Arms(
                         Corpus.read(iteration, null));
-        assertTrue("one thread is one order, whatever the occurrence",
-                rule.ancestor(first, firstAt, second, secondAt, "s0"));
-        assertFalse("and it runs one way",
-                rule.ancestor(second, secondAt, first, firstAt, "s0"));
-        assertFalse("so two activations of one thread never interleave",
+        assertFalse("two activations of one thread never interleave",
                 rule.concurrent(earlier, later, "s0"));
         // A third occurrence on a thread of its own: the message chain does
         // not reach it and no recording states a thread-creation edge
@@ -3666,10 +3830,6 @@ public class ComposerTest {
         // a walk that could not fire.
         assertTrue("an occurrence nothing places is concurrent with all",
                 rule.concurrent(earlier, started, "s0"));
-        assertFalse("and no ordering is invented for it either way",
-                rule.ancestor(first, firstAt, third, thirdAt, "s0")
-                        || rule.ancestor(third, thirdAt, first, firstAt,
-                        "s0"));
         // Attestation: instrumented and symbolic in this session -- the seed
         // -- with no decision anywhere in it.
         assertTrue("a symbolic straight-line region is attested",
@@ -4533,8 +4693,17 @@ public class ComposerTest {
                     ? binary("&&", named, binary("!=", symbol("vH_heard",
                     "I"), integer("I", 0L))) : named);
             if ("handoff".equals(shares)) {
-                session.answered(Endpoint.of(ANCHOR, "Port#recv#1:ATTACH",
-                        at("recv#1", 0), 0), "vH_heard", "I", "5", null);
+                // Delivered by a producer the replay attests, so its family
+                // binds it and no refusal of its own drops the path.
+                Endpoint sender = Endpoint.of(PRODUCER, "Port#send#1:EXPORT",
+                        at("send#1", 0), 0);
+                session.activation(PRODUCER, "thread#" + PRODUCER.regionId(),
+                        false, true);
+                session.expression("EXPR.00000000000000a5",
+                        integer("I", 5L));
+                session.export(sender, "EXPR.00000000000000a5", "I", 1L, "5");
+                session.attach(Endpoint.of(ANCHOR, "Port#recv#1:ATTACH",
+                        at("recv#1", 0), 0), "vH_heard", "I", "5", sender);
             }
             session.decision(ANCHOR, "file#u3", true,
                     "EXPR.00000000000000a2");
@@ -5574,8 +5743,13 @@ public class ComposerTest {
 
         void export(Endpoint endpoint, String ref, long handle,
                     String recorded) {
-            exports.add(ExportRow.of(id, ++seq, endpoint, ref, "Z", handle,
-                    recorded));
+            export(endpoint, ref, "Z", handle, recorded);
+        }
+
+        void export(Endpoint endpoint, String ref, String javaType,
+                    long handle, String recorded) {
+            exports.add(ExportRow.of(id, ++seq, endpoint, ref, javaType,
+                    handle, recorded));
         }
 
         void attach(Endpoint endpoint, String symbol, String arrival,
@@ -5602,18 +5776,13 @@ public class ComposerTest {
         }
 
         /**
-         * An attach an OBLIGATION answered: the mint was planted.
-         *
-         * <p>The one place a handoff read is still bound to a literal, and
-         * the literal is the wave's assignment and not the arrival: what
-         * the replay was told to receive is a fact about the question that
-         * was asked, so the sort the row states has to place it
-         * ({@code Composer.bind}).</p>
+         * An attach an OBLIGATION answered: the mint was planted with
+         * {@code answer} while its producer delivered {@code arrival}.
          */
         void answered(Endpoint endpoint, String symbol, String javaType,
-                      String value, Endpoint producer) {
+                      String arrival, String answer, Endpoint producer) {
             attaches.add(AttachRow.of(id, ++seq, endpoint, symbol, javaType,
-                    value, true, value, producer, "corr-" + symbol,
+                    arrival, true, answer, producer, "corr-" + symbol,
                     producer == null ? "" : "HANDLE"));
         }
 
@@ -5754,11 +5923,15 @@ public class ComposerTest {
                     + MARKER + "))");
         }
         session.export(producer, ref, 1L, marker);
-        session.attach(consumer, symbol, arrival, producer);
+        if (answered == null) {
+            session.attach(consumer, symbol, arrival, producer);
+        } else {
+            session.answered(consumer, symbol, "Z", arrival, answered,
+                    producer);
+        }
         // phi is published in the FATAL polarity by the runtime, healthy
         // sessions included; the composer never re-derives it.
         session.target(symbol, observedFatal, true);
         session.write();
-        assertNotNull(answered == null ? "" : answered);
     }
 }

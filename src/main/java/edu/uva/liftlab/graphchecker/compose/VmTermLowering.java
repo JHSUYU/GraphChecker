@@ -212,12 +212,6 @@ public final class VmTermLowering {
         public boolean floating() {
             return this == FLOAT32 || this == FLOAT64;
         }
-
-        /** Whether a recorded literal of this sort is its own value. */
-        public boolean scalar() {
-            return this == BOOL || this == INT || floating()
-                    || this == STRING;
-        }
     }
 
     public static boolean numeric(Sort sort) {

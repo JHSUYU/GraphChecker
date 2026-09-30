@@ -150,6 +150,26 @@ public final class ContainerSmtCodec {
         return null;
     }
 
+    /**
+     * What {@link #field} lowers of one projection: the owner of a boxed
+     * payload, and the cell of a stated pair.  Never {@code concreteOwner},
+     * which only spells the run's object, nor otherwise the owner, whose
+     * read chain no lowering asks.  Null for a projection {@link #field}
+     * refuses, which rests on all it names.
+     */
+    public static List<JsonElement> fieldOperands(JsonObject expression) {
+        List<JsonElement> operands = new ArrayList<JsonElement>();
+        if (boxedPayloadSort(optionalString(expression, "ownerClass"),
+                optionalString(expression, "_java_type")) != null) {
+            operands.add(expression.get("owner"));
+        }
+        if (stated(expression.get("concreteOwner"))
+                && stated(expression.get("concreteValue"))) {
+            operands.add(expression.get("concreteValue"));
+        }
+        return operands.isEmpty() ? null : operands;
+    }
+
     /** Whether the VM wrote this member at all. */
     private static boolean stated(JsonElement member) {
         return member != null && !member.isJsonNull();

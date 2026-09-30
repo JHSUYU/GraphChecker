@@ -392,6 +392,9 @@ public final class ClaimPolicy {
     /** Budget of one self-refutation run: decides a path, scans them all. */
     static final long SELF_CHECK_BUDGET_MS = 60000L;
 
+    /** Budget of a disjunction's verdict asked whole (#byDisjunct). */
+    static final long WHOLE_BUDGET_MS = 60000L;
+
     /**
      * How many independent asks run at once, each its own z3 process beside
      * the composer's JVM on the campaign head (hdfs-17899-bug2: 128
@@ -436,11 +439,8 @@ public final class ClaimPolicy {
         // A sanity check, not the witness search: its own short budget.  An
         // undecided run leaves the path in the disjunction (safe direction).
         List<Z3.Answer> answers = inParallel(composition.disjuncts(),
-                disjunct -> solver.ask(composition.query(
-                        Collections.singletonList("(assert (! "
-                                + disjunct.selector() + " :named path_alone__"
-                                + ArtifactIO.digest(disjunct.path().pathId, 10)
-                                + "))")),
+                disjunct -> solver.ask(composition.pathQuery(
+                        disjunct.selector(), Collections.<String>emptyList()),
                         Collections.<String>emptyList(), false,
                         SELF_CHECK_BUDGET_MS));
         for (int i = 0; i < answers.size(); i++) {
@@ -457,8 +457,7 @@ public final class ClaimPolicy {
                     "this path's own conjunction is unsatisfiable with "
                             + "every root free, so no valuation of any root "
                             + "could have satisfied it and it contributes "
-                            + "nothing to the disjunction; z3 closed on "
-                            + answer.core()));
+                            + "nothing to the disjunction"));
         }
         if (undecided > 0) {
             // A budget that drops a question says so: runs stay comparable.
@@ -588,9 +587,9 @@ public final class ClaimPolicy {
         List<String> pinned =
                 new ArrayList<String>(outcome.valuation().assertions());
         pinned.addAll(outcome.pinned());
-        pinned.add("(assert " + outcome.selected().selector() + ")");
         pinned.addAll(observed);
-        return solver.ask(composition.query(pinned),
+        return solver.ask(composition.pathQuery(
+                outcome.selected().selector(), pinned),
                 Collections.<String>emptyList(), false).unsat();
     }
 
@@ -673,10 +672,47 @@ public final class ClaimPolicy {
         List<String> assertions =
                 new ArrayList<String>(valuation.assertions());
         assertions.addAll(pinned);
-        Z3.Answer answer = solver.ask(composition.query(assertions), asked,
-                wantCore);
+        Z3.Answer answer = byDisjunct(composition, solver, assertions,
+                composition.selectors(), asked, wantCore);
         return new Outcome(valuation, pinned, answer,
                 selectedOf(composition, answer), armsOf(composition, answer));
+    }
+
+    /**
+     * "One of these disjuncts" under these assertions (which already say
+     * one of them holds).  Asked whole first, within {@link #WHOLE_BUDGET_MS}:
+     * where z3 decides the disjunction at all it does so in seconds, one
+     * parse for every path.  Undecided, it is asked one disjunct at a time:
+     * the body asserts exactly one path selector, so it is sat iff some
+     * disjunct is and unsat iff every one is (the core is the union of
+     * theirs).  Whole, z3 can spend any budget searching every path's
+     * conjunction at once where a case split settles each path in seconds
+     * (hdfs-11741 r3's valuation 0 over 47 paths: undecided after 30
+     * minutes, about a second a path).  The first sat disjunct answers; with
+     * none sat, an undecided one leaves the question undecided.  Selectors
+     * are never asserted together: two of them contradict the partition.
+     */
+    private static Z3.Answer byDisjunct(Composer.Composition composition,
+                                        Z3 solver, List<String> assertions,
+                                        List<String> selectors,
+                                        List<String> asked, boolean wantCore) {
+        Z3.Answer whole = solver.ask(composition.query(assertions), asked,
+                wantCore, WHOLE_BUDGET_MS);
+        if (whole.decided()) return whole;
+        List<Z3.Answer> refuted = new ArrayList<Z3.Answer>();
+        Z3.Answer undecided = null;
+        for (String selector : selectors) {
+            Z3.Answer answer = solver.ask(
+                    composition.pathQuery(selector, assertions), asked,
+                    wantCore);
+            if (answer.sat()) return answer;
+            if (answer.unsat()) {
+                refuted.add(answer);
+            } else if (undecided == null) {
+                undecided = answer;
+            }
+        }
+        return undecided != null ? undecided : Z3.Answer.unsatOfAll(refuted);
     }
 
     /**
@@ -862,27 +898,27 @@ public final class ClaimPolicy {
     }
 
     /**
-     * Whether the seed's own disjunct is unsat at the recorded roots; else
-     * the claim is about the recording, not a pairing.  No seed: false.
+     * Whether every disjunct of the seed's session is unsat at the recorded
+     * roots; else the claim is about the recording, not a pairing.  No seed
+     * path: false.
      */
-    private static boolean seedDisjunctUnsat(
+    static boolean seedDisjunctUnsat(
             Composer.Composition composition, Z3 solver) {
         String seed = composition.seedSessionId();
         if (seed == null) return false;
-        List<String> pinned = new ArrayList<String>();
-        Composer.Valuation recorded = composition.valuations().isEmpty()
-                ? null : composition.valuations().get(0);
-        if (recorded != null) pinned.addAll(recorded.assertions());
-        boolean found = false;
+        List<String> selectors = new ArrayList<String>();
         for (Composer.Disjunct disjunct : composition.disjuncts()) {
-            if (!disjunct.path().sessionId.equals(seed)) continue;
-            pinned.add("(assert (! " + disjunct.selector()
-                    + " :named seed_disjunct__"
-                    + ArtifactIO.digest(disjunct.path().pathId, 10) + "))");
-            found = true;
+            if (disjunct.path().sessionId.equals(seed)) {
+                selectors.add(disjunct.selector());
+            }
         }
-        if (!found) return false;
-        return solver.ask(composition.query(pinned),
+        if (selectors.isEmpty()) return false;
+        List<String> pinned = new ArrayList<String>();
+        if (!composition.valuations().isEmpty()) {
+            pinned.addAll(composition.valuations().get(0).assertions());
+        }
+        pinned.add("(assert " + VmTermLowering.or(selectors) + ")");
+        return byDisjunct(composition, solver, pinned, selectors,
                 Collections.<String>emptyList(), false).unsat();
     }
 }

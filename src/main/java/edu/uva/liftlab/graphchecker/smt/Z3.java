@@ -10,6 +10,7 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -111,6 +112,18 @@ public final class Z3 {
             return core;
         }
 
+        /**
+         * What a disjunction whose every disjunct {@code refuted} answered
+         * unsat answers: unsat, its core the union of theirs (each model
+         * takes one disjunct, which its own core refutes).
+         */
+        public static Answer unsatOfAll(List<Answer> refuted) {
+            Set<String> core = new LinkedHashSet<String>();
+            for (Answer each : refuted) core.addAll(each.core());
+            return new Answer("unsat", Collections.<String, String>emptyMap(),
+                    new ArrayList<String>(core), "");
+        }
+
         @Override
         public String toString() {
             return status + (values.isEmpty() ? "" : " " + values)
@@ -160,8 +173,11 @@ public final class Z3 {
     }
 
     /**
-     * The same ask under its own budget ({@code <= 0}: the instance's).
-     * Same instance, so the run counter and error set stay whole.
+     * The same ask with its verdict under its own budget ({@code <= 0}: the
+     * instance's).  A decided verdict's model and core runs keep the
+     * instance's: each solves again, and a tracked core run can take far
+     * longer than its verdict ({@link #CORE_TRACKING}).  Same instance, so
+     * the run counter and error set stay whole.
      */
     public Answer ask(String query, List<String> modelSymbols,
                       boolean wantCore, long budgetMillis) {
@@ -171,12 +187,13 @@ public final class Z3 {
         Map<String, String> values = Collections.emptyMap();
         if ("sat".equals(status) && modelSymbols != null
                 && !modelSymbols.isEmpty()) {
-            values = parseValues(run(modelQuery(text, modelSymbols), budget));
+            values = parseValues(run(modelQuery(text, modelSymbols),
+                    timeoutMillis));
         }
         List<String> core = Collections.emptyList();
         if (wantCore && "unsat".equals(status)) {
             core = parseCore(run(CORE_TRACKING + text
-                    + "(check-sat)\n(get-unsat-core)\n", budget));
+                    + "(check-sat)\n(get-unsat-core)\n", timeoutMillis));
         }
         // Not after a timeout: it would spend the budget again for "".
         String reason = "";

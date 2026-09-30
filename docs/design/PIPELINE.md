@@ -239,8 +239,10 @@ worker's focus row as that session's world, the wave verdicts, the recorded sche
    `ADMISSION_GAP` (DIAGNOSTIC when the witness stop fired).
 4. Reconciles the slot table (`explore.SlotTable`, `iteration-0000/slots.jsonl`): one slot per
    (interaction, world) inside the closure; a WIRE consumer paired with another producer in the same
-   world is a replacement, and a read whose observed write the run orders after it contradicts the
-   order (both `TOPOLOGY_DIVERGENCE`, BLOCKING when the session is admitted, else DIAGNOSTIC); another
+   world is a replacement, and a read whose observed write the run orders after it (the two rows'
+   seqs, the VM's one event clock, whatever threads ran them; never the anchor chain, which orders
+   occurrences, not their events) contradicts the order (both `TOPOLOGY_DIVERGENCE`, BLOCKING when
+   the session is admitted, else DIAGNOSTIC); another
    world's pairing is a new slot.
 5. Builds the ledger (§7.3) and the candidates (§7.4) and opens the wave: `obligations.jsonl`
    (empty = the frontier closed).
@@ -505,14 +507,18 @@ BLOCKING `DECLARATION_MISSING`; no disjunct is BLOCKING `ADMISSION_GAP` naming t
   attach, an attach that minted no `v_H`; `Corpus#refusedIn`) refuses the path, and an arm whose
   closure reaches one is no option;
 - constraint independence (`compose.Independence`): conditions and reads sharing no variable with phi
-  (or a root) stay out;
+  (or a root) stay out; a field projection's variables are what its lowering reads
+  (`ContainerSmtCodec#fieldOperands`: the cell, and the owner only as a boxed payload), never the
+  owner's `concreteOwner` chain;
 - the valuation this session ran each non-clock root at (`valuationOf`; `Corpus.rootValue`: the
   focus row's assignment where the replay planted it, else the mint's reading): a declared root
   minted with no value, or a mint whose `recordedValue` differs from the assignment ("stated twice
   and differently"), is a BLOCKING refusal; a root the sessions recorded differently is pinned to
   this session's value, or bounded by its declared window around it; a declared root this session
   never minted refuses the path only when the path's terms name it;
-- anchor handoffs: an obligation's answer if any, else bound only by the message family;
+- anchor handoffs: bound only by the message family, answered or not (an obligation's answer is
+  what its replay planted at the consumer, not what a run delivered, so it is never a literal);
+  an attach no session attests the producer of refuses the path (`UNATTESTED_ARM`);
 - the read rule (`statedReads`, `stateJoins`, through `SmtLowering.bind`, the guarded read's rule
   too): JOIN to the observed version's write expression if it lowers with no refusal, else the MINT
   of that version (a placeholder), else PIN to the value the row states, else REFUSE
@@ -531,7 +537,9 @@ BLOCKING `DECLARATION_MISSING`; no disjunct is BLOCKING `ADMISSION_GAP` naming t
   decisions before its cutoff;
 - `phi_p`: the published `phiTerm` (fatal polarity); an empty phi is `true` when the run observed the
   fatal and refuses the path ("decided concretely on its healthy arm") otherwise;
-- every other handoff the conjunction reaches, by the same rules.
+- every other handoff the conjunction reaches, by the same rule; a handoff variable the corpus
+  states of another session and this one minted no attach for refuses the path by name
+  (`UNSTATED_VALUE`), so no path names a boundary variable its families do not bind.
 
 Any refusal drops the path and is filed with its own class (an open lowering refusal is a
 DIAGNOSTIC `UNSTATED_VALUE`).
@@ -542,7 +550,11 @@ twice, are one message under one selector; the eligible senders are the
 sessions with an attested arm at every leaf of the message, whose world's flip set contains or is
 contained in the path's; one `message_arm__` selector per sender (identical arm bodies share one),
 exactly one, each arm closed like a path in its own session (producer prefix before the delivery, its
-P3 closure, nested families to depth 16). A message no session can send drops the path. **A codec's
+P3 closure, nested families to depth 16). The nested families bind every handoff the arm's conjunction
+names, its delivery's and those its closure's conditions and joins read
+(`ComposedFamilies#handedOn`); one its session minted no attach for, or one paired with no producer,
+refuses the arm, so no arm lowers a handoff as a free constant. A message no session can send drops
+the path. **A codec's
 hole** (WIRE-CODEC §6.1, §6.3) is bound by `VmTermLowering#holeArm`, never by plain equality: its
 symbol is declared at the DECODED leaf's sort (the attach's `javaType`, also in
 `Composer#attestedArrival`), and the arm is the operand the producer's export cut out of its leaf
@@ -720,6 +732,17 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
    holes the arms bind (`Composition#holeSymbols`); a selected
    state arm keeps the states whose selector the model set. Each path is also asked alone with every root free (60 s): unsat →
    `PATH_SELF_CONTRADICTORY` DIAGNOSTIC; all paths → BLOCKING. An undecided valuation is BLOCKING.
+   Every such ask (and each re-ask below) is `byDisjunct`: the disjunction whole, its verdict within
+   60 s (`WHOLE_BUDGET_MS`; its model and core runs keep the full budget); undecided, one path at a
+   time: the first sat path answers, else undecided if any path was, else unsat with the union of
+   the paths' cores. Whole, z3 decides in seconds where it decides at all, but can spend any budget
+   searching every path's conjunction at once (hdfs-11741 r3: 47 paths undecided in 30 min whole,
+   about a second each alone). A path is asked by `Composition#pathQuery`: the body without the
+   commands another path's selector guards (`(assert (=> <selector> ...))`, vacuous once the
+   partition forces that selector false), its own selector asserted; 90-98% of a body is guarded
+   (hdfs-17899-bug2 r4: 1.7 of 93 MB shared). The self-contradiction check and `mechanism`'s pinned
+   re-asks of the selected path read the same text. Selectors are never asserted together: two
+   contradict the partition.
    An ask is a verdict run, then a model run (sat) or a core run (unsat, where a core is wanted),
    each its own z3 process; only the core run tracks the named assertions (`smt.Z3#CORE_TRACKING`),
    since tracked z3 simplifies nothing across them and still searches a disjunct whose selector the
@@ -745,7 +768,7 @@ The shell stages only check and print what ComposeMain decided (`solver.state`, 
      its mechanism, with `polarityDecides` true unless that is `RECORDED_FAILURE_EXPLAINED` or
      `NO_SUPPORTED_WITNESS`;
    - ordinal 0 sat on another session's path that observed the fatal, all its families attested, and
-     the seed's disjunct unsat at the recorded roots: its mechanism, if any;
+     every disjunct of the seed's session unsat at the recorded roots: its mechanism, if any;
    - else `NO_SUPPORTED_WITNESS`.
 5. `mechanism`, narrowest first: pinning the path's observed reads makes it unsat →
    `STATE_PAIRING_FLIPPED`; its observed anchor arrivals → `MESSAGE_PAIRING_FLIPPED`; a moved root →

@@ -26,13 +26,74 @@ tools and later fixes on top; no full round has run on HEAD itself.
 | hdfs-17899-bug2 | `r8` | PASS | MARKER_FLIPPED, IPC response door (`REGION.9ffdee3d`) |
 | hdfs-17960 | `r8` | PASS | MARKER_FLIPPED, `HDFS.CONFIG.SNAPSHOT_DELETION_ORDERED=false`, confirmed |
 | hdfs-17967-pathA, B, C | `r7` | PASS | MARKER_FLIPPED, IPC request door |
-| hdfs-11741 | `r8` | FAIL | CLOCK_SKEW (NameNode and DataNode clocks, `polarityDecides`) but 22 BLOCKING gaps: 18 EXPLORE `TOPOLOGY_DIVERGENCE` (`SlotTable#contradictsOrder` orders by the anchor chain), 3 PLAN `OCCURRENCE_ADDRESS_SHARED` (a pool task inherits no frames), 1 COMPOSE `UNSTATED_VALUE` (an export stating no expression). Fixed off main (README §0.3). |
+| hdfs-11741 | `r8` | FAIL | CLOCK_SKEW (NameNode and DataNode clocks, `polarityDecides`) but 22 BLOCKING gaps: 18 EXPLORE `TOPOLOGY_DIVERGENCE` (`SlotTable#contradictsOrder` orders by the anchor chain), 3 PLAN `OCCURRENCE_ADDRESS_SHARED` (a pool task inherits no frames), 1 COMPOSE `UNSTATED_VALUE` (an export stating no expression). Fixed on HEAD (below). |
 | solr-18406 | `a37f4` | PASS | CLOCK_SKEW, one jump of the commit's `delete()` clock (+3652 s), confirmed; `a37f4` ran this code before its merge and the one-clock rules below (`r7` on main before it: its one anchor path UNSAT with every root free). No round on HEAD. |
 | solr-18413 | `r9` | FAIL | the `isExpired#u6` flip is SAT and its replay observes the fatal ("Could not find collection") and is ADMITTED, but IMPORT invariant 9 stops the campaign: that replay's target row states no `phiTerm`, since the fatal condition is concrete there. |
 
-So HDFS stands at 8 of 9 on main. The ad-hoc checks have found no new bug; the only confirmed
-ad-hoc witnesses ever were two CLOCK_SKEWs on token-expiry checks, judged to be HDFS's clock-sync
-assumption.
+So HDFS stands at 8 of 9 on main.
+
+hdfs-11741 fails the cone gate (`experiments/accept/cone.py`): the NameNode clock roots it
+moves lie outside the selected path's causal cone. In that formula, the DataNode's expiry
+comparison is against recorded constants. No clock value crosses the process into it as data,
+so R2's 11741 chain (the NameNode clock reaching the DataNode check) is not in the formula.
+
+Rounds r3 (VM f13), r4 and r8 (VM R3; r8 on main 8820c3129) ended hdfs-11741
+`INCONCLUSIVE_PARTIAL` on engine defects the richer recordings exposed, fixed on HEAD (r8 reached
+`CLOCK_SKEW` and was blocked by the first three):
+
+- PLAN `OCCURRENCE_ADDRESS_SHARED` (3 in each round): a pool's worker inherits no frames
+  (`gc/runtime/PoolWorkers`), so the balancer's two move tasks, each submitted from the one site of
+  an `executePendingMove` call, shared one address, and so did the two DataNode SASL handlers they
+  reached, the anchor among them. A task now stands on the frames it was submitted under
+  (`gc/runtime/Identity#startWork`). The address is recorded, so only a new recording shows it: two
+  on it (`/bigtemp/vnr3ne/gc-out/accept-agent-a0f-id1`, `accept-agent-a0f-full2`) plan no shared
+  address.
+- EXPLORE `TOPOLOGY_DIVERGENCE` (32 in r3, 36 in r4, 18 in r8's last wave): the order check ranked
+  two events by the anchor chain, so the dispatcher's later `isDelayActive` reads came before the
+  move task's `activateDelay` writes they observed. It reads the rows' seqs (`gc/explore/SlotTable`).
+- COMPOSE `UNSTATED_VALUE` (r4, r8): the second move task's export, sharing the first's endpoint
+  and stating no expression, was read as a missing table entry (`ComposedFamilies#lower`).
+- COMPOSE `UNPRODUCIBLE_ANSWER` (every SASL path in r3 and r4, 11 of 17 in r8): Independence walked
+  a field projection's owner chain, which no lowering reads, and so demanded the balancer's
+  storage-group lookups (a key built from an enum's `toString`, item 30)
+  (`gc/compose/Independence`, `ContainerSmtCodec#fieldOperands`).
+
+Offline over r8 (`tools/regress/offline-ab.sh --round r8`, `/bigtemp/vnr3ne/ab/agent-a0f-gate8-r8`)
+HEAD claims `SAT_CANDIDATE` `CLOCK_SKEW`, `polarityDecides`, on 17 paths (main: 6), moving the
+NameNode's four key-expiry clocks (`REGION.08ab84c9`) and the DataNode's (`REGION.ba3902cd`) off
+their readings, with no BLOCKING gap from COMPOSE or the last EXPLORE wave (main: 17 and 18); only
+the recording's own three shared addresses remain. Over r3's corpus (`agent-a0f-gate7`) it admits
+47 paths (main: 2) and claims the same, and valuation 0 needed `ClaimPolicy#byDisjunct` (whole,
+undecided after 30 minutes; each path alone, about a second); over r4 (`agent-a0f-gate7-r4`) it
+claims the same on 41 paths, and hdfs-17899-bug2 claims `MARKER_FLIPPED` in 486 s. `cone.py` puts the DataNode clock and the first
+NameNode clock (`in.d977bf12`) in the witness path's cone, so a NameNode clock now reaches the
+DataNode check; the other three NameNode clocks move only because `clock_order` keeps that node's
+readings ordered, which the cone does not follow, so the cone gate would still fail on them.
+That claim rested on free constants: the balancer's block-key expiry (`HOFF.9a4963b5`,
+`HOFF.3220fe99`), joined in a move task's arm closure, was bound by no family. HEAD binds it
+(`ComposedFamilies#handedOn`), and over r8 (`/bigtemp/vnr3ne/ab/r11741-exp-r8r7`) all 17 paths are
+then unsatisfiable with every root free (`PATH_SELF_CONTRADICTORY`, `NO_SUPPORTED_WITNESS`): the
+NameNode arms deliver that expiry as constants. The workload's `pinBlockKeys` rotated the keys before
+`startRecording`, so the key the Balancer fetched and cached had an expiry no recorded clock wrote, a
+different constant in every replay. The HDFS tree (`gc/hdfs-11741` `5cff0e12b1f`) now rotates once
+inside the window before the Balancer's fetch; no round has run on it yet.
+hdfs-17960, hdfs-17897, hdfs-17899-bug1 and hdfs-17967-pathB keep their claims (r3, r7).
+
+Round `rb1` (this branch before the merge of main `69edf0c06`, fresh seeds) failed hdfs-17967-pathB
+and pathC: their witness moved `HDFS.BLOCK_KEY.SERIAL_NO`, not a door. Main's `7e0d8b14e` moves a
+flip query's non-control handoffs with their own run's arms, so a wave-0 flip at
+`retrieveDataEncryptionKey#u8` moved the target DataNode's block keys with the serial, while the
+worker DataNode's SASL key id stayed: main's weave exports it as a constant (R1-ROOTS' `ra1` states
+it as the worker's heartbeat handoff). The replay was answered with key id 119532 where its producer
+sent 119533, and COMPOSE pinned the answer as a literal. HEAD binds an answered handoff by its family
+(R2). Offline over `rb1` (`/bigtemp/vnr3ne/ab/r11741-2-rb1`), both claim `MARKER_FLIPPED` on an IPC
+request door (`REGION.763d087e`), with no unbound boundary variable (`cone.py`); pathC's witness
+needs a CONFIRM replay. Over r8/r7 (`r11741-1-r8r7`, `r11741-1b-r8r7`) the other eight HDFS claims
+are main's, and hdfs-11741's and hdfs-17967-pathA's composition is the branch's before the change
+(`r11741-3-branch-vs-fix`).
+
+The ad-hoc checks have found no new bug; the only confirmed ad-hoc witnesses ever were two
+CLOCK_SKEWs on token-expiry checks, judged to be HDFS's clock-sync assumption.
 
 ## R1. Symbols come automatically from the fatal slice
 
@@ -68,7 +129,7 @@ assumption.
 | Codec holes (WIRE-CODEC) | partial (contract, lowering, COMPOSE/EXPLORE/CONFIRM; no producer of hole rows) | `gc/contract/Hole`, the hole fields of `ExportRow`/`AttachRow` (`codec`, `keyPath`, `hole`, `messageKey`), `pairedBy ENVELOPE` and `RowInvariants` invariants 2 and 5; `GapKind.CODEC_MISMATCH`; `gc/contract/WireDeclarations` (CODEC, CODEC_VIEW, KEY, TRANSPORT, EXCHANGE rows); `gc/plan/CommunicationCatalogContract#codecPortId` and the `CODEC_PORT` row's fields; the §6.2 lowering identities (`gc/compose/StringIdentities`: `valueOf`/`concat` operands as `toString`, parse of a decimal rendering, a boolean rendering against a literal, split of a template, piece-wise `equals` of two templates) and the §6.1 literal of each sort (`gc/compose/VmTermLowering#smtLiteral`, COMPOSE's callers and a flip query's through `gc/explore/SmtText#literal`); the §6.1/§6.3 hole arm (`gc/compose/VmTermLowering#holeArm`: decoded sort, Java widening, a rendering read back, nullness; `gc/smt/Arms#sameMessage` pairs a hole with its own message's export; relays as nested families, `gc/compose/ComposedFamilies#hole`), a String hole's answer as its JSON string literal (`gc/explore/ObligationFactory#answer`), and CONFIRM's hole edge (`holeTexts` in the claim, `gc/compose/ComposedFamilies#holeTexts`; `messageKey`/`value` on the WIRE edge, `gc/explore/ConfirmMain`, compared by `gc/runtime/Confirmation#attached`) | Nothing writes a hole, a `CODEC_PORT` row or a `wire.jsonl`, and nothing reads the declarations: no port rule, codec hooks, walker or VM leaf natives, and no library catalog. The catalog still stamps schema 5. The identities never look through a read, so on HEAD they fire only where a rendering meets its parse, split or comparison without a heap location between them (the SASL key id is split into an array and read back). Only synthetic hole rows exercise the hole arms, answers and edges; no runtime calls `Confirmation#attached` with a hole's message key and text yet. A hole's value is held in CONFIRM only where it rests on no clock (a replay reads its clocks afresh), and a message key only for a store's version (an exchange's correlation id is its own run's). The VM still wraps every read in a `ConsumerBoundaryExpression`, so `SmtLowering#lowered` keeps seeing through it. |
 | Receiver-side symbol `v_H` | primitive leaves only | `gc/runtime/HandoffMint#addPrimitiveLeaves`; `gc/runtime/WireExport` | String and boxed leaves are substituted with the producer's expression, with no family. A VM export or attach refusal is a gap naming the occurrence, port and status (`WireExport#refused`): an attach outside every admitted activation a DIAGNOSTIC `ADMISSION_GAP` beside that activation, stated unselected; one inside an admitted activation DIAGNOSTIC `UNSTATED_VALUE`, which refuses at COMPOSE only the paths and arms whose closure reaches that occurrence (`Composer#frameRefusals`). The closure does not yet read the `ADMISSION_GAP`. |
 | Outbound staging | per thread | `gc/runtime/SymbolicMessageEnvelope` | Staged values ride the thread's next outbound message, so a message built without passing a door can lend its leaves to the wrong message. Capped at 64 entries. |
-| Composer merges both sides (MESSAGE families) | done | `gc/compose/ComposedFamilies`; `gc/smt/Arms` | Only arms of the same interaction slot, from sessions of compatible worlds. An unpaired attach refuses its path. |
+| Composer merges both sides (MESSAGE families) | done | `gc/compose/ComposedFamilies`; `gc/smt/Arms` | Only arms of the same interaction slot, from sessions of compatible worlds. An unpaired attach refuses its path, answered or not: an obligation's answer is bound by the family like an arrival, never pinned as a literal (`Composer#handoffRead`), and a handoff variable the path's session minted no attach for refuses it (`#reachedHandoffs`). An arm binds every handoff its conjunction names by nested families, those its closure reads included (`ComposedFamilies#handedOn`). |
 | DataTransfer ops, HDFS HTTP, `Http2SolrClient` forwarding, javabin/JSON bodies | not done | — | No anchor and no values. DataTransfer ops are daemon-tick roots. |
 
 ## R3. Shared state in one JVM is tracked and re-pairable
@@ -178,6 +239,17 @@ Correctness:
     `CausynthTraceRecorder#outboundExchange` observed its SEND, and the schedule may run the
     version's reader from that SEND on: `consumed` or `fetched` can find nothing, and the
     delivery pairs with no export (SOLR-18413 r5's seed, the Overseer's queue item).
+29. No read row states Java null: in hdfs-17899-bug2 r4's seed none of 333 reference reads
+    states `N`, though the VM serializes a null it returned as `concreteValue: null`
+    (`ReturnedValue::NULL_REFERENCE`). A read of a null at an `INITIAL` version (bug2's
+    `KeyManager.encryptionKey`) then has no pin and is refused. `RowCodec#toLine` (a default
+    `Gson`) also drops null members from `expressions.jsonl`.
+30. VM: a container query (a `MAP_STATE` read: `get`, an iterator) states no value it returned, and
+    `toString` of an object the VM names (an enum constant) is an `OpStrExpression` over its symbol
+    with no string (`NON_INTEGRAL_TERM`): a read whose join rests on either can be neither joined
+    nor pinned.
+31. `gc/smt/Arms#concurrent` orders an anchor-chain ancestor occurrence before all of its
+    descendant, so the writes of a task are no alternative arm for its starter's later reads.
 
 Scale and robustness:
 
@@ -190,6 +262,9 @@ Scale and robustness:
 11. Every obligation solver reads the whole corpus (`gc/explore/ObligationSolverMain`).
 12. The seed recording has no wall-clock bound; only the case budget ends it.
 13. VM: every expression is kept until the session closes, under one global mutex.
+32. COMPOSE lowers and states a message family once per path that binds it
+    (`gc/compose/ComposedFamilies#messageFamily`): hdfs-11741 r3's 47 paths carry 7 MB of family
+    text per query, each arm body up to twice.
 
 Fallbacks and dead code:
 
