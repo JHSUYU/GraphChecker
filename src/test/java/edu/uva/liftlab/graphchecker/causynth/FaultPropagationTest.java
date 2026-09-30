@@ -1,7 +1,9 @@
 package edu.uva.liftlab.graphchecker.causynth;
 
 import org.junit.After;
+import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
 import soot.BooleanType;
 import soot.G;
 import soot.IntType;
@@ -19,6 +21,8 @@ import soot.jimple.IntConstant;
 import soot.jimple.Jimple;
 import soot.jimple.StringConstant;
 
+import java.io.File;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -36,6 +40,9 @@ public class FaultPropagationTest {
     private static final String IOE = "java.io.IOException";
     private static final String SEND = "<f.Door: void send()>";
     private static final Jimple J = Jimple.v();
+
+    @Rule
+    public final TemporaryFolder roots = new TemporaryFolder();
 
     @After
     public void resetSoot() {
@@ -79,8 +86,12 @@ public class FaultPropagationTest {
     }
 
     @Test
-    public void aLibraryCallReadsItsReceiverWhenItIsShared() {
+    public void aLibraryCallReadsItsReceiverWhenItIsShared() throws Exception {
         scene();
+        File system = roots.newFolder("classes");
+        Files.createDirectories(system.toPath().resolve("f"));
+        Files.createFile(system.toPath().resolve("f/Caller.class"));
+        String both = system + File.pathSeparator + roots.newFolder("other");
         SootMethod read = Scene.v().getMethod("<f.Caller: void read()>");
         List<Unit> units = new ArrayList<>(read.getActiveBody().getUnits());
         List<Local> locals = new ArrayList<>(read.getActiveBody().getLocals());
@@ -96,7 +107,13 @@ public class FaultPropagationTest {
             {"a metrics registry", false,
                 LibraryReceivers.stateful("a.metrics2.Registry", "get")},
             {"an identity method", false,
-                LibraryReceivers.stateful("f.Conf", "hashCode")}};
+                LibraryReceivers.stateful("f.Conf", "hashCode")},
+            {"a class of the system's own roots is no library", true,
+                LibraryReceivers.systemClasses(both).test("f.Caller")},
+            {"a class no root holds is one", false,
+                LibraryReceivers.systemClasses(both).test("f.Conf")},
+            {"with no roots, every class is one", false,
+                LibraryReceivers.systemClasses(null).test("f.Caller")}};
         for (Object[] row : rows) {
             assertEquals((String) row[0], row[1], row[2]);
         }

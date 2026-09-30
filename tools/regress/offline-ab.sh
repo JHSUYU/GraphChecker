@@ -234,6 +234,8 @@ ab_stage_seed_static() {
   )
   [[ ! -s "${grown}/GROWN" ]] \
     || ab_props+=("-Dcausynth.process.dirs=${grown}")
+  [[ -z "$(ab_cfg causynth_lineage_roots)" ]] || ab_props+=(
+    "-Dcausynth.lineage.roots=$(ab_cfg causynth_lineage_roots)")
   [[ -z "$(ab_cfg causynth_communication_mappings)" ]] || ab_props+=(
     "-Dcausynth.communication.mappings=$(ab_cfg causynth_communication_mappings)")
   ab_java "${dir}" "$(ab_heap "$(ab_cfg engine_memory_mb)")" \

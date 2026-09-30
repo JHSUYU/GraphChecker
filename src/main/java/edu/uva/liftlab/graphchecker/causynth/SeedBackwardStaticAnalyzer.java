@@ -186,6 +186,10 @@ final class SeedBackwardStaticAnalyzer {
             new LinkedHashMap<>();
     /** Which library calls are clocks ({@link #processLibraryReceiver}). */
     private final RootCatalog roots = new RootCatalog();
+    /** Which out-of-scope classes are the system's own, not a library
+     *  ({@link #processLibraryReceiver}). */
+    private final Predicate<String> systemClass = LibraryReceivers
+            .systemClasses(System.getProperty(LibraryReceivers.ROOTS));
     /** {@link #rpcMessages}, computed at the first demanded getter. */
     private Set<String> rpcMessages;
     /** The declared per-loop {@code K_L} (PIPELINE §2). */
@@ -2114,8 +2118,9 @@ final class SeedBackwardStaticAnalyzer {
      * state when the receiver is shared ({@link LibraryReceivers}): one
      * {@code library_receiver} row from the receiver to each demanded def.
      * Application calls, container contracts, value types, accessors and
-     * dispatched calls state their dependence themselves, and a clock's
-     * value is a root whatever its receiver holds.
+     * dispatched calls state their dependence themselves, a clock's value is
+     * a root whatever its receiver holds, and a call into the system's own
+     * code outside the scope is the scope frontier's.
      */
     private void processLibraryReceiver(String callerMethod, Fact fact,
                                         MethodSig callee, List<String> defs,
@@ -2130,6 +2135,7 @@ final class SeedBackwardStaticAnalyzer {
         if (demanded.isEmpty() || !(call instanceof InstanceInvokeExpr)
                 || "<init>".equals(callee.name)
                 || isApplicationClassName(callee.owner)
+                || systemClass.test(callee.owner)
                 || isValueLikeLibraryInvoke(callee)
                 || JavaContainerTypes.query(callee.raw, this::libraryHierarchy)
                 || JavaContainerTypes.mutation(callee.raw,

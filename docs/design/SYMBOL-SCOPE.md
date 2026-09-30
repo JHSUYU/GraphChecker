@@ -86,13 +86,17 @@ The worklist (`runWorklist`, `processMethod`) walks definitions backwards:
   its `value` (`AtomicBoolean.get()` is `value != 0`), read off a table rather than its body
   (`plan/SharedFieldFlow#atomicRead`, `StructuralFieldAccessorProof#atomicField`); a container
   query depends on receiver and arguments (`processSemanticContainerOperation`,
-  `container_receiver`, `container_argument`); and any other call on a receiver that is shared
-  state -- its definition, through copies and casts, is `this`, a field read or a structural
-  accessor's result -- depends on it (`processLibraryReceiver`, `causynth/LibraryReceivers`,
-  `library_receiver`, `dependencyRole VALUE_FRONTIER`): `conf.getBoolean(k, d)` on a field's
-  object, `blockPoolManager.get(id)`. Not a receiver the method allocated or was passed, not a
-  call on `Object`, `Class`, a logger or a `metrics` package, and not a clock, whose value is a
-  root (§4.1).
+  `container_receiver`, `container_argument`); and any other library call on a receiver that is
+  shared state -- its definition, through copies and casts, is `this`, a field read or a
+  structural accessor's result -- depends on it (`processLibraryReceiver`,
+  `causynth/LibraryReceivers`, `library_receiver`, `dependencyRole VALUE_FRONTIER`):
+  `lock.isWriteLockedByCurrentThread()` on a field's lock, a ZooKeeper client's `zk.getState()`.
+  A library is code no class root of the system holds (`LibraryReceivers#systemClasses`, over
+  the campaign's `causynth_lineage_roots`, `-Dcausynth.lineage.roots`): a call into the system's
+  own code outside the scope is the frontier's (§2.4), where the slice stops and scope growth
+  takes the class whose body says what the result rests on. Not a receiver the method allocated
+  or was passed, not a call on `Object`, `Class`, a logger or a `metrics` package, and not a
+  clock, whose value is a root (§4.1).
 - **Containers, by interface** (`smt/JavaContainerTypes`): a call's contract is its receiver
   type's interface's -- `Map` (`ConcurrentMap`, `SortedMap`, `NavigableMap` alike), `Set`
   (`NavigableSet`), `List`, `Queue`, `Deque`, `Iterator`, `Map.Entry` -- read off the Soot

@@ -10,8 +10,21 @@ import soot.jimple.IdentityStmt;
 import soot.jimple.InvokeExpr;
 import soot.jimple.ThisRef;
 
+import java.io.File;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Predicate;
+import java.util.regex.Pattern;
+import java.util.zip.ZipFile;
 
 /**
  * Whether a library call's result depends on its receiver's state
@@ -20,15 +33,23 @@ import java.util.function.Predicate;
  * object.  The slice otherwise drops a library call's receiver, so the state
  * behind it never enters {@code S}.
  *
- * <p>It does when the callee's owner is no identity, reflection or logging
- * type ({@link #stateful}) and the receiver is shared state: its definition,
+ * <p>It does when the callee's owner is a library ({@link #systemClasses}:
+ * no class of the system's own roots) and no identity, reflection or logging
+ * type ({@link #stateful}), and the receiver is shared state: its definition,
  * through copies and casts, is {@code this}, a field read, or a structural
  * accessor's result.  A receiver the method allocated, or a parameter, is
  * the method's own object, not state another occurrence stores.  The caller
  * has already ruled out application calls, container contracts, value types
- * and accessors, which state their dependence themselves.</p>
+ * and accessors, which state their dependence themselves.  A call into the
+ * system's own code outside the scope is the scope frontier's (SYMBOL-SCOPE
+ * §2.4): the slice stops there, and scope growth takes the class whose body
+ * says what the result rests on.</p>
  */
 final class LibraryReceivers {
+    /** The system property naming the system's own class roots, as the
+     *  campaign's {@code causynth_lineage_roots}: directories or jars,
+     *  path-separated. */
+    static final String ROOTS = "causynth.lineage.roots";
     /** Packages whose objects hold no state a guard decides on. */
     private static final String[] STATELESS = {
         "org.slf4j.", "org.apache.log4j.", "org.apache.logging.",
@@ -55,6 +76,48 @@ final class LibraryReceivers {
             }
         }
         return true;
+    }
+
+    /**
+     * Whether a class is the system's own: a class file of one of the
+     * {@code roots} (path-separated directories or jars; none when null or
+     * blank).  Asked once per class.
+     */
+    static Predicate<String> systemClasses(String roots) {
+        List<Predicate<String>> holders = new ArrayList<>();
+        if (roots != null) {
+            for (String root : roots.split(Pattern.quote(File.pathSeparator))) {
+                if (!root.trim().isEmpty()) {
+                    holders.add(holder(Paths.get(root.trim())));
+                }
+            }
+        }
+        Map<String, Boolean> asked = new ConcurrentHashMap<>();
+        return owner -> asked.computeIfAbsent(owner, name -> {
+            String file = name.replace('.', '/') + ".class";
+            for (Predicate<String> holder : holders) {
+                if (holder.test(file)) return true;
+            }
+            return false;
+        });
+    }
+
+    /** Whether one root holds a class file, by its relative name. */
+    private static Predicate<String> holder(Path root) {
+        if (Files.isDirectory(root)) {
+            return file -> Files.isRegularFile(root.resolve(file));
+        }
+        if (!Files.isRegularFile(root)) {
+            throw new IllegalStateException("system class root not found: "
+                    + root);
+        }
+        Set<String> entries = ConcurrentHashMap.newKeySet();
+        try (ZipFile jar = new ZipFile(root.toFile())) {
+            jar.stream().forEach(entry -> entries.add(entry.getName()));
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException(unreadable);
+        }
+        return Collections.unmodifiableSet(entries)::contains;
     }
 
     /**

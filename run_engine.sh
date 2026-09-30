@@ -601,6 +601,12 @@ do_analyze() {
   if [[ -s "$(campaign_grown_scope)/${scope_growth_manifest}" ]]; then
     system_properties+=("-Dcausynth.process.dirs=$(campaign_grown_scope)")
   fi
+  # The system's own class roots: a call into one of their classes outside
+  # the scope is the scope frontier's, never a library call whose result
+  # rests on its receiver (causynth.LibraryReceivers).
+  if [[ -n "${causynth_lineage_roots}" ]]; then
+    system_properties+=("-Dcausynth.lineage.roots=${causynth_lineage_roots}")
+  fi
   if [[ -n "${causynth_communication_mappings}" ]]; then
     require_file "communication mapping" "${causynth_communication_mappings}"
     system_properties+=(
